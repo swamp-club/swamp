@@ -34,7 +34,10 @@ import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_mark
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
+import {
+  resolveBehaviorsDir,
+  resolveModelsDir,
+} from "../resolve_models_dir.ts";
 import { resolveReportsDir } from "../resolve_reports_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWebhooksDir } from "../resolve_webhooks_dir.ts";
@@ -87,8 +90,11 @@ export const extensionSourceAddCommand = new Command()
     const marker = await markerRepo.read(RepoPath.create(repoDir));
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
+    const behaviorsDir = resolveBehaviorsDir(marker);
     const defaultKindDirs = [
       resolveModelsDir(marker),
+      // Auto-discovered like extensions/models/ (swamp-club#3338).
+      ...(behaviorsDir === undefined ? [] : [behaviorsDir]),
       resolveVaultsDir(marker),
       resolveDatastoresDir(marker),
       resolveReportsDir(marker),

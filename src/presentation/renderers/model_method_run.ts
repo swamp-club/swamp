@@ -38,6 +38,11 @@ import {
   writeContentLine,
   writeGutterLine,
 } from "../output/console_writer.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceNoun,
+} from "../command_surface.ts";
 
 export interface ModelMethodRunRenderOpts {
   modelName: string;
@@ -45,6 +50,8 @@ export interface ModelMethodRunRenderOpts {
   quiet?: boolean;
   /** Also frame reports whose markdown is empty. */
   verbose?: boolean;
+  /** The CLI spelling the run was reached through; defaults to `model`. */
+  surface?: CommandSurface;
 }
 
 export interface ModelMethodRunRenderer extends Renderer<ModelMethodRunEvent> {
@@ -58,6 +65,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
   private methodName: string;
   private quiet: boolean;
   private verbose: boolean;
+  private readonly surface: CommandSurface;
   private _failed = false;
   private outputBuffer: string[] = [];
 
@@ -66,6 +74,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
     this.methodName = opts.methodName;
     this.quiet = opts.quiet ?? false;
     this.verbose = opts.verbose ?? false;
+    this.surface = opts.surface ?? DEFAULT_COMMAND_SURFACE;
   }
 
   handlers(): EventHandlers<ModelMethodRunEvent> {
@@ -100,7 +109,9 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
         writeGutterLine(
           "Warning",
           STATUS_COLORS.warn,
-          "Environment variables detected in model definition",
+          `Environment variables detected in ${
+            surfaceNoun(this.surface)
+          } definition`,
         );
         for (const detail of e.envVars) {
           writeContentLine(`${detail.path} uses ${detail.envVar}`);

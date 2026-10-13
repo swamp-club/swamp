@@ -56,6 +56,8 @@ Deno.test("scanTemplateSyntax: double braces on a swamp root are malformed", () 
       "{{self.name}}",
       "{{ model.my-vpc.resource.vpc.main.attributes.VpcId }}",
       "{{ vault.get('v', 'k') }}",
+      "{{ vault.get(v, k) }}",
+      "{{ vault.get(my-vault, API_KEY) }}",
       "{{ env.HOME }}",
       "{{env.name}}",
       "{{ workflow.name }}",

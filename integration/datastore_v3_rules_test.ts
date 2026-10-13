@@ -85,6 +85,13 @@
  *    names is pinned. A writer that needs one of them synced must first give
  *    it a v3 home ("v3 stream directories" in
  *    `design/enablers/datastores.md`).
+ * 11. **The Litestream binary provider is dormant** (swamp-club#3358). The
+ *    pinned release (`litestream_pin.ts`) and the provider that downloads,
+ *    verifies and caches it live in
+ *    `src/infrastructure/datastore_v3/litestream/`. No production file but
+ *    the provider imports either, and only the provider reads
+ *    `SWAMP_LITESTREAM_PATH`, so nothing fetches or runs Litestream until
+ *    the sidecar (Phase 4D) wires it in and adds its edges here.
  *
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
@@ -606,5 +613,56 @@ Deno.test("datastore v3: no production code outside v3 compacts history", async 
     "Production calls of compactHistory",
     "Compacting history deletes commits. It is dormant until the v3 opt-in\n" +
       "wires it in.",
+  );
+});
+
+const LITESTREAM_DIR = "src/infrastructure/datastore_v3/litestream";
+const LITESTREAM_MODULES = [
+  "infrastructure/datastore_v3/litestream/litestream_binary_provider.ts",
+  "infrastructure/datastore_v3/litestream/litestream_pin.ts",
+];
+
+/** Production imports of the Litestream provider or pin, in or out of v3. */
+const PINNED_LITESTREAM_IMPORTERS: readonly string[] = [
+  // The provider reads the pin it verifies against.
+  "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts -> src/infrastructure/datastore_v3/litestream/litestream_pin.ts",
+];
+
+Deno.test("datastore v3: no production code imports the Litestream binary provider", async () => {
+  const edges = await collectImportEdges(
+    SRC_DIR,
+    (filePath, importPath) =>
+      LITESTREAM_MODULES.some((module) =>
+        importsLayer(filePath, importPath, module)
+      ),
+  );
+  assertPinnedSet(
+    edges,
+    PINNED_LITESTREAM_IMPORTERS,
+    "Production imports of the dormant Litestream binary provider",
+    "Downloading and running Litestream is dormant until the sidecar\n" +
+      "(Phase 4D) wires it in. Add the sidecar's edge here when it does.",
+  );
+});
+
+/** Production files that mention `SWAMP_LITESTREAM_PATH`. */
+const PINNED_LITESTREAM_PATH_READERS: readonly string[] = [
+  `${LITESTREAM_DIR}/litestream_binary_provider.ts`,
+];
+
+Deno.test("datastore v3: only the Litestream provider reads SWAMP_LITESTREAM_PATH", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if ((await Deno.readTextFile(filePath)).includes("SWAMP_LITESTREAM_PATH")) {
+      found.push(rel);
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_LITESTREAM_PATH_READERS,
+    "Production mentions of SWAMP_LITESTREAM_PATH",
+    "The override must reach Litestream only through the provider, which\n" +
+      "hashes it against the pin. Pass a path to the provider instead.",
   );
 });

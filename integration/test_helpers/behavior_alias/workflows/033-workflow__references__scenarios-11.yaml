@@ -1,0 +1,40 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/scenarios.md (block 11)
+id: 00000000-0000-4000-8000-000000000033
+name: provision-networking
+description: Idempotent networking provisioning — safe to re-run
+version: 1
+jobs:
+  - name: create-vpc
+    steps:
+      - name: vpc
+        guard: ${{ data.latest("networking-vpc", "resource") }}
+        task:
+          type: model_method
+          modelIdOrName: networking-vpc
+          methodName: create
+
+  - name: create-subnets
+    dependsOn:
+      - job: create-vpc
+        condition:
+          type: succeeded
+    steps:
+      - name: subnet
+        guard: ${{ data.latest("public-subnet", "resource") }}
+        task:
+          type: model_method
+          modelIdOrName: public-subnet
+          methodName: create
+
+  - name: create-sg
+    dependsOn:
+      - job: create-subnets
+        condition:
+          type: succeeded
+    steps:
+      - name: security-group
+        guard: ${{ data.latest("app-sg", "resource") }}
+        task:
+          type: model_method
+          modelIdOrName: app-sg
+          methodName: create

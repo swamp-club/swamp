@@ -31,6 +31,7 @@ import {
   type WaitRegistration,
 } from "../../domain/workflows/signal_wait_records.ts";
 import { settledBy } from "../../domain/workflows/signal_wait_store.ts";
+import { sweepPendingSignals } from "../../domain/workflows/signal_wait_cleanup.ts";
 import {
   type AtomicControlPlaneStore,
   ControlPlaneSignalWaitStore,
@@ -631,4 +632,60 @@ Deno.test("ControlPlaneSignalWaitStore: pending signals are kept on a real files
       number: 1,
     }]);
   });
+});
+
+Deno.test("ControlPlaneSignalWaitStore: a sweep of a lapsed slot asks for the same records however many other keys are claimed (swamp-club#3308)", async () => {
+  const at = OPENED.toISOString();
+  // The requests one sweep makes with `others` workflows holding a key each.
+  const requestsOfASweep = async (others: number): Promise<string[]> => {
+    const backing = memoryStore();
+    const store = new ControlPlaneSignalWaitStore(backing);
+    for (let other = 0; other < others; other++) {
+      const stored = await store.createKeyRecord({
+        kind: "claim",
+        workflowId: `wf-${other}`,
+        key: "order",
+        generation: 1,
+        recordedAt: at,
+        waitId: crypto.randomUUID(),
+        runId: crypto.randomUUID(),
+        jobName: "main",
+        stepName: "review",
+        deadline: at,
+      });
+      assertEquals(stored.kind, "found");
+    }
+    // A workflow that no longer runs: its early signal lapsed, and the
+    // lapse stays as the highest record of its slot.
+    const lapse = await store.createPendingRecord({
+      kind: "lapse",
+      workflowId: "wf-retired",
+      key: "order",
+      slot: 1,
+      number: 2,
+      recordedAt: at,
+    });
+    assertEquals(lapse.kind, "found");
+
+    const requests: string[] = [];
+    const counting = new ControlPlaneSignalWaitStore({
+      ...backing,
+      get: (key) => {
+        requests.push(`get ${key}`);
+        return backing.get(key);
+      },
+      list: (prefix) => {
+        requests.push(`list ${prefix}`);
+        return backing.list(prefix);
+      },
+    });
+    assertEquals(await sweepPendingSignals(counting, OPENED), 0);
+    return requests;
+  };
+
+  const few = await requestsOfASweep(10);
+  assertEquals(await requestsOfASweep(500), few);
+  // The pending signals, the retired key's records, its slot, its lapse.
+  assertEquals(few.length, 4);
+  assert(few.every((request) => !request.includes("wf-0")));
 });

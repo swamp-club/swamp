@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { extractVaultReferences } from "./vault_reference_extractor.ts";
+import {
+  extractVaultReferences,
+  isDynamicVaultArgument,
+} from "./vault_reference_extractor.ts";
 
 Deno.test("extractVaultReferences: extracts single quoted reference", () => {
   const data = { apiKey: "${{ vault.get('default', 'api-key') }}" };
@@ -154,4 +157,35 @@ Deno.test("extractVaultReferences: reads only vault.get calls written as code", 
   });
   assertEquals(result.staticRefs, [{ vaultName: "a", secretKey: "b" }]);
   assertEquals(result.hasDynamicRefs, false);
+});
+
+Deno.test("isDynamicVaultArgument: only a bare token with a member access is evaluated", () => {
+  for (const token of ["inputs.vaultName", "self.item.vault", "a.b"]) {
+    assertEquals(isDynamicVaultArgument(token), true, token);
+  }
+  for (const token of ["t", "KEY", "my-vault", "API_KEY", "prod_secrets"]) {
+    assertEquals(isDynamicVaultArgument(token), false, token);
+  }
+});
+
+Deno.test("extractVaultReferences: a bare token with no member access is a static name (swamp-club#3360)", () => {
+  const result = extractVaultReferences({
+    a: "${{ vault.get(prod, API_KEY) }}",
+    b: "${{ vault.get(my-vault, 'db.password') }}",
+    c: "${{ vault.get('prod', API_KEY) }}",
+  });
+  assertEquals(result.staticRefs, [
+    { vaultName: "prod", secretKey: "API_KEY" },
+    { vaultName: "my-vault", secretKey: "db.password" },
+  ]);
+  assertEquals(result.hasDynamicRefs, false);
+});
+
+Deno.test("extractVaultReferences: a call with one dotted bare argument is dynamic", () => {
+  const result = extractVaultReferences({
+    a: "${{ vault.get(prod, inputs.key) }}",
+    b: "${{ vault.get(inputs.vault, API_KEY) }}",
+  });
+  assertEquals(result.staticRefs, []);
+  assertEquals(result.hasDynamicRefs, true);
 });

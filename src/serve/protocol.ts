@@ -348,6 +348,17 @@ export interface ModelOutputLogsPayload {
 
 export interface ModelOutputSearchPayload {
   query?: string;
+  /** Only outputs of this model, by exact name or id. */
+  model?: string;
+  /** Only outputs started at or after this ISO 8601 instant. */
+  since?: string;
+  /** Only outputs started before this ISO 8601 instant (exclusive). */
+  until?: string;
+  /**
+   * At most this many results, most recent first, counted among the outputs
+   * the caller may read.
+   */
+  limit?: number;
 }
 
 export interface ModelMethodHistoryGetPayload {
@@ -397,15 +408,48 @@ export interface WorkflowHistorySearchPayload {
 
 export interface WorkflowRunSearchPayload {
   query?: string;
+  /** Runs started at or after: a duration back from now (`7d`) or ISO time. */
   since?: string;
+  /** Runs started before (exclusive): a duration back or ISO time. */
+  until?: string;
   status?: string;
+  /** One workflow's runs, by name ignoring case. */
   workflow?: string;
+  /** Runs of any of these workflows, by exact name; empty filters nothing. */
+  workflows?: string[];
+  /** Runs with this trigger source (`schedule`, `api`…), ignoring case. */
+  triggerSource?: string;
+  /** Runs with any of these statuses; with `status`, both must hold. */
+  statuses?: string[];
+  /** Runs with any of these trigger sources; with `triggerSource`, both hold. */
+  triggerSources?: string[];
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
   /** Page size; the server applies a default of 500 when omitted. */
   limit?: number;
   /** Number of authorized runs to skip before the page. */
   offset?: number;
+}
+
+/**
+ * Asks for run counts across workflows. Counts only runs the caller may
+ * read. Every field is optional.
+ */
+export interface WorkflowRunSummaryPayload {
+  /** Runs started at or after this ISO time (a duration back also works). */
+  since?: string;
+  /** Runs started before this ISO time (exclusive). */
+  until?: string;
+  /** Only runs of these workflows, by exact name. */
+  workflows?: string[];
+  /** Only runs with this trigger source, ignoring case. */
+  triggerSource?: string;
+  /** Only runs with any of these trigger sources, ignoring case. */
+  triggerSources?: string[];
+  /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
+  recentLimit?: number;
+  /** Include hourly buckets. */
+  timeline?: boolean;
 }
 
 export interface WorkflowSchemaPayload {
@@ -444,6 +488,14 @@ export type WorkflowSignalPayload =
      * `no_open_wait`, as it was before, and nothing is stored.
      */
     acceptsPending?: boolean;
+    /**
+     * True from a client that reads an `accepted` reply (swamp-club#3213). A
+     * caller who may signal the workflow and not read it gets that reply for
+     * a key whose step sets `acceptEarly`; one whose client does not say
+     * this is refused `upgrade_required`, and nothing is delivered or
+     * stored.
+     */
+    acceptsReceipt?: boolean;
     /** Names this signal across retries; see `isIdempotencyKey`. */
     idempotencyKey?: string;
   };
@@ -878,6 +930,11 @@ export type ServerRequest =
     payload?: WorkflowRunSearchPayload;
   }
   | {
+    type: "workflow.run.summary";
+    id: string;
+    payload?: WorkflowRunSummaryPayload;
+  }
+  | {
     type: "workflow.schema";
     id: string;
     payload: WorkflowSchemaPayload;
@@ -1306,6 +1363,72 @@ export interface WorkflowRunSearchResponse {
   total?: number;
 }
 
+/** One run in a workflow's `recent` list. */
+export interface WorkflowRunSummaryRecentRun {
+  runId: string;
+  status: string;
+  startedAt?: string;
+  duration?: number;
+  triggerSource?: string;
+}
+
+/**
+ * The runs of one workflow, counted. `failed` includes interrupted runs and
+ * `running` includes pending ones; a status in no bucket counts in `runs`
+ * only.
+ */
+export interface WorkflowRunSummaryWorkflow {
+  workflowId: string;
+  workflowName: string;
+  runs: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  running: number;
+  suspended: number;
+  /** Total duration of the finished runs. */
+  durationMs: number;
+  lastStartedAt?: string;
+  /** The newest runs, newest first. */
+  recent: WorkflowRunSummaryRecentRun[];
+}
+
+/** The runs started within one UTC hour. */
+export interface WorkflowRunSummaryBucket {
+  /** Top of the UTC hour, as an ISO timestamp. */
+  start: string;
+  runs: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+}
+
+/** Run counts across the workflows the caller may read. */
+export interface WorkflowRunSummaryData {
+  since?: string;
+  until?: string;
+  totals: {
+    /** Workflows with at least one counted run. */
+    workflows: number;
+    runs: number;
+    succeeded: number;
+    failed: number;
+    cancelled: number;
+    running: number;
+    suspended: number;
+    /** Total duration of the finished runs. */
+    durationMs: number;
+  };
+  /** One entry per workflow with a counted run, ordered by name. */
+  workflows: WorkflowRunSummaryWorkflow[];
+  /** Hours with runs, ascending; only when asked for. */
+  timeline?: WorkflowRunSummaryBucket[];
+}
+
+export interface WorkflowRunSummaryResponse {
+  data: WorkflowRunSummaryData;
+}
+
 export interface WorkflowSchemaResponse {
   data: Record<string, unknown>;
 }
@@ -1357,7 +1480,10 @@ export interface WorkflowSignalResponseData {
   awaitingResume?: boolean;
   runRecordAvailable?: boolean;
   resumeCommand?: string;
-  /** True when the step took the signal as it opened its wait. */
+  /**
+   * True when a wait took the signal from where it was held. `awaitingResume`
+   * says whether its run went on from there or is suspended still.
+   */
   taken?: true;
 }
 
@@ -1398,10 +1524,48 @@ export interface WorkflowSignalPendingResponseData {
   };
 }
 
-/** `data` for a delivered signal; `pending` for one that is held. */
+/**
+ * A signal by key that was received, for a caller who may signal the
+ * workflow and not read it, on a key whose step sets `acceptEarly`
+ * (swamp-club#3213). It is the receipt and nothing else: the same reply
+ * whether a wait took the signal or it is held as the key's pending signal,
+ * so it does not say whether a run is waiting.
+ */
+export interface WorkflowSignalAcceptedResponseData {
+  /** What swamp recorded about the signal. */
+  signal: {
+    id: string;
+    receivedAt: string;
+    submittedBy: string;
+    idempotencyKey?: string;
+  };
+  /**
+   * True when the request carried the idempotency key of a signal already
+   * received: `signal` is that one's receipt, and nothing more was done.
+   */
+  duplicate?: true;
+}
+
+/**
+ * `data` for a delivered signal; `pending` for one that is held; `accepted`
+ * for one whose sender is not told which of the two it was.
+ */
 export type WorkflowSignalResponse =
-  | { data: WorkflowSignalResponseData; pending?: undefined }
-  | { data?: undefined; pending: WorkflowSignalPendingResponseData };
+  | {
+    data: WorkflowSignalResponseData;
+    pending?: undefined;
+    accepted?: undefined;
+  }
+  | {
+    data?: undefined;
+    pending: WorkflowSignalPendingResponseData;
+    accepted?: undefined;
+  }
+  | {
+    data?: undefined;
+    pending?: undefined;
+    accepted: WorkflowSignalAcceptedResponseData;
+  };
 
 export interface WorkflowWaitsResponse {
   data: Record<string, unknown>;
@@ -1851,6 +2015,11 @@ export type ServerMessage =
     type: "workflow.run.search";
     id: string;
     payload: WorkflowRunSearchResponse;
+  }
+  | {
+    type: "workflow.run.summary";
+    id: string;
+    payload: WorkflowRunSummaryResponse;
   }
   | { type: "workflow.schema"; id: string; payload: WorkflowSchemaResponse }
   | { type: "workflow.search"; id: string; payload: WorkflowSearchResponse }

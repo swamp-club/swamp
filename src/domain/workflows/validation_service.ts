@@ -273,8 +273,9 @@ export class DefaultWorkflowValidationService
 
   /**
    * With a `vaults:` list, reports each vault the workflow statically uses
-   * but does not list: a quoted `vault.get` in its own steps or inputs, and
-   * each sensitive-output target vault of a mutating model-method step. The
+   * but does not list: a `vault.get` whose vault name is quoted or an
+   * unquoted literal name in its own steps or inputs, and each
+   * sensitive-output target vault of a mutating model-method step. The
    * run-time check is the guarantee for dynamic names and for `vault.get`
    * inside model definitions.
    */

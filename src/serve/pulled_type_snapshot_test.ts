@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
   capturePulledTypes,
+  isBuiltInType,
   unregisterPulledType,
 } from "./pulled_type_snapshot.ts";
 import type { ExtensionTypeRow } from "../infrastructure/persistence/extension_catalog_store.ts";
@@ -31,6 +32,10 @@ import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import "../domain/models/models.ts";
+import "../domain/vaults/vault_types.ts";
+import "../domain/datastore/datastore_types.ts";
+import "../domain/reports/builtin/mod.ts";
 
 const pulledRoot = canonicalizePath(
   join("/repo", ".swamp", "pulled-extensions"),
@@ -106,7 +111,7 @@ Deno.test("unregisterPulledType: removes the type from the registry of its kind"
   webhookTypeRegistry.registerLazy(lazy(types.webhook));
   try {
     for (const kind of Object.keys(types) as (keyof typeof types)[]) {
-      unregisterPulledType({ kind, type: types[kind] });
+      assertEquals(unregisterPulledType({ kind, type: types[kind] }), true);
     }
     assertEquals(
       [
@@ -126,3 +131,79 @@ Deno.test("unregisterPulledType: removes the type from the registry of its kind"
     webhookTypeRegistry.invalidateType(types.webhook);
   }
 });
+
+/**
+ * Runs `fn`, then puts back any built-in entry it removed or replaced, so
+ * a red run cannot leave the process-global registries without them.
+ */
+async function preservingBuiltIns(fn: () => void | Promise<void>) {
+  const model = modelRegistry.get("command/shell")!;
+  const vault = vaultTypeRegistry.get("local_encryption")!;
+  const datastore = datastoreTypeRegistry.get("filesystem")!;
+  const report = reportRegistry.get("@swamp/method-summary")!;
+  try {
+    await fn();
+  } finally {
+    if (modelRegistry.get("command/shell") !== model) {
+      modelRegistry.invalidateType("command/shell");
+      modelRegistry.register(model);
+    }
+    if (vaultTypeRegistry.get("local_encryption") !== vault) {
+      vaultTypeRegistry.invalidateType("local_encryption");
+      vaultTypeRegistry.register(vault);
+    }
+    if (datastoreTypeRegistry.get("filesystem") !== datastore) {
+      datastoreTypeRegistry.invalidateType("filesystem");
+      datastoreTypeRegistry.register(datastore);
+    }
+    if (reportRegistry.get("@swamp/method-summary") !== report) {
+      reportRegistry.invalidateType("@swamp/method-summary");
+      reportRegistry.register("@swamp/method-summary", report);
+    }
+  }
+}
+
+const BUILT_IN_REFS = [
+  { kind: "model", type: "command/shell" },
+  { kind: "model", type: "swamp/grant" },
+  { kind: "vault", type: "local_encryption" },
+  { kind: "datastore", type: "filesystem" },
+  { kind: "report", type: "@swamp/method-summary" },
+] as const;
+
+Deno.test("isBuiltInType: true for built-in types of every kind, false for extension types (swamp-club#2746)", () => {
+  for (const ref of BUILT_IN_REFS) {
+    assertEquals(isBuiltInType(ref), true, `${ref.kind} ${ref.type}`);
+  }
+  const id = crypto.randomUUID();
+  for (
+    const kind of ["model", "vault", "datastore", "report", "webhook"] as const
+  ) {
+    assertEquals(isBuiltInType({ kind, type: `@test/${kind}-${id}` }), false);
+  }
+});
+
+Deno.test("unregisterPulledType: leaves a built-in type registered and returns false (swamp-club#2746)", async () => {
+  await preservingBuiltIns(() => {
+    const before = BUILT_IN_REFS.map((ref) => getRegistered(ref));
+    for (const ref of BUILT_IN_REFS) {
+      assertEquals(unregisterPulledType(ref), false, `${ref.kind} ${ref.type}`);
+    }
+    assertEquals(BUILT_IN_REFS.map((ref) => getRegistered(ref)), before);
+  });
+});
+
+function getRegistered(
+  ref: (typeof BUILT_IN_REFS)[number],
+): unknown {
+  switch (ref.kind) {
+    case "model":
+      return modelRegistry.get(ref.type);
+    case "vault":
+      return vaultTypeRegistry.get(ref.type);
+    case "datastore":
+      return datastoreTypeRegistry.get(ref.type);
+    case "report":
+      return reportRegistry.get(ref.type);
+  }
+}

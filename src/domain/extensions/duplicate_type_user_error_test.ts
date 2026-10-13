@@ -325,3 +325,30 @@ Deno.test("DuplicateTypeUserError: a kept install with an unattributed occupant 
   );
   assert(!err.message.includes("swamp extension rm"));
 });
+
+Deno.test("DuplicateTypeUserError: local-directories names both files, not an install (swamp-club#3338)", () => {
+  const err = new DuplicateTypeUserError({
+    kind: "model",
+    typeNormalized: "@acme/thing",
+    existing: {
+      extensionName: "",
+      extensionVersion: "",
+      canonicalPath: "/repo/extensions/models/a.ts",
+    },
+    conflicting: {
+      extensionName: "",
+      extensionVersion: "",
+      canonicalPath: "/repo/extensions/behaviors/b.ts",
+    },
+    origin: "local-directories",
+  });
+  assertEquals(
+    err.message,
+    'Type "@acme/thing" (kind=model) is defined in both ' +
+      "/repo/extensions/models/a.ts and /repo/extensions/behaviors/b.ts. " +
+      "extensions/behaviors/ is another spelling of extensions/models/, so " +
+      "a type may be defined in only one of them. Change or remove the type " +
+      "declaration in one of the two sources.",
+  );
+  assertEquals(err instanceof UserError, true);
+});

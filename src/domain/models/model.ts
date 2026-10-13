@@ -945,6 +945,7 @@ export class ModelRegistry {
   private models = new Map<string, ModelDefinition>();
   private lazyTypes = new Map<string, LazyModelEntry>();
   private internalTypes = new Set<string>();
+  private builtInTypes = new Set<string>();
   private extensionLoader: (() => Promise<void>) | null = null;
   private extensionLoadPromise: Promise<void> | null = null;
   private extensionsLoaded = false;
@@ -1538,6 +1539,26 @@ export class ModelRegistry {
     this.internalTypes.add(normalized);
   }
 
+  /**
+   * Marks a model type as built in: its code ships with swamp, so no
+   * pulled extension may replace or remove it (swamp-club#2746). Called by
+   * {@link defineModel}; extensions register through {@link register}.
+   * {@link invalidateType} does not clear the mark.
+   */
+  markBuiltIn(type: ModelType | string): void {
+    const normalized = typeof type === "string"
+      ? ModelType.create(type).normalized
+      : type.normalized;
+    this.builtInTypes.add(normalized);
+  }
+
+  isBuiltIn(type: ModelType | string): boolean {
+    const normalized = typeof type === "string"
+      ? ModelType.create(type).normalized
+      : type.normalized;
+    return this.builtInTypes.has(normalized);
+  }
+
   isInternal(type: ModelType | string): boolean {
     const normalized = typeof type === "string"
       ? ModelType.create(type).normalized
@@ -1560,10 +1581,12 @@ export const modelRegistry: ModelRegistry = (globalThis as any)[
 ] ??= new ModelRegistry();
 
 /**
- * Defines and registers a model with the global registry.
+ * Defines and registers a built-in model with the global registry.
  *
  * Use this function at module level to self-register models when the module is imported.
  * The barrel file (models.ts) imports all model files, triggering registration.
+ * A type this call registers is marked built in; a type already registered
+ * is left as it is.
  *
  * @param definition - The model definition to register
  * @returns The same model definition (for re-export)
@@ -1575,6 +1598,7 @@ export function defineModel<
 ): ModelDefinition<TGlobalArgs> {
   if (!modelRegistry.has(definition.type)) {
     modelRegistry.register(definition);
+    modelRegistry.markBuiltIn(definition.type);
   }
   return definition;
 }

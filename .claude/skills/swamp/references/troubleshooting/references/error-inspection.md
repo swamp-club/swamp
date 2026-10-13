@@ -12,8 +12,8 @@ structured form via `--json` — read those before guessing.
 - [Switch to `--json`](#switch-to---json)
 - [Exit codes](#exit-codes)
 - [`swamp-warning:` lines](#swamp-warning-lines)
-- [Recipe: model method or workflow run failed](#recipe-model-method-or-workflow-run-failed)
-- [Recipe: extension not in `model type search`](#recipe-extension-not-in-model-type-search)
+- [Recipe: method or workflow run failed](#recipe-method-or-workflow-run-failed)
+- [Recipe: extension not in `behavior type search`](#recipe-extension-not-in-behavior-type-search)
 - [Recipe: source extension not loading](#recipe-source-extension-not-loading)
 - [Recipe: method preflight check failed](#recipe-method-preflight-check-failed)
 - [Escalating to other tiers](#escalating-to-other-tiers)
@@ -39,7 +39,7 @@ stderr and continue. `--json` only shapes stdout, so warnings stay visible
 regardless of mode.
 
 ```bash
-swamp model type search --json 2>warnings.txt
+swamp behavior type search --json 2>warnings.txt
 cat warnings.txt          # check for swamp-warning: lines
 ```
 
@@ -86,15 +86,15 @@ The emitter is at `src/infrastructure/logging/extension_load_warnings.ts`.
 `swamp doctor extensions` consumes the same emitter and folds warnings into a
 structured report — prefer the doctor command when triaging multiple warnings.
 
-## Recipe: extension not in `model type search`
+## Recipe: extension not in `behavior type search`
 
-Symptom: a model file at `extensions/models/<name>.ts` doesn't appear in
-`swamp model type search`.
+Symptom: a behavior file at `extensions/models/<name>.ts` doesn't appear in
+`swamp behavior type search`.
 
 1. **Run `swamp doctor extensions --json`** — Tier 1 names the failing file and
    error directly. Stop here if the failure is identified.
-2. **If doctor passes**, the model is loading but isn't visible. Re-run
-   `swamp model type search --json` and check stderr for late warnings (some
+2. **If doctor passes**, the behavior is loading but isn't visible. Re-run
+   `swamp behavior type search --json` and check stderr for late warnings (some
    issues only surface when the catalog is queried, not when registries load).
 3. **Verify `~/.swamp/deno/deno check` passes** on the file — type errors that
    pass `~/.swamp/deno/deno check` may still be rejected by swamp's stricter
@@ -121,7 +121,7 @@ Symptom: an extension registered in `.swamp-sources.yaml` isn't appearing.
    dependency mappings (e.g. `"zod": "npm:zod@4"`). Without it, bundling fails
    with `Import "zod" not a dependency`.
 5. **Check the `only` filter**: if the source was added with `--only vaults`,
-   model types won't load from it.
+   behavior types won't load from it.
 
 Source loading code:
 
@@ -129,7 +129,7 @@ Source loading code:
   and path resolution.
 - `src/cli/mod.ts` — wiring sources into the loader pipeline.
 
-## Recipe: model method or workflow run failed
+## Recipe: method or workflow run failed
 
 Symptom: `swamp behavior run` or `swamp workflow run` exits non-zero and the
 stderr message doesn't point to an obvious fix.
@@ -138,7 +138,7 @@ Reports run automatically after both successful and failed executions, capturing
 structured diagnostics that go beyond what stderr shows — error messages,
 execution status, arguments passed, and data output pointers.
 
-1. **Inspect the method-summary report** (for model method failures):
+1. **Inspect the method-summary report** (for method failures):
    ```bash
    swamp report get @swamp/method-summary --model <model> --json
    ```
@@ -152,9 +152,10 @@ execution status, arguments passed, and data output pointers.
    The JSON output includes per-job step status, succeeded/failed/skipped
    counts, and retrieval commands for failed step data.
 
-3. **Check for custom reports.** Model types can define additional reports that
-   run alongside the built-in summaries. List all reports for a model with
-   `swamp report get --model <model>` (no report name) to see what's available.
+3. **Check for custom reports.** Behavior types can define additional reports
+   that run alongside the built-in summaries. List all reports for a behavior
+   with `swamp report get --model <model>` (no report name) to see what's
+   available.
 
 4. **Run `swamp help report get`** to confirm current retrieval syntax — flags
    may change between releases.
@@ -169,7 +170,7 @@ Symptom: `swamp behavior run` fails with `Pre-flight check failed: …`.
 This is a different concept from `swamp doctor` — it's a per-method validation
 check (e.g. "AWS credentials are valid", "API is reachable"), not an integration
 health check. See [checks.md](checks.md) for skip flags, check selection errors,
-extension conflicts, and required-check behavior.
+extension conflicts, and required-check handling.
 
 ## Escalating to other tiers
 

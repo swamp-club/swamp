@@ -25,17 +25,25 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { formatSchemaAttributes } from "./model_get.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceNounCapitalized,
+} from "../command_surface.ts";
 
 class LogModelMethodDescribeRenderer
   implements Renderer<ModelMethodDescribeEvent> {
+  constructor(private readonly surface: CommandSurface) {}
+
   handlers(): EventHandlers<ModelMethodDescribeEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
         const data = e.data;
         const lines: string[] = [];
+        const label = `${surfaceNounCapitalized(this.surface)}:`;
 
-        lines.push(`${bold(cyan("Model:"))} ${data.modelName}`);
+        lines.push(`${bold(cyan(label))} ${data.modelName}`);
         lines.push(`${bold(cyan("Type:"))} ${data.modelType}`);
         lines.push(`${bold(cyan("Version:"))} ${data.version}`);
         lines.push("");
@@ -95,11 +103,12 @@ class JsonModelMethodDescribeRenderer
 
 export function createModelMethodDescribeRenderer(
   mode: OutputMode,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): Renderer<ModelMethodDescribeEvent> {
   switch (mode) {
     case "json":
       return new JsonModelMethodDescribeRenderer();
     case "log":
-      return new LogModelMethodDescribeRenderer();
+      return new LogModelMethodDescribeRenderer(surface);
   }
 }

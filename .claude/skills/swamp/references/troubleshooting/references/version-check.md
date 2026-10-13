@@ -1,7 +1,7 @@
 # Version-Drift Check
 
 Run before entering the diagnostic tiers. A stale swamp binary or extension is a
-common root cause for unexpected behavior — the check is cheap and can
+common root cause for unexpected results — the check is cheap and can
 short-circuit hours of investigation.
 
 ## Step 1: Check the swamp binary

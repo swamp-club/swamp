@@ -65,7 +65,7 @@ Deno.test("serveConfigRows: renders a real serve.config payload with everything 
     { label: "Auto Resume", value: "enabled", ok: true },
     { label: "Hot Reload", value: "enabled", ok: true },
     { label: "Trust Proxy", value: "enabled", ok: true },
-    { label: "Webhooks", value: "1 endpoints", ok: false },
+    { label: "Webhooks", value: "1 endpoint", ok: false },
   ]);
 });
 

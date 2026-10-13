@@ -1,0 +1,21 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/data-chaining.md (block 1)
+id: 00000000-0000-4000-8000-000000000013
+name: ec2-with-latest-ami
+description: Create EC2 instance with dynamically looked-up AMI
+version: 1
+jobs:
+  - name: provision
+    description: Provision EC2 with latest Amazon Linux AMI
+    steps:
+      - name: lookup-ami
+        description: Find latest Amazon Linux 2 AMI
+        task:
+          type: model_method
+          modelIdOrName: latest-ami
+          methodName: execute
+      - name: create-instance
+        description: Create EC2 instance using looked-up AMI
+        task:
+          type: model_method
+          modelIdOrName: my-instance
+          methodName: create

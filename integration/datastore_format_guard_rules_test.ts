@@ -126,7 +126,9 @@ const GUARDED_PINNED = [
   "src/cli/commands/datastore_gc.ts:datastoreGcCommand",
   "src/cli/commands/datastore_status.ts:datastoreStatusCommand",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:anotherProcessWritesCheckout",
-  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
+  // swamp-club#3359: holdV3Writer also opens the handle, to record its
+  // writer lease's fence in commits.db.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer (x2)",
   // swamp-club#3299: interrupted-writer recovery opens the handle and
   // inspects the writer lock of the datastore v3RepositoryFactoryConfig or
   // holdV3Writer passes it, after the same check.
@@ -140,7 +142,9 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/v3_config_adoption.ts:planV3ConfigAdoption",
   "src/serve/handlers/admin_handlers.ts:handleDatastoreStatus",
   "src/cli/commands/datastore_lock.ts:datastoreLockReleaseCommand (x2)",
-  "src/cli/commands/datastore_lock.ts:datastoreLockStatusCommand (x2)",
+  // swamp-club#3372: lock status also resolves a custom datastore's provider
+  // and builds each model's lock to inspect it, after the same check.
+  "src/cli/commands/datastore_lock.ts:datastoreLockStatusCommand (x4)",
   "src/cli/commands/datastore_namespace.ts:buildMigrateDeps",
   "src/cli/commands/datastore_sync.ts:datastoreSyncCommand",
   "src/cli/commands/doctor_datastores.ts:createDoctorDatastoresDeps",
@@ -162,6 +166,9 @@ const GUARDED_PINNED = [
   "src/infrastructure/persistence/server_token_lock.ts:createServerTokenLock (x2)",
   "src/infrastructure/persistence/server_token_lock.ts:withServerTokenLock",
   "src/libswamp/datastores/migrate_index.ts:createMigrateIndexDeps",
+  // swamp-club#3372: builds locks only through the source lock status hands
+  // it, from that command's checked config.
+  "src/libswamp/datastores/lock.ts:scanCustomModelLocks",
   "src/libswamp/datastores/setup.ts:datastoreSetupExtension",
   "src/libswamp/datastores/sync.ts:createDatastoreSyncDeps",
 ];

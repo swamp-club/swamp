@@ -1,7 +1,7 @@
 # Swamp Data Skill
 
-Manage model data lifecycle through the CLI. All commands support `--json` for
-machine-readable output.
+Manage behavior data lifecycle through the CLI. All commands support `--json`
+for machine-readable output.
 
 **Verify CLI syntax:** Always run `swamp help data` to confirm exact flags
 before executing — the output is structured JSON.
@@ -33,10 +33,11 @@ query matches the instance `name` exactly (use `specName == "<spec>"` for a spec
 name); when nothing matches by name but something does by spec name,
 `specNameHint.suggestedPredicate` gives the query to run.
 
-`model("<m>")` resolves `<m>` as a model name or definition id exactly as
-`data get` does, and an unknown model is an error; `modelName == "<m>"` compares
-the name stored with the data, which a model rename does not update (see
-[references/fields.md](references/fields.md#model--match-by-model-as-data-get-resolves-it)).
+`model("<m>")` resolves `<m>` as a behavior name or definition id exactly as
+`data get` does, and an unknown behavior is an error; `modelName == "<m>"`
+compares the name stored with the data, which a behavior rename does not update
+(see
+[references/fields.md](references/fields.md#model--match-by-behavior-as-data-get-resolves-it)).
 A latest read by a data name that was renamed (`data rename`) returns the item
 it was renamed to.
 
@@ -48,7 +49,7 @@ reading the wrong `results[0]`. See [reference.md](reference.md#query-data) for
 the fields `data get --json` has that the query record lacks.
 
 A query returns only each item's latest version unless the predicate names
-`version`. An item is one model's data name, and its latest version is the
+`version`. An item is one behavior's data name, and its latest version is the
 newest one, whichever run or step wrote it. So:
 
 - Add `version >= 0` when reading by `workflowRunId`, or a run whose item was
@@ -76,12 +77,12 @@ for the full list of queryable fields and predicate operators.
 
 | Task                     | Command                                               |
 | ------------------------ | ----------------------------------------------------- |
-| Query by model           | `swamp data query 'modelName == "my-model"'`          |
+| Query by behavior        | `swamp data query 'modelName == "my-model"'`          |
 | Query by type            | `swamp data query 'dataType == "resource"'`           |
 | Query with projection    | `swamp data query 'modelName == "x"' --select 'name'` |
 | Query by tags            | `swamp data query 'tags.env == "prod"'`               |
 | Query by content         | `swamp data query 'attributes.status == "failed"'`    |
-| List model data          | `swamp data list <model> --json`                      |
+| List behavior data       | `swamp data list <model> --json`                      |
 | List workflow data       | `swamp data list --workflow <name> --json`            |
 | Read one item            | See [Reading one item](#reading-one-item)             |
 | View version history     | `swamp data versions <model> <name> --json`           |
@@ -97,19 +98,19 @@ for the full list of queryable fields and predicate operators.
 
 `swamp data gc` and `swamp data prune` operate on `.swamp/data/` (the data
 catalog). `swamp run gc` operates on `.swamp/outputs/` (workflow-run history and
-model-method outputs). Use both to reclaim full `.swamp/` storage.
+method outputs). Use both to reclaim full `.swamp/` storage.
 
 See [references/concepts.md](references/concepts.md) for lifetime types, tags,
 and version GC policies.
 
 ## Common Mistakes
 
-| Don't do this                             | Do this instead                                       |
-| ----------------------------------------- | ----------------------------------------------------- |
-| `grep`/`find` on `.swamp/data/` files     | `swamp data query '<predicate>'`                      |
-| `cat .swamp/data/.../raw \| jq`           | `swamp data query '<predicate>' --select content`     |
-| `ls .swamp/data/` to list artifacts       | `swamp data list <model>`                             |
-| Re-fetching data a model already produced | Use CEL: `data.latest("<name>", "<data>").attributes` |
+| Don't do this                                | Do this instead                                       |
+| -------------------------------------------- | ----------------------------------------------------- |
+| `grep`/`find` on `.swamp/data/` files        | `swamp data query '<predicate>'`                      |
+| `cat .swamp/data/.../raw \| jq`              | `swamp data query '<predicate>' --select content`     |
+| `ls .swamp/data/` to list artifacts          | `swamp data list <model>`                             |
+| Re-fetching data a behavior already produced | Use CEL: `data.latest("<name>", "<data>").attributes` |
 
 Composing with swamp's `--json` output (e.g. piping through `jq` to reshape for
 `--stdin`) is fine — the anti-pattern is bypassing swamp's data layer entirely.

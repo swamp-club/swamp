@@ -51,7 +51,7 @@ interface WorkerSnapshot {
   activeDispatchIds: string[];
 }
 
-interface ScheduleEntry {
+export interface ScheduleEntry {
   workflowId: string;
   workflowName: string;
   cronExpression: string;
@@ -61,6 +61,14 @@ interface ScheduleEntry {
   queued?: number;
   oldestQueuedAt?: string | null;
   lastQueueDelayMs?: number | null;
+}
+
+export interface WebhookEntry {
+  route: string;
+  /** The configured workflow id or name. */
+  workflow: string;
+  /** Signature verification scheme, when serve reports it. */
+  scheme?: string;
 }
 
 interface ComponentHealth {
@@ -81,8 +89,10 @@ export interface HealthSnapshot {
   scheduling: {
     enabled: boolean;
     schedules: ScheduleEntry[];
+    /** The IANA zone serve's scheduler reads cron in; absent on older serves. */
+    timeZone?: string;
   };
-  webhooks: Array<{ route: string; workflow: string }>;
+  webhooks: WebhookEntry[];
   components: ComponentHealth[];
 }
 

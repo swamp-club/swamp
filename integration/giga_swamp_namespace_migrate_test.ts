@@ -26,18 +26,21 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { ensureDir, exists } from "@std/fs";
+import { basename, join } from "@std/path";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   datastoreNamespaceMigrate,
+  INFRASTRUCTURE_FILES,
   type NamespaceMigrateEvent,
 } from "../src/libswamp/datastores/namespace_migrate.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { DEFAULT_DATASTORE_SUBDIRS } from "../src/domain/datastore/datastore_config.ts";
 import {
+  dirContents,
   findFileCollisions,
   mergeDirInto,
+  removeCatalogFiles,
 } from "../src/infrastructure/persistence/directory_merge.ts";
 import {
   listNamespaceManifests,
@@ -117,6 +120,7 @@ function buildDeps(
   namespace: string,
   catalogStore: CatalogStore,
   directories: readonly string[] = DEFAULT_DATASTORE_SUBDIRS,
+  liveCatalogDir: string = join(dsPath, "data"),
 ) {
   return {
     getDatastorePath: () => dsPath,
@@ -126,14 +130,11 @@ function buildDeps(
     dirHasDataFiles: async (path: string) => {
       if (!(await dirExists(path))) return false;
       for await (const entry of Deno.readDir(path)) {
-        if (
-          entry.name !== "_catalog.db" &&
-          entry.name !== "_catalog.db-journal" &&
-          entry.name !== "_catalog.db-wal"
-        ) return true;
+        if (!INFRASTRUCTURE_FILES.has(entry.name)) return true;
       }
       return false;
     },
+    dirContents: (path: string) => dirContents(path),
     dirSize,
     renameDir: (source: string, destination: string) =>
       Deno.rename(source, destination),
@@ -158,6 +159,8 @@ function buildDeps(
     mergeDirInto: (source: string, destination: string) =>
       mergeDirInto(source, destination),
     ensureDir: (path: string) => ensureDir(path),
+    removeOrphanedCatalogFiles: (namespaceDataDir: string) =>
+      removeCatalogFiles(namespaceDataDir, liveCatalogDir),
     invalidateCatalog: () => catalogStore.invalidate(),
     markDirtyBulk: () => Promise.resolve(),
     removeNamespaceManifest: (ns: string) =>
@@ -489,3 +492,228 @@ for (
     });
   }
 }
+
+// --- the repo-local catalog is not datastore content (swamp-club#3316) ---
+
+const SIDECARS = ["_catalog.db-wal", "_catalog.db-shm"];
+
+/**
+ * A repo-local datastore: the datastore root is the repo's own `.swamp`, so
+ * the live catalog sits in the `data` directory migration moves. The catalog
+ * store stays open for the whole test, which keeps its WAL sidecars on disk.
+ */
+async function withRepoLocalDatastore(
+  fn: (
+    repo: {
+      dsPath: string;
+      liveCatalogDir: string;
+      namespace: string;
+      migrate: (
+        input: { confirm: boolean; reverse: boolean },
+      ) => Promise<NamespaceMigrateEvent[]>;
+    },
+  ) => Promise<void>,
+  renameDir?: (source: string, destination: string) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (root) => {
+    const repoDir = join(root, "repo");
+    const dsPath = join(repoDir, ".swamp");
+    const namespace = "infra";
+    const liveCatalogDir = join(dsPath, "data");
+    await ensureDir(liveCatalogDir);
+    const catalogStore = new CatalogStore(catalogDbPath(repoDir));
+    try {
+      catalogStore.invalidate();
+      assertEquals(join(liveCatalogDir, "_catalog.db"), catalogDbPath(repoDir));
+      for (const name of ["_catalog.db", ...SIDECARS]) {
+        assertEquals(
+          await exists(join(liveCatalogDir, name)),
+          true,
+          `${name} must exist for the test to exercise the catalog paths`,
+        );
+      }
+      const deps = {
+        ...buildDeps(
+          dsPath,
+          namespace,
+          catalogStore,
+          DEFAULT_DATASTORE_SUBDIRS,
+          liveCatalogDir,
+        ),
+        ...(renameDir ? { renameDir } : {}),
+      };
+      const ctx = createLibSwampContext({});
+      await fn({
+        dsPath,
+        liveCatalogDir,
+        namespace,
+        migrate: (input) =>
+          collect<NamespaceMigrateEvent>(
+            datastoreNamespaceMigrate(ctx, deps, input),
+          ),
+      });
+      for (const name of ["_catalog.db", ...SIDECARS]) {
+        assertEquals(
+          await exists(join(liveCatalogDir, name)),
+          true,
+          `the live ${name} must survive`,
+        );
+      }
+    } finally {
+      catalogStore.close();
+    }
+  });
+}
+
+async function seed(dir: string): Promise<void> {
+  await ensureDir(join(dir, "test-model", "v1"));
+  await Deno.writeTextFile(join(dir, "test-model", "v1", "raw"), "seeded");
+}
+
+async function seeded(dir: string): Promise<boolean> {
+  return await exists(join(dir, "test-model", "v1", "raw"));
+}
+
+function migrated(events: NamespaceMigrateEvent[]): string[] {
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error(`expected completed, got ${JSON.stringify(events)}`);
+  }
+  return completed.data.migratedDirectories;
+}
+
+async function writeOrphanedCatalog(dir: string): Promise<void> {
+  await ensureDir(dir);
+  for (const name of INFRASTRUCTURE_FILES) {
+    await Deno.writeTextFile(join(dir, name), "stale");
+  }
+}
+
+async function catalogFileCount(dir: string): Promise<number> {
+  return (await dirContents(dir)).catalogFiles;
+}
+
+Deno.test("namespace migrate: a second forward migration has nothing to move", async () => {
+  await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
+    await seed(join(dsPath, "data"));
+    await seed(join(dsPath, "outputs"));
+
+    assertEquals(
+      migrated(await migrate({ confirm: true, reverse: false })),
+      ["data", "outputs"],
+    );
+    assertEquals(await seeded(join(dsPath, namespace, "data")), true);
+    assertEquals(await seeded(join(dsPath, namespace, "outputs")), true);
+    assertEquals(await seeded(join(dsPath, "data")), false);
+    assertEquals(await catalogFileCount(join(dsPath, namespace, "data")), 0);
+
+    for (const confirm of [false, true]) {
+      const again = await migrate({ confirm, reverse: false });
+      assertEquals(again.map((e) => e.kind), ["preview", "completed"]);
+      if (again[0].kind === "preview") {
+        assertEquals(again[0].data.directories, []);
+      }
+      assertEquals(migrated(again), []);
+    }
+    assertEquals(await seeded(join(dsPath, namespace, "data")), true);
+  });
+});
+
+Deno.test("namespace migrate: a re-run completes a migration that stopped part-way", async () => {
+  // The first run's rename of `outputs` fails. Refusing it here rather than
+  // with a file in the way keeps the test portable: Windows renames a
+  // directory over a file.
+  let refuseOutputs = true;
+  const renameDir = (source: string, destination: string) =>
+    refuseOutputs && basename(destination) === "outputs"
+      ? Promise.reject(new Error("rename refused"))
+      : Deno.rename(source, destination);
+  await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
+    await seed(join(dsPath, "data"));
+    await seed(join(dsPath, "outputs"));
+
+    const first = await migrate({ confirm: true, reverse: false });
+    const failure = first.at(-1);
+    if (failure?.kind !== "error") throw new Error("expected a failure");
+    assertEquals(failure.succeededDirectories, ["data"]);
+    assertEquals(failure.failedDirectory, "outputs");
+
+    refuseOutputs = false;
+
+    assertEquals(
+      migrated(await migrate({ confirm: true, reverse: false })),
+      ["outputs"],
+    );
+    assertEquals(await seeded(join(dsPath, namespace, "data")), true);
+    assertEquals(await seeded(join(dsPath, namespace, "outputs")), true);
+    assertEquals(await exists(join(dsPath, "outputs")), false);
+  }, renameDir);
+});
+
+Deno.test("namespace migrate: reverses while the catalog and its sidecars are in place", async () => {
+  await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
+    await seed(join(dsPath, "data"));
+    await seed(join(dsPath, "outputs"));
+    await writeNamespaceManifest(dsPath, namespace, "repo-1");
+    await migrate({ confirm: true, reverse: false });
+
+    assertEquals(
+      migrated(await migrate({ confirm: true, reverse: true })),
+      ["data", "outputs"],
+    );
+    assertEquals(await seeded(join(dsPath, "data")), true);
+    assertEquals(await seeded(join(dsPath, "outputs")), true);
+    assertEquals(await exists(join(dsPath, namespace, "data")), false);
+    assertEquals(await exists(join(dsPath, namespace, "outputs")), false);
+  });
+});
+
+Deno.test("namespace migrate: a forward re-run deletes a stale catalog copy from the namespace", async () => {
+  await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
+    // What a migration by an affected version left behind.
+    const namespaceData = join(dsPath, namespace, "data");
+    await seed(namespaceData);
+    await writeOrphanedCatalog(namespaceData);
+
+    assertEquals(
+      migrated(await migrate({ confirm: false, reverse: false })),
+      [],
+    );
+    assertEquals(
+      await catalogFileCount(namespaceData),
+      INFRASTRUCTURE_FILES.size,
+      "preview must not delete",
+    );
+
+    assertEquals(
+      migrated(await migrate({ confirm: true, reverse: false })),
+      [],
+    );
+    assertEquals(await catalogFileCount(namespaceData), 0);
+    assertEquals(await seeded(namespaceData), true);
+  });
+});
+
+Deno.test("namespace migrate: reverse deletes a stale catalog copy and empties the namespace data directory", async () => {
+  await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
+    const namespaceData = join(dsPath, namespace, "data");
+    await seed(namespaceData);
+    await writeOrphanedCatalog(namespaceData);
+
+    assertEquals(migrated(await migrate({ confirm: true, reverse: true })), [
+      "data",
+    ]);
+    assertEquals(await seeded(join(dsPath, "data")), true);
+    assertEquals(await exists(namespaceData), false);
+  });
+});
+
+Deno.test("namespace migrate: reverse deletes a namespace data directory holding only a stale catalog", async () => {
+  await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
+    const namespaceData = join(dsPath, namespace, "data");
+    await writeOrphanedCatalog(namespaceData);
+
+    assertEquals(migrated(await migrate({ confirm: true, reverse: true })), []);
+    assertEquals(await exists(namespaceData), false);
+  });
+});

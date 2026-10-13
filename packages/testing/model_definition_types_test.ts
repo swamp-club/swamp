@@ -32,7 +32,7 @@
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
-import { defineModel, type ModelDefinition } from "./mod.ts";
+import { defineBehavior, defineModel, type ModelDefinition } from "./mod.ts";
 
 // ---------------------------------------------------------------------------
 // Shared schemas
@@ -137,4 +137,37 @@ Deno.test("satisfies-based model preserves its literal shape", () => {
 Deno.test("defineModel-based model preserves its literal shape", () => {
   assertEquals(helperModel.type, "@swamp-test/helper-model");
   assertEquals(Object.keys(helperModel.methods), ["run"]);
+});
+
+// ---------------------------------------------------------------------------
+// `defineBehavior` — the behavior spelling of `defineModel` (swamp-club#3338).
+// ---------------------------------------------------------------------------
+
+const helperBehavior = defineBehavior({
+  type: "@swamp-test/helper-behavior",
+  version: "2026.10.13.1",
+  globalArguments: GlobalArgsSchema,
+  methods: {
+    run: {
+      description: "Run the behavior",
+      arguments: RunArgsSchema,
+      execute: (_args, context) => {
+        type CtxGlobalArgs = typeof context.globalArgs;
+        assertType<Equals<CtxGlobalArgs, GlobalArgs>>();
+        return Promise.resolve({ dataHandles: [] });
+      },
+    },
+  },
+});
+
+Deno.test("defineBehavior is defineModel under the behavior spelling", () => {
+  assertEquals(defineBehavior, defineModel);
+  const input = {
+    type: "@swamp-test/identity-behavior",
+    version: "2026.10.13.1",
+    methods: {},
+  } satisfies ModelDefinition;
+  assertEquals(defineBehavior(input), input);
+  assertEquals(helperBehavior.type, "@swamp-test/helper-behavior");
+  assertEquals(Object.keys(helperBehavior.methods), ["run"]);
 });

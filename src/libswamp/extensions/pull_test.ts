@@ -40,6 +40,7 @@ import {
   parseExtensionRef,
   type PreparedInstall,
   prepareInstall,
+  type UnoptedPrereleaseNotice,
   validateExtensionName,
 } from "./pull.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -56,6 +57,7 @@ import {
 } from "../../infrastructure/persistence/test_helpers/install_crash.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { STAGING_DIR_NAME } from "../../domain/extensions/install_journal.ts";
+import type { ExtensionReplacement } from "../../domain/extensions/extension_replacement.ts";
 
 Deno.test("parseExtensionRef: parses name without version", () => {
   const ref = parseExtensionRef("@myorg/my-ext");
@@ -614,6 +616,8 @@ interface SkillArchiveSpec {
   files?: Record<string, string>;
   /** Leaves manifest.yaml out of the archive. */
   omitManifest?: boolean;
+  /** The manifest version; defaults to SKILL_VERSION. */
+  version?: string;
 }
 
 /** Builds an extension archive that ships only skills. */
@@ -624,7 +628,7 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
     const lines = [
       "manifestVersion: 1",
       `name: "${spec.name}"`,
-      `version: "${SKILL_VERSION}"`,
+      `version: "${spec.version ?? SKILL_VERSION}"`,
       Object.keys(spec.skills).length > 0 ? "skills:" : "skills: []",
       ...Object.keys(spec.skills).map((s) => `  - ${s}`),
     ];
@@ -2459,3 +2463,660 @@ Deno.test("detectConflicts: lists conflicting files in per-level name order", as
     }
   }
 });
+
+// ===== Replacement identity (swamp-club#2877) =====
+//
+// A pull that replaces an installed extension states what is installed and
+// what is coming, with the channel each is published on and the channel the
+// install follows, before anything is written.
+
+const OLD = "2026.09.23.1";
+const NEW = "2026.10.01.1";
+
+interface ChannelFixture {
+  name: string;
+  /** Archives by version. */
+  archives: Record<string, Uint8Array>;
+  info: Partial<ExtensionRegistryInfo>;
+  /** The registry's published channel per version, for the lookup. */
+  published?: Record<string, string>;
+  /** Makes the lookup throw. */
+  lookupFails?: boolean;
+  /** Leaves getVersionChannels unset, as restore and update do. */
+  noLookup?: boolean;
+}
+
+async function channelFixture(
+  name: string,
+  versions: string[],
+): Promise<Record<string, Uint8Array>> {
+  const archives: Record<string, Uint8Array> = {};
+  for (const version of versions) {
+    archives[version] = await buildSkillArchive({
+      ...swapSpec(name, { "models/a.ts": `// ${version}\n` }),
+      version,
+    });
+  }
+  return archives;
+}
+
+function channelContext(
+  repoDir: string,
+  lockfile: LockfileRepository,
+  fixture: ChannelFixture,
+  opts: {
+    force?: boolean;
+    channel?: string;
+    logger?: Logger;
+    lookups?: string[][];
+  } = {},
+): InstallContext & {
+  replacements: ExtensionReplacement[];
+  notices: UnoptedPrereleaseNotice[];
+} {
+  const replacements: ExtensionReplacement[] = [];
+  const notices: UnoptedPrereleaseNotice[] = [];
+  return {
+    getExtension: (name) =>
+      Promise.resolve(
+        name === fixture.name
+          ? {
+            name,
+            description: "",
+            latestVersion: null,
+            ...fixture.info,
+          }
+          : null,
+      ),
+    downloadArchive: (_name, version) =>
+      Promise.resolve(fixture.archives[version]),
+    getChecksum: () => Promise.resolve(null),
+    ...(fixture.noLookup ? {} : {
+      getVersionChannels: (_name: string, versions: string[]) => {
+        opts.lookups?.push(versions);
+        if (fixture.lookupFails) {
+          return Promise.reject(new Error("registry unavailable"));
+        }
+        return Promise.resolve(
+          new Map(
+            versions.flatMap((v) =>
+              fixture.published?.[v]
+                ? [[v, fixture.published[v]] as [string, string]]
+                : []
+            ),
+          ),
+        );
+      },
+    }),
+    lockfileRepository: lockfile,
+    skillsDirs: [join(repoDir, ".claude", "skills")],
+    repoDir,
+    alreadyPulled: new Set(),
+    depth: 0,
+    force: opts.force ?? false,
+    channel: opts.channel,
+    logger: opts.logger,
+    onReplacing: (r) => replacements.push(r),
+    onUnoptedPrerelease: (n) => notices.push(n),
+    replacements,
+    notices,
+  };
+}
+
+/** Installs OLD as the latest stable, the way a plain pull would. */
+async function installOld(
+  repoDir: string,
+  lockfile: LockfileRepository,
+  fixture: ChannelFixture,
+): Promise<void> {
+  await installExtension(
+    { name: fixture.name, version: null },
+    channelContext(repoDir, lockfile, {
+      ...fixture,
+      info: { latestVersion: OLD },
+    }),
+  );
+  await lockfile.refresh();
+}
+
+Deno.test(
+  "installExtension: a conflicting upgrade carries the installed and incoming identity",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD, NEW]),
+        info: { latestVersion: NEW },
+      };
+      await installOld(repoDir, lockfile, fixture);
+
+      const ctx = channelContext(repoDir, lockfile, fixture);
+      const error = await assertRejects(
+        () => installExtension({ name, version: null }, ctx),
+        ConflictError,
+      );
+      assertEquals(error.replacement?.name, name);
+      assertEquals(error.replacement?.current, {
+        version: OLD,
+        channel: "stable",
+        publishedChannel: "stable",
+      });
+      assertEquals(error.replacement?.incoming, {
+        version: NEW,
+        channel: "stable",
+        publishedChannel: "stable",
+      });
+      assertEquals(error.replacement?.change, "upgrade");
+      assertEquals(error.replacement?.channelChanged, false);
+      // Nothing is reported as going ahead while the conflict stands.
+      assertEquals(ctx.replacements, []);
+      assertEquals(lockfile.getEntry(name)?.version, OLD);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an exact older version is a downgrade, its channel looked up",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD, NEW]),
+        info: { latestVersion: NEW },
+        published: { [OLD]: "stable" },
+      };
+      await installExtension(
+        { name, version: null },
+        channelContext(repoDir, lockfile, fixture),
+      );
+      await lockfile.refresh();
+
+      const lookups: string[][] = [];
+      const ctx = channelContext(repoDir, lockfile, fixture, {
+        force: true,
+        lookups,
+      });
+      const result = await installExtension({ name, version: OLD }, ctx);
+      // The installed version is the registry's latest, so only the
+      // incoming one is looked up.
+      assertEquals(lookups, [[OLD]]);
+      assertEquals(ctx.replacements.length, 1);
+      assertEquals(ctx.replacements[0].change, "downgrade");
+      assertEquals(result?.change, "downgrade");
+      assertEquals(result?.previous?.version, NEW);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: re-pulling the same version under force reports it as same",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD]),
+        info: { latestVersion: OLD },
+      };
+      await installOld(repoDir, lockfile, fixture);
+
+      const ctx = channelContext(repoDir, lockfile, fixture, { force: true });
+      const result = await installExtension({ name, version: null }, ctx);
+      assertEquals(ctx.replacements.map((r) => r.change), ["same"]);
+      assertEquals(result?.previous, {
+        version: OLD,
+        channel: "stable",
+        publishedChannel: "stable",
+      });
+      assertEquals(result?.change, "same");
+      assertEquals(result?.channelChanged, false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an exact beta pulled without --channel is a channel change and an unopted pre-release",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD, NEW]),
+        info: { latestVersion: OLD },
+        published: { [NEW]: "beta" },
+      };
+      await installOld(repoDir, lockfile, fixture);
+
+      const ctx = channelContext(repoDir, lockfile, fixture, { force: true });
+      const result = await installExtension({ name, version: NEW }, ctx);
+      const [replacement] = ctx.replacements;
+      assertEquals(replacement.incoming, {
+        version: NEW,
+        channel: "stable",
+        publishedChannel: "beta",
+      });
+      assertEquals(replacement.change, "upgrade");
+      assertEquals(replacement.channelChanged, true);
+      assertEquals(ctx.notices, [{
+        name,
+        version: NEW,
+        publishedChannel: "beta",
+        parent: null,
+      }]);
+      assertEquals(result?.channel, "stable");
+      assertEquals(result?.publishedChannel, "beta");
+      // The lockfile keeps following stable and records where the
+      // version is published.
+      const entry = lockfile.getEntry(name);
+      assertEquals(entry?.channel, undefined);
+      assertEquals(entry?.publishedChannel, "beta");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a beta pulled with --channel beta is no unopted pre-release",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [NEW]),
+        info: { latestBeta: NEW },
+        noLookup: true,
+      };
+      const ctx = channelContext(repoDir, lockfile, fixture, {
+        channel: "beta",
+      });
+      const result = await installExtension({ name, version: NEW }, ctx);
+      assertEquals(ctx.notices, []);
+      assertEquals(result?.channel, "beta");
+      assertEquals(result?.publishedChannel, "beta");
+      assertEquals(lockfile.getEntry(name)?.publishedChannel, "beta");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a first install reports no replacement",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [NEW]),
+        info: { latestVersion: NEW },
+      };
+      const ctx = channelContext(repoDir, lockfile, fixture);
+      const result = await installExtension({ name, version: null }, ctx);
+      assertEquals(ctx.replacements, []);
+      assertEquals(result?.previous, null);
+      assertEquals(result?.change, undefined);
+      assertEquals(result?.publishedChannel, "stable");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: with no lockfile entry, a manifest naming the extension gives the installed version",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      await ensureDir(extRootOf(repoDir, name));
+      await Deno.writeTextFile(
+        join(extRootOf(repoDir, name), "manifest.yaml"),
+        `manifestVersion: 1\nname: "${name}"\nversion: "${OLD}"\n`,
+      );
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [NEW]),
+        info: { latestVersion: NEW },
+      };
+      const ctx = channelContext(repoDir, lockfile, fixture, { force: true });
+      await installExtension({ name, version: null }, ctx);
+      assertEquals(ctx.replacements[0].current, {
+        version: OLD,
+        channel: null,
+        publishedChannel: null,
+      });
+      assertEquals(ctx.replacements[0].change, "upgrade");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a manifest naming another extension leaves the installed version unknown",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      await ensureDir(extRootOf(repoDir, name));
+      await Deno.writeTextFile(
+        join(extRootOf(repoDir, name), "manifest.yaml"),
+        `manifestVersion: 1\nname: "@t/other"\nversion: "${OLD}"\n`,
+      );
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [NEW]),
+        info: { latestVersion: NEW },
+      };
+      const ctx = channelContext(repoDir, lockfile, fixture, { force: true });
+      const result = await installExtension({ name, version: null }, ctx);
+      assertEquals(ctx.replacements[0].current, null);
+      assertEquals(ctx.replacements[0].change, "unknown");
+      assertEquals(result?.previous, null);
+      assertEquals(result?.change, "unknown");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a failed channel lookup fails a replacement and changes nothing",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD, NEW]),
+        info: { latestVersion: OLD },
+      };
+      await installOld(repoDir, lockfile, fixture);
+
+      const ctx = channelContext(
+        repoDir,
+        lockfile,
+        { ...fixture, lookupFails: true },
+        { force: true },
+      );
+      const error = await assertRejects(
+        () => installExtension({ name, version: NEW }, ctx),
+        UserError,
+      );
+      assertStringIncludes(error.message, "registry unavailable");
+      assertStringIncludes(error.message, "Nothing was changed");
+      assertStringIncludes(
+        error.message,
+        "Retry when the registry is reachable",
+      );
+      assertEquals(ctx.replacements, []);
+      assertEquals(lockfile.getEntry(name)?.version, OLD);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a version no channel lists fails a replacement",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD, NEW]),
+        info: { latestVersion: OLD },
+        published: { [NEW]: "nightly" },
+      };
+      await installOld(repoDir, lockfile, fixture);
+
+      await assertRejects(
+        () =>
+          installExtension(
+            { name, version: NEW },
+            channelContext(repoDir, lockfile, fixture, { force: true }),
+          ),
+        UserError,
+        "lists it on no release channel",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a failed channel lookup on a first install warns and installs",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const { logger, warnings } = warningRecorder();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [NEW]),
+        info: { latestVersion: OLD },
+        lookupFails: true,
+      };
+      const ctx = channelContext(repoDir, lockfile, fixture, { logger });
+      const result = await installExtension({ name, version: NEW }, ctx);
+      assertEquals(result?.version, NEW);
+      assertEquals(result?.publishedChannel, null);
+      assertEquals(ctx.notices, []);
+      assertEquals(
+        warnings.some((w) => w.includes("Could not determine")),
+        true,
+      );
+      assertEquals("publishedChannel" in lockfile.getEntry(name)!, false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a version that is the latest on a channel needs no lookup",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [NEW]),
+        info: { latestVersion: OLD, latestRc: NEW },
+        lookupFails: true,
+      };
+      const ctx = channelContext(repoDir, lockfile, fixture);
+      const result = await installExtension({ name, version: NEW }, ctx);
+      assertEquals(result?.publishedChannel, "rc");
+      assertEquals(ctx.notices.map((n) => n.publishedChannel), ["rc"]);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an installed version promoted since it was pulled is reported where it is now",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archives = await channelFixture(name, [OLD, NEW]);
+      await installExtension(
+        { name, version: OLD },
+        channelContext(repoDir, lockfile, {
+          name,
+          archives,
+          info: { latestBeta: OLD },
+        }, { channel: "beta" }),
+      );
+      await lockfile.refresh();
+      assertEquals(lockfile.getEntry(name)?.publishedChannel, "beta");
+
+      const lookups: string[][] = [];
+      const ctx = channelContext(repoDir, lockfile, {
+        name,
+        archives,
+        info: { latestBeta: NEW },
+        published: { [OLD]: "stable" },
+      }, { channel: "beta", force: true, lookups });
+      await installExtension({ name, version: NEW }, ctx);
+      assertEquals(lookups, [[OLD]]);
+      assertEquals(ctx.replacements[0].current, {
+        version: OLD,
+        channel: "beta",
+        publishedChannel: "stable",
+      });
+      assertEquals(ctx.replacements[0].channelChanged, true);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a dependency pinned to a beta is an unopted pre-release naming its parent",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const dep = uniqueExtName();
+      const parentArchive = await buildSkillArchive({
+        ...swapSpec(parent, { "models/p.ts": "// parent\n" }),
+        version: NEW,
+        dependencies: [`${dep}@${NEW}`],
+      });
+      const depArchive = await buildSkillArchive({
+        ...swapSpec(dep, { "models/d.ts": "// dep\n" }),
+        version: NEW,
+      });
+      const notices: UnoptedPrereleaseNotice[] = [];
+      const ctx: InstallContext = {
+        getExtension: (name) =>
+          Promise.resolve(
+            name === parent
+              ? { name, description: "", latestVersion: NEW }
+              : { name, description: "", latestVersion: OLD },
+          ),
+        downloadArchive: (name) =>
+          Promise.resolve(name === parent ? parentArchive : depArchive),
+        getChecksum: () => Promise.resolve(null),
+        getVersionChannels: (_name, versions) =>
+          Promise.resolve(new Map(versions.map((v) => [v, "beta"]))),
+        lockfileRepository: lockfile,
+        skillsDirs: [join(repoDir, ".claude", "skills")],
+        repoDir,
+        alreadyPulled: new Set(),
+        depth: 0,
+        force: false,
+        onUnoptedPrerelease: (n) => notices.push(n),
+      };
+      await installExtension({ name: parent, version: null }, ctx);
+      assertEquals(notices, [{
+        name: dep,
+        version: NEW,
+        publishedChannel: "beta",
+        parent,
+      }]);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a restore that cannot look the channel up keeps the recorded published channel",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archives = await channelFixture(name, [OLD]);
+      await installExtension(
+        { name, version: OLD },
+        channelContext(repoDir, lockfile, {
+          name,
+          archives,
+          info: { latestVersion: OLD },
+          published: {},
+        }, { channel: "beta" }),
+      );
+      await lockfile.refresh();
+      await lockfile.writeEntry(name, OLD, lockfile.getEntry(name)!.files!, {
+        ...lockfile.getEntry(name)!,
+        publishedChannel: "beta",
+      });
+
+      // As extensionInstall restores it: the entry's channel and version,
+      // no lookup, and the version no longer the latest on any channel.
+      const ctx = channelContext(repoDir, lockfile, {
+        name,
+        archives,
+        info: { latestVersion: NEW },
+        noLookup: true,
+      }, { channel: "beta", force: true });
+      const result = await installExtension({ name, version: OLD }, ctx);
+      assertEquals(result?.publishedChannel, null);
+      assertEquals(lockfile.getEntry(name)?.publishedChannel, "beta");
+      assertEquals(lockfile.getEntry(name)?.channel, "beta");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a lockfile entry whose files are not on this checkout is not a replacement",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      // As a managed lockfile lists an extension another checkout holds.
+      await lockfile.writeEntry(name, OLD, [
+        `.swamp/pulled-extensions/${name}/models/a.ts`,
+      ]);
+      await lockfile.refresh();
+      const lookups: string[][] = [];
+      const ctx = channelContext(repoDir, lockfile, {
+        name,
+        archives: await channelFixture(name, [OLD]),
+        info: { latestVersion: NEW },
+        lookupFails: true,
+      }, { lookups });
+      const result = await installExtension({ name, version: OLD }, ctx);
+      // A failed lookup only warns, and only the incoming version is asked.
+      assertEquals(lookups, [[OLD]]);
+      assertEquals(result?.version, OLD);
+      assertEquals(ctx.replacements, []);
+      assertEquals(result?.previous, null);
+      assertEquals(result?.change, undefined);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a conflict with nothing of the extension installed carries no replacement",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const userSkill = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(userSkill);
+      await Deno.writeTextFile(join(userSkill, "notes.md"), "mine");
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      const error = await assertRejects(
+        () =>
+          installExtension(
+            { name, version: null },
+            skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          ),
+        ConflictError,
+      );
+      assertEquals(error.replacement, undefined);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an installed entry pinning a version constraint is not looked up",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD, NEW]),
+        info: { latestVersion: OLD },
+        published: { [NEW]: "beta" },
+      };
+      await installOld(repoDir, lockfile, fixture);
+      await lockfile.writeEntry(
+        name,
+        ">=2026.01.01.1",
+        lockfile.getEntry(name)!.files!,
+      );
+      await lockfile.refresh();
+
+      const lookups: string[][] = [];
+      const ctx = channelContext(repoDir, lockfile, fixture, {
+        force: true,
+        lookups,
+      });
+      await installExtension({ name, version: NEW }, ctx);
+      assertEquals(lookups, [[NEW]]);
+      assertEquals(ctx.replacements[0].current, null);
+      assertEquals(ctx.replacements[0].change, "unknown");
+    });
+  },
+);

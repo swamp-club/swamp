@@ -1,0 +1,66 @@
+# Hand-written: every step type, both model_method forms.
+id: 00000000-0000-4000-8000-000000000200
+name: all-step-types
+description: covers every step task type
+inputs:
+  properties:
+    env:
+      type: string
+      default: dev
+jobs:
+  - name: main
+    steps:
+      - name: existing
+        task:
+          type: model_method
+          modelIdOrName: my-model
+          methodName: run
+          inputs:
+            env: ${{ inputs.env }}
+      - name: direct
+        dependsOn:
+          - step: existing
+            condition:
+              type: succeeded
+        task:
+          type: model_method
+          modelType: "@acme/thing"
+          modelName: thing-${{ inputs.env }}
+          methodName: create
+          inputs: "${{ inputs.payload }}"
+          globalArgs:
+            region: us-east-1
+      - name: direct-plain
+        task:
+          type: model_method
+          modelType: command/shell
+          modelName: shell-1
+          methodName: execute
+      - name: nested
+        task:
+          type: workflow
+          workflowIdOrName: other
+          inputs:
+            x: 1
+      - name: approve
+        task:
+          type: manual_approval
+          prompt: ok?
+          timeout: 60
+      - name: check
+        task:
+          type: assert
+          expr: "1 == 1"
+          message: must hold
+      - name: wait
+        task:
+          type: wait_for_signal
+          timeout: 30
+          key: deploy-ok
+          acceptEarly: 10
+          schema:
+            type: object
+            required: [verdict]
+            properties:
+              verdict:
+                type: string

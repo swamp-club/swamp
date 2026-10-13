@@ -75,7 +75,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
 const VALID_MODELS = Object.keys(PROVIDER_REGISTRY);
 
 const GUIDE_TOPICS: Record<string, string> = {
-  "model": "Load this guide for model operations — create, run, edit, delete, search types, method execution, model outputs",
+  "behavior": "Load this guide for behavior (model) operations — create, run, edit, delete, search types, method execution, behavior outputs",
   "workflow": "Load this guide for workflow operations — create, run, validate, DAG, history, scheduled workflows",
   "data": "Load this guide for data operations — list, query, versions, garbage collection, delete, CEL predicates",
   "vault": "Load this guide for vault operations — create, store/read secrets, list keys, vault expressions",
@@ -85,7 +85,7 @@ const GUIDE_TOPICS: Record<string, string> = {
   "report": "Load this guide for report operations — run, configure, view, filter reports",
   "troubleshooting": "Load this guide for troubleshooting — errors, health checks, diagnostics, tracing, debugging",
   "issue": "Load this guide for issue operations — file bugs, feature requests, security reports, comments",
-  "architecture": "Load this guide for architecture decisions — choosing between model, workflow, report, extension, vault, and design trade-offs",
+  "architecture": "Load this guide for architecture decisions — choosing between behavior, workflow, report, extension, vault, and design trade-offs",
   "share": "Load this guide for sharing a repo — promoting a solo repo to a team, datastore promotion, vault migration, joiner onboarding",
   "serve": "Load this guide for swamp serve — auth modes, grants, access control, groups, tokens, OAuth server login",
 };

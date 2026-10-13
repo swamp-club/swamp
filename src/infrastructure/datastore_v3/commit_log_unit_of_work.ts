@@ -156,7 +156,7 @@ export interface CommitLogUnitOptions {
   /** The datastore namespace; empty for an unnamespaced datastore. */
   readonly namespace: Namespace;
   readonly writer: CommitWriter;
-  /** The writer's fence (its solo writer lock's or leader lease's), if any. */
+  /** The writer's fence (its writer lease's or leader lease's), if any. */
   readonly fence?: number;
   /**
    * Bounds content uploads for the whole operation the unit serves, every

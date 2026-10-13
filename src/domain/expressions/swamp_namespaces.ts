@@ -25,6 +25,10 @@ import {
 } from "./cel_grammar.ts";
 import { extractExpressions } from "./expression_parser.ts";
 import { levenshteinDistance } from "../string_distance.ts";
+import {
+  findVaultGetCalls,
+  isDynamicVaultArgument,
+} from "./vault_reference_extractor.ts";
 
 export { BINDING_MACROS, parsesAsCel } from "./cel_grammar.ts";
 
@@ -82,10 +86,55 @@ export const WIDEST_SWAMP_SCOPE: SwampScope = {
  * Text that does not parse is never foreign. That covers prose, and a
  * malformed swamp expression such as one whose string literal never closes,
  * which must stay guarded rather than reach a method as literal text.
+ *
+ * Text that reads the `vault` namespace is never foreign either, whatever
+ * else it reads. The runtime pass resolves every such expression and then
+ * evaluates it, so `${{ vault.get(t, KEY) + github.sha }}` fails on `github`
+ * rather than reaching a method as written; see
+ * {@link foreignRootsBesideVault}.
  */
 export function isForeignExpression(celExpression: string): boolean {
-  return parses(celExpression) &&
+  const roots = attributedRoots(celExpression);
+  return roots !== undefined && !roots.has("vault") &&
     !isSwampExpression(celExpression, WIDEST_SWAMP_SCOPE);
+}
+
+/**
+ * The root identifiers that swamp does not provide in an expression that
+ * also reads the `vault` namespace, such as `github` in
+ * `vault.get(t, KEY) + github.sha`. Swamp evaluates the whole expression
+ * because of the vault read, so each of these fails the run. Empty for an
+ * expression that does not read `vault`, or does not parse.
+ */
+export function foreignRootsBesideVault(celExpression: string): string[] {
+  const roots = attributedRoots(celExpression);
+  if (roots === undefined || !roots.has("vault")) return [];
+  return [...roots].filter((root) => !SWAMP_ROOT_NAMESPACES.has(root));
+}
+
+/**
+ * The free root identifiers of an expression, with each `vault.get` argument
+ * read as the resolver reads it, or undefined when the text does not parse.
+ *
+ * Parsed with the grammar {@link isSwampExpression} uses, deliberately not
+ * {@link parsesAsCel}. Text only the evaluation grammar accepts (`inputs.?x`)
+ * is text `isSwampExpression` cannot attribute, so it must not count as
+ * foreign: it stays claimed and guarded.
+ */
+function attributedRoots(celExpression: string): Set<string> | undefined {
+  let ast: ASTNode;
+  try {
+    ast = parseForAttribution(celExpression);
+  } catch {
+    return undefined;
+  }
+  const refs: References = {
+    roots: new Set(),
+    inputs: new Set(),
+    opaqueInputs: false,
+  };
+  collectReferences(ast, new Set(), refs);
+  return refs.roots;
 }
 
 /**
@@ -208,6 +257,80 @@ export function failedOnForeignRoot(error: unknown): boolean {
 }
 
 /**
+ * Parses an expression to attribute its free root identifiers, reading each
+ * `vault.get` argument the way the resolver does. The resolver rewrites
+ * `vault.get(vaultName, secretKey)` before CEL ever sees it, so no argument
+ * reaches a method as text:
+ *
+ * - A quoted argument is a literal name. It is kept as written, except that
+ *   a backtick-quoted one, which the resolver's matcher accepts and CEL
+ *   cannot parse, is parsed as a string constant.
+ * - An unquoted argument with no `.` is used verbatim as a literal name, so
+ *   `t` and `KEY` in `vault.get(t, KEY)` are names, not identifiers CEL would
+ *   look up. It is parsed as a string constant.
+ * - One holding a `.` is evaluated as CEL. `inputs.vaultName` keeps its
+ *   roots, so an undeclared input is still judged by the scope. One that
+ *   reads nothing swamp provides (`db.password`, `github.repo`) fails that
+ *   evaluation rather than passing through, so it is no sign of another
+ *   templating system and is parsed as a string constant too; see
+ *   {@link unresolvableVaultArguments}.
+ *
+ * Throws when the text does not parse.
+ */
+function parseForAttribution(celExpression: string): ASTNode {
+  let text = "";
+  let last = 0;
+  for (const call of findVaultGetCalls(celExpression)) {
+    // Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
+    //         [4]=quote2, [5]=quoted key,   [6]=unquoted key
+    const vaultName = attributedVaultArg(call[1], call[2], call[3]);
+    const secretKey = attributedVaultArg(call[4], call[5], call[6]);
+    text += celExpression.slice(last, call.index) +
+      `vault.get(${vaultName}, ${secretKey})`;
+    last = call.index + call[0].length;
+  }
+  text += celExpression.slice(last);
+  return parseCel(transformHyphenatedModelRefs(text)).ast;
+}
+
+function attributedVaultArg(
+  quote: string | undefined,
+  quoted: string | undefined,
+  bare: string | undefined,
+): string {
+  // The matcher takes a backtick-quoted name, which CEL has no syntax for.
+  if (quoted !== undefined) {
+    return quote === "`" ? "''" : `${quote}${quoted}${quote}`;
+  }
+  return bare !== undefined && readsOnlySwampBindings(bare) ? bare : "''";
+}
+
+/** Whether an unquoted `vault.get` argument is CEL over swamp's namespaces. */
+function readsOnlySwampBindings(bareToken: string): boolean {
+  return isDynamicVaultArgument(bareToken) &&
+    isSwampExpression(bareToken, WIDEST_SWAMP_SCOPE);
+}
+
+/**
+ * The unquoted `vault.get` arguments in an expression that the resolver
+ * evaluates as CEL (they hold a `.`) but that read nothing swamp provides,
+ * such as `db.password` in `vault.get(t, db.password)`. Each fails when the
+ * expression is resolved, so a secret key that contains a dot must be quoted.
+ */
+export function unresolvableVaultArguments(celExpression: string): string[] {
+  const args: string[] = [];
+  for (const call of findVaultGetCalls(celExpression)) {
+    for (const bare of [call[3], call[6]]) {
+      if (
+        bare !== undefined && isDynamicVaultArgument(bare) &&
+        !isSwampExpression(bare, WIDEST_SWAMP_SCOPE)
+      ) args.push(bare);
+    }
+  }
+  return args;
+}
+
+/**
  * Whether evaluating a CEL expression could read anything swamp binds: some
  * free root identifier is a swamp namespace (`vault`, `data`, `self`,
  * `inputs`, ...). Fails closed — text the attribution grammar cannot parse
@@ -220,7 +343,7 @@ export function failedOnForeignRoot(error: unknown): boolean {
 export function readsSwampBinding(celExpression: string): boolean {
   let ast: ASTNode;
   try {
-    ast = parseCel(transformHyphenatedModelRefs(celExpression)).ast;
+    ast = parseForAttribution(celExpression);
   } catch {
     return true;
   }
@@ -234,21 +357,6 @@ export function readsSwampBinding(celExpression: string): boolean {
     if (SWAMP_ROOT_NAMESPACES.has(root)) return true;
   }
   return false;
-}
-
-/**
- * Parses with the grammar {@link isSwampExpression} uses, deliberately not
- * {@link parsesAsCel}. Text only the evaluation grammar accepts (`inputs.?x`)
- * is text `isSwampExpression` cannot attribute, so it must not count as
- * foreign: it stays claimed and guarded.
- */
-function parses(celExpression: string): boolean {
-  try {
-    parseCel(transformHyphenatedModelRefs(celExpression));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -273,7 +381,7 @@ export function isSwampExpression(
 ): boolean {
   let ast: ASTNode;
   try {
-    ast = parseCel(transformHyphenatedModelRefs(celExpression)).ast;
+    ast = parseForAttribution(celExpression);
   } catch {
     return false;
   }

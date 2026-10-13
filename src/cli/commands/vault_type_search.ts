@@ -31,7 +31,7 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
+import { listVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   requestServerResponse,
@@ -78,9 +78,10 @@ export async function vaultTypeSearchAction(
   }
 
   await vaultTypeRegistry.ensureLoaded();
+  const vaultTypes = await listVaultTypes();
 
   const deps: VaultTypeSearchDeps = {
-    getVaultTypes: () => getVaultTypes(),
+    getVaultTypes: () => vaultTypes,
   };
 
   const renderer = createVaultTypeSearchRenderer(effectiveMode);

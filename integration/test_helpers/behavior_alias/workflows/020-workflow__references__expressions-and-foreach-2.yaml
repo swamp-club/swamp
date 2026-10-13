@@ -1,0 +1,23 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/expressions-and-foreach.md (block 2)
+id: 00000000-0000-4000-8000-000000000020
+name: corpus-20
+inputs:
+  properties:
+    tags:
+      type: object
+      additionalProperties: { type: string }
+
+jobs:
+  - name: apply-tags
+    steps:
+      - name: tag-${{self.tag.key}}
+        forEach:
+          item: tag
+          in: ${{ inputs.tags }}
+        task:
+          type: model_method
+          modelIdOrName: tag-manager
+          methodName: apply
+          inputs:
+            key: ${{ self.tag.key }}
+            value: ${{ self.tag.value }}

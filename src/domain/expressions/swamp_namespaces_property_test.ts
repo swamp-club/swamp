@@ -128,6 +128,33 @@ Deno.test("isForeignExpression: never true for text cut short inside a string", 
   );
 });
 
+/** A dot-less bare token: a literal vault or secret name. */
+const arbBareName = fc.stringMatching(/^[A-Za-z_][A-Za-z0-9_-]{0,11}$/);
+
+Deno.test("isSwampExpression: a bare-token vault.get classifies as its quoted form does", () => {
+  fc.assert(
+    fc.property(
+      arbBareName,
+      arbBareName,
+      fc.option(arbExpression, { nil: undefined }),
+      arbScope,
+      (vaultName, secretKey, rest, scope) => {
+        const suffix = rest === undefined ? "" : ` + ${rest}`;
+        const bare = `vault.get(${vaultName}, ${secretKey})${suffix}`;
+        const quoted = `vault.get('${vaultName}', '${secretKey}')${suffix}`;
+        assert(
+          isSwampExpression(bare, scope) === isSwampExpression(quoted, scope),
+          bare,
+        );
+        assert(
+          isForeignExpression(bare) === isForeignExpression(quoted),
+          bare,
+        );
+      },
+    ),
+  );
+});
+
 Deno.test("misspeltSwampNamespace: only ever names a root isForeignExpression calls foreign", () => {
   fc.assert(
     fc.property(

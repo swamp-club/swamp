@@ -38,6 +38,11 @@ import {
   formatSchemaAttributes,
   formatSchemaType,
 } from "./model_get.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceNounPlural,
+} from "../command_surface.ts";
 
 const INDENT_2 = "  ";
 const INDENT_4 = "    ";
@@ -133,9 +138,14 @@ class JsonModelSearchRenderer implements ModelSearchRenderer {
 class InkModelSearchRenderer implements ModelSearchRenderer {
   private _selected: ModelSearchItem | undefined;
   private readonly fetchPreview: ModelPreviewFetcher | undefined;
+  private readonly surface: CommandSurface;
 
-  constructor(fetchPreview?: ModelPreviewFetcher) {
+  constructor(
+    fetchPreview: ModelPreviewFetcher | undefined,
+    surface: CommandSurface,
+  ) {
     this.fetchPreview = fetchPreview;
+    this.surface = surface;
   }
 
   selectedItem(): ModelSearchItem | undefined {
@@ -146,6 +156,7 @@ class InkModelSearchRenderer implements ModelSearchRenderer {
     return {
       resolving: () => {},
       completed: async (e) => {
+        const labels = modelSearchPickerLabels(this.surface);
         const result = await renderInteractivePicker<
           ModelSearchItem,
           ModelGetData
@@ -156,10 +167,11 @@ class InkModelSearchRenderer implements ModelSearchRenderer {
           renderModelResultLine,
           renderModelPreview,
           renderModelScrollback,
-          "models",
+          labels.itemLabel,
           {
             fetchPreview: this.fetchPreview,
             previewKeyFn: (item) => item.id,
+            commandName: labels.commandName,
           },
         );
         if (result) {
@@ -174,22 +186,38 @@ class InkModelSearchRenderer implements ModelSearchRenderer {
 }
 
 /**
+ * What the interactive picker calls its items and itself on `surface`. The
+ * legacy picker leaves `commandName` unset, so its title stays the default
+ * built from the item label ("models search").
+ */
+export function modelSearchPickerLabels(
+  surface: CommandSurface,
+): { itemLabel: string; commandName: string | undefined } {
+  return {
+    itemLabel: surfaceNounPlural(surface),
+    commandName: surface === "model" ? undefined : `${surface} search`,
+  };
+}
+
+/**
  * Creates a model search renderer for the given output mode.
  *
  * @param mode - Output mode (log for interactive, json for machine-readable).
  * @param fetchPreview - Optional callback to fetch model detail for the preview
  *   pane. When provided, the picker shows full method/argument detail. When
  *   omitted, only the model name and type are shown in the preview.
+ * @param surface - The CLI spelling, which names the picker's items.
  */
 export function createModelSearchRenderer(
   mode: OutputMode,
   fetchPreview?: ModelPreviewFetcher,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): ModelSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonModelSearchRenderer(fetchPreview);
     case "log":
-      return new InkModelSearchRenderer(fetchPreview);
+      return new InkModelSearchRenderer(fetchPreview, surface);
   }
 }
 

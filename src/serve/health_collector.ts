@@ -68,6 +68,11 @@ export interface HealthSnapshot {
   readonly scheduling: {
     readonly enabled: boolean;
     readonly schedules: HealthSnapshotSchedule[];
+    /**
+     * The IANA time zone serve's scheduler evaluates cron expressions in
+     * (the serve host's local zone), so clients can preview fire times.
+     */
+    readonly timeZone?: string;
   };
   readonly webhooks: HealthSnapshotWebhook[];
   readonly components: ComponentHealth[];
@@ -244,6 +249,7 @@ export class HealthCollector {
       scheduling: {
         enabled: this.#deps.scheduleEnabled,
         schedules,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
       webhooks,
       components,

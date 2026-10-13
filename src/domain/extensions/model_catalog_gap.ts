@@ -40,6 +40,11 @@ export type ModelCatalogGap =
 
 const MODEL_EXPORT_DECLARATION = /export\s+const\s+model\s*[=:]/;
 const ANNOTATED_MODEL_EXPORT = /export\s+const\s+model\s*:/;
+// `behavior` is the other spelling of the `model` export (swamp-club#3338).
+// It is read only when the file has no `model` export, as the catalog
+// extractors do.
+const BEHAVIOR_EXPORT_DECLARATION = /export\s+const\s+behavior\s*[=:]/;
+const ANNOTATED_BEHAVIOR_EXPORT = /export\s+const\s+behavior\s*:/;
 
 /**
  * Says why `extractContentMetadata` would not list a model file, or returns
@@ -52,7 +57,12 @@ const ANNOTATED_MODEL_EXPORT = /export\s+const\s+model\s*:/;
  * the catalog, only the reason may describe that text.
  */
 export function modelCatalogGap(content: string): ModelCatalogGap | null {
-  if (!declaresExport(content, MODEL_EXPORT_DECLARATION)) return null;
+  const spelledModel = declaresExport(content, MODEL_EXPORT_DECLARATION);
+  if (
+    !spelledModel && !declaresExport(content, BEHAVIOR_EXPORT_DECLARATION)
+  ) {
+    return null;
+  }
 
   const type = extractModelType(content);
   const version = extractModelVersion(content);
@@ -61,7 +71,10 @@ export function modelCatalogGap(content: string): ModelCatalogGap | null {
   if (extractModelExportBody(content) === null) {
     return {
       kind: "not-plain-object",
-      annotated: declaresExport(content, ANNOTATED_MODEL_EXPORT),
+      annotated: declaresExport(
+        content,
+        spelledModel ? ANNOTATED_MODEL_EXPORT : ANNOTATED_BEHAVIOR_EXPORT,
+      ),
     };
   }
 

@@ -36,6 +36,13 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   // Foreign rows are catalog-only and never ephemeral.
   readonly fetchForeignContent?: ForeignContentFetcher;
 
+  // Which repository issued each unsettled deferred version. A receipt
+  // carries no lifetime, so settling looks its owner up here.
+  private readonly deferredIssuers = new Map<
+    string,
+    Set<UnifiedDataRepository>
+  >();
+
   constructor(
     private readonly persistent: UnifiedDataRepository,
     private readonly ephemeral: UnifiedDataRepository,
@@ -46,6 +53,47 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
 
   private routeWrite(data: Data): UnifiedDataRepository {
     return data.lifetime === "ephemeral" ? this.ephemeral : this.persistent;
+  }
+
+  private recordDeferredIssuer(
+    repo: UnifiedDataRepository,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): void {
+    const key = deferredKey({ type, modelId, dataName, version });
+    const issuers = this.deferredIssuers.get(key);
+    if (issuers) {
+      issuers.add(repo);
+    } else {
+      this.deferredIssuers.set(key, new Set([repo]));
+    }
+  }
+
+  /**
+   * The receipts `repo` issued, each once. A receipt nothing recorded belongs
+   * to the persistent repository.
+   */
+  private receiptsIssuedBy(
+    repo: UnifiedDataRepository,
+    receipts: DeferredWriteReceipt[],
+  ): DeferredWriteReceipt[] {
+    const seen = new Set<string>();
+    return receipts.filter((receipt) => {
+      const key = deferredKey(receipt);
+      if (seen.has(key)) return false;
+      const issuers = this.deferredIssuers.get(key);
+      const issued = issuers ? issuers.has(repo) : repo === this.persistent;
+      if (issued) seen.add(key);
+      return issued;
+    });
+  }
+
+  private forgetDeferredIssuers(receipts: DeferredWriteReceipt[]): void {
+    for (const receipt of receipts) {
+      this.deferredIssuers.delete(deferredKey(receipt));
+    }
   }
 
   // --- Write Operations ---
@@ -70,7 +118,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       : this.persistent.append(type, modelId, dataName, content);
   }
 
-  allocateVersion(
+  async allocateVersion(
     type: ModelType,
     modelId: string,
     data: Data,
@@ -78,7 +126,18 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<
     { version: number; contentPath: string; priorVersions: number[] }
   > {
-    return this.routeWrite(data).allocateVersion(type, modelId, data, options);
+    const repo = this.routeWrite(data);
+    const allocated = await repo.allocateVersion(type, modelId, data, options);
+    if (options?.deferred) {
+      this.recordDeferredIssuer(
+        repo,
+        type,
+        modelId,
+        data.name,
+        allocated.version,
+      );
+    }
+    return allocated;
   }
 
   finalizeVersion(
@@ -487,43 +546,86 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return merged;
   }
 
-  saveDeferred(
-    _type: ModelType,
-    _modelId: string,
-    _data: Data,
-    _content: Uint8Array,
+  async saveDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    content: Uint8Array,
   ): Promise<DeferredWriteReceipt> {
-    throw new Error("saveDeferred is not supported in composite repository");
+    const repo = this.routeWrite(data);
+    const receipt = await repo.saveDeferred(type, modelId, data, content);
+    this.recordDeferredIssuer(
+      repo,
+      receipt.type,
+      receipt.modelId,
+      receipt.dataName,
+      receipt.version,
+    );
+    return receipt;
   }
 
-  finalizeVersionDeferred(
-    _type: ModelType,
-    _modelId: string,
-    _data: Data,
-    _version: number,
-    _priorVersions?: number[],
+  async finalizeVersionDeferred(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    version: number,
+    priorVersions?: number[],
   ): Promise<
     { receipt: DeferredWriteReceipt; size: number; checksum: string }
   > {
-    throw new Error(
-      "finalizeVersionDeferred is not supported in composite repository",
+    const repo = this.routeWrite(data);
+    const result = await repo.finalizeVersionDeferred(
+      type,
+      modelId,
+      data,
+      version,
+      priorVersions,
     );
+    this.recordDeferredIssuer(repo, type, modelId, data.name, version);
+    return result;
   }
 
-  advanceLatestMarkers(
-    _receipts: DeferredWriteReceipt[],
+  /**
+   * Promotes each receipt in the repository that issued it, persistent first:
+   * a persistent failure then leaves nothing promoted. A failure keeps the
+   * receipts' issuers, so the rollback that follows still finds them.
+   */
+  async advanceLatestMarkers(
+    receipts: DeferredWriteReceipt[],
   ): Promise<void> {
-    throw new Error(
-      "advanceLatestMarkers is not supported in composite repository",
-    );
+    for (const repo of [this.persistent, this.ephemeral]) {
+      const issued = this.receiptsIssuedBy(repo, receipts);
+      if (issued.length > 0) await repo.advanceLatestMarkers(issued);
+    }
+    this.forgetDeferredIssuers(receipts);
   }
 
-  rollbackVersions(
-    _receipts: DeferredWriteReceipt[],
+  /**
+   * Rolls each receipt back in the repository that issued it. Both
+   * repositories are attempted, so one failing never strands the other's
+   * deferred versions.
+   */
+  async rollbackVersions(
+    receipts: DeferredWriteReceipt[],
   ): Promise<void> {
-    throw new Error(
-      "rollbackVersions is not supported in composite repository",
-    );
+    const errors: unknown[] = [];
+    try {
+      for (const repo of [this.persistent, this.ephemeral]) {
+        const issued = this.receiptsIssuedBy(repo, receipts);
+        if (issued.length === 0) continue;
+        try {
+          await repo.rollbackVersions(issued);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    } finally {
+      this.forgetDeferredIssuers(receipts);
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Rolling back deferred writes failed");
+    }
   }
 
   async findByTaggedName(
@@ -556,4 +658,13 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     }
     return merged;
   }
+}
+
+function deferredKey(receipt: DeferredWriteReceipt): string {
+  return [
+    receipt.type.normalized,
+    receipt.modelId,
+    receipt.dataName,
+    receipt.version,
+  ].join("\0");
 }

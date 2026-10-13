@@ -1,0 +1,40 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/scenarios.md (block 4)
+id: 00000000-0000-4000-8000-000000000029
+# workflows/parallel-lookups/workflow.yaml
+name: parallel-lookups
+description: Run multiple lookups in parallel
+version: 1
+jobs:
+  - name: lookups
+    description: All lookups run in parallel
+    steps:
+      - name: ami
+        task:
+          type: model_method
+          modelIdOrName: ami-lookup
+          methodName: execute
+
+      - name: vpc
+        task:
+          type: model_method
+          modelIdOrName: vpc-lookup
+          methodName: execute
+
+      - name: sg
+        task:
+          type: model_method
+          modelIdOrName: sg-lookup
+          methodName: execute
+
+  - name: use-results
+    description: Use all lookup results
+    dependsOn:
+      - job: lookups
+        condition:
+          type: succeeded
+    steps:
+      - name: create-instance
+        task:
+          type: model_method
+          modelIdOrName: my-instance
+          methodName: create

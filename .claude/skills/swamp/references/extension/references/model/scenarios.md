@@ -1,13 +1,13 @@
-# Extension Model Scenarios
+# Extension Behavior Scenarios
 
-End-to-end scenarios showing how to build custom extension models.
+End-to-end scenarios showing how to build custom extension behaviors.
 
 ## Table of Contents
 
 - [Scenario 1: Custom API Integration](#scenario-1-custom-api-integration)
 - [Scenario 2: Cloud Resource CRUD](#scenario-2-cloud-resource-crud)
-- [Scenario 3: Factory Model for Discovery](#scenario-3-factory-model-for-discovery)
-- [Scenario 4: Extending Built-in Models](#scenario-4-extending-built-in-models)
+- [Scenario 3: Factory Behavior for Discovery](#scenario-3-factory-behavior-for-discovery)
+- [Scenario 4: Extending Built-in Behaviors](#scenario-4-extending-built-in-behaviors)
 - [Scenario 5: Community Extension Found](#scenario-5-community-extension-found)
 
 ---
@@ -17,29 +17,29 @@ End-to-end scenarios showing how to build custom extension models.
 ### User Request
 
 > "I need to integrate with a third-party API (like Stripe, Twilio, or a custom
-> internal API) that doesn't have a built-in model type."
+> internal API) that doesn't have a built-in behavior type."
 
 ### What You'll Build
 
-- 1 extension model: `@user/stripe-customer`
+- 1 extension behavior: `@user/stripe-customer`
 - Methods: `create`, `get`, `update`
 
 ### Decision Tree
 
 ```
 swamp extension search Stripe → no community extension
-swamp model type search Stripe → no local results
-No existing model → Create extension model
+swamp behavior type search Stripe → no local results
+No existing behavior → Create extension behavior
 Need typed input validation → Define Zod schemas
 Store response data for CEL access → Use writeResource
 ```
 
 ### Step-by-Step
 
-**1. Create the model file**
+**1. Create the behavior file**
 
 ```typescript
-// extensions/models/stripe_customer.ts
+// extensions/behaviors/stripe_customer.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -61,7 +61,7 @@ const CustomerSchema = z.object({
 
 type CustomerData = z.infer<typeof CustomerSchema>;
 
-export const model = {
+export const behavior = {
   type: "@user/stripe-customer",
   version: "2026.02.10.1",
   globalArguments: GlobalArgsSchema,
@@ -165,10 +165,10 @@ export const model = {
 };
 ```
 
-**2. Create a model instance**
+**2. Create a behavior instance**
 
 ```bash
-swamp model create @user/stripe-customer my-customer --json
+swamp behavior create @user/stripe-customer my-customer --json
 ```
 
 **3. Configure with vault for API key**
@@ -186,14 +186,14 @@ methods:
       name: John Doe
 ```
 
-**4. Run and reference in other models**
+**4. Run and reference in other behaviors**
 
 ```bash
 swamp behavior run my-customer create
 ```
 
 ```yaml
-# Another model referencing the customer
+# Another behavior referencing the customer
 globalArguments:
   customerId: ${{ model.my-customer.resource.customer.primary.attributes.id }}
 ```
@@ -217,15 +217,15 @@ globalArguments:
 
 ### What You'll Build
 
-- 1 extension model: `@user/s3-bucket`
+- 1 extension behavior: `@user/s3-bucket`
 - Methods: `create`, `update`, `delete`, `sync`
 
 ### Decision Tree
 
 ```
 swamp extension search S3 → no community extension
-swamp model type search S3 → no local results
-No existing model → Create extension model
+swamp behavior type search S3 → no local results
+No existing behavior → Create extension behavior
 Full lifecycle management → create, update, delete methods
 Update reads existing state → Use context.readResource
 Delete cleans up → Return empty dataHandles
@@ -234,10 +234,10 @@ Detect drift → sync method reads stored ID, refreshes from live API
 
 ### Step-by-Step
 
-**1. Create the model file**
+**1. Create the behavior file**
 
 ```typescript
-// extensions/models/s3_bucket.ts
+// extensions/behaviors/s3_bucket.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -255,7 +255,7 @@ const BucketSchema = z.object({
 
 type BucketData = z.infer<typeof BucketSchema>;
 
-export const model = {
+export const behavior = {
   type: "@user/s3-bucket",
   version: "2026.02.10.1",
   globalArguments: GlobalArgsSchema,
@@ -560,7 +560,7 @@ jobs:
 
 ---
 
-## Scenario 3: Factory Model for Discovery
+## Scenario 3: Factory Behavior for Discovery
 
 ### User Request
 
@@ -569,26 +569,26 @@ jobs:
 
 ### What You'll Build
 
-- 1 factory model: `@user/vpc-scanner`
+- 1 factory behavior: `@user/vpc-scanner`
 - Produces multiple named instances from a single spec
 
 ### Decision Tree
 
 ```
 swamp extension search VPC → no community extension
-swamp model type search VPC → no local results
-No existing model → Create extension model
-Discover multiple resources → Factory model pattern
+swamp behavior type search VPC → no local results
+No existing behavior → Create extension behavior
+Discover multiple resources → Factory behavior pattern
 Each resource needs unique ID → Dynamic instance names
 Query all discovered resources → data.findBySpec()
 ```
 
 ### Step-by-Step
 
-**1. Create the factory model**
+**1. Create the factory behavior**
 
 ```typescript
-// extensions/models/vpc_scanner.ts
+// extensions/behaviors/vpc_scanner.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -602,7 +602,7 @@ const VpcSchema = z.object({
   State: z.string(),
 }).passthrough();
 
-export const model = {
+export const behavior = {
   type: "@user/vpc-scanner",
   version: "2026.02.10.1",
   globalArguments: GlobalArgsSchema,
@@ -676,14 +676,14 @@ export const model = {
 **2. Run the scanner**
 
 ```bash
-swamp model create @user/vpc-scanner my-scanner --json
+swamp behavior create @user/vpc-scanner my-scanner --json
 swamp behavior run my-scanner scan
 ```
 
 **3. Query discovered VPCs**
 
 ```yaml
-# In another model or workflow
+# In another behavior or workflow
 globalArguments:
   # Get all discovered VPCs
   allVpcs: ${{ data.findBySpec("my-scanner", "vpc") }}
@@ -725,23 +725,23 @@ jobs:
 
 ---
 
-## Scenario 4: Extending Built-in Models
+## Scenario 4: Extending Built-in Behaviors
 
 ### User Request
 
-> "I want to add an 'audit' method to the built-in command/shell model that logs
-> all executions."
+> "I want to add an 'audit' method to the built-in command/shell behavior that
+> logs all executions."
 
 ### What You'll Build
 
 - 1 extension file that adds methods to `command/shell`
-- No new model type — just new methods on existing type
+- No new behavior type — just new methods on existing type
 
 ### Decision Tree
 
 ```
 swamp extension search shell → no community extension
-swamp model type search command/shell → exists locally
+swamp behavior type search command/shell → exists locally
 Want to add methods, not create new type → export const extension
 Cannot change schema → Only add new methods
 ```
@@ -751,7 +751,7 @@ Cannot change schema → Only add new methods
 **1. Create the extension file**
 
 ```typescript
-// extensions/models/shell_audit.ts
+// extensions/behaviors/shell_audit.ts
 import { z } from "npm:zod@4";
 
 export const extension = {
@@ -785,7 +785,7 @@ export const extension = {
 
         context.logger.info("Audit: {*}", auditEntry);
 
-        // Write to the shell model's result spec
+        // Write to the shell behavior's result spec
         const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${JSON.stringify(auditEntry)}`,
@@ -830,18 +830,18 @@ export const extension = {
 **2. Verify extension loaded**
 
 ```bash
-swamp model type describe command/shell --json
+swamp behavior type describe command/shell --json
 # Should show audit and dryRun in methods list
 ```
 
 **3. Use the new methods**
 
 ```bash
-# Create a shell model
-swamp model create command/shell my-script --json
+# Create a shell behavior
+swamp behavior create command/shell my-script --json
 
 # Configure it
-swamp model edit my-script
+swamp behavior edit my-script
 # Add: methods.execute.arguments.run = "echo 'Hello'"
 
 # Use the new audit method
@@ -855,9 +855,9 @@ swamp behavior run my-script dryRun
 
 | Rule                         | Reason                                     |
 | ---------------------------- | ------------------------------------------ |
-| Cannot change schema         | Would break existing model instances       |
+| Cannot change schema         | Would break existing behavior instances    |
 | Only add new methods         | No overriding existing methods             |
-| Use `export const extension` | Distinguishes from new model definitions   |
+| Use `export const extension` | Distinguishes from new behavior types      |
 | Methods array format         | Allows multiple methods per extension file |
 
 ---
@@ -895,23 +895,23 @@ swamp extension search DigitalOcean --json
 swamp extension pull @swamp/digitalocean
 ```
 
-**3. Use the installed model type**
+**3. Use the installed behavior type**
 
 ```bash
-swamp model type search DigitalOcean --json
+swamp behavior type search DigitalOcean --json
 # Now shows @swamp/digitalocean types
 
-swamp model type describe @swamp/digitalocean-droplet --json
+swamp behavior type describe @swamp/digitalocean-droplet --json
 # Review available methods and schema
 
-swamp model create @swamp/digitalocean-droplet my-droplet --json
+swamp behavior create @swamp/digitalocean-droplet my-droplet --json
 ```
 
 ### Expected Agent Behavior
 
-- The agent does NOT offer to create a custom extension model
+- The agent does NOT offer to create a custom extension behavior
 - The agent installs the community extension and uses it directly
 - If the extension lacks a needed method, the agent extends it rather than
   building from scratch
-- The agent only creates a custom model if the community extension is missing or
-  does not cover the needed functionality
+- The agent only creates a custom behavior if the community extension is missing
+  or does not cover the needed functionality

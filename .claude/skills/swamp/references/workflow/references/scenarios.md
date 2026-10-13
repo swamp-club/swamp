@@ -23,27 +23,27 @@ End-to-end scenarios showing how to build workflows for common use cases.
 ### What You'll Build
 
 - 1 workflow with 3 sequential jobs
-- Models for VPC, subnet, and security group
+- Behaviors for VPC, subnet, and security group
 
 ### Decision Tree
 
 ```
 Multiple steps in order → Workflow with job dependencies
-Each step creates a resource → Separate models for each
+Each step creates a resource → Separate behaviors for each
 Later steps reference earlier outputs → CEL expressions
 ```
 
 ### Step-by-Step
 
-**1. Create the models first**
+**1. Create the behaviors first**
 
 ```bash
-swamp model create @user/vpc networking-vpc --json
-swamp model create @user/subnet public-subnet --json
-swamp model create @user/security-group app-sg --json
+swamp behavior create @user/vpc networking-vpc --json
+swamp behavior create @user/subnet public-subnet --json
+swamp behavior create @user/security-group app-sg --json
 ```
 
-Configure each model to reference the previous:
+Configure each behavior to reference the previous:
 
 ```yaml
 # models/public-subnet/input.yaml
@@ -83,8 +83,8 @@ jobs:
     steps:
       - name: vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
 
   - name: create-subnet
@@ -96,8 +96,8 @@ jobs:
     steps:
       - name: subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: create
 
   - name: create-sg
@@ -109,8 +109,8 @@ jobs:
     steps:
       - name: security-group
         task:
-          type: model_method
-          modelIdOrName: app-sg
+          type: behavior
+          behavior: app-sg
           methodName: create
 ```
 
@@ -122,7 +122,7 @@ swamp workflow run provision-networking
 
 ### CEL Paths Used
 
-| Model         | Expression                                                        |
+| Behavior      | Expression                                                        |
 | ------------- | ----------------------------------------------------------------- |
 | public-subnet | `model.networking-vpc.resource.vpc.main.attributes.VpcId`         |
 | app-sg        | `model.networking-vpc.resource.vpc.main.attributes.VpcId`         |
@@ -140,7 +140,7 @@ swamp workflow run provision-networking
 ### What You'll Build
 
 - 1 workflow with parallel steps in a single job
-- Multiple independent models
+- Multiple independent behaviors
 
 ### Decision Tree
 
@@ -151,12 +151,12 @@ No data dependencies between them → Run in parallel automatically
 
 ### Step-by-Step
 
-**1. Create independent lookup models**
+**1. Create independent lookup behaviors**
 
 ```bash
-swamp model create command/shell ami-lookup --json
-swamp model create command/shell vpc-lookup --json
-swamp model create command/shell sg-lookup --json
+swamp behavior create command/shell ami-lookup --json
+swamp behavior create command/shell vpc-lookup --json
+swamp behavior create command/shell sg-lookup --json
 ```
 
 **2. Create parallel workflow**
@@ -173,20 +173,20 @@ jobs:
     steps:
       - name: ami
         task:
-          type: model_method
-          modelIdOrName: ami-lookup
+          type: behavior
+          behavior: ami-lookup
           methodName: execute
 
       - name: vpc
         task:
-          type: model_method
-          modelIdOrName: vpc-lookup
+          type: behavior
+          behavior: vpc-lookup
           methodName: execute
 
       - name: sg
         task:
-          type: model_method
-          modelIdOrName: sg-lookup
+          type: behavior
+          behavior: sg-lookup
           methodName: execute
 
   - name: use-results
@@ -198,12 +198,12 @@ jobs:
     steps:
       - name: create-instance
         task:
-          type: model_method
-          modelIdOrName: my-instance
+          type: behavior
+          behavior: my-instance
           methodName: create
 ```
 
-**3. Configure the instance model to use all lookups**
+**3. Configure the instance behavior to use all lookups**
 
 ```yaml
 # models/my-instance/input.yaml
@@ -227,7 +227,7 @@ globalArguments:
 ### What You'll Build
 
 - 1 workflow with forEach iteration
-- 1 model that accepts environment as input
+- 1 behavior that accepts environment as input
 
 ### Decision Tree
 
@@ -239,7 +239,7 @@ Each iteration needs different values → forEach item variable
 
 ### Step-by-Step
 
-**1. Create model with inputs schema**
+**1. Create behavior with inputs schema**
 
 ```yaml
 # models/deploy-service/input.yaml
@@ -281,8 +281,8 @@ jobs:
           item: env
           in: ${{ inputs.environments }}
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ self.env }}
@@ -306,7 +306,7 @@ swamp workflow run deploy-all-envs --input '{"environments": ["dev", "staging"]}
 | -------- | --------------------- | ---------------------------------- |
 | workflow | `inputs.environments` | `["dev", "staging", "production"]` |
 | step     | `self.env`            | Current iteration value            |
-| model    | `inputs.environment`  | Passed from step                   |
+| behavior | `inputs.environment`  | Passed from step                   |
 
 ---
 
@@ -346,8 +346,8 @@ jobs:
     steps:
       - name: sg
         task:
-          type: model_method
-          modelIdOrName: app-sg
+          type: behavior
+          behavior: app-sg
           methodName: delete
 
   - name: delete-subnet
@@ -359,8 +359,8 @@ jobs:
     steps:
       - name: subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: delete
 
   - name: delete-vpc
@@ -372,8 +372,8 @@ jobs:
     steps:
       - name: vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: delete
 
   - name: cleanup
@@ -385,14 +385,14 @@ jobs:
     steps:
       - name: gc
         task:
-          type: model_method
-          modelIdOrName: gc-runner
+          type: behavior
+          behavior: gc-runner
           methodName: gc
 ```
 
-**2. Create models with delete methods**
+**2. Create behaviors with delete methods**
 
-Each model's delete method reads its own stored data:
+Each behavior's delete method reads its own stored data:
 
 ```typescript
 // In extension model
@@ -477,8 +477,8 @@ jobs:
     steps:
       - name: dispatch
         task:
-          type: model_method
-          modelIdOrName: notification-sender
+          type: behavior
+          behavior: notification-sender
           methodName: send
           inputs:
             channel: ${{ inputs.channel }}
@@ -505,8 +505,8 @@ jobs:
     steps:
       - name: run-deploy
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ inputs.environment }}
@@ -590,12 +590,12 @@ Per-iteration resume → forEach + guard with self.*
 
 ### Step-by-Step
 
-**1. Create the models**
+**1. Create the behaviors**
 
 ```bash
-swamp model create @user/vpc networking-vpc --json
-swamp model create @user/subnet public-subnet --json
-swamp model create @user/security-group app-sg --json
+swamp behavior create @user/vpc networking-vpc --json
+swamp behavior create @user/subnet public-subnet --json
+swamp behavior create @user/security-group app-sg --json
 ```
 
 **2. Create the workflow with guards**
@@ -615,8 +615,8 @@ jobs:
       - name: vpc
         guard: ${{ data.latest("networking-vpc", "resource") }}
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
 
   - name: create-subnets
@@ -628,8 +628,8 @@ jobs:
       - name: subnet
         guard: ${{ data.latest("public-subnet", "resource") }}
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: create
 
   - name: create-sg
@@ -641,8 +641,8 @@ jobs:
       - name: security-group
         guard: ${{ data.latest("app-sg", "resource") }}
         task:
-          type: model_method
-          modelIdOrName: app-sg
+          type: behavior
+          behavior: app-sg
           methodName: create
 ```
 
@@ -689,8 +689,8 @@ jobs:
           in: ${{ inputs.environments }}
         guard: ${{ data.latest("deploy-service", "result", [self.env]) }}
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ self.env }}
@@ -720,8 +720,8 @@ jobs:
           ${{ model.method("api-client", "check-freshness",
               {"maxAge": 1800}).stdout }}
         task:
-          type: model_method
-          modelIdOrName: api-client
+          type: behavior
+          behavior: api-client
           methodName: fetch
 ```
 
@@ -777,13 +777,13 @@ jobs:
     steps:
       - name: compile
         task:
-          type: model_method
-          modelIdOrName: builder
+          type: behavior
+          behavior: builder
           methodName: compile
       - name: test
         task:
-          type: model_method
-          modelIdOrName: builder
+          type: behavior
+          behavior: builder
           methodName: test
 
   - name: gpu-test
@@ -791,8 +791,8 @@ jobs:
       - name: train-smoke
         target: gpu-box-1
         task:
-          type: model_method
-          modelIdOrName: ml-runner
+          type: behavior
+          behavior: ml-runner
           methodName: smoke-test
 
   - name: report
@@ -807,8 +807,8 @@ jobs:
     steps:
       - name: summarize
         task:
-          type: model_method
-          modelIdOrName: reporter
+          type: behavior
+          behavior: reporter
           methodName: summarize
 ```
 

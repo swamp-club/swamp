@@ -41,8 +41,8 @@ jobs:
       - name: compile
         description: Compile source code
         task:
-          type: model_method
-          modelIdOrName: build-runner
+          type: behavior
+          behavior: build-runner
           methodName: build
   - name: deploy
     description: Deploy the application
@@ -54,8 +54,8 @@ jobs:
       - name: upload
         description: Upload artifacts
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ inputs.environment }}
@@ -76,8 +76,8 @@ jobs:
     steps:
       - name: fetch
         task:
-          type: model_method
-          modelIdOrName: downloader
+          type: behavior
+          behavior: downloader
           methodName: execute
 ```
 
@@ -85,7 +85,7 @@ When `swamp serve` starts, it scans all workflows and registers cron entries for
 any with `trigger.schedule`. A filesystem watcher monitors for changes — adding,
 modifying, or removing a schedule takes effect without restart.
 
-**Key behaviors:**
+**Key points:**
 
 - Overlap prevention: if still running from previous trigger, next trigger skips
 - Concurrency: one scheduled run at a time by default; raise it with
@@ -161,7 +161,7 @@ rewrite that file, dropping YAML comments, and are refused when it is not
 writable (e.g. a read-only ConfigMap mount): edit it directly, then run
 `swamp serve reload` (with `--hot-reload`) or restart serve.
 
-**`set` behavior:** `--schedule` is required. Each call replaces the entire
+**`set` semantics:** `--schedule` is required. Each call replaces the entire
 override entry (not a merge). To keep existing inputs, re-specify them.
 
 **`get` output:** Shows three sections — built-in (from workflow YAML), override
@@ -175,7 +175,7 @@ is `github` (default), `jira`, `linear`, `stripe`, `slack`, `generic` (requires
 header; optional prefix), or a webhook extension type such as `@swamp/telegram`
 (see
 [../extension/references/webhook/api.md](../extension/references/webhook/api.md)).
-Omitting the scheme preserves the original behavior. The secret field supports
+Omitting the scheme keeps the `github` default. The secret field supports
 indirection to avoid exposing secrets in argv: `@env=VAR_NAME` reads from an
 environment variable, `@file=/path` reads from a file (trailing newline
 trimmed). Plain strings are literal secrets.
@@ -228,10 +228,10 @@ inputs match required method/workflow arguments.
 5. Valid step dependency references
 6. No cyclic job dependencies
 7. No cyclic step dependencies within jobs
-8. Step inputs match required arguments — for `model_method` tasks, checks that
-   all required method arguments are provided in the step's `inputs:` block. For
+8. Step inputs match required arguments — for `behavior` tasks, checks that all
+   required method arguments are provided in the step's `inputs:` block. For
    `workflow` tasks, checks that all required workflow inputs are provided.
-   Dynamic CEL references (`${{ ... }}`) in model/workflow names are skipped.
+   Dynamic CEL references (`${{ ... }}`) in behavior/workflow names are skipped.
 
 ```bash
 swamp workflow validate my-workflow --json
@@ -421,8 +421,8 @@ swamp workflow history logs 7c9e6679-7425-40de-944b-e07fc1f90ae7 build.compile -
 
 ### Run Tracking
 
-Workflow runs and their individual model method step executions are tracked in
-the SQLite run tracker (`.swamp/run_tracker.db`). Use `swamp run history` to see
+Workflow runs and their individual method step executions are tracked in the
+SQLite run tracker (`.swamp/run_tracker.db`). Use `swamp run history` to see
 both workflow-level and step-level runs in a single view:
 
 ```bash
@@ -436,10 +436,10 @@ A run whose process was killed (for example by a second Ctrl-C) stays `running`
 with a dead pid. `swamp run doctor --fix` or
 `swamp workflow recover <workflow> --run <id>` marks it `interrupted`, with the
 in-flight step `unknown`, and marks the step's method run `cancelled` in
-`swamp model method history`. Then resume it with `swamp workflow resume`.
+`swamp behavior history`. Then resume it with `swamp workflow resume`.
 
 The history output shows the `KIND` column as `workflow` or `method`, with the
-workflow name or model/method name respectively.
+workflow name or behavior/method name respectively.
 
 ## Workflow Inputs
 
@@ -480,8 +480,8 @@ Reference inputs with `${{ inputs.<name> }}`:
 steps:
   - name: deploy
     task:
-      type: model_method
-      modelIdOrName: deploy-service
+      type: behavior
+      behavior: deploy-service
       methodName: deploy
       inputs:
         environment: ${{ inputs.environment }}
@@ -495,7 +495,7 @@ the workflow itself contains (data from `data.latest`, step outputs and forEach
 items behaves the same way). They are also **recorded** (after type coercion and
 schema defaults) in the run record, the history index that
 `workflow history search --input` filters on, any child workflow run they are
-forwarded to, evaluated model definitions, and the data of any model that
+forwarded to, evaluated behavior definitions, and the data of any behavior that
 records its arguments. This holds for `workflow resume --input`, `--input-file`,
 and `--stdin` too; the run record's `resumeInputs` lists only the key names, but
 the merged values persist everywhere else.
@@ -529,7 +529,7 @@ apiKey: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
 - If a secret was already passed as an input: rotate it, then remove the runs
   (`swamp run gc --older-than` for finished runs, or `swamp workflow delete`),
   which also removes each run's `.swamp/workflows-evaluated/runs/<run-id>/`
-  snapshot, and the affected `.swamp/definitions-evaluated/` files and model
+  snapshot, and the affected `.swamp/definitions-evaluated/` files and behavior
   data (`swamp data delete <model> <data_name>`), which neither command removes.
   Suspended and running runs are never removed by `run gc`.
 
@@ -544,10 +544,10 @@ swamp workflow evaluate my-workflow --input environment=dev --json
 swamp workflow evaluate --all --json
 ```
 
-**Key behaviors:**
+**Key points:**
 
 - CEL expressions (`${{ inputs.X }}`, `${{ model.X.resource... }}`) are resolved
-- forEach steps are expanded into concrete steps with resolved `modelIdOrName`,
+- forEach steps are expanded into concrete steps with resolved behavior names,
   `methodName`, inputs, and args
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
@@ -633,7 +633,7 @@ jobs:
         task: ... # no affinity — dispatched independently
 ```
 
-**Key behaviors:**
+**Key points:**
 
 - Workflow-level affinity scopes to the entire run; job-level scopes to the job
 - If the pinned worker disconnects or starts draining mid-group, steps fail with
@@ -693,8 +693,8 @@ jobs:
           in: ${{ inputs.targets }}
         concurrency: 3 # step level — caps forEach iterations
         task: {
-          type: model_method,
-          modelIdOrName: api-client,
+          type: behavior,
+          behavior: api-client,
           methodName: call,
         }
 ```
@@ -710,8 +710,8 @@ steps:
   - name: optional-check
     allowFailure: true
     task:
-      type: model_method
-      modelIdOrName: checker
+      type: behavior
+      behavior: checker
       methodName: validate
 ```
 
@@ -746,8 +746,8 @@ steps:
   - name: read-plate
     guard: ${{ data.latest("plate-reader", "scan-complete").attributes.id }}
     task:
-      type: model_method
-      modelIdOrName: plate-reader
+      type: behavior
+      behavior: plate-reader
       methodName: read-all
 
   # Value comparison — same batch means skip, different batch means re-run
@@ -756,29 +756,29 @@ steps:
       ${{ data.latest("liquid-handler", "dispense-log").attributes.batchId
           == inputs.batchId }}
     task:
-      type: model_method
-      modelIdOrName: liquid-handler
+      type: behavior
+      behavior: liquid-handler
       methodName: dispense
 
-  # Method call — invoke a model method to check external state
+  # Method call — invoke a method to check external state
   - name: create-instance
     guard: >-
       ${{ model.method("infra", "check-exists",
           {"name": inputs.instanceName}).stdout }}
     task:
-      type: model_method
-      modelIdOrName: infra
+      type: behavior
+      behavior: infra
       methodName: create
 ```
 
 **`model.method()` in guards:**
 
 `model.method(modelName, methodName)` or
-`model.method(modelName, methodName, inputs)` invokes a model method and returns
-the content of its first resource data output (parsed as JSON if possible). This
+`model.method(modelName, methodName, inputs)` invokes a method and returns the
+content of its first resource data output (parsed as JSON if possible). This
 lets guards check external state by running a lightweight probe method. For
-command/shell models the return value is `{exitCode, stdout, stderr, ...}`, so
-guard expressions typically access a specific field like `.stdout`.
+command/shell behaviors the return value is `{exitCode, stdout, stderr, ...}`,
+so guard expressions typically access a specific field like `.stdout`.
 
 **forEach compatibility:** Guard expressions can reference `self.*`, so each
 expanded iteration evaluates its own guard independently:
@@ -790,8 +790,8 @@ expanded iteration evaluates its own guard independently:
     in: ${{ range(1, 97) }}
   guard: ${{ data.latest("plate-reader", self.well) }}
   task:
-    type: model_method
-    modelIdOrName: plate-reader
+    type: behavior
+    behavior: plate-reader
     methodName: read-single-well
 ```
 
@@ -806,17 +806,17 @@ renderer shows `skipped <step> (guarded)` to distinguish from dependency skips.
 
 Steps support four task types:
 
-**`model_method`** — prefer `modelType` + `modelName` (direct type execution)
-for dynamic inputs. Use `modelIdOrName` only for persistent definitions with CEL
+**`behavior`** — prefer `behaviorType` + `behaviorName` (direct type execution)
+for dynamic inputs. Use `behavior` only for persistent definitions with CEL
 expressions or shared config. See
 [references/direct-execution.md](references/direct-execution.md) for details.
 
 ```yaml
 # Direct type execution (default — dynamic inputs, no YAML to manage)
 task:
-  type: model_method
-  modelType: "@test/greeter"
-  modelName: my-greeter
+  type: behavior
+  behaviorType: "@test/greeter"
+  behaviorName: my-greeter
   methodName: greet
   inputs:
     greeting: ${{ inputs.greeting }}
@@ -824,12 +824,19 @@ task:
 
 # Existing definition (only for persistent config with CEL expressions)
 task:
-  type: model_method
-  modelIdOrName: my-model
+  type: behavior
+  behavior: my-model
   methodName: run
   inputs:
     key: ${{ inputs.value }}
 ```
+
+**Compatibility:** `type: model_method` with `modelIdOrName`, or `modelType` +
+`modelName`, is the same task and stays accepted. It is the form swamp stores:
+`swamp workflow edit` and every other save write the step back as
+`model_method`. Hand-write `model_method` when the file must load on a swamp
+release older than the behavior spelling. Do not mix the two spellings in one
+task; swamp refuses it.
 
 **`workflow`** - Invoke another workflow (waits for completion):
 
@@ -903,10 +910,10 @@ it. Use it when a step needs a value, not a yes or no:
   dependsOn: [{ step: review, condition: { type: succeeded } }]
   # A truthy guard skips the step: skip unless the verdict is ship.
   guard: ${{ steps.review.outputs.payload.verdict != "ship" }}
-  task: { type: model_method, modelIdOrName: release, methodName: deploy }
+  task: { type: behavior, behavior: release, methodName: deploy }
 - name: escalate
   dependsOn: [{ step: review, condition: { type: failed } }]
-  task: { type: model_method, modelIdOrName: release, methodName: escalate }
+  task: { type: behavior, behavior: release, methodName: escalate }
 ```
 
 ```
@@ -965,22 +972,29 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   the run does not suspend there; a signal older than that is ignored and the
   wait opens as usual. A key holds one pending signal: a second while the first
   is held is refused `already_pending`, and the error's `--json` form carries
-  `pending.heldUntil`, the time after which to send again. On such a step
-  `no_open_wait` means only that the key changed hands while the signal arrived:
-  send it again. A retry by key after the step took the first signal is held as
-  a second one, for the next run, unless both carry the same `--idempotency-key`
-  (1 to 128 letters, digits, `.`, `:`, `-`, `_`): the retry is then answered
-  with the first signal's receipt and `duplicate: true`, and nothing is
-  delivered or held twice. Give every signal a sender may retry its own key.
-  Without one, the result carries `lastWait` (how and when the key's last wait
-  was settled), so read that before sending again. The payload is checked on
-  arrival against the schema as written, so the schema of such a step may hold
-  no expression, `inputs.*` included (`workflow validate` refuses one). A
-  pending signal is stored in plaintext like any payload, and `workflow waits`
-  does not list it. Upgrade every host that runs, resumes or lists the workflow
-  before adding `acceptEarly`, and every client that signals it with `--server`:
-  an older swamp never takes a held signal, and a server holds nothing for an
-  older client, which is refused `no_open_wait`. A server older than
+  `pending.heldUntil`, the time after which to send again. Through
+  `swamp serve`, a token with `signal` and not `read` on the workflow is not
+  told whether a run is waiting: its signal is answered `accepted` (HTTP 202,
+  `accepted: true` in `--json`) with the receipt alone, whether a step took it
+  or it is held, and `already_pending` carries no `heldUntil`. Such a sender
+  makes a retry safe with `--idempotency-key`. On such a step `no_open_wait`
+  means the key changed hands while the signal arrived, or the signal was too
+  old for the wait that was opening: send it again. A result with `taken: true`
+  means a wait took the held signal; resume the run when its `awaitingResume` is
+  true. A retry by key after the step took the first signal is held as a second
+  one, for the next run, unless both carry the same `--idempotency-key` (1 to
+  128 letters, digits, `.`, `:`, `-`, `_`): the retry is then answered with the
+  first signal's receipt and `duplicate: true`, and nothing is delivered or held
+  twice. Give every signal a sender may retry its own key. Without one, the
+  result carries `lastWait` (how and when the key's last wait was settled), so
+  read that before sending again. The payload is checked on arrival against the
+  schema as written, so the schema of such a step may hold no expression,
+  `inputs.*` included (`workflow validate` refuses one). A pending signal is
+  stored in plaintext like any payload, and `workflow waits` does not list it.
+  Upgrade every host that runs, resumes or lists the workflow before adding
+  `acceptEarly`, and every client that signals it with `--server`: an older
+  swamp never takes a held signal, and a server holds nothing for an older
+  client, which is refused `no_open_wait`. A server older than
   `--idempotency-key` ignores the key.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
@@ -1143,12 +1157,12 @@ output from prior steps:
 data.latest("<modelName>", "<dataName>").attributes.<field>
 ```
 
-The second argument is the data name the model wrote, which is not always its
+The second argument is the data name the behavior wrote, which is not always its
 output spec name — see
-[data-chaining.md](references/data-chaining.md#choosing-model-vs-datalatest-expressions).
+[data-chaining.md](references/data-chaining.md#choosing-data-accessors-vs-model-expressions).
 The result of `data.latest()` is a `DataRecord` — access fields via
 `.attributes.<field>`, NOT `.content.<field>`. The `.attributes` map contains
-the structured output data that models produce.
+the structured output data that behaviors produce.
 
 **Dynamic messages:** The `message` field supports `${{ }}` expression
 interpolation. Use this to include actual values in failure messages:
@@ -1164,7 +1178,7 @@ interpolation. Use this to include actual values in failure messages:
     severity: high
 ```
 
-**Severity and failure behavior:**
+**Severity and failure handling:**
 
 - An assert step that fails records `status: failed` with the resolved message
 - By default, ANY failed assert fails the job and workflow (like any other step)
@@ -1205,15 +1219,15 @@ expr: >-
 
 Two moments, and which one applies decides what an expression can see.
 
-| Field                                  | Resolves                                                          | Sees                                      |
-| -------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------- |
-| Most fields                            | Run start                                                         | `inputs.*`, literals                      |
-| `guard`                                | Step time                                                         | Data written by earlier steps in this run |
-| `task.inputs`, assert `task.message`   | Step time **when** they read `data.*`                             | Same                                      |
-| `task.modelIdOrName`, `task.modelName` | Step time when they read `data.*` **or** their step has a `guard` | Same                                      |
-| `trigger.inputs`                       | Trigger fire time                                                 | The webhook payload                       |
-| `forEach.in`                           | Job start                                                         | Data available when the job begins        |
-| `run.*`, `self.*`                      | Step time                                                         | The run record, the forEach variable      |
+| Field                                | Resolves                                                          | Sees                                      |
+| ------------------------------------ | ----------------------------------------------------------------- | ----------------------------------------- |
+| Most fields                          | Run start                                                         | `inputs.*`, literals                      |
+| `guard`                              | Step time                                                         | Data written by earlier steps in this run |
+| `task.inputs`, assert `task.message` | Step time **when** they read `data.*`                             | Same                                      |
+| `task.behavior`, `task.behaviorName` | Step time when they read `data.*` **or** their step has a `guard` | Same                                      |
+| `trigger.inputs`                     | Trigger fire time                                                 | The webhook payload                       |
+| `forEach.in`                         | Job start                                                         | Data available when the job begins        |
+| `run.*`, `self.*`                    | Step time                                                         | The run record, the forEach variable      |
 
 The null-safe form applies to **same-run** data, not only to data from a prior
 cycle. `data.latest("m", "rec").attributes.x` fails at run start when an earlier
@@ -1225,8 +1239,8 @@ defers to step time and sees the write:
 # Step 1 writes the record; step 2 reads it in the same run.
 - name: consume
   task:
-    type: model_method
-    modelIdOrName: "${{ data.latest('writer', 'rec').?attributes.?name.orValue('') }}"
+    type: behavior
+    behavior: "${{ data.latest('writer', 'rec').?attributes.?name.orValue('') }}"
     methodName: run
 ```
 
@@ -1253,7 +1267,7 @@ are treated as allowed failures.
 # Only fail on high-severity assertions (treat low/medium as warnings)
 swamp workflow run my-checks --fail-on high
 
-# Default behavior — any failure fails the run
+# Default — any failure fails the run
 swamp workflow run my-checks --fail-on low
 ```
 
@@ -1294,9 +1308,9 @@ jobs:
     steps:
       - name: create-vpc
         task:
-          type: model_method
-          modelType: "command/shell"
-          modelName: create-vpc
+          type: behavior
+          behaviorType: "command/shell"
+          behaviorName: create-vpc
           methodName: execute
   - name: verify
     dependsOn:
@@ -1306,9 +1320,9 @@ jobs:
     steps:
       - name: describe-vpc
         task:
-          type: model_method
-          modelType: "command/shell"
-          modelName: describe-vpc
+          type: behavior
+          behaviorType: "command/shell"
+          behaviorName: describe-vpc
           methodName: execute
       - name: cidr-correct
         dependsOn:
@@ -1369,16 +1383,16 @@ jobs:
     steps:
       - name: refresh-token
         task:
-          type: model_method
-          modelIdOrName: token-refresher
+          type: behavior
+          behavior: token-refresher
           methodName: refresh
   use-token:
     depends_on: [refresh]
     steps:
       - name: call-api
         task:
-          type: model_method
-          modelIdOrName: api-client # vault.get() resolved after refresh
+          type: behavior
+          behavior: api-client # vault.get() resolved after refresh
           methodName: invoke
 ```
 
@@ -1417,11 +1431,11 @@ End-to-end workflow creation:
 
 | Need                       | Use Skill               |
 | -------------------------- | ----------------------- |
-| Create/run models          | `swamp-model`           |
+| Create/run behaviors       | `swamp-model`           |
 | Vault management           | `swamp-vault`           |
 | Repository structure       | `swamp-repo`            |
-| Manage model data          | `swamp-data`            |
-| Create custom models       | `swamp-extension`       |
+| Manage behavior data       | `swamp-data`            |
+| Create custom behaviors    | `swamp-extension`       |
 | Understand swamp internals | `swamp-troubleshooting` |
 
 ## References

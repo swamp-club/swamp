@@ -604,3 +604,82 @@ Deno.test("advanceLatestMarkers: keeps every promoted deferred write without ena
     [1, 2, 3, 4, 5],
   );
 });
+
+Deno.test("advanceLatestMarkers: catalogs a deferred write once it is promoted (swamp-club#3255)", async () => {
+  const { repo, catalog } = createRepo();
+
+  const receipt = await repo.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData(),
+    TEST_CONTENT,
+  );
+  assertEquals(catalog.count(), 0);
+
+  await repo.advanceLatestMarkers([receipt]);
+
+  assertEquals(catalog.count(), 1);
+});
+
+Deno.test("rollbackVersions: a rolled-back deferred write never reaches the catalog (swamp-club#3255)", async () => {
+  const { repo, catalog } = createRepo();
+
+  const receipt = await repo.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData(),
+    TEST_CONTENT,
+  );
+  await repo.rollbackVersions([receipt]);
+
+  assertEquals(catalog.count(), 0);
+  assertEquals(
+    await repo.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [],
+  );
+});
+
+Deno.test("rollbackVersions: releases a version that was allocated and never finalized (swamp-club#3255)", async () => {
+  const { repo } = createRepo();
+  const data = createTestData({ streaming: true });
+
+  const allocated = await repo.allocateVersion(TEST_TYPE, TEST_MODEL_ID, data);
+  await Deno.writeFile(allocated.contentPath, TEST_CONTENT);
+
+  await repo.rollbackVersions([{
+    type: TEST_TYPE,
+    modelId: TEST_MODEL_ID,
+    dataName: data.name,
+    version: allocated.version,
+  }]);
+
+  await assertRejects(
+    () => Deno.stat(allocated.contentPath),
+    Deno.errors.NotFound,
+  );
+});
+
+Deno.test("advanceLatestMarkers: a version allocated and never finalized gets no latest marker (swamp-club#3255)", async () => {
+  const { repo, catalog } = createRepo();
+  const data = createTestData({ streaming: true });
+
+  const allocated = await repo.allocateVersion(TEST_TYPE, TEST_MODEL_ID, data);
+  await Deno.writeFile(allocated.contentPath, TEST_CONTENT);
+
+  await repo.advanceLatestMarkers([{
+    type: TEST_TYPE,
+    modelId: TEST_MODEL_ID,
+    dataName: data.name,
+    version: allocated.version,
+  }]);
+
+  assertEquals(
+    repo.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, data.name),
+    null,
+  );
+  assertEquals(catalog.count(), 0);
+  await assertRejects(
+    () => Deno.stat(allocated.contentPath),
+    Deno.errors.NotFound,
+  );
+});

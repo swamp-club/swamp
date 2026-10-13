@@ -1,0 +1,20 @@
+# Extracted from .claude/skills/swamp/references/extension/references/model/scenarios.md (block 5)
+id: 00000000-0000-4000-8000-000000000006
+# workflows/tag-all-vpcs/workflow.yaml
+name: tag-all-vpcs
+version: 1
+jobs:
+  - name: tag
+    steps:
+      - name: tag-${{ self.vpc.attributes.VpcId }}
+        forEach:
+          item: vpc
+          in: ${{ data.findBySpec("my-scanner", "vpc") }}
+        task:
+          type: model_method
+          modelIdOrName: vpc-tagger
+          methodName: tag
+          inputs:
+            vpcId: ${{ self.vpc.attributes.VpcId }}
+            tags:
+              ManagedBy: Swamp

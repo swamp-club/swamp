@@ -1,0 +1,56 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/data-chaining.md (block 17)
+id: 00000000-0000-4000-8000-000000000015
+name: delete-networking
+description: Delete all networking resources in reverse dependency order
+version: 1
+jobs:
+  - name: delete-route-tables
+    description: Disassociate and delete route tables first
+    steps:
+      - name: delete-public-route-table
+        task:
+          type: model_method
+          modelIdOrName: public-route-table
+          methodName: delete
+      - name: delete-private-route-table
+        task:
+          type: model_method
+          modelIdOrName: private-route-table
+          methodName: delete
+    dependsOn: []
+
+  - name: delete-subnets-and-igw
+    description: Delete subnets and internet gateway
+    steps:
+      - name: delete-public-subnet
+        task:
+          type: model_method
+          modelIdOrName: public-subnet
+          methodName: delete
+      - name: delete-private-subnet
+        task:
+          type: model_method
+          modelIdOrName: private-subnet
+          methodName: delete
+      - name: delete-igw
+        task:
+          type: model_method
+          modelIdOrName: networking-igw
+          methodName: delete
+    dependsOn:
+      - job: delete-route-tables
+        condition:
+          type: succeeded
+
+  - name: delete-vpc
+    description: Delete the VPC last
+    steps:
+      - name: delete-vpc
+        task:
+          type: model_method
+          modelIdOrName: networking-vpc
+          methodName: delete
+    dependsOn:
+      - job: delete-subnets-and-igw
+        condition:
+          type: succeeded

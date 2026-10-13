@@ -47,7 +47,7 @@ found), see [references/version-check.md](references/version-check.md).
 | 1. Health checks    | Known integration issues, stale runs | `swamp doctor extensions`, `swamp run doctor` |
 | 2. Error inspection | Command failures, unexpected output  | stderr, `--json`, exit codes                  |
 | 3. Tracing          | Slow workflows, timing questions     | OpenTelemetry spans                           |
-| 4. Source reading   | Internal behavior questions          | `swamp source fetch`                          |
+| 4. Source reading   | Internals questions                  | `swamp source fetch`                          |
 
 ## Symptom → tier index
 
@@ -62,9 +62,9 @@ found), see [references/version-check.md](references/version-check.md).
 | `datastore_format_unsupported` / `_marker_invalid` | Datastore format → see below                                     |
 | Command errored — message is clear                 | Tier 2 → read it, fix the named issue                            |
 | Command errored — message is vague                 | Tier 2 → re-run with `--json`                                    |
-| Model method or workflow run failed                | Tier 2 → inspect generated reports                               |
+| Method or workflow run failed                      | Tier 2 → inspect generated reports                               |
 | Workflow / method / sync is slow                   | Tier 3 → enable tracing                                          |
-| Need to understand internal behavior               | Tier 4 → fetch source                                            |
+| Need to understand internals                       | Tier 4 → fetch source                                            |
 
 ### Account required (`auth_gate_blocked`)
 

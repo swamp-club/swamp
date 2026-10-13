@@ -4,16 +4,16 @@
 
 - [Example: Dynamic AMI Lookup Workflow](#example-dynamic-ami-lookup-workflow)
 - [Example: Multi-Step Infrastructure Workflow](#example-multi-step-infrastructure-workflow)
-- [Choosing model.\* vs data.latest() Expressions](#choosing-model-vs-datalatest-expressions)
+- [Choosing model.\* vs data.latest() Expressions](#choosing-data-accessors-vs-model-expressions)
 - [Step Results (`steps.*`)](#step-results-steps)
 - [Resource References](#resource-references)
 - [Delete Workflow Ordering](#delete-workflow-ordering)
 - [Update Workflow Ordering](#update-workflow-ordering)
 
-The `command/shell` model enables powerful data chaining in workflows by running
-shell commands and making the output available to other models. This is useful
-for dynamic lookups like finding the latest AMI, checking resource state, or
-querying AWS for configuration values.
+The `command/shell` behavior enables powerful data chaining in workflows by
+running shell commands and making the output available to other behaviors. This
+is useful for dynamic lookups like finding the latest AMI, checking resource
+state, or querying AWS for configuration values.
 
 ## Example: Dynamic AMI Lookup Workflow
 
@@ -29,21 +29,21 @@ jobs:
       - name: lookup-ami
         description: Find latest Amazon Linux 2 AMI
         task:
-          type: model_method
-          modelIdOrName: latest-ami
+          type: behavior
+          behavior: latest-ami
           methodName: execute
       - name: create-instance
         description: Create EC2 instance using looked-up AMI
         task:
-          type: model_method
-          modelIdOrName: my-instance
+          type: behavior
+          behavior: my-instance
           methodName: create
 ```
 
-### Model Inputs
+### Behavior Inputs
 
 ```yaml
-# latest-ami input (command/shell model)
+# latest-ami input (command/shell behavior)
 name: latest-ami
 version: 1
 tags: {}
@@ -71,8 +71,8 @@ Use `dependsOn` to ensure step B runs after step A when B references A's output.
 
 ## Choosing Data Accessors vs `model.*` Expressions
 
-Model instance definitions use CEL expressions to reference other models' data.
-The `data.*` namespace is the current accessor; `model.*.resource` and
+Behavior instance definitions use CEL expressions to reference other behaviors'
+data. The `data.*` namespace is the current accessor; `model.*.resource` and
 `model.*.file` are deprecated and will be removed in a future release.
 
 Inside the `data.*` namespace, `data.query()` is the primitive and the other
@@ -90,9 +90,9 @@ predicate, a projection, or history access.
 | `model.<name>.resource.<spec>`             | **Yes** — eagerly populated  | **Yes**              | **Yes**              | **Deprecated** |
 
 `data.latest()` and `data.version()` take the **data name** — the instance name
-the model wrote — not the output spec name. They often differ: an extension may
-write spec `syncRunSummary` as `sync-<timestamp>`, so
-`data.latest("mirror", "syncRunSummary")` finds nothing. List a model's data
+the behavior wrote — not the output spec name. They often differ: an extension
+may write spec `syncRunSummary` as `sync-<timestamp>`, so
+`data.latest("mirror", "syncRunSummary")` finds nothing. List a behavior's data
 names with `swamp data query "modelName == 'mirror'" --select name`. To read
 every record of a spec, use `data.findBySpec("<model>", "<spec>")` — one record
 per data name, not ordered newest-first. When `data.latest()` or
@@ -104,33 +104,33 @@ that spec.
 "Sees current-run data" is about visibility, not ordering — the two are
 separate, and only the shortcuts give you both.
 
-An accessor whose **first argument names a model** contributes an implicit
-dependency, so the step is ordered after that model's data exists. That covers
-`data.latest`, `data.version`, `data.listVersions` and `data.findBySpec`.
+An accessor whose **first argument names a behavior** contributes an implicit
+dependency, so the step is ordered after that behavior's data exists. That
+covers `data.latest`, `data.version`, `data.listVersions` and `data.findBySpec`.
 
 `data.query` and `data.findByTag` contribute **no** implicit dependency. Their
-first argument is a predicate or a tag key, not a model name, so there is
-nothing to resolve to a producer — a predicate can match data from any model,
+first argument is a predicate or a tag key, not a behavior name, so there is
+nothing to resolve to a producer — a predicate can match data from any behavior,
 including data no step has written yet.
 
 **When a step queries data that another step in the same run produces, an
 explicit `dependsOn` is required, not merely advisable.** Without it the query
 runs against whatever happens to exist at evaluation time, which is a race
-rather than a reliable empty result. This is the one behavioural difference to
-watch when replacing a `data.latest` call with the equivalent `data.query`
-predicate: the read keeps working, the ordering guarantee does not come with it.
+rather than a reliable empty result. This is the one difference to watch when
+replacing a `data.latest` call with the equivalent `data.query` predicate: the
+read keeps working, the ordering guarantee does not come with it.
 
 ### When to use each
 
 **Use a shortcut (`data.latest` / `data.version` / `data.findBySpec` / etc.)**
 when your access pattern fits a shortcut. This covers the majority of
-cross-model data reads: "give me the latest X/Y", "give me version 2 of X/Y",
+cross-behavior data reads: "give me the latest X/Y", "give me version 2 of X/Y",
 "give me every instance from spec S".
 
 **Use `data.query()` directly** when you need a predicate beyond a single
-model+name pair — for example, "every failed resource tagged env=prod", "every
-record across workflows tagged role=manifest", or a projection that extracts
-just specific fields.
+behavior+name pair — for example, "every failed resource tagged env=prod",
+"every record across workflows tagged role=manifest", or a projection that
+extracts just specific fields.
 
 **Avoid `model.*.resource` / `model.*.file`** — these patterns are deprecated
 and will emit a warning. Migrate to `data.latest()` or `data.query()`. For a
@@ -160,7 +160,7 @@ Use explicit `dependsOn` to control step ordering.
 ## Step Results (`steps.*`)
 
 Within one workflow run, `steps.<name>` exposes every **completed** upstream
-step, keyed by step name — no model or instance name needed.
+step, keyed by step name — no behavior or instance name needed.
 
 | Expression                                        | Value                                          |
 | ------------------------------------------------- | ---------------------------------------------- |
@@ -171,13 +171,13 @@ step, keyed by step name — no model or instance name needed.
 ```yaml
 - name: write_record # command/shell writes a `result` resource
   task:
-    type: model_method
-    modelIdOrName: writer
+    type: behavior
+    behavior: writer
     methodName: execute
 - name: use_it
   task:
-    type: model_method
-    modelIdOrName: reader
+    type: behavior
+    behavior: reader
     methodName: execute
     inputs:
       msg: ${{ steps.write_record.outputs.stdout }}
@@ -193,8 +193,8 @@ step, keyed by step name — no model or instance name needed.
   which fails with `No such key: <name>`.
 - **`outputs` is a flat merge** of the attributes of every JSON resource the
   step wrote, in write order; a later resource wins on a shared key. When a step
-  writes several instances with the same attribute names (factory models), read
-  the one you need with `data.latest("<model>", "<instance>")`.
+  writes several instances with the same attribute names (factory behaviors),
+  read the one you need with `data.latest("<model>", "<instance>")`.
 - **No outputs, no key.** A step that wrote no JSON resource (file outputs only,
   `manual_approval`, `assert`) has no `outputs` — `No such key: outputs`. Test
   with `has(steps.x.outputs)` when that is expected.
@@ -205,8 +205,8 @@ step, keyed by step name — no model or instance name needed.
 - **Names that are not CEL identifiers** (hyphens, forEach-expanded names such
   as `deploy-dev`) use bracket access: `steps["deploy-dev"].status`.
 - **Nested workflows:** a `type: workflow` step's outputs are its child's
-  succeeded model method steps, keyed by child step name. Grandchild workflows
-  are not propagated.
+  succeeded method steps, keyed by child step name. Grandchild workflows are not
+  propagated.
 - Resolves at step time, so it works on resume and across jobs. Outputs of
   ephemeral-lifetime data are not available after the producing process exits
   (resume, history).
@@ -227,13 +227,13 @@ jobs:
     steps:
       - name: find-vpc
         task:
-          type: model_method
-          modelIdOrName: vpc-lookup
+          type: behavior
+          behavior: vpc-lookup
           methodName: execute
       - name: find-subnet
         task:
-          type: model_method
-          modelIdOrName: subnet-lookup
+          type: behavior
+          behavior: subnet-lookup
           methodName: execute
   - name: provision
     description: Create resources using lookup results
@@ -244,17 +244,17 @@ jobs:
     steps:
       - name: create-security-group
         task:
-          type: model_method
-          modelIdOrName: app-security-group
+          type: behavior
+          behavior: app-security-group
           methodName: create
       - name: create-instance
         task:
-          type: model_method
-          modelIdOrName: app-server
+          type: behavior
+          behavior: app-server
           methodName: create
 ```
 
-### Model Inputs for Multi-Step Workflow
+### Behavior Inputs for Multi-Step Workflow
 
 ```yaml
 # vpc-lookup (command/shell)
@@ -309,14 +309,14 @@ globalArguments:
 
 ## Resource References
 
-All model data outputs are accessed via
+All behavior data outputs are accessed via
 `model.<name>.resource.<specName>.<instanceName>.attributes.<field>`:
 
-| Model Type    | Spec Name  | Example                                                      |
-| ------------- | ---------- | ------------------------------------------------------------ |
-| command/shell | `result`   | `model.ami-lookup.resource.result.result.attributes.stdout`  |
-| Cloud Control | `resource` | `model.my-vpc.resource.resource.main.attributes.VpcId`       |
-| Custom models | (varies)   | `model.my-deploy.resource.state.current.attributes.endpoint` |
+| Behavior Type    | Spec Name  | Example                                                      |
+| ---------------- | ---------- | ------------------------------------------------------------ |
+| command/shell    | `result`   | `model.ami-lookup.resource.result.result.attributes.stdout`  |
+| Cloud Control    | `resource` | `model.my-vpc.resource.resource.main.attributes.VpcId`       |
+| Custom behaviors | (varies)   | `model.my-deploy.resource.state.current.attributes.endpoint` |
 
 ## Vary Dimensions for Environment Isolation
 
@@ -333,8 +333,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: scanner
+      type: behavior
+      behavior: scanner
       methodName: execute
       inputs:
         environment: ${{ self.env }}
@@ -356,8 +356,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: reporter
+      type: behavior
+      behavior: reporter
       methodName: summarize
       inputs:
         environment: ${{ self.env }}
@@ -390,8 +390,8 @@ steps:
   - name: lookup-ami
     guard: ${{ data.latest("ami-lookup", "result") }}
     task:
-      type: model_method
-      modelIdOrName: ami-lookup
+      type: behavior
+      behavior: ami-lookup
       methodName: execute
   - name: create-instance
     guard: ${{ data.latest("my-instance", "resource") }}
@@ -400,8 +400,8 @@ steps:
         condition:
           type: completed
     task:
-      type: model_method
-      modelIdOrName: my-instance
+      type: behavior
+      behavior: my-instance
       methodName: create
 ```
 
@@ -422,8 +422,8 @@ steps:
       ${{ data.latest("deploy-service", "result").attributes.version
           == inputs.version }}
     task:
-      type: model_method
-      modelIdOrName: deploy-service
+      type: behavior
+      behavior: deploy-service
       methodName: deploy
       inputs:
         version: ${{ inputs.version }}
@@ -441,8 +441,8 @@ steps:
       ${{ model.method("vpc-lookup", "execute",
           {"vpcName": inputs.vpcName}).stdout }}
     task:
-      type: model_method
-      modelIdOrName: networking-vpc
+      type: behavior
+      behavior: networking-vpc
       methodName: create
 ```
 
@@ -453,7 +453,7 @@ already exist in AWS?) before deciding whether to create it.
 
 Delete workflows require **explicit `dependsOn`** in reverse dependency order.
 Delete methods read their own stored data via `context.dataRepository` — not
-other models' data via expressions.
+other behaviors' data via expressions.
 
 The dependency graph for a delete workflow is the **reverse** of the create
 workflow.
@@ -471,13 +471,13 @@ jobs:
     steps:
       - name: delete-public-route-table
         task:
-          type: model_method
-          modelIdOrName: public-route-table
+          type: behavior
+          behavior: public-route-table
           methodName: delete
       - name: delete-private-route-table
         task:
-          type: model_method
-          modelIdOrName: private-route-table
+          type: behavior
+          behavior: private-route-table
           methodName: delete
     dependsOn: []
 
@@ -486,18 +486,18 @@ jobs:
     steps:
       - name: delete-public-subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: delete
       - name: delete-private-subnet
         task:
-          type: model_method
-          modelIdOrName: private-subnet
+          type: behavior
+          behavior: private-subnet
           methodName: delete
       - name: delete-igw
         task:
-          type: model_method
-          modelIdOrName: networking-igw
+          type: behavior
+          behavior: networking-igw
           methodName: delete
     dependsOn:
       - job: delete-route-tables
@@ -509,8 +509,8 @@ jobs:
     steps:
       - name: delete-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: delete
     dependsOn:
       - job: delete-subnets-and-igw
@@ -529,7 +529,8 @@ jobs:
 **Key points:**
 
 - Use **job-level `dependsOn`** to enforce ordering between groups of deletions
-- Each delete method reads its own stored data — no cross-model CEL references
+- Each delete method reads its own stored data — no cross-behavior CEL
+  references
 - Steps within a job can run in parallel (e.g., public and private subnets
   delete concurrently)
 - Always delete dependent resources before the resources they depend on (e.g.,
@@ -540,7 +541,7 @@ jobs:
 Update workflows follow the **same dependency order as create** — update the
 foundation first, then dependents. Like delete workflows, update methods read
 their own stored data via `context.dataRepository` and don't reference other
-models via CEL expressions, so you need **explicit `dependsOn`**.
+behaviors via CEL expressions, so you need **explicit `dependsOn`**.
 
 The key difference from delete: update methods call `writeResource()` to persist
 the updated state (creating a new version), so the stored data stays current for
@@ -557,8 +558,8 @@ jobs:
     steps:
       - name: update-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: update
     dependsOn: []
 
@@ -567,13 +568,13 @@ jobs:
     steps:
       - name: update-public-subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: update
       - name: update-private-subnet
         task:
-          type: model_method
-          modelIdOrName: private-subnet
+          type: behavior
+          behavior: private-subnet
           methodName: update
     dependsOn:
       - job: update-vpc
@@ -585,13 +586,13 @@ jobs:
     steps:
       - name: update-public-route-table
         task:
-          type: model_method
-          modelIdOrName: public-route-table
+          type: behavior
+          behavior: public-route-table
           methodName: update
       - name: update-private-route-table
         task:
-          type: model_method
-          modelIdOrName: private-route-table
+          type: behavior
+          behavior: private-route-table
           methodName: update
     dependsOn:
       - job: update-subnets-and-igw
@@ -607,24 +608,26 @@ jobs:
 | Update | Forward (VPC → subnets → RT) | Read stored data, modify, write via `writeResource()` |
 | Delete | Reverse (RT → subnets → VPC) | Read stored data, clean up, return empty handles      |
 
-## Factory Model Patterns
+## Factory Behavior Patterns
 
-The factory pattern uses one model definition with `inputs` to create multiple
-named instances. Instead of maintaining 4 separate subnet model definitions, you
-define one `prod-subnet` model and call it 4 times with different inputs.
+The factory pattern uses one behavior definition with `inputs` to create
+multiple named instances. Instead of maintaining 4 separate subnet behavior
+definitions, you define one `prod-subnet` behavior and call it 4 times with
+different inputs.
 
 For a complete walkthrough, see the
-[model scenarios](../../model/references/scenarios.md#scenario-5-factory-pattern-for-model-reuse).
+[behavior scenarios](../../behavior/references/scenarios.md#scenario-5-factory-pattern-for-behavior-reuse).
 
-### Calling One Model Multiple Times
+### Calling One Behavior Multiple Times
 
-Steps within a job run in parallel. Each step calls the same `modelIdOrName`
-with different inputs.
+Steps within a job run in parallel. Each step calls the same `behavior` with
+different inputs.
 
-> **Lock contention:** Steps targeting the **same model** serialize on the
-> per-model lock — they won't actually run in parallel. For true parallelism,
-> use separate model instances (factory pattern) so each instance holds its own
-> lock. This matters most for long-running methods like builds or deployments.
+> **Lock contention:** Steps targeting the **same behavior** serialize on the
+> per-behavior lock — they won't actually run in parallel. For true parallelism,
+> use separate behavior instances (factory pattern) so each instance holds its
+> own lock. This matters most for long-running methods like builds or
+> deployments.
 
 Example:
 
@@ -634,8 +637,8 @@ jobs:
     steps:
       - name: create-public-a
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: public-a
@@ -643,8 +646,8 @@ jobs:
             availabilityZone: us-east-1a
       - name: create-public-b
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: public-b
@@ -653,8 +656,8 @@ jobs:
 ```
 
 The `instanceName` input flows into `name: ${{ inputs.instanceName }}` in the
-model's globalArguments, which sets the data instance name. This is how one
-model produces separately addressable data instances.
+behavior's globalArguments, which sets the data instance name. This is how one
+behavior produces separately addressable data instances.
 
 ### Referencing Factory Instance Data Downstream
 
@@ -671,15 +674,15 @@ jobs:
     steps:
       - name: create-public-rt
         task:
-          type: model_method
-          modelIdOrName: prod-route-table
+          type: behavior
+          behavior: prod-route-table
           methodName: create
           inputs:
             instanceName: public-rt
             subnetId: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
 ```
 
-### Delete Steps for Factory Models
+### Delete Steps for Factory Behaviors
 
 Delete steps must provide `instanceName` because the `name` globalArgument
 (`name: ${{ inputs.instanceName }}`) determines which data instance to read and
@@ -696,8 +699,8 @@ actually tries to access an unresolved value.
 # WRONG: No instanceName, so the system can't resolve which data instance to use
 - name: delete-public-a
   task:
-    type: model_method
-    modelIdOrName: prod-subnet
+    type: behavior
+    behavior: prod-subnet
     methodName: delete
     inputs:
       identifier: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
@@ -709,8 +712,8 @@ actually tries to access an unresolved value.
 # CORRECT: instanceName resolves the name globalArgument and keys the data instance
 - name: delete-public-a
   task:
-    type: model_method
-    modelIdOrName: prod-subnet
+    type: behavior
+    behavior: prod-subnet
     methodName: delete
     inputs:
       instanceName: public-a

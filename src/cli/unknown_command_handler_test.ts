@@ -89,7 +89,7 @@ Deno.test("buildUnknownCommandMessage - typo suggests correct command", () => {
   assertStringIncludes(msg, 'Did you mean "create"');
 });
 
-Deno.test("buildUnknownCommandMessage - non-typo suggests model get/method run/validate", () => {
+Deno.test("buildUnknownCommandMessage - non-typo under model suggests the behavior get/run/validate forms", () => {
   const cmd = buildCommand("model", [
     "create",
     "delete",
@@ -100,9 +100,24 @@ Deno.test("buildUnknownCommandMessage - non-typo suggests model get/method run/v
   ]);
   const msg = buildUnknownCommandMessage("hetzner-server", cmd);
   assertStringIncludes(msg, "is not a subcommand");
-  assertStringIncludes(msg, "swamp model get hetzner-server");
+  assertStringIncludes(msg, "swamp behavior get hetzner-server");
   assertStringIncludes(msg, "swamp behavior run hetzner-server");
-  assertStringIncludes(msg, "swamp model validate hetzner-server");
+  assertStringIncludes(msg, "swamp behavior validate hetzner-server");
+  assertEquals(msg.includes("swamp model get"), false);
+});
+
+Deno.test("buildUnknownCommandMessage - non-typo under behavior suggests the same get/run/validate forms", () => {
+  const cmd = buildCommand("behavior", [
+    "run",
+    "create",
+    "get",
+    "validate",
+  ]);
+  const msg = buildUnknownCommandMessage("hetzner-server", cmd);
+  assertStringIncludes(msg, "is not a subcommand");
+  assertStringIncludes(msg, "swamp behavior get hetzner-server");
+  assertStringIncludes(msg, "swamp behavior run hetzner-server");
+  assertStringIncludes(msg, "swamp behavior validate hetzner-server");
 });
 
 Deno.test("buildUnknownCommandMessage - workflow context suggestions", () => {
@@ -417,12 +432,129 @@ Deno.test("buildUnknownCommandMessage - history context suggestions", () => {
   assertStringIncludes(msg, "history search");
 });
 
-Deno.test("buildUnknownCommandMessage - output context suggestions", () => {
-  const cmd = buildCommand("output", ["get", "search", "logs", "data"]);
-  const msg = buildUnknownCommandMessage("my-server", cmd);
-  assertStringIncludes(msg, "swamp model output get my-server");
-  assertStringIncludes(msg, "swamp model output search");
-  assertStringIncludes(msg, "swamp model output logs my-server");
+/** `swamp <group> output`, so the output group has its real parent chain. */
+function outputUnder(group: string): Command {
+  const output = buildCommand("output", ["get", "search", "logs", "data"]);
+  new Command().name("swamp").command(
+    group,
+    new Command().name(group).command("output", output),
+  );
+  return output;
+}
+
+Deno.test("buildUnknownCommandMessage - output context suggestions name the group as reached", () => {
+  const legacy = buildUnknownCommandMessage("my-server", outputUnder("model"));
+  assertStringIncludes(legacy, "swamp model output get my-server");
+  assertStringIncludes(legacy, "swamp model output search");
+  assertStringIncludes(legacy, "swamp model output logs my-server");
+
+  const preferred = buildUnknownCommandMessage(
+    "my-server",
+    outputUnder("behavior"),
+  );
+  assertStringIncludes(preferred, "swamp behavior output get my-server");
+  assertStringIncludes(preferred, "swamp behavior output search");
+  assertStringIncludes(preferred, "swamp behavior output logs my-server");
+  assertEquals(preferred.includes("swamp model"), false);
+});
+
+Deno.test("buildUnknownCommandMessage - behavior method describe suggests behavior describe (swamp-club#3331)", () => {
+  const cmd = buildCommand("behavior", ["run", "describe", "history"]);
+  const msg = buildUnknownCommandMessage("method", cmd, [
+    "behavior",
+    "method",
+    "describe",
+    "my-server",
+    "getSystemInfo",
+  ]);
+  assertStringIncludes(msg, "swamp behavior describe my-server getSystemInfo");
+  assertEquals(msg.includes("swamp behavior run"), false);
+
+  const bare = buildUnknownCommandMessage("method", cmd, [
+    "behavior",
+    "method",
+    "describe",
+  ]);
+  assertStringIncludes(bare, "swamp behavior describe <model> <method>");
+});
+
+Deno.test("buildUnknownCommandMessage - behavior method history suggests behavior history (swamp-club#3331)", () => {
+  const cmd: Command = new Command().name("behavior").alias("behaviour");
+  for (const sub of ["run", "describe", "history"]) {
+    cmd.command(sub, new Command().description(sub));
+  }
+  const shorthand = buildUnknownCommandMessage("method", cmd, [
+    "behaviour",
+    "method",
+    "history",
+    "my-server",
+  ]);
+  assertStringIncludes(shorthand, "swamp behavior history my-server");
+
+  const get = buildUnknownCommandMessage("method", cmd, [
+    "behavior",
+    "method",
+    "history",
+    "get",
+    "abc123",
+  ]);
+  assertStringIncludes(get, "swamp behavior history get abc123");
+});
+
+Deno.test("buildUnknownCommandMessage - model describe suggests behavior describe (swamp-club#3331)", () => {
+  const cmd = buildCommand("model", ["create", "get", "method"]);
+  const msg = buildUnknownCommandMessage("describe", cmd, [
+    "model",
+    "describe",
+    "my-server",
+    "getSystemInfo",
+  ]);
+  assertStringIncludes(msg, "swamp behavior describe my-server getSystemInfo");
+  assertEquals(msg.includes("swamp behavior get describe"), false);
+});
+
+Deno.test("buildUnknownCommandMessage - model history suggests behavior history (swamp-club#3331)", () => {
+  const cmd = buildCommand("model", ["create", "get", "method"]);
+  const msg = buildUnknownCommandMessage("history", cmd, [
+    "model",
+    "history",
+    "logs",
+    "abc123",
+  ]);
+  assertStringIncludes(msg, "swamp behavior history logs abc123");
+  assertEquals(msg.includes("swamp behavior get history"), false);
+
+  const bare = buildUnknownCommandMessage("history", cmd, ["model", "history"]);
+  assertStringIncludes(bare, "swamp behavior history <model>");
+});
+
+Deno.test("buildUnknownCommandMessage - a boolean flag between the group and the positionals is not read as taking a value", () => {
+  const behavior = buildCommand("behavior", ["run", "describe"]);
+  for (const flag of ["--json", "--log", "--skip-checks"]) {
+    const msg = buildUnknownCommandMessage("method", behavior, [
+      "behavior",
+      "method",
+      flag,
+      "describe",
+      "my-server",
+      "getSystemInfo",
+    ]);
+    assertStringIncludes(
+      msg,
+      "swamp behavior describe my-server getSystemInfo",
+      flag,
+    );
+  }
+  const model = buildCommand("model", ["create", "get", "method"]);
+  const msg = buildUnknownCommandMessage("run", model, [
+    "--log",
+    "model",
+    "run",
+    "--json",
+    "p1",
+    "ping",
+  ]);
+  assertStringIncludes(msg, "swamp behavior run p1 ping");
 });
 
 Deno.test("extractPositionalArgs - extracts args after command path", () => {
@@ -435,6 +567,16 @@ Deno.test("extractPositionalArgs - skips flags and their values", () => {
   const args = ["extension", "search", "home", "assistant", "--json"];
   const result = extractPositionalArgs(args, "extension search");
   assertEquals(result, ["home", "assistant"]);
+});
+
+Deno.test("extractPositionalArgs - --version under a group takes a value, as on data get", () => {
+  for (const flag of ["--version", "-V"]) {
+    const args = ["data", "frobnicate", flag, "3", "my-server"];
+    assertEquals(extractPositionalArgs(args, "data"), [
+      "frobnicate",
+      "my-server",
+    ], flag);
+  }
 });
 
 Deno.test("extractPositionalArgs - skips flag values between positional args", () => {
@@ -454,6 +596,33 @@ Deno.test("extractPositionalArgs - handles flags before command path", () => {
   const args = ["--json", "extension", "search", "home", "assistant"];
   const result = extractPositionalArgs(args, "extension search");
   assertEquals(result, ["home", "assistant"]);
+});
+
+Deno.test("extractPositionalArgs - a boolean flag does not consume the next token", () => {
+  assertEquals(
+    extractPositionalArgs(
+      ["--log", "model", "get", "--json", "my-server"],
+      "model get",
+    ),
+    ["my-server"],
+  );
+  assertEquals(
+    extractPositionalArgs(
+      ["behavior", "run", "my-server", "--skip-checks", "deploy"],
+      "behavior run",
+    ),
+    ["my-server", "deploy"],
+  );
+});
+
+Deno.test("extractPositionalArgs - an option written with = does not consume the next token", () => {
+  assertEquals(
+    extractPositionalArgs(
+      ["behavior", "run", "--log-level=debug", "my-server", "deploy"],
+      "behavior run",
+    ),
+    ["my-server", "deploy"],
+  );
 });
 
 Deno.test("extractPositionalArgs - returns empty for no positional args", () => {

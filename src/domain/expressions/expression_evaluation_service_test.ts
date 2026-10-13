@@ -22,7 +22,6 @@ import { attachSensitiveValues } from "./sensitive_context.ts";
 import { SplicePair } from "./splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { ProvenanceMap } from "./provenance_map.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -32,7 +31,13 @@ import {
   containsRuntimeExpression,
   containsVaultExpression,
   ExpressionEvaluationService,
+  partitionAuthored,
+  partitionAuthoredAt,
 } from "./expression_evaluation_service.ts";
+import { extractExpressions } from "./expression_parser.ts";
+import { ProvenanceMap } from "./provenance_map.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
 import { deferredExpressionReference } from "./deferred_expression.ts";
@@ -1792,4 +1797,71 @@ Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expres
     // self.globalArguments is bound to the real value, not the sentinel.
     assertEquals(args.len, `/tmp/test-home-mixed:${SENSITIVE.length}`);
   });
+});
+
+// ============================================================================
+// Rejected-expression warnings quote the raw text verbatim (swamp-club#3321)
+// ============================================================================
+
+/** Runs `fn` with the expression warnings captured, as messages. */
+async function capturingExpressionWarnings(
+  fn: () => void,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "expressions"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+const BRACED_RAWS = [
+  "${{ env.HOME }}",
+  "${{ {'k': 'v'}.k }}",
+];
+
+Deno.test("partitionAuthored: the refusal warning quotes the raw expression verbatim (swamp-club#3321)", async () => {
+  for (const raw of BRACED_RAWS) {
+    const messages = await capturingExpressionWarnings(() => {
+      assertEquals(
+        partitionAuthored(extractExpressions({ run: raw }), new Set()),
+        [],
+      );
+    });
+    assertEquals(messages.length, 1);
+    assertStringIncludes(messages[0], "at run:");
+    assertEquals(messages[0].endsWith(`Raw: ${raw}`), true, messages[0]);
+  }
+});
+
+Deno.test("partitionAuthoredAt: the data-content warning quotes the raw expression verbatim (swamp-club#3321)", async () => {
+  for (const raw of BRACED_RAWS) {
+    const messages = await capturingExpressionWarnings(() => {
+      assertEquals(
+        partitionAuthoredAt(
+          extractExpressions({ run: raw }),
+          new Set([raw]),
+          ProvenanceMap.data(),
+        ),
+        [],
+      );
+    });
+    assertEquals(messages.length, 1);
+    assertStringIncludes(messages[0], "at run:");
+    assertEquals(messages[0].endsWith(`Raw: ${raw}`), true, messages[0]);
+  }
 });

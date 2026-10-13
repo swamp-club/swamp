@@ -46,7 +46,7 @@ explicit to readers.
 ### `createLock(datastorePath, options?)`
 
 Returns a `DistributedLock` for serializing write access. Called by every write
-command (`model create`, `behavior run`, `workflow run`, `data gc`, etc.).
+command (`behavior create`, `behavior run`, `workflow run`, `data gc`, etc.).
 
 - `datastorePath` — the resolved datastore path from `resolveDatastorePath`
 - `options` — optional lock configuration (see `LockOptions` below)
@@ -228,7 +228,7 @@ interface LockInfo {
 
 ## LockOptions
 
-Configuration for lock behavior.
+Options that configure a lock.
 
 ```typescript
 interface LockOptions {
@@ -347,8 +347,8 @@ supports:
 - `namespacedSync` — when `true`, the extension correctly handles the
   `namespace` field on `DatastoreSyncOptions`, scoping its index walk and upload
   to `{namespace}/` in the remote datastore. Extensions that don't advertise
-  this still receive the namespace field but are expected to ignore it
-  (solo-mode behavior).
+  this still receive the namespace field but are expected to ignore it (as in
+  solo mode).
 - `scopedSync` — supports domain-level sync context.
 - `lazyHydration` — supports metadata-only pulls with on-demand content fetch.
 

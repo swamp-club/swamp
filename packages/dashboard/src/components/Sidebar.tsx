@@ -21,6 +21,8 @@ import { type MouseEvent, useEffect, useRef, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import type { View } from "../types.ts";
 import { buildPath, isPlainLeftClick } from "../routes.ts";
+import { BEHAVIORS_LABEL } from "../lib/behavior_labels.ts";
+import { formatCompactCount, formatDuration } from "../lib/format.ts";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -57,15 +59,30 @@ interface NavItemProps {
   active: boolean;
   onClick: (view: View) => void;
   badge?: number;
+  /** What the badge counts, read after it: "3 pending". */
+  badgeLabel?: string;
+  /**
+   * Fades the item and tags it with a short hint ("Off") while keeping it
+   * clickable; `off.description` is its accessible description.
+   */
+  off?: { hint: string; description: string };
 }
 
-function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
+function NavItem(
+  { label, view, active, onClick, badge, badgeLabel, off }: NavItemProps,
+) {
   const iconSvg = ICONS[view] ?? "";
+  const describedBy = off ? `nav-${view}-off` : undefined;
   return (
     <a
       href={buildPath({ view, detail: null })}
-      className={`nav-item${active ? " active" : ""}`}
+      className={`nav-item${active ? " active" : ""}${
+        off ? " nav-item-off" : ""
+      }`}
       aria-current={active ? "page" : undefined}
+      aria-describedby={describedBy}
+      title={off?.description}
+      data-tooltip={off ? `${label} — ${off.description}` : undefined}
       onClick={(e) => {
         if (!isPlainLeftClick(e)) return;
         e.preventDefault();
@@ -110,13 +127,47 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
         stroke="currentColor"
         strokeWidth="1.5"
         aria-hidden="true"
-        style={{ flexShrink: 0, opacity: active ? 1 : 0.7 }}
+        style={{
+          flexShrink: 0,
+          opacity: off ? (active ? 0.6 : 0.4) : active ? 1 : 0.7,
+        }}
         dangerouslySetInnerHTML={{ __html: iconSvg }}
       />
-      <span className="nav-label">{label}</span>
+      <span
+        className="nav-label"
+        style={off ? { opacity: active ? 0.7 : 0.5 } : undefined}
+      >
+        {label}
+      </span>
+      {off && (
+        <>
+          <span
+            className="nav-off"
+            aria-hidden="true"
+            style={{
+              marginLeft: "auto",
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: "0.6rem",
+              fontWeight: 500,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              padding: "1px 6px",
+              borderRadius: 4,
+              border: "1px solid currentColor",
+              opacity: 0.45,
+            }}
+          >
+            {off.hint}
+          </span>
+          <span id={describedBy} className="visually-hidden">
+            {off.description}
+          </span>
+        </>
+      )}
       {badge !== undefined && badge > 0 && (
         <span
           className="nav-badge"
+          aria-hidden="true"
           style={{
             marginLeft: "auto",
             fontFamily: "'JetBrains Mono', monospace",
@@ -125,10 +176,17 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
             padding: "1px 7px",
             borderRadius: 10,
             background: "var(--sidebar-accent)",
-            color: "#000",
+            color: "var(--sidebar-bg)",
           }}
         >
-          {badge}
+          {formatCompactCount(badge)}
+        </span>
+      )}
+      {badge !== undefined && badge > 0 && (
+        <span className="visually-hidden">
+          {`, ${formatCompactCount(badge)}${
+            badgeLabel ? ` ${badgeLabel}` : ""
+          }`}
         </span>
       )}
     </a>
@@ -148,7 +206,8 @@ interface RailTooltip {
  */
 function tooltipFor(e: MouseEvent<HTMLElement>): RailTooltip | null {
   const item = (e.target as HTMLElement).closest<HTMLElement>(".nav-item");
-  const label = item?.querySelector(".nav-label")?.textContent;
+  const label = item?.dataset.tooltip ??
+    item?.querySelector(".nav-label")?.textContent;
   if (!item || !label) return null;
   const rect = item.getBoundingClientRect();
   return { label, top: rect.top + rect.height / 2, left: rect.right + 10 };
@@ -159,6 +218,8 @@ interface SidebarProps {
   onNavigate: (view: View) => void;
   health: HealthSnapshot | null;
   approvalCount: number;
+  /** False once serve said it runs without an audit log. */
+  auditEnabled?: boolean;
   onLogout: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -171,6 +232,7 @@ export function Sidebar({
   onNavigate,
   health,
   approvalCount,
+  auditEnabled = true,
   onLogout,
   collapsed,
   onToggleCollapsed,
@@ -292,7 +354,7 @@ export function Sidebar({
           onClick={onNavigate}
         />
         <NavItem
-          label="Models"
+          label={BEHAVIORS_LABEL}
           view="models"
           active={activeView === "models"}
           onClick={onNavigate}
@@ -319,12 +381,16 @@ export function Sidebar({
           active={activeView === "approvals"}
           onClick={onNavigate}
           badge={approvalCount > 0 ? approvalCount : undefined}
+          badgeLabel="pending"
         />
         <NavItem
           label="Activity"
           view="activity"
           active={activeView === "activity"}
           onClick={onNavigate}
+          off={auditEnabled
+            ? undefined
+            : { hint: "Off", description: "Audit log is disabled" }}
         />
       </div>
 
@@ -403,7 +469,7 @@ export function Sidebar({
               }}
             >
               {health.instanceId.slice(0, 8)} &middot;{" "}
-              {formatUptime(health.uptimeMs)}
+              {formatDuration(health.uptimeMs)} uptime
             </div>
           </>
         )}
@@ -477,11 +543,4 @@ function SectionLabel({ text }: { text: string }) {
       {text}
     </div>
   );
-}
-
-function formatUptime(ms: number): string {
-  const hours = Math.floor(ms / 3600000);
-  const minutes = Math.floor((ms % 3600000) / 60000);
-  if (hours > 0) return `${hours}h ${minutes}m uptime`;
-  return `${minutes}m uptime`;
 }

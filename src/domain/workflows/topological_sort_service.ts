@@ -24,6 +24,12 @@ export interface GraphNode {
   name: string;
   weight: number;
   dependencies: string[];
+  /**
+   * Places the node within a group of nodes that share a level, such as the
+   * iterations of one forEach step: the group sorts by `key` in place of the
+   * node's name, and its members by `index`.
+   */
+  group?: { key: string; index: number };
 }
 
 /**
@@ -63,7 +69,9 @@ export class DuplicateNodeNameError extends Error {
  *
  * Uses Kahn's algorithm to produce a deterministic order:
  * 1. Nodes are sorted by their dependency level (depth in the graph)
- * 2. Within each level, nodes are sorted by weight (ascending), then name
+ * 2. Within each level, nodes are sorted by weight (ascending), then name;
+ *    a grouped node sorts by its group's key in place of its name, and the
+ *    members of one group by their index
  *
  * This ensures:
  * - Dependencies are always executed before their dependents
@@ -138,11 +146,19 @@ export class TopologicalSortService {
         throw new CyclicDependencyError(cycle);
       }
 
-      // Sort available nodes by weight (ascending), then by name for determinism
+      // Sort available nodes by weight (ascending), then by name for
+      // determinism. A group sorts by its key and keeps its members in index
+      // order, so a forEach's iterations run in list order (swamp-club#3318).
       available.sort((a, b) => {
         if (a.weight !== b.weight) {
           return a.weight - b.weight;
         }
+        const byKey = (a.group?.key ?? a.name).localeCompare(
+          b.group?.key ?? b.name,
+        );
+        if (byKey !== 0) return byKey;
+        const byIndex = (a.group?.index ?? 0) - (b.group?.index ?? 0);
+        if (byIndex !== 0) return byIndex;
         return a.name.localeCompare(b.name);
       });
 

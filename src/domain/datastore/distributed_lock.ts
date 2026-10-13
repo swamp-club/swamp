@@ -58,6 +58,32 @@ export interface LockInfo {
    * another process; read it through {@link lockSkipping}.
    */
   skipping?: string[];
+  /**
+   * On a v3 datastore's writer lease (swamp-club#3359): the fence its holder
+   * took. Every commit the holder makes names it.
+   */
+  fence?: number;
+}
+
+/**
+ * True when `current`, a lock read back with `inspect()`, is still the hold
+ * `taken` read just after this process acquired it. A lock that is gone, or
+ * that someone is still writing, is nobody's hold. Each backend writes its
+ * own holder, hostname and pid (some write a pid of 0 or a holder with a
+ * random suffix), so the reading is compared with the backend's own earlier
+ * one, never with this process's identity. When both readings carry a
+ * nonce it must match too, which tells apart two holds by one process: every
+ * extension lock keeps its nonce for the whole of a hold (swamp-club#3373).
+ */
+export function lockStillNames(
+  current: LockInfo | null,
+  taken: LockInfo,
+): boolean {
+  return current !== null && current.holderUnknown !== true &&
+    current.holder === taken.holder && current.hostname === taken.hostname &&
+    current.pid === taken.pid &&
+    (current.nonce === undefined || taken.nonce === undefined ||
+      current.nonce === taken.nonce);
 }
 
 /** The most nonces a lock's {@link LockInfo.skipping} lists. */

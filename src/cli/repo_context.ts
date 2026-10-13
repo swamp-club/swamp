@@ -125,6 +125,7 @@ import {
   type DistributedLock,
   type LockInfo,
   lockSkipping,
+  lockStillNames,
   LockTimeoutError,
   LockWaitCycleError,
   MAX_LOCK_SKIPPING,
@@ -144,6 +145,8 @@ import {
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import {
   HydrateContractViolationError,
+  type LostModelLock,
+  ModelLockLostError,
   UnpublishedDataVersionError,
 } from "../domain/datastore/datastore_sync_service.ts";
 import type {
@@ -210,7 +213,10 @@ export function createLockProgressWriter(
   };
 }
 import { withSpan } from "../infrastructure/tracing/mod.ts";
-import { ensureSupportedDatastoreFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
+import {
+  datastoreEngineOf,
+  ensureSupportedDatastoreFormat,
+} from "../infrastructure/persistence/datastore_format_guard.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import {
   holdV3Writer,
@@ -427,6 +433,13 @@ function escapesRoot(rel: string): boolean {
 export interface RequireRepoOptions {
   repoDir: string;
   outputMode: OutputMode;
+  /**
+   * On a v3 datastore, take the writer lease again once another writer has
+   * taken it over and finished, rather than refusing every later commit.
+   * Serve's lifetime hold sets it; a one-shot command fails as a whole
+   * instead (swamp-club#3359).
+   */
+  retakeLostV3Lease?: boolean;
   /**
    * Skip the coordinator's implicit pull-at-startup and push-at-flush.
    * The lock is still acquired (so concurrent writers are blocked), but
@@ -817,6 +830,27 @@ export async function resolveDatastoreForRepo(
   );
 
   return { repoDir: repoPath.value, datastoreConfig, marker, engine };
+}
+
+/**
+ * The engine of the repo's datastore, decided without checking its format
+ * and without reading anything remote: v3 only for a filesystem datastore
+ * whose marker on disk says so. For a command that must choose how to open
+ * the repo before it opens it (swamp-club#3359). Anything it cannot read
+ * answers v2, so the open that follows reports it as it always has.
+ */
+export async function peekRepoDatastoreEngine(
+  repoDir: string,
+): Promise<DatastoreEngine> {
+  try {
+    const repoPath = RepoPath.create(repoDir);
+    const marker = await new RepoMarkerRepository().read(repoPath);
+    return datastoreEngineOf(
+      await resolveDatastoreConfig(marker, undefined, repoPath.value),
+    );
+  } catch {
+    return "v2";
+  }
 }
 
 /**
@@ -1503,7 +1537,9 @@ export async function requireInitializedRepoUnlocked(
   // A v3 datastore takes one writing process at a time; join this process's
   // hold before any model lock (swamp-club#3279).
   if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
-    await holdV3Writer(datastoreConfig, repoDir);
+    await holdV3Writer(datastoreConfig, repoDir, {
+      ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
+    });
   }
 
   const repoPath = RepoPath.create(repoDir);
@@ -2737,6 +2773,23 @@ async function unpublishedTargets(
 }
 
 /**
+ * Reads a per-model lock just after it was acquired, as the reading its
+ * push checks against (swamp-club#3373). A lock that reads nothing, is
+ * still being written, or cannot be read gives undefined: its push is not
+ * checked, as before, rather than refused for a backend that cannot report.
+ */
+async function readTakenLock(
+  lock: DistributedLock,
+): Promise<LockInfo | undefined> {
+  try {
+    const info = await lock.inspect();
+    return info === null || info.holderUnknown ? undefined : info;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Best-effort delete of a stale global lock whose `info` was just observed.
  *
  * Without this, the wait loops in `acquireModelLocks` only `break` past a
@@ -2894,6 +2947,17 @@ export async function acquireModelLocks(
 
   const lockKeys: string[] = [];
   const heldLocks: DistributedLock[] = [];
+  /**
+   * Per {@link heldLocks} index: the model it locks, and the lock as read
+   * just after it was acquired, which the push checks it against. Undefined
+   * when the lock read nothing or could not be read then.
+   */
+  const heldLockModels: Array<{ modelType: string; modelId: string }> = [];
+  const heldLockTaken: Array<LockInfo | undefined> = [];
+  // A v3 context fences its own writer; a filesystem datastore has no push.
+  const checkLocks = customSyncService !== undefined &&
+    isCustomDatastoreConfig(config) &&
+    options?.repoContext?.commitLog === undefined;
 
   const release = async () => {
     for (const key of lockKeys) {
@@ -2909,6 +2973,24 @@ export async function acquireModelLocks(
       // Buggy extension — degrade to full sync
     }
   }
+
+  // Pulls one model's data, scoped to it when the extension can.
+  const pullModel = (
+    syncService: DatastoreSyncService,
+    modelType: string,
+    modelId: string,
+  ) => {
+    const ns = isCustomDatastoreConfig(config) ? config.namespace : undefined;
+    if (caps?.scopedSync) {
+      const context: SyncContext = { models: [{ modelType, modelId }] };
+      return syncService.pullChanged({
+        context,
+        ...(ns ? { namespace: ns } : {}),
+      });
+    }
+    if (ns) return syncService.pullChanged({ namespace: ns });
+    return syncService.pullChanged();
+  };
 
   // All or nothing: a call that returns no lock result holds no locks.
   // Without this unwind a throw below leaves every lock taken so far held
@@ -2939,6 +3021,8 @@ export async function acquireModelLocks(
       });
       lockKeys.push(coordinatorKey);
       heldLocks.push(lock);
+      heldLockModels.push({ modelType, modelId });
+      heldLockTaken.push(checkLocks ? await readTakenLock(lock) : undefined);
 
       // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
       // If a structural command acquired the global lock between our initial check
@@ -2954,6 +3038,8 @@ export async function acquireModelLocks(
         await release();
         lockKeys.length = 0;
         heldLocks.length = 0;
+        heldLockModels.length = 0;
+        heldLockTaken.length = 0;
 
         // Wait for global lock to be released (with timeout)
         const retryWaitStart = Date.now();
@@ -3010,23 +3096,11 @@ export async function acquireModelLocks(
             dim(`Syncing model ${modelType}/${modelId} from datastore...`),
           );
 
-          const ns = isCustomDatastoreConfig(config)
-            ? config.namespace
-            : undefined;
           const syncService = customSyncService;
-          const pulled = await wrapSync(() => {
-            if (caps?.scopedSync) {
-              const context: SyncContext = {
-                models: [{ modelType, modelId }],
-              };
-              return syncService.pullChanged({
-                context,
-                ...(ns ? { namespace: ns } : {}),
-              });
-            }
-            if (ns) return syncService.pullChanged({ namespace: ns });
-            return syncService.pullChanged();
-          }, "pull");
+          const pulled = await wrapSync(
+            () => pullModel(syncService, modelType, modelId),
+            "pull",
+          );
           // 0 means the local cache is unchanged; void means unknown.
           if (pulled !== 0) synced = true;
         } catch (error) {
@@ -3048,6 +3122,47 @@ export async function acquireModelLocks(
   // Older nested swamps read only the holder; set once, never cleared, so
   // concurrent lock holders in this process cannot clear it under each other.
   processLockHolderMarker.markHoldingLocks();
+
+  // A breakglass (`swamp datastore lock release --force`) lets another clone
+  // take a model's lock while this run still works under it. Both clones
+  // allocate data versions from their own caches, so the other run may have
+  // written and pushed the same version, and this push would overwrite it.
+  // Refuse to push unless every per-model lock still names the holder it
+  // named when taken (swamp-club#3373). The check and the upload are not
+  // atomic; Phase 5's model leases close that window.
+  const assertModelLocksHeld = async () => {
+    const lost: LostModelLock[] = [];
+    for (const [i, lock] of heldLocks.entries()) {
+      const taken = heldLockTaken[i];
+      if (taken === undefined) continue;
+      // A read that fails here fails the push, like the upload after it
+      // would: a push that cannot confirm its lock does not go ahead.
+      const info = await lock.inspect();
+      if (lockStillNames(info, taken)) continue;
+      lost.push({
+        ...heldLockModels[i],
+        ...(info ? { heldBy: { holder: info.holder, pid: info.pid } } : {}),
+      });
+    }
+    if (lost.length === 0) return;
+    // The refused versions stay marked dirty in the cache, and an unlocked
+    // push later in this command (a workflow's end-of-run push, serve's
+    // sync) would upload them over the other run's. Pull the lost models so
+    // the cache holds the datastore's copy, which such a push then leaves
+    // alone. Best effort: the refusal stands whatever the pull does.
+    if (customSyncService) {
+      for (const { modelType, modelId } of lost) {
+        try {
+          await pullModel(customSyncService, modelType, modelId);
+        } catch (error) {
+          logger
+            .debug`Pull after losing the lock on ${modelType}/${modelId} failed: ${error}`;
+        }
+      }
+      catalogStore?.invalidate();
+    }
+    throw new ModelLockLostError(lost);
+  };
 
   // `beforePush` runs inside the same wrapped call as the push, so in serve
   // no run pull can land between it and the upload (swamp-club#3146).
@@ -3071,6 +3186,7 @@ export async function acquireModelLocks(
         // merge under global lock. Narrows the critical section from
         // "entire sync" to "index read-modify-write" only.
         await wrapSync(async () => {
+          await assertModelLocksHeld();
           await beforePush?.();
           return await flushTwoPhasePush(
             provider,
@@ -3087,6 +3203,7 @@ export async function acquireModelLocks(
       } else {
         // Single-phase fallback: everything under global lock
         await wrapSync(async () => {
+          await assertModelLocksHeld();
           await beforePush?.();
           return await flushSinglePhasePush(
             provider,

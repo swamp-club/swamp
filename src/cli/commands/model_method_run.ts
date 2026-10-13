@@ -68,8 +68,21 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
-import { modelMethodHistoryCommand } from "./model_method_history.ts";
-import { modelMethodDescribeCommand } from "./model_method_describe.ts";
+import {
+  createModelMethodHistoryCommand,
+  modelMethodHistoryCommand,
+} from "./model_method_history.ts";
+import {
+  createModelMethodDescribeCommand,
+  modelMethodDescribeCommand,
+} from "./model_method_describe.ts";
+import {
+  type CommandSyntax,
+  PREFERRED_SPELLING_EXAMPLE,
+  recordDefiningModule,
+  subcommandSyntax,
+} from "./command_syntax.ts";
+import type { CommandSurface } from "../../presentation/command_surface.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -93,7 +106,7 @@ import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datas
 import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";
 import {
-  UnpublishedDataVersionError,
+  isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -122,20 +135,30 @@ export interface RunCommandSyntax {
     method: string,
     name: string,
   ) => string;
+  /** Which tree the command is mounted in; picks the log-mode wording. */
+  readonly surface: CommandSurface;
+  /**
+   * The preferred spelling as a full example invocation, set only on the
+   * legacy syntax; listed as the last `--help` example.
+   */
+  readonly preferred?: string;
 }
-
-/** The legacy spelling: `swamp model [@type] method run`. */
-export const MODEL_METHOD_RUN_SYNTAX: RunCommandSyntax = {
-  invocation: (model, method) => `swamp model method run ${model} ${method}`,
-  directInvocation: (type, method, name) =>
-    `swamp model ${type} method run ${method} ${name}`,
-};
 
 /** The preferred spelling: `swamp behavior run [@type]`. */
 export const BEHAVIOR_RUN_SYNTAX: RunCommandSyntax = {
   invocation: (model, method) => `swamp behavior run ${model} ${method}`,
   directInvocation: (type, method, name) =>
     `swamp behavior run ${type} ${method} ${name}`,
+  surface: "behavior",
+};
+
+/** The legacy spelling: `swamp model [@type] method run`. */
+export const MODEL_METHOD_RUN_SYNTAX: RunCommandSyntax = {
+  invocation: (model, method) => `swamp model method run ${model} ${method}`,
+  directInvocation: (type, method, name) =>
+    `swamp model ${type} method run ${method} ${name}`,
+  surface: "model",
+  preferred: BEHAVIOR_RUN_SYNTAX.invocation("my-server", "getSystemInfo"),
 };
 
 /** The `--help` examples, written once and rendered for each surface. */
@@ -176,6 +199,9 @@ function examples(
         s.invocation("my-server", "deploy")
       } --stdin`,
     ],
+    ...(s.preferred === undefined
+      ? []
+      : [[PREFERRED_SPELLING_EXAMPLE, s.preferred] as const]),
   ];
 }
 
@@ -189,9 +215,9 @@ export function createModelMethodRunCommand(syntax: RunCommandSyntax) {
   for (const [title, example] of examples(syntax)) {
     command.example(title, example);
   }
-  return command
+  const built = command
     .description(
-      `Execute a method on a model. With @type prefix, auto-creates the definition if needed.
+      `Execute a method on a ${syntax.surface}. With @type prefix, auto-creates the definition if needed.
 
 When --json is set, errors are written to stderr as a JSON envelope:
 
@@ -199,10 +225,10 @@ When --json is set, errors are written to stderr as a JSON envelope:
 
 The "code" field is a stable, machine-readable identifier. Callers should match on "code" rather than parsing the error message. Known codes for this command:
 
-    lock_timeout             Another invocation holds the model lock (exit 75)
-    model_not_found          No model matches the given name
+    lock_timeout             Another invocation holds the ${syntax.surface} lock (exit 75)
+    model_not_found          No ${syntax.surface} matches the given name
     unknown_model_type       The @type prefix does not match any installed type
-    unknown_method           The model does not define the requested method
+    unknown_method           The ${syntax.surface} does not define the requested method
     no_evaluated_definition  No evaluated definition exists (use --last-evaluated)
     evaluated_cache_may_hold_secrets
                              Cached evaluation from an older swamp may hold secrets;
@@ -343,6 +369,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             modelIdOrName,
             methodName,
             { typeArg, definitionName },
+            syntax.surface,
           );
           return;
         }
@@ -600,7 +627,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     // could not publish is logged instead.
                     if (
                       !methodFailed ||
-                      !(error instanceof UnpublishedDataVersionError)
+                      !isUnpublishedDataError(error)
                     ) {
                       throw error;
                     }
@@ -637,6 +664,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       methodName,
                       quiet: ctx.verbosity === "quiet",
                       verbose: ctx.verbosity === "verbose",
+                      surface: syntax.surface,
                     },
                   );
 
@@ -719,20 +747,80 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
         }
       },
     );
+  return recordDefiningModule(built, import.meta.url);
 }
 
 export const modelMethodRunCommand = createModelMethodRunCommand(
   MODEL_METHOD_RUN_SYNTAX,
 );
 
-export const modelMethodCommand = new Command()
-  .name("method")
-  .description("Execute model methods")
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("run", modelMethodRunCommand)
-  .command("describe", modelMethodDescribeCommand)
-  .command("history", modelMethodHistoryCommand);
+/**
+ * The run syntax of the `run` subcommand of a `method` group reached as
+ * `syntax`. The legacy `swamp model method run` names a direct type before
+ * `method` instead, so its group is built with MODEL_METHOD_RUN_SYNTAX.
+ */
+function methodRunSyntax(syntax: CommandSyntax): RunCommandSyntax {
+  const run = subcommandSyntax(syntax, "run").invocation;
+  return {
+    invocation: (model, method) => `${run} ${model} ${method}`,
+    directInvocation: (type, method, name) =>
+      `${run} ${type} ${method} ${name}`,
+    surface: syntax.surface,
+  };
+}
+
+/** The subcommands of `model method`, in registration order. */
+export interface ModelMethodChildren {
+  readonly run: ReturnType<typeof createModelMethodRunCommand>;
+  readonly describe: ReturnType<typeof createModelMethodDescribeCommand>;
+  readonly history: ReturnType<typeof createModelMethodHistoryCommand>;
+}
+
+/** The legacy spelling: `swamp model method`. */
+export const MODEL_METHOD_SYNTAX: CommandSyntax = {
+  invocation: "swamp model method",
+  surface: "model",
+};
+
+/**
+ * Builds the `method` group for one CLI surface. Children not passed are
+ * built fresh from `syntax`; Cliffy reparents a command attached under a
+ * second parent, so two surfaces must never share an instance.
+ */
+export function createModelMethodCommand(
+  syntax: CommandSyntax,
+  children: Partial<ModelMethodChildren> = {},
+) {
+  const command = new Command()
+    .name("method")
+    .description(`Execute ${syntax.surface} methods`)
+    .error(unknownCommandErrorHandler)
+    .action(groupCommandAction)
+    .command(
+      "run",
+      children.run ?? createModelMethodRunCommand(methodRunSyntax(syntax)),
+    )
+    .command(
+      "describe",
+      children.describe ??
+        createModelMethodDescribeCommand(subcommandSyntax(syntax, "describe")),
+    )
+    .command(
+      "history",
+      children.history ??
+        createModelMethodHistoryCommand(subcommandSyntax(syntax, "history")),
+    );
+  return recordDefiningModule(command, import.meta.url);
+}
+
+export const modelMethodCommand = createModelMethodCommand(
+  MODEL_METHOD_SYNTAX,
+  {
+    run: modelMethodRunCommand,
+    describe: modelMethodDescribeCommand,
+    history: modelMethodHistoryCommand,
+  },
+);
 
 /**
  * The --server branch: dispatch the method run through a `swamp serve`
@@ -744,6 +832,7 @@ async function runMethodViaServer(
   modelIdOrName: string,
   methodName: string,
   info: { typeArg?: string; definitionName?: string },
+  surface: CommandSurface,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, [
     "model",
@@ -823,6 +912,7 @@ async function runMethodViaServer(
         methodName,
         quiet: ctx.verbosity === "quiet",
         verbose: ctx.verbosity === "verbose",
+        surface,
       });
       await consumeStream(
         runModelMethodOverServer({

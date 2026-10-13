@@ -1,0 +1,2823 @@
+{
+  "001-behavior__references__scenarios-13.yaml": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "name": "create-subnets",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "create-subnets",
+        "description": "Create all 4 subnets in parallel",
+        "steps": [
+          {
+            "name": "create-public-a",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "create",
+              "inputs": {
+                "instanceName": "public-a",
+                "cidrBlock": "10.0.1.0/24",
+                "availabilityZone": "us-east-1a"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "create-public-b",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "create",
+              "inputs": {
+                "instanceName": "public-b",
+                "cidrBlock": "10.0.2.0/24",
+                "availabilityZone": "us-east-1b"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "create-private-a",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "create",
+              "inputs": {
+                "instanceName": "private-a",
+                "cidrBlock": "10.0.3.0/24",
+                "availabilityZone": "us-east-1a"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "create-private-b",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "create",
+              "inputs": {
+                "instanceName": "private-b",
+                "cidrBlock": "10.0.4.0/24",
+                "availabilityZone": "us-east-1b"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "002-behavior__references__scenarios-14.yaml": {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "name": "delete-subnets",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "delete-subnets",
+        "description": "Delete all 4 subnets",
+        "steps": [
+          {
+            "name": "delete-public-a",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "delete",
+              "inputs": {
+                "instanceName": "public-a",
+                "cidrBlock": "10.0.1.0/24",
+                "availabilityZone": "us-east-1a",
+                "identifier": "${{ data.latest(\"prod-subnet\", \"public-a\").attributes.SubnetId }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "delete-public-b",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "delete",
+              "inputs": {
+                "instanceName": "public-b",
+                "cidrBlock": "10.0.2.0/24",
+                "availabilityZone": "us-east-1b",
+                "identifier": "${{ data.latest(\"prod-subnet\", \"public-b\").attributes.SubnetId }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "delete-private-a",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "delete",
+              "inputs": {
+                "instanceName": "private-a",
+                "cidrBlock": "10.0.3.0/24",
+                "availabilityZone": "us-east-1a",
+                "identifier": "${{ data.latest(\"prod-subnet\", \"private-a\").attributes.SubnetId }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "delete-private-b",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "delete",
+              "inputs": {
+                "instanceName": "private-b",
+                "cidrBlock": "10.0.4.0/24",
+                "availabilityZone": "us-east-1b",
+                "identifier": "${{ data.latest(\"prod-subnet\", \"private-b\").attributes.SubnetId }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "003-data__references__examples-9.yaml": {
+    "id": "00000000-0000-4000-8000-000000000003",
+    "name": "corpus-3",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "cleanup",
+        "steps": [
+          {
+            "name": "delete-resources",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "delete-all-resources"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "run-gc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "gc-runner",
+              "methodName": "gc"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "004-data__references__examples-10.yaml": {
+    "id": "00000000-0000-4000-8000-000000000004",
+    "name": "corpus-4",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "create",
+        "steps": [
+          {
+            "name": "create-vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "networking-vpc",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "tag",
+        "steps": [
+          {
+            "name": "tag-resources",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "tag-networking"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "create",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "005-extension__references__model__examples-1.yaml": {
+    "id": "00000000-0000-4000-8000-000000000005",
+    "name": "sync-all",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "sync",
+        "steps": [
+          {
+            "name": "sync-vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "web-vpc",
+              "methodName": "sync"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "sync-droplet-1",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "web-droplet",
+              "methodName": "sync",
+              "inputs": {
+                "name": "web-1"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "sync-droplet-2",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "web-droplet",
+              "methodName": "sync",
+              "inputs": {
+                "name": "web-2"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "sync-lb",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "web-lb",
+              "methodName": "sync"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "006-extension__references__model__scenarios-5.yaml": {
+    "id": "00000000-0000-4000-8000-000000000006",
+    "name": "tag-all-vpcs",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "tag",
+        "steps": [
+          {
+            "name": "tag-${{ self.vpc.attributes.VpcId }}",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "vpc-tagger",
+              "methodName": "tag",
+              "inputs": {
+                "vpcId": "${{ self.vpc.attributes.VpcId }}",
+                "tags": {
+                  "ManagedBy": "Swamp"
+                }
+              }
+            },
+            "forEach": {
+              "item": "vpc",
+              "in": "${{ data.findBySpec(\"my-scanner\", \"vpc\") }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "007-vault__references__examples-5.yaml": {
+    "id": "00000000-0000-4000-8000-000000000007",
+    "name": "deploy-app",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "environment": {
+          "type": "string",
+          "enum": [
+            "dev",
+            "staging",
+            "production"
+          ]
+        }
+      },
+      "required": [
+        "environment"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "deploy",
+        "steps": [
+          {
+            "name": "deploy-service",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "deploy-service",
+              "methodName": "deploy"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "008-vault__references__examples-13.yaml": {
+    "id": "00000000-0000-4000-8000-000000000008",
+    "name": "rotate-secrets",
+    "description": "Push a rotated secret to its consumer and redeploy services",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "vaultName": {
+          "type": "string"
+        },
+        "secretKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "vaultName",
+        "secretKey"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "update-secret",
+        "steps": [
+          {
+            "name": "push-new-secret",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "secret-updater",
+              "methodName": "update",
+              "inputs": {
+                "key": "${{ inputs.secretKey }}",
+                "value": "${{ vault.get(inputs.vaultName, inputs.secretKey) }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "redeploy",
+        "steps": [
+          {
+            "name": "deploy-services",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "deploy-all-services"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "update-secret",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "009-workflow__reference-1.yaml": {
+    "id": "00000000-0000-4000-8000-000000000009",
+    "name": "my-deploy-workflow",
+    "description": "Deploy workflow with build and deploy jobs",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "environment": {
+          "type": "string",
+          "description": "Target deployment environment",
+          "enum": [
+            "dev",
+            "staging",
+            "production"
+          ]
+        },
+        "replicas": {
+          "type": "integer",
+          "default": 1
+        }
+      },
+      "required": [
+        "environment"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "build",
+        "description": "Build the application",
+        "steps": [
+          {
+            "name": "compile",
+            "description": "Compile source code",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "build-runner",
+              "methodName": "build"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "deploy",
+        "description": "Deploy the application",
+        "steps": [
+          {
+            "name": "upload",
+            "description": "Upload artifacts",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "deploy-service",
+              "methodName": "deploy",
+              "inputs": {
+                "environment": "${{ inputs.environment }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "build",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "010-workflow__reference-2.yaml": {
+    "id": "00000000-0000-4000-8000-000000000010",
+    "name": "anime-downloader",
+    "trigger": {
+      "schedule": "0 3,12 * * *"
+    },
+    "tags": {},
+    "jobs": [
+      {
+        "name": "download",
+        "steps": [
+          {
+            "name": "fetch",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "downloader",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "011-workflow__reference-12.yaml": {
+    "id": "00000000-0000-4000-8000-000000000011",
+    "name": "corpus-11",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "fan-out",
+        "steps": [
+          {
+            "name": "per-item",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "api-client",
+              "methodName": "call"
+            },
+            "forEach": {
+              "item": "target",
+              "in": "${{ inputs.targets }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "concurrency": 3,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0,
+        "concurrency": 5
+      }
+    ],
+    "version": 1,
+    "concurrency": 10
+  },
+  "012-workflow__reference-26.yaml": {
+    "id": "00000000-0000-4000-8000-000000000012",
+    "name": "provision-and-verify",
+    "description": "Create infrastructure and assert expected state",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "provision",
+        "steps": [
+          {
+            "name": "create-vpc",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "create-vpc",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "verify",
+        "steps": [
+          {
+            "name": "describe-vpc",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "describe-vpc",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "cidr-correct",
+            "task": {
+              "type": "assert",
+              "expr": "data.latest(\"describe-vpc\", \"result\").attributes.stdout.contains(\"10.0.0.0/16\")",
+              "message": "VPC CIDR is not 10.0.0.0/16",
+              "severity": "high"
+            },
+            "dependsOn": [
+              {
+                "step": "describe-vpc",
+                "condition": {
+                  "type": "succeeded"
+                }
+              }
+            ],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "has-tags",
+            "task": {
+              "type": "assert",
+              "expr": "data.latest(\"describe-vpc\", \"result\").attributes.stdout.contains(\"env=production\")",
+              "message": "VPC is missing env=production tag",
+              "severity": "medium"
+            },
+            "dependsOn": [
+              {
+                "step": "describe-vpc",
+                "condition": {
+                  "type": "succeeded"
+                }
+              }
+            ],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "provision",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "013-workflow__references__data-chaining-1.yaml": {
+    "id": "00000000-0000-4000-8000-000000000013",
+    "name": "ec2-with-latest-ami",
+    "description": "Create EC2 instance with dynamically looked-up AMI",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "provision",
+        "description": "Provision EC2 with latest Amazon Linux AMI",
+        "steps": [
+          {
+            "name": "lookup-ami",
+            "description": "Find latest Amazon Linux 2 AMI",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "latest-ami",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "create-instance",
+            "description": "Create EC2 instance using looked-up AMI",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "my-instance",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "014-workflow__references__data-chaining-6.yaml": {
+    "id": "00000000-0000-4000-8000-000000000014",
+    "name": "full-stack-provision",
+    "description": "Provision complete infrastructure with dynamic lookups",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "lookup",
+        "description": "Look up existing infrastructure",
+        "steps": [
+          {
+            "name": "find-vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "vpc-lookup",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "find-subnet",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "subnet-lookup",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "provision",
+        "description": "Create resources using lookup results",
+        "steps": [
+          {
+            "name": "create-security-group",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "app-security-group",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "create-instance",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "app-server",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "lookup",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "015-workflow__references__data-chaining-17.yaml": {
+    "id": "00000000-0000-4000-8000-000000000015",
+    "name": "delete-networking",
+    "description": "Delete all networking resources in reverse dependency order",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "delete-route-tables",
+        "description": "Disassociate and delete route tables first",
+        "steps": [
+          {
+            "name": "delete-public-route-table",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "public-route-table",
+              "methodName": "delete"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "delete-private-route-table",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "private-route-table",
+              "methodName": "delete"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "delete-subnets-and-igw",
+        "description": "Delete subnets and internet gateway",
+        "steps": [
+          {
+            "name": "delete-public-subnet",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "public-subnet",
+              "methodName": "delete"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "delete-private-subnet",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "private-subnet",
+              "methodName": "delete"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "delete-igw",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "networking-igw",
+              "methodName": "delete"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "delete-route-tables",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "delete-vpc",
+        "description": "Delete the VPC last",
+        "steps": [
+          {
+            "name": "delete-vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "networking-vpc",
+              "methodName": "delete"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "delete-subnets-and-igw",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "016-workflow__references__data-chaining-18.yaml": {
+    "id": "00000000-0000-4000-8000-000000000016",
+    "name": "update-networking",
+    "description": "Update networking resources (e.g., enable DNS, modify tags)",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "update-vpc",
+        "description": "Update VPC attributes first",
+        "steps": [
+          {
+            "name": "update-vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "networking-vpc",
+              "methodName": "update"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "update-subnets-and-igw",
+        "description": "Update subnets and internet gateway",
+        "steps": [
+          {
+            "name": "update-public-subnet",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "public-subnet",
+              "methodName": "update"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "update-private-subnet",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "private-subnet",
+              "methodName": "update"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "update-vpc",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "update-route-tables",
+        "description": "Update route tables last",
+        "steps": [
+          {
+            "name": "update-public-route-table",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "public-route-table",
+              "methodName": "update"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "update-private-route-table",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "private-route-table",
+              "methodName": "update"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "update-subnets-and-igw",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "017-workflow__references__data-chaining-19.yaml": {
+    "id": "00000000-0000-4000-8000-000000000017",
+    "name": "corpus-17",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "create-subnets",
+        "steps": [
+          {
+            "name": "create-public-a",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "create",
+              "inputs": {
+                "instanceName": "public-a",
+                "cidrBlock": "10.0.1.0/24",
+                "availabilityZone": "us-east-1a"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "create-public-b",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-subnet",
+              "methodName": "create",
+              "inputs": {
+                "instanceName": "public-b",
+                "cidrBlock": "10.0.2.0/24",
+                "availabilityZone": "us-east-1b"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "018-workflow__references__data-chaining-20.yaml": {
+    "id": "00000000-0000-4000-8000-000000000018",
+    "name": "corpus-18",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "create-route-tables",
+        "steps": [
+          {
+            "name": "create-public-rt",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "prod-route-table",
+              "methodName": "create",
+              "inputs": {
+                "instanceName": "public-rt",
+                "subnetId": "${{ data.latest(\"prod-subnet\", \"public-a\").attributes.SubnetId }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "create-subnets",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "019-workflow__references__expressions-and-foreach-1.yaml": {
+    "id": "00000000-0000-4000-8000-000000000019",
+    "name": "corpus-19",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "environments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "jobs": [
+      {
+        "name": "deploy-all",
+        "steps": [
+          {
+            "name": "deploy-${{self.env}}",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "my-service",
+              "methodName": "deploy",
+              "inputs": {
+                "environment": "${{ self.env }}"
+              }
+            },
+            "forEach": {
+              "item": "env",
+              "in": "${{ inputs.environments }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "020-workflow__references__expressions-and-foreach-2.yaml": {
+    "id": "00000000-0000-4000-8000-000000000020",
+    "name": "corpus-20",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "jobs": [
+      {
+        "name": "apply-tags",
+        "steps": [
+          {
+            "name": "tag-${{self.tag.key}}",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "tag-manager",
+              "methodName": "apply",
+              "inputs": {
+                "key": "${{ self.tag.key }}",
+                "value": "${{ self.tag.value }}"
+              }
+            },
+            "forEach": {
+              "item": "tag",
+              "in": "${{ inputs.tags }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "021-workflow__references__expressions-and-foreach-6.yaml": {
+    "id": "00000000-0000-4000-8000-000000000021",
+    "name": "corpus-21",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "process-all",
+        "steps": [
+          {
+            "name": "process-${{ self.instance.name }}",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "processor",
+              "methodName": "run",
+              "inputs": {
+                "target": "${{ self.instance.name }}"
+              }
+            },
+            "forEach": {
+              "item": "instance",
+              "in": "${{ data.findBySpec(\"my-factory\", \"instance\") }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "022-workflow__references__nested-workflows-2.yaml": {
+    "id": "00000000-0000-4000-8000-000000000022",
+    "name": "corpus-22",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "episodes": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "episodes"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "download",
+        "steps": [
+          {
+            "name": "download-${{ self.ep.show }}",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "transmission",
+              "methodName": "add",
+              "inputs": {
+                "uri": "${{ self.ep.magnet }}",
+                "protocol": "torrent"
+              }
+            },
+            "forEach": {
+              "item": "ep",
+              "in": "${{ inputs.episodes }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "023-workflow__references__nested-workflows-3.yaml": {
+    "id": "00000000-0000-4000-8000-000000000023",
+    "name": "notify-team",
+    "description": "Send notifications to the team",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "channel": {
+          "type": "string",
+          "enum": [
+            "slack",
+            "email"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "message"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "send",
+        "steps": [
+          {
+            "name": "dispatch",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "notification-sender",
+              "methodName": "send",
+              "inputs": {
+                "channel": "${{ inputs.channel }}",
+                "message": "${{ inputs.message }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "024-workflow__references__nested-workflows-4.yaml": {
+    "id": "00000000-0000-4000-8000-000000000024",
+    "name": "deploy-and-notify",
+    "description": "Deploy then notify the team",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "environment": {
+          "type": "string",
+          "enum": [
+            "dev",
+            "staging",
+            "production"
+          ]
+        }
+      },
+      "required": [
+        "environment"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "deploy",
+        "steps": [
+          {
+            "name": "run-deploy",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "deploy-service",
+              "methodName": "deploy",
+              "inputs": {
+                "environment": "${{ inputs.environment }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "notify",
+        "steps": [
+          {
+            "name": "send-notification",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "notify-team",
+              "inputs": {
+                "channel": "slack",
+                "message": "Deployed to ${{ inputs.environment }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "deploy",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "025-workflow__references__nested-workflows-5.yaml": {
+    "id": "00000000-0000-4000-8000-000000000025",
+    "name": "corpus-25",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "deploy-all",
+        "steps": [
+          {
+            "name": "deploy-${{ self.env }}",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "deploy-single-env",
+              "inputs": {
+                "environment": "${{ self.env }}"
+              }
+            },
+            "forEach": {
+              "item": "env",
+              "in": "${{ inputs.environments }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "026-workflow__references__nested-workflows-6.yaml": {
+    "id": "00000000-0000-4000-8000-000000000026",
+    "name": "corpus-26",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "apply-wave",
+        "steps": [
+          {
+            "name": "apply-${{ self.item.host }}",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "${{ self.item.implementation.workflowIdOrName }}",
+              "inputs": {
+                "host": "${{ self.item.host }}"
+              }
+            },
+            "forEach": {
+              "item": "item",
+              "in": "${{ inputs.items }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "027-workflow__references__nested-workflows-7.yaml": {
+    "id": "00000000-0000-4000-8000-000000000027",
+    "name": "corpus-27",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "create",
+        "steps": [
+          {
+            "name": "create-vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "networking-vpc",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "tag",
+        "steps": [
+          {
+            "name": "tag-resources",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "tag-networking"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "create",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "028-workflow__references__scenarios-3.yaml": {
+    "id": "00000000-0000-4000-8000-000000000028",
+    "name": "provision-networking",
+    "description": "Provision complete networking stack",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "create-vpc",
+        "description": "Create the VPC first",
+        "steps": [
+          {
+            "name": "vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "networking-vpc",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "create-subnet",
+        "description": "Create subnets after VPC",
+        "steps": [
+          {
+            "name": "subnet",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "public-subnet",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "create-vpc",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "create-sg",
+        "description": "Create security groups after subnets",
+        "steps": [
+          {
+            "name": "security-group",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "app-sg",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "create-subnet",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "029-workflow__references__scenarios-4.yaml": {
+    "id": "00000000-0000-4000-8000-000000000029",
+    "name": "parallel-lookups",
+    "description": "Run multiple lookups in parallel",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "lookups",
+        "description": "All lookups run in parallel",
+        "steps": [
+          {
+            "name": "ami",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "ami-lookup",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "vpc-lookup",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "sg",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "sg-lookup",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "use-results",
+        "description": "Use all lookup results",
+        "steps": [
+          {
+            "name": "create-instance",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "my-instance",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "lookups",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "030-workflow__references__scenarios-7.yaml": {
+    "id": "00000000-0000-4000-8000-000000000030",
+    "name": "deploy-all-envs",
+    "description": "Deploy to all environments",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "environments": {
+          "type": "array",
+          "default": [
+            "dev",
+            "staging",
+            "production"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": []
+    },
+    "jobs": [
+      {
+        "name": "deploy",
+        "description": "Deploy to each environment",
+        "steps": [
+          {
+            "name": "deploy-${{ self.env }}",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "deploy-service",
+              "methodName": "deploy",
+              "inputs": {
+                "environment": "${{ self.env }}"
+              }
+            },
+            "forEach": {
+              "item": "env",
+              "in": "${{ inputs.environments }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "031-workflow__references__scenarios-9.yaml": {
+    "id": "00000000-0000-4000-8000-000000000031",
+    "name": "notify-team",
+    "description": "Send team notification",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "channel": {
+          "type": "string",
+          "default": "slack",
+          "enum": [
+            "slack",
+            "email"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "send",
+        "steps": [
+          {
+            "name": "dispatch",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "notification-sender",
+              "methodName": "send",
+              "inputs": {
+                "channel": "${{ inputs.channel }}",
+                "message": "${{ inputs.message }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "032-workflow__references__scenarios-10.yaml": {
+    "id": "00000000-0000-4000-8000-000000000032",
+    "name": "deploy-and-notify",
+    "description": "Deploy then notify team",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "environment": {
+          "type": "string",
+          "enum": [
+            "dev",
+            "staging",
+            "production"
+          ]
+        }
+      },
+      "required": [
+        "environment"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "deploy",
+        "description": "Deploy the application",
+        "steps": [
+          {
+            "name": "run-deploy",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "deploy-service",
+              "methodName": "deploy",
+              "inputs": {
+                "environment": "${{ inputs.environment }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "notify-success",
+        "description": "Notify on success",
+        "steps": [
+          {
+            "name": "send-notification",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "notify-team",
+              "inputs": {
+                "channel": "slack",
+                "message": "Successfully deployed to ${{ inputs.environment }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "deploy",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "notify-failure",
+        "description": "Notify on failure",
+        "steps": [
+          {
+            "name": "send-alert",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "notify-team",
+              "inputs": {
+                "channel": "email",
+                "message": "ALERT: Deployment to ${{ inputs.environment }} failed!"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "deploy",
+            "condition": {
+              "type": "failed"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "033-workflow__references__scenarios-11.yaml": {
+    "id": "00000000-0000-4000-8000-000000000033",
+    "name": "provision-networking",
+    "description": "Idempotent networking provisioning — safe to re-run",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "create-vpc",
+        "steps": [
+          {
+            "name": "vpc",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "networking-vpc",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest(\"networking-vpc\", \"resource\") }}"
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "create-subnets",
+        "steps": [
+          {
+            "name": "subnet",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "public-subnet",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest(\"public-subnet\", \"resource\") }}"
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "create-vpc",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "create-sg",
+        "steps": [
+          {
+            "name": "security-group",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "app-sg",
+              "methodName": "create"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest(\"app-sg\", \"resource\") }}"
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "create-subnets",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "034-workflow__references__scenarios-12.yaml": {
+    "id": "00000000-0000-4000-8000-000000000034",
+    "name": "corpus-34",
+    "tags": {},
+    "jobs": [
+      {
+        "name": "deploy-all",
+        "steps": [
+          {
+            "name": "deploy-${{ self.env }}",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "deploy-service",
+              "methodName": "deploy",
+              "inputs": {
+                "environment": "${{ self.env }}"
+              }
+            },
+            "forEach": {
+              "item": "env",
+              "in": "${{ inputs.environments }}"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "dataOutputOverrides": [
+              {
+                "specName": "result",
+                "vary": [
+                  "environment"
+                ]
+              }
+            ],
+            "allowFailure": false,
+            "guard": "${{ data.latest(\"deploy-service\", \"result\", [self.env]) }}"
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "035-workflow__references__scenarios-13.yaml": {
+    "id": "00000000-0000-4000-8000-000000000035",
+    "name": "corpus-35",
+    "trigger": {
+      "schedule": "*/30 * * * *"
+    },
+    "tags": {},
+    "jobs": [
+      {
+        "name": "sync",
+        "steps": [
+          {
+            "name": "fetch-data",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "api-client",
+              "methodName": "fetch"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ model.method(\"api-client\", \"check-freshness\",\n    {\"maxAge\": 1800}).stdout }}"
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  },
+  "100-verification__workflow-verify-build.yaml": {
+    "id": "7c2f8a31-4e19-4d6b-b8a0-1f3d5e7c9b2a",
+    "name": "verify-build",
+    "description": "Build verification: lint, format check, type check, tests, dependency audit,\ncompile, and binary smoke test. Runs on the host in a fresh git worktree\nchecked out at the verified commit.\n",
+    "tags": {
+      "purpose": "pre-pr-verification"
+    },
+    "inputs": {
+      "properties": {
+        "commit": {
+          "type": "string",
+          "description": "Commit SHA being verified."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name being verified."
+        }
+      },
+      "required": [
+        "commit",
+        "branch"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "setup",
+        "description": "Create a clean worktree at the verified commit.",
+        "steps": [
+          {
+            "name": "checkout",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-setup-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "set -e\nCHECKOUT_DIR=\"/tmp/swamp-verify-build-${{ run.id }}\"\nrm -rf \"$CHECKOUT_DIR\"\ngit worktree prune\ngit worktree add --detach \"$CHECKOUT_DIR\" \"${{ inputs.commit }}\"\n"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "static-analysis",
+        "description": "Lint, format check, and type check.",
+        "steps": [
+          {
+            "name": "lint",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-lint-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno lint",
+                "workingDir": "/tmp/swamp-verify-build-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "fmt-check",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-fmt-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno fmt --check",
+                "workingDir": "/tmp/swamp-verify-build-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "type-check",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-check-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno task check",
+                "workingDir": "/tmp/swamp-verify-build-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "setup",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "tests",
+        "description": "Run the full test suite.",
+        "steps": [
+          {
+            "name": "run-tests",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-tests-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno task test",
+                "workingDir": "/tmp/swamp-verify-build-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "setup",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "deps-audit",
+        "description": "Scan dependencies for known vulnerabilities.",
+        "steps": [
+          {
+            "name": "vuln-scan",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-audit-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno task audit",
+                "workingDir": "/tmp/swamp-verify-build-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "setup",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "compile",
+        "description": "Compile the binary and verify it executes.",
+        "steps": [
+          {
+            "name": "build",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-compile-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno task compile",
+                "workingDir": "/tmp/swamp-verify-build-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "binary-check",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-smoke-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "ls -la swamp && chmod +x swamp && ./swamp --version",
+                "workingDir": "/tmp/swamp-verify-build-${{ run.id }}"
+              }
+            },
+            "dependsOn": [
+              {
+                "step": "build",
+                "condition": {
+                  "type": "succeeded"
+                }
+              }
+            ],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "static-analysis",
+            "condition": {
+              "type": "succeeded"
+            }
+          },
+          {
+            "job": "tests",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "cleanup",
+        "description": "Remove the temporary worktree.",
+        "steps": [
+          {
+            "name": "remove-worktree",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "build-cleanup-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "CHECKOUT_DIR=\"/tmp/swamp-verify-build-${{ run.id }}\"\ngit worktree remove --force \"$CHECKOUT_DIR\" 2>/dev/null || true\ngit worktree prune\n# Remove ephemeral auto-definitions created for this run\nREPO_ROOT=\"$(git rev-parse --git-common-dir)/..\"\nfind \"$REPO_ROOT/.swamp/auto-definitions\" -name \"*-${{ run.id }}.yaml\" -delete 2>/dev/null || true\n",
+                "ignoreExitCode": true
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "compile",
+            "condition": {
+              "type": "always"
+            }
+          },
+          {
+            "job": "deps-audit",
+            "condition": {
+              "type": "always"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1,
+    "concurrency": 4,
+    "reports": {
+      "require": [
+        "@swamp/verification-summary"
+      ]
+    }
+  },
+  "100-verification__workflow-verify-reviews.yaml": {
+    "id": "b4d6e8f0-2a1c-4b3d-9e5f-7a8c0d2e4f6b",
+    "name": "verify-reviews",
+    "description": "Agent code reviews using claude CLI directly. Detects changed files,\nconstructs review prompts with the diff inlined, and runs claude -p\nfor each review type in parallel. Runs on the host in a fresh git\nworktree so CLAUDE.md, skills, and file reads reflect the verified commit.\n",
+    "tags": {
+      "purpose": "pre-pr-verification"
+    },
+    "inputs": {
+      "properties": {
+        "commit": {
+          "type": "string",
+          "description": "Commit SHA being verified."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name being verified."
+        }
+      },
+      "required": [
+        "commit",
+        "branch"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "setup",
+        "description": "Create a clean worktree at the verified commit.",
+        "steps": [
+          {
+            "name": "checkout",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "review-setup-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "set -e\n# Concurrent verifications share refs/remotes/origin/main; the\n# loser of the ref update fails with \"incorrect old value\".\n# The retry finds the ref current, so it has nothing to write.\ngit fetch origin main || { sleep 1; git fetch origin main; }\nCHECKOUT_DIR=\"/tmp/swamp-verify-reviews-${{ run.id }}\"\nrm -rf \"$CHECKOUT_DIR\"\ngit worktree prune\ngit worktree add --detach \"$CHECKOUT_DIR\" \"${{ inputs.commit }}\"\nswamp repo init \"$CHECKOUT_DIR\"\n# init prepends a managed section to CLAUDE.md and .gitignore;\n# restore them so only the branch's own changes reach the diff.\ngit -C \"$CHECKOUT_DIR\" checkout -- .\n"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "detect-changes",
+        "description": "Compute the merge-base diff and changed file list.",
+        "steps": [
+          {
+            "name": "diff",
+            "task": {
+              "type": "model_method",
+              "modelType": "@swamp/git",
+              "modelName": "repo-${{ run.id }}",
+              "methodName": "diff",
+              "inputs": {
+                "repoPath": "/tmp/swamp-verify-reviews-${{ run.id }}",
+                "base": "origin/main",
+                "threeWay": true
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "changed-files",
+            "task": {
+              "type": "model_method",
+              "modelType": "@swamp/git",
+              "modelName": "repo-${{ run.id }}",
+              "methodName": "diff",
+              "inputs": {
+                "repoPath": "/tmp/swamp-verify-reviews-${{ run.id }}",
+                "base": "origin/main",
+                "nameOnly": true,
+                "threeWay": true
+              }
+            },
+            "dependsOn": [
+              {
+                "step": "diff",
+                "condition": {
+                  "type": "succeeded"
+                }
+              }
+            ],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "setup",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "reviews",
+        "description": "Run all agent reviews in parallel using claude CLI.",
+        "steps": [
+          {
+            "name": "code-review",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "review-code-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "set -o pipefail\nMERGE_BASE=$(git merge-base origin/main HEAD)\nDIFF_FILE=$(mktemp)\nPROMPT_FILE=$(mktemp)\nRESULT_FILE=$(mktemp)\ngit diff \"$MERGE_BASE\" > \"$DIFF_FILE\"\ncat verification/review-prompts/code-review.md > \"$PROMPT_FILE\"\nprintf '\\n\\nThe diff to review is at: %s\\nRead that file to see the changes.\\n\\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\\nVERDICT: pass\\nVERDICT: fail\\n\\nThen provide your full review below the verdict line.\\n' \"$DIFF_FILE\" >> \"$PROMPT_FILE\"\nclaude -p - \\\n  --model claude-opus-5-5 \\\n  --allowedTools \"Read,Glob,Grep\" < \"$PROMPT_FILE\" | tee \"$RESULT_FILE\"\nCLAUDE_EXIT=$?\nrm -f \"$PROMPT_FILE\" \"$DIFF_FILE\"\nif [ $CLAUDE_EXIT -ne 0 ]; then\n  echo \"::error::claude exited with status $CLAUDE_EXIT\"\n  rm -f \"$RESULT_FILE\"\n  exit 1\nfi\ndeno run --allow-read=\"$RESULT_FILE\" \\\n  scripts/check_review_verdict.ts \"$RESULT_FILE\" \"Code review\"\nVERDICT_EXIT=$?\nrm -f \"$RESULT_FILE\"\nexit $VERDICT_EXIT\n",
+                "workingDir": "/tmp/swamp-verify-reviews-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "adversarial-review",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "review-adversarial-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "set -o pipefail\nMERGE_BASE=$(git merge-base origin/main HEAD)\nDIFF_FILE=$(mktemp)\nPROMPT_FILE=$(mktemp)\nRESULT_FILE=$(mktemp)\ngit diff \"$MERGE_BASE\" > \"$DIFF_FILE\"\ncat verification/review-prompts/adversarial-review.md > \"$PROMPT_FILE\"\nprintf '\\n\\nThe diff to review is at: %s\\nRead that file to see the changes.\\n\\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\\nVERDICT: pass\\nVERDICT: fail\\n\\nThen provide your full review below the verdict line.\\n' \"$DIFF_FILE\" >> \"$PROMPT_FILE\"\nclaude -p - \\\n  --model claude-opus-5-5 \\\n  --allowedTools \"Read,Glob,Grep\" < \"$PROMPT_FILE\" | tee \"$RESULT_FILE\"\nCLAUDE_EXIT=$?\nrm -f \"$PROMPT_FILE\" \"$DIFF_FILE\"\nif [ $CLAUDE_EXIT -ne 0 ]; then\n  echo \"::error::claude exited with status $CLAUDE_EXIT\"\n  rm -f \"$RESULT_FILE\"\n  exit 1\nfi\ndeno run --allow-read=\"$RESULT_FILE\" \\\n  scripts/check_review_verdict.ts \"$RESULT_FILE\" \"Adversarial review\"\nVERDICT_EXIT=$?\nrm -f \"$RESULT_FILE\"\nexit $VERDICT_EXIT\n",
+                "workingDir": "/tmp/swamp-verify-reviews-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
+          },
+          {
+            "name": "ux-review",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "review-ux-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "set -o pipefail\nMERGE_BASE=$(git merge-base origin/main HEAD)\nDIFF_FILE=$(mktemp)\nPROMPT_FILE=$(mktemp)\nRESULT_FILE=$(mktemp)\ngit diff \"$MERGE_BASE\" > \"$DIFF_FILE\"\ncat verification/review-prompts/ux-review.md > \"$PROMPT_FILE\"\nprintf '\\n\\nThe diff to review is at: %s\\nRead that file to see the changes.\\n\\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\\nVERDICT: pass\\nVERDICT: fail\\n\\nThen provide your full review below the verdict line.\\n' \"$DIFF_FILE\" >> \"$PROMPT_FILE\"\nclaude -p - \\\n  --model claude-opus-5-5 \\\n  --allowedTools \"Read,Glob,Grep\" < \"$PROMPT_FILE\" | tee \"$RESULT_FILE\"\nCLAUDE_EXIT=$?\nrm -f \"$PROMPT_FILE\" \"$DIFF_FILE\"\nif [ $CLAUDE_EXIT -ne 0 ]; then\n  echo \"::error::claude exited with status $CLAUDE_EXIT\"\n  rm -f \"$RESULT_FILE\"\n  exit 1\nfi\ndeno run --allow-read=\"$RESULT_FILE\" \\\n  scripts/check_review_verdict.ts \"$RESULT_FILE\" \"UX review\"\nVERDICT_EXIT=$?\nrm -f \"$RESULT_FILE\"\nexit $VERDICT_EXIT\n",
+                "workingDir": "/tmp/swamp-verify-reviews-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
+          },
+          {
+            "name": "ci-security-review",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "review-ci-security-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "set -o pipefail\nMERGE_BASE=$(git merge-base origin/main HEAD)\nDIFF_FILE=$(mktemp)\nPROMPT_FILE=$(mktemp)\nRESULT_FILE=$(mktemp)\ngit diff \"$MERGE_BASE\" > \"$DIFF_FILE\"\ncat verification/review-prompts/ci-security-review.md > \"$PROMPT_FILE\"\nprintf '\\n\\nThe diff to review is at: %s\\nRead that file to see the changes.\\n\\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\\nVERDICT: pass\\nVERDICT: fail\\n\\nThen provide your full review below the verdict line.\\n' \"$DIFF_FILE\" >> \"$PROMPT_FILE\"\nclaude -p - \\\n  --model claude-opus-5-5 \\\n  --allowedTools \"Read,Glob,Grep\" < \"$PROMPT_FILE\" | tee \"$RESULT_FILE\"\nCLAUDE_EXIT=$?\nrm -f \"$PROMPT_FILE\" \"$DIFF_FILE\"\nif [ $CLAUDE_EXIT -ne 0 ]; then\n  echo \"::error::claude exited with status $CLAUDE_EXIT\"\n  rm -f \"$RESULT_FILE\"\n  exit 1\nfi\ndeno run --allow-read=\"$RESULT_FILE\" \\\n  scripts/check_review_verdict.ts \"$RESULT_FILE\" \"CI security review\"\nVERDICT_EXIT=$?\nrm -f \"$RESULT_FILE\"\nexit $VERDICT_EXIT\n",
+                "workingDir": "/tmp/swamp-verify-reviews-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.github/workflows/')).size() == 0 }}"
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "detect-changes",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "cleanup",
+        "description": "Remove the temporary worktree.",
+        "steps": [
+          {
+            "name": "remove-worktree",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "review-cleanup-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "CHECKOUT_DIR=\"/tmp/swamp-verify-reviews-${{ run.id }}\"\ngit worktree remove --force \"$CHECKOUT_DIR\" 2>/dev/null || true\ngit worktree prune\n# Remove ephemeral auto-definitions created for this run\nREPO_ROOT=\"$(git rev-parse --git-common-dir)/..\"\nfind \"$REPO_ROOT/.swamp/auto-definitions\" -name \"*-${{ run.id }}.yaml\" -delete 2>/dev/null || true\n",
+                "ignoreExitCode": true
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "reviews",
+            "condition": {
+              "type": "always"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1,
+    "concurrency": 4
+  },
+  "100-verification__workflow-verify-skills.yaml": {
+    "id": "a1c3e5f7-8b2d-4f6a-9c0e-1d3f5a7b9c2e",
+    "name": "verify-skills",
+    "description": "Skill verification: review bundled skills for quality and run trigger/routing\nevals. Gated by skill-path changes — skips when no skill files changed. Runs\non the host in a fresh git worktree checked out at the verified commit.\n",
+    "tags": {
+      "purpose": "pre-pr-verification"
+    },
+    "inputs": {
+      "properties": {
+        "commit": {
+          "type": "string",
+          "description": "Commit SHA being verified."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name being verified."
+        }
+      },
+      "required": [
+        "commit",
+        "branch"
+      ]
+    },
+    "jobs": [
+      {
+        "name": "setup",
+        "description": "Create a clean worktree at the verified commit.",
+        "steps": [
+          {
+            "name": "checkout",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "skills-setup-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "set -e\n# Concurrent verifications share refs/remotes/origin/main; the\n# loser of the ref update fails with \"incorrect old value\".\n# The retry finds the ref current, so it has nothing to write.\ngit fetch origin main || { sleep 1; git fetch origin main; }\nCHECKOUT_DIR=\"/tmp/swamp-verify-skills-${{ run.id }}\"\nrm -rf \"$CHECKOUT_DIR\"\ngit worktree prune\ngit worktree add --detach \"$CHECKOUT_DIR\" \"${{ inputs.commit }}\"\nswamp repo init \"$CHECKOUT_DIR\"\n# init prepends a managed section to CLAUDE.md and .gitignore;\n# restore them so only the branch's own changes reach the diff.\ngit -C \"$CHECKOUT_DIR\" checkout -- .\n"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      },
+      {
+        "name": "detect-changes",
+        "description": "Compute changed file list for guard expressions.",
+        "steps": [
+          {
+            "name": "changed-files",
+            "task": {
+              "type": "model_method",
+              "modelType": "@swamp/git",
+              "modelName": "repo-${{ run.id }}",
+              "methodName": "diff",
+              "inputs": {
+                "repoPath": "/tmp/swamp-verify-skills-${{ run.id }}",
+                "base": "origin/main",
+                "nameOnly": true,
+                "threeWay": true
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "setup",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "skills",
+        "description": "Run skill review and trigger evals, guarded by skill-path changes.",
+        "steps": [
+          {
+            "name": "skill-review",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "skills-review-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno task review-skills",
+                "workingDir": "/tmp/swamp-verify-skills-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+          },
+          {
+            "name": "skill-trigger-eval",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "skills-trigger-eval-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "deno task eval-skill-triggers",
+                "workingDir": "/tmp/swamp-verify-skills-${{ run.id }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false,
+            "guard": "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "detect-changes",
+            "condition": {
+              "type": "succeeded"
+            }
+          }
+        ],
+        "weight": 0
+      },
+      {
+        "name": "cleanup",
+        "description": "Remove the temporary worktree.",
+        "steps": [
+          {
+            "name": "remove-worktree",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "skills-cleanup-${{ run.id }}",
+              "methodName": "execute",
+              "inputs": {
+                "run": "CHECKOUT_DIR=\"/tmp/swamp-verify-skills-${{ run.id }}\"\ngit worktree remove --force \"$CHECKOUT_DIR\" 2>/dev/null || true\ngit worktree prune\n# Remove ephemeral auto-definitions created for this run\nREPO_ROOT=\"$(git rev-parse --git-common-dir)/..\"\nfind \"$REPO_ROOT/.swamp/auto-definitions\" -name \"*-${{ run.id }}.yaml\" -delete 2>/dev/null || true\n",
+                "ignoreExitCode": true
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [
+          {
+            "job": "skills",
+            "condition": {
+              "type": "always"
+            }
+          }
+        ],
+        "weight": 0
+      }
+    ],
+    "version": 1,
+    "concurrency": 2
+  },
+  "200-all-step-types.yaml": {
+    "id": "00000000-0000-4000-8000-000000000200",
+    "name": "all-step-types",
+    "description": "covers every step task type",
+    "tags": {},
+    "inputs": {
+      "properties": {
+        "env": {
+          "type": "string",
+          "default": "dev"
+        }
+      }
+    },
+    "jobs": [
+      {
+        "name": "main",
+        "steps": [
+          {
+            "name": "existing",
+            "task": {
+              "type": "model_method",
+              "modelIdOrName": "my-model",
+              "methodName": "run",
+              "inputs": {
+                "env": "${{ inputs.env }}"
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "direct",
+            "task": {
+              "type": "model_method",
+              "modelType": "@acme/thing",
+              "modelName": "thing-${{ inputs.env }}",
+              "methodName": "create",
+              "inputs": "${{ inputs.payload }}",
+              "globalArgs": {
+                "region": "us-east-1"
+              }
+            },
+            "dependsOn": [
+              {
+                "step": "existing",
+                "condition": {
+                  "type": "succeeded"
+                }
+              }
+            ],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "direct-plain",
+            "task": {
+              "type": "model_method",
+              "modelType": "command/shell",
+              "modelName": "shell-1",
+              "methodName": "execute"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "nested",
+            "task": {
+              "type": "workflow",
+              "workflowIdOrName": "other",
+              "inputs": {
+                "x": 1
+              }
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "approve",
+            "task": {
+              "type": "manual_approval",
+              "prompt": "ok?",
+              "timeout": 60
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "check",
+            "task": {
+              "type": "assert",
+              "expr": "1 == 1",
+              "message": "must hold",
+              "severity": "high"
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          },
+          {
+            "name": "wait",
+            "task": {
+              "type": "wait_for_signal",
+              "timeout": 30,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "verdict": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "verdict"
+                ]
+              },
+              "key": "deploy-ok",
+              "acceptEarly": 10
+            },
+            "dependsOn": [],
+            "weight": 0,
+            "allowFailure": false
+          }
+        ],
+        "dependsOn": [],
+        "weight": 0
+      }
+    ],
+    "version": 1
+  }
+}

@@ -8,7 +8,7 @@ last-verified: 2026-10-06 @ 77141f20
 A workflow defines what to execute. Each execution is a _Workflow Run_.
 
 A workflow is made up of one or more _jobs_, and each job of one or more
-_steps_. A step calls a method on a model or invokes another workflow.
+_steps_. A step calls a method on a behavior or invokes another workflow.
 
 Jobs can depend on each other. A job runs only if its dependency condition is
 met, for example only when one of its upstream dependencies fails. Like steps,
@@ -21,38 +21,38 @@ that hit rate-limited APIs.
 
 ## Step Task Variants
 
-A `model_method` step task has two mutually exclusive variants.
+A `behavior` step task has two mutually exclusive variants.
 
-### Existing Definition (`modelIdOrName`)
+### Existing Definition (`behavior`)
 
 Refers to an existing definition by name or ID:
 
 ```yaml
 task:
-  type: model_method
-  modelIdOrName: my-vpc
+  type: behavior
+  behavior: my-vpc
   methodName: create
   inputs:
     cidr: "10.0.0.0/16"
 ```
 
-### Direct Type Execution (`modelType` + `modelName`)
+### Direct Type Execution (`behaviorType` + `behaviorName`)
 
 Creates the definition if it doesn't exist. The type's schemas decide which
 inputs are global arguments and which are method arguments:
 
 ```yaml
 task:
-  type: model_method
-  modelType: "@swamp/aws/ec2/vpc"
-  modelName: my-vpc
+  type: behavior
+  behaviorType: "@swamp/aws/ec2/vpc"
+  behaviorName: my-vpc
   methodName: create
   inputs:
     region: us-east-1
     cidr: "10.0.0.0/16"
 ```
 
-A step cannot have both `modelIdOrName` and `modelType`. Auto-created
+A step cannot have both `behavior` and `behaviorType`. Auto-created
 definitions are stored in `.swamp/auto-definitions/`.
 
 The optional `globalArgs` field passes global arguments directly and skips
@@ -60,9 +60,9 @@ schema-based input routing. When it is set, `inputs` are method arguments only:
 
 ```yaml
 task:
-  type: model_method
-  modelType: "@myorg/deployer"
-  modelName: my-deployer
+  type: behavior
+  behaviorType: "@myorg/deployer"
+  behaviorName: my-deployer
   methodName: deploy
   globalArgs:
     region: us-east-1
@@ -71,7 +71,7 @@ task:
 ```
 
 `globalArgs` is valid only with direct type execution. The schema rejects it
-for `modelIdOrName` tasks.
+for `behavior` tasks that name an existing definition.
 
 `inputs` and `globalArgs` each accept a literal YAML record or a single CEL
 expression that evaluates to a record at runtime:
@@ -122,6 +122,20 @@ In a task target, a whole-field `inputs` or `globalArgs` expression, or step
 placement it fails.
 See "Definition Evaluation" in
 [../enablers/expressions.md](../enablers/expressions.md).
+
+### Model spelling
+
+`type: behavior` is the preferred spelling of `type: model_method`
+(swamp-club#3334). The fields map one to one: `behavior` is `modelIdOrName`,
+`behaviorType` is `modelType` and `behaviorName` is `modelName`. The other
+fields are the same. Swamp converts a `type: behavior` task to `model_method`
+when it reads the workflow. A task that mixes the two spellings is refused.
+
+The model spelling is the stored form and stays accepted. `swamp workflow
+edit`, and anything else that saves a workflow, writes each step back as
+`model_method`, so older swamp releases can read the file. A file written by
+hand in the behavior spelling needs a swamp release that accepts it. The
+examples outside the two variants above use the model spelling.
 
 ### Manual Approval (`manual_approval`)
 
@@ -647,7 +661,7 @@ shows the run id, suspended-at time, inputs digest, and ready-to-run
 production builds the `WorkflowGateService` behind them.
 `createWorkflowGateService` (`src/libswamp/models/workflow_gate.ts`) is called
 only from tests. `src/libswamp/workflows/run.ts` leaves it unwired on purpose,
-because model code bypasses authorization. On a remote worker both return
+because behavior code bypasses authorization. On a remote worker both return
 `{ ok: false }` (`src/worker/remote_method_context.ts`). Use the CLI or the
 `workflow.approve` / `workflow.reject` WebSocket requests instead.
 
@@ -672,7 +686,7 @@ override its value at resume. For audit, the run record's `resumeInputs` lists
 the key names supplied at resume.
 
 Resume inputs are ordinary inputs once merged. Their values are substituted and
-persisted wherever run inputs are: evaluated definitions, step data of models
+persisted wherever run inputs are: evaluated definitions, step data of behaviors
 that record their arguments, the run record on a later suspension, and child
 runs they are forwarded to. They are not a secret channel. A credential minted
 during a gate is stored with `swamp vault put` while the run is suspended, and
@@ -1159,8 +1173,18 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
    - a claim holds the key and reads this slot: the pending signal is taken
      for that wait (below), and the answer is the one a delivered signal gets.
      If the wait is not registered yet its captured schema cannot be read, so
-     nothing is taken and the answer is pending: the step registers before it
-     reads the slot, and so has not read it yet;
+     nothing is taken: the step registers before it reads the slot, and so
+     has not read it yet. The claim keeps the wait's `early` and deadline, so
+     the signaller applies the part of the taking rule they decide
+     (`isReceivedForWait`, which `pendingOutcome` calls too). A signal
+     received inside that window is answered pending. One received before it
+     is refused `no_open_wait` and told to send again once the wait is open:
+     every reader of that wait refuses the stored record the same way, so
+     nothing takes it afterwards, and the record stays in a slot no later
+     claim reads (swamp-club#3307). The workflow name the run recorded and
+     the schema it captured are not on the claim. A signal the wait will
+     refuse for either one is still answered pending here, and the wait runs
+     to its deadline unless it is signalled again;
    - a claim holds the key and reads another slot, which takes a claim made
      and settled some other way than by this signal, and a second claim
      made: the signal is delivered to that open wait as a signal by key is
@@ -1168,7 +1192,8 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      with that slot;
    - the key's highest generation has reached the slot, and a claim that
      reads the slot was settled by this very signal: a step took it on
-     opening its wait and its run went on. This is looked for among every
+     opening its wait and its run went on, or another reader gave it to a
+     wait that was open already. This is looked for among every
      claim of the key and not only the highest (`findTakerOf`), because the
      key may have been claimed again since: a signal a wait took is never
      delivered to another wait or stored a second time. The key's holder is
@@ -1177,8 +1202,10 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      slot written already, so a step cannot take the signal between the two
      reads and be missed by both. The answer
      is the one a delivered signal gets, built from the claim, since the run
-     may have ended and its registration with it. The result says `taken`,
-     and the command suggests no resume;
+     may have ended and its registration with it. The result says `taken`.
+     Its `awaitingResume` is read from the run as for any delivered signal:
+     false for a step that took the signal and went on, true for a wait
+     whose run is suspended still, and the command then prints the resume;
    - the key is free and its highest generation has reached the slot some
      other way: the arrival runs again from 2 at the new slot, with the same
      receipt ID and received time, at most eight times
@@ -1244,7 +1271,19 @@ the captured schema and takes nothing without one); and serve's sweep, which
 gives the open waits of a run held back only by its waits their pending
 signals (`takePendingSignalsOfRun`) before it times any out
 (`settleExpiredWaits`), and so continues a run whose signaller stopped between
-its create and its second read.
+its create and its second read. The sweep takes the signal and then asks
+`decideContinuation` again; `decideContinuation` itself reads outcomes only,
+so it stays a pure reading of what is stored. Under serve each take is
+audited as `workflow.signal.taken` (see the Signal paragraphs of
+[serve](serve.md)): `takePendingSignal` tells the `pendingTaken` listener of
+the store it took through, with identifiers and never the payload.
+
+Two readers recognise an applicable pending signal without taking it
+(`applicablePendingOutcome`, which only reads): the check `workflow resume`
+runs before it resumes, and the description of what a nested child still waits
+on (`findUnsettledWait`). Neither holds the run's claim, and the resume they
+lead to takes the signal under it, so a wait with its signal is never reported
+as still waiting for one.
 
 _The interleavings._ `S` is the signaller, `P` the step, `g` the highest
 generation of the key before either starts, so the slot is `g+1`.
@@ -1304,16 +1343,34 @@ record under its `wait-pending/<workflowId>/` prefix. The wait-record sweep
 - A slot the key has passed, with no claim left that reads it, is removed
   whole. A build from before pending signals leaves such slots when it
   collects a run. A slot whose claim still exists is left for that claim's
-  removal. The claims are listed once, before the slots are looked at, so a
-  claim made after the listing is checked for at each slot: when the key's
-  highest record is a claim that reads the slot, the slot is left, because
-  its step may be about to take the signal.
+  removal. The claims that read a slot are two records of its own key at most
+  (`claimsReadingSlot`): the claim of the slot's generation, with or without
+  `acceptEarly`, and the claim one generation up when it was created over a
+  release. Generations only grow and a claim reads no further than one below
+  its own, so a claim made after the key's highest record was read cannot
+  read a slot the key had passed by then. A slot is left as it is when either
+  record cannot be read: a damaged claim keeps its slot's pending records
+  until the workflow is deleted.
+
+_What a sweep reads._ One listing of `wait-pending/`, then for each slot that
+holds a record: the highest record of the slot's key, and either the slot's
+highest pending record (a live slot) or the one or two key records that could
+read it (a slot the key has passed). It never lists the key records of other
+workflows (swamp-club#3308), so its cost follows the number of slots holding a
+pending record, not the number of keyed workflows. A lapse stays until its
+slot is claimed, so a key that lapsed once and is not waited on again is read
+on every sweep from then on.
 
 This part of the sweep reads key records and never a run record, so unlike
-the rest it runs on every datastore. `swamp serve` runs it with each
-continuation pass (`sweepHeldSignals`), since a signal by key is held through
-serve and nothing else there sweeps wait records; where the continuation sweep
-does not start, it is left to `workflow waits` and the run garbage collection.
+the rest it runs on every datastore. `swamp serve` runs it from the
+continuation sweep (`heldSignalSweeper`), since a signal by key is held through
+serve and nothing else there sweeps wait records: with the boot pass, and then
+with the first pass after ten minutes have gone by since it last ran
+(`HELD_SIGNAL_SWEEP_INTERVAL_MS`), not with every pass. Nothing waits on it
+being prompt: a signal lapses a day after its age limit, and a signaller
+removes the signal it stores over. The time of the last sweep is kept in the
+process, so each instance keeps its own. Where the continuation sweep does not
+start, it is left to `workflow waits` and the run garbage collection.
 Nothing is audited: it reports a count (`WaitRecordSweep.pendingSignals`).
 
 _Idempotency keys._ A sender may name a signal with an idempotency key
@@ -1664,6 +1721,15 @@ resume applies the signal, and cancelling it would discard one. Such a run stays
 suspended until someone resumes it, so a workflow started repeatedly and never
 resumed accumulates suspended runs.
 
+A run started through serve is serve-owned (it records the instance's id), and
+supersede leaves serve-owned runs alone (`isSuperseded`,
+`src/libswamp/workflows/supersede.ts`). So runs started with
+`swamp workflow run --server`, detached (`--detach`) or not, never supersede
+one another: each one that reaches a gate stays suspended until it is approved,
+rejected or cancelled, and a caller that starts many accumulates them. A run
+started through serve still supersedes matching suspended runs that a local
+`swamp workflow run` left, unless `--no-supersede` is given.
+
 **Nested workflows.** A parent waiting on a child that waits for a signal is
 told to signal the child's wait, then resume the child, then resume the parent.
 Through serve with auto-resume on, the signal continues the child, and the
@@ -1944,7 +2010,7 @@ cancelled and superseded as the run of whoever started it. See
 - **Retry can repeat external effects.** A method can change an external system
   and then fail. Resume does not guarantee exactly-once execution.
 - **Definitions and inputs must stay compatible.** Resume uses the current
-  workflow and model definitions. A failed-run resume refuses a structural
+  workflow and behavior definitions. A failed-run resume refuses a structural
   change it would walk into (the
   [structure check](#resume-from-failed-step---from)): a renamed, moved or
   added step, a renamed or added job, or a removed job still holding unfinished
@@ -2107,25 +2173,25 @@ that suspends again at a reset gate. When a job's walk ends, unless the run
 suspended or was cancelled, a marked step still `pending` is a **stranded
 step**: the current workflow no longer produces it, typically because a
 `forEach` collection shrank or its iteration names changed. It fails with
-`failureKind: workflow_changed` and the error
-`Not run: the workflow or a forEach collection changed since the run. Start a new run.`
-The failure is never an allowed failure, and its `step_failed` event carries no
-model fields. Stranding is detected when the job's walk ends, so a step in the
+`failureKind: workflow_changed` and the error `Not run: the workflow or a
+forEach collection changed since the run. Start a new run.` The failure is never
+an allowed failure, and its `step_failed` event carries no `modelName` or
+`methodName`. Stranding is detected when the job's walk ends, so a step in the
 same job that depends on the `forEach` step still runs; later jobs do not,
 because the job fails. The run's JSON carries `failureKind` on the step. Retry
 refuses the run, and the CLI prints `To start a new run: swamp workflow run
-<wf>` instead of the retry command, with a `Run inputs:` line pointing to
-`swamp workflow history get <id> --json` when the run had inputs. When the error
+<wf>` instead of the retry command, with a `Run inputs:` line pointing to `swamp
+workflow history get <id> --json` when the run had inputs. When the error
 printed above it is a different step's real failure, a line first says that a
-step did not run because the workflow changed. The resolver's status refusals still suggest a retry,
-which then refuses with this reason. Workflow reports and the verification
-summary count a stranded step as an ordinary failure; `failureKind` is not
-carried into report details.
+step did not run because the workflow changed. The resolver's status refusals
+still suggest a retry, which then refuses with this reason. Workflow reports and
+the verification summary count a stranded step as an ordinary failure;
+`failureKind` is not carried into report details.
 
 ### Assert (`assert`)
 
 Evaluates a CEL predicate over earlier step data, records a pass/fail result,
-and fails the step when the predicate is false. It can also call model methods
+and fails the step when the predicate is false. It can also call methods
 with `model.method()` to check external state.
 
 ```yaml
@@ -2253,7 +2319,7 @@ path: `.swamp/workflow-runs/`).
 
 `swamp workflow validate` checks structure (schema, unique names, dependency
 references, cycles) and checks each step's inputs against the resolved
-method's required arguments. To resolve a step's model type, the local path
+method's required arguments. To resolve a step's behavior type, the local path
 first hot-loads pulled and local extensions (`modelRegistry.ensureLoaded()` in
 `src/cli/commands/workflow_validate.ts`), as `swamp model type describe` and
 `swamp model validate` do. With `--server`, the serve instance validates,
@@ -2267,28 +2333,27 @@ Results have three severity levels:
 - **Fail** (red ✗): the check failed. Any failure gives a non-zero exit.
 
 Step-input checks fail when the resolved method does not exist
-(`method_not_found`) or a required argument is missing. A step whose model
-type cannot be resolved also fails. It is never skipped as a pass, which
-would hide real contract bugs such as non-existent method names or wrong
-argument keys. Dynamic CEL references (`${{ ... }}`) in model or type names are
-skipped, since they only resolve at run time. A reference to a model
-instance that does not exist locally (`model_not_found`) is a warning, not a
-failure: an upstream step may create it during the run, but it could
-also be a typo.
+(`method_not_found`) or a required argument is missing. A step whose behavior
+type cannot be resolved also fails. It is never skipped as a pass, which would
+hide real contract bugs such as non-existent method names or wrong argument
+keys. Dynamic CEL references (`${{ ... }}`) in behavior or type names are
+skipped, since they only resolve at run time. A reference to a behavior instance
+that does not exist locally (`model_not_found`) is a warning, not a failure: an
+upstream step may create it during the run, but it could also be a typo.
 
 ### GlobalArgument Input References
 
-A model definition's `globalArguments` or method-level argument defaults may
+A behavior definition's `globalArguments` or method-level argument defaults may
 contain `${{ inputs.* }}` expressions. The validator checks that the calling
 step's `inputs:` block supplies each referenced input. Otherwise the run would
-fail with an unresolved expression, for example when a definition expects
-`host: ${{ inputs.ip }}` and the step never provides it. The check uses the
-step's inputs, not the workflow's top-level inputs, because in a model
-definition `${{ inputs.* }}` is the model's own input namespace, filled by the
-step at runtime.
+fail with an unresolved expression, for example when a definition expects `host:
+${{ inputs.ip }}` and the step never provides it. The check uses the step's
+inputs, not the workflow's top-level inputs, because in a behavior definition
+`${{ inputs.* }}` is the behavior's own input namespace, filled by the step at
+runtime.
 
 Steps with dynamic inputs (a single `${{ ... }}` expression as the whole
-`inputs` value) or dynamic model references are skipped, since neither can be
+`inputs` value) or dynamic behavior references are skipped, since neither can be
 analysed statically. A nested-workflow step whose target workflow cannot be
 found reports its input check as "skipped", not failed
 (`src/domain/workflows/validation_service.ts`). The validator also checks
@@ -2328,7 +2393,7 @@ Workflows live in `workflows/workflow-{name}.yaml` (legacy
 globally unique name, a set of jobs, and optional workflow inputs.
 
 A workflow reference — a CLI argument, a `workflowIdOrName` — resolves by name
-first, then by exact id, the same rule as model definitions
+first, then by exact id, the same rule as behavior definitions
 (`src/domain/workflows/workflow_lookup.ts`). A name may be a UUID, so a
 workflow named with another workflow's id wins over the workflow with that id.
 Only a file that declares an id is returned for that id, even though a
@@ -2337,7 +2402,7 @@ path.
 
 ### Workflow Inputs
 
-Like model definitions, workflows can declare their own inputs (workflow
+Like behavior definitions, workflows can declare their own inputs (workflow
 inputs) as JsonSchema. Inputs let you parameterize a workflow without editing
 its definition file:
 
@@ -2362,14 +2427,14 @@ jobs:
 
 **Workflow Input Rules:**
 
-- Specified as JsonSchema (same rules as model inputs)
+- Specified as JsonSchema (same rules as behavior inputs)
 - Can be required or optional
 - Read through CEL expressions: `${{ inputs.someWorkflowParameter }}`
-- Called "workflow inputs" to tell them apart from "model inputs"
+- Called "workflow inputs" to tell them apart from "behavior inputs"
 - Provide dynamic configuration for workflow execution
 
 See [expressions](../enablers/expressions.md) for CEL syntax and
-[models](./models.md) for detailed input specification patterns.
+[behaviors](./behaviors.md) for detailed input specification patterns.
 
 ### Vaults Allow-List
 
@@ -2383,15 +2448,15 @@ jobs:
 # ...
 ```
 
-Every vault operation in a run of the workflow — `vault.get` expressions,
-method code using `context.vaultService`, sensitive outputs and their
-read-back — on a vault not listed is refused, whoever triggered the run. The
-list is the author's maximum and needs no serve: it bounds local
-`swamp workflow run` as well as serve runs, where it applies alongside the
-triggering principal's vault grants, so either can refuse (see
-[access-control § Vaults](../enablers/access-control.md#vaults)). A nested
-workflow's list intersects with its parent's, so nesting only narrows. A model
-method run outside a workflow has no list. Without `vaults:` nothing changes.
+Every vault operation in a run of the workflow — `vault.get` expressions, method
+code using `context.vaultService`, sensitive outputs and their read-back — on a
+vault not listed is refused, whoever triggered the run. The list is the author's
+maximum and needs no serve: it bounds local `swamp workflow run` as well as
+serve runs, where it applies alongside the triggering principal's vault grants,
+so either can refuse (see [access-control §
+Vaults](../enablers/access-control.md#vaults)). A nested workflow's list
+intersects with its parent's, so nesting only narrows. A method run outside a
+workflow has no list. Without `vaults:` nothing changes.
 
 A run records the list in force when it starts (its own intersected with any
 parent's) as `allowedVaults` on the run record. A resume is held to both that
@@ -2406,10 +2471,11 @@ step's sensitive outputs are stored in (field `vaultName`, the step's
 user vault). A mutating method whose outputs would land in an unlisted vault is
 refused before it runs.
 
-`swamp workflow validate` reports a static `vault.get` name in the workflow's
-own steps or inputs that is not listed, and each sensitive-output target vault
-of a model-method step that is not listed. Dynamic names and `vault.get` inside
-model definitions are caught only at run time.
+`swamp workflow validate` reports a static `vault.get` name (quoted, or an
+unquoted name with no `.`) in the workflow's own steps or inputs that is not
+listed, and each sensitive-output target vault of a method step that is not
+listed. Dynamic names and `vault.get` inside behavior definitions are caught
+only at run time.
 
 The workflow schema is strict, so a release older than the field rejects a
 workflow file that sets `vaults:`. Upgrade every machine and serve replica that
@@ -2437,7 +2503,7 @@ jobs:
   # ... jobs run automatically at 3am and noon
 ```
 
-**Schedule behavior:**
+**Scheduling:**
 
 - Uses [croner](https://github.com/Hexagon/croner) grammar. Standard cron has 5
   fields (minute, hour, day-of-month, month, day-of-week). A 6-field expression
@@ -2513,7 +2579,7 @@ time. A workflow with no built-in trigger block gets one from the override.
 (`src/cli/commands/workflow_trigger_set.ts`). Unknown keys in an override entry
 produce a warning and are ignored (`src/serve/serve_config.ts`).
 
-**Override behavior:**
+**Overrides:**
 
 - Applied when `ScheduledExecutionService` starts, in two phases. Every
   workflow with a schedule (built-in or override, resolved through
@@ -2669,13 +2735,13 @@ and run only if either failed.
 
 ## Steps
 
-Each step has a name, a description, and a task: a model method to run or a
+Each step has a name, a description, and a task: a method to run or a
 nested workflow to invoke. Steps use the same dependency logic as jobs.
 
-When a step calls a mutating model method (`create`, `update`, `delete`,
-`action`), the model's pre-flight checks run first. If any check fails, the step
-fails without running the method. Set `allowFailure: true` on the step to let
-the workflow continue past a pre-flight failure.
+When a step calls a mutating method (`create`, `update`, `delete`, `action`),
+the behavior's pre-flight checks run first. If any check fails, the step fails
+without running the method. Set `allowFailure: true` on the step to let the
+workflow continue past a pre-flight failure.
 
 ## Allow Failure
 
@@ -2764,7 +2830,7 @@ steps:
       modelName: liquid-handler
       method: dispense
 
-  # Method call — invoke a model method to check external state
+  # Method call — invoke a method to check external state
   - name: create-instance
     guard: >
       ${{ model.method("infra", "check-exists",
@@ -2777,14 +2843,14 @@ steps:
 ### model.method() in guards
 
 `model.method(modelName, methodName)` or
-`model.method(modelName, methodName, inputs)` calls a model method and returns
+`model.method(modelName, methodName, inputs)` calls a method and returns
 the content of its first resource data output, parsed as JSON if possible.
 Guards use it to check external state with a lightweight probe method.
 
 The method runs through the same step executor as regular workflow steps, so it
 has full access to vault secrets, expression context, and data storage. For
-command/shell models the returned content is `{exitCode, stdout, stderr, ...}`,
-so guards usually read one field such as `.stdout`.
+command/shell behaviors the returned content is `{exitCode, stdout, stderr,
+...}`, so guards usually read one field such as `.stdout`.
 
 ### forEach compatibility
 
@@ -2902,24 +2968,27 @@ syntax.
 
 ## Pre-flight Check Control
 
-Workflow runs support the same pre-flight check skip options as direct model
-method runs. The flags apply to every model method step in the workflow:
+Workflow runs support the same pre-flight check skip options as direct method
+runs. The flags apply to every method step in the workflow:
 
-| Flag                         | Behavior                                   |
+| Flag                         | Effect                                     |
 | ---------------------------- | ------------------------------------------ |
 | `--skip-checks`              | Skip all pre-flight checks                 |
 | `--skip-check <name>`        | Skip a specific check by name (repeatable) |
 | `--skip-check-label <label>` | Skip all checks with a label (repeatable)  |
 
 The options pass from the CLI through `WorkflowRunInput` →
-`StepExecutionContext` → `MethodContext`, so behavior matches
+`StepExecutionContext` → `MethodContext`, so the effect matches
 `swamp model method run`.
 
 ## Workflow Runs
 
 A run executes the jobs and steps in dependency order. The order should be a
 weighted topological sort, so that identical inputs should give the same run
-order.
+order. Within a level, steps sort by weight, then by name. The iterations of a
+`forEach` step stay together in list order, placed by the step's name as
+written (its expressions unresolved), so `operate-10` runs after `operate-9`
+and a list of `prod, dev` runs `prod` first.
 
 The run record is written to the datastore at
 `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
@@ -2927,6 +2996,13 @@ The run record is written to the datastore at
 `.swamp/workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.log`, whichever
 datastore holds the record. The record's `logFile` names it relative to the
 repo.
+
+The record is first saved before the run's `started` event is yielded
+(`WorkflowExecutionService.run`), so a consumer that sees `started` can read
+the run by the id the event carries. `swamp workflow run --server --detach`
+relies on this: it returns that id and stops listening (swamp-club#1090; see
+[serve](serve.md#running-primitives-through-serve)). If the first save fails, the run fails
+without a `started` event.
 
 `swamp run gc` and deleting a workflow remove a run's log with its record. They
 rebuild its path from the record's directory and file names rather than reading
@@ -2957,7 +3033,7 @@ stop the run live. When serve is not running, the command cancels offline: it
 stops the owning `workflow run` process (SIGTERM, then SIGKILL after a grace
 period), re-reads the run, and writes the cancelled status to the run YAML only
 if the run is still active. The owner saves its own final record while handling
-SIGTERM, once its in-flight model methods have stopped or the step stop grace
+SIGTERM, once its in-flight methods have stopped or the step stop grace
 ran out (see [Post-Cancellation Cleanup](#post-cancellation-cleanup)), so a run
 it already finished keeps that record; a cancelled one gets the `--reason` as
 its `cancel_reason` tag. An owner killed after its grace, or one that died
@@ -3298,44 +3374,42 @@ a reservation gets "Another operation on this run is in progress; try again".
 A local CLI resume or approve, or a second serve instance on a shared
 datastore, is not covered by the reservation.
 
-Model method runs cancel the same way, with
-`swamp model cancel <model> [--all] [--reason <reason>]`. The named form
-considers only the named model's runs, never those of another model of the
-same type. (A run an older swamp registered names no model on its tracker row and is
-matched from its method-run record or the model's lock; see
-`design/enablers/run-tracker.md`.) The command SIGTERMs
-the process that owns the method run and waits up to 10 s for it to exit
-before SIGKILL: the 3 s grace the shell step gets, plus time for the owner to
-save the cancelled output (`METHOD_OWNER_STOP_GRACE_MS`,
-`src/cli/commands/model_cancel.ts`). A process that also owns a running
-workflow run, as a workflow step's method run does, gets the workflow cancel
-grace instead, so its cleanup steps can run. `--all` stops the owning
-processes together, each once. A run its owner finished another way during
-the wait keeps that status, and the command reports it as finished before the
-cancel took effect (`finished` in `--json`) rather than as cancelled. When the
-owner is a workflow run, stopping it cancels the whole run, so every running
-step of the run ends, not only the cancelled method run's. On Windows the
-SIGTERM is a stop request, as for a workflow cancel (see
-[Cancellation](#cancellation)).
-A step's method run that a cancel stops records `cancelled`, in its method-run
-output and its tracker row, as a standalone method run does; the step itself
-is still recorded failed (`DefaultStepExecutor`,
-`src/domain/workflows/execution_service.ts`). When the owner is killed after
-its grace instead, the method-run output it left `running` is cancelled by the
-command, with `OWNER_STOPPED_STEP_ERROR`, before the row is completed.
-`swamp model cancel` never signals a `swamp serve` process. A method run that
-serve executes (a workflow step or a direct method run) carries serve's
-instance id on its tracker row and serve's pid, so stopping its owner would
-shut down the whole server. While that serve is alive, `--all` skips such runs
-and lists them (`skipped` in `--json`, always present), and the named form
-cancels the latest run serve does not own, listing the rest under `skipped`
-too, or refuses when serve owns them all. Cancel a serve-owned step through its
-workflow run on the server; a direct method run stops only from the client
-that started it. A step row sharing its pid and host with a serve-owned
-workflow row counts as serve-owned too, for rows an older serve wrote without
-an instance id. A serve-owned run whose serve is a dead process on this host
-is cancelled normally, as there is no process left to signal; a run from
-another host is always treated as live (`splitServeOwnedRuns`,
+Method runs cancel the same way, with `swamp model cancel <model> [--all]
+[--reason <reason>]`. The named form considers only the named behavior's runs,
+never those of another behavior of the same type. (A run an older swamp
+registered names no behavior on its tracker row and is matched from its
+method-run record or the behavior's lock; see `design/enablers/run-tracker.md`.)
+The command SIGTERMs the process that owns the method run and waits up to 10 s
+for it to exit before SIGKILL: the 3 s grace the shell step gets, plus time for
+the owner to save the cancelled output (`METHOD_OWNER_STOP_GRACE_MS`,
+`src/cli/commands/model_cancel.ts`). A process that also owns a running workflow
+run, as a workflow step's method run does, gets the workflow cancel grace
+instead, so its cleanup steps can run. `--all` stops the owning processes
+together, each once. A run its owner finished another way during the wait keeps
+that status, and the command reports it as finished before the cancel took
+effect (`finished` in `--json`) rather than as cancelled. When the owner is a
+workflow run, stopping it cancels the whole run, so every running step of the
+run ends, not only the cancelled method run's. On Windows the SIGTERM is a stop
+request, as for a workflow cancel (see [Cancellation](#cancellation)). A step's
+method run that a cancel stops records `cancelled`, in its method-run output and
+its tracker row, as a standalone method run does; the step itself is still
+recorded failed (`DefaultStepExecutor`,
+`src/domain/workflows/execution_service.ts`). When the owner is killed after its
+grace instead, the method-run output it left `running` is cancelled by the
+command, with `OWNER_STOPPED_STEP_ERROR`, before the row is completed. `swamp
+model cancel` never signals a `swamp serve` process. A method run that serve
+executes (a workflow step or a direct method run) carries serve's instance id on
+its tracker row and serve's pid, so stopping its owner would shut down the whole
+server. While that serve is alive, `--all` skips such runs and lists them
+(`skipped` in `--json`, always present), and the named form cancels the latest
+run serve does not own, listing the rest under `skipped` too, or refuses when
+serve owns them all. Cancel a serve-owned step through its workflow run on the
+server; a direct method run stops only from the client that started it. A step
+row sharing its pid and host with a serve-owned workflow row counts as
+serve-owned too, for rows an older serve wrote without an instance id. A
+serve-owned run whose serve is a dead process on this host is cancelled
+normally, as there is no process left to signal; a run from another host is
+always treated as live (`splitServeOwnedRuns`,
 `src/cli/commands/model_cancel.ts`).
 
 ### Post-Cancellation Cleanup
@@ -3349,7 +3423,7 @@ order:
 
 - Steps whose dependency conditions are met run with a fresh 30-second cleanup
   signal. `always` is true unconditionally; `completed` is true when the
-  dependency reached `succeeded` or `failed`. A cleanup step's model method
+  dependency reached `succeeded` or `failed`. A cleanup step's method
   that the 30 seconds cut off saves its method run `cancelled` with the cause
   `cleanup grace expired`.
 - Steps whose conditions are not met (`succeeded` on a failed dependency) are
@@ -3359,7 +3433,7 @@ order:
   method reported (for `command/shell`, the killed subprocess's exit). A level
   holding several steps does not wait for them once the cancellation fires, so
   each step it leaves `running` is marked `failed` with reason `cancelled`.
-  Their model methods go on stopping, and before it saves its cancelled
+  Their methods go on stopping, and before it saves its cancelled
   record the run waits for them, and for any guard or assert
   `model.method()` call still in flight, until `STEP_STOP_GRACE_MS` (4 s)
   after the cancellation. Each method therefore saves its method run
@@ -3619,7 +3693,7 @@ implementation). See [repo](../surfaces/repo.md) for more on domain events.
 
 A workflow run emits one parent telemetry entry for the outer
 `swamp workflow run` invocation. It also emits one child entry per workflow YAML
-step that resolves to a model method. Each child links to the parent through
+step that resolves to a method. Each child links to the parent through
 `parentInvocationId` and carries a `workflowContext` block:
 
 ```yaml
@@ -3632,19 +3706,19 @@ workflowContext:
   executor: loopback
 ```
 
-Children use the same `cli_invocation` event shape as a direct
-`swamp model method run <name> <method>` invocation: `command="model"`,
+Children use the same `cli_invocation` event shape as a direct `swamp model
+method run <name> <method>` invocation: `command="model"`,
 `subcommand="method"`, `args=["run", <modelName>, <methodName>]` and
 `commandPath=["model", "method", "run"]`. Analytics that group by command or
 method therefore count direct and workflow-internal invocations the same way.
-Per-executor and per-model-type queries read `workflowContext` directly, without
-joining through the parent.
+Per-executor and per-behavior-type queries read `workflowContext` directly,
+without joining through the parent.
 
 ### Failure Semantics
 
 - A step that fails after `method_executing` was yielded records an error child
   entry with the measured duration.
-- A step that fails before `method_executing` (model lookup failure, vault
+- A step that fails before `method_executing` (behavior lookup failure, vault
   expression resolution failure, vary-key validation failure, env-var
   validation) records a synthesized child entry with `durationMs = 0`. The
   method was never invoked, so its duration is zero. Dashboards that filter
@@ -3663,7 +3737,7 @@ joining through the parent.
   invokes another method) are not captured as separate child entries. The
   workflow step is the unit of measurement.
 - **Workflow-task steps** (steps whose task is a nested workflow) emit no child
-  entry of their own. The nested workflow's model-method steps produce child
+  entry of their own. The nested workflow's method steps produce child
   entries linked to the same parent CLI invocation. At any nesting depth, those
   entries carry the top-level run's `workflowName` and `runId`, with the nested
   workflow's own `jobName` and `stepName`. The bridge pairs a step's
@@ -3680,7 +3754,7 @@ joining through the parent.
 
 The bridge lives in `src/libswamp/workflows/telemetry_bridge.ts`. The domain
 `step_failed` event has optional `modelName` and `methodName` fields, set only
-at the model-method failure site. Other yield sites (nesting depth, cycle
+at the method failure site. Other yield sites (nesting depth, cycle
 detection, nested-workflow failure) leave them undefined, so the bridge can tell
 structural failures from method failures.
 

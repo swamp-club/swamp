@@ -19,8 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { resolveToolFlag } from "./repo_init.ts";
+import { resolveToolFlag, ToolNameType } from "./repo_init.ts";
 import { UserError } from "../../domain/errors.ts";
+import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -45,6 +46,22 @@ Deno.test("repoInitCommand offers --no-vault to skip the default vault", async (
   const { repoInitCommand } = await import("./repo_init.ts");
   const option = repoInitCommand.getOption("no-vault");
   assertEquals(option?.flags, ["--no-vault"]);
+});
+
+Deno.test("repoInitCommand: --tool help lists every built-in tool", async () => {
+  const { repoInitCommand } = await import("./repo_init.ts");
+  const description = repoInitCommand.getOption("tool")?.description ?? "";
+  for (const tool of VALID_AI_TOOLS) {
+    assertEquals(
+      description.includes(tool),
+      true,
+      `--tool help should list ${tool}: ${description}`,
+    );
+  }
+});
+
+Deno.test("ToolNameType: completes every built-in tool", () => {
+  assertEquals(new ToolNameType().complete(), [...VALID_AI_TOOLS]);
 });
 
 Deno.test("repoUpgradeCommand is registered as subcommand", async () => {

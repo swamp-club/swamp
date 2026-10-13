@@ -20,8 +20,10 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  auditTakenSignals,
   continueAfterSignal,
   deliverSignalForCaller,
+  SIGNAL_UPGRADE_REQUIRED_MESSAGE,
   SIGNAL_WAIT_NOT_FOUND_MESSAGE,
   type SignalDeliveryResult,
 } from "./signal_delivery.ts";
@@ -47,6 +49,11 @@ import {
   InMemorySignalWaitStore,
 } from "../domain/workflows/signal_wait_store_test_helpers.ts";
 import { claimWaitKey } from "../domain/workflows/wait_key_claim.ts";
+import {
+  earlyWaitRef,
+  takePendingSignal,
+} from "../domain/workflows/pending_signal.ts";
+import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 
 const SCHEMA = {
   type: "object" as const,
@@ -384,7 +391,7 @@ Deno.test("deliverSignalForCaller: an unsupported datastore is said in general t
   };
   const result = await deliver(ctx, f.waitId);
   assertEquals(result.status, "unsupported");
-  assert(result.status !== "delivered" && result.status !== "pending");
+  assert(result.status === "unsupported");
   assertEquals(result.message.includes("internal-name"), false);
 });
 
@@ -747,36 +754,201 @@ Deno.test("deliverSignalForCaller: by key, a retry under the idempotency key of 
       idempotencyKey,
     });
   const first = await send("order-1");
-  assert(first.status === "pending", `got ${first.status}`);
+  assert(first.status === "accepted", `got ${first.status}`);
   assertEquals(first.data.signal.idempotencyKey, "order-1");
   assertEquals("duplicate" in first.data, false);
 
   const retry = await send("order-1");
-  assert(retry.status === "pending", `got ${retry.status}`);
+  assert(retry.status === "accepted", `got ${retry.status}`);
   assertEquals(retry.data.duplicate, true);
   assertEquals(retry.data.signal, first.data.signal);
-  assertEquals(
-    Object.keys(retry.data).sort(),
-    ["duplicate", "heldUntil", "signal"],
-  );
+  assertEquals(Object.keys(retry.data).sort(), ["duplicate", "signal"]);
   assertEquals(f.waits.pendingRecords.size, 1);
 
   assertEquals((await send("order-2")).status, "already_pending");
 });
 
-Deno.test("deliverSignalForCaller: by key, a caller with signal alone is told the receipt of a held signal and nothing of the workflow", async () => {
+/** Opens a wait under the early key for a run of `workflow`, as its step does. */
+async function openEarlyWait(
+  f: Fixture,
+  workflow: Workflow,
+): Promise<{ waitId: string; runId: string }> {
+  const at = new Date();
+  const wait = SignalWait.open(SCHEMA, 3600, at, undefined, EARLY_KEY);
+  const runId = crypto.randomUUID();
+  const claimed = await claimWaitKey(f.waits, {
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    waitId: wait.id,
+    runId,
+    jobName: "main",
+    stepName: "identify",
+    deadline: wait.deadline.toISOString(),
+    acceptEarly: 600,
+  }, at);
+  assert(claimed.kind === "acquired", `got ${claimed.kind}`);
+  await f.waits.register(
+    registrationOf(
+      {
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        runId,
+        jobName: "main",
+        stepName: "identify",
+      },
+      wait,
+      at,
+    ),
+  );
+  return { waitId: wait.id, runId };
+}
+
+Deno.test("deliverSignalForCaller: by key, a caller with signal alone gets the receipt alone, the same whether a wait took the signal or it is held (swamp-club#3213)", async () => {
+  const shape = (result: SignalDeliveryResult) => {
+    assert(result.status === "accepted", `got ${result.status}`);
+    assertEquals(Object.keys(result.data), ["signal"]);
+    assertEquals(
+      Object.keys(result.data.signal).sort(),
+      ["id", "receivedAt", "submittedBy"],
+    );
+    return result;
+  };
+
+  // Held: no wait is open.
+  const held = await fixture();
+  const heldWorkflow = withEarlyWorkflow(held);
+  const pending = shape(
+    await deliverByKey(
+      held.ctxWith([grantOf(["signal"])]),
+      heldWorkflow.name,
+      EARLY_KEY,
+    ),
+  );
+  assertEquals(pending.run, undefined);
+  assertEquals(held.waits.pendingRecords.size, 1);
+
+  // Delivered: a wait is open and takes it. The run is named for the server
+  // alone, so the run is continued.
+  const open = await fixture();
+  const openWorkflow = withEarlyWorkflow(open);
+  const { waitId, runId } = await openEarlyWait(open, openWorkflow);
+  const delivered = shape(
+    await deliverByKey(
+      open.ctxWith([grantOf(["signal"])]),
+      openWorkflow.name,
+      EARLY_KEY,
+    ),
+  );
+  assertEquals(delivered.run?.runId, runId);
+  assertEquals(open.waits.outcomes.has(waitId), true);
+  assertEquals(JSON.stringify(delivered.data).includes(waitId), false);
+});
+
+Deno.test("deliverSignalForCaller: by key, a reader is still told whether a wait took the signal (swamp-club#3213)", async () => {
   const f = await fixture();
   const workflow = withEarlyWorkflow(f);
+  const { waitId } = await openEarlyWait(f, workflow);
   const result = await deliverByKey(
-    f.ctxWith([grantOf(["signal"])]),
+    f.ctxWith([grantOf(["signal", "read"])]),
     workflow.name,
     EARLY_KEY,
   );
-  assert(result.status === "pending", `got ${result.status}`);
-  assertEquals(Object.keys(result.data).sort(), ["heldUntil", "signal"]);
+  assert(result.status === "delivered", `got ${result.status}`);
+  assertEquals(result.data.waitId, waitId);
+  assertEquals(result.data.key, EARLY_KEY);
 });
 
-Deno.test("deliverSignalForCaller: by key, a retry held after the key's last wait was signalled names that wait, and only a reader is shown its receipt", async () => {
+Deno.test("deliverSignalForCaller: by key, a caller with signal alone is held to the receipt even when the request cannot read a pending answer (swamp-club#3213)", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const result = await deliverSignalForCaller(
+    f.ctxWith([grantOf(["signal"])]),
+    CALLER,
+    {
+      requestId: "req-1",
+      workflow: workflow.name,
+      key: EARLY_KEY,
+      payload: { verdict: "ship" },
+      holdEarly: false,
+    },
+  );
+  // `no_open_wait` would say no run is waiting.
+  assertEquals(result.status, "accepted");
+  assertEquals(f.waits.pendingRecords.size, 1);
+});
+
+Deno.test("deliverSignalForCaller: by key, a client that cannot read the receipt is refused the same way with and without an open wait, and no wait record is read (swamp-club#3213)", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const send = (
+    ctx: ConnectionContext,
+    key = EARLY_KEY,
+    name = workflow.name,
+  ) =>
+    deliverSignalForCaller(ctx, CALLER, {
+      requestId: "req-1",
+      workflow: name,
+      key,
+      payload: { verdict: "ship" },
+      acceptsReceipt: false,
+    });
+  const refused: SignalDeliveryResult = {
+    status: "upgrade_required",
+    message: SIGNAL_UPGRADE_REQUIRED_MESSAGE,
+  };
+  assertEquals(
+    await send(withUnreadableWaits(f, [grantOf(["signal"])])),
+    refused,
+  );
+  await openEarlyWait(f, workflow);
+  assertEquals(
+    await send(withUnreadableWaits(f, [grantOf(["signal"])])),
+    refused,
+  );
+  assertEquals(f.waits.pendingRecords.size, 0);
+  assertEquals(f.waits.outcomes.size, 0);
+
+  // A reader is answered as before, and so is a key that takes no early
+  // signal.
+  assertEquals(
+    (await send(f.ctxWith([grantOf(["signal", "read"])]))).status,
+    "delivered",
+  );
+});
+
+Deno.test("deliverSignalForCaller: by key, a key whose step sets no acceptEarly answers a caller with signal alone as before (swamp-club#3213)", async () => {
+  const f = await fixture();
+  const workflow = Workflow.create({
+    name: "keyed",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "identify",
+            task: StepTask.waitForSignal(3600, SCHEMA, EARLY_KEY),
+          }),
+        ],
+      }),
+    ],
+  });
+  f.workflows.set(workflow.name, workflow);
+  const result = await deliverSignalForCaller(
+    f.ctxWith([grantOf(["signal"])]),
+    CALLER,
+    {
+      requestId: "req-1",
+      workflow: workflow.name,
+      key: EARLY_KEY,
+      payload: { verdict: "ship" },
+      acceptsReceipt: false,
+    },
+  );
+  assertEquals(result.status, "no_open_wait");
+  assertEquals(f.waits.pendingRecords.size, 0);
+});
+
+Deno.test("deliverSignalForCaller: by key, a retry held after the key's last wait was signalled names that wait to a reader only", async () => {
   for (const actions of [["signal", "read"], ["signal"]] as Action[][]) {
     const f = await fixture();
     const workflow = withEarlyWorkflow(f);
@@ -806,13 +978,18 @@ Deno.test("deliverSignalForCaller: by key, a retry held after the key's last wai
       workflow.name,
       EARLY_KEY,
     );
+    // A caller with signal alone is told nothing of the key's earlier wait.
+    if (!actions.includes("read")) {
+      assert(result.status === "accepted", `got ${result.status}`);
+      assertEquals(Object.keys(result.data), ["signal"]);
+      continue;
+    }
     assert(result.status === "pending", `got ${result.status}`);
-    const readable = actions.includes("read");
     assertEquals(result.data.lastWait, {
       waitId: wait.id,
       settledAs: "accepted",
       settledAt: settled.settledAt,
-      ...(readable ? { receipt: settled.receipt } : {}),
+      receipt: settled.receipt,
     });
   }
 });
@@ -839,7 +1016,7 @@ Deno.test("deliverSignalForCaller: by key, a caller who may not signal the workf
   assertEquals(f.waits.pendingRecords.size, 0);
 });
 
-Deno.test("deliverSignalForCaller: by key, a second early signal is refused, and only a reader is shown the earlier receipt", async () => {
+Deno.test("deliverSignalForCaller: by key, a second early signal is refused, and only a reader is shown the earlier receipt and until when it is held", async () => {
   const f = await fixture();
   const workflow = withEarlyWorkflow(f);
   const reader = f.ctxWith([grantOf(["signal", "read"])]);
@@ -859,7 +1036,9 @@ Deno.test("deliverSignalForCaller: by key, a second early signal is refused, and
     EARLY_KEY,
   );
   assert(signalOnly.status === "already_pending");
-  assertEquals(signalOnly.pending, { heldUntil: first.data.heldUntil });
+  // Until when the earlier signal is held is for a reader.
+  assertEquals(signalOnly.pending, undefined);
+  assertEquals(signalOnly.message.includes(first.data.heldUntil), false);
   assertEquals(signalOnly.message.includes(first.data.signal.id), false);
   assertEquals(signalOnly.message.includes(CALLER_ID), false);
   assertEquals(f.waits.pendingRecords.size, 1);
@@ -879,11 +1058,40 @@ Deno.test("deliverSignalForCaller: by key, an early payload the schema refuses i
     },
   );
   assert(result.status === "invalid_payload", `got ${result.status}`);
+  // A caller with signal alone is not told whether a wait was open.
+  assertEquals(result.message.startsWith("Payload refused:\n"), true);
+  assertEquals(f.waits.pendingRecords.size, 0);
+
+  const reader = await deliverSignalForCaller(
+    f.ctxWith([grantOf(["signal", "read"])]),
+    CALLER,
+    {
+      requestId: "req-1",
+      workflow: workflow.name,
+      key: EARLY_KEY,
+      payload: { verdict: "maybe" },
+    },
+  );
+  assert(reader.status === "invalid_payload", `got ${reader.status}`);
   assertEquals(
-    result.message.startsWith("Payload refused; nothing was stored"),
+    reader.message.startsWith("Payload refused; nothing was stored"),
     true,
   );
-  assertEquals(f.waits.pendingRecords.size, 0);
+
+  // With a wait open the caller with signal alone reads the same sentence.
+  await openEarlyWait(f, workflow);
+  const open = await deliverSignalForCaller(
+    f.ctxWith([grantOf(["signal"])]),
+    CALLER,
+    {
+      requestId: "req-1",
+      workflow: workflow.name,
+      key: EARLY_KEY,
+      payload: { verdict: "maybe" },
+    },
+  );
+  assert(open.status === "invalid_payload", `got ${open.status}`);
+  assertEquals(open.message, result.message);
 });
 
 Deno.test("continueAfterSignal: does nothing for a signal that is only held", async () => {
@@ -891,8 +1099,73 @@ Deno.test("continueAfterSignal: does nothing for a signal that is only held", as
   const workflow = withEarlyWorkflow(f);
   const ctx = f.ctxWith([grantOf(["signal"])]);
   const result = await deliverByKey(ctx, workflow.name, EARLY_KEY);
-  assertEquals(result.status, "pending");
+  assertEquals(result.status, "accepted");
   // No run took the signal, so there is nothing to launch; a launcher that
   // was asked would throw on this context, which has none.
   await continueAfterSignal(ctx, result, SUBJECT);
+});
+
+Deno.test("auditTakenSignals: a wait that takes a pending signal is audited by receipt and key, without the payload (swamp-club#3213)", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const events: AuditEvent[] = [];
+  const ctx = {
+    ...f.ctxWith([grantOf(["signal"])]),
+    instanceId: "instance-a",
+    auditEmitter: { emit: (event: AuditEvent) => events.push(event) },
+  } as unknown as ConnectionContext;
+  auditTakenSignals(ctx);
+
+  const held = await deliverSignalForCaller(ctx, CALLER, {
+    requestId: "req-1",
+    workflow: workflow.name,
+    key: EARLY_KEY,
+    payload: { verdict: "ship" },
+  });
+  assert(held.status === "accepted", `got ${held.status}`);
+  const actions = () => events.map((event) => event.action);
+  assertEquals(actions().includes("workflow.signal.pending"), true);
+  assertEquals(actions().includes("workflow.signal.taken"), false);
+
+  // The step opens its wait and takes the signal.
+  const at = new Date();
+  const wait = SignalWait.open(SCHEMA, 3600, at, undefined, EARLY_KEY);
+  const runId = crypto.randomUUID();
+  const claimed = await claimWaitKey(f.waits, {
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    waitId: wait.id,
+    runId,
+    jobName: "main",
+    stepName: "identify",
+    deadline: wait.deadline.toISOString(),
+    acceptEarly: 600,
+  }, at);
+  assert(claimed.kind === "acquired", `got ${claimed.kind}`);
+  const early = earlyWaitRef({
+    waitId: wait.id,
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    runId,
+    deadline: wait.deadline.toISOString(),
+    schema: SCHEMA,
+    key: EARLY_KEY,
+    early: claimed.claim.early,
+  });
+  assert(early !== undefined);
+  const taken = await takePendingSignal(f.waits, early);
+  assertEquals(taken.kind === "found" && taken.record.kind, "accepted");
+
+  const audited = events.filter((event) =>
+    event.action === "workflow.signal.taken"
+  );
+  assertEquals(audited.length, 1);
+  assertEquals(audited[0].principalId, "system");
+  assertEquals(
+    audited[0].detail,
+    `receipt=${held.data.signal.id} key=${EARLY_KEY} wait=${wait.id} run=${runId} workflow=${workflow.id}`,
+  );
+  for (const event of events) {
+    assertEquals(JSON.stringify(event).includes("ship"), false);
+  }
 });

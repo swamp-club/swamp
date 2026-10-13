@@ -174,6 +174,13 @@ export {
   type WorkflowRunSearchItem,
 } from "./workflows/run_search.ts";
 export {
+  workflowRunSummary,
+  type WorkflowRunSummaryData,
+  type WorkflowRunSummaryDeps,
+  type WorkflowRunSummaryEvent,
+  type WorkflowRunSummaryInput,
+} from "./workflows/run_summary.ts";
+export {
   workflowHistorySearch,
   type WorkflowHistorySearchData,
   type WorkflowHistorySearchDeps,
@@ -304,6 +311,8 @@ export {
   type ModelOutputSearchEvent,
   type ModelOutputSearchInput,
   type ModelOutputSearchItem,
+  type ModelOutputSearchModel,
+  type ModelOutputSearchOutput,
 } from "./models/output_search.ts";
 export {
   type ArtifactsData,
@@ -1115,6 +1124,7 @@ export {
   parseExtensionRef,
   resolveServerUrl,
   type ShadowedTypeInfo,
+  type UnoptedPrereleaseNotice,
   validateExtensionName,
 } from "./extensions/pull.ts";
 export {
@@ -1744,6 +1754,7 @@ export {
 export {
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
+  type CustomModelLockSource,
   datastoreLockRelease,
   type DatastoreLockReleaseData,
   type DatastoreLockReleaseDeps,
@@ -1824,3 +1835,41 @@ export {
   type QuestPassDeps,
   type QuestPassEvent,
 } from "./quest/pass.ts";
+export {
+  createStartDeps,
+  resolveStartWorkspacePath,
+  type SignedInState,
+  startAddTools,
+  startBack,
+  startCheckFolder,
+  startChooseHarness,
+  type StartContents,
+  type StartDeps,
+  type StartFolderCheck,
+  type StartHarnessInfo,
+  startImportWorkspace,
+  startInspect,
+  type StartInspection,
+  startLaunch,
+  type StartLaunchEvent,
+  startListHarnesses,
+  startListTasks,
+  startListWorkspaces,
+  startOpenAgent,
+  startOpenWorkspace,
+  startPickFolder,
+  startPrepare,
+  type StartPrepareEvent,
+  type StartRepoOps,
+  startResume,
+  startSaveTask,
+  type StartScreen,
+  type StartSignals,
+  startSignIn,
+  type StartSignInEvent,
+  type StartStatus,
+  startStatus,
+  type StartStatusEvent,
+  type StartTaskSummary,
+  type StartWorkspaceSummary,
+} from "./start/start.ts";

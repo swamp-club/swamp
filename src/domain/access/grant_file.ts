@@ -30,6 +30,7 @@ import {
 import type { Subject } from "./subject.ts";
 import { parseSubject } from "./subject.ts";
 import {
+  canonicalResourceSelectorString,
   parseResourceSelector,
   type ResourceKind,
   type ResourceSelector,
@@ -210,10 +211,14 @@ export function parseGrantFile(
       : raw.resources!;
 
     if (raw.resources) {
+      // Compared as parsed, so `model:x` and `behavior:x`, one selector in
+      // two spellings, collide (swamp-club#3334). A selector that does not
+      // parse is compared as written; its parse error is reported below.
       const seen = new Set<string>();
       let hasDuplicate = false;
       for (const r of raw.resources) {
-        if (seen.has(r)) {
+        const key = canonicalResourceSelectorString(r);
+        if (seen.has(key)) {
           errors.push({
             filename,
             entryIndex: i,
@@ -222,7 +227,7 @@ export function parseGrantFile(
           hasDuplicate = true;
           break;
         }
-        seen.add(r);
+        seen.add(key);
       }
       if (hasDuplicate) continue;
     }

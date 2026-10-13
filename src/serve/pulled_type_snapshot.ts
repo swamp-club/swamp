@@ -61,7 +61,7 @@ const PULLED_TYPE_KINDS: ReadonlySet<string> = new Set<PulledTypeKind>([
   "webhook",
 ]);
 
-function isPulledTypeKind(kind: string): kind is PulledTypeKind {
+export function isPulledTypeKind(kind: string): kind is PulledTypeKind {
   return PULLED_TYPE_KINDS.has(kind);
 }
 
@@ -94,26 +94,53 @@ export function capturePulledTypes(
   return snapshot;
 }
 
-/** Removes one pulled type from the registry of its kind. */
+/**
+ * True when `ref` names a type that ships with swamp. A pulled extension
+ * that declares such a type never replaces it, and removing the extension
+ * never unregisters it (swamp-club#2746). Built-in webhook schemes are not
+ * in the webhook registry, so no webhook type is built in.
+ */
+export function isBuiltInType(
+  ref: PulledTypeRef & { readonly kind: PulledTypeKind },
+): boolean {
+  switch (ref.kind) {
+    case "model":
+      return modelRegistry.isBuiltIn(ref.type);
+    case "vault":
+      return vaultTypeRegistry.get(ref.type)?.isBuiltIn === true;
+    case "datastore":
+      return datastoreTypeRegistry.get(ref.type)?.isBuiltIn === true;
+    case "report":
+      return reportRegistry.isBuiltIn(ref.type);
+    case "webhook":
+      return false;
+  }
+}
+
+/**
+ * Removes one pulled type from the registry of its kind. Returns false,
+ * leaving the registry as it is, for a built-in type.
+ */
 export function unregisterPulledType(
   ref: PulledTypeRef & { readonly kind: PulledTypeKind },
-): void {
+): boolean {
+  if (isBuiltInType(ref)) return false;
   switch (ref.kind) {
     case "model":
       modelRegistry.invalidateType(ref.type);
       removeAttachedExtensionsForType(ref.type);
-      return;
+      return true;
     case "vault":
       vaultTypeRegistry.invalidateType(ref.type);
-      return;
+      return true;
     case "datastore":
       datastoreTypeRegistry.invalidateType(ref.type);
-      return;
+      return true;
     case "report":
       reportRegistry.invalidateType(ref.type);
-      return;
+      return true;
     case "webhook":
       webhookTypeRegistry.invalidateType(ref.type);
-      return;
+      return true;
   }
 }

@@ -23,7 +23,10 @@ import type {
   WaitRegistration,
 } from "./signal_wait_records.ts";
 import type { WaitKeyRecords } from "./wait_key_claim.ts";
-import type { PendingSignalRecords } from "./pending_signal.ts";
+import type {
+  PendingSignalRecords,
+  PendingSignalTakenListener,
+} from "./pending_signal.ts";
 
 /**
  * Where the registrations and outcomes of signal waits are kept
@@ -62,6 +65,13 @@ export interface SignalWaitStore extends WaitKeyRecords, PendingSignalRecords {
   removeRegistration(waitId: string): Promise<void>;
 
   removeOutcome(waitId: string): Promise<void>;
+
+  /**
+   * Set by a process that records each pending signal a wait takes through
+   * this store, as `swamp serve` does for its audit log (swamp-club#3213).
+   * Not part of what a store keeps: `takePendingSignal` calls it.
+   */
+  pendingTaken?: PendingSignalTakenListener;
 }
 
 /**

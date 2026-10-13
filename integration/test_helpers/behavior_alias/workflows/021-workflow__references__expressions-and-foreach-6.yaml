@@ -1,0 +1,16 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/expressions-and-foreach.md (block 6)
+id: 00000000-0000-4000-8000-000000000021
+name: corpus-21
+jobs:
+  - name: process-all
+    steps:
+      - name: process-${{ self.instance.name }}
+        forEach:
+          item: instance
+          in: ${{ data.findBySpec("my-factory", "instance") }}
+        task:
+          type: model_method
+          modelIdOrName: processor
+          methodName: run
+          inputs:
+            target: ${{ self.instance.name }}

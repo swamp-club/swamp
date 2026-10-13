@@ -506,6 +506,57 @@ Deno.test("defineModel is idempotent when called with same model", () => {
   assertEquals(result2, model);
 });
 
+Deno.test("defineModel: marks the type it registers as built in (swamp-club#2746)", async () => {
+  const { modelRegistry } = await import("./model.ts");
+  const type = `test/define-model-built-in-${crypto.randomUUID()}`;
+  try {
+    defineModel(createTestModel(type));
+
+    assertEquals(modelRegistry.isBuiltIn(type), true);
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("defineModel: leaves a type registered by another path unmarked (swamp-club#2746)", async () => {
+  const { modelRegistry } = await import("./model.ts");
+  const type = `test/define-model-preregistered-${crypto.randomUUID()}`;
+  try {
+    modelRegistry.register(createTestModel(type));
+    defineModel(createTestModel(type));
+
+    assertEquals(modelRegistry.isBuiltIn(type), false);
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("ModelRegistry.isBuiltIn: false for a type added with register (swamp-club#2746)", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("@test/extension-type"));
+
+  assertEquals(registry.isBuiltIn("@test/extension-type"), false);
+});
+
+Deno.test("ModelRegistry.isBuiltIn: the mark survives invalidateType and matches any spelling (swamp-club#2746)", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+  registry.markBuiltIn("command/shell");
+
+  registry.invalidateType("command/shell");
+
+  assertEquals(registry.isBuiltIn("command/shell"), true);
+  assertEquals(registry.isBuiltIn("Command/Shell"), true);
+  assertEquals(registry.isBuiltIn(ModelType.create("command/shell")), true);
+});
+
+Deno.test("modelRegistry: every type the built-in barrel registers is marked built in (swamp-club#2746)", async () => {
+  const { modelRegistry } = await import("./models.ts");
+  for (const type of ["command/shell", "swamp/grant", "swamp/worker"]) {
+    assertEquals(modelRegistry.isBuiltIn(type), true, type);
+  }
+});
+
 // ModelRegistry.extend() tests
 
 Deno.test("ModelRegistry.extend adds methods to existing model", () => {

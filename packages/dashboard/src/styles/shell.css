@@ -1,0 +1,28 @@
+/* App shell additions: the time range bar above run-based pages and the
+   sidebar's "off" nav items. Keep 768px in sync with styles.css. */
+
+.shell-topbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+  margin: -8px 0 12px;
+}
+
+.nav-item-off:hover .nav-label,
+.nav-item-off:focus-visible .nav-label {
+  opacity: 0.85 !important;
+}
+
+@media (min-width: 769px) {
+  .app.sidebar-collapsed .nav-off {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .shell-topbar {
+    margin: 0 0 12px;
+  }
+}

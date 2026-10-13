@@ -24,11 +24,23 @@ import { useRequest } from "../client/useRequest";
 import { extractArray, extractObject } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
 import { serveConfigRows } from "./serve_config_rows";
+import { EmptyState } from "../components/EmptyState";
+import { LoadError } from "../components/LoadError";
+import { Skeleton } from "../components/Skeleton";
+import { loadState } from "../client/load_state.ts";
+import {
+  CLUSTER_COLUMNS,
+  DeploymentPanelSkeleton,
+  KeyValuePanelSkeleton,
+  SERVE_CONFIG_KEYS,
+  TablePanelSkeleton,
+  WORKER_COLUMNS,
+} from "./PageSkeletons.tsx";
 
 interface ClusterInstance {
   instanceId: string;
   hostname: string;
-  startedAt: string;
+  startedAt: string | null;
   lastHeartbeatAt: string;
   status: string;
   address?: string;
@@ -52,20 +64,28 @@ export function System(
   { health, denied }: { health: HealthSnapshot | null; denied: boolean },
 ) {
   const healthState = healthViewState(health, denied);
-  const { data: clusterData } = useRequest("cluster.instances");
-  const { data: configData } = useRequest("serve.config");
-  const { data: workersData } = useRequest("worker.list");
-  const { data: datastoreData } = useRequest("datastore.status");
+  const clusterReq = useRequest("cluster.instances");
+  const configReq = useRequest("serve.config");
+  const workersReq = useRequest("worker.list");
+  const datastoreReq = useRequest("datastore.status");
+  const datastoreData = datastoreReq.data;
 
-  const instances = extractArray<ClusterInstance>(clusterData);
-  const configRows = serveConfigRows(configData);
-  const workers = extractArray<WorkerInfo>(workersData);
+  const instances = extractArray<ClusterInstance>(clusterReq.data);
+  const configRows = serveConfigRows(configReq.data);
+  const workers = extractArray<WorkerInfo>(workersReq.data);
+  const clusterState = loadState(clusterReq, () => instances.length === 0);
+  const workersState = loadState(workersReq, () => workers.length === 0);
+  const datastoreState = loadState(datastoreReq, () => false);
+  const configState = loadState(configReq, () => configRows === null);
 
   return (
     <>
       <div className="page-header">
         <h1>System</h1>
         <div className="header-right">
+          {healthState === "loading" && (
+            <Skeleton width={96} height={26} radius={20} />
+          )}
           {health && (
             <div className="health-pill">
               <span className="health-dot" />
@@ -79,7 +99,22 @@ export function System(
         </div>
       </div>
 
-      {instances.length > 0 && (
+      {clusterState === "loading" && (
+        <TablePanelSkeleton
+          title="Cluster Instances"
+          columns={CLUSTER_COLUMNS}
+          rows={1}
+          label="Loading cluster instances"
+        />
+      )}
+      {clusterState === "error" && (
+        <LoadError
+          subject="cluster instances"
+          message={clusterReq.error}
+          onRetry={clusterReq.refetch}
+        />
+      )}
+      {clusterState === "ready" && (
         <div className="panel" style={{ marginBottom: 14 }}>
           <div className="panel-header">
             <div className="panel-title">
@@ -91,13 +126,9 @@ export function System(
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Instance</th>
-                  <th>Status</th>
-                  <th>Uptime</th>
-                  <th>Active Runs</th>
-                  <th>Throughput</th>
-                  <th>P95 Latency</th>
-                  <th>Workers</th>
+                  {CLUSTER_COLUMNS.map((c) => (
+                    <th key={c.header}>{c.header}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -146,7 +177,35 @@ export function System(
         </div>
       )}
 
-      {workers.length > 0 && (
+      {workersState === "loading" && (
+        <TablePanelSkeleton
+          title="Workers"
+          columns={WORKER_COLUMNS}
+          rows={2}
+          label="Loading workers"
+        />
+      )}
+      {workersState === "error" && (
+        <LoadError
+          subject="workers"
+          message={workersReq.error}
+          onRetry={workersReq.refetch}
+        />
+      )}
+      {workersState === "empty" && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <div className="panel-header">
+            <div className="panel-title">
+              Workers <span className="panel-count">0</span>
+            </div>
+          </div>
+          <EmptyState title="No remote workers">
+            Steps run on this serve. Workers that join with{" "}
+            <code>swamp worker connect</code> show here with their dispatches.
+          </EmptyState>
+        </div>
+      )}
+      {workersState === "ready" && (
         <div className="panel" style={{ marginBottom: 14 }}>
           <div className="panel-header">
             <div className="panel-title">
@@ -157,9 +216,9 @@ export function System(
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Worker</th>
-                  <th>Status</th>
-                  <th>Active Dispatches</th>
+                  {WORKER_COLUMNS.map((c) => (
+                    <th key={c.header}>{c.header}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -180,7 +239,7 @@ export function System(
         </div>
       )}
 
-      {healthState !== "ready" && (
+      {healthState === "denied" && (
         <div className="panel" style={{ marginBottom: 14 }}>
           <HealthUnavailable
             state={healthState}
@@ -191,6 +250,7 @@ export function System(
 
       {/* Deployment + Datastore side by side */}
       <div className="panels-grid" style={{ marginBottom: 14 }}>
+        {healthState === "loading" && <DeploymentPanelSkeleton />}
         {health && (
           <div className="panel">
             <div className="panel-header">
@@ -271,7 +331,27 @@ export function System(
           </div>
         )}
 
-        {datastoreData && (
+        {datastoreState === "loading" && (
+          <KeyValuePanelSkeleton
+            title="Datastore"
+            rows={5}
+            label="Loading datastore status"
+          />
+        )}
+        {datastoreState === "error" && (
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-title">Datastore</div>
+            </div>
+            <LoadError
+              subject="datastore status"
+              message={datastoreReq.error}
+              onRetry={datastoreReq.refetch}
+              inset
+            />
+          </div>
+        )}
+        {datastoreState === "ready" && datastoreData && (
           <div className="panel">
             <div className="panel-header">
               <div className="panel-title">Datastore</div>
@@ -340,6 +420,20 @@ export function System(
       </div>
 
       {/* Serve Configuration */}
+      {configState === "loading" && (
+        <KeyValuePanelSkeleton
+          title="Serve Configuration"
+          keys={SERVE_CONFIG_KEYS}
+          label="Loading serve configuration"
+        />
+      )}
+      {configState === "error" && (
+        <LoadError
+          subject="serve configuration"
+          message={configReq.error}
+          onRetry={configReq.refetch}
+        />
+      )}
       {configRows && (
         <div className="panel">
           <div className="panel-header">
@@ -365,8 +459,10 @@ export function System(
   );
 }
 
-function formatUptime(startedAt: string): string {
+function formatUptime(startedAt: string | null): string {
+  if (!startedAt) return "—";
   const ms = Date.now() - new Date(startedAt).getTime();
+  if (!Number.isFinite(ms)) return "—";
   const hours = Math.floor(ms / 3600000);
   const minutes = Math.floor((ms % 3600000) / 60000);
   if (hours > 0) return `${hours}h ${minutes}m`;

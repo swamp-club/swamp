@@ -1,0 +1,40 @@
+# Extracted from .claude/skills/swamp/references/workflow/reference.md (block 1)
+id: 00000000-0000-4000-8000-000000000009
+name: my-deploy-workflow
+description: Deploy workflow with build and deploy jobs
+version: 1
+inputs:
+  properties:
+    environment:
+      type: string
+      enum: ["dev", "staging", "production"]
+      description: Target deployment environment
+    replicas:
+      type: integer
+      default: 1
+  required: ["environment"]
+jobs:
+  - name: build
+    description: Build the application
+    steps:
+      - name: compile
+        description: Compile source code
+        task:
+          type: model_method
+          modelIdOrName: build-runner
+          methodName: build
+  - name: deploy
+    description: Deploy the application
+    dependsOn:
+      - job: build
+        condition:
+          type: succeeded
+    steps:
+      - name: upload
+        description: Upload artifacts
+        task:
+          type: model_method
+          modelIdOrName: deploy-service
+          methodName: deploy
+          inputs:
+            environment: ${{ inputs.environment }}

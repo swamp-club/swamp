@@ -29,6 +29,7 @@ import type { TelemetryService } from "../domain/telemetry/telemetry_service.ts"
 
 import type { DatastoreConfigData } from "../domain/datastore/datastore_config.ts";
 import type { VaultConfigData } from "../domain/vaults/vault_config.ts";
+import { isBooleanFlag } from "./boolean_flags.ts";
 
 const BUILTIN_VAULT_TYPES = new Set(["local_encryption", "mock"]);
 
@@ -152,13 +153,53 @@ const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
   // `swamp behavior run <model|@type> <method> [name]` (swamp-club#3265). This
   // runs before the command tree exists, so the alias spelling cannot be
   // canonicalised here and needs its own entry.
-  "behavior run": ["redact", "categorical", "redact"], // name or @type, method, name
-  "behaviour run": ["redact", "categorical", "redact"],
   "model output": ["categorical", "redact"], // sub-subcmd, id/query
   "vault create": ["categorical", "redact"], // type, name
   "type describe": ["categorical"], // type
   "workflow history": ["categorical", "redact"], // sub-subcmd, name
+  ...behaviorArgSchemas(),
 };
+
+/**
+ * The `swamp behavior …` paths (swamp-club#3265, swamp-club#3331), each
+ * classified like its legacy `swamp model …` twin. This runs before the
+ * command tree exists, so the `behaviour` alias cannot be canonicalised and
+ * gets its own entries. The schema is keyed on two words, so the positions
+ * after `behavior <sub>` mirror the positions after the legacy key's second
+ * word: `behavior run` and `describe` take the slots after `model method
+ * <word>`, `create` matches `model create`, and the rest, including the
+ * `history` and `output` shorthands, are all-redact.
+ */
+function behaviorArgSchemas(): Record<
+  string,
+  readonly ("categorical" | "redact")[]
+> {
+  const schemas: Record<string, readonly ("categorical" | "redact")[]> = {
+    run: ["redact", "categorical", "redact"], // name or @type, method, name
+    create: ["categorical", "redact"], // type, name
+    describe: ["redact", "categorical"], // name, method
+    // `history <name>` and `output <name>` are shorthands that take a name
+    // first, so neither slot can be categorical without recording it.
+    history: ["redact", "redact"], // sub-subcmd or name, id or name
+    output: ["redact", "redact"], // sub-subcmd or name, id/query
+    get: ["redact"],
+    edit: ["redact"],
+    delete: ["redact"],
+    validate: ["redact"],
+    evaluate: ["redact"],
+    search: ["redact"],
+    list: ["redact"],
+    cancel: ["redact"],
+    type: ["redact", "redact"], // sub-subcmd, type
+  };
+  const entries: Record<string, readonly ("categorical" | "redact")[]> = {};
+  for (const group of ["behavior", "behaviour"]) {
+    for (const [sub, schema] of Object.entries(schemas)) {
+      entries[`${group} ${sub}`] = schema;
+    }
+  }
+  return entries;
+}
 
 /** Global options that are tracked separately */
 export const GLOBAL_OPTIONS: ReadonlySet<string> = new Set([
@@ -294,48 +335,8 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
 function consumesNextArg(arg: string, next: string | undefined): boolean {
   return next !== undefined &&
     !next.startsWith("-") &&
-    !isKnownFlag(arg) &&
+    !isBooleanFlag(arg) &&
     !arg.includes("=");
-}
-
-/**
- * Known boolean flags that don't take values.
- */
-function isKnownFlag(option: string): boolean {
-  const flags = new Set([
-    "--json",
-    "-q",
-    "--quiet",
-    "-v",
-    "--verbose",
-    "--no-telemetry",
-    "--no-color",
-    "--show-properties",
-    "--force",
-    "-f",
-    "--help",
-    "-h",
-    "--version",
-    "-V",
-    "--dry-run",
-    "--all",
-    "-a",
-    "--yes",
-    "-y",
-    "--check",
-    "--verify",
-    "--prune",
-    "--streaming",
-    "--last-evaluated",
-    // Boolean flags of a method run: without these, `--skip-checks create
-    // my-def` would shift the definition name into the categorical method
-    // slot and record it (swamp-club#3265).
-    "--skip-checks",
-    "--skip-reports",
-    "--stdin",
-    "--literal-inputs",
-  ]);
-  return flags.has(option);
 }
 
 /**

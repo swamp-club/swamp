@@ -52,6 +52,8 @@ import {
 import type { SignalReceipt } from "../domain/workflows/signal_wait.ts";
 import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import { SIGNAL_WAITS_NOT_CONFIGURED } from "../domain/workflows/signal_wait_store.ts";
+import { declaredEarlyWait } from "../domain/workflows/early_signal.ts";
+import type { Workflow } from "../domain/workflows/workflow.ts";
 import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -59,6 +61,7 @@ import {
   callerResourceDecider,
   type ConnectionContext,
   type DecisionSubject,
+  emitSystemAuditEvent,
   handlerLibSwampContext,
   isCallerAuthorized,
   resolveDisplayPrincipal,
@@ -72,6 +75,7 @@ import {
   workflowAccessResource,
 } from "./handlers/resource_resolution.ts";
 import type {
+  WorkflowSignalAcceptedResponseData,
   WorkflowSignalPendingResponseData,
   WorkflowSignalResponseData,
 } from "./protocol.ts";
@@ -113,6 +117,13 @@ export type SignalDeliveryRequest = SignalDeliveryAddress & {
    * whatever the step declares (swamp-club#3212). Defaults to true.
    */
   readonly holdEarly?: boolean;
+  /**
+   * False for a caller that cannot read an `accepted` answer
+   * (swamp-club#3213). Where that is the only answer the caller may be
+   * given, the signal is then refused `upgrade_required` before any wait is
+   * looked for. Defaults to true.
+   */
+  readonly acceptsReceipt?: boolean;
   /**
    * The sender's idempotency key, already in the form of one. A signal
    * whose key matches one already received is answered with that signal.
@@ -172,6 +183,32 @@ export type SignalDeliveryResult =
      */
     readonly workflow: { readonly id: string; readonly name: string };
   }
+  /**
+   * By key, for a caller who may not read the workflow, on a key whose step
+   * sets `acceptEarly` (swamp-club#3213): the receipt alone, whether a wait
+   * took the signal or it is held, so the answer does not say whether a run
+   * is waiting.
+   */
+  | {
+    readonly status: "accepted";
+    readonly data: WorkflowSignalAcceptedResponseData;
+    /** For the server's own use, as on a `pending` answer. */
+    readonly workflow: { readonly id: string; readonly name: string };
+    /**
+     * The run of the wait that took the signal, when one did. For the
+     * server's own use, as on a `delivered` answer.
+     */
+    readonly run?: {
+      readonly workflowId: string;
+      readonly runId: string;
+      readonly recordAvailable: boolean;
+    };
+  }
+  /**
+   * The only answer the caller may be given is `accepted`, and their client
+   * cannot read one. Nothing was delivered or stored.
+   */
+  | { readonly status: "upgrade_required"; readonly message: string }
   /**
    * An unknown wait ID, an unknown workflow, a key the workflow does not
    * declare, or a wait the caller may not signal.
@@ -246,6 +283,37 @@ function genericLastWait(last: SignalLastWait): string {
  * not know the address a client reached it by, so that is left to fill in.
  */
 const SERVER_WAITS_COMMAND = "swamp workflow waits --server <server>";
+
+/**
+ * What a client that cannot read an `accepted` answer is told. The same
+ * sentence whether or not a wait is open: it is decided before one is
+ * looked for.
+ */
+export const SIGNAL_UPGRADE_REQUIRED_MESSAGE =
+  "This server answers a signal for that key with a receipt this client cannot read, so the signal was not delivered and nothing was stored. Upgrade swamp here and send it again.";
+
+/** The receipt as an `accepted` answer carries it: never the wait. */
+function acceptedData(
+  signal: {
+    id: string;
+    receivedAt: string;
+    submittedBy: string;
+    idempotencyKey?: string;
+  },
+  duplicate: boolean | undefined,
+): WorkflowSignalAcceptedResponseData {
+  return {
+    signal: {
+      id: signal.id,
+      receivedAt: signal.receivedAt,
+      submittedBy: signal.submittedBy,
+      ...(signal.idempotencyKey !== undefined
+        ? { idempotencyKey: signal.idempotencyKey }
+        : {}),
+    },
+    ...(duplicate ? { duplicate: true as const } : {}),
+  };
+}
 
 const NOT_FOUND: SignalDeliveryResult = {
   status: "not_found",
@@ -403,6 +471,14 @@ async function authorizeKeyTarget(
  * declared key no open wait holds is `no_open_wait`, to a caller who may
  * signal the workflow.
  *
+ * On a key whose step sets `acceptEarly`, a caller who may not read the
+ * workflow they named is answered `accepted`, with the receipt alone
+ * (swamp-club#3213). Whether that is so is decided once, from the authorized
+ * workflow's definition and before any wait is looked for, and it holds for
+ * every answer to the request: a signal a wait took and one that is held
+ * read the same, a refusal names no time and no earlier wait, and the signal
+ * is held whatever `holdEarly` says.
+ *
  * Nothing is written but the wait's outcome record: no run is saved, no
  * claim or reservation is taken and nothing is pushed. Continuing the run
  * is the caller's next step (see {@link continueAfterSignal}).
@@ -447,6 +523,35 @@ export async function deliverSignalForCaller(
     if (!isWaitKey(request.key)) return NOT_FOUND;
     keyTarget = target;
     named = `key ${request.key} of workflow ${target.name}`;
+  }
+
+  // By key the definition is read once, here: the use case is handed this
+  // workflow, so the reply's shape and what is done with the signal are
+  // decided from the same definition.
+  let keyWorkflow: Workflow | null = null;
+  let receiptOnly = false;
+  if (keyTarget && !("waitId" in request)) {
+    try {
+      keyWorkflow = await findWorkflowById(
+        ctx.repoContext.workflowRepo,
+        keyTarget.id,
+        keyTarget.name,
+      );
+    } catch (error) {
+      logger.warn("Signal for {address} failed: {error}", {
+        address: named,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { status: "failed", message: "Signal delivery failed" };
+    }
+    receiptOnly = !keyTarget.readable && keyWorkflow !== null &&
+      declaredEarlyWait(keyWorkflow, request.key) !== undefined;
+    if (receiptOnly && request.acceptsReceipt === false) {
+      return {
+        status: "upgrade_required",
+        message: SIGNAL_UPGRADE_REQUIRED_MESSAGE,
+      };
+    }
   }
 
   // By key the caller is a reader only if they may read the workflow they
@@ -511,16 +616,7 @@ export async function deliverSignalForCaller(
     // By key the use case acts on the workflow that was authorized: found
     // by its id and accepted only under the authorized name, so neither a
     // workflow named with that id nor a copy that shares it is reached.
-    ...(keyTarget
-      ? {
-        findWorkflow: () =>
-          findWorkflowById(
-            ctx.repoContext.workflowRepo,
-            keyTarget.id,
-            keyTarget.name,
-          ),
-      }
-      : {}),
+    ...(keyTarget ? { findWorkflow: () => Promise.resolve(keyWorkflow) } : {}),
   };
   const address = "waitId" in request
     ? { waitId: waitId! }
@@ -541,7 +637,11 @@ export async function deliverSignalForCaller(
           : {}),
         authorize,
         waitsCommand: SERVER_WAITS_COMMAND,
-        ...(request.holdEarly === false ? { holdEarly: false } : {}),
+        // A caller answered with the receipt alone is never refused for
+        // want of an open wait: that refusal would say none is open.
+        ...(request.holdEarly === false && !receiptOnly
+          ? { holdEarly: false }
+          : {}),
         ...(request.idempotencyKey !== undefined
           ? { idempotencyKey: request.idempotencyKey }
           : {}),
@@ -570,8 +670,11 @@ export async function deliverSignalForCaller(
               : [];
             result = {
               status: "invalid_payload",
-              // An early signal has no wait to stay open.
-              message: ((details as { early?: unknown })?.early === true
+              // An early signal has no wait to stay open. A caller answered
+              // with the receipt alone is not told which it was.
+              message: (receiptOnly
+                ? "Payload refused:\n"
+                : (details as { early?: unknown })?.early === true
                 ? "Payload refused; nothing was stored:\n"
                 : "Payload refused; the wait stays open:\n") +
                 errors.map((error) =>
@@ -583,10 +686,13 @@ export async function deliverSignalForCaller(
             const receipt = readable && kind === "already_settled"
               ? (event.error.details as { receipt?: SignalReceipt }).receipt
               : undefined;
-            const last = kind === "no_open_wait"
+            // Neither is given to a caller answered with the receipt alone:
+            // when a signal stops being held, and how the key's last wait
+            // was settled, are facts about the workflow's runs.
+            const last = kind === "no_open_wait" && !receiptOnly
               ? signalLastWait(event.error)
               : undefined;
-            const earlier = kind === "already_pending"
+            const earlier = kind === "already_pending" && !receiptOnly
               ? event.error.details as {
                 receipt?: PendingSignalReceipt;
                 heldUntil?: string;
@@ -636,6 +742,13 @@ export async function deliverSignalForCaller(
 
   if (held !== undefined) {
     emitHeld(ctx, caller, request.requestId, held);
+    if (receiptOnly) {
+      return {
+        status: "accepted",
+        workflow: { id: held.workflowId, name: held.workflowName },
+        data: acceptedData(held.signal, held.duplicate),
+      };
+    }
     return {
       status: "pending",
       workflow: { id: held.workflowId, name: held.workflowName },
@@ -670,6 +783,18 @@ export async function deliverSignalForCaller(
   }
 
   emitDelivered(ctx, caller, request.requestId, delivered);
+  if (receiptOnly) {
+    return {
+      status: "accepted",
+      workflow: { id: delivered.workflowId, name: delivered.workflowName },
+      run: {
+        workflowId: delivered.workflowId,
+        runId: delivered.runId,
+        recordAvailable: delivered.runRecordAvailable,
+      },
+      data: acceptedData(delivered.signal, delivered.duplicate),
+    };
+  }
   return {
     status: "delivered",
     run: {
@@ -733,6 +858,7 @@ function emitDelivered(
     detail:
       `wait=${delivered.waitId} receipt=${delivered.signal.id} run=${delivered.runId}` +
       (delivered.key !== undefined ? ` key=${delivered.key}` : "") +
+      (delivered.taken ? " taken=true" : "") +
       (delivered.duplicate ? " duplicate=true" : ""),
   }));
 }
@@ -775,6 +901,27 @@ function emitHeld(
 }
 
 /**
+ * Has every pending signal a wait takes through this server's wait store
+ * audited as `workflow.signal.taken`, with the receipt ID, the key, the
+ * wait and the run, and never the payload (swamp-club#3213). The step that
+ * opens its wait, a signaller that finds the key claimed and the
+ * continuation sweep all take through the one store, so each is recorded
+ * whoever made it. No request made the take, so it is a system event. Two
+ * instances that take one signal at the same moment both record it; the
+ * receipt ID says they are one take.
+ */
+export function auditTakenSignals(ctx: ConnectionContext): void {
+  const waits = ctx.repoContext.signalWaits;
+  if (!waits?.supported) return;
+  waits.store.pendingTaken = (taken) =>
+    emitSystemAuditEvent(
+      ctx,
+      "workflow.signal.taken",
+      `receipt=${taken.receiptId} key=${taken.key} wait=${taken.waitId} run=${taken.runId} workflow=${taken.workflowId}`,
+    );
+}
+
+/**
  * Tries to continue the run a delivered signal belongs to, now that one
  * more of its waits is settled (swamp-club#3108). The WebSocket handler
  * calls it after sending its reply; the HTTP route before building its own,
@@ -787,10 +934,14 @@ export async function continueAfterSignal(
   result: SignalDeliveryResult,
   subject: DecisionSubject,
 ): Promise<void> {
-  if (result.status !== "delivered") return;
+  // An `accepted` answer names a run only when a wait took the signal.
+  const run = result.status === "delivered" || result.status === "accepted"
+    ? result.run
+    : undefined;
+  if (run === undefined) return;
   try {
-    if (!result.run.recordAvailable) await hydrateMissingRun(ctx, result.run);
-    await continueSettledRun(ctx, result.run, {
+    if (!run.recordAvailable) await hydrateMissingRun(ctx, run);
+    await continueSettledRun(ctx, run, {
       kind: "signal",
       principalId: subject.principal
         ? principalToString(subject.principal)
@@ -804,7 +955,7 @@ export async function continueAfterSignal(
     logger.warn(
       "Could not continue run {runId} after its signal: {error}",
       {
-        runId: result.run.runId,
+        runId: run.runId,
         error: error instanceof Error ? error.message : String(error),
       },
     );

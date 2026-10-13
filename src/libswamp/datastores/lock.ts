@@ -149,6 +149,10 @@ export type DatastoreLockStatusEvent =
 /** Input for lock status. */
 export interface DatastoreLockStatusInput {
   datastoreType: string;
+  /**
+   * Kept for callers; per-model locks are reported for every datastore type
+   * since swamp-club#3372.
+   */
   isFilesystemDatastore: boolean;
 }
 
@@ -179,20 +183,18 @@ export async function* datastoreLockStatus(
 
       const info = await deps.inspectGlobalLock();
 
-      // Scan for per-model locks (filesystem only) — yield these first
-      if (input.isFilesystemDatastore) {
-        const modelLocks = await deps.scanModelLocks();
-        for (const ml of modelLocks) {
-          yield {
-            kind: "model_lock",
-            data: {
-              held: true,
-              info: ml.info,
-              datastoreType: input.datastoreType,
-              lockScope: `${ml.modelType}/${ml.modelId}`,
-            },
-          };
-        }
+      // Per-model locks are yielded first
+      const modelLocks = await deps.scanModelLocks();
+      for (const ml of modelLocks) {
+        yield {
+          kind: "model_lock",
+          data: {
+            held: true,
+            info: ml.info,
+            datastoreType: input.datastoreType,
+            lockScope: `${ml.modelType}/${ml.modelId}`,
+          },
+        };
       }
 
       // Yield the global status as the final completed event
@@ -351,24 +353,121 @@ async function scanModelLocks(
   return results;
 }
 
-/** Wires real infrastructure into DatastoreLockStatusDeps. */
+/** At most this many per-model lock inspects run at once on a custom datastore. */
+const CUSTOM_MODEL_LOCK_INSPECT_CONCURRENCY = 16;
+
+/**
+ * Where a custom datastore's per-model locks come from. A bucket has no
+ * directory to walk, so each of the repo's models has its lock built the way
+ * a run builds it and inspected.
+ *
+ * Only models this checkout lists are inspected, so a lock is missed for a
+ * model this checkout does not know yet: a git-tracked definition not pulled
+ * here, another clone's auto-definition before this clone's next sync, or a
+ * model deleted here.
+ */
+export interface CustomModelLockSource {
+  /** The repo's models, as the modelType/modelId pairs runs lock on. */
+  listModels: () => Promise<Array<{ modelType: string; modelId: string }>>;
+  /** Builds the datastore's lock for a per-model lock key. */
+  createLock: (lockKey: string) => DistributedLock;
+}
+
+/**
+ * Inspects each listed model's lock through the custom datastore's own lock,
+ * with bounded concurrency. A failed inspect fails the scan: reporting the
+ * model as unlocked would be the wrong answer for a lock that could not be
+ * read.
+ */
+async function scanCustomModelLocks(
+  source: CustomModelLockSource,
+  namespace?: string,
+): Promise<
+  Array<{
+    lockKey: string;
+    modelType: string;
+    modelId: string;
+    info: LockInfo;
+  }>
+> {
+  const byKey = new Map<string, { modelType: string; modelId: string }>();
+  for (const model of await source.listModels()) {
+    const key = modelLockKey(namespace, model.modelType, model.modelId);
+    if (!byKey.has(key)) byKey.set(key, model);
+  }
+  const pending = [...byKey.entries()];
+
+  const results: Array<{
+    lockKey: string;
+    modelType: string;
+    modelId: string;
+    info: LockInfo;
+  }> = [];
+  const worker = async () => {
+    for (let next = pending.shift(); next; next = pending.shift()) {
+      const [lockKey, { modelType, modelId }] = next;
+      try {
+        const info = await source.createLock(lockKey).inspect();
+        if (info) results.push({ lockKey, modelType, modelId, info });
+      } catch (error) {
+        // Stop the other workers taking more models; the scan has failed.
+        pending.length = 0;
+        throw new Error(
+          `Could not inspect the lock for ${modelType}/${modelId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { cause: error },
+        );
+      }
+    }
+  };
+  // allSettled so no inspect is still in flight when the scan returns.
+  const settled = await Promise.allSettled(
+    Array.from(
+      {
+        length: Math.min(CUSTOM_MODEL_LOCK_INSPECT_CONCURRENCY, pending.length),
+      },
+      worker,
+    ),
+  );
+  const failed = settled.find((s) => s.status === "rejected");
+  if (failed) throw failed.reason;
+
+  const scope = (r: { modelType: string; modelId: string }) =>
+    `${r.modelType}/${r.modelId}`;
+  return results.sort((a, b) => scope(a) < scope(b) ? -1 : 1);
+}
+
+/**
+ * Wires real infrastructure into DatastoreLockStatusDeps.
+ *
+ * A custom datastore reports per-model locks only when `customModelLocks`
+ * is given.
+ */
 export function createDatastoreLockStatusDeps(
-  globalLock: DistributedLock,
+  globalLock: Pick<DistributedLock, "inspect">,
   config: DatastoreConfig,
+  customModelLocks?: CustomModelLockSource,
 ): DatastoreLockStatusDeps {
-  const isFilesystem = !isCustomDatastoreConfig(config) &&
-    config.type === "filesystem";
-  const datastorePath = isFilesystem ? (config as { path: string }).path : "";
+  if (isCustomDatastoreConfig(config)) {
+    return {
+      inspectGlobalLock: () => globalLock.inspect(),
+      scanModelLocks: () =>
+        customModelLocks
+          ? scanCustomModelLocks(customModelLocks, config.namespace)
+          : Promise.resolve([]),
+    };
+  }
 
   return {
     inspectGlobalLock: () => globalLock.inspect(),
-    scanModelLocks: () => scanModelLocks(datastorePath, config.namespace),
+    scanModelLocks: () => scanModelLocks(config.path, config.namespace),
   };
 }
 
 /** Wires real infrastructure into DatastoreLockReleaseDeps. */
 export function createDatastoreLockReleaseDeps(
-  lock: DistributedLock,
+  lock: Pick<DistributedLock, "inspect" | "forceRelease">,
 ): DatastoreLockReleaseDeps {
   return {
     inspectLock: () => lock.inspect(),

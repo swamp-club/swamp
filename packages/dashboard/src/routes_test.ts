@@ -18,17 +18,22 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import fc from "fast-check";
 import {
   absoluteUrl,
   buildPath,
   type ClickLike,
+  type DetailView,
   encodeSegment,
   isPlainLeftClick,
+  isStartPath,
+  legacyRedirectPath,
   parentOf,
   parseRoute,
   type RouteState,
   viewForDetail,
 } from "./routes.ts";
+import type { View } from "./types.ts";
 
 // ── parseRoute ──────────────────────────────────────────────────────────
 
@@ -147,7 +152,7 @@ Deno.test("buildPath: model detail", () => {
       view: "models",
       detail: { kind: "model", modelName: "my-model" },
     }),
-    "/dashboard/models/my-model",
+    "/dashboard/behaviors/my-model",
   );
 });
 
@@ -177,7 +182,7 @@ Deno.test("buildPath: encodes special characters", () => {
       view: "models",
       detail: { kind: "model", modelName: "my model/v2" },
     }),
-    "/dashboard/models/my%20model%2Fv2",
+    "/dashboard/behaviors/my%20model%2Fv2",
   );
 });
 
@@ -387,7 +392,7 @@ Deno.test("buildPath: deep-link kinds", () => {
       view: "models",
       detail: { kind: "data", modelName: "m", dataName: "d", version: 4 },
     }),
-    "/dashboard/models/m/data/d/versions/4",
+    "/dashboard/behaviors/m/data/d/versions/4",
   );
   assertEquals(
     buildPath({
@@ -399,7 +404,7 @@ Deno.test("buildPath: deep-link kinds", () => {
         variant: "x/y",
       },
     }),
-    "/dashboard/models/m/reports/@a%2Fb/variants/x%2Fy",
+    "/dashboard/behaviors/m/reports/@a%2Fb/variants/x%2Fy",
   );
   assertEquals(
     buildPath({
@@ -506,6 +511,89 @@ Deno.test("parentOf: existing details have no parent", () => {
   assertEquals(parentOf(null), null);
 });
 
+// ── Schedules and webhooks ──────────────────────────────────────────────
+
+Deno.test("parseRoute: schedule detail", () => {
+  assertEquals(parseRoute("/dashboard/schedules/nightly-backup"), {
+    view: "schedules",
+    detail: { kind: "schedule", workflowName: "nightly-backup" },
+  });
+});
+
+Deno.test("parseRoute: schedule detail of a scoped workflow", () => {
+  assertEquals(parseRoute("/dashboard/schedules/@acme%2Fquota-reset"), {
+    view: "schedules",
+    detail: { kind: "schedule", workflowName: "@acme/quota-reset" },
+  });
+});
+
+Deno.test("parseRoute: webhook detail decodes the route's slashes", () => {
+  assertEquals(parseRoute("/dashboard/webhooks/%2Fhooks%2Fgithub-push"), {
+    view: "webhooks",
+    detail: { kind: "webhook", route: "/hooks/github-push" },
+  });
+});
+
+Deno.test("parseRoute: an unencoded webhook route keeps its first segment", () => {
+  assertEquals(parseRoute("/dashboard/webhooks/hooks/github-push"), {
+    view: "webhooks",
+    detail: { kind: "webhook", route: "hooks" },
+  });
+});
+
+Deno.test("parseRoute: a garbled webhook link lands on the webhook list", () => {
+  assertEquals(parseRoute("/dashboard/webhooks/%E0%A4%A"), {
+    view: "webhooks",
+    detail: null,
+  });
+});
+
+Deno.test("buildPath: schedule and webhook details", () => {
+  assertEquals(
+    buildPath({
+      view: "schedules",
+      detail: { kind: "schedule", workflowName: "@acme/quota-reset" },
+    }),
+    "/dashboard/schedules/@acme%2Fquota-reset",
+  );
+  assertEquals(
+    buildPath({
+      view: "webhooks",
+      detail: { kind: "webhook", route: "/hooks/github-push" },
+    }),
+    "/dashboard/webhooks/%2Fhooks%2Fgithub-push",
+  );
+});
+
+Deno.test("round-trip: schedule and webhook details", () => {
+  const states: RouteState[] = [
+    {
+      view: "schedules",
+      detail: { kind: "schedule", workflowName: "deploy api/v2" },
+    },
+    {
+      view: "webhooks",
+      detail: { kind: "webhook", route: "/hooks/stripe events?x=1#y" },
+    },
+  ];
+  for (const state of states) {
+    assertEquals(parseRoute(buildPath(state)), state);
+  }
+});
+
+Deno.test("viewForDetail: schedule and webhook details keep their pages", () => {
+  assertEquals(
+    viewForDetail({ kind: "schedule", workflowName: "w" }),
+    "schedules",
+  );
+  assertEquals(viewForDetail({ kind: "webhook", route: "/h" }), "webhooks");
+});
+
+Deno.test("parentOf: schedule and webhook details close to their list", () => {
+  assertEquals(parentOf({ kind: "schedule", workflowName: "w" }), null);
+  assertEquals(parentOf({ kind: "webhook", route: "/h" }), null);
+});
+
 Deno.test("absoluteUrl: prefixes the origin", () => {
   assertEquals(
     absoluteUrl(
@@ -515,6 +603,284 @@ Deno.test("absoluteUrl: prefixes the origin", () => {
       },
       "https://ops.example.com",
     ),
-    "https://ops.example.com/dashboard/models/m/data/d/versions/2",
+    "https://ops.example.com/dashboard/behaviors/m/data/d/versions/2",
   );
+});
+
+Deno.test("isStartPath: matches the start page with or without a slash", () => {
+  assertEquals(isStartPath("/dashboard/start"), true);
+  assertEquals(isStartPath("/dashboard/start/"), true);
+});
+
+Deno.test("isStartPath: rejects every other path", () => {
+  assertEquals(isStartPath("/dashboard"), false);
+  assertEquals(isStartPath("/dashboard/"), false);
+  assertEquals(isStartPath("/dashboard/starts"), false);
+  assertEquals(isStartPath("/dashboard/start/x"), false);
+  assertEquals(isStartPath("/dashboard/models/start"), false);
+  assertEquals(isStartPath("/start"), false);
+});
+
+Deno.test("isStartPath: the start path is not a serve view", () => {
+  assertEquals(parseRoute("/dashboard/start"), {
+    view: "overview",
+    detail: null,
+  });
+});
+
+// ── behaviors: the canonical segment, and every old link ───────────────
+//
+// The parseRoute("/dashboard/models/...") assertions above stay as the
+// old-link regression suite. Each one is repeated here for the canonical
+// `behaviors` segment and the `behaviours` spelling, which must resolve to
+// the same route.
+
+const BEHAVIOR_LINKS: [string, RouteState][] = [
+  ["", { view: "models", detail: null }],
+  ["/", { view: "models", detail: null }],
+  ["/my-model", {
+    view: "models",
+    detail: { kind: "model", modelName: "my-model" },
+  }],
+  ["/my%20model%2Fv2", {
+    view: "models",
+    detail: { kind: "model", modelName: "my model/v2" },
+  }],
+  ["/incidents/data/state", {
+    view: "models",
+    detail: { kind: "data", modelName: "incidents", dataName: "state" },
+  }],
+  ["/incidents/data/state/versions/3", {
+    view: "models",
+    detail: {
+      kind: "data",
+      modelName: "incidents",
+      dataName: "state",
+      version: 3,
+    },
+  }],
+  ["/m/data/d/versions/01", {
+    view: "models",
+    detail: { kind: "data", modelName: "m", dataName: "d" },
+  }],
+  ["/m/reports/@swamp%2Fmethod-summary", {
+    view: "models",
+    detail: {
+      kind: "report",
+      modelName: "m",
+      reportName: "@swamp/method-summary",
+    },
+  }],
+  ["/m/reports/%40acme%2Fcost/variants/us-east", {
+    view: "models",
+    detail: {
+      kind: "report",
+      modelName: "m",
+      reportName: "@acme/cost",
+      variant: "us-east",
+    },
+  }],
+  ["/data", { view: "models", detail: { kind: "model", modelName: "data" } }],
+  ["/m/data", { view: "models", detail: { kind: "model", modelName: "m" } }],
+  ["/m/data/state%E2%8", {
+    view: "models",
+    detail: { kind: "model", modelName: "m" },
+  }],
+  ["/%E2%8", { view: "models", detail: null }],
+  ["/%40acme%2Fm", {
+    view: "models",
+    detail: { kind: "model", modelName: "@acme/m" },
+  }],
+];
+
+Deno.test("parseRoute: behaviors, models and behaviours links resolve alike", () => {
+  for (const segment of ["behaviors", "models", "behaviours"]) {
+    for (const [rest, expected] of BEHAVIOR_LINKS) {
+      const path = `/dashboard/${segment}${rest}`;
+      assertEquals(parseRoute(path), expected, path);
+    }
+  }
+});
+
+Deno.test("parseRoute: bare behaviors path without /dashboard prefix", () => {
+  assertEquals(parseRoute("/behaviors/my-model"), {
+    view: "models",
+    detail: { kind: "model", modelName: "my-model" },
+  });
+});
+
+Deno.test("buildPath: the behaviors list and its details use behaviors", () => {
+  assertEquals(
+    buildPath({ view: "models", detail: null }),
+    "/dashboard/behaviors",
+  );
+  assertEquals(
+    buildPath({
+      view: "models",
+      detail: { kind: "report", modelName: "m", reportName: "r" },
+    }),
+    "/dashboard/behaviors/m/reports/r",
+  );
+  assertEquals(
+    buildPath({
+      view: "models",
+      detail: { kind: "data", modelName: "@a/m", dataName: "d" },
+    }),
+    "/dashboard/behaviors/@a%2Fm/data/d",
+  );
+});
+
+Deno.test("buildPath: every other list view keeps its own segment", () => {
+  const views: View[] = [
+    "workflows",
+    "executions",
+    "schedules",
+    "webhooks",
+    "approvals",
+    "activity",
+    "data",
+    "vaults",
+    "extensions",
+    "system",
+  ];
+  for (const view of views) {
+    assertEquals(buildPath({ view, detail: null }), `/dashboard/${view}`);
+  }
+});
+
+const ALL_VIEWS: View[] = [
+  "overview",
+  "workflows",
+  "executions",
+  "models",
+  "schedules",
+  "webhooks",
+  "approvals",
+  "activity",
+  "data",
+  "vaults",
+  "extensions",
+  "system",
+];
+
+const name = fc.fullUnicodeString({ minLength: 1, maxLength: 24 });
+
+const detailArb: fc.Arbitrary<NonNullable<DetailView>> = fc.oneof(
+  fc.record({ kind: fc.constant("model" as const), modelName: name }),
+  fc.record({ kind: fc.constant("workflow" as const), workflowName: name }),
+  fc.record({
+    kind: fc.constant("run" as const),
+    workflowName: name,
+    runId: name,
+  }),
+  fc.record(
+    {
+      kind: fc.constant("data" as const),
+      modelName: name,
+      dataName: name,
+      version: fc.integer({ min: 1, max: Number.MAX_SAFE_INTEGER }),
+    },
+    { requiredKeys: ["kind", "modelName", "dataName"] },
+  ),
+  fc.record(
+    {
+      kind: fc.constant("report" as const),
+      modelName: name,
+      reportName: name,
+      variant: name,
+    },
+    { requiredKeys: ["kind", "modelName", "reportName"] },
+  ),
+  fc.record({
+    kind: fc.constant("runReport" as const),
+    workflowName: name,
+    runId: name,
+    reportName: name,
+  }),
+  fc.record({ kind: fc.constant("schedule" as const), workflowName: name }),
+  fc.record({ kind: fc.constant("webhook" as const), route: name }),
+);
+
+const routeArb: fc.Arbitrary<RouteState> = fc.oneof(
+  fc.constantFrom(...ALL_VIEWS).map((view) => ({ view, detail: null })),
+  detailArb.map((detail) => ({ view: viewForDetail(detail), detail })),
+);
+
+Deno.test("round-trip property: parseRoute(buildPath(s)) is s", () => {
+  fc.assert(
+    fc.property(routeArb, (state) => {
+      assertEquals(parseRoute(buildPath(state)), state);
+    }),
+  );
+});
+
+Deno.test("round-trip property: a model-era link redirects to the same route", () => {
+  fc.assert(
+    fc.property(
+      routeArb.filter((state) => state.view === "models"),
+      (state) => {
+        const path = buildPath(state);
+        const legacy = path.replace(
+          /^\/dashboard\/behaviors/,
+          "/dashboard/models",
+        );
+        assertEquals(parseRoute(legacy), state);
+        assertEquals(legacyRedirectPath(legacy), path);
+      },
+    ),
+  );
+});
+
+// ── legacyRedirectPath ──────────────────────────────────────────────────
+
+Deno.test("legacyRedirectPath: rewrites only the leading models segment", () => {
+  const cases: [string, string][] = [
+    ["/dashboard/models", "/dashboard/behaviors"],
+    ["/dashboard/models/", "/dashboard/behaviors/"],
+    ["/dashboard/models/my-model", "/dashboard/behaviors/my-model"],
+    [
+      "/dashboard/models/incidents/data/state/versions/3",
+      "/dashboard/behaviors/incidents/data/state/versions/3",
+    ],
+    [
+      "/dashboard/models/m/reports/%40acme%2Fcost/variants/us-east",
+      "/dashboard/behaviors/m/reports/%40acme%2Fcost/variants/us-east",
+    ],
+    [
+      "/dashboard/models/@swamp%2Fecho/data/log",
+      "/dashboard/behaviors/@swamp%2Fecho/data/log",
+    ],
+    ["/dashboard/models/data", "/dashboard/behaviors/data"],
+    ["/dashboard/models/models", "/dashboard/behaviors/models"],
+    ["/dashboard/models/%E2%8", "/dashboard/behaviors/%E2%8"],
+    ["/dashboard/behaviours", "/dashboard/behaviors"],
+    ["/dashboard/behaviours/m/data/d", "/dashboard/behaviors/m/data/d"],
+  ];
+  for (const [from, to] of cases) {
+    assertEquals(legacyRedirectPath(from), to, from);
+    assertEquals(parseRoute(to), parseRoute(from), from);
+  }
+});
+
+Deno.test("legacyRedirectPath: leaves every other path alone", () => {
+  for (
+    const path of [
+      "/dashboard",
+      "/dashboard/",
+      "/dashboard/behaviors",
+      "/dashboard/behaviors/m",
+      "/dashboard/modelsx",
+      "/dashboard/models-x/m",
+      "/dashboard/behavioursx",
+      "/dashboard/workflows/models",
+      "/dashboard/data",
+      "/dashboard/start",
+      "/models/m",
+      "/dashboardx/models",
+      "/dashboard/Models",
+      "/dashboard/model%73",
+    ]
+  ) {
+    assertEquals(legacyRedirectPath(path), null, path);
+  }
 });

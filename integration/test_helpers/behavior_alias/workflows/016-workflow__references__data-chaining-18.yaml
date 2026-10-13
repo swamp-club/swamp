@@ -1,0 +1,51 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/data-chaining.md (block 18)
+id: 00000000-0000-4000-8000-000000000016
+name: update-networking
+description: Update networking resources (e.g., enable DNS, modify tags)
+version: 1
+jobs:
+  - name: update-vpc
+    description: Update VPC attributes first
+    steps:
+      - name: update-vpc
+        task:
+          type: model_method
+          modelIdOrName: networking-vpc
+          methodName: update
+    dependsOn: []
+
+  - name: update-subnets-and-igw
+    description: Update subnets and internet gateway
+    steps:
+      - name: update-public-subnet
+        task:
+          type: model_method
+          modelIdOrName: public-subnet
+          methodName: update
+      - name: update-private-subnet
+        task:
+          type: model_method
+          modelIdOrName: private-subnet
+          methodName: update
+    dependsOn:
+      - job: update-vpc
+        condition:
+          type: succeeded
+
+  - name: update-route-tables
+    description: Update route tables last
+    steps:
+      - name: update-public-route-table
+        task:
+          type: model_method
+          modelIdOrName: public-route-table
+          methodName: update
+      - name: update-private-route-table
+        task:
+          type: model_method
+          modelIdOrName: private-route-table
+          methodName: update
+    dependsOn:
+      - job: update-subnets-and-igw
+        condition:
+          type: succeeded

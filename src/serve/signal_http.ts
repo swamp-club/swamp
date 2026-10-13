@@ -112,6 +112,10 @@ const STATUS: Record<SignalDeliveryResult["status"], number> = {
   delivered: 200,
   // Held for a wait that has not opened: accepted, and not yet acted on.
   pending: 202,
+  // Received, for a caller who is not told whether a wait took it.
+  accepted: 202,
+  // Not reached over HTTP: this route always reads an `accepted` answer.
+  upgrade_required: 426,
   not_found: 404,
   invalid_payload: 422,
   already_settled: 409,
@@ -332,7 +336,8 @@ function emitResponseAudit(
   if (!ctx.auditEmitter) return;
   const { principal, sourceIp } = caller;
   const outcome: AuditOutcome =
-    result.status === "delivered" || result.status === "pending"
+    result.status === "delivered" || result.status === "pending" ||
+      result.status === "accepted"
       ? "success"
       : "failure";
   ctx.auditEmitter.emit(buildAuditEvent({

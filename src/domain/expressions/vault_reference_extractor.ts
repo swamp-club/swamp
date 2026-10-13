@@ -60,12 +60,36 @@ export function findVaultGetCalls(celExpression: string): RegExpExecArray[] {
   return calls;
 }
 
+/**
+ * Whether an unquoted `vault.get` argument is evaluated as CEL before the
+ * lookup. One holding a `.` is a member access (`inputs.vaultName`); any
+ * other is a literal name (`my-vault`, `API_KEY`), used verbatim. The
+ * resolver and the swamp-expression classifier both read an argument through
+ * this one rule, so they always agree.
+ */
+export function isDynamicVaultArgument(bareToken: string): boolean {
+  return bareToken.includes(".");
+}
+
 /** Whether `vault` at `at` is a root identifier rather than a member. */
 function isNamespaceRoot(text: string, at: number): boolean {
   let i = at - 1;
   if (i >= 0 && /\w/.test(text[i])) return false;
   while (i >= 0 && /\s/.test(text[i])) i--;
   return !(i >= 0 && text[i] === ".");
+}
+
+/**
+ * The name a `vault.get` argument stands for when it is known without
+ * evaluating anything: a quoted argument, or an unquoted one that is not
+ * dynamic (see {@link isDynamicVaultArgument}). Undefined for a dynamic one.
+ */
+function literalVaultArg(
+  quoted: string | undefined,
+  bare: string | undefined,
+): string | undefined {
+  if (quoted !== undefined) return quoted;
+  return bare !== undefined && !isDynamicVaultArgument(bare) ? bare : undefined;
 }
 
 export interface VaultReference {
@@ -103,8 +127,8 @@ function collectVaultReferences(
   if (typeof data === "string") {
     for (const span of scanExpressions(data)) {
       for (const vaultMatch of findVaultGetCalls(span.inner)) {
-        const vaultName = vaultMatch[2];
-        const secretKey = vaultMatch[5];
+        const vaultName = literalVaultArg(vaultMatch[2], vaultMatch[3]);
+        const secretKey = literalVaultArg(vaultMatch[5], vaultMatch[6]);
 
         if (vaultName !== undefined && secretKey !== undefined) {
           const key = `${vaultName}\0${secretKey}`;

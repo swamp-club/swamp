@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  DASHBOARD_DIST_DIR,
+  serveDashboardRoute,
+} from "../../serve/dashboard_assets.ts";
+import { validateWebSocketOrigin } from "../../serve/origin.ts";
 import { Command } from "@cliffy/command";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import {
@@ -419,14 +424,7 @@ import { withServerTokenLock } from "../../infrastructure/persistence/server_tok
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import {
-  basename,
-  extname,
-  isAbsolute,
-  join,
-  normalize,
-  resolve,
-} from "@std/path";
+import { basename, join, resolve } from "@std/path";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -451,7 +449,10 @@ import {
   sweepStaleRecords,
   sweepTokenConsistency,
 } from "../../serve/boot_reconciliation.ts";
-import { AccessDataPoller } from "../../serve/access_data_poller.ts";
+import {
+  type AccessDataPoller,
+  createAccessDataPoller,
+} from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
 import { computeFileContentHashIfExists } from "../../domain/extensions/extension_package_cache.ts";
 import { RuntimeDataPoller } from "../../serve/runtime_data_poller.ts";
@@ -483,9 +484,10 @@ import {
   ContinuationSweepService,
   decideContinuationSweepStart,
   DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
+  heldSignalSweeper,
   sweepContinuations,
-  sweepHeldSignals,
 } from "../../serve/continuation_sweep_service.ts";
+import { auditTakenSignals } from "../../serve/signal_delivery.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
@@ -929,77 +931,7 @@ export function assertOffLoopbackSecurity(
   }
 }
 
-export function validateWebSocketOrigin(
-  origin: string | null,
-  hostHeader: string | null,
-  bindHost: string,
-  tlsEnabled: boolean,
-  trustedHosts?: readonly string[],
-): { allowed: boolean; reason?: string } {
-  if (origin) {
-    const TRUSTED_ORIGINS = new Set([
-      "http://127.0.0.1",
-      "http://localhost",
-      "https://127.0.0.1",
-      "https://localhost",
-      "http://[::1]",
-      "https://[::1]",
-    ]);
-    if (tlsEnabled) {
-      TRUSTED_ORIGINS.add(`https://${bindHost.toLowerCase()}`);
-    }
-    if (trustedHosts) {
-      for (const h of trustedHosts) {
-        const lh = h.toLowerCase();
-        TRUSTED_ORIGINS.add(`http://${lh}`);
-        TRUSTED_ORIGINS.add(`https://${lh}`);
-      }
-    }
-
-    let originBase: string;
-    try {
-      const originUrl = new URL(origin);
-      originBase = `${originUrl.protocol}//${originUrl.hostname}`;
-    } catch {
-      return { allowed: false, reason: `malformed origin: ${origin}` };
-    }
-
-    if (!TRUSTED_ORIGINS.has(originBase)) {
-      return { allowed: false, reason: `untrusted origin: ${origin}` };
-    }
-  }
-
-  // Only validate Host header when binding off-loopback (direct exposure).
-  // When bound to loopback, a reverse proxy on the same machine handles
-  // external connections and forwards the public domain as the Host header —
-  // this is the documented production deployment model (Caddy, nginx).
-  const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-  if (hostHeader && !LOOPBACK_HOSTS.has(bindHost.toLowerCase())) {
-    let hostName: string;
-    try {
-      const parsed = new URL(`http://${hostHeader}`);
-      hostName = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    } catch {
-      return { allowed: false, reason: `malformed host: ${hostHeader}` };
-    }
-    const TRUSTED_HOSTS = new Set([
-      "127.0.0.1",
-      "localhost",
-      "::1",
-      bindHost.toLowerCase(),
-    ]);
-    if (trustedHosts) {
-      for (const h of trustedHosts) {
-        TRUSTED_HOSTS.add(h.toLowerCase());
-      }
-    }
-    if (!TRUSTED_HOSTS.has(hostName)) {
-      return { allowed: false, reason: `untrusted host: ${hostHeader}` };
-    }
-  }
-
-  return { allowed: true };
-}
+export { validateWebSocketOrigin };
 
 function forwardedHeaderValue(req: Request, name: string): string | null {
   const value = req.headers.get(name)?.split(",")[0]?.trim();
@@ -2908,6 +2840,8 @@ export const serveCommand = new Command()
     } = await requireInitializedRepoUnlocked({
       repoDir,
       outputMode: ctx.outputMode,
+      // Serve outlives any other writer: once it is done, serve writes again.
+      retakeLostV3Lease: true,
     });
 
     // One gate per serve process, shared by the pollers, the WebSocket
@@ -2916,10 +2850,12 @@ export const serveCommand = new Command()
     // meaningful with a sync service — without one nothing syncs.
     const syncGate = syncService ? createSyncGate() : undefined;
 
+    const datastoreEngine = resolverEngine(repoDatastoreResolver);
+
     // A v3 datastore is maintained by its writer: serve compacts history and
     // sweeps chunks while it runs (swamp-club#3279).
     const v3Maintenance = !isCustomDatastoreConfig(datastoreConfig) &&
-        resolverEngine(repoDatastoreResolver) === "v3"
+        datastoreEngine === "v3"
       ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, datastoreConfig))
       : undefined;
     v3Maintenance?.start();
@@ -4133,6 +4069,21 @@ export const serveCommand = new Command()
       },
       readConditionTypeLiterals,
     );
+    // Created before the boot load: on a filesystem datastore it fingerprints
+    // the access data first, so a peer write landing after the load still
+    // reads as a change on the first cycle (swamp-club#3371).
+    accessDataPoller = await createAccessDataPoller({
+      syncService,
+      syncGate,
+      pollIntervalMs: datastorePollIntervalMs,
+      policySnapshotLoader,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      namespace: serveNamespace,
+      datastoreConfig,
+      datastoreEngine,
+      datastoreResolver: repoDatastoreResolver,
+      eventBus: repoContext.eventBus,
+    });
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
       mode: grantReloadMode,
@@ -4162,17 +4113,9 @@ export const serveCommand = new Command()
       await grantsDirectoryPoller.start();
     }
 
-    if (syncService) {
-      accessDataPoller = new AccessDataPoller({
-        syncService,
-        syncGate,
-        pollIntervalMs: datastorePollIntervalMs,
-        policySnapshotLoader,
-        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-        namespace: serveNamespace,
-      });
-      accessDataPoller.start();
+    accessDataPoller?.start();
 
+    if (syncService) {
       runtimeDataPoller = new RuntimeDataPoller({
         syncService,
         syncGate,
@@ -4503,6 +4446,9 @@ export const serveCommand = new Command()
           ? join(datastoreResolver.resolvePath("config"), "models")
           : undefined,
       };
+    // Every pending signal a wait takes on this server is audited, whether
+    // the step, a signaller or the sweep took it (swamp-club#3213).
+    auditTakenSignals(connectionCtx);
 
     const ac = new AbortController();
 
@@ -5668,62 +5614,7 @@ export const serveCommand = new Command()
 
     // Dashboard static file serving
     const dashboardEnabled = merged.dashboard;
-    const dashboardDistDir = dashboardEnabled
-      ? resolve(
-        import.meta.dirname ?? ".",
-        "..",
-        "..",
-        "..",
-        "packages",
-        "dashboard",
-        "dist",
-      )
-      : null;
-
-    const MIME_TYPES: Record<string, string> = {
-      ".html": "text/html; charset=utf-8",
-      ".js": "application/javascript",
-      ".css": "text/css",
-      ".json": "application/json",
-      ".svg": "image/svg+xml",
-      ".png": "image/png",
-      ".ico": "image/x-icon",
-      ".woff2": "font/woff2",
-      ".woff": "font/woff",
-      ".ttf": "font/ttf",
-    };
-
-    async function serveDashboardFile(
-      filePath: string,
-    ): Promise<Response | null> {
-      if (!dashboardDistDir) return null;
-      const root = resolve(dashboardDistDir);
-      const target = resolve(join(root, normalize(filePath)));
-      if (
-        isAbsolute(filePath) || filePath.includes("..") ||
-        (!target.startsWith(root + "/") && target !== root &&
-          !target.startsWith(root + "\\"))
-      ) {
-        return new Response("Forbidden", { status: 403 });
-      }
-      try {
-        const content = await Deno.readFile(target);
-        const ext = extname(target);
-        const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
-        const isIndexHtml = basename(target) === "index.html";
-        return new Response(content, {
-          headers: {
-            "content-type": contentType,
-            "cache-control": isIndexHtml
-              ? "no-cache"
-              : "public, max-age=31536000, immutable",
-          },
-        });
-      } catch (e) {
-        if (e instanceof Deno.errors.NotFound) return null;
-        throw e;
-      }
-    }
+    const dashboardDistDir = dashboardEnabled ? DASHBOARD_DIST_DIR : null;
 
     if (dashboardEnabled && !isJson) {
       const scheme = tlsEnabled ? "https" : "http";
@@ -6651,27 +6542,12 @@ export const serveCommand = new Command()
         }
 
         // Dashboard SPA
-        if (dashboardEnabled) {
-          const dashUrl = new URL(req.url);
-          if (
-            dashUrl.pathname === "/dashboard" ||
-            dashUrl.pathname.startsWith("/dashboard/")
-          ) {
-            if (req.method !== "GET" && req.method !== "HEAD") {
-              return new Response("Method not allowed", { status: 405 });
-            }
-            const subPath = dashUrl.pathname === "/dashboard"
-              ? "index.html"
-              : dashUrl.pathname.slice("/dashboard/".length) || "index.html";
-            const fileResponse = await serveDashboardFile(subPath);
-            if (fileResponse) return fileResponse;
-            const indexResponse = await serveDashboardFile("index.html");
-            if (indexResponse) return indexResponse;
-            return new Response(
-              "Dashboard assets not available in this build",
-              { status: 404, headers: { "content-type": "text/plain" } },
-            );
-          }
+        if (dashboardDistDir) {
+          const dashboardResponse = await serveDashboardRoute(
+            dashboardDistDir,
+            req,
+          );
+          if (dashboardResponse) return dashboardResponse;
         }
 
         return new Response("Not found", { status: 404 });
@@ -6911,6 +6787,7 @@ export const serveCommand = new Command()
         staleTtlMs,
         workflowRunRepo: repoContext.workflowRunRepo,
         markDirty: repoContext.markDirty,
+        outputRepo: repoContext.outputRepo,
       });
       if (remoteReaped > 0) {
         logger
@@ -6988,6 +6865,7 @@ export const serveCommand = new Command()
             staleTtlMs,
             workflowRunRepo: repoContext.workflowRunRepo,
             markDirty: repoContext.markDirty,
+            outputRepo: repoContext.outputRepo,
           });
           if (reaped > 0) {
             logger
@@ -7382,6 +7260,8 @@ export const serveCommand = new Command()
           "Continuation sweep runs once, at boot: this datastore cannot be read without replacing this instance's run records, so later passes could resume a run from a copy that is out of date. Runs are still continued when a signal arrives here",
         );
       }
+      // Built once, outside the pass: it remembers when it last swept.
+      const sweepHeldSignalsWhenDue = heldSignalSweeper();
       continuationSweepService = new ContinuationSweepService({
         intervalMs: continuationSweepIntervalMs,
         bootPassOnly,
@@ -7392,7 +7272,7 @@ export const serveCommand = new Command()
             takeover: !synced || boot,
             isStopping,
           });
-          if (!isStopping()) await sweepHeldSignals(connectionCtx);
+          if (!isStopping()) await sweepHeldSignalsWhenDue(connectionCtx);
           return result;
         },
       });

@@ -22,7 +22,7 @@ Reach for a doctor command when the symptom maps to a known integration:
 | ---------------------------------------------------------- | ------------------------- |
 | Audit log empty after init/upgrade or after AI-tool change | `swamp doctor audit`      |
 | Hooks aren't firing for the configured AI tool             | `swamp doctor audit`      |
-| Extension model/vault/datastore/report missing from CLI    | `swamp doctor extensions` |
+| Extension behavior/vault/datastore/report missing from CLI | `swamp doctor extensions` |
 | `swamp-warning:` line on stderr mentioning a load failure  | `swamp doctor extensions` |
 | Workflow YAML fails to parse or construct                  | `swamp doctor workflows`  |
 | `swamp workflow get` errors on a file that search finds    | `swamp doctor workflows`  |
@@ -42,7 +42,8 @@ swamp doctor audit --tool kiro      # override
 swamp doctor audit --json           # machine-readable
 ```
 
-Supported tools: `claude | cursor | kiro | opencode | codex | copilot | none`.
+Supported tools:
+`amp | claude | cursor | kiro | opencode | codex | copilot | pi | antigravity | none`.
 
 ### Preflight checks
 
@@ -111,13 +112,15 @@ otherwise. Exit code mirrors `fail` only.
 If neither `--tool` nor `.swamp.yaml` declares a tool, the command exits with:
 
 ```
-No AI tool configured in .swamp.yaml and no --tool flag provided.
-Pass --tool <name> (claude | cursor | kiro | opencode | codex | copilot | none)
-or run `swamp init --tool <name>`.
+No AI tool enrolled in .swamp.yaml (`tools` is empty) and no --tool flag
+provided. Pass --tool <name> to audit a specific tool (amp | claude | cursor |
+kiro | opencode | codex | copilot | pi | antigravity), or enroll a tool with
+`swamp repo upgrade --tool <name>` and try again. Repos initialized with
+`--tool none` are not auditable until a tool is enrolled.
 ```
 
-This is expected first-run UX, not a bug. Either pass `--tool` or set the tool
-in `.swamp.yaml` via `swamp init --tool <name>`.
+This is expected first-run UX, not a bug. Either pass `--tool` or enroll a tool
+with `swamp repo upgrade --tool <name>`.
 
 ## `swamp doctor extensions`
 
@@ -146,15 +149,15 @@ swamp doctor extensions --repair
 
 Four user-facing registries, in fixed order:
 
-| Registry    | Covers                                               |
-| ----------- | ---------------------------------------------------- |
-| `model`     | `extensions/models/` and registered model extensions |
-| `vault`     | `extensions/vaults/`                                 |
-| `datastore` | `extensions/datastores/`                             |
-| `report`    | `extensions/reports/`                                |
+| Registry    | Covers                                                  |
+| ----------- | ------------------------------------------------------- |
+| `model`     | `extensions/models/` and registered behavior extensions |
+| `vault`     | `extensions/vaults/`                                    |
+| `datastore` | `extensions/datastores/`                                |
+| `report`    | `extensions/reports/`                                   |
 
 The `model` row absorbs both `model` and `extension` load warnings — extensions
-that augment an existing model type fold into the model registry's row.
+that augment an existing behavior type fold into the model registry's row.
 
 ### Output — log mode
 
@@ -247,8 +250,8 @@ line names it. A file reachable through more than one directory is reported
 once.
 
 Scope is **load-ability only** — whether the file can be parsed and constructed.
-Schema validity (DAG integrity, model references, expression validation) is the
-job of `swamp workflow validate`.
+Schema validity (DAG integrity, behavior references, expression validation) is
+the job of `swamp workflow validate`.
 
 ### Output — log mode
 
@@ -296,7 +299,7 @@ else `warn` if any file warned, else `pass`.
 | Error fragment                                                  | Fix                                                                                                                                                                                                                                                                       |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | YAML parse error at line N                                      | Fix the YAML syntax at the indicated line/column                                                                                                                                                                                                                          |
-| `type "shell" is no longer supported`                           | Replace `type: shell` with `type: model_method` using `command/shell`                                                                                                                                                                                                     |
+| `type "shell" is no longer supported`                           | Replace `type: shell` with `type: behavior` using `command/shell`                                                                                                                                                                                                         |
 | Invalid uuid / missing name                                     | Add required `id` (UUID) and `name` fields to the workflow YAML                                                                                                                                                                                                           |
 | Invalid cron expression                                         | Fix the `trigger.schedule` cron expression                                                                                                                                                                                                                                |
 | Extension workflow missing, no error                            | Check its top-level `jobs:` key; rerun with `--log-level debug`                                                                                                                                                                                                           |
@@ -310,7 +313,7 @@ These two commands are complementary:
   fields, invalid types). These files are silently dropped by the workflow
   loader, so `workflow validate` never sees them.
 - `workflow validate` checks **loaded** workflows for semantic validity (DAG
-  cycles, undefined model references, expression errors).
+  cycles, undefined behavior references, expression errors).
 
 Run both in CI for complete coverage.
 

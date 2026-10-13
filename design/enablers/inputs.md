@@ -1,13 +1,13 @@
 ---
 audience: maintainer, operator
-enables: [models, workflows]
+enables: [behaviors, workflows]
 last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Inputs
 
-Models and workflows both support _inputs_. Inputs are JSON Schema, written as
-YAML in a top-level `inputs` field of a model definition or workflow file.
+Behaviors and workflows both support _inputs_. Inputs are JSON Schema, written
+as YAML in a top-level `inputs` field of a behavior definition or workflow file.
 
 For example, an environment input:
 
@@ -19,12 +19,12 @@ inputs:
     description: "Target environment for deployment"
 ```
 
-This gives the model an 'environment' input that must be a string: dev, staging
-or production.
+This gives the behavior an 'environment' input that must be a string: dev,
+staging or production.
 
-## Model Example
+## Behavior Example
 
-Models can reference their inputs:
+Behaviors can reference their inputs:
 
 ```yaml
 type: command/shell
@@ -131,7 +131,7 @@ inside `${{ }}`.
 ## Iteration
 
 An input can be an array or a hash. A CEL expression can then iterate over it to
-set a step, a job, or a model's global arguments.
+set a step, a job, or a behavior's global arguments.
 
 ```yaml
 id: abc123
@@ -208,7 +208,7 @@ expressions without running anything. They write the result to
 
 `swamp workflow run` and `swamp model method run` accept `--last-evaluated`. It
 skips evaluating inputs and CEL and runs the last evaluated version of the
-models and workflows (`src/cli/commands/workflow_run.ts`,
+behaviors and workflows (`src/cli/commands/workflow_run.ts`,
 `src/cli/commands/model_method_run.ts`).
 
 ### Combining file + key=value overrides
@@ -218,10 +218,10 @@ the key=value pairs override them (deep merged).
 
 ### Type coercion
 
-Key=value inputs are strings by default. When the workflow or model declares an
-`InputsSchema`, strings are coerced to the schema's types (`number`, `integer`,
-`boolean`, `array`, `object`) before validation (`coerceInputTypes` in
-`src/domain/inputs/input_coercion.ts`). Without a schema they stay strings.
+Key=value inputs are strings by default. When the workflow or behavior declares
+an `InputsSchema`, strings are coerced to the schema's types (`number`,
+`integer`, `boolean`, `array`, `object`) before validation (`coerceInputTypes`
+in `src/domain/inputs/input_coercion.ts`). Without a schema they stay strings.
 
 For `array` and `object`, the string is parsed as JSON. If that gives a real
 array or object, the parsed value is used. If parsing fails or gives another

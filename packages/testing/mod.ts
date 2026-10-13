@@ -62,7 +62,7 @@ export type {
 // under strict mode. See the `swamp-extension-model` skill's
 // `references/typing.md` for the full rationale and worked example.
 
-export { defineModel } from "./model_definition_types.ts";
+export { defineBehavior, defineModel } from "./model_definition_types.ts";
 
 export type {
   CheckDefinition,

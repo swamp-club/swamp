@@ -47,7 +47,10 @@ import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
 import { freeRoots } from "./cel_grammar.ts";
-import { findVaultGetCalls } from "./vault_reference_extractor.ts";
+import {
+  findVaultGetCalls,
+  isDynamicVaultArgument,
+} from "./vault_reference_extractor.ts";
 import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { extractOwnNamespaceDataModelNames } from "./dependency_extractor.ts";
 import { analyzeExpression } from "./expression_references.ts";
@@ -1765,9 +1768,8 @@ export class ModelResolver {
    * CEL-evaluated against the supplied context before the vault lookup.
    * This enables `vault.get(inputs.vaultName, inputs.secretKey)` where the
    * argument values are determined at runtime. Quoted arguments are always
-   * used verbatim. If a bare token is not syntactically valid CEL (e.g.
-   * `my-vault` containing a hyphen), it is used verbatim for backwards
-   * compatibility.
+   * used verbatim. A bare token with no `.` (e.g. `my-vault`) is a literal
+   * name and is used verbatim too; see `isDynamicVaultArgument`.
    *
    * @param value - The string that may contain vault expressions
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
@@ -1882,11 +1884,8 @@ export class ModelResolver {
       return raw;
     }
 
-    // A bare token containing a dot is clearly intended as a CEL member
-    // access expression (inputs.x, self.item.vault, etc.). Tokens
-    // without a dot are likely literal names (my-vault, myvault) — use
-    // verbatim for backwards compatibility.
-    if (!raw.includes(".")) {
+    // A literal name (my-vault, myvault) is used verbatim.
+    if (!isDynamicVaultArgument(raw)) {
       return raw;
     }
 

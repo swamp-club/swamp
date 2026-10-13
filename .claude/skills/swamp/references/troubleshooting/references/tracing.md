@@ -24,7 +24,7 @@ Tracing is most useful when:
 
 - A workflow run is slow and you need to identify which step/method is the
   bottleneck
-- Extension model methods are timing out and you need to see the full execution
+- Extension methods are timing out and you need to see the full execution
   timeline
 - Datastore sync (S3 pull/push) is slow and you want to measure lock acquisition
   and transfer times
@@ -134,7 +134,7 @@ so work they do later starts its own trace instead — see
 
 Every libswamp generator is traced. Key span names:
 
-- `swamp.model.method.run` — standalone model method execution
+- `swamp.model.method.run` — standalone method execution
 - `swamp.data.gc` — garbage collection (attributes: entries expired, bytes
   reclaimed)
 - `swamp.extension.pull` / `.push` — registry network operations
@@ -242,5 +242,5 @@ If tracing shows the timing but not the cause:
   [health-checks.md](health-checks.md).
 - **Span error messages need decoding, or `--json` output would say more** →
   Tier 2: [error-inspection.md](error-inspection.md).
-- **The span is fast but the behavior is still wrong** → Tier 4:
+- **The span is fast but the result is still wrong** → Tier 4:
   [source-reading.md](source-reading.md) — read the implementation directly.

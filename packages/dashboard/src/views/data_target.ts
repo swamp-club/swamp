@@ -193,6 +193,15 @@ const DENIED_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * How serve's `entityType` reads on the page. Serve keeps saying "Model"
+ * (it is protocol); the page says "Behavior", the product term.
+ */
+const ENTITY_LABELS: ReadonlyMap<string, string> = new Map([
+  ["Workflow run or workflow", "Workflow run"],
+  ["Model", "Behavior"],
+]);
+
+/**
  * What to tell the reader when a request failed. `pinned` is true when the
  * page asked for one exact version (a permalink or a run's report): a
  * missing item there has expired or been cleaned up, not merely renamed.
@@ -210,10 +219,7 @@ export function pageError(
     if (entity === "Data") {
       return pinned ? { kind: "gone" } : { kind: "not-found", entity };
     }
-    return {
-      kind: "not-found",
-      entity: entity === "Workflow run or workflow" ? "Workflow run" : entity,
-    };
+    return { kind: "not-found", entity: ENTITY_LABELS.get(entity) ?? entity };
   }
   return { kind: "failed", message };
 }

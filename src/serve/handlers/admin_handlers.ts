@@ -201,6 +201,7 @@ import { ExtensionApiClient } from "../../infrastructure/http/extension_api_clie
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { resolveMountedSourceDirs } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
@@ -945,6 +946,11 @@ export async function handleExtensionPull(
       lockfileRepository: deps.lockfileRepository,
       repoRoot: repoDir,
       localManifestIdentity: readLocalManifestIdentity(repoDir),
+      // An unreadable .swamp-sources.yaml fails the request, as it fails
+      // CLI startup, rather than counting as no mounts: that would prune
+      // the mounted rows (swamp-club#2563). Hot-reload falls back instead
+      // because it has no caller to report to.
+      mountedSourceDirs: await resolveMountedSourceDirs(repoDir),
     });
 
     const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
@@ -1179,6 +1185,7 @@ export async function handleExtensionUpdate(
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
 
     const denoRuntime = new EmbeddedDenoRuntime();
+    const mountedSourceDirs = await resolveMountedSourceDirs(repoDir);
     catalog = new ExtensionCatalogStore(
       swampPath(repoDir, "_extension_catalog.db"),
     );
@@ -1207,6 +1214,7 @@ export async function handleExtensionUpdate(
           catalog: catalog!,
           lockfileRepository: installCtx.lockfileRepository,
           repoRoot: repoDir,
+          mountedSourceDirs,
         });
         return await new UpgradeExtensionService({
           denoRuntime,
@@ -1762,6 +1770,7 @@ export async function handleDoctorExtensions(
     sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
 
     const localManifestIdentity = readLocalManifestIdentity(repoDir);
+    const mountedSourceDirs = await resolveMountedSourceDirs(repoDir);
     let reconcileTransitions: readonly ReconcileTransition[] = [];
     try {
       const reconcileLockfileRepo = await LockfileRepository.create(
@@ -1772,6 +1781,7 @@ export async function handleDoctorExtensions(
         lockfileRepository: reconcileLockfileRepo,
         repoRoot: repoDir,
         localManifestIdentity,
+        mountedSourceDirs,
       });
       rescanRepo.invalidateAll();
       const denoRuntime = new EmbeddedDenoRuntime();
@@ -1846,6 +1856,7 @@ export async function handleDoctorExtensions(
           lockfileRepository: aggLockfileRepo,
           repoRoot: repoDir,
           localManifestIdentity: localIdentity,
+          mountedSourceDirs,
         });
         const extensions = repo.loadAll();
         return buildAggregateState({ extensions, repoDir });

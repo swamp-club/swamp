@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
+  applicablePendingOutcome,
   decodePendingRecord,
   earliestReceipt,
   type EarlyWaitRef,
@@ -26,6 +27,7 @@ import {
   encodePendingRecord,
   heldUntil,
   isPendingHeld,
+  isReceivedForWait,
   PENDING_SIGNAL_MAX_BYTES,
   pendingAddressFromKey,
   pendingOutcome,
@@ -255,6 +257,26 @@ Deno.test("pendingOutcome: the window runs from the claim minus the age limit to
   assertEquals(at("2026-01-01T00:00:40.001Z"), false);
 });
 
+Deno.test("isReceivedForWait: a claim decides the slot and the window as its wait does, both edges included", () => {
+  // What a claim keeps of its wait: `early` and the deadline.
+  const claim = { early: ref().early, deadline: DEADLINE };
+  const at = (receivedAt: string) =>
+    isReceivedForWait(pending({ receivedAt }), claim);
+  assertEquals(at("2026-01-01T00:00:00.000Z"), true);
+  assertEquals(at("2025-12-31T23:59:59.999Z"), false);
+  assertEquals(at(DEADLINE), true);
+  assertEquals(at("2026-01-01T00:00:40.001Z"), false);
+  // A slot the claim does not read, and the one below it over a release.
+  assertEquals(isReceivedForWait(pending({ slot: 2 }), claim), false);
+  const overRelease = {
+    early: { ...claim.early, generation: 2, overRelease: true },
+    deadline: DEADLINE,
+  };
+  assertEquals(isReceivedForWait(pending({ slot: 1 }), overRelease), true);
+  assertEquals(isReceivedForWait(pending({ slot: 2 }), overRelease), true);
+  assertEquals(isReceivedForWait(pending({ slot: 3 }), overRelease), false);
+});
+
 Deno.test("pendingOutcome: a payload the captured schema refuses is not taken", () => {
   assertEquals(
     pendingOutcome(pending({ payload: { verdict: "maybe" } }), ref()),
@@ -271,12 +293,103 @@ Deno.test("pendingOutcome: a record for another workflow, key or slot is never t
   assertEquals(pendingOutcome(pending({ slot: 2 }), ref()), undefined);
 });
 
+Deno.test("applicablePendingOutcome: the outcome the slot's pending signal would give, with nothing settled", async () => {
+  const store = new InMemorySignalWaitStore();
+  assertEquals(await applicablePendingOutcome(store, ref()), undefined);
+  await store.createPendingRecord(pending());
+
+  const outcome = await applicablePendingOutcome(store, ref());
+  assertEquals(outcome, pendingOutcome(pending(), ref()));
+  assert(outcome, "the pending signal applies");
+  assertEquals(store.outcomes.size, 0);
+  // The take stores that same outcome.
+  assertEquals(await takePendingSignal(store, ref()), {
+    kind: "found",
+    record: outcome,
+  });
+});
+
+Deno.test("applicablePendingOutcome: a signal that does not apply, a lapse or an unreadable head gives nothing", async () => {
+  const old = new InMemorySignalWaitStore();
+  await old.createPendingRecord(
+    pending({ receivedAt: "2025-12-31T23:00:00.000Z" }),
+  );
+  assertEquals(await applicablePendingOutcome(old, ref()), undefined);
+
+  const lapsed = new InMemorySignalWaitStore();
+  await lapsed.createPendingRecord(pending());
+  await lapsed.createPendingRecord({
+    kind: "lapse",
+    workflowId: WORKFLOW,
+    key: KEY,
+    slot: 1,
+    number: 2,
+    recordedAt: "2026-01-02T00:00:00.000Z",
+  });
+  assertEquals(await applicablePendingOutcome(lapsed, ref()), undefined);
+
+  const damaged = new InMemorySignalWaitStore();
+  damaged.pendingRecords.set(
+    pendingRecordKey(pending()),
+    new TextEncoder().encode("{"),
+  );
+  assertEquals(await applicablePendingOutcome(damaged, ref()), undefined);
+});
+
 Deno.test("takePendingSignal: settles the wait with the highest pending signal of its slot", async () => {
   const store = new InMemorySignalWaitStore();
   await store.createPendingRecord(pending());
   const stored = await takePendingSignal(store, ref());
   assertEquals(stored.kind === "found" && stored.record.kind, "accepted");
   assertEquals(await store.findOutcome(WAIT_ID), stored);
+});
+
+Deno.test("takePendingSignal: a store's listener is told of the take by its receipt and key, and never the payload", async () => {
+  const store = new InMemorySignalWaitStore();
+  const heard: unknown[] = [];
+  store.pendingTaken = (taken) => heard.push(taken);
+  // Nothing applies: nothing is heard.
+  assertEquals(await takePendingSignal(store, ref()), { kind: "absent" });
+  assertEquals(heard, []);
+
+  const held = pending();
+  await store.createPendingRecord(held);
+  await takePendingSignal(store, ref());
+  assertEquals(heard, [{
+    waitId: WAIT_ID,
+    workflowId: WORKFLOW,
+    runId: ref().runId,
+    key: KEY,
+    receiptId: held.receiptId,
+  }]);
+});
+
+Deno.test("takePendingSignal: a listener that throws does not undo or fail the take", async () => {
+  const store = new InMemorySignalWaitStore();
+  store.pendingTaken = () => {
+    throw new Error("audit log is full");
+  };
+  await store.createPendingRecord(pending());
+  const stored = await takePendingSignal(store, ref());
+  assertEquals(stored.kind === "found" && stored.record.kind, "accepted");
+});
+
+Deno.test("takePendingSignal: a wait another outcome settled first is not heard as a take", async () => {
+  const store = new InMemorySignalWaitStore();
+  const heard: unknown[] = [];
+  store.pendingTaken = (taken) => heard.push(taken);
+  await store.createPendingRecord(pending());
+  await store.settle({
+    kind: "timed_out",
+    waitId: WAIT_ID,
+    workflowId: WORKFLOW,
+    runId: ref().runId,
+    deadline: ref().deadline,
+    settledAt: ref().deadline,
+  });
+  const stored = await takePendingSignal(store, ref());
+  assertEquals(stored.kind === "found" && stored.record.kind, "timed_out");
+  assertEquals(heard, []);
 });
 
 Deno.test("takePendingSignal: nothing applies, nothing is settled", async () => {

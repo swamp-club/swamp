@@ -108,8 +108,11 @@ export class ReadModelIncompleteError extends Error {
 export interface ReadModel {
   /**
    * Applies every commit that landed after the stored cursor, in landing
-   * order, advancing the cursor after each one's effects are durable. When
-   * it reaches the end of the change feed, the index is complete.
+   * order, a page of commits at a time, advancing the cursor after each
+   * page's effects. A file a crash or power loss could still lose is
+   * repaired, never trusted: the first open after a reboot checks the files
+   * written since, and applies every commit again if one was lost. When it
+   * reaches the end of the change feed, the index is complete.
    */
   catchUp(signal: AbortSignal): Promise<CatchUpResult>;
 
@@ -128,7 +131,8 @@ export interface ReadModel {
   ): Promise<CatchUpResult>;
 
   /**
-   * The records present in a partition, by key. Rejects with
+   * The records present in a partition, by key, once any catch-up in
+   * progress has finished. Rejects with
    * {@link ReadModelIncompleteError} until a catch-up has reached the end of
    * the change feed since the read model was built or reset: until then a
    * partition catch-up or a replay cut short may have filled only part of
@@ -141,9 +145,9 @@ export interface ReadModel {
 
   /**
    * The SHA-256 of every chunk a live record's blob names in a namespace,
-   * parts expanded: the chunks chunk garbage collection must keep. Rejects
-   * with {@link ReadModelIncompleteError} like {@link liveRecords}, so a
-   * partial index never reads as the set to keep.
+   * parts expanded: the chunks chunk garbage collection must keep. Waits
+   * and rejects with {@link ReadModelIncompleteError} like
+   * {@link liveRecords}, so a partial index never reads as the set to keep.
    */
   chunksInUse(namespace: string): Promise<ReadonlySet<string>>;
 

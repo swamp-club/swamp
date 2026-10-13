@@ -25,6 +25,11 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceNoun,
+} from "../command_surface.ts";
 
 interface JsonSchemaProperty {
   type?: string | string[];
@@ -121,7 +126,10 @@ function formatRecord(
 }
 
 class LogModelGetRenderer implements Renderer<ModelGetEvent> {
+  constructor(private readonly surface: CommandSurface) {}
+
   handlers(): EventHandlers<ModelGetEvent> {
+    const noun = surfaceNoun(this.surface);
     return {
       resolving: () => {},
       completed: (e) => {
@@ -176,13 +184,13 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           if (data.staleness === "upgradable") {
             lines.push(
               yellow(
-                "  This instance is behind its model type. The next method run will migrate it.",
+                `  This instance is behind its ${noun} type. The next method run will migrate it.`,
               ),
             );
           } else if (data.staleness === "stranded") {
             lines.push(
               yellow(
-                "  This instance is behind its model type and no upgrade entry covers the gap,",
+                `  This instance is behind its ${noun} type and no upgrade entry covers the gap,`,
               ),
             );
             lines.push(
@@ -256,18 +264,23 @@ class JsonModelGetRenderer implements Renderer<ModelGetEvent> {
 
 export function createModelGetRenderer(
   mode: OutputMode,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): Renderer<ModelGetEvent> {
   switch (mode) {
     case "json":
       return new JsonModelGetRenderer();
     case "log":
-      return new LogModelGetRenderer();
+      return new LogModelGetRenderer(surface);
   }
 }
 
 /** Standalone render function for use by un-migrated search commands. */
-export function renderModelGet(data: ModelGetData, mode: OutputMode): void {
-  const renderer = createModelGetRenderer(mode);
+export function renderModelGet(
+  data: ModelGetData,
+  mode: OutputMode,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
+): void {
+  const renderer = createModelGetRenderer(mode, surface);
   const handlers = renderer.handlers();
   handlers.completed({ kind: "completed", data });
 }

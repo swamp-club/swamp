@@ -509,11 +509,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     receipts: DeferredWriteReceipt[],
   ): Promise<void> {
     for (const receipt of receipts) {
-      this.latestVersionMap.set(
-        latestKey(receipt.type.normalized, receipt.modelId, receipt.dataName),
-        receipt.version,
-      );
-      if (!this.enableWriteGc) continue;
       const data = this.dataMap.get(
         dataKey(
           receipt.type.normalized,
@@ -522,7 +517,20 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
           receipt.version,
         ),
       );
-      const gc = data?.garbageCollection;
+      if (!data) {
+        // Allocated and never finalized: there is no version to promote, so
+        // the marker must not name one.
+        this.releaseAllocation(receipt);
+        continue;
+      }
+      this.latestVersionMap.set(
+        latestKey(receipt.type.normalized, receipt.modelId, receipt.dataName),
+        receipt.version,
+      );
+      // A deferred version has no catalog row until it is promoted.
+      this.catalogUpsert(receipt.type, receipt.modelId, data);
+      if (!this.enableWriteGc) continue;
+      const gc = data.garbageCollection;
       if (typeof gc === "number") {
         // Keep the newest `gc` versions, counting the promoted one, as the
         // filesystem repository does. This repository has no pending state,
@@ -559,8 +567,28 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       }
       this.dataMap.delete(key);
       this.contentMap.delete(key);
+      this.releaseAllocation(receipt);
     }
     return Promise.resolve();
+  }
+
+  /** Drops the temp file of a version a writer allocated and never finalized. */
+  private releaseAllocation(receipt: DeferredWriteReceipt): void {
+    for (const [path, alloc] of this.allocatedPaths) {
+      if (
+        alloc.typeNormalized === receipt.type.normalized &&
+        alloc.modelId === receipt.modelId &&
+        alloc.data.name === receipt.dataName &&
+        alloc.version === receipt.version
+      ) {
+        try {
+          Deno.removeSync(path);
+        } catch {
+          // Best-effort cleanup — file may already be gone
+        }
+        this.allocatedPaths.delete(path);
+      }
+    }
   }
 
   // --- Read Operations ---

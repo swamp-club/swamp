@@ -45,10 +45,11 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
+import { holdsV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import {
-  holdsV3WriterLock,
-  V3_WRITER_LOCK_KEY,
-} from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
+  plantV3WriterLease,
+  type V3WriterLeaseHolder,
+} from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
 import {
   closeV3Datastores,
   holdV3Writer,
@@ -390,25 +391,17 @@ async function leaveInterruptedWriter(
   return { kept, overwritten: committedFile, committed };
 }
 
-/** A writer lock file as `FileLock` writes one, held by `pid` on this host. */
+/** The writer lease held by `pid` on this host, last renewed at `acquiredAt`. */
 async function writeLock(
   datastorePath: string,
   pid: number,
   acquiredAt: Date,
-): Promise<void> {
-  const path = join(datastorePath, V3_WRITER_LOCK_KEY);
-  await Deno.mkdir(dirname(path), { recursive: true });
-  await Deno.writeTextFile(
-    path,
-    JSON.stringify({
-      holder: `test@${Deno.hostname()}`,
-      hostname: Deno.hostname(),
-      pid,
-      acquiredAt: acquiredAt.toISOString(),
-      ttlMs: 30_000,
-      nonce: crypto.randomUUID(),
-    }),
-  );
+): Promise<V3WriterLeaseHolder> {
+  return await plantV3WriterLease(datastorePath, {
+    pid,
+    acquiredAt,
+    ttlMs: 30_000,
+  });
 }
 
 async function assertRecovered(
@@ -511,11 +504,15 @@ Deno.test("v3 interrupted run: a marker naming a live process, or a lock its liv
         since: Date.now() - 60_000,
       }),
     );
-    await writeLock(datastorePath, Deno.ppid, new Date(Date.now() - 600_000));
+    const lapsed = await writeLock(
+      datastorePath,
+      Deno.ppid,
+      new Date(Date.now() - 600_000),
+    );
     await v3RepositoryFactoryConfig(repos.repoA, config, { readOnly: true });
     assertEquals(await residue(), before);
     assertEquals((await readWriterMarker(repos.repoA))?.pid, GONE_PID);
-    await Deno.remove(join(datastorePath, V3_WRITER_LOCK_KEY));
+    await lapsed.release();
 
     // Once the lock is free, the next read recovers.
     await v3RepositoryFactoryConfig(repos.repoA, config, { readOnly: true });

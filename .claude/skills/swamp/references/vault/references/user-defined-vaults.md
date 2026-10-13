@@ -230,7 +230,7 @@ export const vault = {
 
 ## Key Rules
 
-1. **Import**: Use `import { z } from "npm:zod";` (same as extension models)
+1. **Import**: Use `import { z } from "npm:zod";` (same as extension behaviors)
 2. **Export**: Must be `export const vault` (named export, not default)
 3. **Collectives**: `swamp` and `si` collectives are reserved for built-in types
    (with or without `@` prefix)

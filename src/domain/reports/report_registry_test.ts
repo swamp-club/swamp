@@ -274,3 +274,36 @@ Deno.test("ReportRegistry.ensureTypeLoaded: keeps a type the loader promoted", a
   assertEquals(registry.isLazy("@myorg/custom-report"), false);
   assertEquals(registry.get("@myorg/custom-report")?.scope, "model");
 });
+
+Deno.test("ReportRegistry.registerBuiltIn: registers the report and marks it built in (swamp-club#2746)", () => {
+  const registry = new ReportRegistry();
+  const report = makeReport("method");
+  registry.registerBuiltIn("@swamp/method-summary", report);
+
+  assertEquals(registry.get("@swamp/method-summary"), report);
+  assertEquals(registry.isBuiltIn("@swamp/method-summary"), true);
+  assertEquals(registry.isBuiltIn("@Swamp/Method-Summary"), true);
+});
+
+Deno.test("ReportRegistry.isBuiltIn: false for a report added with register or registerLazy (swamp-club#2746)", () => {
+  const registry = new ReportRegistry();
+  registry.register("@myorg/cost-report", makeReport("method"));
+  registry.registerLazy(createLazyReportEntry("@myorg/lazy-report"));
+
+  assertEquals(registry.isBuiltIn("@myorg/cost-report"), false);
+  assertEquals(registry.isBuiltIn("@myorg/lazy-report"), false);
+});
+
+Deno.test("reportRegistry: the shipped built-in reports are marked built in (swamp-club#2746)", async () => {
+  await import("./builtin/mod.ts");
+  const { reportRegistry } = await import("./report_registry.ts");
+  for (
+    const name of [
+      "@swamp/method-summary",
+      "@swamp/workflow-summary",
+      "@swamp/verification-summary",
+    ]
+  ) {
+    assertEquals(reportRegistry.isBuiltIn(name), true, name);
+  }
+});

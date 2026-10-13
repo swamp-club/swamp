@@ -17,219 +17,138 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useState } from "react";
-import type { AuditEvent } from "../client/useAuditStream";
+import { useMemo, useState } from "react";
+import type { AuditEvent, AuditStream } from "../client/useAuditStream";
+import { copyText } from "../components/clipboard.ts";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { formatAbsoluteTime, formatCount, pluralize } from "../lib/format.ts";
 import { actorLabel } from "./actor_label.ts";
+import {
+  AUDIT_COLUMNS,
+  AuditDeniedState,
+  AuditDisabledState,
+  AuditErrorState,
+  AuditFeedSkeleton,
+  auditFeedView,
+  AuditLiveToggle,
+} from "./AuditStates.tsx";
+import "../styles/activity.css";
 
-const CATEGORY_COLORS: Record<string, string> = {
-  auth: "#6366f1",
-  access: "#f59e0b",
-  execution: "#22c55e",
-  secrets: "#ef4444",
-  admin: "#8b5cf6",
-  data: "#3b82f6",
-  system: "#64748b",
-};
-
-const OUTCOME_COLORS: Record<string, string> = {
-  success: "var(--success)",
-  failure: "var(--danger)",
-  denied: "var(--warning)",
+// Category hues come from the theme's status tokens so both themes read.
+const CATEGORY_TONE: Record<string, string> = {
+  auth: "info",
+  access: "warning",
+  execution: "success",
+  secrets: "danger",
+  admin: "running",
+  data: "info",
+  system: "cancelled",
 };
 
 function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function CategoryBadge({ category }: { category: string }) {
-  const color = CATEGORY_COLORS[category] ?? "var(--text-3)";
-  return (
-    <span
-      style={{
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: "0.65rem",
-        fontWeight: 500,
-        padding: "1px 6px",
-        borderRadius: 4,
-        background: `${color}20`,
-        color,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {category}
-    </span>
-  );
+  const tone = CATEGORY_TONE[category] ?? "cancelled";
+  return <span className={`act-cat act-tone-${tone}`}>{category}</span>;
 }
 
 function OutcomeDot({ outcome }: { outcome: string }) {
-  const color = OUTCOME_COLORS[outcome] ?? "var(--text-3)";
   return (
     <span
-      style={{
-        width: 7,
-        height: 7,
-        borderRadius: "50%",
-        background: color,
-        display: "inline-block",
-        flexShrink: 0,
-      }}
+      className={`act-outcome act-outcome-${outcome}`}
       title={outcome}
+      role="img"
+      aria-label={`Outcome: ${outcome}`}
     />
+  );
+}
+
+function DetailField(
+  { label, value, wide }: { label: string; value: string; wide?: boolean },
+) {
+  return (
+    <div className={wide ? "act-field act-field-wide" : "act-field"}>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
   );
 }
 
 function EventRow({ event }: { event: AuditEvent }) {
   const [expanded, setExpanded] = useState(false);
+  const detailId = `audit-${event.id}`;
+  const d = event.decision as Record<string, string> | undefined;
 
   return (
-    <div
-      style={{
-        borderBottom: "1px solid var(--border)",
-        cursor: "pointer",
-      }}
-      onClick={() => setExpanded(!expanded)}
-    >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns:
-            "72px 18px 68px minmax(100px, 1.5fr) minmax(80px, 1fr) minmax(80px, 1fr)",
-          gap: 12,
-          alignItems: "center",
-          padding: "8px 16px",
-          fontSize: "0.8rem",
-        }}
+    <div className={`act-event${expanded ? " expanded" : ""}`}>
+      <button
+        type="button"
+        className="act-row act-row-grid"
+        aria-expanded={expanded}
+        aria-controls={detailId}
+        onClick={() => setExpanded(!expanded)}
       >
         <span
-          className="mono"
-          style={{ color: "var(--text-3)", fontSize: "0.72rem" }}
+          className="mono act-time"
+          title={formatAbsoluteTime(event.timestamp)}
         >
           {formatTime(event.timestamp)}
         </span>
         <OutcomeDot outcome={event.outcome} />
         <CategoryBadge category={event.category} />
-        <span
-          className="mono"
-          style={{
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {event.action}
-        </span>
-        <span
-          style={{
-            color: "var(--text-3)",
-            fontSize: "0.72rem",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {actorLabel(event)}
-        </span>
-        <span
-          className="mono"
-          style={{
-            color: "var(--text-3)",
-            fontSize: "0.68rem",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
+        <span className="mono act-ellipsis">{event.action}</span>
+        <span className="act-ellipsis act-muted">{actorLabel(event)}</span>
+        <span className="mono act-ellipsis act-muted act-resource">
           {event.resourceKind}:{event.resourceName}
         </span>
-      </div>
+      </button>
       {expanded && (
-        <div
-          style={{
-            padding: "8px 16px 12px",
-            background: "var(--card-bg)",
-            fontSize: "0.72rem",
-            fontFamily: "'JetBrains Mono', monospace",
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: "4px 24px",
-            color: "var(--text-2)",
-          }}
-        >
-          <div>
-            <strong>ID:</strong> {event.id}
-          </div>
-          <div>
-            <strong>Request:</strong> {event.requestId}
-          </div>
-          <div>
-            <strong>Instance:</strong> {event.instanceId}
-          </div>
-          <div>
-            <strong>Source IP:</strong> {event.sourceIp}
-          </div>
-          <div>
-            <strong>Initiated by:</strong> {event.initiatedBy}
-          </div>
-          <div>
-            <strong>Principal kind:</strong> {event.principalKind}
-          </div>
+        <dl className="act-detail" id={detailId}>
+          <DetailField label="ID" value={event.id} />
+          <DetailField label="Request" value={event.requestId} />
+          <DetailField
+            label="Time"
+            value={formatAbsoluteTime(event.timestamp)}
+          />
+          <DetailField label="Instance" value={event.instanceId} />
+          <DetailField label="Source IP" value={event.sourceIp} />
+          <DetailField label="Initiated by" value={event.initiatedBy} />
+          <DetailField label="Principal kind" value={event.principalKind} />
+          <DetailField label="Principal ID" value={event.principalId} />
           {event.principalUsername && (
-            <div>
-              <strong>Username:</strong> {event.principalUsername}
-            </div>
+            <DetailField label="Username" value={event.principalUsername} />
           )}
           {event.principalEmail && (
-            <div>
-              <strong>Email:</strong> {event.principalEmail}
-            </div>
+            <DetailField label="Email" value={event.principalEmail} />
           )}
-          <div>
-            <strong>Principal ID:</strong> {event.principalId}
-          </div>
           {event.methodName && (
-            <div>
-              <strong>Method name:</strong> {event.methodName}
-            </div>
+            <DetailField label="Method" value={event.methodName} />
           )}
           {event.detail && (
-            <div style={{ gridColumn: "1 / -1" }}>
-              <strong>Detail:</strong> {event.detail}
+            <DetailField label="Detail" value={event.detail} wide />
+          )}
+          {d && (
+            <div
+              className={`act-decision act-decision-${
+                d.effect === "deny" ? "deny" : "allow"
+              }`}
+            >
+              <strong>Decision</strong> {d.effect} {d.action} on{" "}
+              {d.resourceKind}:{d.resourceName}
+              {d.grantId && (
+                <span className="act-muted">{` (grant ${d.grantId})`}</span>
+              )}
             </div>
           )}
-          {event.decision && (() => {
-            const d = event.decision as Record<string, string>;
-            return (
-              <div
-                style={{
-                  gridColumn: "1 / -1",
-                  marginTop: 4,
-                  padding: "6px 8px",
-                  borderRadius: 4,
-                  background: d.effect === "deny"
-                    ? "rgba(239, 68, 68, 0.1)"
-                    : "rgba(34, 197, 94, 0.1)",
-                }}
-              >
-                <strong>Decision:</strong> {d.effect} {d.action} on{" "}
-                {d.resourceKind}:{d.resourceName}
-                {d.grantId && (
-                  <span style={{ opacity: 0.7 }}>
-                    {` (grant: ${d.grantId})`}
-                  </span>
-                )}
-              </div>
-            );
-          })()}
-        </div>
+        </dl>
       )}
     </div>
   );
@@ -245,232 +164,194 @@ const CATEGORIES = [
   "system",
 ];
 const OUTCOMES = ["success", "failure", "denied"];
-
-interface ActivityProps {
-  auditStream: {
-    events: AuditEvent[];
-    streaming: boolean;
-    liveEnabled: boolean;
-    error: string | null;
-    clearEvents: () => void;
-    setLiveEnabled: (enabled: boolean) => void;
-    maxEvents: number;
-    setMaxEvents: (n: number) => void;
-  };
-}
-
 const EVENT_LIMITS = [100, 500, 1000];
 
-export function Activity({ auditStream }: ActivityProps) {
+function ToggleGroup(
+  { label, options, selected, onToggle }: {
+    label: string;
+    options: string[];
+    selected: Set<string>;
+    onToggle: (value: string) => void;
+  },
+) {
+  return (
+    <div className="time-range" role="group" aria-label={label}>
+      {options.map((o) => (
+        <button
+          type="button"
+          key={o}
+          className={selected.has(o) ? "active" : ""}
+          aria-pressed={selected.has(o)}
+          onClick={() => onToggle(o)}
+        >
+          {o}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function toggleIn(set: Set<string>, value: string): Set<string> {
+  const next = new Set(set);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return next;
+}
+
+export function Activity({ auditStream }: { auditStream: AuditStream }) {
   const {
     events,
-    streaming,
+    status,
+    historyLoaded,
     liveEnabled,
     error,
     clearEvents,
     setLiveEnabled,
+    reconnect,
     maxEvents,
     setMaxEvents,
   } = auditStream;
   const [categoryFilters, setCategoryFilters] = useState<Set<string>>(
-    new Set(),
+    () => new Set(),
   );
   const [outcomeFilters, setOutcomeFilters] = useState<Set<string>>(
-    new Set(),
+    () => new Set(),
   );
 
-  const toggleCategory = (c: string) => {
-    setCategoryFilters((prev) => {
-      const next = new Set(prev);
-      if (next.has(c)) next.delete(c);
-      else next.add(c);
-      return next;
-    });
+  const newestFirst = useMemo(() => {
+    const filtered = events.filter((e) =>
+      (categoryFilters.size === 0 || categoryFilters.has(e.category)) &&
+      (outcomeFilters.size === 0 || outcomeFilters.has(e.outcome))
+    );
+    return filtered.reverse();
+  }, [events, categoryFilters, outcomeFilters]);
+
+  const filtering = categoryFilters.size > 0 || outcomeFilters.size > 0;
+  const clearFilters = () => {
+    setCategoryFilters(new Set());
+    setOutcomeFilters(new Set());
   };
 
-  const toggleOutcome = (o: string) => {
-    setOutcomeFilters((prev) => {
-      const next = new Set(prev);
-      if (next.has(o)) next.delete(o);
-      else next.add(o);
-      return next;
-    });
-  };
+  if (status === "disabled" || status === "denied") {
+    return (
+      <>
+        <div className="page-header">
+          <h1>Activity</h1>
+        </div>
+        {status === "disabled"
+          ? <AuditDisabledState copy={copyText} />
+          : <AuditDeniedState message={error} />}
+      </>
+    );
+  }
 
-  const filtered = events.filter((e) => {
-    if (categoryFilters.size > 0 && !categoryFilters.has(e.category)) {
-      return false;
-    }
-    if (outcomeFilters.size > 0 && !outcomeFilters.has(e.outcome)) return false;
-    return true;
-  });
-
-  const reversed = [...filtered].reverse();
+  const feedView = auditFeedView(status, events.length, historyLoaded);
+  const loading = feedView === "loading";
 
   return (
     <>
       <div className="page-header">
         <h1>Activity</h1>
         <div className="header-right">
-          <button
-            type="button"
-            onClick={() => setLiveEnabled(!liveEnabled)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "4px 10px",
-              borderRadius: 5,
-              fontSize: "0.78rem",
-              fontWeight: 500,
-              fontFamily: "inherit",
-              cursor: "pointer",
-              border: streaming
-                ? "1px solid var(--success)"
-                : liveEnabled
-                ? "1px solid var(--warning)"
-                : "1px solid var(--text-3)",
-              background: streaming
-                ? "rgba(34, 197, 94, 0.15)"
-                : liveEnabled
-                ? "rgba(245, 158, 11, 0.1)"
-                : "transparent",
-              color: streaming
-                ? "var(--success)"
-                : liveEnabled
-                ? "var(--warning)"
-                : "var(--text-3)",
-            }}
-          >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: streaming
-                  ? "var(--success)"
-                  : liveEnabled
-                  ? "var(--warning)"
-                  : "var(--text-3)",
-                animation: streaming ? "pulse 2s infinite" : "none",
-              }}
-            />
-            {streaming ? "Live" : liveEnabled ? "Connecting" : "Paused"}
-          </button>
-          <div className="time-range">
-            {EVENT_LIMITS.map((n) => (
-              <button
-                type="button"
-                key={n}
-                className={`time-btn${maxEvents === n ? " active" : ""}`}
-                onClick={() => setMaxEvents(n)}
-              >
-                {n}
-              </button>
-            ))}
-          </div>
-          {error && (
-            <span style={{ fontSize: "0.72rem", color: "var(--danger)" }}>
-              {error}
+          {feedView === "feed" && (
+            <span className="mono act-count" aria-live="polite">
+              {filtering
+                ? `${formatCount(newestFirst.length)} of ${
+                  pluralize(events.length, "event")
+                }`
+                : pluralize(events.length, "event")}
             </span>
           )}
-          <span
-            className="mono"
-            style={{ fontSize: "0.75rem", color: "var(--text-3)" }}
-          >
-            {filtered.length} events
-          </span>
-          <div className="time-range">
-            {CATEGORIES.map((c) => (
-              <button
-                type="button"
-                key={c}
-                className={`time-btn${categoryFilters.has(c) ? " active" : ""}`}
-                onClick={() => toggleCategory(c)}
-              >
-                {c}
-              </button>
-            ))}
-          </div>
-          <div className="time-range">
-            {OUTCOMES.map((o) => (
-              <button
-                type="button"
-                key={o}
-                className={`time-btn${outcomeFilters.has(o) ? " active" : ""}`}
-                onClick={() => toggleOutcome(o)}
-              >
-                {o}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            className="time-btn"
-            onClick={clearEvents}
-            style={{ marginLeft: 8 }}
-          >
-            Clear
-          </button>
+          <AuditLiveToggle
+            status={status}
+            onToggle={() =>
+              status === "error" ? reconnect() : setLiveEnabled(!liveEnabled)}
+          />
         </div>
       </div>
 
-      <div
-        className="card"
-        style={{ overflow: "hidden", padding: 0, flex: 1 }}
-      >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "72px 18px 68px minmax(100px, 1.5fr) minmax(80px, 1fr) minmax(80px, 1fr)",
-            gap: 12,
-            padding: "10px 16px",
-            fontSize: "0.68rem",
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-            color: "var(--text-3)",
-            borderBottom: "1px solid var(--border)",
-          }}
+      <div className="act-toolbar">
+        <ToggleGroup
+          label="Filter by category"
+          options={CATEGORIES}
+          selected={categoryFilters}
+          onToggle={(c) => setCategoryFilters((prev) => toggleIn(prev, c))}
+        />
+        <ToggleGroup
+          label="Filter by outcome"
+          options={OUTCOMES}
+          selected={outcomeFilters}
+          onToggle={(o) => setOutcomeFilters((prev) => toggleIn(prev, o))}
+        />
+        <span className="act-toolbar-spacer" />
+        <div className="time-range" role="group" aria-label="Events to keep">
+          {EVENT_LIMITS.map((n) => (
+            <button
+              type="button"
+              key={n}
+              className={maxEvents === n ? "active" : ""}
+              aria-pressed={maxEvents === n}
+              onClick={() => setMaxEvents(n)}
+            >
+              {formatCount(n)}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="btn-sm"
+          onClick={clearEvents}
+          disabled={events.length === 0}
         >
-          <span>Time</span>
-          <span></span>
-          <span>Category</span>
-          <span>Action</span>
-          <span>Initiated By</span>
-          <span>Resource</span>
-        </div>
-        <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 200px)" }}>
-          {reversed.length === 0
-            ? (
-              <div
-                style={{
-                  padding: 32,
-                  textAlign: "center",
-                  color: "var(--text-3)",
-                  fontSize: "0.85rem",
-                }}
-              >
-                {streaming
-                  ? "Waiting for audit events..."
-                  : "No audit events — is audit enabled in serve.yaml?"}
-              </div>
-            )
-            : reversed.map((event, idx) => (
-              <EventRow key={`${event.id}-${idx}`} event={event} />
-            ))}
-        </div>
+          Clear
+        </button>
       </div>
 
-      <style>
-        {`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-      `}
-      </style>
+      {status === "error" && (
+        <AuditErrorState message={error} onRetry={reconnect} />
+      )}
+
+      {feedView === "error"
+        ? null
+        : loading
+        ? <AuditFeedSkeleton />
+        : (
+          <div className="act-feed">
+            <div className="act-row-grid act-feed-head" aria-hidden="true">
+              {AUDIT_COLUMNS.map((c, i) => <span key={i}>{c}</span>)}
+            </div>
+            {newestFirst.length === 0
+              ? filtering
+                ? (
+                  <EmptyState
+                    title="No events match these filters"
+                    action={
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        onClick={clearFilters}
+                      >
+                        Clear filters
+                      </button>
+                    }
+                  />
+                )
+                : (
+                  <EmptyState title="No activity yet">
+                    {status === "live"
+                      ? "Events appear here as soon as anyone uses this server."
+                      : "Resume the live feed to see new events."}
+                  </EmptyState>
+                )
+              : (
+                <div className="act-feed-body">
+                  {newestFirst.map((event, idx) => (
+                    <EventRow key={`${event.id}-${idx}`} event={event} />
+                  ))}
+                </div>
+              )}
+          </div>
+        )}
     </>
   );
 }

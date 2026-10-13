@@ -17,13 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
+import { auditEnabled } from "./client/audit_state.ts";
 import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { pendingApprovals } from "./client/approvals";
 import { Logo } from "./components/Logo";
+import { AppShellSkeleton } from "./components/AppShellSkeleton.tsx";
 import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar";
 import {
   MOBILE_MEDIA_QUERY,
@@ -32,6 +41,8 @@ import {
   SIDEBAR_COLLAPSED_KEY,
 } from "./components/sidebar_state.ts";
 import { useRouter } from "./hooks/useRouter";
+import { TimeRangeProvider } from "./client/time_range.ts";
+import { TimeRangePicker } from "./components/TimeRangePicker.tsx";
 import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
 import { Workflows } from "./views/Workflows";
@@ -49,9 +60,41 @@ import { Extensions } from "./views/Extensions";
 import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
 import { DataDetail } from "./views/DataDetail";
-import { buildPath } from "./routes.ts";
+import { ScheduleDetail } from "./views/ScheduleDetail.tsx";
+import { WebhookDetail } from "./views/WebhookDetail.tsx";
+import { buildPath, isStartPath } from "./routes.ts";
+import "./styles/shell.css";
+
+// Views whose content is runs over time, which the dashboard-wide time
+// range scopes; the shell shows the picker above them.
+const TIMED_VIEWS: ReadonlySet<View> = new Set<View>([
+  "overview",
+  "workflows",
+  "executions",
+  "schedules",
+  "webhooks",
+  "approvals",
+  "models",
+]);
+// Details whose content follows the time range. A run page doesn't: it is
+// one run, and its recent-runs strip deliberately ignores the range.
+const TIMED_DETAILS = new Set(["workflow", "model", "schedule", "webhook"]);
+
+// Only `swamp start` serves the start page, so it loads as its own chunk.
+const Start = lazy(() =>
+  import("./views/start/Start").then((m) => ({ default: m.Start }))
+);
 
 export function App() {
+  // The `swamp start` page talks only to its own loopback server, so it
+  // must never mount the serve provider, its auth probe or its socket.
+  if (isStartPath(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="loading">Loading...</div>}>
+        <Start />
+      </Suspense>
+    );
+  }
   return (
     <SwampProvider>
       <AppShell />
@@ -63,7 +106,7 @@ function AppShell() {
   const { connected, token, authMode, sessionReady, logout } = useSwamp();
 
   if (authMode === null || !sessionReady) {
-    return <div className="loading">Connecting...</div>;
+    return <AppShellSkeleton label="Connecting" />;
   }
 
   if (authMode !== "none" && token === null) {
@@ -71,10 +114,14 @@ function AppShell() {
   }
 
   if (!connected) {
-    return <div className="loading">Connecting to swamp serve...</div>;
+    return <AppShellSkeleton label="Connecting to swamp serve" />;
   }
 
-  return <Dashboard onLogout={logout} />;
+  return (
+    <TimeRangeProvider>
+      <Dashboard onLogout={logout} />
+    </TimeRangeProvider>
+  );
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
@@ -146,6 +193,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     return () => document.removeEventListener("keydown", handler);
   }, [drawerOpen, detail, goUp]);
 
+  const showTimeRange = detail
+    ? TIMED_DETAILS.has(detail.kind)
+    : TIMED_VIEWS.has(view);
+
   const appClass = `app${drawerOpen ? " drawer-open" : ""}${
     collapsed ? " sidebar-collapsed" : ""
   }`;
@@ -157,6 +208,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         onNavigate={navigateAndClose}
         health={health}
         approvalCount={approvalCount}
+        auditEnabled={auditEnabled(auditStream.status)}
         onLogout={onLogout}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
@@ -189,6 +241,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           </button>
           <Logo size="sm" />
         </div>
+        {showTimeRange && (
+          <div className="shell-topbar">
+            <TimeRangePicker />
+          </div>
+        )}
         {detail?.kind === "data" || detail?.kind === "report" ||
             detail?.kind === "runReport"
           ? (
@@ -215,6 +272,26 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               onOpenRun={openRun}
             />
           )
+          : detail?.kind === "schedule"
+          ? (
+            <ScheduleDetail
+              key={detail.workflowName}
+              workflowName={detail.workflowName}
+              health={health}
+              denied={healthDenied}
+              onBack={closeDetail}
+            />
+          )
+          : detail?.kind === "webhook"
+          ? (
+            <WebhookDetail
+              key={detail.route}
+              route={detail.route}
+              health={health}
+              denied={healthDenied}
+              onBack={closeDetail}
+            />
+          )
           : detail?.kind === "model"
           ? (
             <ModelDetail
@@ -233,9 +310,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
               )}
               {view === "workflows" && (
-                <Workflows onOpenWorkflow={openWorkflow} />
+                <Workflows health={health} onOpenWorkflow={openWorkflow} />
               )}
-              {view === "executions" && <Executions onOpenRun={openRun} />}
+              {view === "executions" && (
+                <Executions health={health} onOpenRun={openRun} />
+              )}
               {view === "models" && <Models onOpenModel={openModel} />}
               {view === "schedules" && (
                 <Schedules health={health} denied={healthDenied} />

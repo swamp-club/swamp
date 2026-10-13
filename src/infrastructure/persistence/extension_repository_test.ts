@@ -1331,6 +1331,121 @@ Deno.test("ExtensionRepository: saveAll preserves source-mounted rows outside re
   });
 });
 
+// ===== swamp-club#2563: partial saves keep mounted rows =====
+
+const MOUNTED_MODELS_DIR = "/mounted/shared/extensions/models";
+
+function seedRow(
+  catalog: ExtensionCatalogStore,
+  sourcePath: string,
+  type: string,
+): void {
+  catalog.upsertWithIdentity({
+    source_path: sourcePath,
+    type_normalized: type,
+    kind: "model",
+    bundle_path: `${sourcePath}.js`,
+    version: "0.0.0",
+    description: "",
+    extends_type: "",
+    source_mtime: "",
+    source_fingerprint: "fp",
+    state: "Indexed",
+    extension_name: "@local/test",
+    extension_version: "0.0.0",
+  });
+}
+
+function withMountedRepository(
+  mountedSourceDirs: readonly string[],
+  fn: (
+    repo: ExtensionRepository,
+    catalog: ExtensionCatalogStore,
+    repoRoot: string,
+  ) => void,
+): void {
+  const { repoRoot, dbPath } = makeTempLayout();
+  const { repository, catalog } = makeStubRepository({
+    dbPath,
+    repoRoot,
+    mountedSourceDirs,
+  });
+  try {
+    fn(repository, catalog, repoRoot);
+  } finally {
+    catalog.close();
+    Deno.removeSync(repoRoot, { recursive: true });
+  }
+}
+
+Deno.test("ExtensionRepository.saveAll: a partial save keeps the rows of a mounted source", () => {
+  withMountedRepository([MOUNTED_MODELS_DIR], (repo, cat, repoRoot) => {
+    const mounted = `${MOUNTED_MODELS_DIR}/probe.ts`;
+    seedRow(cat, mounted, "@mounted/probe");
+    repo.saveAll([pulledExtension({
+      repoRoot,
+      name: "@scope/other",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@scope/x" }],
+    })]);
+    assertEquals(
+      cat.findBySourcePath(canonicalizePath(mounted))?.type_normalized,
+      "@mounted/probe",
+    );
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: without mounted dirs a partial save prunes out-of-root rows", () => {
+  withMountedRepository([], (repo, cat, repoRoot) => {
+    const mounted = `${MOUNTED_MODELS_DIR}/probe.ts`;
+    seedRow(cat, mounted, "@mounted/probe");
+    repo.saveAll([pulledExtension({
+      repoRoot,
+      name: "@scope/other",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@scope/x" }],
+    })]);
+    assertEquals(cat.findBySourcePath(canonicalizePath(mounted)), undefined);
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: a local override of a mounted type does not fail a partial save", () => {
+  withMountedRepository([MOUNTED_MODELS_DIR], (repo, cat, repoRoot) => {
+    const mounted = `${MOUNTED_MODELS_DIR}/probe.ts`;
+    const local = join(repoRoot, "extensions", "models", "probe.ts");
+    seedRow(cat, mounted, "@shared/probe");
+    seedRow(cat, local, "@shared/probe");
+    repo.saveAll([pulledExtension({
+      repoRoot,
+      name: "@scope/other",
+      version: "1.0.0",
+      sources: [{ relPath: "models/x.ts", type: "@scope/x" }],
+    })]);
+    assertEquals(
+      cat.findBySourcePath(canonicalizePath(local))?.type_normalized,
+      "@shared/probe",
+    );
+    assertEquals(
+      cat.findBySourcePath(canonicalizePath(mounted))?.type_normalized,
+      "",
+    );
+  });
+});
+
+Deno.test("ExtensionRepository.saveAll: settles mounted conflicts when pruneUnreachable is false", () => {
+  withMountedRepository([MOUNTED_MODELS_DIR], (repo, cat, repoRoot) => {
+    const mounted = `${MOUNTED_MODELS_DIR}/probe.ts`;
+    const local = join(repoRoot, "extensions", "models", "probe.ts");
+    seedRow(cat, mounted, "@shared/probe");
+    seedRow(cat, local, "@shared/probe");
+    repo.saveAll([], { pruneUnreachable: false });
+    assertEquals(
+      cat.findBySourcePath(canonicalizePath(mounted))?.type_normalized,
+      "",
+    );
+  });
+});
+
 Deno.test("saveAll: upsertWithIdentity canonicalizes source_path preventing ghost rows", () => {
   withRepository((repo, cat, repoRoot) => {
     const loc = makeSourceLocation(
