@@ -290,10 +290,9 @@ import {
   type FailedExpressions,
 } from "../expressions/unresolved_expression_guard.ts";
 import { errorPaths, UserError } from "../errors.ts";
-import { InvalidExpressionError } from "../expressions/errors.ts";
 import {
   isForeignExpression,
-  unlistedForeignRoots,
+  unlistedForeignRootError,
 } from "../expressions/swamp_namespaces.ts";
 import {
   getRunLogger,
@@ -671,14 +670,11 @@ function assertNoUnlistedForeignArguments(
       ? provenance.hasDataAtOrBelow(expr.path)
       : provenance.overlapsData(expr.path, expr.start, expr.end);
     if (inData || !isForeignExpression(expr.celExpression)) continue;
-    const [root] = unlistedForeignRoots(expr.celExpression);
-    if (root !== undefined) {
-      throw new InvalidExpressionError(
-        `Unknown variable: ${root}`,
-        expr.celExpression,
-        `${field}.${expr.path}`,
-      );
-    }
+    const unlisted = unlistedForeignRootError(
+      expr.celExpression,
+      `${field}.${expr.path}`,
+    );
+    if (unlisted) throw unlisted;
   }
 }
 

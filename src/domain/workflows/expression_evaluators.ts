@@ -68,6 +68,7 @@ import {
   isForeignExpression,
   type MisspeltNamespace,
   misspeltSwampNamespace,
+  unlistedForeignRootError,
   unlistedForeignRoots,
 } from "../expressions/swamp_namespaces.ts";
 
@@ -540,7 +541,8 @@ export class WorkflowExpressionEvaluator {
       // Strict: per-expression eval errors propagate, except for another
       // templating system's text in a step argument, which stays raw. CEL
       // stops at the first unknown name, so the failing root being a known
-      // one says nothing about the others: every root is checked.
+      // one says nothing about the others: every root is checked, and the
+      // error names the unlisted one.
       let value: unknown;
       try {
         value = await this.celEvaluator.evaluateAsync(
@@ -551,9 +553,14 @@ export class WorkflowExpressionEvaluator {
         const foreign = foreignTaskText(workflow, expr);
         if (
           !foreign || !NESTED_TASK_ARGUMENT.test(foreign.path) ||
-          !failedOnForeignRoot(error) ||
-          unlistedForeignRoots(expr.celExpression).length > 0
+          !failedOnForeignRoot(error)
         ) throw error;
+        const unlisted = unlistedForeignRootError(
+          expr.celExpression,
+          expr.path,
+          error,
+        );
+        if (unlisted) throw unlisted;
         failedForeignPaths.add(expr.path);
         continue;
       }

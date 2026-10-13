@@ -3072,7 +3072,8 @@ Deno.test("fails an unlisted root in step arguments", async () => {
 Deno.test("fails an unlisted root in a branch a run would not evaluate", async () => {
   const results = await service.validate(foreignTextWorkflow(
     StepTask.model("m", "run", {
-      sha: "${{ true ? github.sha : nonexistent.variable }}",
+      // Evaluates to "x" in a run, which never reads the other branch.
+      sha: "${{ true ? 'x' : nonexistent.variable }}",
     }),
   ));
   assertEquals(results.filter((r) => !r.passed).map((r) => r.name), [

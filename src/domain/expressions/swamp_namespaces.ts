@@ -25,6 +25,7 @@ import {
 } from "./cel_grammar.ts";
 import { lexSegments } from "./cel_string_lexer.ts";
 import { isDeferredExpression } from "./deferred_expression.ts";
+import { InvalidExpressionError } from "./errors.ts";
 import { extractExpressions } from "./expression_parser.ts";
 import { levenshteinDistance } from "../string_distance.ts";
 import {
@@ -61,7 +62,7 @@ const SWAMP_ROOT_NAMESPACES: ReadonlySet<string> = new Set([
  * workflow step's arguments (see {@link unlistedForeignRoots}). This set is
  * the one place the list lives; a new root is added here, with a test.
  */
-const KNOWN_FOREIGN_ROOTS: ReadonlySet<string> = new Set([
+export const KNOWN_FOREIGN_ROOTS: ReadonlySet<string> = new Set([
   "github",
   "gitea",
   "forgejo",
@@ -186,6 +187,28 @@ export function unlistedForeignRoots(celExpression: string): string[] {
   return [...roots].filter((root) =>
     !SWAMP_ROOT_NAMESPACES.has(root) && !KNOWN_FOREIGN_ROOTS.has(root) &&
     !isDeferredExpression(root)
+  );
+}
+
+/**
+ * The error for a step argument that reads an unlisted root (see
+ * {@link unlistedForeignRoots}), naming the first one, or undefined when it
+ * reads none. CEL stops at the first unknown name, so its own error for
+ * `github.sha + nonexistent.x` names `github`, which is allowed; this names
+ * `nonexistent`, and carries CEL's error as its cause.
+ */
+export function unlistedForeignRootError(
+  celExpression: string,
+  path?: string,
+  cause?: unknown,
+): InvalidExpressionError | undefined {
+  const [root] = unlistedForeignRoots(celExpression);
+  if (root === undefined) return undefined;
+  return new InvalidExpressionError(
+    `Unknown variable: ${root}`,
+    celExpression,
+    path,
+    cause instanceof Error ? cause : undefined,
   );
 }
 

@@ -687,7 +687,9 @@ these hold:
 - Every root swamp does not bind is on that list (`unlistedForeignRoots`
   returns none). CEL stops at the first unknown name, so the failing root
   alone says nothing about the others: `${{ github.sha + nonexistent.x }}`
-  fails on `github`, and still fails the run.
+  fails on `github`, and still fails the run. The run's error names the
+  unlisted root, `Unknown variable: nonexistent`
+  (`unlistedForeignRootError`), with CEL's own error as its cause.
 
 The known foreign roots are the GitHub Actions contexts swamp does not bind
 itself, and the Gitea and Forgejo equivalents of `github`:
@@ -766,7 +768,7 @@ whole-field record expression, and in step arguments that read an unlisted
 root. The message for an unlisted root names it and points at `literal()`,
 or, for a `globalArgs` path, at a step input. The check is static, so it
 fails every unlisted root in step arguments, including one in a branch a run
-would never evaluate (`${{ true ? github.sha : nonexistent.x }}`); there it
+would never evaluate (`${{ true ? "x" : nonexistent.x }}`); there it
 is stricter than a run.
 
 A root that nearly spells a swamp namespace gets a hint

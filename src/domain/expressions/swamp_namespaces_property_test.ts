@@ -22,6 +22,7 @@ import fc from "fast-check";
 import {
   isForeignExpression,
   isSwampExpression,
+  KNOWN_FOREIGN_ROOTS,
   misspeltSwampNamespace,
   type SwampScope,
   unlistedForeignRoots,
@@ -43,19 +44,7 @@ const SWAMP_ROOTS = [
   "webhook",
 ];
 const FOREIGN_ROOTS = ["github", "secrets", "matrix", "host", "value"];
-const KNOWN_FOREIGN_ROOTS = [
-  "github",
-  "gitea",
-  "forgejo",
-  "matrix",
-  "secrets",
-  "vars",
-  "needs",
-  "runner",
-  "job",
-  "jobs",
-  "strategy",
-];
+const KNOWN_ROOTS = [...KNOWN_FOREIGN_ROOTS];
 const MEMBERS = ["sha", "version", "region", "name", "outputs"];
 
 /** A member-access chain rooted at a swamp or foreign identifier. */
@@ -219,7 +208,7 @@ Deno.test("unlistedForeignRoots: empty exactly when every root is swamp's or a k
       fc.uniqueArray(
         fc.constantFrom(
           ...SWAMP_ROOTS.filter((root) => root !== "vault"),
-          ...KNOWN_FOREIGN_ROOTS,
+          ...KNOWN_ROOTS,
           "host",
           "value",
           "nonexistent",
@@ -229,7 +218,7 @@ Deno.test("unlistedForeignRoots: empty exactly when every root is swamp's or a k
       (roots) => {
         const cel = roots.map((root) => `${root}.x`).join(" + ");
         const expected = roots.filter((root) =>
-          !SWAMP_ROOTS.includes(root) && !KNOWN_FOREIGN_ROOTS.includes(root)
+          !SWAMP_ROOTS.includes(root) && !KNOWN_FOREIGN_ROOTS.has(root)
         );
         assert(
           unlistedForeignRoots(cel).join() === expected.join(),
@@ -241,7 +230,7 @@ Deno.test("unlistedForeignRoots: empty exactly when every root is swamp's or a k
 });
 
 Deno.test("known foreign roots: none is a swamp namespace or nearly spells one", () => {
-  for (const root of KNOWN_FOREIGN_ROOTS) {
+  for (const root of KNOWN_ROOTS) {
     assert(!SWAMP_ROOTS.includes(root), root);
     assert(isForeignExpression(`${root}.x`), root);
     assert(misspeltSwampNamespace(`${root}.x + input.y`)?.root === "input");

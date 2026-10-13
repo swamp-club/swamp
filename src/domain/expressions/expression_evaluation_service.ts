@@ -61,7 +61,7 @@ import { ProvenanceMap } from "./provenance_map.ts";
 import {
   failedOnForeignRoot,
   isForeignExpression,
-  unlistedForeignRoots,
+  unlistedForeignRootError,
 } from "./swamp_namespaces.ts";
 import {
   attachBindingProvenance,
@@ -392,7 +392,7 @@ export interface EvaluatedDefinition {
  * text (see {@link isForeignExpression}) that fails to evaluate: `"fail"`
  * rethrows, as for any failed expression; `"passThrough"` leaves it raw when
  * it failed on its foreign root (see {@link failedOnForeignRoot}) and reads
- * no unlisted root (see {@link unlistedForeignRoots}).
+ * no unlisted root (see {@link unlistedForeignRootError}).
  * Only a step's task inputs pass it through. Everything else a step-time
  * pass covers (placement, say) must be resolved by swamp.
  */
@@ -560,12 +560,18 @@ export class ExpressionEvaluationService {
         // text (swamp-club#2528). Classified only after it fails, so a
         // mistake here can never stop an expression that evaluates.
         if (
-          foreignText === "passThrough" &&
-          isForeignExpression(expr.celExpression) &&
-          failedOnForeignRoot(error) &&
-          unlistedForeignRoots(expr.celExpression).length === 0
-        ) continue;
-        throw error;
+          foreignText !== "passThrough" ||
+          !isForeignExpression(expr.celExpression) ||
+          !failedOnForeignRoot(error)
+        ) throw error;
+        // CEL named the known root it stopped at; name the unlisted one.
+        const unlisted = unlistedForeignRootError(
+          expr.celExpression,
+          expr.path,
+          error,
+        );
+        if (unlisted) throw unlisted;
+        continue;
       }
       evaluatedValues.set(expr.raw, value);
       origins?.set(expr.raw, spliceOrigin(expr.celExpression, context, value));

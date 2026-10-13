@@ -1433,8 +1433,9 @@ Deno.test("evaluateDataTracked: an unlisted root fails even when asked to pass t
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
     const cases: [string, string][] = [
       ["${{ nonexistent.variable }}", "Unknown variable: nonexistent"],
-      // CEL stops at the known root; the unlisted one still fails it.
-      ["${{ github.sha + nonexistent.x }}", "Unknown variable: github"],
+      // CEL stops at the known root; the unlisted one still fails it, and
+      // is the one the error names.
+      ["${{ github.sha + nonexistent.x }}", "Unknown variable: nonexistent"],
     ];
     for (const [text, message] of cases) {
       await assertRejects(

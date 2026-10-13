@@ -652,7 +652,7 @@ Deno.test("foreign template text: only known foreign roots pass through step arg
       ],
       [
         directWorkflow("mixed", type, "${{ github.sha + nonexistent.x }}"),
-        "Unknown variable: github",
+        "Unknown variable: nonexistent",
       ],
     ];
     // A nested workflow's input value follows the same rule.

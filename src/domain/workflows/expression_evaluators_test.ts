@@ -569,10 +569,10 @@ Deno.test("WorkflowExpressionEvaluator: an unlisted root in step arguments throw
       "Unknown variable: nonexistent",
     ],
     // CEL stops at the known root, yet the unlisted one beside it still
-    // fails the run.
+    // fails the run, and is the one the error names.
     [
       StepTask.model("m", "run", { sha: "${{ github.sha + nonexistent.x }}" }),
-      "Unknown variable: github",
+      "Unknown variable: nonexistent",
     ],
   ];
   for (const [task, message] of cases) {
@@ -587,6 +587,24 @@ Deno.test("WorkflowExpressionEvaluator: an unlisted root in step arguments throw
       message,
     );
   }
+});
+
+Deno.test("WorkflowExpressionEvaluator: an unlisted root in a branch that is not evaluated does not fail the run", async () => {
+  // Validate fails this text; it reads the roots as written.
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const result = await evaluator.evaluate(
+    foreignWorkflow(
+      StepTask.model("m", "run", {
+        sha: "${{ true ? 'x' : nonexistent.variable }}",
+      }),
+    ),
+    emptyContext(),
+    "unrestricted",
+  );
+  const task = result.workflow.jobs[0].steps[0].task.data as {
+    inputs: Record<string, unknown>;
+  };
+  assertEquals(task.inputs, { sha: "x" });
 });
 
 Deno.test("WorkflowExpressionEvaluator: literal() around an unlisted root in step inputs evaluates to the text", async () => {
