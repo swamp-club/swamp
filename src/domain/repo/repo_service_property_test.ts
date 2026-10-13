@@ -122,7 +122,13 @@ Deno.test("RepoService property: claude instructions land in one target and a se
           );
         }
       } finally {
-        await Deno.remove(dir, { recursive: true }).catch(() => {});
+        if (Deno.build.os === "windows") {
+          // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+          // handles yet. Temp dir is ephemeral, OS reclaims.
+          await Deno.remove(dir, { recursive: true }).catch(() => {});
+        } else {
+          await Deno.remove(dir, { recursive: true });
+        }
       }
     }),
     { numRuns: 40 },

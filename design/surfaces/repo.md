@@ -35,7 +35,11 @@ the first rule that matches:
    `AGENTS.md`.
 4. Otherwise: write `CLAUDE.md`.
 
-The repo's own content means anything outside swamp's managed section. Swamp
+The repo's own content means anything outside swamp's managed section. When
+another enrolled tool (codex, opencode, ...) also keeps swamp's section in
+`AGENTS.md`, Claude Code reads swamp's instructions twice, once from its own
+target and once from `AGENTS.md`. The copies are identical, so this is accepted
+rather than deduplicated. Swamp
 never writes its Claude instructions into `AGENTS.md` itself, because Claude
 Code before 2.1.277 (and some sessions before 2.1.281) reads only `CLAUDE.md`
 files and rules, and would lose swamp's rules. A repo whose `.gitignore`

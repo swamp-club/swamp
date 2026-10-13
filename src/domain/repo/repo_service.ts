@@ -1226,8 +1226,9 @@ export class RepoService {
     repoPath: RepoPath,
   ): Promise<ClaudeInstructionsState> {
     const path = (relative: string) => join(repoPath.value, relative);
-    // An unreadable file (a directory, no permission) counts as absent, so
-    // the choice falls back to today's CLAUDE.md rather than failing here.
+    // A file that can't be read or stat'ed (a directory, no permission)
+    // counts as absent, so the choice falls back to today's CLAUDE.md rather
+    // than failing here.
     const readIfExists = async (relative: string): Promise<string | null> => {
       try {
         return await Deno.readTextFile(path(relative));
@@ -1240,9 +1241,8 @@ export class RepoService {
     ): Promise<Deno.FileInfo | null> => {
       try {
         return await Deno.lstat(path(relative));
-      } catch (error) {
-        if (error instanceof Deno.errors.NotFound) return null;
-        throw error;
+      } catch {
+        return null;
       }
     };
     const claudeMd = await readIfExists("CLAUDE.md");
