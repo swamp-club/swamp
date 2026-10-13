@@ -360,6 +360,10 @@ const CUSTOM_MODEL_LOCK_INSPECT_CONCURRENCY = 16;
  * Where a custom datastore's per-model locks come from. A bucket has no
  * directory to walk, so each of the repo's models has its lock built the way
  * a run builds it and inspected.
+ *
+ * Only models this checkout lists are inspected: a lock held for a model
+ * defined only in another clone (e.g. its auto-definitions), or deleted here,
+ * is not reported.
  */
 export interface CustomModelLockSource {
   /** The repo's models, as the modelType/modelId pairs runs lock on. */
@@ -407,7 +411,12 @@ async function scanCustomModelLocks(
       } catch (error) {
         // Stop the other workers taking more models; the scan has failed.
         pending.length = 0;
-        throw error;
+        throw new Error(
+          `Could not inspect the lock for ${modelType}/${modelId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { cause: error },
+        );
       }
     }
   };

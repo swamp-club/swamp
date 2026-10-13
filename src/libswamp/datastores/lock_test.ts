@@ -682,18 +682,29 @@ Deno.test("createDatastoreLockStatusDeps: a failed inspect fails the scan", asyn
     createLock: () => failing,
   });
 
-  await assertRejects(() => deps.scanModelLocks(), Error, "AccessDenied");
+  await assertRejects(
+    () => deps.scanModelLocks(),
+    Error,
+    "Could not inspect the lock for aws-ec2/my-server: AccessDenied",
+  );
 });
 
 Deno.test("createDatastoreLockStatusDeps: a failed inspect stops further inspects", async () => {
   let inspects = 0;
+  let inFlight = 0;
   const createLock = (lockKey: string) =>
     ({
-      inspect() {
+      async inspect() {
         inspects++;
-        return lockKey.includes("server-00")
-          ? Promise.reject(new Error("AccessDenied"))
-          : Promise.resolve(null);
+        inFlight++;
+        try {
+          if (lockKey.includes("server-00")) throw new Error("AccessDenied");
+          // Still running when the failing inspect rejects.
+          for (let i = 0; i < 5; i++) await Promise.resolve();
+          return null;
+        } finally {
+          inFlight--;
+        }
       },
     }) as unknown as DistributedLock;
 
@@ -707,10 +718,9 @@ Deno.test("createDatastoreLockStatusDeps: a failed inspect stops further inspect
   });
 
   await assertRejects(() => deps.scanModelLocks(), Error, "AccessDenied");
-  const afterScan = inspects;
-  assertEquals(afterScan < models.length, true);
-  await Promise.resolve();
-  assertEquals(inspects, afterScan);
+  // No inspect outlives the scan, and the failure stopped the rest.
+  assertEquals(inFlight, 0);
+  assertEquals(inspects, 16);
 });
 
 Deno.test("createDatastoreLockStatusDeps: bounds concurrent inspects and sorts results", async () => {
