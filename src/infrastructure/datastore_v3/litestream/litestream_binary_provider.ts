@@ -105,6 +105,8 @@ export interface LitestreamFs {
   rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
+  /** Whether the file has an exec bit; always true where there are none. */
+  isExecutable(path: string): Promise<boolean>;
   /**
    * Directories under `dir` whose names start with `prefix`, with their
    * modification time in ms. One removed while it is listed is left out.
@@ -195,6 +197,10 @@ export const denoLitestreamFs: LitestreamFs = {
   async chmod(path, mode) {
     // Windows has no mode bits; Deno.chmod throws there.
     if (Deno.build.os !== "windows") await Deno.chmod(path, mode);
+  },
+  async isExecutable(path) {
+    if (Deno.build.os === "windows") return true;
+    return ((await Deno.stat(path)).mode ?? 0) & 0o111 ? true : false;
   },
   async listDirs(dir, prefix) {
     const dirs: { name: string; mtimeMs: number }[] = [];
@@ -367,7 +373,15 @@ export class LitestreamBinaryProvider {
         actual === expected ? undefined : `holds a binary whose SHA-256 is ` +
           `${actual}, not the pinned ${expected}`
       );
-    if (problem === undefined) return path;
+    if (problem === undefined) {
+      // A binary installed by hand may lack the exec bit, which would only
+      // surface as EACCES when the sidecar starts. The cache is swamp's own
+      // directory, so fix it here; an override path is never modified.
+      if (!(await this.fs.isExecutable(path))) {
+        await this.fs.chmod(path, 0o755);
+      }
+      return path;
+    }
     throw markErrorPaths(
       new LitestreamIntegrityError(
         `The Litestream cache ${versionDir} ${problem}. swamp will not run ` +
@@ -467,7 +481,12 @@ export class LitestreamBinaryProvider {
           `  2. Extract ${binaryName} from it ` +
           `(SHA-256 ${digests.binarySha256}).\n` +
           `  3. Put it at ${cachePath}, or set ${LITESTREAM_PATH_ENV} to ` +
-          `its path.`,
+          `its path (make that one executable yourself).` +
+          (target.startsWith("darwin-")
+            ? `\nOn macOS, download it with curl rather than a browser: a ` +
+              `browser download is quarantined, and Gatekeeper may stop ` +
+              `the binary from starting.`
+            : ""),
       ),
       [cachePath],
     );

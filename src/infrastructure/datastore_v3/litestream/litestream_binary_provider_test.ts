@@ -550,3 +550,57 @@ Deno.test("denoLitestreamFs.listDirs: lists only directories with the prefix", a
     assertEquals(names, [".tmp-0.5.17-a"]);
   });
 });
+
+Deno.test({
+  name:
+    "LitestreamBinaryProvider.resolve: a hand-installed cached binary without the exec bit is made executable",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withTempDir(async (dataDir) => {
+      const fx = await fixture();
+      const versionDir = join(dataDir, "litestream", "0.5.17");
+      await Deno.mkdir(versionDir, { recursive: true });
+      const path = join(versionDir, "litestream");
+      await Deno.writeFile(path, BINARY, { mode: 0o644 });
+      await Deno.chmod(path, 0o644);
+
+      const resolved = await provider(dataDir, fx).resolve();
+      assertEquals(resolved.source, "cache");
+      assertEquals((await Deno.stat(path)).mode! & 0o777, 0o755);
+    });
+  },
+});
+
+Deno.test({
+  name: "LitestreamBinaryProvider.resolve: an override path is never modified",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withTempDir(async (dataDir) => {
+      const fx = await fixture();
+      const overridePath = join(dataDir, "my-litestream");
+      await Deno.writeFile(overridePath, BINARY);
+      await Deno.chmod(overridePath, 0o644);
+      await provider(dataDir, fx, { overridePath }).resolve();
+      assertEquals((await Deno.stat(overridePath)).mode! & 0o777, 0o644);
+    });
+  },
+});
+
+Deno.test("LitestreamBinaryProvider.resolve: offline on macOS, the error says to download with curl", async () => {
+  await withTempDir(async (dataDir) => {
+    const fx = await fixture();
+    const offline = () => Promise.reject(new TypeError("dns error"));
+    const mac = await assertRejects(
+      () =>
+        provider(dataDir, fx, { os: "darwin", arch: "aarch64", fetch: offline })
+          .resolve(),
+      LitestreamUnavailableError,
+    );
+    assertStringIncludes(mac.message, "download it with curl");
+    const linux = await assertRejects(
+      () => provider(dataDir, fx, { fetch: offline }).resolve(),
+      LitestreamUnavailableError,
+    );
+    assertEquals(linux.message.includes("curl"), false);
+  });
+});

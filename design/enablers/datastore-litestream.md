@@ -92,7 +92,9 @@ Built in swamp-club#3358, dormant until the sidecar uses it. The code is
   37 MB. A version directory whose binary is missing or doesn't match is
   refused, never replaced or run: the error names the directory to delete.
 - **Concurrent first use takes no lock.** Each process stages its download
-  in its own temp directory beside the cache and renames it into place. A
+  in its own temp directory beside the cache and renames it into place, so N
+  racing processes each download the archive once; this happens once per
+  version. A
   rename onto an existing directory fails on every platform, so the first
   rename wins. The other process discards its copy and hashes the winner's.
   Staging directories older than 10 minutes, left by a crashed process, are
@@ -101,7 +103,10 @@ Built in swamp-club#3358, dormant until the sidecar uses it. The code is
   binary the user installed. It is hashed against the pin like any other.
   With no network and no override, the error says what failed (network error,
   timeout or HTTP status), the exact URL, both digests, and the two places
-  the binary can go: the cache path or `SWAMP_LITESTREAM_PATH`.
+  the binary can go: the cache path or `SWAMP_LITESTREAM_PATH`. On macOS it
+  says to download with `curl`, because a browser download is quarantined and
+  Gatekeeper may stop it. A binary placed in the cache by hand is made
+  executable once its hash matches; an override path is never modified.
 - **The serve Docker image** fetches the linux archive at build time
   (`ADD --checksum`, one stage per architecture), installs
   `/usr/local/bin/litestream` and sets `SWAMP_LITESTREAM_PATH` to it, so serve
