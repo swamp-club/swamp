@@ -521,6 +521,14 @@ export async function replayPendingRuns(
 
 export const CLAIM_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * How often a live owner refreshes its tracker rows (the interval the
+ * workflow execution service heartbeats on). A row owned on another host is
+ * only judged once it has missed two of these, however small `--stale-ttl`
+ * is.
+ */
+const TRACKER_ROW_HEARTBEAT_MS = 30_000;
+
 export interface ReconcileRemoteInterruptedRunsDeps {
   controlPlaneStore: ControlPlaneStore;
   instanceId: string;
@@ -539,6 +547,8 @@ export interface ReconcileRemoteInterruptedRunsDeps {
    * name and process table.
    */
   ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead">;
+  /** This process's pid. Defaults to `Deno.pid`. */
+  selfPid?: number;
 }
 
 /**
@@ -605,14 +615,20 @@ export async function reconcileRemoteInterruptedRuns(
   const heartbeatIds = new Set(
     heartbeatKeys.map((key) => key.slice("heartbeats/".length)),
   );
+  // Gone instances are not claimed: their rows are in this tracker only, so
+  // the instances that can see them share it, and two that judge the same
+  // instance in one tick write the same interruption twice.
   const deadSet = goneInstanceIds(allRunning, {
     liveness: {
       ...(deps.ownerLiveness ?? localOwnerLiveness()),
       instanceId: deps.instanceId,
     },
-    selfPid: Deno.pid,
+    selfPid: deps.selfPid ?? Deno.pid,
     hasHeartbeat: (id) => heartbeatIds.has(id),
-    staleTtlMs: deps.staleTtlMs ?? DEFAULT_STALE_TTL_MS,
+    staleTtlMs: Math.max(
+      deps.staleTtlMs ?? DEFAULT_STALE_TTL_MS,
+      2 * TRACKER_ROW_HEARTBEAT_MS,
+    ),
     now: Date.now(),
   });
   for (const claimedId of claimedInstanceIds) deadSet.add(claimedId);

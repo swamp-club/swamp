@@ -1462,6 +1462,43 @@ Deno.test("reconcileRemoteInterruptedRuns: a heartbeat-less row owned on another
   assertEquals(await reconcileRemoteInterruptedRuns(old.deps), 1);
 });
 
+Deno.test("reconcileRemoteInterruptedRuns: a small stale ttl does not shorten the wait for a row owned on another host", async () => {
+  const row = (ageMs: number) =>
+    makeActiveRunData({
+      instanceId: "elsewhere",
+      hostname: "other-host",
+      heartbeatAt: new Date(Date.now() - ageMs).toISOString(),
+    });
+
+  // Between two refreshes of a live owner's row.
+  const live = createReconcileHarness({}, [row(45_000)]);
+  live.deps.ownerLiveness = deadPidLiveness;
+  live.deps.staleTtlMs = 2_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(live.deps), 0);
+
+  const missed = createReconcileHarness({}, [row(120_000)]);
+  missed.deps.ownerLiveness = deadPidLiveness;
+  missed.deps.staleTtlMs = 2_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(missed.deps), 1);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: interrupts a previous instance's row that carries this process's pid", async () => {
+  // A restarted container: the old process and this one are both pid 7.
+  const h = createReconcileHarness({}, [
+    makeActiveRunData({
+      id: "run-1",
+      instanceId: "old-self",
+      hostname: "this-host",
+      pid: 7,
+    }),
+  ]);
+  h.deps.ownerLiveness = deadPidLiveness;
+  h.deps.selfPid = 7;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(h.completed.map((c) => c.runId), ["run-1"]);
+});
+
 // ── cleanupExpiredClaims tests ─────────────────────────────────────────
 
 Deno.test("cleanupExpiredClaims: deletes expired claims", async () => {

@@ -1130,9 +1130,12 @@ therefore also interrupts the local runs of an instance that has no heartbeat at
 all (`goneInstanceIds`). Such an instance counts as gone when every `running`
 tracker row it left is either owned on this host by a dead pid (or by this
 process's own pid, which a restarted container reuses), or owned on another host
-and older than `--stale-ttl`. The wait covers a live instance that shares the
-tracker from another host and has started listening but not yet written its
-first heartbeat. Nothing is claimed or deleted for such an instance.
+and older than `--stale-ttl`, or than 60 s (two refreshes of a tracker row) if
+that is longer. The wait covers a live instance that shares the tracker from
+another host and has started listening but not yet written its first heartbeat.
+Nothing is claimed or deleted for such an instance. The pid checks take the same
+hostname to mean the same process table, so two containers that share a tracker
+volume need distinct hostnames.
 
 When the datastore manages config, a `ConfigPoller` pulls `.swamp/config/` every
 `--datastore-poll-interval` (default 30 s) and checks the extension lockfile. The `AccessDataPoller` pulls grants

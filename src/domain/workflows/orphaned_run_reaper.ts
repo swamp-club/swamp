@@ -214,7 +214,8 @@ export interface GoneInstanceCheck {
  * (swamp-club#3355). The age wait covers a live instance sharing this
  * tracker from another host, which starts listening before it writes its
  * first heartbeat; a row on this host with a live pid always keeps its
- * instance.
+ * instance. As in {@link trackerShowsDeadOwner}, the same hostname is taken
+ * to mean the same process table.
  */
 export function goneInstanceIds(
   running: readonly ActiveRun[],
