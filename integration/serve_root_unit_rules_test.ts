@@ -320,7 +320,8 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // rather than through signalChange's hook fallback (swamp-club#3056): boot
   // and continuous reconciliation, run.doctor's fix, and worker data-plane
   // writes and capability deletes, which the dispatching run's push carries.
-  "src/serve/boot_reconciliation.ts: reconcileRemoteInterruptedRuns",
+  // Two roots in turn, never nested: method-run outputs, then run records.
+  "src/serve/boot_reconciliation.ts: reconcileRemoteInterruptedRuns (x2)",
   "src/serve/boot_reconciliation.ts: sweepStaleRecords",
   "src/serve/capability_service.ts: CapabilityService",
   "src/serve/data_plane.ts: DataPlane",

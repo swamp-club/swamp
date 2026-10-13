@@ -550,8 +550,10 @@ export interface ReconcileRemoteInterruptedRunsDeps {
   markDirty?: MarkDirtyHook;
   /**
    * Where method-run outputs are read and cancelled. Without it a dead
-   * instance's method-run rows are interrupted but left unsettled, so a
-   * later dead-owner settle can still cancel their outputs.
+   * instance's method-run rows are interrupted but left unsettled: nothing
+   * here retries them, but a settled row would hide a `running` output from
+   * the dead-owner settle that boot and `run doctor --fix` run for rows
+   * owned on this host.
    */
   outputRepo?: MethodRunOutputs;
   /**
