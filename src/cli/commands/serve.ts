@@ -2098,7 +2098,8 @@ const checkConfigCommand = new Command()
       "by serve at startup. A restricted-model-types entry without a leading " +
       "'@' that is not a built-in type is a warning, since extension types are " +
       "not loaded here: write an extension type with its '@'. Apart from a " +
-      "--grants-file or --grants-dir outside the repository, it reads only this repository's files and never contacts the " +
+      "--grants-file or --grants-dir outside the repository, it reads only this " +
+      "repository's files and never contacts the " +
       "datastore, so it cannot tell whether a control plane was already moved to a " +
       "key (or to a different key), and vaults whose configs arrive through the " +
       "datastore must be synced first; serve checks both at startup. Nothing is " +
