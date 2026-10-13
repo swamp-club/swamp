@@ -358,10 +358,9 @@ have their own sections. The group also has:
 - `swamp vault type-search [keyword]`: browse registered vault types
   (built-in and extension). An extension type is listed under the name and
   description it declares, and the keyword matches the type id, name or
-  description. To show them, the command imports the extension vault bundles
-  that are only indexed. One whose import throws is logged as a warning and
-  listed under its type id; one that imports without registering a vault type
-  is dropped from the listing
+  description. The command imports no bundle: for a type that is only
+  indexed, it reads both fields from the source text, so one whose source
+  computes its name is listed under its type id.
 - `swamp vault put ... --label k=v`: attach provider-native tags via
   `VaultPutOptions.tags` (repeatable)
 

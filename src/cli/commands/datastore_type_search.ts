@@ -30,10 +30,8 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import {
-  ensureAllDatastoreTypesLoaded,
-  getDatastoreTypes,
-} from "../../domain/datastore/datastore_types.ts";
+import { listDatastoreTypes } from "../../domain/datastore/datastore_types.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -50,10 +48,11 @@ export async function datastoreTypeSearchAction(
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching datastore types with query: ${query ?? "(none)"}`;
 
-  await ensureAllDatastoreTypesLoaded();
+  await datastoreTypeRegistry.ensureLoaded();
+  const datastoreTypes = await listDatastoreTypes();
 
   const deps: DatastoreTypeSearchDeps = {
-    getDatastoreTypes: () => getDatastoreTypes(),
+    getDatastoreTypes: () => datastoreTypes,
   };
 
   const renderer = createDatastoreTypeSearchRenderer(effectiveMode);

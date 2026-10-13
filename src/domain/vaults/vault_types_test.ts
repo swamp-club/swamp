@@ -18,15 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertExists } from "@std/assert";
-import {
-  type LazyVaultEntry,
-  VaultTypeRegistry,
-} from "./vault_type_registry.ts";
-import {
-  ensureAllVaultTypesLoaded,
-  getVaultType,
-  getVaultTypes,
-} from "./vault_types.ts";
+import { VaultTypeRegistry } from "./vault_type_registry.ts";
+import { getVaultType, getVaultTypes, listVaultTypes } from "./vault_types.ts";
 
 Deno.test("getVaultTypes contains expected built-in types", () => {
   const types = getVaultTypes().map((v) => v.type);
@@ -84,89 +77,95 @@ Deno.test("all vault types have required fields", () => {
   }
 });
 
-function lazyVaultEntry(type: string): LazyVaultEntry {
-  return {
-    type,
-    bundlePath: `/repo/.swamp/vault-bundles/${type}.js`,
-    sourcePath: `/repo/extensions/vaults/${type}.ts`,
-    version: "2026.01.15.1",
-  };
+const LAZY_VAULT_SOURCE = (type: string, name: string) => `
+export const vault = {
+  type: "${type}",
+  name: ${name},
+  description: "Declared description",
+  createProvider: () => ({}),
+};
+`;
+
+function lazyVaultRegistry(
+  entries: Array<{ type: string; description?: string }>,
+): VaultTypeRegistry {
+  const registry = new VaultTypeRegistry();
+  for (const { type, description } of entries) {
+    registry.registerLazy({
+      type,
+      bundlePath: `/repo/.swamp/vault-bundles/${type}.js`,
+      sourcePath: `/repo/extensions/vaults/${type}.ts`,
+      version: "",
+      description,
+    });
+  }
+  return registry;
 }
 
-Deno.test("ensureAllVaultTypesLoaded: imports every lazy type so it is listed as declared", async () => {
-  const registry = new VaultTypeRegistry();
-  registry.registerLazy(lazyVaultEntry("@test/one"));
-  registry.registerLazy(lazyVaultEntry("@test/two"));
-  registry.setTypeLoader((type) => {
-    registry.promoteFromLazy({
-      type,
-      name: `Declared ${type}`,
-      description: `Description of ${type}`,
-      isBuiltIn: false,
-    });
+Deno.test("listVaultTypes: lists a lazy type under its declared name and description without loading it", async () => {
+  const registry = lazyVaultRegistry([{ type: "@test/lazy" }]);
+  let typeLoads = 0;
+  registry.setTypeLoader(() => {
+    typeLoads++;
     return Promise.resolve();
   });
 
-  await ensureAllVaultTypesLoaded(registry);
-
-  assertEquals(registry.getAllLazy(), []);
-  assertEquals(
-    registry.getAll().map((t) => [t.type, t.name, t.description]),
-    [
-      ["@test/one", "Declared @test/one", "Description of @test/one"],
-      ["@test/two", "Declared @test/two", "Description of @test/two"],
-    ],
+  const types = await listVaultTypes(
+    registry,
+    () => Promise.resolve(LAZY_VAULT_SOURCE("@test/lazy", `"Lazy Vault"`)),
   );
+
+  assertEquals(types, [{
+    type: "@test/lazy",
+    name: "Lazy Vault",
+    description: "Declared description",
+    isBuiltIn: false,
+  }]);
+  assertEquals(typeLoads, 0);
+  assertEquals(registry.isLazy("@test/lazy"), true);
 });
 
-Deno.test("ensureAllVaultTypesLoaded: a type that fails to import keeps its placeholder and the rest still load", async () => {
-  const registry = new VaultTypeRegistry();
-  registry.registerLazy(lazyVaultEntry("@test/broken"));
-  registry.registerLazy(lazyVaultEntry("@test/good"));
-  registry.setTypeLoader((type) => {
-    if (type === "@test/broken") {
-      return Promise.reject(new Error("name: expected string"));
-    }
-    registry.promoteFromLazy({
-      type,
-      name: "Good Vault",
-      description: "A good vault",
-      isBuiltIn: false,
-    });
-    return Promise.resolve();
-  });
+Deno.test("listVaultTypes: an unreadable source keeps the type id and the catalog description", async () => {
+  const registry = lazyVaultRegistry([
+    { type: "@test/gone", description: "From the catalog" },
+  ]);
 
-  await ensureAllVaultTypesLoaded(registry);
+  const types = await listVaultTypes(
+    registry,
+    () => Promise.reject(new Deno.errors.NotFound("gone")),
+  );
 
-  assertEquals(registry.getAllLazy().map((e) => e.type), ["@test/broken"]);
-  assertEquals(registry.getAll().map((t) => t.name), ["Good Vault"]);
+  assertEquals(types.map((t) => [t.name, t.description]), [
+    ["@test/gone", "From the catalog"],
+  ]);
 });
 
-Deno.test("ensureAllVaultTypesLoaded: a type the loader skips is dropped from the listing", async () => {
-  const registry = new VaultTypeRegistry();
-  registry.registerLazy(lazyVaultEntry("@test/skipped"));
-  registry.setTypeLoader(() => Promise.resolve());
+Deno.test("listVaultTypes: a computed name keeps the type id", async () => {
+  const registry = lazyVaultRegistry([{ type: "@test/computed" }]);
 
-  await ensureAllVaultTypesLoaded(registry);
+  const types = await listVaultTypes(
+    registry,
+    () => Promise.resolve(LAZY_VAULT_SOURCE("@test/computed", "label")),
+  );
 
-  assertEquals(registry.getAllLazy(), []);
-  assertEquals(registry.getAll(), []);
+  assertEquals(types.map((t) => [t.name, t.description]), [
+    ["@test/computed", "Declared description"],
+  ]);
 });
 
-Deno.test("ensureAllVaultTypesLoaded: runs the extension loader before importing lazy types", async () => {
+Deno.test("listVaultTypes: a loaded type is listed from the registry, not from source", async () => {
   const registry = new VaultTypeRegistry();
-  const calls: string[] = [];
-  registry.setLoader(() => {
-    calls.push("index");
-    registry.registerLazy(lazyVaultEntry("@test/indexed"));
-    return Promise.resolve();
-  });
-  registry.setTypeLoader((type) => {
-    calls.push(type);
-    return Promise.resolve();
+  registry.register({
+    type: "@test/loaded",
+    name: "Loaded Vault",
+    description: "From the registry",
+    isBuiltIn: false,
   });
 
-  await ensureAllVaultTypesLoaded(registry);
+  const types = await listVaultTypes(
+    registry,
+    () => Promise.reject(new Error("source must not be read")),
+  );
 
-  assertEquals(calls, ["index", "@test/indexed"]);
+  assertEquals(types.map((t) => t.name), ["Loaded Vault"]);
 });

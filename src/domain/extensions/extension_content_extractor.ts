@@ -453,7 +453,7 @@ function extractGlobalArguments(content: string): ExtractedArgument[] {
  * Returns null if the file doesn't contain a recognizable vault definition.
  * Uses `createProvider` as the discriminator to distinguish vault files from model files.
  */
-function extractVaultFromSource(
+export function extractVaultFromSource(
   content: string,
   filePath: string,
   vaultsDir: string,
@@ -1094,7 +1094,7 @@ function extractWorkflowFromYaml(
  * Returns null if the file doesn't contain a recognizable datastore definition.
  * Uses `createProvider` as the discriminator combined with `export const datastore`.
  */
-function extractDatastoreFromSource(
+export function extractDatastoreFromSource(
   content: string,
   filePath: string,
   datastoresDir: string,

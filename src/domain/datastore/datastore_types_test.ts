@@ -18,95 +18,95 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import {
-  DatastoreTypeRegistry,
-  type LazyDatastoreEntry,
-} from "./datastore_type_registry.ts";
-import { ensureAllDatastoreTypesLoaded } from "./datastore_types.ts";
+import { DatastoreTypeRegistry } from "./datastore_type_registry.ts";
+import { listDatastoreTypes } from "./datastore_types.ts";
 
-function lazyDatastoreEntry(type: string): LazyDatastoreEntry {
-  return {
-    type,
-    bundlePath: `/repo/.swamp/datastore-bundles/${type}.js`,
-    sourcePath: `/repo/extensions/datastores/${type}.ts`,
-    version: "2026.01.15.1",
-  };
+const LAZY_DATASTORE_SOURCE = (type: string, name: string) => `
+export const datastore = {
+  type: "${type}",
+  name: ${name},
+  description: "Declared description",
+  createProvider: () => ({}),
+};
+`;
+
+function lazyDatastoreRegistry(
+  entries: Array<{ type: string }>,
+): DatastoreTypeRegistry {
+  const registry = new DatastoreTypeRegistry();
+  for (const { type } of entries) {
+    registry.registerLazy({
+      type,
+      bundlePath: `/repo/.swamp/datastore-bundles/${type}.js`,
+      sourcePath: `/repo/extensions/datastores/${type}.ts`,
+      version: "",
+    });
+  }
+  return registry;
 }
 
-Deno.test("ensureAllDatastoreTypesLoaded: imports every lazy type so it is listed as declared", async () => {
-  const registry = new DatastoreTypeRegistry();
-  registry.registerLazy(lazyDatastoreEntry("@test/one"));
-  registry.registerLazy(lazyDatastoreEntry("@test/two"));
-  registry.setTypeLoader((type) => {
-    registry.promoteFromLazy({
-      type,
-      name: `Declared ${type}`,
-      description: `Description of ${type}`,
-      isBuiltIn: false,
-    });
+Deno.test("listDatastoreTypes: lists a lazy type under its declared name and description without loading it", async () => {
+  const registry = lazyDatastoreRegistry([{ type: "@test/lazy" }]);
+  let typeLoads = 0;
+  registry.setTypeLoader(() => {
+    typeLoads++;
     return Promise.resolve();
   });
 
-  await ensureAllDatastoreTypesLoaded(registry);
-
-  assertEquals(registry.getAllLazy(), []);
-  assertEquals(
-    registry.getAll().map((t) => [t.type, t.name, t.description]),
-    [
-      ["@test/one", "Declared @test/one", "Description of @test/one"],
-      ["@test/two", "Declared @test/two", "Description of @test/two"],
-    ],
+  const types = await listDatastoreTypes(
+    registry,
+    () => Promise.resolve(LAZY_DATASTORE_SOURCE("@test/lazy", `"Lazy Store"`)),
   );
+
+  assertEquals(types, [{
+    type: "@test/lazy",
+    name: "Lazy Store",
+    description: "Declared description",
+    isBuiltIn: false,
+  }]);
+  assertEquals(typeLoads, 0);
+  assertEquals(registry.isLazy("@test/lazy"), true);
 });
 
-Deno.test("ensureAllDatastoreTypesLoaded: a type that fails to import keeps its placeholder and the rest still load", async () => {
-  const registry = new DatastoreTypeRegistry();
-  registry.registerLazy(lazyDatastoreEntry("@test/broken"));
-  registry.registerLazy(lazyDatastoreEntry("@test/good"));
-  registry.setTypeLoader((type) => {
-    if (type === "@test/broken") {
-      return Promise.reject(new Error("name: expected string"));
-    }
-    registry.promoteFromLazy({
-      type,
-      name: "Good Store",
-      description: "A good store",
-      isBuiltIn: false,
-    });
-    return Promise.resolve();
-  });
+Deno.test("listDatastoreTypes: an unreadable source keeps the type id and an empty description", async () => {
+  const registry = lazyDatastoreRegistry([{ type: "@test/gone" }]);
 
-  await ensureAllDatastoreTypesLoaded(registry);
+  const types = await listDatastoreTypes(
+    registry,
+    () => Promise.reject(new Deno.errors.NotFound("gone")),
+  );
 
-  assertEquals(registry.getAllLazy().map((e) => e.type), ["@test/broken"]);
-  assertEquals(registry.getAll().map((t) => t.name), ["Good Store"]);
+  assertEquals(types.map((t) => [t.name, t.description]), [
+    ["@test/gone", ""],
+  ]);
 });
 
-Deno.test("ensureAllDatastoreTypesLoaded: a type the loader skips is dropped from the listing", async () => {
-  const registry = new DatastoreTypeRegistry();
-  registry.registerLazy(lazyDatastoreEntry("@test/skipped"));
-  registry.setTypeLoader(() => Promise.resolve());
+Deno.test("listDatastoreTypes: a computed name keeps the type id", async () => {
+  const registry = lazyDatastoreRegistry([{ type: "@test/computed" }]);
 
-  await ensureAllDatastoreTypesLoaded(registry);
+  const types = await listDatastoreTypes(
+    registry,
+    () => Promise.resolve(LAZY_DATASTORE_SOURCE("@test/computed", "label")),
+  );
 
-  assertEquals(registry.getAllLazy(), []);
-  assertEquals(registry.getAll(), []);
+  assertEquals(types.map((t) => [t.name, t.description]), [
+    ["@test/computed", "Declared description"],
+  ]);
 });
 
-Deno.test("ensureAllDatastoreTypesLoaded: runs the extension loader before importing lazy types", async () => {
+Deno.test("listDatastoreTypes: a loaded type is listed from the registry, not from source", async () => {
   const registry = new DatastoreTypeRegistry();
-  const calls: string[] = [];
-  registry.setLoader(() => {
-    calls.push("index");
-    registry.registerLazy(lazyDatastoreEntry("@test/indexed"));
-    return Promise.resolve();
-  });
-  registry.setTypeLoader((type) => {
-    calls.push(type);
-    return Promise.resolve();
+  registry.register({
+    type: "@test/loaded",
+    name: "Loaded Store",
+    description: "From the registry",
+    isBuiltIn: false,
   });
 
-  await ensureAllDatastoreTypesLoaded(registry);
+  const types = await listDatastoreTypes(
+    registry,
+    () => Promise.reject(new Error("source must not be read")),
+  );
 
-  assertEquals(calls, ["index", "@test/indexed"]);
+  assertEquals(types.map((t) => t.name), ["Loaded Store"]);
 });

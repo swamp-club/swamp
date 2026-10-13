@@ -97,10 +97,8 @@ import {
   principalToString,
 } from "../../domain/access/principal.ts";
 import { VaultConfigParseError } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import {
-  ensureAllVaultTypesLoaded,
-  getVaultTypes,
-} from "../../domain/vaults/vault_types.ts";
+import { listVaultTypes } from "../../domain/vaults/vault_types.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
   admitVaultListingOrReject,
   admitVaultLookupOrReject,
@@ -1388,9 +1386,10 @@ export async function handleVaultTypeSearch(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    await ensureAllVaultTypesLoaded();
+    await vaultTypeRegistry.ensureLoaded();
+    const vaultTypes = await listVaultTypes();
     const deps: VaultTypeSearchDeps = {
-      getVaultTypes: () => getVaultTypes(),
+      getVaultTypes: () => vaultTypes,
     };
 
     let result: Record<string, unknown> | undefined;

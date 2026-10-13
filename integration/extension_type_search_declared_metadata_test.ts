@@ -20,9 +20,9 @@
 // Vault and datastore type search list an extension type as it declares
 // itself (swamp-club#3365). A cold index registers the type lazily, with no
 // declared name and an empty catalog description; the type search commands
-// import the lazy bundles before listing. This wires the real loader, catalog
-// and registries together, on a first index and on a second, catalog-backed
-// one.
+// read both out of the entry's source text and import no bundle. This wires
+// the real loader, catalog and registries together, on a first index and on
+// a second, catalog-backed one.
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -33,13 +33,13 @@ import { vaultKindAdapter } from "../src/domain/extensions/vault_kind_adapter.ts
 import { datastoreKindAdapter } from "../src/domain/extensions/datastore_kind_adapter.ts";
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import {
-  ensureAllVaultTypesLoaded,
   getVaultTypes,
+  listVaultTypes,
 } from "../src/domain/vaults/vault_types.ts";
 import { datastoreTypeRegistry } from "../src/domain/datastore/datastore_type_registry.ts";
 import {
-  ensureAllDatastoreTypesLoaded,
   getDatastoreTypes,
+  listDatastoreTypes,
 } from "../src/domain/datastore/datastore_types.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
@@ -116,11 +116,12 @@ interface KindUnderTest {
   declared: { name: string; description: string };
   registry: {
     setTypeLoader(loader: (type: string) => Promise<void>): void;
+    isLazy(type: string): boolean;
     invalidateType(type: string): void;
     clearLoadersForTesting(): void;
   };
-  ensureAllLoaded: () => Promise<void>;
-  list: () => TypeListing[];
+  placeholders: () => TypeListing[];
+  list: () => Promise<TypeListing[]>;
 }
 
 const KINDS: Record<string, KindUnderTest> = {
@@ -133,8 +134,8 @@ const KINDS: Record<string, KindUnderTest> = {
       description: "File-backed mock vault for testing.",
     },
     registry: vaultTypeRegistry,
-    ensureAllLoaded: () => ensureAllVaultTypesLoaded(),
-    list: () => getVaultTypes(),
+    placeholders: () => getVaultTypes(),
+    list: () => listVaultTypes(),
   },
   datastore: {
     subdir: "datastores",
@@ -145,13 +146,13 @@ const KINDS: Record<string, KindUnderTest> = {
       description: "A sprocket-backed test datastore.",
     },
     registry: datastoreTypeRegistry,
-    ensureAllLoaded: () => ensureAllDatastoreTypesLoaded(),
-    list: () => getDatastoreTypes(),
+    placeholders: () => getDatastoreTypes(),
+    list: () => listDatastoreTypes(),
   },
 };
 
 for (const [kind, k] of Object.entries(KINDS)) {
-  Deno.test(`${kind} type search lists a cold-indexed extension type as declared, on a first and a second index`, async () => {
+  Deno.test(`${kind} type search lists a cold-indexed extension type as declared without importing it, on a first and a second index`, async () => {
     const repoDir = await Deno.makeTempDir({ prefix: "swamp_3365_" });
     const sourceDir = join(repoDir, "extensions", k.subdir);
     await ensureDir(join(repoDir, ".swamp"));
@@ -169,10 +170,11 @@ for (const [kind, k] of Object.entries(KINDS)) {
       lockfileRepository: await LockfileRepository.create(lockfilePath),
       repoRoot: repoDir,
     });
-    const listed = () => {
-      const found = k.list().find((t) => t.type === type);
+    const pick = (types: TypeListing[]) => {
+      const found = types.find((t) => t.type === type);
       return found && { name: found.name, description: found.description };
     };
+    let typeLoads = 0;
     const index = async () => {
       const loader = new ExtensionLoader(
         testDenoRuntime,
@@ -181,23 +183,27 @@ for (const [kind, k] of Object.entries(KINDS)) {
         undefined,
         repository,
       );
-      k.registry.setTypeLoader((t) => loader.loadSingleType(t));
+      k.registry.setTypeLoader((t) => {
+        typeLoads++;
+        return loader.loadSingleType(t);
+      });
       await loader.buildIndex(sourceDir, { indexOnly: true });
     };
 
     try {
       await index();
       // The bug: a lazy type is listed under its type id with no description.
-      assertEquals(listed(), { name: type, description: "" });
-      await k.ensureAllLoaded();
-      assertEquals(listed(), k.declared);
+      assertEquals(pick(k.placeholders()), { name: type, description: "" });
+      assertEquals(pick(await k.list()), k.declared);
 
       // A later process starts from the populated catalog and is lazy again.
       k.registry.invalidateType(type);
       await index();
-      assertEquals(listed()?.name, type);
-      await k.ensureAllLoaded();
-      assertEquals(listed(), k.declared);
+      assertEquals(pick(await k.list()), k.declared);
+
+      // Listing imported nothing: the type is still lazy.
+      assertEquals(typeLoads, 0);
+      assertEquals(k.registry.isLazy(type), true);
     } finally {
       k.registry.invalidateType(type);
       k.registry.clearLoadersForTesting();
