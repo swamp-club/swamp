@@ -689,7 +689,8 @@ function StatusChips(
                 className="start-crumb-link start-crumb-workspace"
                 onClick={showTasks}
                 disabled={disabled || switching}
-                title={status.workspacePath ?? undefined}
+                aria-label={`${status.workspaceName}: back to this workspace's tasks`}
+                title="Back to this workspace's tasks"
               >
                 {status.workspaceName}
               </button>
