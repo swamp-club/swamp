@@ -36,6 +36,8 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
+import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
+import { WorkerBundleProber } from "../../infrastructure/runtime/worker_bundle_prober.ts";
 
 // Required so the model loader's test bootstrap finds command/shell
 // (preserved from the loader test files' pattern).
@@ -767,6 +769,74 @@ Deno.test(
         );
         // A source that fails to bundle does not roll the install back.
         assertEquals(calls, { commit: 1, rollback: 0 });
+      },
+    );
+  },
+);
+
+// =============================================================
+// Probed indexing (swamp-club#3374)
+// =============================================================
+
+Deno.test(
+  "InstallExtensionService.execute: an extension and its dependency share one prober, released once after both are indexed",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const names = [`@test/probe-root-${id}`, `@test/probe-dep-${id}`];
+        const results = [];
+        for (const extName of names) {
+          const files = [];
+          for (const file of ["a.ts", "b.ts"]) {
+            await stageModel(
+              repoDir,
+              extName,
+              file,
+              MINIMAL_MODEL_CODE(`${extName}-${file.slice(0, 1)}`),
+            );
+            files.push(`.swamp/pulled-extensions/${extName}/models/${file}`);
+          }
+          results.push(makeStubInstallResult(extName, "1.0.0", files));
+        }
+        const [root, dep] = results;
+        root.dependencyResults = [dep];
+
+        // The root and its dependency are indexed concurrently. A release
+        // while either still has probes to run would fail them.
+        const worker = new WorkerBundleProber();
+        let probes = 0;
+        const probesAtRelease: number[] = [];
+        const prober: BundleProber = {
+          probe: (request) => {
+            probes++;
+            return worker.probe(request);
+          },
+          release: () => {
+            probesAtRelease.push(probes);
+            worker.release();
+          },
+        };
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          bundleProber: prober,
+          installExtensionFn: stubInstallExtension(() => Promise.resolve(root)),
+        });
+
+        await service.execute(
+          { name: names[0], version: "1.0.0" } as ExtensionRef,
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        assertEquals(probesAtRelease, [4]);
+        for (const extName of names) {
+          const [ext] = repository.loadByName(extName);
+          assertEquals(
+            [...ext.sources.values()].map((s) => s.state.tag),
+            ["Indexed", "Indexed"],
+          );
+        }
       },
     );
   },

@@ -681,6 +681,8 @@ export class ExtensionLoader {
               // A source no aggregate knows yet has no row, so it would be
               // stale, and probed to its timeout, on every command. The
               // row pins the failure to this fingerprint (swamp-club#3374).
+              // No aggregate owns it, like the rows a successful rebundle
+              // writes here; the repository derives its owner on load.
               const stat = await Deno.stat(absolutePath).catch(() => null);
               catalog.upsert({
                 type_normalized: "",
@@ -1037,7 +1039,7 @@ export class ExtensionLoader {
           args.baseDir,
           fingerprint,
         ),
-        { bundlePath, fingerprint },
+        { sourcePath: args.absolutePath, bundlePath, fingerprint },
       );
       if (probed.tag === "no-export") return null;
       return {
@@ -1828,7 +1830,11 @@ export class ExtensionLoader {
         baseDir,
         effectiveFingerprint,
       ),
-      { bundlePath, fingerprint: effectiveFingerprint },
+      {
+        sourcePath: absolutePath,
+        bundlePath,
+        fingerprint: effectiveFingerprint,
+      },
     );
 
     if (probed.tag === "primary") {
@@ -2150,7 +2156,7 @@ export class ExtensionLoader {
   private async probeBundle(
     prober: BundleProber,
     importUrl: string,
-    source: { bundlePath: string; fingerprint: string },
+    source: { sourcePath: string; bundlePath: string; fingerprint: string },
   ): Promise<
     Extract<BundleProbeResult, { tag: "primary" | "secondary" | "no-export" }>
   > {
@@ -2175,7 +2181,10 @@ export class ExtensionLoader {
       case "timed-out":
       case "exited": {
         throw new ProbeFailedError(
-          describeProbeFailure(result),
+          describeProbeFailure(result, {
+            sourcePath: source.sourcePath,
+            pulled: this.contributorFor(source.sourcePath).pulled,
+          }),
           source.bundlePath,
           source.fingerprint,
         );

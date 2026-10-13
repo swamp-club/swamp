@@ -1395,7 +1395,9 @@ for (
     const probed = await indexWithProbeResult(result);
     try {
       const error = await assertRejects(probed.index, ProbeFailedError);
-      assertStringIncludes(error.message, "Edit the file to retry");
+      // The fixture is a pulled source, which is not the user's to edit.
+      assertStringIncludes(error.message, "probed.ts was not indexed");
+      assertStringIncludes(error.message, "Upgrade or re-pull the extension");
       assertEquals(probed.imported(), false);
     } finally {
       await probed.cleanup();

@@ -127,7 +127,8 @@ export class InstallExtensionService {
     /**
      * Indexes the installed sources by probing their bundles in isolation
      * instead of importing them into this isolate (swamp-club#3374).
-     * Released when the install's indexing ends.
+     * Released once every installed extension has been indexed: the root
+     * and its dependencies are indexed concurrently and share it.
      */
     bundleProber?: BundleProber;
   }) {
@@ -209,6 +210,8 @@ export class InstallExtensionService {
             }). Run \`swamp doctor extensions\` to inspect, or retry ` +
             `\`swamp extension pull ${ref.name}\` to reconcile.`,
         );
+      } finally {
+        this.bundleProber?.release();
       }
       const tombstones: Extension[] = [];
       for (const newExt of newExtensions) {
@@ -274,26 +277,6 @@ export class InstallExtensionService {
     const extRoot = join(effectivePulledRoot, result.name);
     const sources: ReturnType<typeof makeSource>[] = [];
 
-    try {
-      await this.indexSourcesOnDisk(extRoot, repoDir, sources);
-    } finally {
-      this.bundleProber?.release();
-    }
-
-    return makeExtension({
-      name: result.name,
-      version: result.version,
-      origin: "pulled",
-      extensionRoot: extRoot,
-      sources,
-    });
-  }
-
-  private async indexSourcesOnDisk(
-    extRoot: string,
-    repoDir: string,
-    sources: ReturnType<typeof makeSource>[],
-  ): Promise<void> {
     for (const kindDir of KIND_DIRS) {
       const dir = join(extRoot, kindDir);
       const tsFiles = await collectTsFiles(dir);
@@ -322,6 +305,14 @@ export class InstallExtensionService {
         );
       }
     }
+
+    return makeExtension({
+      name: result.name,
+      version: result.version,
+      origin: "pulled",
+      extensionRoot: extRoot,
+      sources,
+    });
   }
 
   /**

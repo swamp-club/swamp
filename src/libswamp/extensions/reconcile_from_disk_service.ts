@@ -834,7 +834,7 @@ export class ReconcileFromDiskService {
         // Recorded below as deterministic, so this is the one time the
         // user is told why the source is missing (swamp-club#3374).
         if (error instanceof ProbeFailedError) {
-          logger.warn`${absolutePath}: ${error.message}`;
+          logger.warn`${error.message}`;
         }
         let failFp: string;
         try {

@@ -2916,7 +2916,10 @@ use it:
   source is recorded as `ValidationFailed`.
 - **Hang.** An import that has not settled after 10 seconds
   (`DEFAULT_PROBE_TIMEOUT_MS`) is abandoned and its worker terminated. The
-  source is recorded as `ValidationFailed`.
+  source is recorded as `ValidationFailed`. Only the bundle's own import is
+  timed: the worker reports when it is ready to import, and the timeout
+  starts then, so starting the worker and loading the kind adapter never
+  counts against a source.
 - **Print.** `console` output in the worker is captured and logged at debug.
 - **Throw.** Reported as a failed import and recorded as `BundleBuildFailed`,
   as an in-process import that threw was, so it is retried on the next
@@ -2924,8 +2927,11 @@ use it:
 
 An exit or a hang is recorded as `ValidationFailed` because that state is not
 retried until the source fingerprint changes: one command pays the timeout,
-not every command. The user is warned once, with the reason and that editing
-the file retries it. On the warm path a source that no aggregate knows yet
+not every command. The user is warned once, with the source's path, the
+reason and how to retry: edit a local source, upgrade or re-pull a pulled
+one. Anything that is not the bundle's doing is reported as a failed import,
+which is retried, and never pinned to the source: a worker that does not
+start, one that dies, or a prober released under a probe. On the warm path a source that no aggregate knows yet
 gets a `ValidationFailed` catalog row directly, since without a row it would
 be stale, and probed again, on every scan.
 
@@ -2940,9 +2946,17 @@ once on load.
 The worker is robustness isolation, **not a sandbox**. It shares the
 process's permissions, environment and filesystem, so it does not make
 untrusted extension code safe to index. A bundle that writes to `Deno.stdout`
-directly, bypassing `console`, is not captured. Each pass releases its
-prober, which terminates the worker; the worker is started by the first probe,
-so a pass with nothing to probe starts none.
+directly, bypassing `console`, is not captured.
+
+One worker serves a pass's probes in turn and is replaced after any probe
+that did not finish cleanly. Work a bundle leaves behind (a timer that throws,
+a rejected promise) is swallowed in the worker so it cannot close the worker
+under the next bundle; a worker that dies anyway is dropped, and Deno may
+print its uncaught error on stderr. Each pass releases its prober, which
+terminates the worker. An install indexes an extension and its dependencies
+concurrently through one prober and releases it once, after all of them. The
+worker is started by the first probe, so a pass with nothing to probe starts
+none.
 
 ### Self-Healing
 

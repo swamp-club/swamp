@@ -33,12 +33,18 @@ import type {
   LoaderKind,
 } from "../../domain/extensions/kind_adapter.ts";
 
-/** What the worker posts back for one request. */
-export interface BundleProbeReply {
-  readonly result: BundleProbeResult;
-  /** Lines the bundle wrote through `console` while it was imported. */
-  readonly output: readonly string[];
-}
+/**
+ * What the worker posts for one request: `started` once it is ready to
+ * import the bundle, so the import alone is timed, then `done`.
+ */
+export type BundleProbeReply =
+  | { readonly type: "started" }
+  | {
+    readonly type: "done";
+    readonly result: BundleProbeResult;
+    /** Lines the bundle wrote through `console` while it was imported. */
+    readonly output: readonly string[];
+  };
 
 class ExitAtImport extends Error {
   constructor(readonly code: number) {
@@ -50,6 +56,15 @@ const scope = globalThis as unknown as {
   onmessage: ((event: MessageEvent<BundleProbeRequest>) => void) | null;
   postMessage(message: BundleProbeReply): void;
 };
+
+// An uncaught error closes a worker. Work a bundle left behind (a timer
+// that throws, a rejected fetch) must not close this one under the next
+// bundle, which would then be blamed for not answering.
+globalThis.addEventListener("error", (event) => event.preventDefault());
+globalThis.addEventListener(
+  "unhandledrejection",
+  (event) => event.preventDefault(),
+);
 
 const output: string[] = [];
 const capture = (...args: unknown[]) => {
@@ -104,6 +119,7 @@ function findExit(error: unknown): ExitAtImport | undefined {
 
 async function probe(request: BundleProbeRequest): Promise<BundleProbeResult> {
   const adapter = await adapterFor(request.kind);
+  scope.postMessage({ type: "started" });
 
   let module: Record<string, unknown>;
   try {
@@ -161,5 +177,5 @@ scope.onmessage = async (event) => {
       message: error instanceof Error ? error.message : String(error),
     };
   }
-  scope.postMessage({ result, output: output.splice(0) });
+  scope.postMessage({ type: "done", result, output: output.splice(0) });
 };

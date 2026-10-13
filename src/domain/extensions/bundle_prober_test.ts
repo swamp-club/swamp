@@ -29,14 +29,34 @@ Deno.test("ProbeFailedError: is a ValidationError, so the source is recorded as 
   assertEquals(error.fingerprint, "fp");
 });
 
-Deno.test("describeProbeFailure: names a timeout and how to retry", () => {
-  const message = describeProbeFailure({ tag: "timed-out", timeoutMs: 10000 });
-  assertStringIncludes(message, "did not finish within 10000ms");
-  assertStringIncludes(message, "Edit the file to retry");
+Deno.test("describeProbeFailure: names the source, the timeout and how to retry a local source", () => {
+  const message = describeProbeFailure(
+    { tag: "timed-out", timeoutMs: 10000 },
+    { sourcePath: "/r/extensions/vaults/x.ts", pulled: false },
+  );
+  assertEquals(
+    message,
+    "Extension source /r/extensions/vaults/x.ts was not indexed: its import did not finish within 10s. Edit the file to retry.",
+  );
 });
 
-Deno.test("describeProbeFailure: names an exit and its code", () => {
-  const message = describeProbeFailure({ tag: "exited", code: 3 });
+Deno.test("describeProbeFailure: a timeout that is not whole seconds stays in milliseconds", () => {
+  const message = describeProbeFailure(
+    { tag: "timed-out", timeoutMs: 500 },
+    { sourcePath: "/r/x.ts", pulled: false },
+  );
+  assertStringIncludes(message, "within 500ms");
+});
+
+Deno.test("describeProbeFailure: names an exit code, and does not tell the user to edit a pulled source", () => {
+  const message = describeProbeFailure(
+    { tag: "exited", code: 3 },
+    {
+      sourcePath: "/r/.swamp/pulled-extensions/@a/b/models/x.ts",
+      pulled: true,
+    },
+  );
   assertStringIncludes(message, "called exit(3) at import");
-  assertStringIncludes(message, "Edit the file to retry");
+  assertStringIncludes(message, "Upgrade or re-pull the extension to retry.");
+  assertEquals(message.includes("Edit the file"), false);
 });

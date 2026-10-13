@@ -78,12 +78,24 @@ export class ProbeFailedError extends ValidationError {
   }
 }
 
-/** The reason recorded for a probe that did not finish. */
+/**
+ * The reason recorded for a probe that did not finish. It names the source
+ * and says how to retry: a local source is edited, a pulled one is not the
+ * user's to edit.
+ */
 export function describeProbeFailure(
   result: Extract<BundleProbeResult, { tag: "timed-out" | "exited" }>,
+  source: { readonly sourcePath: string; readonly pulled: boolean },
 ): string {
   const what = result.tag === "timed-out"
-    ? `its import did not finish within ${result.timeoutMs}ms`
+    ? `its import did not finish within ${formatTimeout(result.timeoutMs)}`
     : `it called exit(${result.code}) at import`;
-  return `Extension source was not indexed: ${what}. Edit the file to retry.`;
+  const retry = source.pulled
+    ? "Upgrade or re-pull the extension to retry."
+    : "Edit the file to retry.";
+  return `Extension source ${source.sourcePath} was not indexed: ${what}. ${retry}`;
+}
+
+function formatTimeout(timeoutMs: number): string {
+  return timeoutMs % 1000 === 0 ? `${timeoutMs / 1000}s` : `${timeoutMs}ms`;
 }
