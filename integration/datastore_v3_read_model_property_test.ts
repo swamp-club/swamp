@@ -188,7 +188,7 @@ Deno.test("read model: matches the partition reference model after every catch-u
           const readModel = env.openReadModel({
             pageSize,
             writeBatch: () => new CrashingBatch(control),
-            bootIdentity: () => `boot-id:${boot}`,
+            bootIdentity: () => Promise.resolve(`boot-id:${boot}`),
           });
           try {
             for (const [command, catchUp] of steps) {

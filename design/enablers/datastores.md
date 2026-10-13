@@ -3076,15 +3076,24 @@ So the catch-up does not sync files at all. A written file can be lost only
 to an OS crash or a power loss, and either one ends the boot: until then the
 page cache holds what was written, whatever happens to the process. The
 state records each key a catch-up wrote or removed (`unsynced_keys`) and the
-boot it ran in (`unsynced_boot`, from `boot_identity.ts`: the kernel's boot
-id on Linux, the boot time elsewhere). On the first exclusive section in a
+boot it ran in (`unsynced_boot`, from `boot_identity.ts`). On the first
+exclusive section in a
 later boot, every listed file is checked against the state: a present file
 must be a regular file with the live record's SHA-256, an absent one must be
 gone (a directory left at a removed name is fine). If all match, they
 survived the reboot and are on disk, and the list is cleared. If one does
 not, the state is reset and the catch-up applies every commit again, which
-rewrites and removes every file. A boot identity that cannot be compared is
-taken as a new boot, so a doubt costs a check, never skips one.
+rewrites and removes every file.
+
+The boot must be named by the kernel, never by the clock: the boot time
+(now less the uptime) shifts when the clock steps within one boot, which
+would look like a reboot, and the check would read the files back from the
+page cache, pass, and stop watching them. So the identity is
+`/proc/sys/kernel/random/boot_id` on Linux and the `kern.bootsessionuuid`
+sysctl on macOS, read once per process. Where neither is available
+(Windows), or it cannot be read, the catch-up syncs its files at each
+page's barrier instead and lists nothing; a list left by an earlier boot is
+then not trusted, and every commit is applied again, synced.
 
 The cost moves to the first open after a reboot: it hashes every file
 written since the list was last cleared, holding the read model's lock. The

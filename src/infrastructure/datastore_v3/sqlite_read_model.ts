@@ -29,11 +29,13 @@
  *   commits after the page's files are written. Every effect is idempotent,
  *   so a crash anywhere is repaired by catching up again from the unchanged
  *   cursor, and the index and cursor are never ahead of the files.
- * - **Files are not synced.** Only an OS crash or a power loss can lose a
- *   written file, and either ends the boot. The state lists every file a
- *   catch-up wrote or removed, with the boot; the first open in a later boot
- *   checks each against the state, and a file that does not match resets
- *   the state so every commit is applied again.
+ * - **Files are not synced** where the kernel names the boot (Linux,
+ *   macOS). Only an OS crash or a power loss can lose a written file, and
+ *   either ends the boot. The state lists every file a catch-up wrote or
+ *   removed, with the boot; the first open in a later boot checks each
+ *   against the state, and a file that does not match resets the state so
+ *   every commit is applied again. Elsewhere each page's files are synced
+ *   at its barrier.
  * - **Repositories write the same files.** In Phase 3 repositories still
  *   write local files themselves; applying a commit this process just made
  *   rewrites the same bytes.
@@ -49,6 +51,7 @@
  */
 
 import { getLogger } from "@logtape/logtape";
+import { createHash } from "node:crypto";
 import { basename, dirname, join, SEPARATOR } from "@std/path";
 import {
   type CatalogProjection,
@@ -89,8 +92,7 @@ import {
   resolveRealPath,
 } from "../persistence/safe_path.ts";
 import { DurableWriteBatch } from "./atomic_stream_write.ts";
-import { currentBootIdentity, sameBoot } from "./boot_identity.ts";
-import { createHash } from "node:crypto";
+import { currentBootIdentity } from "./boot_identity.ts";
 import {
   type AppliedRecord,
   type FileOwnership,
@@ -137,12 +139,13 @@ export interface SqliteReadModelOptions {
   /** The catalog to write; `_catalog_v3.db` in the state directory by default. */
   readonly catalog?: ReadModelCatalog;
   /**
-   * Makes the batch each page writes through; by default one that does not
-   * sync, since the files are checked after a reboot instead.
+   * Makes the batch each page writes through. By default one that does not
+   * sync when the boot can be named, since the files are checked after a
+   * reboot instead, and one that syncs when it cannot.
    */
   readonly writeBatch?: () => DurableWriteBatch;
   /** The current boot; {@link currentBootIdentity} by default. */
-  readonly bootIdentity?: () => string;
+  readonly bootIdentity?: () => Promise<string | undefined>;
 }
 
 /** The {@link ReadModel} over SQLite state and the local filesystem. */
@@ -155,9 +158,9 @@ export class SqliteReadModel implements ReadModel {
   readonly #catalog: ReadModelCatalog;
   readonly #state: ReadModelState;
   readonly #writeBatch: () => DurableWriteBatch;
-  readonly #bootIdentity: () => string;
-  /** The boot of the current exclusive section. */
-  #boot = "";
+  readonly #bootIdentity: () => Promise<string | undefined>;
+  /** The boot of the current exclusive section; undefined when unnamed. */
+  #boot: string | undefined;
   readonly #paths = new PathCache();
   #queue: Promise<unknown> = Promise.resolve();
   #closed = false;
@@ -176,7 +179,7 @@ export class SqliteReadModel implements ReadModel {
     this.#catalog = catalog;
     this.#state = state;
     this.#writeBatch = options.writeBatch ??
-      (() => new DurableWriteBatch({ sync: false }));
+      (() => new DurableWriteBatch({ sync: this.#boot === undefined }));
     this.#bootIdentity = options.bootIdentity ?? currentBootIdentity;
   }
 
@@ -406,7 +409,7 @@ export class SqliteReadModel implements ReadModel {
           this.#state.reset(generation);
           this.#catalog.markPopulated(generation);
         }
-        this.#boot = this.#bootIdentity();
+        this.#boot = await this.#bootIdentity();
         await this.#checkUnsyncedAfterReboot(generation);
         return await body();
       } finally {
@@ -426,7 +429,15 @@ export class SqliteReadModel implements ReadModel {
    */
   async #checkUnsyncedAfterReboot(generation: number): Promise<void> {
     const written = this.#state.unsyncedBoot();
-    if (written === undefined || sameBoot(written, this.#boot)) return;
+    if (written === undefined || written === this.#boot) return;
+    if (this.#boot === undefined) {
+      // Whether the boot ended is unknown, so the files cannot be trusted
+      // and a check proves nothing: apply every commit again, synced.
+      logger
+        .warn`The current boot cannot be named, so files written unsynced in an earlier one are rewritten`;
+      this.#state.reset(generation);
+      return;
+    }
     for (const file of this.#state.unsyncedFiles()) {
       const path = join(
         this.#cacheRoot(file.namespace),
@@ -551,7 +562,9 @@ export class SqliteReadModel implements ReadModel {
         records,
         live: projection.live,
         files,
-        unsynced: { keys: touched, boot: this.#boot },
+        unsynced: this.#boot === undefined
+          ? undefined
+          : { keys: touched, boot: this.#boot },
       });
       return true;
     } catch (error) {
@@ -676,7 +689,7 @@ export class SqliteReadModel implements ReadModel {
     let resolved: string;
     if (missingFrom === undefined) {
       resolved = await this.#paths.resolve(path);
-      this.#paths.noteAbsent(path, []);
+      if (isPut) this.#paths.noteAbsent(path, []);
     } else {
       resolved = join(
         await this.#paths.resolveDirectory(
@@ -688,7 +701,7 @@ export class SqliteReadModel implements ReadModel {
       for (let i = segments.length - 1; i >= missingFrom; i--) {
         absent.push(join(root, ...segments.slice(0, i)));
       }
-      this.#paths.noteAbsent(path, absent);
+      if (isPut) this.#paths.noteAbsent(path, absent);
     }
     if (!within(resolved, await this.#paths.resolveDirectory(root))) {
       throw new PathTraversalError(path, root, resolved);
@@ -951,7 +964,13 @@ async function holdsExpected(
   try {
     info = await Deno.lstat(path);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return file.expect === "absent";
+    // Under a file, the path cannot exist either.
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.NotADirectory
+    ) {
+      return file.expect === "absent";
+    }
     throw error;
   }
   if (file.expect !== "present") return info.isDirectory;

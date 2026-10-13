@@ -21,46 +21,55 @@
  * Which boot of the operating system this process runs in (swamp-club#3337).
  * A file written and not synced can be lost only to an OS crash or a power
  * loss, and either one ends the boot: within one boot, the page cache holds
- * what was written. The read model writes its files unsynced and checks
- * them on its first open in a later boot.
+ * what was written. The read model writes its files unsynced only where it
+ * can name the boot exactly, and checks them on its first open in a later
+ * boot.
  *
- * On Linux the kernel's boot id names the boot exactly. Elsewhere the boot
- * is named by its start time, now less the uptime, which the clock and the
- * uptime's whole seconds blur by a few seconds: two boot times within
- * {@link BOOT_TIME_TOLERANCE_MS} are one boot, since no machine restarts
- * that fast. An identity that cannot be compared is a different boot, so a
- * doubt costs a check and never skips one.
+ * The identity must not depend on the wall clock: a clock step within one
+ * boot would look like a reboot, and the check would read the files back
+ * from the page cache, pass, and stop watching them. So it is the kernel's
+ * own per-boot id: `/proc/sys/kernel/random/boot_id` on Linux, the
+ * `kern.bootsessionuuid` sysctl on macOS. Elsewhere, or when it cannot be
+ * read, there is no identity and the read model syncs its files instead.
  *
  * @module
  */
 
-/** How far apart two readings of one boot's start time can be. */
-export const BOOT_TIME_TOLERANCE_MS = 5_000;
-
 const BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id";
+const SYSCTL = "/usr/sbin/sysctl";
+const SYSCTL_TIMEOUT_MS = 5_000;
 
-/** The current boot: `boot-id:<uuid>` on Linux, else `boot-time:<ms>`. */
-export function currentBootIdentity(): string {
-  if (Deno.build.os === "linux") {
-    try {
-      const id = Deno.readTextFileSync(BOOT_ID_FILE).trim();
-      if (id !== "") return `boot-id:${id}`;
-    } catch {
-      // No procfs: fall back to the boot time.
-    }
-  }
-  return `boot-time:${Math.round(Date.now() - Deno.osUptime() * 1000)}`;
+let cached: Promise<string | undefined> | undefined;
+
+/**
+ * The current boot, `boot-id:<id>` on Linux or `boot-session:<uuid>` on
+ * macOS; undefined where the boot cannot be named exactly. Read once per
+ * process: a process never outlives its boot.
+ */
+export function currentBootIdentity(): Promise<string | undefined> {
+  cached ??= readBootIdentity();
+  return cached;
 }
 
-/** True when `a` and `b` name the same boot. */
-export function sameBoot(a: string, b: string): boolean {
-  if (a === b) return true;
-  const time = (identity: string): number | undefined => {
-    const match = /^boot-time:(-?\d+)$/.exec(identity);
-    return match === null ? undefined : Number(match[1]);
-  };
-  const ta = time(a);
-  const tb = time(b);
-  return ta !== undefined && tb !== undefined &&
-    Math.abs(ta - tb) <= BOOT_TIME_TOLERANCE_MS;
+async function readBootIdentity(): Promise<string | undefined> {
+  try {
+    if (Deno.build.os === "linux") {
+      const id = (await Deno.readTextFile(BOOT_ID_FILE)).trim();
+      return id === "" ? undefined : `boot-id:${id}`;
+    }
+    if (Deno.build.os === "darwin") {
+      const output = await new Deno.Command(SYSCTL, {
+        args: ["-n", "kern.bootsessionuuid"],
+        stdin: "null",
+        stdout: "piped",
+        stderr: "null",
+        signal: AbortSignal.timeout(SYSCTL_TIMEOUT_MS),
+      }).output();
+      const id = new TextDecoder().decode(output.stdout).trim();
+      return output.success && id !== "" ? `boot-session:${id}` : undefined;
+    }
+  } catch {
+    // No identity: the caller syncs instead.
+  }
+  return undefined;
 }

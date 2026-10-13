@@ -511,7 +511,8 @@ Deno.test("read model: files a reboot lost after their page committed are repair
   await withV3Env(async (env) => {
     await appendScenario(env);
     let boot = "boot-id:1";
-    const open = () => env.openReadModel({ bootIdentity: () => boot });
+    const open = () =>
+      env.openReadModel({ bootIdentity: () => Promise.resolve(boot) });
     const first = open();
     try {
       assertEquals((await first.catchUp(signal())).cursor, 5);
@@ -572,7 +573,8 @@ Deno.test("read model: a reboot that kept every file clears the unsynced list wi
   await withV3Env(async (env) => {
     await appendScenario(env);
     let boot = "boot-id:1";
-    const open = () => env.openReadModel({ bootIdentity: () => boot });
+    const open = () =>
+      env.openReadModel({ bootIdentity: () => Promise.resolve(boot) });
     const first = open();
     try {
       await first.catchUp(signal());
@@ -594,7 +596,10 @@ Deno.test("read model: a reboot that kept every file clears the unsynced list wi
 Deno.test("read model: within one boot the unsynced files are trusted and not checked (swamp-club#3337)", async () => {
   await withV3Env(async (env) => {
     await appendScenario(env);
-    const open = () => env.openReadModel({ bootIdentity: () => "boot-id:1" });
+    const open = () =>
+      env.openReadModel({
+        bootIdentity: () => Promise.resolve("boot-id:1"),
+      });
     const first = open();
     try {
       await first.catchUp(signal());
@@ -609,6 +614,65 @@ Deno.test("read model: within one boot the unsynced files are trusted and not ch
       await reopened.close();
     }
     assertEquals(unsyncedCount(env), listed);
+  });
+});
+
+Deno.test("read model: without a boot identity the catch-up syncs and lists nothing, and an earlier boot's list is rewritten (swamp-club#3337)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    let boot: string | undefined = "boot-id:1";
+    const open = () =>
+      env.openReadModel({ bootIdentity: () => Promise.resolve(boot) });
+    const first = open();
+    try {
+      await first.catchUp(signal());
+    } finally {
+      await first.close();
+    }
+    assert(unsyncedCount(env) > 0);
+    // The boot can no longer be named: the files are rewritten, synced.
+    boot = undefined;
+    const unnamed = open();
+    try {
+      assertEquals(await unnamed.catchUp(signal()), { applied: 5, cursor: 5 });
+    } finally {
+      await unnamed.close();
+    }
+    assertEquals(unsyncedCount(env), 0);
+    assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test("read model: a listed file the state shows present without a live record resets the state after a reboot (swamp-club#3337)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    let boot = "boot-id:1";
+    const open = () =>
+      env.openReadModel({ bootIdentity: () => Promise.resolve(boot) });
+    const first = open();
+    try {
+      await first.catchUp(signal());
+    } finally {
+      await first.close();
+    }
+    const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
+    try {
+      db.prepare("DELETE FROM live_records WHERE record_key = ?").run(
+        dataKey("b", 1).toString(),
+      );
+    } finally {
+      db.close();
+    }
+    boot = "boot-id:2";
+    const reopened = open();
+    try {
+      assertEquals(await reopened.catchUp(signal()), { applied: 5, cursor: 5 });
+    } finally {
+      await reopened.close();
+    }
+    assertEquals(await observe(env), clean);
   });
 });
 
