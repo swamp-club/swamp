@@ -640,20 +640,21 @@ export async function reloadPulledExtensions(
 
       for (const row of rows) {
         if (!row.type_normalized) continue;
-        // A pulled type never replaces a built-in of the same name: the
-        // invalidate below would drop the built-in, and removing the
-        // extension later would leave nothing (swamp-club#2746).
-        if (
-          isPulledTypeKind(row.kind) &&
-          isBuiltInType({ kind: row.kind, type: row.type_normalized })
-        ) {
-          logger.warn(
-            "Hot-reload: extension {extension} declares built-in {kind} type {type}, keeping the built-in",
-            { extension: name, kind: row.kind, type: row.type_normalized },
-          );
-          continue;
-        }
         try {
+          // A pulled type never replaces a built-in of the same name: the
+          // invalidate below would drop the built-in, and removing the
+          // extension later would leave nothing (swamp-club#2746). Inside
+          // the try, so a malformed row type fails only this row.
+          if (
+            isPulledTypeKind(row.kind) &&
+            isBuiltInType({ kind: row.kind, type: row.type_normalized })
+          ) {
+            logger.warn(
+              "Hot-reload: extension {extension} declares built-in {kind} type {type}, keeping the built-in",
+              { extension: name, kind: row.kind, type: row.type_normalized },
+            );
+            continue;
+          }
           const kind = row.kind;
 
           if (kind === "model") {

@@ -2025,3 +2025,49 @@ Deno.test("reloadPulledExtensions: pulled rows named like a built-in vault, data
     })
   );
 });
+
+Deno.test("reloadPulledExtensions: a malformed row type fails only that row, not the reload (swamp-club#2746)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const ext = `@test/malformed-${id}`;
+  const okType = `@test/ok-${id}`;
+  await withPulledRepo([ext], async ({ repoDir, lockfilePath, catalog }) => {
+    const modelsDir = join(
+      swampPath(repoDir, "pulled-extensions"),
+      ext,
+      "models",
+    );
+    await ensureDir(modelsDir);
+    const bundleDir = join(
+      swampPath(repoDir, "bundles"),
+      bundleNamespace(modelsDir, repoDir),
+    );
+    await ensureDir(bundleDir);
+    for (const [file, type] of [["a-bad", "   "], ["b-ok", okType]]) {
+      const sourcePath = join(modelsDir, `${file}.ts`);
+      const code = pulledModelCode(okType, file);
+      await Deno.writeTextFile(sourcePath, code);
+      await Deno.writeTextFile(join(bundleDir, `${file}.js`), code);
+      catalog.upsert({
+        type_normalized: type,
+        kind: "model",
+        bundle_path: join(bundleDir, `${file}.js`),
+        source_path: canonicalizePath(sourcePath),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+    }
+    try {
+      await withMockedCommand(
+        copyingBundler,
+        () => reload(repoDir, lockfilePath),
+      );
+
+      assertEquals(modelRegistry.has(okType), true);
+    } finally {
+      modelRegistry.invalidateType(okType);
+    }
+  });
+});
