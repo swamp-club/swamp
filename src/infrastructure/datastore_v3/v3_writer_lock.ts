@@ -57,6 +57,7 @@ import {
   WriterLeaseBusyError,
   type WriterLeaseHold,
   type WriterLeaseInspection,
+  type WriterLeaseStore,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_LOCK_TTL_MS, FileLock } from "../persistence/file_lock.ts";
@@ -467,10 +468,27 @@ function startRenewal(
 }
 
 function writerLease(datastorePath: string, ttlMs: number): WriterLease {
+  return v3WriterLease(
+    new FileSystemControlPlaneStore(resolve(datastorePath)),
+    ttlMs,
+  );
+}
+
+/**
+ * This process's writer lease over `store`, whose keys are relative to the
+ * datastore-wide `_control/`. A filesystem datastore's store is its root
+ * `_control/` directory; any other datastore's is its provider's writable
+ * datastore-wide control plane (`datastoreWriterLeaseStore`), so the lease
+ * is one per datastore whatever namespace a checkout syncs.
+ */
+export function v3WriterLease(
+  store: WriterLeaseStore,
+  ttlMs: number,
+): WriterLease {
   const host = Deno.hostname();
   const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
   return new WriterLease({
-    store: new FileSystemControlPlaneStore(resolve(datastorePath)),
+    store,
     holder: { holder: `${user}@${host}`, hostname: host, pid: Deno.pid },
     ttlMs,
     now: () => Date.now(),

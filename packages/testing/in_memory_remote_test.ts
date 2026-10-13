@@ -1329,6 +1329,54 @@ Deno.test("createInMemoryRemote: the datastore-wide store reads the root whateve
   });
 });
 
+Deno.test("createInMemoryRemote: the datastore-wide store writes at the root whatever a service bound, records its writes, and fails as told", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    const team = remote.connect(join(dir, "team"));
+    await team.pullChanged({ namespace: "team" });
+    await team.controlPlaneStore!().put("writer/fence-1", bytes("team"));
+    const store = remote.datastoreControlPlaneStore!();
+
+    assertEquals(await store.putIfAbsent("writer/fence-1", bytes("a")), true);
+    assertEquals(await store.putIfAbsent("writer/fence-1", bytes("b")), false);
+    await store.put("writer/heartbeat-1", bytes("h"));
+    assertEquals(await store.list("writer/"), [
+      "writer/fence-1",
+      "writer/heartbeat-1",
+    ]);
+    await store.delete("writer/heartbeat-1");
+    assertEquals([...remote.controlPlaneRecords().keys()].sort(), [
+      "_control/writer/fence-1",
+      "team/_control/writer/fence-1",
+    ]);
+    assertEquals(
+      remote.ops().filter((op) => op.instance === "datastore").map((op) => [
+        op.op,
+        op.paths,
+        op.deleted,
+      ]),
+      [
+        ["controlPlane", ["_control/writer/fence-1"], []],
+        ["controlPlane", ["_control/writer/heartbeat-1"], []],
+        ["controlPlane", [], ["_control/writer/heartbeat-1"]],
+      ],
+    );
+
+    remote.failNext("controlPlane", new Error("boom"), {
+      instance: "datastore",
+    });
+    await assertRejects(
+      () => store.putIfAbsent("writer/fence-2", bytes("c")),
+      Error,
+      "boom",
+    );
+    remote.offline(true);
+    await assertRejects(() => store.list("writer/"), Error, "offline");
+    remote.offline(false);
+    assertEquals(await store.get("writer/fence-2"), null);
+  });
+});
+
 Deno.test("createInMemoryRemote: a service that has not pulled reads datastore-wide control records", async () => {
   await withTempDir(async (dir) => {
     const remote = createInMemoryRemote({ controlPlane: true });

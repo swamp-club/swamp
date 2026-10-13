@@ -19,10 +19,12 @@
 
 // deno-lint-ignore-file no-import-prefix
 import { assert, assertEquals } from "jsr:@std/assert@1.0.19";
+import { dirname, join } from "@std/path";
 import type {
   ControlPlaneStore,
   DatastoreControlPlaneStore,
   DatastoreSyncService,
+  WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
 /** Options for {@link assertControlPlaneStoreConformance}. */
@@ -344,6 +346,263 @@ export async function assertDatastoreControlPlaneStoreConformance(
       await namespacedStore?.delete(namespacedKey);
     } catch { /* best-effort cleanup */ }
   }
+}
+
+/** A fresh sync service and the cache directory it syncs. */
+export interface NamespacedSyncFixture {
+  /** A sync service from the provider, never pulled or pushed. */
+  service: DatastoreSyncService;
+  /** The service's own cache directory, which the suite writes into. */
+  cacheDir: string;
+}
+
+/** Options for {@link assertWritableDatastoreControlPlaneStoreConformance}. */
+export interface WritableDatastoreControlPlaneStoreConformanceOptions {
+  /**
+   * The provider's `datastoreControlPlaneStore()`. Called more than once;
+   * each call must return a handle onto the same records.
+   */
+  openDatastoreStore: () =>
+    | WritableDatastoreControlPlaneStore
+    | Promise<WritableDatastoreControlPlaneStore>;
+  /**
+   * A fresh sync service from the same provider, never pulled or pushed,
+   * with a cache of its own each call.
+   */
+  openSyncService: () => DatastoreSyncService | Promise<DatastoreSyncService>;
+  /**
+   * A fresh sync service with its cache directory, for the namespaced-push
+   * case. Without it that case is skipped.
+   */
+  openNamespacedSyncFixture?: () => Promise<NamespacedSyncFixture>;
+  /**
+   * The namespace the suite syncs under. Default: a fresh one per run. A
+   * backend that only syncs registered namespaces needs one registered
+   * before the suite runs; pass its name here.
+   */
+  namespace?: string;
+  /** How many creates of one key are raced. Default: 8. */
+  concurrency?: number;
+}
+
+/** What {@link assertWritableDatastoreControlPlaneStoreConformance} ran. */
+export interface WritableDatastoreControlPlaneStoreConformanceResult {
+  /** Why the namespaced-push case was skipped, when it was. */
+  namespacedPushSkipped?: string;
+}
+
+/**
+ * Checks a provider's writable `datastoreControlPlaneStore()` against the
+ * contract the v3 writer lease relies on: one set of records at the
+ * datastore-wide `_control/` root, whatever namespace a checkout syncs.
+ *
+ * Checked: everything {@link assertControlPlaneStoreConformance} checks
+ * (round-trip, list, delete, and the create-only `putIfAbsent`, whose
+ * refusal leaves the record unchanged and of whose concurrent calls exactly
+ * one wins), everything {@link assertDatastoreControlPlaneStoreConformance}
+ * checks, and then the root scope of its writes:
+ *
+ * - a record it writes is read at the root by a never-pulled sync service;
+ * - a namespaced service's record under the same key is not read, listed
+ *   or counted by `putIfAbsent` through it, and writing through it binds no
+ *   namespace;
+ * - a record under `writer/` stays at the root, unchanged, after a
+ *   namespaced push creates a namespaced index and a second service pulls
+ *   and pushes under it. That is when the S3 and GCS extensions move root
+ *   `_control/` records into the namespace; a datastore-wide record must
+ *   never move. Skipped without `openNamespacedSyncFixture`.
+ *
+ * The suite writes only under keys of its own and removes them. On a real
+ * bucket the namespaced-push case leaves the namespace's index behind; its
+ * one data file is deleted again.
+ *
+ * ```ts
+ * import { assertWritableDatastoreControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("writable datastore-wide control-plane store conformance", async () => {
+ *   const openSyncFixture = async () => {
+ *     const cacheDir = await Deno.makeTempDir();
+ *     return { service: provider.createSyncService!(repoDir, cacheDir), cacheDir };
+ *   };
+ *   await assertWritableDatastoreControlPlaneStoreConformance({
+ *     openDatastoreStore: () => provider.datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
+ *     openSyncService: async () => (await openSyncFixture()).service,
+ *     openNamespacedSyncFixture: openSyncFixture,
+ *   });
+ * });
+ * ```
+ */
+export async function assertWritableDatastoreControlPlaneStoreConformance(
+  options: WritableDatastoreControlPlaneStoreConformanceOptions,
+): Promise<WritableDatastoreControlPlaneStoreConformanceResult> {
+  const namespace = options.namespace ??
+    `conformance-ns-${crypto.randomUUID().slice(0, 8)}`;
+
+  await assertControlPlaneStoreConformance(options.openDatastoreStore, {
+    concurrency: options.concurrency,
+  });
+  await assertDatastoreControlPlaneStoreConformance({
+    openDatastoreStore: options.openDatastoreStore,
+    openSyncService: options.openSyncService,
+    namespace,
+  });
+  await assertWritesStayAtRoot(options, namespace);
+  if (!options.openNamespacedSyncFixture) {
+    return { namespacedPushSkipped: "no openNamespacedSyncFixture was given" };
+  }
+  await assertWriterRecordSurvivesNamespacedPush(
+    options.openDatastoreStore,
+    options.openNamespacedSyncFixture,
+    namespace,
+  );
+  return {};
+}
+
+async function assertWritesStayAtRoot(
+  options: WritableDatastoreControlPlaneStoreConformanceOptions,
+  namespace: string,
+): Promise<void> {
+  const root = `conformance-${crypto.randomUUID()}`;
+  const sharedKey = `${root}/shared`;
+  const namespacedOnlyKey = `${root}/namespaced-only`;
+
+  // Built before the datastore-wide store writes, so a write that bound a
+  // namespace would show when this service pulls under its own.
+  const namespacedService = await options.openSyncService();
+  const rootService = await options.openSyncService();
+  if (!namespacedService.controlPlaneStore || !rootService.controlPlaneStore) {
+    throw new Error(
+      "openSyncService must return services with a controlPlaneStore",
+    );
+  }
+  const store = await options.openDatastoreStore();
+  let namespacedStore: ControlPlaneStore | undefined;
+
+  try {
+    await store.put(sharedKey, encode("root"));
+    assertEquals(
+      await text(rootService.controlPlaneStore(), sharedKey),
+      "root",
+      "a record written through the datastore-wide store must be read at the root by a never-pulled sync service",
+    );
+
+    await namespacedService.pullChanged({ namespace });
+    namespacedStore = namespacedService.controlPlaneStore();
+    assertEquals(
+      await namespacedStore.get(sharedKey),
+      null,
+      "a namespaced service must not see a record the datastore-wide store wrote at the root",
+    );
+    await namespacedStore.put(sharedKey, encode("namespaced"));
+    await namespacedStore.put(namespacedOnlyKey, encode("namespaced"));
+    assertEquals(
+      await text(namespacedStore, sharedKey),
+      "namespaced",
+      "a namespaced service must still read its own records after the datastore-wide store wrote",
+    );
+
+    assertEquals(
+      await text(store, sharedKey),
+      "root",
+      "a namespaced write must not change the datastore-wide record of the same key",
+    );
+    assertEquals(
+      (await store.list(`${root}/`)).sort(),
+      [sharedKey],
+      "list must report only datastore-wide records, never a namespace's",
+    );
+    assertEquals(
+      await store.putIfAbsent(namespacedOnlyKey, encode("root")),
+      true,
+      "putIfAbsent must not count a record that exists only under a namespace",
+    );
+    assertEquals(
+      await text(namespacedStore, namespacedOnlyKey),
+      "namespaced",
+      "a datastore-wide create must leave the namespace's record of the same key unchanged",
+    );
+  } finally {
+    for (const key of [sharedKey, namespacedOnlyKey]) {
+      try {
+        await store.delete(key);
+      } catch { /* best-effort cleanup */ }
+      try {
+        await namespacedStore?.delete(key);
+      } catch { /* best-effort cleanup */ }
+    }
+  }
+}
+
+async function assertWriterRecordSurvivesNamespacedPush(
+  openDatastoreStore:
+    WritableDatastoreControlPlaneStoreConformanceOptions["openDatastoreStore"],
+  openFixture: () => Promise<NamespacedSyncFixture>,
+  namespace: string,
+): Promise<void> {
+  const id = crypto.randomUUID();
+  // Under `writer/` but not a lease key, so a live lease never reads it.
+  const writerKey = `writer/conformance-${id}`;
+  const relPath = `${namespace}/data/conformance/writer-${id}`;
+  const store = await openDatastoreStore();
+  const first = await openFixture();
+  let pushed = false;
+
+  try {
+    await store.put(writerKey, encode("datastore-wide"));
+
+    // The first namespaced push creates the namespace's index.
+    await first.service.pullChanged({ namespace });
+    await first.service.markDirty({ relPath, namespace });
+    await writeLocal(first.cacheDir, relPath, encode("conformance"));
+    await first.service.pushChanged({ namespace });
+    pushed = true;
+
+    // A second fresh service now finds that index on its pull and push,
+    // which is when root records would be moved into the namespace.
+    const second = await openFixture();
+    await second.service.pullChanged({ namespace });
+    await second.service.markDirty({ relPath, namespace });
+    await writeLocal(second.cacheDir, relPath, encode("conformance again"));
+    await second.service.pushChanged({ namespace });
+
+    assertEquals(
+      await text(store, writerKey),
+      "datastore-wide",
+      "a record under writer/ must stay at the datastore-wide root after namespaced pulls and pushes",
+    );
+    assert(
+      (await store.list("writer/")).includes(writerKey),
+      "a record under writer/ must still be listed at the root after namespaced pulls and pushes",
+    );
+    if (second.service.controlPlaneStore) {
+      assertEquals(
+        await second.service.controlPlaneStore().get(writerKey),
+        null,
+        "a record under writer/ must never be copied into a namespace",
+      );
+    }
+  } finally {
+    try {
+      await store.delete(writerKey);
+    } catch { /* best-effort cleanup */ }
+    if (pushed) {
+      try {
+        await first.service.markDirty({ relPath, namespace });
+        await Deno.remove(join(first.cacheDir, ...relPath.split("/")));
+        await first.service.pushChanged({ namespace });
+      } catch { /* best-effort cleanup */ }
+    }
+  }
+}
+
+async function writeLocal(
+  cacheDir: string,
+  relPath: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  const path = join(cacheDir, ...relPath.split("/"));
+  await Deno.mkdir(dirname(path), { recursive: true });
+  await Deno.writeFile(path, bytes);
 }
 
 /**

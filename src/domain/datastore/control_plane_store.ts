@@ -72,3 +72,41 @@ export interface DatastoreControlPlaneStore {
     options?: ControlPlaneReadOptions,
   ): Promise<Uint8Array | null>;
 }
+
+/**
+ * A {@link DatastoreControlPlaneStore} that can also write, at the same
+ * datastore-wide `_control/` root. The v3 writer lease keeps its records
+ * (`writer/`) here, because there is one writer per datastore, not per
+ * namespace.
+ *
+ * Every key is relative to `_control/` at the datastore root: writing binds
+ * no namespace, and records a namespaced sync service writes under
+ * `<namespace>/_control/` are never read, listed or changed through it.
+ */
+export interface WritableDatastoreControlPlaneStore
+  extends DatastoreControlPlaneStore {
+  /** Writes the record at `_control/<key>`, replacing any record there. */
+  put(key: string, data: Uint8Array): Promise<void>;
+  /**
+   * Creates the record at `_control/<key>` only if no record is there.
+   * Returns false, leaving the existing record unchanged, when one is. Of
+   * concurrent creates of one key, from any process, exactly one returns
+   * true.
+   */
+  putIfAbsent(key: string, data: Uint8Array): Promise<boolean>;
+  /** Removes the record at `_control/<key>`; a missing record is no error. */
+  delete(key: string): Promise<void>;
+  /** The keys under `_control/<prefix>`, relative to `_control/`. */
+  list(prefix: string): Promise<string[]>;
+}
+
+/** True when `store` also has the writes a datastore-wide writer needs. */
+export function isWritableDatastoreControlPlaneStore(
+  store: DatastoreControlPlaneStore,
+): store is WritableDatastoreControlPlaneStore {
+  const candidate = store as Partial<WritableDatastoreControlPlaneStore>;
+  return typeof candidate.put === "function" &&
+    typeof candidate.putIfAbsent === "function" &&
+    typeof candidate.delete === "function" &&
+    typeof candidate.list === "function";
+}

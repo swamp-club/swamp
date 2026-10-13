@@ -1298,6 +1298,22 @@ export function validateServeDaemonArgs(
   return resolveServeStartupSettings(merged);
 }
 
+/**
+ * The root control-plane prefixes a namespaced serve copies into its
+ * namespace at boot. Datastore-wide records, the v3 writer lease
+ * (`writer/`) and the format marker (`datastore-format`), are never among
+ * them: there is one of each per datastore, whatever the namespace
+ * (swamp-club#3364).
+ */
+export const ROOT_CONTROL_PLANE_IMPORT_PREFIXES: readonly string[] = [
+  "token-secrets/",
+  "pending-runs/",
+  "heartbeats/",
+  "active-runs/",
+  "fire-records/",
+  "claims/",
+];
+
 /** Shutdown drain deadline when `--shutdown-drain-timeout` is unset. */
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
 
@@ -3271,16 +3287,7 @@ export const serveCommand = new Command()
           : undefined;
         if (rootSyncService?.controlPlaneStore) {
           const rootStore = rootSyncService.controlPlaneStore();
-          for (
-            const prefix of [
-              "token-secrets/",
-              "pending-runs/",
-              "heartbeats/",
-              "active-runs/",
-              "fire-records/",
-              "claims/",
-            ]
-          ) {
+          for (const prefix of ROOT_CONTROL_PLANE_IMPORT_PREFIXES) {
             try {
               const keys = await rootStore.list(prefix);
               for (const key of keys) {
