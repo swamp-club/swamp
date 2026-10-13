@@ -182,6 +182,10 @@ async function main() {
       ".claude/skills",
       "--include",
       "resources/deno",
+      // A worker entry point is not in the module graph, so it is named
+      // here (src/infrastructure/runtime/worker_bundle_prober.ts).
+      "--include",
+      "src/infrastructure/runtime/bundle_probe_worker.ts",
       // Dashboard dist is included only when pre-built (CI runs
       // `npm run build` in packages/dashboard before compile).
       ...(dashboardDistExists

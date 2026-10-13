@@ -35,6 +35,13 @@ import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { bundleImportUrl, ExtensionLoader } from "./extension_loader.ts";
 import type { KindAdapter } from "./kind_adapter.ts";
+import {
+  type BundleProber,
+  type BundleProbeRequest,
+  type BundleProbeResult,
+  ProbeFailedError,
+} from "./bundle_prober.ts";
+import { ValidationError } from "./validation_error.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
@@ -1249,3 +1256,149 @@ Deno.test("buildIndex: a layout-version eviction keeps install staging (swamp-cl
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+// -- Probed indexing (swamp-club#3374) ------------------------------------
+
+/**
+ * Indexes one pulled source through `bundleAndIndexOne` with a prober that
+ * answers `result`. The bundle marks the global of any isolate that
+ * imports it, so the returned `imported` is true only if the loader
+ * imported it in-process.
+ */
+async function indexWithProbeResult(result: BundleProbeResult): Promise<{
+  index: () => ReturnType<ExtensionLoader["bundleAndIndexOne"]>;
+  requests: BundleProbeRequest[];
+  imported: () => boolean;
+  cleanup: () => Promise<void>;
+}> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_3374_" });
+  const marker = `__swamp_3374_unit_${crypto.randomUUID()}`;
+  const modelsDir = join(
+    dir,
+    ".swamp",
+    "pulled-extensions",
+    "@test",
+    "ext",
+    "models",
+  );
+  await Deno.mkdir(modelsDir, { recursive: true });
+  const body = `globalThis[${JSON.stringify(marker)}] = true;\n` +
+    'export const model = { type: "@test/probed" };\n';
+  const sourcePath = join(modelsDir, "probed.ts");
+  await Deno.writeTextFile(sourcePath, body);
+  const bundleDir = join(
+    dir,
+    ".swamp",
+    "bundles",
+    bundleNamespace(modelsDir, dir),
+  );
+  await Deno.mkdir(bundleDir, { recursive: true });
+  await Deno.writeTextFile(join(bundleDir, "probed.js"), body);
+
+  const requests: BundleProbeRequest[] = [];
+  const prober: BundleProber = {
+    probe(request) {
+      requests.push(request);
+      return Promise.resolve(result);
+    },
+    release() {},
+  };
+  const loader = new ExtensionLoader(
+    stubDenoRuntime,
+    makeStubAdapter(new Set()),
+    dir,
+    undefined,
+    undefined,
+    prober,
+  );
+  return {
+    index: () =>
+      loader.bundleAndIndexOne({
+        absolutePath: sourcePath,
+        relativePath: "probed.ts",
+        baseDir: modelsDir,
+        trustPulledCache: true,
+      }),
+    requests,
+    imported: () => (globalThis as Record<string, unknown>)[marker] === true,
+    cleanup: () => Deno.remove(dir, { recursive: true }).catch(() => {}),
+  };
+}
+
+Deno.test("bundleAndIndexOne: with a prober, indexes from the probe result without importing the bundle", async () => {
+  const probed = await indexWithProbeResult({
+    tag: "primary",
+    typeNormalized: "@test/probed",
+    version: "1",
+    description: "d",
+  });
+  try {
+    const out = await probed.index();
+    assertEquals(out?.typeNormalized, "@test/probed");
+    assertEquals(out?.kind, "model");
+    assertEquals(probed.requests.length, 1);
+    assertEquals(probed.requests[0].kind, "model");
+    assertStringIncludes(probed.requests[0].importUrl, "probed.js?");
+    assertEquals(probed.imported(), false);
+  } finally {
+    await probed.cleanup();
+  }
+});
+
+Deno.test("bundleAndIndexOne: a probe that finds no export indexes nothing", async () => {
+  const probed = await indexWithProbeResult({ tag: "no-export" });
+  try {
+    assertEquals(await probed.index(), null);
+    assertEquals(probed.imported(), false);
+  } finally {
+    await probed.cleanup();
+  }
+});
+
+Deno.test("bundleAndIndexOne: a probe validation failure is a ValidationError", async () => {
+  const probed = await indexWithProbeResult({
+    tag: "validation-failed",
+    message: "name is required",
+  });
+  try {
+    const error = await assertRejects(
+      probed.index,
+      ValidationError,
+      "name is required",
+    );
+    assertEquals(error instanceof ProbeFailedError, false);
+  } finally {
+    await probed.cleanup();
+  }
+});
+
+Deno.test("bundleAndIndexOne: an import that throws in the probe stays a retryable plain error", async () => {
+  const probed = await indexWithProbeResult({
+    tag: "import-failed",
+    message: "boom at import",
+  });
+  try {
+    const error = await assertRejects(probed.index, Error, "boom at import");
+    assertEquals(error instanceof ValidationError, false);
+  } finally {
+    await probed.cleanup();
+  }
+});
+
+for (
+  const result of [
+    { tag: "timed-out", timeoutMs: 10 },
+    { tag: "exited", code: 3 },
+  ] as const
+) {
+  Deno.test(`bundleAndIndexOne: a probe that ${result.tag} is a ProbeFailedError`, async () => {
+    const probed = await indexWithProbeResult(result);
+    try {
+      const error = await assertRejects(probed.index, ProbeFailedError);
+      assertStringIncludes(error.message, "Edit the file to retry");
+      assertEquals(probed.imported(), false);
+    } finally {
+      await probed.cleanup();
+    }
+  });
+}

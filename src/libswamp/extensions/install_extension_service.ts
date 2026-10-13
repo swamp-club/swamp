@@ -43,6 +43,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
+import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
@@ -106,6 +107,7 @@ type KindDir = typeof KIND_DIRS[number];
 export class InstallExtensionService {
   private readonly denoRuntime: DenoRuntime;
   private readonly repository: ExtensionRepository;
+  private readonly bundleProber: BundleProber | undefined;
   private readonly installExtensionFn: InstallExtensionFn;
 
   constructor(args: {
@@ -122,7 +124,14 @@ export class InstallExtensionService {
      * `install_test_helpers.ts`.
      */
     installExtensionFn?: InstallExtensionFn;
+    /**
+     * Indexes the installed sources by probing their bundles in isolation
+     * instead of importing them into this isolate (swamp-club#3374).
+     * Released when the install's indexing ends.
+     */
+    bundleProber?: BundleProber;
   }) {
+    this.bundleProber = args.bundleProber;
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
     this.installExtensionFn = args.installExtensionFn ?? installExtension;
@@ -265,6 +274,26 @@ export class InstallExtensionService {
     const extRoot = join(effectivePulledRoot, result.name);
     const sources: ReturnType<typeof makeSource>[] = [];
 
+    try {
+      await this.indexSourcesOnDisk(extRoot, repoDir, sources);
+    } finally {
+      this.bundleProber?.release();
+    }
+
+    return makeExtension({
+      name: result.name,
+      version: result.version,
+      origin: "pulled",
+      extensionRoot: extRoot,
+      sources,
+    });
+  }
+
+  private async indexSourcesOnDisk(
+    extRoot: string,
+    repoDir: string,
+    sources: ReturnType<typeof makeSource>[],
+  ): Promise<void> {
     for (const kindDir of KIND_DIRS) {
       const dir = join(extRoot, kindDir);
       const tsFiles = await collectTsFiles(dir);
@@ -293,14 +322,6 @@ export class InstallExtensionService {
         );
       }
     }
-
-    return makeExtension({
-      name: result.name,
-      version: result.version,
-      origin: "pulled",
-      extensionRoot: extRoot,
-      sources,
-    });
   }
 
   /**
@@ -340,6 +361,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "vaults":
         return new ExtensionLoader(
@@ -348,6 +370,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "datastores":
         return new ExtensionLoader(
@@ -356,6 +379,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "reports":
         return new ExtensionLoader(
@@ -364,6 +388,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "webhooks":
         return new ExtensionLoader(
@@ -372,6 +397,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
     }
   }

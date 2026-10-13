@@ -124,6 +124,7 @@ import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
 import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
 import { renderAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 import { ReconcileFromDiskService } from "../libswamp/extensions/reconcile_from_disk_service.ts";
+import { WorkerBundleProber } from "../infrastructure/runtime/worker_bundle_prober.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
@@ -746,6 +747,7 @@ export async function configureStartupExtensions(
         repository,
         lockfileRepository,
         repoDir,
+        bundleProber: new WorkerBundleProber(),
         localManifestIdentity,
         scanOnDiskDatastores: extensionBacked,
         additionalInstalledNames: await transitionalInstalledNames(
@@ -1193,6 +1195,7 @@ async function loadUserModels(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const pulledDirs = await enumeratePulledExtensionDirs(
       lockfilePath,
@@ -1296,6 +1299,7 @@ async function loadUserVaults(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1384,6 +1388,7 @@ async function loadUserDatastores(
       repoDir,
       undefined,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1478,6 +1483,7 @@ async function loadUserReports(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1567,6 +1573,7 @@ async function loadUserWebhooks(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(

@@ -111,6 +111,7 @@ import { transitionalInstalledNames } from "../../infrastructure/persistence/ins
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import { WorkerBundleProber } from "../../infrastructure/runtime/worker_bundle_prober.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -326,6 +327,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
           lockfileRepository: reconcileLockfileRepo,
           repoDir,
           localManifestIdentity,
+          bundleProber: new WorkerBundleProber(),
           scanOnDiskDatastores: extensionBacked,
           additionalInstalledNames: await transitionalInstalledNames(
             repoDir,
