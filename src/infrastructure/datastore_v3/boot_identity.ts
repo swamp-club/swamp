@@ -47,17 +47,24 @@ let cached: Promise<string | undefined> | undefined;
  * process: a process never outlives its boot.
  */
 export function currentBootIdentity(): Promise<string | undefined> {
-  cached ??= readBootIdentity();
+  cached ??= readBootIdentity(Deno.build.os);
   return cached;
 }
 
-async function readBootIdentity(): Promise<string | undefined> {
+/**
+ * Reads the boot identity on `os`, uncached; undefined when it cannot be
+ * read. `bootIdFile` is the Linux boot id's path.
+ */
+export async function readBootIdentity(
+  os: typeof Deno.build.os,
+  bootIdFile: string = BOOT_ID_FILE,
+): Promise<string | undefined> {
   try {
-    if (Deno.build.os === "linux") {
-      const id = (await Deno.readTextFile(BOOT_ID_FILE)).trim();
+    if (os === "linux") {
+      const id = (await Deno.readTextFile(bootIdFile)).trim();
       return id === "" ? undefined : `boot-id:${id}`;
     }
-    if (Deno.build.os === "darwin") {
+    if (os === "darwin") {
       const output = await new Deno.Command(SYSCTL, {
         args: ["-n", "kern.bootsessionuuid"],
         stdin: "null",

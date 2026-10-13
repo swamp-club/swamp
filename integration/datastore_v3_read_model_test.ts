@@ -74,6 +74,7 @@ import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import {
   READ_MODEL_LOCK_FILE,
   READ_MODEL_STATE_FILE,
+  type SqliteReadModel,
 } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
 import { DurableWriteBatch } from "../src/infrastructure/datastore_v3/atomic_stream_write.ts";
 import {
@@ -673,6 +674,41 @@ Deno.test("read model: a listed file the state shows present without a live reco
       await reopened.close();
     }
     assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test("read model: a read made during a catch-up waits for it and never sees a page's uncommitted state (swamp-club#3337)", async () => {
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    let read: Promise<ReadonlySet<string>> | undefined;
+    let settledDuringPage = false;
+    const holder: { readModel?: SqliteReadModel } = {};
+    class ReadingBatch extends DurableWriteBatch {
+      override async barrier(): Promise<void> {
+        read ??= holder.readModel!.chunksInUse("");
+        read.then(
+          () => settledDuringPage = true,
+          () => settledDuringPage = true,
+        );
+        await super.barrier();
+      }
+    }
+    const readModel = env.openReadModel({
+      pageSize: 2,
+      writeBatch: () => new ReadingBatch(),
+    });
+    holder.readModel = readModel;
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(settledDuringPage, false);
+      // Mid-page the index was incomplete; once the catch-up is done it is.
+      assertEquals(
+        (await read!).size,
+        Math.ceil(LARGE.length / TEST_CHUNK_BYTES),
+      );
+    } finally {
+      await readModel.close();
+    }
   });
 });
 

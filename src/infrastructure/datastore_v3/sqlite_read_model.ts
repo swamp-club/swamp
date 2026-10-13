@@ -356,22 +356,35 @@ export class SqliteReadModel implements ReadModel {
     namespace: string,
     partition: PartitionKey,
   ): Promise<readonly LiveRecord[]> {
-    if (this.#closed) return Promise.reject(closedError());
-    const records = this.#state.liveRecordsIfComplete(
-      namespace,
-      partition.toString(),
-    );
-    return records === undefined
-      ? Promise.reject(new ReadModelIncompleteError())
-      : Promise.resolve(records);
+    return this.#afterQueue(() => {
+      const records = this.#state.liveRecordsIfComplete(
+        namespace,
+        partition.toString(),
+      );
+      if (records === undefined) throw new ReadModelIncompleteError();
+      return records;
+    });
   }
 
   chunksInUse(namespace: string): Promise<ReadonlySet<string>> {
+    return this.#afterQueue(() => {
+      const chunks = this.#state.chunksInUseIfComplete(namespace);
+      if (chunks === undefined) throw new ReadModelIncompleteError();
+      return chunks;
+    });
+  }
+
+  /**
+   * Runs a read once every earlier call has finished (swamp-club#3337): a
+   * page's state is uncommitted until its barrier, so a read in the middle
+   * of a catch-up would see what a failed page rolls back.
+   */
+  #afterQueue<T>(read: () => T): Promise<T> {
     if (this.#closed) return Promise.reject(closedError());
-    const chunks = this.#state.chunksInUseIfComplete(namespace);
-    return chunks === undefined
-      ? Promise.reject(new ReadModelIncompleteError())
-      : Promise.resolve(chunks);
+    return this.#queue.then(() => {
+      if (this.#closed) throw closedError();
+      return read();
+    });
   }
 
   async close(): Promise<void> {

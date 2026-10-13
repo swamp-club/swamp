@@ -48,6 +48,9 @@ export class PathTraversalError extends Error {
  * If the path exists, uses `Deno.realPath()` directly. Otherwise, walks up
  * to the nearest existing ancestor, resolves that, and appends the remaining
  * non-existent segments.
+ *
+ * Exported for the v3 read model's `PathCache`, which remembers directories'
+ * real paths for its containment checks (swamp-club#3337).
  */
 export async function resolveRealPath(path: string): Promise<string> {
   const normalized = resolve(path);

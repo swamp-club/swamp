@@ -3104,7 +3104,11 @@ is logged as such, apart from a file that does not match.
 
 What this does not cover: a disk detached without the OS restarting (a
 removable drive pulled mid-write) can lose page-cache writes within one
-boot, and the read model will not notice. `commits.db` keeps
+boot, and the read model will not notice. The check runs at the start of an
+exclusive section, so an index read (`liveRecords`, `chunksInUse`) before
+the first catch-up of a new boot is not covered by it. A commit whose apply
+fails is not recorded, so the files it wrote before failing are not listed:
+until its retry rewrites them, a reboot can leave one torn. `commits.db` keeps
 `synchronous=FULL` and stays the source of truth. The compacted-base load
 and recovery's sweep still sync their files at a barrier
 (`DurableWriteBatch`): they are rare. `F_BARRIERFSYNC`, which Deno does not
