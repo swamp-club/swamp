@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { View } from "./types.ts";
+import { dashboardBaseFor, PAGE_WORKSPACE } from "./client/workspace_path.ts";
 
-const BASE = "/dashboard";
+// `/dashboard`, or `/dashboard/w/<workspace>` on the local dashboard.
+const BASE = dashboardBaseFor(PAGE_WORKSPACE);
 
 /**
  * The detail a URL addresses. Model-scoped kinds (`data`, `report`) and the
@@ -96,8 +98,10 @@ const BEHAVIORS = `${BASE}/${VIEW_SEGMENTS.models}`;
  * rest of the raw path is kept byte for byte, so encoded names survive.
  */
 export function legacyRedirectPath(pathname: string): string | null {
-  const match = /^\/dashboard\/(models|behaviours)(?=\/|$)/.exec(pathname);
-  return match ? `${BEHAVIORS}${pathname.slice(match[0].length)}` : null;
+  if (!pathname.startsWith(`${BASE}/`)) return null;
+  const rest = pathname.slice(BASE.length);
+  const match = /^\/(models|behaviours)(?=\/|$)/.exec(rest);
+  return match ? `${BEHAVIORS}${rest.slice(match[0].length)}` : null;
 }
 
 /**
@@ -106,7 +110,7 @@ export function legacyRedirectPath(pathname: string): string | null {
  * serve connection, auth probe or sidebar is set up.
  */
 export function isStartPath(pathname: string): boolean {
-  return pathname === `${BASE}/start` || pathname === `${BASE}/start/`;
+  return pathname === "/dashboard/start" || pathname === "/dashboard/start/";
 }
 
 /**

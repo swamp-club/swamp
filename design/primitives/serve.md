@@ -1337,7 +1337,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   boot. User services (`default.target`, launchd agents) run only while the
   user is logged in. To start a user service at boot, enable systemd lingering
   (`loginctl enable-linger $USER`) or install system-wide.
-- **Dashboard.** `--dashboard` serves the Vite SPA in `packages/dashboard`
+- **Dashboard.** The same bundle also runs with no serve, on local repos: see
+  [local dashboard](../surfaces/local-dashboard.md). Serve never sends its
+  `local` flag, so everything below is unchanged by it.
+  `--dashboard` serves the Vite SPA in `packages/dashboard`
   (overview, behaviors, workflows, executions, approvals, data, vaults,
   extensions, schedules, webhooks and system views) from
   `packages/dashboard/dist`. `scripts/compile.ts` embeds it only if pre-built

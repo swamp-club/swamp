@@ -41,6 +41,7 @@ import { RequestError } from "../../client/stream.ts";
 import { behaviorNoun, BEHAVIORS_LABEL } from "../../lib/behavior_labels.ts";
 import { AgentBadge } from "./AgentBadge.tsx";
 import { StartClient } from "./client.ts";
+import { dashboardBaseFor } from "../../client/workspace_path.ts";
 import {
   agentScreenHeading,
   agentsToggleLabel,
@@ -708,12 +709,23 @@ function StatusChips(
       </ol>
     </nav>
   );
-  const chips = signedIn && (
+  const chips = (signedIn || status.workspaceName) && (
     <div className="start-chips">
-      <div className="start-chip start-chip-user">
-        <span className="start-chip-dot" aria-hidden="true" />
-        Signed in as {status.username}
-      </div>
+      {status.workspaceName && (
+        <a
+          className="start-chip start-chip-dashboard"
+          href={dashboardBaseFor(status.workspaceName)}
+          title="This workspace's behaviors, workflows, runs and data"
+        >
+          Open dashboard →
+        </a>
+      )}
+      {signedIn && (
+        <div className="start-chip start-chip-user">
+          <span className="start-chip-dot" aria-hidden="true" />
+          Signed in as {status.username}
+        </div>
+      )}
     </div>
   );
   return (
@@ -2495,8 +2507,19 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
           <>
             <p>
               Carry on in that window. {name}{" "}
-              will show you the result there. You can close this tab.
+              will show you the result there, and what it builds and runs shows
+              up on this workspace's dashboard.
             </p>
+            {status.workspaceName && (
+              <p>
+                <a
+                  className="start-primary start-dashboard-link"
+                  href={dashboardBaseFor(status.workspaceName)}
+                >
+                  Open the dashboard
+                </a>
+              </p>
+            )}
             {showCommand ? commandBlock : (
               <p className="start-hint">
                 Window didn't appear?{" "}

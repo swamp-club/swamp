@@ -17,10 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ReactNode } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { HealthUnavailable } from "../components/HealthUnavailable";
 import { useRequest } from "../client/useRequest";
+import { useSwamp } from "../client/SwampProvider";
 import { extractArray, extractObject } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
 import { serveConfigRows } from "./serve_config_rows";
@@ -65,7 +67,9 @@ export function System(
 ) {
   const healthState = healthViewState(health, denied);
   const clusterReq = useRequest("cluster.instances");
-  const configReq = useRequest("serve.config");
+  const { local } = useSwamp();
+  // The local dashboard has no serve, so no serve configuration to show.
+  const configReq = useRequest("serve.config", undefined, { enabled: !local });
   const workersReq = useRequest("worker.list");
   const datastoreReq = useRequest("datastore.status");
   const datastoreData = datastoreReq.data;
@@ -408,7 +412,7 @@ export function System(
                             ? <span className="sys-val ok">enabled</span>
                             : val === false
                             ? "disabled"
-                            : String(val)}
+                            : withPathBreaks(String(val))}
                         </span>
                       </div>
                     )}
@@ -420,14 +424,14 @@ export function System(
       </div>
 
       {/* Serve Configuration */}
-      {configState === "loading" && (
+      {!local && configState === "loading" && (
         <KeyValuePanelSkeleton
           title="Serve Configuration"
           keys={SERVE_CONFIG_KEYS}
           label="Loading serve configuration"
         />
       )}
-      {configState === "error" && (
+      {!local && configState === "error" && (
         <LoadError
           subject="serve configuration"
           message={configReq.error}
@@ -467,4 +471,14 @@ function formatUptime(startedAt: string | null): string {
   const minutes = Math.floor((ms % 3600000) / 60000);
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+/**
+ * Lets a long path wrap after its separators rather than mid-name: a
+ * break opportunity follows each `/` and `-`.
+ */
+export function withPathBreaks(text: string): ReactNode[] {
+  return text.split(/(?<=[/-])/).flatMap((part, i) =>
+    i === 0 ? [part] : [<wbr key={i} />, part]
+  );
 }

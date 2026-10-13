@@ -70,7 +70,7 @@ export const AUDIT_COLUMNS = [
   "Resource",
 ] as const;
 
-function Icon({ path }: { path: string }) {
+export function Icon({ path }: { path: string }) {
   return (
     <svg
       width="18"
@@ -149,7 +149,7 @@ export function CopyableSnippet(
   );
 }
 
-function Benefit(
+export function Benefit(
   { icon, title, children }: {
     icon: string;
     title: string;

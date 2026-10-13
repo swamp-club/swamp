@@ -25,6 +25,9 @@ import { BEHAVIORS_LABEL } from "../lib/behavior_labels.ts";
 import { formatCompactCount, formatDuration } from "../lib/format.ts";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { operationsOff, showsLogout } from "./sidebar_state.ts";
+import { PAGE_WORKSPACE } from "../client/workspace_path.ts";
 
 export type { View };
 
@@ -220,6 +223,11 @@ interface SidebarProps {
   approvalCount: number;
   /** False once serve said it runs without an audit log. */
   auditEnabled?: boolean;
+  /**
+   * True on the local dashboard: no serve behind it, so schedules and
+   * webhooks are off and there is no login to leave.
+   */
+  local?: boolean;
   onLogout: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -233,6 +241,7 @@ export function Sidebar({
   health,
   approvalCount,
   auditEnabled = true,
+  local = false,
   onLogout,
   collapsed,
   onToggleCollapsed,
@@ -240,6 +249,7 @@ export function Sidebar({
   onCloseDrawer,
 }: SidebarProps) {
   const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
+  const off = operationsOff({ auditEnabled, local });
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   // Drop a tooltip measured before the rail was toggled.
@@ -329,6 +339,10 @@ export function Sidebar({
         </button>
       </div>
 
+      {PAGE_WORKSPACE !== null && !collapsed && (
+        <WorkspaceSwitcher current={PAGE_WORKSPACE} />
+      )}
+
       <div style={{ padding: "0 8px", marginBottom: 24 }}>
         <SectionLabel text="Overview" />
         <NavItem
@@ -368,12 +382,14 @@ export function Sidebar({
           view="schedules"
           active={activeView === "schedules"}
           onClick={onNavigate}
+          off={off.schedules}
         />
         <NavItem
           label="Webhooks"
           view="webhooks"
           active={activeView === "webhooks"}
           onClick={onNavigate}
+          off={off.webhooks}
         />
         <NavItem
           label="Approvals"
@@ -388,9 +404,7 @@ export function Sidebar({
           view="activity"
           active={activeView === "activity"}
           onClick={onNavigate}
-          off={auditEnabled
-            ? undefined
-            : { hint: "Off", description: "Audit log is disabled" }}
+          off={off.activity}
         />
       </div>
 
@@ -473,44 +487,47 @@ export function Sidebar({
             </div>
           </>
         )}
-        <button
-          type="button"
-          className="sidebar-logout"
-          onClick={onLogout}
-          aria-label="Logout"
-          title="Logout"
-          style={{
-            marginTop: 12,
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            padding: "6px 0",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 5,
-            background: "transparent",
-            color: "var(--sidebar-text)",
-            fontSize: "0.75rem",
-            cursor: "pointer",
-            fontFamily: "inherit",
-          }}
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{ flexShrink: 0 }}
+        {/* The local dashboard has no login to leave. */}
+        {showsLogout(local) && (
+          <button
+            type="button"
+            className="sidebar-logout"
+            onClick={onLogout}
+            aria-label="Logout"
+            title="Logout"
+            style={{
+              marginTop: 12,
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              padding: "6px 0",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 5,
+              background: "transparent",
+              color: "var(--sidebar-text)",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
           >
-            <path d="M6 2H3v12h3M10 5l3 3-3 3M13 8H6" />
-          </svg>
-          <span className="sidebar-logout-text">Logout</span>
-        </button>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ flexShrink: 0 }}
+            >
+              <path d="M6 2H3v12h3M10 5l3 3-3 3M13 8H6" />
+            </svg>
+            <span className="sidebar-logout-text">Logout</span>
+          </button>
+        )}
       </div>
       {collapsed && tooltip && (
         <div

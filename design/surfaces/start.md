@@ -203,7 +203,7 @@ or when nothing opens, the page shows a command to copy.
 
 ## Not in phase 1
 
-No other dashboard views, no method runs by Swamp, no credentials in the
-browser, no Git, no shared datastore, no change to repo resolution or the
-harness allowlists. When the CLI dashboard ships, launch leads into it and the
-closing summary becomes its empty state.
+No method runs by Swamp, no credentials in the browser, no Git, no shared
+datastore, no change to repo resolution or the harness allowlists. A workspace's
+dashboard is the [local dashboard](./local-dashboard.md): the start server also
+serves it, and "Open dashboard" leads there once a workspace is open.

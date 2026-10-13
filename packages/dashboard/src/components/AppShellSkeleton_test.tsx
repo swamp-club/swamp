@@ -19,9 +19,9 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { assert, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AppShellSkeleton } from "./AppShellSkeleton.tsx";
+import { AppShellSkeleton, connectingLabel } from "./AppShellSkeleton.tsx";
 
 Deno.test("AppShellSkeleton: a busy layout with the visible status", () => {
   const html = renderToStaticMarkup(
@@ -64,4 +64,9 @@ Deno.test("AppShellSkeleton: no empty-state copy", () => {
   const html = renderToStaticMarkup(<AppShellSkeleton collapsed={false} />);
   assert(!html.includes("empty-state"));
   assert(!/\bNo \w+/.test(html));
+});
+
+Deno.test("connectingLabel: serve keeps its wording; the local dashboard connects to The Swamp", () => {
+  assertEquals(connectingLabel(false), "Connecting to swamp serve");
+  assertEquals(connectingLabel(true), "Connecting to The Swamp");
 });
