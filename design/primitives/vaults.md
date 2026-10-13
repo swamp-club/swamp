@@ -356,7 +356,11 @@ have their own sections. The group also has:
     [Key source over `--server`](#key-source-over---server))
 - `swamp vault search [keyword]`: browse configured vaults
 - `swamp vault type-search [keyword]`: browse registered vault types
-  (built-in and extension)
+  (built-in and extension). An extension type is listed under the name and
+  description it declares, and the keyword matches the type id, name or
+  description. The command imports no bundle: for a type that is only
+  indexed, it reads both fields from the source text, so one whose source
+  computes its name is listed under its type id.
 - `swamp vault put ... --label k=v`: attach provider-native tags via
   `VaultPutOptions.tags` (repeatable)
 

@@ -453,7 +453,7 @@ function extractGlobalArguments(content: string): ExtractedArgument[] {
  * Returns null if the file doesn't contain a recognizable vault definition.
  * Uses `createProvider` as the discriminator to distinguish vault files from model files.
  */
-function extractVaultFromSource(
+export function extractVaultFromSource(
   content: string,
   filePath: string,
   vaultsDir: string,
@@ -473,13 +473,9 @@ function extractVaultFromSource(
   const typeMatch = vaultBody.match(/type:\s*["']([^"']+)["']/);
   if (!typeMatch) return null;
 
-  // Extract name
-  const nameMatch = vaultBody.match(/(?<![.\w])name:\s*["']([^"']+)["']/);
-
-  // Extract description
-  const descMatch = vaultBody.match(
-    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
-  );
+  // Name and description are read at the top level of the definition only,
+  // so a nested `name:` is never mistaken for the vault's own.
+  const topLevel = topLevelStringValues(vaultBody);
 
   // Check for configSchema presence
   const hasConfigSchema = /configSchema\s*[:,}]/.test(vaultBody);
@@ -520,11 +516,123 @@ function extractVaultFromSource(
   return {
     fileName: relative(vaultsDir, filePath),
     type: typeMatch[1],
-    name: nameMatch ? nameMatch[1] : "",
-    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    name: topLevel.get("name") ?? "",
+    description: topLevel.get("description") ?? "",
     hasConfigSchema,
     configFields,
   };
+}
+
+/**
+ * The top-level entries of an object literal body whose whole value is a
+ * constant string, by key. A value that only starts with a string literal,
+ * such as `"Foo" + suffix` or a template with a substitution, is computed
+ * and is left out. A repeated key takes its last entry, as it does at runtime.
+ */
+function topLevelStringValues(body: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const entry of extractTopLevelEntries(body)) {
+    const value = entry.raw === undefined
+      ? undefined
+      : evaluateStringExpression(entry.raw);
+    if (value === undefined) values.delete(entry.key);
+    else values.set(entry.key, value);
+  }
+  return values;
+}
+
+const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
+  n: "\n",
+  t: "\t",
+  r: "\r",
+  b: "\b",
+  f: "\f",
+  v: "\v",
+  "0": "\0",
+};
+
+// What may follow a constant string without changing its value.
+const TYPE_ONLY_SUFFIX = /(?:as\s+const|satisfies\s+string)\b/y;
+
+/**
+ * The value of `expression` when it is one string literal or several joined
+ * with `+`, with escape sequences decoded. Comments around the literals and a
+ * trailing `as const` or `satisfies string` are ignored. Undefined for
+ * anything else.
+ */
+function evaluateStringExpression(expression: string): string | undefined {
+  let result = "";
+  let i = 0;
+  const skipSpace = () => {
+    while (i < expression.length) {
+      if (/\s/.test(expression[i])) {
+        i++;
+      } else if (expression.startsWith("//", i)) {
+        const end = expression.indexOf("\n", i);
+        i = end === -1 ? expression.length : end + 1;
+      } else if (expression.startsWith("/*", i)) {
+        const end = expression.indexOf("*/", i + 2);
+        i = end === -1 ? expression.length : end + 2;
+      } else {
+        return;
+      }
+    }
+  };
+  while (true) {
+    skipSpace();
+    const quote = expression[i];
+    if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
+    i++;
+    while (true) {
+      if (i >= expression.length) return undefined;
+      const c = expression[i];
+      if (c === quote) break;
+      if (c === "\n" && quote !== "`") return undefined;
+      // A template's CRLF line ending reads as a line feed.
+      if (c === "\r" && expression[i + 1] === "\n") {
+        i++;
+        continue;
+      }
+      if (quote === "`" && c === "$" && expression[i + 1] === "{") {
+        return undefined;
+      }
+      if (c !== "\\") {
+        result += c;
+        i++;
+        continue;
+      }
+      const escaped = expression[i + 1];
+      if (escaped === undefined) return undefined;
+      const hex = escaped === "x"
+        ? /^[0-9a-fA-F]{2}/.exec(expression.slice(i + 2))?.[0]
+        : escaped === "u"
+        ? /^(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]{1,6}\})/.exec(
+          expression.slice(i + 2),
+        )?.[0]
+        : undefined;
+      if (hex !== undefined) {
+        const codePoint = parseInt(hex.replace(/[{}]/g, ""), 16);
+        if (codePoint > 0x10ffff) return undefined;
+        result += String.fromCodePoint(codePoint);
+        i += 2 + hex.length;
+        continue;
+      }
+      result += SIMPLE_ESCAPES[escaped] ?? escaped;
+      i += 2;
+    }
+    i++;
+    skipSpace();
+    if (i >= expression.length) return result;
+    if (expression[i] === "+") {
+      i++;
+      continue;
+    }
+    TYPE_ONLY_SUFFIX.lastIndex = i;
+    if (!TYPE_ONLY_SUFFIX.test(expression)) return undefined;
+    i = TYPE_ONLY_SUFFIX.lastIndex;
+    skipSpace();
+    return i >= expression.length ? result : undefined;
+  }
 }
 
 /**
@@ -686,6 +794,8 @@ interface TopLevelEntry {
   key: string;
   body?: string;
   value?: string;
+  /** Source text of a value that starts with a string literal, up to its comma. */
+  raw?: string;
 }
 
 const TOP_LEVEL_KEY =
@@ -786,11 +896,17 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
     LEADING_STRING_LITERAL.lastIndex = i;
     const literal = LEADING_STRING_LITERAL.exec(block);
     if (literal) {
-      entries.push({ key, value: literal[1] ?? literal[2] ?? literal[3] });
+      const valueStart = i;
       i = LEADING_STRING_LITERAL.lastIndex;
-    } else {
-      entries.push({ key });
+      skipValue();
+      entries.push({
+        key,
+        value: literal[1] ?? literal[2] ?? literal[3],
+        raw: block.slice(valueStart, i).replace(/,\s*$/, ""),
+      });
+      continue;
     }
+    entries.push({ key });
     skipValue();
   }
 
@@ -1094,7 +1210,7 @@ function extractWorkflowFromYaml(
  * Returns null if the file doesn't contain a recognizable datastore definition.
  * Uses `createProvider` as the discriminator combined with `export const datastore`.
  */
-function extractDatastoreFromSource(
+export function extractDatastoreFromSource(
   content: string,
   filePath: string,
   datastoresDir: string,
@@ -1114,12 +1230,7 @@ function extractDatastoreFromSource(
   const typeMatch = datastoreBody.match(/type:\s*["']([^"']+)["']/);
   if (!typeMatch) return null;
 
-  const nameMatch = datastoreBody.match(
-    /(?<![.\w])name:\s*["']([^"']+)["']/,
-  );
-  const descMatch = datastoreBody.match(
-    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
-  );
+  const topLevel = topLevelStringValues(datastoreBody);
   const hasConfigSchema = /configSchema\s*[:,}]/.test(datastoreBody);
 
   let configFields: ExtractedArgument[] = [];
@@ -1159,8 +1270,8 @@ function extractDatastoreFromSource(
   return {
     fileName: relative(datastoresDir, filePath),
     type: typeMatch[1],
-    name: nameMatch ? nameMatch[1] : "",
-    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    name: topLevel.get("name") ?? "",
+    description: topLevel.get("description") ?? "",
     hasConfigSchema,
     configFields,
   };

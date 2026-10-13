@@ -3001,6 +3001,15 @@ has been fully indexed.
 2. `types()` returns both fully loaded and lazy type names, so commands like
    `model type search` import no bundles.
 
+   `vault type search` and `datastore type search` also show each type's
+   declared name and description, which a lazy entry does not carry. They
+   read both from the entry's source text (`listVaultTypes`,
+   `listDatastoreTypes`, using the extractors `extension push` uses) and
+   still import nothing: a listing must not run extension code, which can
+   exit, hang or print at import. A name the source computes falls back to
+   the type id; a computed description falls back to the catalog's for a
+   vault and to empty for a datastore.
+
 3. When a specific type is needed (e.g. `model get`, `model create`),
    `ensureTypeLoaded(type)` looks up its bundle path in the catalog and imports
    only that bundle, plus any extension bundles targeting the base type.
