@@ -193,7 +193,7 @@ export function trackerShowsDeadOwner(
 /** What {@link goneInstanceIds} needs to judge a serve instance's rows. */
 export interface GoneInstanceCheck {
   /** The caller's host and serve instance id, and a pid check for this host. */
-  readonly liveness: OwnerLiveness;
+  readonly liveness: OwnerLiveness & { readonly instanceId: string };
   /** The caller's own pid: another instance's row carrying it is dead. */
   readonly selfPid: number;
   /** Whether the control-plane store holds a heartbeat for the instance. */
