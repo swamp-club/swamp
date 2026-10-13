@@ -19,6 +19,7 @@
 
 import type { ModelDefinition } from "../models/model.ts";
 import {
+  ModelLockLostError,
   UnpublishedDataVersionError,
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
@@ -20266,6 +20267,30 @@ Deno.test("DefaultStepExecutor: a step that succeeded fails when its versions ca
   const { error } = await runStepUnderLockHook(() => lock.hook, "execute");
 
   assertEquals(error, UNPUBLISHED);
+});
+
+const LOCK_LOST = new ModelLockLostError([{
+  modelType: "test/x",
+  modelId: "m",
+}]);
+
+Deno.test("DefaultStepExecutor: a failed step keeps its own error when its lock was lost before the push (swamp-club#3373)", async () => {
+  const lock = recordingLockHook(LOCK_LOST);
+  const { error } = await runStepUnderLockHook(
+    () => lock.hook,
+    "execute",
+    () => Promise.reject(new Error("the method's own failure")),
+  );
+
+  assert(error instanceof Error);
+  assertStringIncludes(error.message, "the method's own failure");
+});
+
+Deno.test("DefaultStepExecutor: a step that succeeded fails when its lock was lost before the push (swamp-club#3373)", async () => {
+  const lock = recordingLockHook(LOCK_LOST);
+  const { error } = await runStepUnderLockHook(() => lock.hook, "execute");
+
+  assertEquals(error, LOCK_LOST);
 });
 
 Deno.test("run: the run is recorded by the time started is yielded (swamp-club#1090)", async () => {

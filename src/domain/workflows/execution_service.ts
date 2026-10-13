@@ -168,8 +168,8 @@ import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import {
   type HydrateFileHook,
+  isUnpublishedDataError,
   type MarkDirtyHook,
-  UnpublishedDataVersionError,
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
@@ -1266,8 +1266,9 @@ export type DirectTypeResolver = (
 
 /**
  * Runs a step lock's flush with what the step wrote. A step that already
- * failed keeps its own error: a version its flush could not publish is
- * logged instead (swamp-club#3146). Any other flush error is thrown.
+ * failed keeps its own error: a version its flush could not publish, or
+ * refused to push after losing its lock, is logged instead (swamp-club#3146,
+ * swamp-club#3373). Any other flush error is thrown.
  */
 async function flushStepLock(
   flush: (written?: readonly WrittenVersion[]) => Promise<void>,
@@ -1278,7 +1279,7 @@ async function flushStepLock(
   try {
     await flush(written);
   } catch (error) {
-    if (!stepFailed || !(error instanceof UnpublishedDataVersionError)) {
+    if (!stepFailed || !isUnpublishedDataError(error)) {
       throw error;
     }
     logger.error("{message}", { message: error.message });

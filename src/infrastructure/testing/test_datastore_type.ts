@@ -33,6 +33,10 @@ import { join } from "@std/path";
 import type { InMemoryRemote } from "@swamp-club/swamp-testing";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  DistributedLock,
+  LockOptions,
+} from "../../domain/datastore/distributed_lock.ts";
 
 /** A registered test datastore type and its disposer. */
 export interface TestDatastoreType {
@@ -49,6 +53,11 @@ export interface TestDatastoreTypeOptions {
    * end of `withLock`, so a test can place pushes relative to lock release.
    */
   onLockRelease?: () => void;
+  /**
+   * Replaces the type's lock, which never waits and whose `inspect()` reads
+   * null, so a test can share one lock table between clones.
+   */
+  createLock?: (options?: LockOptions) => DistributedLock;
 }
 
 /**
@@ -72,22 +81,23 @@ export function registerTestDatastoreType(
     description: "Shared in-memory remote for sync tests",
     isBuiltIn: false,
     createProvider: () => ({
-      createLock: () => ({
-        acquire: () => Promise.resolve(),
-        release: () => {
-          released();
-          return Promise.resolve();
-        },
-        withLock: async <T>(fn: () => Promise<T>) => {
-          try {
-            return await fn();
-          } finally {
+      createLock: (_datastorePath: string, lockOptions?: LockOptions) =>
+        options.createLock?.(lockOptions) ?? {
+          acquire: () => Promise.resolve(),
+          release: () => {
             released();
-          }
+            return Promise.resolve();
+          },
+          withLock: async <T>(fn: () => Promise<T>) => {
+            try {
+              return await fn();
+            } finally {
+              released();
+            }
+          },
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
         },
-        inspect: () => Promise.resolve(null),
-        forceRelease: () => Promise.resolve(true),
-      }),
       createVerifier: () => ({
         verify: () =>
           Promise.resolve({

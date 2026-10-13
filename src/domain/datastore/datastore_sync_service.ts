@@ -730,3 +730,56 @@ export class UnpublishedDataVersionError extends UserError {
     this.versions = versions;
   }
 }
+
+/** A model whose lock a run lost before its push, and who holds it now. */
+export interface LostModelLock {
+  readonly modelType: string;
+  readonly modelId: string;
+  /** The lock's current holder, or undefined when nobody holds it. */
+  readonly heldBy?: { readonly holder: string; readonly pid: number };
+}
+
+/**
+ * Thrown instead of a push when a model lock the run took no longer names
+ * this process: someone ran `swamp datastore lock release --force`, or the
+ * lock expired and another process took it (swamp-club#3373). Another run of
+ * the model may have written the same data version since, and pushing would
+ * overwrite it. Nothing is pushed.
+ *
+ * Extends `UserError` so the message renders clean at the CLI error boundary.
+ */
+export class ModelLockLostError extends UserError {
+  readonly lost: readonly LostModelLock[];
+
+  constructor(lost: readonly LostModelLock[]) {
+    const names = lost.map((l) =>
+      `${l.modelType}/${l.modelId} (${
+        l.heldBy
+          ? `now held by ${l.heldBy.holder}, pid ${l.heldBy.pid}`
+          : "now released"
+      })`
+    ).join(", ");
+    super(
+      `This run lost its lock on ${names} before pushing: the lock was ` +
+        `force-released or taken over by another process, which may have ` +
+        `written the same data version. Nothing was pushed, and this run's ` +
+        `data is on this host only. Run the method or step again: it pulls ` +
+        `the other run's data first.`,
+      "model_lock_lost",
+    );
+    this.name = "ModelLockLostError";
+    this.lost = lost;
+  }
+}
+
+/**
+ * True for a push error that leaves the run's data versions on this host
+ * only: {@link UnpublishedDataVersionError} or {@link ModelLockLostError}.
+ * A run that already failed keeps its own error and logs this one.
+ */
+export function isUnpublishedDataError(
+  error: unknown,
+): error is UnpublishedDataVersionError | ModelLockLostError {
+  return error instanceof UnpublishedDataVersionError ||
+    error instanceof ModelLockLostError;
+}

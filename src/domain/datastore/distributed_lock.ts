@@ -60,6 +60,24 @@ export interface LockInfo {
   skipping?: string[];
 }
 
+/**
+ * True when `current`, a lock read back with `inspect()`, still names the
+ * holder `taken` named when this process had just acquired it. A lock that
+ * is gone, or that someone is still writing, names nobody. Each backend
+ * writes its own holder, hostname and pid (some write a pid of 0 or a
+ * holder with a random suffix), so the reading is compared with the
+ * backend's own earlier one, never with this process's identity. Two holds
+ * by one process cannot be told apart this way (swamp-club#3373).
+ */
+export function lockStillNames(
+  current: LockInfo | null,
+  taken: LockInfo,
+): boolean {
+  return current !== null && current.holderUnknown !== true &&
+    current.holder === taken.holder && current.hostname === taken.hostname &&
+    current.pid === taken.pid;
+}
+
 /** The most nonces a lock's {@link LockInfo.skipping} lists. */
 export const MAX_LOCK_SKIPPING = 1024;
 

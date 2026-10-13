@@ -28,6 +28,7 @@ import { UserError } from "../errors.ts";
 import {
   type DistributedLock,
   type LockInfo,
+  lockStillNames,
   LockTimeoutError,
   toCoreLockTimeoutError,
   withCoreLockErrors,
@@ -262,4 +263,38 @@ Deno.test("withCoreLockErrors: delegates release, inspect, forceRelease and with
   assertEquals(await lock.forceRelease("n-1"), true);
   assertEquals(await lock.withLock(() => Promise.resolve(42)), 42);
   assertEquals(calls, ["release", "inspect", "forceRelease:n-1"]);
+});
+
+const held = (over: Partial<LockInfo> = {}): LockInfo => ({
+  holder: "sam@host",
+  hostname: "host",
+  pid: 100,
+  acquiredAt: "2026-10-13T00:00:00.000Z",
+  ttlMs: 30_000,
+  nonce: "n1",
+  ...over,
+});
+
+Deno.test("lockStillNames: true while the lock names the holder it named when taken", () => {
+  assertEquals(lockStillNames(held(), held()), true);
+  // A heartbeat moves acquiredAt; a backend may write pid 0 throughout.
+  assertEquals(
+    lockStillNames(
+      held({ acquiredAt: "2026-10-13T00:01:00.000Z" }),
+      held(),
+    ),
+    true,
+  );
+  assertEquals(lockStillNames(held({ pid: 0 }), held({ pid: 0 })), true);
+});
+
+Deno.test("lockStillNames: false for a lock that is gone, being written, or names another holder", () => {
+  assertEquals(lockStillNames(null, held()), false);
+  assertEquals(lockStillNames(held({ holderUnknown: true }), held()), false);
+  assertEquals(lockStillNames(held({ pid: 101 }), held()), false);
+  assertEquals(
+    lockStillNames(held({ hostname: "other", holder: "sam@other" }), held()),
+    false,
+  );
+  assertEquals(lockStillNames(held({ holder: "kim@host" }), held()), false);
 });

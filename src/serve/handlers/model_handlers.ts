@@ -196,7 +196,7 @@ import {
 } from "./resource_resolution.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
-  UnpublishedDataVersionError,
+  isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -366,7 +366,7 @@ async function releaseModelLocks(
   pushFailure: { error: unknown } | undefined,
 ): Promise<void> {
   let failure = pushFailure;
-  if (pushFailure?.error instanceof UnpublishedDataVersionError) {
+  if (isUnpublishedDataError(pushFailure?.error)) {
     // The client got its result before the push; the loss is logged only.
     logger.error("{message}", { message: pushFailure.error.message });
     failure = undefined;
