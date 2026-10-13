@@ -52,6 +52,8 @@ const ICONS: Record<string, string> = {
     '<rect x="4" y="2" width="10" height="14" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M9 2v5M9 11v5M4 9h3M11 9h3"/>',
   activity: '<path d="M2 9h4l2-5 3 10 2-5h3"/><circle cx="15" cy="9" r="1.5"/>',
   extensions: '<path d="M3 5h12M3 9h12M3 13h8"/>',
+  workers:
+    '<rect x="1.5" y="1.5" width="9" height="9" rx="1.5"/><rect x="12" y="1.5" width="4.5" height="4.5" rx="1"/><rect x="12" y="7.5" width="4.5" height="3" rx="1"/><rect x="1.5" y="12" width="4.5" height="4.5" rx="1"/><rect x="7.5" y="12" width="9" height="4.5" rx="1"/>',
   system:
     '<path d="M9 2a7 7 0 110 14A7 7 0 019 2z"/><path d="M12 9a3 3 0 01-6 0 3 3 0 016 0z"/><path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4"/>',
 };
@@ -426,6 +428,12 @@ export function Sidebar({
           label="Extensions"
           view="extensions"
           active={activeView === "extensions"}
+          onClick={onNavigate}
+        />
+        <NavItem
+          label="Workers"
+          view="workers"
+          active={activeView === "workers"}
           onClick={onNavigate}
         />
         <NavItem

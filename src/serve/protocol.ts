@@ -567,9 +567,21 @@ export interface VaultAnnotatePayload {
 
 export interface WorkerListPayload {
   showAll?: boolean;
+  /**
+   * Also return disconnected workers that disconnected within this many
+   * milliseconds (at most 24h, the worker GC default). Ignored with `showAll`.
+   */
+  disconnectedWithinMs?: number;
 }
 
 export type WorkerQueueListPayload = Record<string, never>;
+
+export interface WorkerLeaseListPayload {
+  /** Dispatch ids whose step leases to return (a lease is named by its dispatch id). */
+  dispatchIds?: string[];
+  /** Also return leases written within this many milliseconds (recently ended). */
+  endedWithinMs?: number;
+}
 
 export interface WorkerVerifyPayload {
   workerName?: string;
@@ -978,6 +990,11 @@ export type ServerRequest =
     type: "worker.queue.list";
     id: string;
     payload?: WorkerQueueListPayload;
+  }
+  | {
+    type: "worker.lease.list";
+    id: string;
+    payload?: WorkerLeaseListPayload;
   }
   | { type: "worker.verify"; id: string; payload?: WorkerVerifyPayload }
   | { type: "worker.prune"; id: string; payload?: WorkerPrunePayload }
@@ -1672,6 +1689,10 @@ export interface WorkerQueueListResponse {
   data: Record<string, unknown>;
 }
 
+export interface WorkerLeaseListResponse {
+  data: Record<string, unknown>;
+}
+
 export interface WorkerPruneResponse {
   data: Record<string, unknown>;
 }
@@ -2065,6 +2086,11 @@ export type ServerMessage =
     type: "worker.queue.list";
     id: string;
     payload: WorkerQueueListResponse;
+  }
+  | {
+    type: "worker.lease.list";
+    id: string;
+    payload: WorkerLeaseListResponse;
   }
   | { type: "worker.verify"; id: string; payload: WorkerVerifyResponse }
   | { type: "worker.prune"; id: string; payload: WorkerPruneResponse }

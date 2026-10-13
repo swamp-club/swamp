@@ -186,7 +186,7 @@ Everything below shares the one listener, dispatched in table order
 
 | Transport | Route(s) | Auth | Purpose |
 | --- | --- | --- | --- |
-| WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, `?token=`, or an origin-bound dashboard session cookie) unless mode `none` | Serve protocol: 120 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
+| WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, `?token=`, or an origin-bound dashboard session cookie) unless mode `none` | Serve protocol: 121 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
 | HTTP | `/data/*`, `/bundle/*` | worker session bearer | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
 | HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
@@ -1344,7 +1344,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `local` flag, so everything below is unchanged by it.
   `--dashboard` serves the Vite SPA in `packages/dashboard`
   (overview, behaviors, workflows, executions, approvals, data, vaults,
-  extensions, schedules, webhooks and system views) from
+  extensions, schedules, webhooks, workers and system views) from
   `packages/dashboard/dist`. `scripts/compile.ts` embeds it only if pre-built
   before compile. The SPA uses the same WebSocket protocol and logs in through
   `/auth/info` plus the browser session routes. In token and OAuth modes,
@@ -1398,6 +1398,23 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   resolves to the same page, and the dashboard rewrites the address to its
   `/dashboard/behaviors/...` form in place, keeping the query and hash. The
   dashboard only ever builds `/dashboard/behaviors/...` links.
+- **Workers view.** `/dashboard/workers` draws the remote-execution workers as a
+  live host map (`packages/dashboard/src/views/Workers.tsx`,
+  `components/HostMap.tsx`). Workers are grouped by the `fleet` label (the
+  enrollment token name), any other label key, or platform/arch, in a treemap
+  weighted by slot capacity. Each worker is a square sized by its `capacity`,
+  with one cell per dispatch slot showing that slot's step-lease state. The
+  view reads two admin-only requests: `worker.list` with
+  `disconnectedWithinMs` (disconnected workers stay visible for the viewer's
+  visibility TTL, at most the worker GC's default 24 h grace period), and
+  `worker.lease.list` (the step leases behind the listed `activeDispatchIds`
+  plus leases written in the last few seconds, read by lease name and version
+  time without loading other leases' attributes). Both are audited reads, so
+  the view refetches only when the health stream shows a worker change on this
+  instance, plus a 60 s fallback while the tab is visible. A placement selector
+  dims workers a step's `labels:`/`platform:`/`target:` would not reach, using
+  the scheduler's own eligibility rules (`integration/host_map_placement_parity_test.ts`
+  pins the two together).
 
   Individual data items and reports have shareable deep links:
   - `/dashboard/behaviors/<behavior>/data/<dataName>`: the latest version.

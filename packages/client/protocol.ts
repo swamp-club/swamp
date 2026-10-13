@@ -455,6 +455,21 @@ export interface VaultAnnotatePayload {
   clear?: boolean;
 }
 
+// ── Server admin ─────────────────────────────────────────────────────────
+
+export interface WorkerListPayload {
+  showAll?: boolean;
+  /** Also return workers that disconnected within this many ms (max 24h). */
+  disconnectedWithinMs?: number;
+}
+
+export interface WorkerLeaseListPayload {
+  /** Dispatch ids whose step leases to return. */
+  dispatchIds?: string[];
+  /** Also return leases written within this many ms (max 5 minutes). */
+  endedWithinMs?: number;
+}
+
 // ── Audit / summary / reports ────────────────────────────────────────────
 
 export interface AuditTimelinePayload {
@@ -678,8 +693,9 @@ export type ServerRequest =
   // Run tracking
   | { type: "run.history"; id: string; payload?: RunHistoryPayload }
   // Server admin
-  | { type: "worker.list"; id: string }
+  | { type: "worker.list"; id: string; payload?: WorkerListPayload }
   | { type: "worker.queue.list"; id: string }
+  | { type: "worker.lease.list"; id: string; payload?: WorkerLeaseListPayload }
   | { type: "datastore.status"; id: string }
   | { type: "cluster.instances"; id: string }
   | { type: "serve.config"; id: string }
@@ -906,6 +922,7 @@ export type ServerMessage =
   // Server admin responses
   | { type: "worker.list"; id: string; payload: DataResponse }
   | { type: "worker.queue.list"; id: string; payload: DataResponse }
+  | { type: "worker.lease.list"; id: string; payload: DataResponse }
   | { type: "datastore.status"; id: string; payload: DataResponse }
   | { type: "cluster.instances"; id: string; payload: ClusterInstancesResponse }
   | { type: "serve.config"; id: string; payload: ServeConfigResponse }

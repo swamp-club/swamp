@@ -336,6 +336,119 @@ Deno.test("workerList: omits filteredDisconnectedCount when no workers are disco
   assertEquals(completed.data.filteredDisconnectedCount, undefined);
 });
 
+function completedWorkers(events: WorkerListEvent[]): string[] {
+  const completed = events[1] as Extract<
+    WorkerListEvent,
+    { kind: "completed" }
+  >;
+  return completed.data.workers.map((w) => w.name);
+}
+
+Deno.test("workerList: reports tokenName and disconnectedAt for disconnected workers", async () => {
+  const deps = makeDeps([
+    makeRecord(
+      "gpu-1",
+      "state-main",
+      workerAttributes("gpu-1", {
+        tokenName: "gpu-pool",
+        status: "disconnected",
+        disconnectedAt: "2026-06-09T11:30:00.000Z",
+      }),
+    ),
+  ]);
+  const events = await collect<WorkerListEvent>(
+    workerList(createLibSwampContext(), deps, { includeDisconnected: true }),
+  );
+  const completed = events[1] as Extract<
+    WorkerListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.workers[0].tokenName, "gpu-pool");
+  assertEquals(
+    completed.data.workers[0].disconnectedAt,
+    "2026-06-09T11:30:00.000Z",
+  );
+});
+
+Deno.test("workerList: omits a stale disconnectedAt on a reconnected worker", async () => {
+  const deps = makeDeps([
+    makeRecord(
+      "gpu-1",
+      "state-main",
+      workerAttributes("gpu-1", {
+        status: "idle",
+        disconnectedAt: "2026-06-09T11:30:00.000Z",
+      }),
+    ),
+  ]);
+  const events = await collect<WorkerListEvent>(
+    workerList(createLibSwampContext(), deps),
+  );
+  const completed = events[1] as Extract<
+    WorkerListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.workers[0].disconnectedAt, undefined);
+});
+
+Deno.test("workerList: disconnectedWithinMs keeps only recently disconnected workers", async () => {
+  const deps = makeDeps([
+    makeRecord("live", "state-main", workerAttributes("live")),
+    makeRecord(
+      "recent",
+      "state-main",
+      workerAttributes("recent", {
+        status: "disconnected",
+        disconnectedAt: "2026-06-09T11:00:00.000Z",
+      }),
+    ),
+    makeRecord(
+      "old",
+      "state-main",
+      workerAttributes("old", {
+        status: "disconnected",
+        disconnectedAt: "2026-06-09T08:00:00.000Z",
+      }),
+    ),
+    makeRecord(
+      "undated",
+      "state-main",
+      workerAttributes("undated", { status: "disconnected" }),
+    ),
+  ]);
+  const events = await collect<WorkerListEvent>(
+    workerList(createLibSwampContext(), deps, {
+      disconnectedWithinMs: 2 * 60 * 60 * 1000,
+    }),
+  );
+  assertEquals(completedWorkers(events), ["live", "recent"]);
+  const completed = events[1] as Extract<
+    WorkerListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.filteredDisconnectedCount, 2);
+});
+
+Deno.test("workerList: includeDisconnected overrides disconnectedWithinMs", async () => {
+  const deps = makeDeps([
+    makeRecord(
+      "old",
+      "state-main",
+      workerAttributes("old", {
+        status: "disconnected",
+        disconnectedAt: "2026-06-01T00:00:00.000Z",
+      }),
+    ),
+  ]);
+  const events = await collect<WorkerListEvent>(
+    workerList(createLibSwampContext(), deps, {
+      includeDisconnected: true,
+      disconnectedWithinMs: 1000,
+    }),
+  );
+  assertEquals(completedWorkers(events), ["old"]);
+});
+
 Deno.test("effectiveTokenState: live states past expiry display as expired", () => {
   const past = "2026-06-09T00:00:00.000Z";
   const future = "2026-06-10T00:00:00.000Z";

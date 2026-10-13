@@ -36,8 +36,9 @@ import {
   KeyValuePanelSkeleton,
   SERVE_CONFIG_KEYS,
   TablePanelSkeleton,
-  WORKER_COLUMNS,
+  WORKER_SUMMARY_KEYS,
 } from "./PageSkeletons.tsx";
+import { RouteLink } from "../components/RouteLink.tsx";
 
 interface ClusterInstance {
   instanceId: string;
@@ -60,6 +61,7 @@ interface WorkerInfo {
   name: string;
   status: string;
   activeDispatchIds: string[];
+  capacity?: number;
 }
 
 export function System(
@@ -182,12 +184,13 @@ export function System(
       )}
 
       {workersState === "loading" && (
-        <TablePanelSkeleton
-          title="Workers"
-          columns={WORKER_COLUMNS}
-          rows={2}
-          label="Loading workers"
-        />
+        <div style={{ marginBottom: 14 }}>
+          <KeyValuePanelSkeleton
+            title="Workers"
+            keys={WORKER_SUMMARY_KEYS}
+            label="Loading workers"
+          />
+        </div>
       )}
       {workersState === "error" && (
         <LoadError
@@ -215,30 +218,26 @@ export function System(
             <div className="panel-title">
               Workers <span className="panel-count">{workers.length}</span>
             </div>
+            <RouteLink to={{ view: "workers", detail: null }}>
+              Open the worker map
+            </RouteLink>
           </div>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  {WORKER_COLUMNS.map((c) => (
-                    <th key={c.header}>{c.header}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {workers.map((w) => (
-                  <tr key={w.name}>
-                    <td style={{ fontWeight: 500 }}>{w.name}</td>
-                    <td>
-                      <StatusPill status={w.status} />
-                    </td>
-                    <td className="mono" style={{ fontSize: "0.75rem" }}>
-                      {w.activeDispatchIds?.length ?? 0}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ padding: 0 }}>
+            {WORKER_SUMMARY_KEYS.map((key) => (
+              <div
+                className="sys-row"
+                style={{ padding: "8px 18px" }}
+                key={key}
+              >
+                <span className="sys-key">{key}</span>
+                <span className="sys-val mono">
+                  {key === "Slots in use"
+                    ? slotSummary(workers)
+                    : workers.filter((w) => w.status === key.toLowerCase())
+                      .length}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -461,6 +460,17 @@ export function System(
       )}
     </>
   );
+}
+
+function slotSummary(workers: readonly WorkerInfo[]): string {
+  let used = 0;
+  let total = 0;
+  for (const w of workers) {
+    if (w.status !== "idle" && w.status !== "busy") continue;
+    used += w.activeDispatchIds?.length ?? 0;
+    total += w.capacity ?? 1;
+  }
+  return `${used}/${total}`;
 }
 
 function formatUptime(startedAt: string | null): string {

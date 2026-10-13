@@ -40,7 +40,7 @@ import {
   VaultListSkeleton,
   VaultSectionSkeleton,
   VersionsPanelSkeleton,
-  WORKER_COLUMNS,
+  WORKER_SUMMARY_KEYS,
 } from "./PageSkeletons.tsx";
 import { serveConfigRows } from "./serve_config_rows.ts";
 
@@ -119,15 +119,16 @@ Deno.test("TablePanelSkeleton: System's tables keep their titles and headers", (
   assertStringIncludes(cluster, "Cluster Instances");
   assertStringIncludes(cluster, headers(CLUSTER_COLUMNS));
   const workers = renderBusy(
-    <TablePanelSkeleton
+    <KeyValuePanelSkeleton
       title="Workers"
-      columns={WORKER_COLUMNS}
-      rows={2}
+      keys={WORKER_SUMMARY_KEYS}
       label="Loading workers"
     />,
     "Loading workers",
   );
-  assertStringIncludes(workers, headers(WORKER_COLUMNS));
+  for (const key of WORKER_SUMMARY_KEYS) {
+    assertStringIncludes(workers, key);
+  }
 });
 
 Deno.test("DeploymentPanelSkeleton: real title and row keys", () => {

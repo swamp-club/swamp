@@ -56,6 +56,7 @@ import { Executions } from "./views/Executions";
 import { Models } from "./views/Models";
 import { ModelDetail } from "./views/ModelDetail";
 import { System } from "./views/System";
+import { Workers } from "./views/Workers";
 import { Schedules } from "./views/Schedules";
 import { Webhooks } from "./views/Webhooks";
 import { Approvals } from "./views/Approvals";
@@ -369,6 +370,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}
               {view === "extensions" && <Extensions />}
+              {view === "workers" && <Workers health={health} />}
               {view === "system" && (
                 <System health={health} denied={healthDenied} />
               )}

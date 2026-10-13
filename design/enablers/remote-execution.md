@@ -64,7 +64,7 @@ Three properties drove the design:
 | **Fleet probe**          | Built-in behavior (`swamp/fleet-probe`). Its one `verify` method tests every seam between worker and orchestrator: dispatch metadata (`probeMarker`), capability RPC (`queryData`), and the HTTP data plane (`writeResource`/`readResource`). Used by `swamp worker verify` and `--verify-on-enroll`.                                        |
 | **Probe marker**         | A dispatch-level string (`probeMarker` on `DispatchParams`) merged into the method's args. Confirms dispatch metadata arrives intact. Sent in `DispatchParams`, not the environment snapshot, which denylists `SWAMP_*` variables.                                                                                                           |
 | **Verify-on-enroll**     | Opt-in orchestrator flag (`--verify-on-enroll`). Sends the fleet probe to each enrolling worker before it can be scheduled. A worker is `unverified` from enrollment until its probe passes; one that fails stays `unverified` and is not scheduled.                                                                                         |
-| **Unverified**           | Worker status until the enrollment probe passes. Shown in `swamp worker list`; excluded from label/platform scheduling. A probe dispatch never changes it: `swamp worker verify` reports its result without promoting the worker, which is probed again when it reconnects, or once dispatches from before a reconnect have freed its slots. |
+| **Unverified**           | Worker status until the enrollment probe passes. Shown in `swamp worker list` and the dashboard's Workers view; excluded from label/platform scheduling. A probe dispatch never changes it: `swamp worker verify` reports its result without promoting the worker, which is probed again when it reconnects, or once dispatches from before a reconnect have freed its slots. |
 
 For an unverified worker, the failure reason is only in the `--json` record
 (`src/presentation/output/worker_output.ts`). A step that pins a `target:` by
@@ -597,7 +597,13 @@ worker state is ordinary data:
   and debugging.
 - **Reports and the CLI already work.** `swamp data query`, reports and any CEL
   helper read worker state like any behavior output. No separate "pool status"
-  surface is needed.
+  store is needed: the dashboard's Workers view (`/dashboard/workers`) is a
+  read-only projection of these same records — worker state through
+  `worker.list`, and the step leases on each worker's slots through
+  `worker.lease.list`, which looks leases up by name (`lease-<dispatchId>`,
+  since a lease id is its dispatch id). Disconnected workers stay on the map
+  for a viewer-chosen TTL, bounded by the worker GC's default 24 h grace
+  period below.
 
 The scheduler reads and writes this data as its source of truth, so there is no
 second store to drift out of sync.

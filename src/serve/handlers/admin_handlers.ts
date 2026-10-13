@@ -106,6 +106,10 @@ import {
   workerQueueList,
 } from "../../libswamp/worker/queue_list.ts";
 import {
+  createWorkerLeaseListDeps,
+  workerLeaseList,
+} from "../../libswamp/worker/lease_list.ts";
+import {
   createWorkerTokenCreateDeps,
   workerTokenCreate,
 } from "../../libswamp/worker/token_create.ts";
@@ -181,6 +185,7 @@ import type {
   ExtensionSearchPayload,
   ExtensionUpdatePayload,
   VaultMigratePayload,
+  WorkerLeaseListPayload,
   WorkerListPayload,
   WorkerProbeResult,
   WorkerPrunePayload,
@@ -395,6 +400,7 @@ export async function handleWorkerList(
     await consumeStream(
       workerList(libCtx, deps, {
         includeDisconnected: payload?.showAll ?? false,
+        disconnectedWithinMs: payload?.disconnectedWithinMs,
       }),
       {
         resolving: () => {},
@@ -469,6 +475,62 @@ export async function handleWorkerQueueList(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "worker_queue_list_failed", message);
+  }
+}
+
+export async function handleWorkerLeaseList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+  payload?: WorkerLeaseListPayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  try {
+    const libCtx = handlerLibSwampContext(ctx);
+    const deps = createWorkerLeaseListDeps(
+      ctx.repoContext.dataQueryService,
+      ctx.repoContext.unifiedDataRepo.namespace,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workerLeaseList(libCtx, deps, {
+        dispatchIds: payload?.dispatchIds,
+        endedWithinMs: payload?.endedWithinMs,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "worker.lease.list",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "worker_lease_list_failed", message);
   }
 }
 

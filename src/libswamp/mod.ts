@@ -553,6 +553,15 @@ export {
   type WorkerQueueListItem,
 } from "./worker/queue_list.ts";
 export {
+  createWorkerLeaseListDeps,
+  workerLeaseList,
+  type WorkerLeaseListData,
+  type WorkerLeaseListDeps,
+  type WorkerLeaseListEvent,
+  type WorkerLeaseListItem,
+  type WorkerLeaseListOptions,
+} from "./worker/lease_list.ts";
+export {
   type PrunableToken,
   type PrunableWorker,
   workerPrune,

@@ -62,9 +62,19 @@ import {
   handleExtensionRm,
   handleRunDoctor,
   handleVaultMigrate,
+  handleWorkerLeaseList,
   redactServeOptions,
   serveDatastoreSetupDeps,
 } from "./admin_handlers.ts";
+
+import type { Grant } from "../../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import {
+  createConditionEvaluator,
+  type PolicySnapshotLoader,
+} from "../../domain/access/policy_snapshot_loader.ts";
+import type { Principal } from "../../domain/access/principal.ts";
 
 await initializeLogging({});
 
@@ -1267,4 +1277,118 @@ Deno.test("serveDatastoreSetupDeps: marks the open catalog for rebuild instead o
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
+});
+
+// --- handleWorkerLeaseList (swamp-club#3356) ---
+
+const LEASE_VIEWER: Principal = { kind: "user", id: "viewer" };
+
+function leaseGrant(overrides: Partial<Grant>): Grant {
+  return {
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "viewer" },
+    effect: "allow",
+    actions: ["read"],
+    resource: { kind: "data", pattern: "*" },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function leaseListCtx(
+  grants: Grant[] | null,
+  predicates: string[],
+): ConnectionContext {
+  const lease = {
+    name: "lease-d-1",
+    createdAt: "2026-06-09T11:59:00.000Z",
+    attributes: {
+      leaseId: "d-1",
+      dispatchId: "d-1",
+      workerName: "gpu-1",
+      modelType: "command/shell",
+      modelId: "m-1",
+      methodName: "execute",
+      state: "active",
+      hasWrites: false,
+      createdAt: "2026-06-09T11:58:00.000Z",
+    },
+  };
+  return {
+    repoDir: "/tmp/unused",
+    repoContext: {
+      dataQueryService: {
+        query: (predicate: string) => {
+          predicates.push(predicate);
+          return Promise.resolve([lease]);
+        },
+      },
+      unifiedDataRepo: { namespace: "repo-ns" },
+    } as unknown as ConnectionContext["repoContext"],
+    authConfig: {
+      mode: grants ? "token" as const : "none" as const,
+      admins: [],
+      allowedCollectives: [],
+      allowedUsers: [],
+      oauthProvider: "",
+      groupsField: "collectives",
+      restrictedModelTypes: [],
+      restrictedCommands: [],
+      approveRequiresExplicitGrant: false,
+      signalRequiresExplicitGrant: false,
+    },
+    ...(grants
+      ? {
+        policySnapshotLoader: {
+          decisionService: new GrantBasedAccessDecisionService(
+            new PolicySnapshot(grants, [], createConditionEvaluator()),
+          ),
+        } as unknown as PolicySnapshotLoader,
+      }
+      : {}),
+  } as unknown as ConnectionContext;
+}
+
+Deno.test("handleWorkerLeaseList: refuses a principal without the admin access grant", async () => {
+  const predicates: string[] = [];
+  const socket = createMockSocket();
+  await handleWorkerLeaseList(
+    socket,
+    leaseListCtx([leaseGrant({})], predicates),
+    "req-leases",
+    new AbortController(),
+    LEASE_VIEWER,
+    { dispatchIds: ["d-1"] },
+  );
+  const frame = JSON.parse(socket.sent[0]);
+  assertEquals(frame.type, "error");
+  assertEquals(frame.error.code, "unauthorized");
+  assertEquals(predicates.length, 0);
+});
+
+Deno.test("handleWorkerLeaseList: returns leases for an admin, scoped to the repo namespace", async () => {
+  const predicates: string[] = [];
+  const socket = createMockSocket();
+  await handleWorkerLeaseList(
+    socket,
+    leaseListCtx([
+      leaseGrant({
+        actions: ["admin"],
+        resource: { kind: "access", pattern: "*" },
+      }),
+    ], predicates),
+    "req-leases",
+    new AbortController(),
+    LEASE_VIEWER,
+    { dispatchIds: ["d-1"], endedWithinMs: 10_000 },
+  );
+  const frame = JSON.parse(socket.sent[0]);
+  assertEquals(frame.type, "worker.lease.list");
+  assertEquals(frame.payload.data.count, 1);
+  assertEquals(frame.payload.data.leases[0].workerName, "gpu-1");
+  assertStringIncludes(predicates[0], 'ns == "repo-ns"');
+  assertStringIncludes(predicates[0], 'name in ["lease-d-1"]');
 });

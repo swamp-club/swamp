@@ -32,6 +32,7 @@
   --skel-shine: rgba(255, 255, 255, 0.65);
   --cancelled: #4b5563;
   --cancelled-bg: #f3f4f6;
+  --tile-idle: #c4c8d2;
   --chart-bar-1: #059669;
   --chart-bar-2: #dc2626;
   --chart-bar-3: #d97706;
@@ -74,6 +75,7 @@
     --skel-shine: rgba(255, 255, 255, 0.05);
     --cancelled: #9ca3af;
     --cancelled-bg: #1a1c22;
+    --tile-idle: #3a3f4d;
     --chart-bar-1: #34d399;
     --chart-bar-2: #f87171;
     --chart-bar-3: #fbbf24;
@@ -116,6 +118,7 @@
   --skel-shine: rgba(255, 255, 255, 0.05);
   --cancelled: #9ca3af;
   --cancelled-bg: #1a1c22;
+  --tile-idle: #3a3f4d;
   --chart-bar-1: #34d399;
   --chart-bar-2: #f87171;
   --chart-bar-3: #fbbf24;
@@ -1724,6 +1727,74 @@ a.run-pip:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.workers-pill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+}
+
+.workers-pill:hover {
+  border-color: var(--text-3);
+}
+
+.workers-pill strong {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.workers-pill-label {
+  color: var(--text-1);
+  font-weight: 600;
+  padding-right: 10px;
+  border-right: 1px solid var(--border);
+}
+
+.workers-pill-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.workers-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.workers-pill-dot.is-busy {
+  background: var(--success);
+}
+
+.workers-pill-dot.is-idle {
+  background: var(--tile-idle);
+}
+
+.workers-pill-dot.is-unavailable {
+  background: var(--danger);
+}
+
+.health-dot {
+  background: var(--warning);
+}
+
+.workers-pill.is-bad {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.workers-pill.is-bad .health-dot {
+  background: var(--danger);
 }
 
 .health-dot {

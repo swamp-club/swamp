@@ -52,6 +52,15 @@ Deno.test("stepLeaseModel: acquire records an active lease without writes", asyn
   assertEquals(lease.workerName, "ci-runner-3");
 });
 
+Deno.test("stepLeaseModel: acquire records the workflow run the step belongs to", async () => {
+  const { context, store } = harness();
+  await stepLeaseModel.methods.acquire.execute(
+    { ...acquireArgs, workflowRunId: "run-42" },
+    context,
+  );
+  assertEquals(store.get("lease-l-1")!.workflowRunId, "run-42");
+});
+
 Deno.test("stepLeaseModel: acquiring the same lease id twice fails", async () => {
   const { context } = harness();
   await stepLeaseModel.methods.acquire.execute(acquireArgs, context);

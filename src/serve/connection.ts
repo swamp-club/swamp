@@ -186,6 +186,7 @@ import {
   handleServeConfig,
   handleServeReload,
   handleVaultMigrate,
+  handleWorkerLeaseList,
   handleWorkerList,
   handleWorkerPrune,
   handleWorkerQueueList,
@@ -1004,12 +1005,23 @@ const WorkerListRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     showAll: z.boolean().optional(),
+    disconnectedWithinMs: z.number().int().min(0).max(86_400_000).optional(),
   }).optional(),
 });
 
 const WorkerQueueListRequestSchema = z.object({
   type: z.literal("worker.queue.list"),
   id: z.string().min(1).max(256),
+});
+
+const WorkerLeaseListRequestSchema = z.object({
+  type: z.literal("worker.lease.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    dispatchIds: z.array(z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/))
+      .max(2000).optional(),
+    endedWithinMs: z.number().int().min(0).max(300_000).optional(),
+  }).optional(),
 });
 
 const WorkerVerifyRequestSchema = z.object({
@@ -1514,6 +1526,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   VaultAnnotateRequestSchema,
   WorkerListRequestSchema,
   WorkerQueueListRequestSchema,
+  WorkerLeaseListRequestSchema,
   WorkerVerifyRequestSchema,
   WorkerPruneRequestSchema,
   DatastoreStatusRequestSchema,
@@ -3277,6 +3290,19 @@ export function handleMessage(
           request.id,
           controller,
           principal,
+        ),
+        auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "worker.lease.list":
+      task = audited(
+        handleWorkerLeaseList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
         ),
         auditOpts("admin", "worker", "*"),
       );

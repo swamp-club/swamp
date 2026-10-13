@@ -259,6 +259,7 @@ const workerListData: WorkerListData = {
   workers: [
     {
       name: "ci-runner-3",
+      tokenName: "ci-runner-3",
       status: "busy",
       labels: { os: "linux", gpu: "none" },
       platform: "linux",
@@ -271,6 +272,7 @@ const workerListData: WorkerListData = {
     },
     {
       name: "mac-builder",
+      tokenName: "mac-builder",
       status: "idle",
       labels: {},
       platform: "darwin",
@@ -339,6 +341,7 @@ Deno.test("renderWorkerList: log mode shows disconnected hint after table", () =
     workers: [
       {
         name: "live-worker",
+        tokenName: "live-worker",
         status: "idle",
         labels: {},
         platform: "linux",
@@ -376,6 +379,7 @@ Deno.test("renderWorkerList: json mode includes filteredDisconnectedCount when p
     workers: [
       {
         name: "live-worker",
+        tokenName: "live-worker",
         status: "idle",
         labels: {},
         platform: "linux",

@@ -70,6 +70,7 @@ Deno.test("parseRoute: top-level views parse correctly", () => {
     "data",
     "vaults",
     "extensions",
+    "workers",
     "system",
   ] as const;
 
@@ -741,6 +742,7 @@ Deno.test("buildPath: every other list view keeps its own segment", () => {
     "data",
     "vaults",
     "extensions",
+    "workers",
     "system",
   ];
   for (const view of views) {
@@ -760,6 +762,7 @@ const ALL_VIEWS: View[] = [
   "data",
   "vaults",
   "extensions",
+  "workers",
   "system",
 ];
 
