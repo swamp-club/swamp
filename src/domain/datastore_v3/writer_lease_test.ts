@@ -168,6 +168,25 @@ Deno.test("fenceKey: keys sort by fence and parse back", () => {
   assertEquals(parseWriterLeaseKey("heartbeats/fence-1"), undefined);
 });
 
+Deno.test("parseWriterLeaseKey: ignores unpadded and out-of-range keys", () => {
+  for (
+    const key of [
+      "writer/fence-1000000000000",
+      "writer/fence-5",
+      "writer/heartbeat-5",
+      "writer/released-0000000000005",
+      "writer/fence-+00000000005",
+      "writer/fence-00000000000５",
+    ]
+  ) {
+    assertEquals(parseWriterLeaseKey(key), undefined, key);
+  }
+  assertEquals(parseWriterLeaseKey("writer/fence-999999999999"), {
+    kind: "fence",
+    fence: 999_999_999_999,
+  });
+});
+
 Deno.test("fenceKey: refuses a fence that is not a positive integer", () => {
   for (const fence of [0, -1, 1.5, Number.NaN, 10 ** 12]) {
     assertThrows(() => fenceKey(fence), Error, "writer fence");

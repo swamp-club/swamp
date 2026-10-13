@@ -4048,7 +4048,10 @@ over) lands nothing.
 `writer/`: on a filesystem datastore, files under `<datastore>/_control/writer/`,
 created exclusively through `FileSystemControlPlaneStore` (hard link, with a
 `createNew` fallback). Fences are zero-padded to 12 digits, so the keys sort
-by fence.
+by fence. Only a key of exactly 12 digits whose fence is from 1 to 10^12 - 1
+is a lease record; any other key under `writer/`, such as an unpadded or
+out-of-range one, is ignored, so a stray key cannot alias a record or wedge
+the lease (swamp-club#3375).
 
 | Key | Written | Means |
 |---|---|---|

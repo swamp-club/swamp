@@ -218,9 +218,16 @@ function requireFence(fence: number): void {
   }
 }
 
-const KEY_PATTERN = /^writer\/(fence|heartbeat|released)-(\d+)$/;
+const KEY_PATTERN = new RegExp(
+  `^writer/(fence|heartbeat|released)-(\\d{${FENCE_DIGITS}})$`,
+);
 
-/** A lease key's kind and fence, or undefined for any other key. */
+/**
+ * A lease key's kind and fence, or undefined for any other key. Only a key
+ * `fenceKey`, `heartbeatKey` or `releasedKey` could have written counts: an
+ * unpadded or out-of-range key is ignored, so it can neither alias a real
+ * record nor wedge the lease (swamp-club#3375).
+ */
 export function parseWriterLeaseKey(
   key: string,
 ):
@@ -229,7 +236,7 @@ export function parseWriterLeaseKey(
   const match = KEY_PATTERN.exec(key);
   if (match === null) return undefined;
   const fence = Number(match[2]);
-  if (!Number.isSafeInteger(fence) || fence < 1) return undefined;
+  if (fence < 1 || fence > MAX_FENCE) return undefined;
   return { kind: match[1] as "fence" | "heartbeat" | "released", fence };
 }
 
