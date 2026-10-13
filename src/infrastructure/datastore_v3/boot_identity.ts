@@ -32,6 +32,11 @@
  * `kern.bootsessionuuid` sysctl on macOS. Elsewhere, or when it cannot be
  * read, there is no identity and the read model syncs its files instead.
  *
+ * The premise holds for local, fixed storage. A removable drive pulled
+ * mid-write, a network filesystem whose server loses its cache, or a VM
+ * restored from a snapshot can lose unsynced writes without ending the
+ * boot: keep a checkout's cache on local disk.
+ *
  * @module
  */
 
@@ -39,15 +44,16 @@ const BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id";
 const SYSCTL = "/usr/sbin/sysctl";
 const SYSCTL_TIMEOUT_MS = 5_000;
 
-let cached: Promise<string | undefined> | undefined;
+let cached: string | undefined;
 
 /**
  * The current boot, `boot-id:<id>` on Linux or `boot-session:<uuid>` on
- * macOS; undefined where the boot cannot be named exactly. Read once per
- * process: a process never outlives its boot.
+ * macOS; undefined where the boot cannot be named exactly. A name is read
+ * once per process, since a process never outlives its boot; a failed read
+ * is tried again on the next call.
  */
-export function currentBootIdentity(): Promise<string | undefined> {
-  cached ??= readBootIdentity(Deno.build.os);
+export async function currentBootIdentity(): Promise<string | undefined> {
+  cached ??= await readBootIdentity(Deno.build.os);
   return cached;
 }
 

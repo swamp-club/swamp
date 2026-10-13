@@ -62,6 +62,7 @@ import {
   deleteVersion,
   MODEL_ID,
   MODEL_TYPE,
+  modelCommit,
   modelIntent,
   modelPartition,
   savePut,
@@ -743,37 +744,98 @@ Deno.test("read model: a listed file the state shows present without a live reco
   });
 });
 
-Deno.test("read model: a read made during a catch-up waits for it and never sees a page's uncommitted state (swamp-club#3337)", async () => {
+Deno.test("read model: a read made during a page waits for it and never sees what the page rolls back (swamp-club#3337)", async () => {
   await withV3Env(async (env) => {
     await appendScenario(env);
     let read: Promise<ReadonlySet<string>> | undefined;
     let settledDuringPage = false;
+    let failBarrier = false;
     const holder: { readModel?: SqliteReadModel } = {};
     class ReadingBatch extends DurableWriteBatch {
       override async barrier(): Promise<void> {
-        read ??= holder.readModel!.chunksInUse("");
+        if (!failBarrier) return await super.barrier();
+        read = holder.readModel!.chunksInUse("");
         read.then(
           () => settledDuringPage = true,
           () => settledDuringPage = true,
         );
         await super.barrier();
+        assertEquals(settledDuringPage, false);
+        throw new Error("injected crash at the barrier");
       }
     }
     const readModel = env.openReadModel({
-      pageSize: 2,
       writeBatch: () => new ReadingBatch(),
     });
     holder.readModel = readModel;
     try {
       await readModel.catchUp(signal());
-      assertEquals(settledDuringPage, false);
-      // Mid-page the index was incomplete; once the catch-up is done it is.
-      assertEquals(
-        (await read!).size,
-        Math.ceil(LARGE.length / TEST_CHUNK_BYTES),
+      const before = await readModel.chunksInUse("");
+      assertEquals(before.size, Math.ceil(LARGE.length / TEST_CHUNK_BYTES));
+      // A page that deletes a@2, the only version holding chunks, then
+      // fails at its barrier and rolls back.
+      await env.store.append(
+        modelCommit(6, [deleteVersion("a", 2)], { fence: 1 }),
       );
+      failBarrier = true;
+      await assertRejects(
+        () => readModel.catchUp(signal()),
+        Error,
+        "injected crash",
+      );
+      assertEquals(await read!, before);
     } finally {
       await readModel.close();
+    }
+  });
+});
+
+Deno.test("read model: a syncing removal syncs the deepest directory its cleanup left, not the one it removed (swamp-club#3337)", async () => {
+  await withV3Env(async (env) => {
+    for (
+      const [seq, ops] of [
+        [1, [await savePut("x", 1), versionOp("x", 1)]],
+        [2, [deleteVersion("x", 1)]],
+      ] as const
+    ) {
+      await env.store.append(
+        commitOf({ seq, partition: PARTITION, namespace: "", ops: [...ops] }),
+      );
+    }
+    const syncedPerPage: string[][] = [];
+    const readModel = env.openReadModel({
+      pageSize: 1,
+      writeBatch: () => {
+        const synced: string[] = [];
+        syncedPerPage.push(synced);
+        return new DurableWriteBatch({
+          syncDirectory: (dir) => {
+            synced.push(dir);
+            return Promise.resolve();
+          },
+        });
+      },
+    });
+    try {
+      assertEquals((await readModel.catchUp(signal())).cursor, 2);
+    } finally {
+      await readModel.close();
+    }
+    const root = swampPath(env.repoDir);
+    const removedFile = join(root, ...dataKey("x", 1).toString().split("/"));
+    await assertRejects(
+      () => Deno.lstat(dirname(removedFile)),
+      Deno.errors.NotFound,
+    );
+    // The removal's page synced only directories that still exist, the
+    // closest one to the file included.
+    const removalPage = syncedPerPage[1];
+    assert(removalPage.length > 0, "the removal synced nothing");
+    for (const dir of removalPage) {
+      assert(
+        (await Deno.lstat(dir)).isDirectory,
+        `${dir} was synced but is gone`,
+      );
     }
   });
 });

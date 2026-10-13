@@ -159,6 +159,8 @@ export class SqliteReadModel implements ReadModel {
   readonly #state: ReadModelState;
   readonly #writeBatch: () => DurableWriteBatch;
   readonly #bootIdentity: () => Promise<string | undefined>;
+  /** Settles when the page being applied, if any, commits or rolls back. */
+  #pageInFlight: Promise<void> | undefined;
   /** The boot of the current exclusive section; undefined when unnamed. */
   #boot: string | undefined;
   readonly #paths = new PathCache();
@@ -304,9 +306,7 @@ export class SqliteReadModel implements ReadModel {
         }
         const modified = (await Deno.lstat(path)).mtime?.getTime();
         if (modified === undefined || modified < options.since) continue;
-        await removeRecordFile(path, batch);
-        await cleanupEmptyParentDirs(path, root);
-        this.#paths.clear();
+        await this.#removeRecord(path, root, batch);
         removed.push(key);
       }
     };
@@ -356,7 +356,7 @@ export class SqliteReadModel implements ReadModel {
     namespace: string,
     partition: PartitionKey,
   ): Promise<readonly LiveRecord[]> {
-    return this.#afterQueue(() => {
+    return this.#afterPage(() => {
       const records = this.#state.liveRecordsIfComplete(
         namespace,
         partition.toString(),
@@ -367,7 +367,7 @@ export class SqliteReadModel implements ReadModel {
   }
 
   chunksInUse(namespace: string): Promise<ReadonlySet<string>> {
-    return this.#afterQueue(() => {
+    return this.#afterPage(() => {
       const chunks = this.#state.chunksInUseIfComplete(namespace);
       if (chunks === undefined) throw new ReadModelIncompleteError();
       return chunks;
@@ -375,16 +375,17 @@ export class SqliteReadModel implements ReadModel {
   }
 
   /**
-   * Runs a read once every earlier call has finished (swamp-club#3337): a
-   * page's state is uncommitted until its barrier, so a read in the middle
-   * of a catch-up would see what a failed page rolls back.
+   * Runs a read once no page is being applied in this process
+   * (swamp-club#3337): a page's state is uncommitted until its barrier, so
+   * a read in the middle of one would see what a failed page rolls back.
+   * It does not wait for the rest of a catch-up, or for another process's
+   * lock; other processes only ever see committed state.
    */
-  #afterQueue<T>(read: () => T): Promise<T> {
-    if (this.#closed) return Promise.reject(closedError());
-    return this.#queue.then(() => {
-      if (this.#closed) throw closedError();
-      return read();
-    });
+  async #afterPage<T>(read: () => T): Promise<T> {
+    if (this.#closed) throw closedError();
+    while (this.#pageInFlight !== undefined) await this.#pageInFlight;
+    if (this.#closed) throw closedError();
+    return read();
   }
 
   async close(): Promise<void> {
@@ -487,6 +488,8 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<number> {
     if (page.length === 0) return 0;
     const batch = this.#writeBatch();
+    const settled = Promise.withResolvers<void>();
+    this.#pageInFlight = settled.promise;
     this.#state.beginBatch();
     try {
       let applied = 0;
@@ -510,6 +513,8 @@ export class SqliteReadModel implements ReadModel {
     } finally {
       batch.discard();
       this.#state.rollbackBatch();
+      this.#pageInFlight = undefined;
+      settled.resolve();
     }
   }
 
@@ -633,9 +638,7 @@ export class SqliteReadModel implements ReadModel {
     if (decision.kind === "keep") return undefined;
     touched.add(key);
     if (decision.kind === "remove" || change.put === null) {
-      await removeRecordFile(path, batch);
-      await cleanupEmptyParentDirs(path, this.#cacheRoot(commit.namespace));
-      this.#paths.clear();
+      await this.#removeRecord(path, this.#cacheRoot(commit.namespace), batch);
       return decision.kind === "remove" ? decision.next : undefined;
     }
     const blob = "blob" in change.put.content
@@ -820,9 +823,7 @@ export class SqliteReadModel implements ReadModel {
         "the compacted base",
       );
       if (path === undefined) continue;
-      await removeRecordFile(path, batch);
-      await cleanupEmptyParentDirs(path, this.#cacheRoot(namespace));
-      this.#paths.clear();
+      await this.#removeRecord(path, this.#cacheRoot(namespace), batch);
     }
     for (const { namespace, record_key } of writes) {
       signal.throwIfAborted();
@@ -850,6 +851,36 @@ export class SqliteReadModel implements ReadModel {
         continue;
       }
       await this.#writeContent(namespace, path, content, signal, batch);
+    }
+  }
+
+  /**
+   * Removes a record's file and the directories it leaves empty, up to
+   * `root`, and has `batch` sync the deepest directory still standing: the
+   * one whose entry the removal changed. Syncing the file's own directory
+   * would do nothing once the cleanup has removed it.
+   */
+  async #removeRecord(
+    path: string,
+    root: string,
+    batch: DurableWriteBatch,
+  ): Promise<void> {
+    await removeRecordFile(path, batch);
+    await cleanupEmptyParentDirs(path, root);
+    this.#paths.clear();
+    if (!batch.syncs) return;
+    for (let dir = dirname(path);; dir = dirname(dir)) {
+      if (dir === root || !dir.startsWith(root + SEPARATOR)) {
+        batch.touch(root);
+        return;
+      }
+      try {
+        await Deno.lstat(dir);
+        batch.touch(dir);
+        return;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
     }
   }
 
@@ -894,9 +925,10 @@ function appliedRecord(put: PutOp | null): AppliedRecord | null {
 }
 
 /**
- * Removes a record's file, its directory synced at `batch`'s barrier. A
- * missing file is fine. A directory at the key (a tombstone of a name
- * directory) is removed only when empty: its files are other records.
+ * Removes a record's file, after `batch` lets go of it. A missing file is
+ * fine. A directory at the key (a tombstone of a name directory) is removed
+ * only when empty: its files are other records. The caller has the right
+ * directory synced.
  */
 async function removeRecordFile(
   path: string,
@@ -914,7 +946,6 @@ async function removeRecordFile(
     for await (const _ of Deno.readDir(path)) return;
   }
   await Deno.remove(path);
-  batch.touch(dirname(path));
 }
 
 /** A file and a directory claiming one path: which one, and why. */

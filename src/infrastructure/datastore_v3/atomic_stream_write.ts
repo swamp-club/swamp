@@ -154,6 +154,11 @@ export class DurableWriteBatch {
     if (this.#held.size >= this.#maxOpenFiles) await this.#syncHeld();
   }
 
+  /** Whether the barrier syncs anything. */
+  get syncs(): boolean {
+    return this.#sync;
+  }
+
   /**
    * Syncs and closes the file this batch wrote at `path`, if it holds one.
    * Call it before removing `path`: Windows cannot replace or remove a file
