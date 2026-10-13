@@ -197,15 +197,20 @@ export async function acquireV3WriterLock(
  */
 export async function tryAcquireV3WriterLock(
   datastorePath: string,
-  options: { readonly fenceStore?: V3WriterFenceStore } = {},
+  options: {
+    readonly fenceStore?: V3WriterFenceStore;
+    /** The lease's TTL; renewals keep it while the recovery runs. */
+    readonly ttlMs?: number;
+  } = {},
 ): Promise<(() => Promise<void>) | undefined> {
   const key = resolve(datastorePath);
   if (held.has(key)) return undefined;
+  const ttlMs = options.ttlMs ?? DEFAULT_LOCK_TTL_MS;
   let hold: WriterLeaseHold;
   try {
     hold = await takeLease(datastorePath, {
       maxWaitMs: 0,
-      ttlMs: DEFAULT_LOCK_TTL_MS,
+      ttlMs,
       ...(options.fenceStore !== undefined
         ? { fenceStore: options.fenceStore }
         : {}),
@@ -214,7 +219,18 @@ export async function tryAcquireV3WriterLock(
     if (error instanceof V3WriterBusyError) return undefined;
     throw error;
   }
-  return () => hold.release();
+  // Renewed like any hold: a recovery that outlasts the TTL must not let
+  // another writer take over while it still removes files.
+  const entry: Held = { hold, refs: 1 };
+  startRenewal(entry, hold, datastorePath, ttlMs);
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    if (entry.renewal !== undefined) clearInterval(entry.renewal);
+    await entry.renewing;
+    await hold.release();
+  };
 }
 
 /** Whether this process holds the writer lease of the datastore at `datastorePath`. */

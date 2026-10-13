@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { FileLock } from "../persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
 import {
@@ -319,6 +320,27 @@ Deno.test("tryAcquireV3WriterLock: takes the lease without waiting, or resolves 
     } finally {
       await held();
     }
+  });
+});
+
+Deno.test("tryAcquireV3WriterLock: the recovery's hold is renewed until it is released", async () => {
+  await withTempDir(async (dir) => {
+    const release = await tryAcquireV3WriterLock(dir, { ttlMs: 30 });
+    assert(release !== undefined);
+    const heartbeat = join(dir, V3_WRITER_LEASE_DIR, "heartbeat-000000000001");
+    try {
+      // Taking the lease writes the first heartbeat; a renewal rewrites it.
+      const first = await Deno.readTextFile(heartbeat);
+      await waitFor(
+        () => Deno.readTextFile(heartbeat).then((now) => now !== first),
+        "the recovery's hold renewed",
+      );
+    } finally {
+      await release();
+    }
+    // Released, and renewing no more.
+    await assertRejects(() => Deno.stat(heartbeat), Deno.errors.NotFound);
+    assertEquals(await v3WriterLockHandle(dir).inspect(), null);
   });
 });
 

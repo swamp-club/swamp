@@ -4078,7 +4078,8 @@ taker has seen it unreadable for a whole TTL plus the allowance.
 take over. A holder whose clock or pause made it look expired too early is
 fenced, never corrupted, because:
 
-- **Renewal** (every third of the TTL) lists `writer/` first and only then
+- **Renewal** (every third of the TTL, for every hold, a read-only
+  command's recovery hold included) lists `writer/` first and only then
   writes its heartbeat. A higher fence, or a released marker for its own,
   means it has lost the lease: it writes nothing, logs the loss once at error
   level, and its process refuses its own later commits at once
@@ -4117,7 +4118,12 @@ refused. The schema bump is a downgrade barrier: a Phase 3 swamp refuses a
 schema 4 `commits.db` (swamps from this change on refuse a newer one with
 `datastore_v3_schema_newer`), which keeps an unfenced writer that still takes
 the old `writer.lock` out of a fenced datastore. While such a swamp holds a
-live `_control/writer.lock`, the lease is refused as busy.
+live `_control/writer.lock`, the lease is refused as busy; the check runs
+before `commits.db` is opened, so a refused write does not migrate it. One
+window stays open during the first upgrade: a Phase 3 swamp that takes
+`writer.lock` between that check and the migration keeps writing unfenced
+for as long as its connection stays open. It is milliseconds wide and exists
+only while both versions write one datastore.
 
 **Litestream (Phase 4 D).** `v3WriterFence` gives the hold's fence, which D
 replicates under (`_litestream/<fence>/`), and `checkV3WriterLease` is the
