@@ -40,12 +40,18 @@ import {
   parseExtensionManifest,
 } from "../domain/extensions/extension_manifest.ts";
 import type {
+  LocalModule,
+  LocalModuleKind,
   MissingLocalModule,
   ModuleGraphProject,
   ModuleGraphReader,
   SourceModuleGraph,
+  SymlinkFreeGraph,
 } from "../domain/extensions/extension_source_graph.ts";
-import { mergeSourceGraphs } from "../domain/extensions/extension_source_graph.ts";
+import {
+  mergeSourceGraphs,
+  withoutSymlinkedModules,
+} from "../domain/extensions/extension_source_graph.ts";
 import {
   planSourceArchive,
   type SourceArchiveKind,
@@ -1281,6 +1287,17 @@ export async function resolveExtensionFiles(
     binaryFilePaths.push(bfPath);
   }
 
+  // 16a. Symlinked entry points, found before anything reads them: neither
+  // the bare-specifier scan nor the module graph reader nor the bundler
+  // follows one to its target (swamp-club#3420).
+  const symlinkedRoots = await symlinksAmong([
+    ...modelRoots,
+    ...vaultEntryPoints,
+    ...datastoreEntryPoints,
+    ...reportEntryPoints,
+    ...webhookEntryPoints,
+  ]);
+
   // 17. Project config: the deno.json, or the package.json project when the
   // extension uses bare specifiers, that push bundles under. The module
   // graph is read under the same config, so it is the bundle's graph.
@@ -1306,6 +1323,7 @@ export async function resolveExtensionFiles(
           ...webhookEntryPoints,
         ]
       ) {
+        if (symlinkedRoots.has(ep)) continue;
         if (sourceHasBareSpecifiers(await Deno.readTextFile(ep))) {
           hasBare = true;
           break;
@@ -1327,6 +1345,7 @@ export async function resolveExtensionFiles(
   // bundle was built from, wherever it lives (swamp-club#3376).
   const sources = await resolveSourceModules({
     reader: ctx.moduleGraphReader,
+    symlinkedRoots,
     lenient: ctx.lenientSources ?? false,
     logger,
     project: { denoConfigPath, packageJsonDir },
@@ -1437,13 +1456,30 @@ async function realPathOr(path: string): Promise<string> {
   }
 }
 
+/** The paths in `paths` that are symlinks; one that cannot be read is not. */
+async function symlinksAmong(paths: Iterable<string>): Promise<Set<string>> {
+  const symlinks = new Set<string>();
+  for (const path of new Set(paths)) {
+    try {
+      if ((await Deno.lstat(path)).isSymlink) symlinks.add(path);
+    } catch {
+      // Reported by the step that needs the file.
+    }
+  }
+  return symlinks;
+}
+
 /**
  * Reads the module graph of every entry point, fails on a local module the
  * graph cannot load or whose real path leaves the repository and the
- * extensions root, and plans the archive's source copy.
+ * extensions root, and plans the archive's source copy. Symlinks are taken
+ * out of each graph before it is used: a symlinked entry point is never
+ * read, and the safety gate refuses every symlink by the symlink rule
+ * (swamp-club#3420).
  */
 async function resolveSourceModules(options: {
   reader: ModuleGraphReader;
+  symlinkedRoots: ReadonlySet<string>;
   project: ModuleGraphProject;
   repoDir: string;
   extensionsRoot: string;
@@ -1451,32 +1487,27 @@ async function resolveSourceModules(options: {
   lenient: boolean;
   logger: Logger;
 }): Promise<ResolvedSourceModules> {
-  const graphOf = new Map<string, SourceModuleGraph>();
+  const graphOf = new Map<string, SymlinkFreeGraph>();
   const kindGraphs: Array<
-    { k: SourceModuleKindRoots; graph: SourceModuleGraph }
+    {
+      k: SourceModuleKindRoots;
+      graph: SourceModuleGraph;
+      symlinked: LocalModule[];
+    }
   > = [];
   for (const k of options.kinds) {
     const graphs: SourceModuleGraph[] = [];
+    const symlinked: LocalModule[] = [];
     for (const root of k.roots) {
-      let graph = graphOf.get(root);
-      if (!graph) {
-        try {
-          graph = await options.reader.read(root, options.project);
-        } catch (error) {
-          if (!options.lenient) throw error;
-          options.logger
-            .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
-          graph = {
-            modules: [{ path: root, kind: "code" }],
-            edges: [],
-            missing: [],
-          };
-        }
-        graphOf.set(root, graph);
+      let free = graphOf.get(root);
+      if (!free) {
+        free = await readSymlinkFreeGraph(root, options);
+        graphOf.set(root, free);
       }
-      graphs.push(graph);
+      graphs.push(free.graph);
+      symlinked.push(...free.symlinked);
     }
-    kindGraphs.push({ k, graph: mergeSourceGraphs(graphs) });
+    kindGraphs.push({ k, graph: mergeSourceGraphs(graphs), symlinked });
   }
   const graph = mergeSourceGraphs(kindGraphs.map((g) => g.graph));
 
@@ -1538,12 +1569,29 @@ async function resolveSourceModules(options: {
     const owner = holder ?? listedBy.find((o) => o.paths.has(path));
     return owner !== undefined && owner.k.kind !== k.kind;
   };
-  for (const { k, graph: g } of kindGraphs) {
+  // Symlinks are listed, once, for the safety gate to refuse, but never
+  // planned into the archive; fmt (lenient) leaves them out, so it never
+  // writes through one.
+  const symlinksListed = new Set<string>();
+  for (const { k, graph: g, symlinked } of kindGraphs) {
     const paths = g.modules.map((m) => m.path).filter((p) => !outside.has(p))
       .sort();
     const listed = paths.filter((p) => !ownedElsewhere(k, p));
-    codeFilesByKind[k.kind] = listed.filter((p) => kindOf.get(p) === "code");
-    dataFilesByKind[k.kind] = listed.filter((p) => kindOf.get(p) === "data");
+    const links = options.lenient ? [] : symlinked.filter((m) => {
+      if (symlinksListed.has(m.path)) return false;
+      symlinksListed.add(m.path);
+      return true;
+    });
+    const linked = (kind: LocalModuleKind) =>
+      links.filter((m) => m.kind === kind).map((m) => m.path);
+    codeFilesByKind[k.kind] = [
+      ...listed.filter((p) => kindOf.get(p) === "code"),
+      ...linked("code"),
+    ].sort();
+    dataFilesByKind[k.kind] = [
+      ...listed.filter((p) => kindOf.get(p) === "data"),
+      ...linked("data"),
+    ].sort();
     planKinds.push({
       kind: k.kind,
       dir: k.dir,
@@ -1567,4 +1615,39 @@ async function resolveSourceModules(options: {
     allowedRoots: [resolve(options.repoDir), resolve(options.extensionsRoot)],
   });
   return { missing: graph.missing, codeFilesByKind, dataFilesByKind, plan };
+}
+
+/**
+ * One entry point's module graph with its symlinks taken out. A symlinked
+ * entry point is not read at all; any other symlink is removed before the
+ * graph is used, with what it alone reaches and any error recorded for it.
+ */
+async function readSymlinkFreeGraph(
+  root: string,
+  options: {
+    reader: ModuleGraphReader;
+    symlinkedRoots: ReadonlySet<string>;
+    project: ModuleGraphProject;
+    lenient: boolean;
+    logger: Logger;
+  },
+): Promise<SymlinkFreeGraph> {
+  const empty: SourceModuleGraph = { modules: [], edges: [], missing: [] };
+  if (options.symlinkedRoots.has(root)) {
+    return withoutSymlinkedModules(empty, root, options.symlinkedRoots);
+  }
+  let graph: SourceModuleGraph;
+  try {
+    graph = await options.reader.read(root, options.project);
+  } catch (error) {
+    if (!options.lenient) throw error;
+    options.logger
+      .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
+    graph = { ...empty, modules: [{ path: root, kind: "code" }] };
+  }
+  const symlinks = await symlinksAmong([
+    ...graph.modules.map((m) => m.path),
+    ...graph.missing.map((m) => m.path),
+  ]);
+  return withoutSymlinkedModules(graph, root, symlinks);
 }

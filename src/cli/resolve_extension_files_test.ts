@@ -41,7 +41,10 @@ import {
   assertPathEquals,
   withMockedEnv,
 } from "../infrastructure/persistence/path_test_helpers.ts";
-import type { ModuleGraphReader } from "../domain/extensions/extension_source_graph.ts";
+import type {
+  ModuleGraphReader,
+  SourceModuleGraph,
+} from "../domain/extensions/extension_source_graph.ts";
 import { regexModuleGraphReader as graphReader } from "./resolve_extension_files_test_helpers.ts";
 
 const logger = getLogger(["test"]);
@@ -2902,5 +2905,233 @@ Deno.test("resolveExtensionFiles lists a skill's files in per-level name order",
         "zebra.md",
       ],
     );
+  });
+});
+
+// --- Symlinks in the module graph (swamp-club#3420) ---
+
+const SECRET = "SECRET-3420-target-content";
+
+/**
+ * A module graph reader that returns a scripted graph per entry point and
+ * records which entry points it was asked to read.
+ */
+function scriptedReader(
+  graphs: Record<string, SourceModuleGraph>,
+): { reader: ModuleGraphReader; reads: string[] } {
+  const reads: string[] = [];
+  return {
+    reads,
+    reader: {
+      read(entryPoint) {
+        reads.push(entryPoint);
+        return Promise.resolve(
+          graphs[entryPoint] ?? {
+            modules: [{ path: entryPoint, kind: "code" }],
+            edges: [],
+            missing: [],
+          },
+        );
+      },
+    },
+  };
+}
+
+function importEdge(importer: string, target: string, line: number) {
+  return {
+    importer,
+    target,
+    specifier: `./${relative(dirname(importer), target)}`,
+    span: {
+      start: { line, character: 0 },
+      end: { line, character: 1 },
+    },
+  };
+}
+
+/** Runs `fn` with a directory outside the repo holding a file with SECRET. */
+async function withOutsideTarget(
+  fn: (target: string) => Promise<void>,
+): Promise<void> {
+  const outside = await Deno.makeTempDir({ prefix: "swamp-3420-outside-" });
+  try {
+    const target = join(outside, "target.ts");
+    await Deno.writeTextFile(target, `export const s = "${SECRET}";\n`);
+    await fn(target);
+  } finally {
+    await Deno.remove(outside, { recursive: true });
+  }
+}
+
+async function writeModelManifest(dir: string, models: string[]) {
+  const manifestPath = join(dir, "manifest.yaml");
+  await Deno.writeTextFile(
+    manifestPath,
+    stringifyYaml({
+      manifestVersion: 1,
+      name: "@test/linkext",
+      version: "2026.03.03.1",
+      models,
+    }),
+  );
+  return manifestPath;
+}
+
+Deno.test("resolveExtensionFiles: a symlinked entry point is never read and is listed for the safety gate, outside the archive plan", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideTarget(async (target) => {
+      const modelsDir = join(dir, "extensions", "models");
+      const link = join(modelsDir, "evil.ts");
+      await Deno.symlink(target, link, { type: "file" });
+      const { reader, reads } = scriptedReader({});
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath: await writeModelManifest(dir, ["evil.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: reader,
+      });
+
+      assertEquals(reads, []);
+      assertEquals(result.allModelFiles, [link]);
+      assertEquals(result.missingModules, []);
+      assertEquals(result.sourcePlan.entries, []);
+      assertEquals(JSON.stringify(result).includes(SECRET), false);
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: a symlinked shared module outside the repository is listed for the safety gate, not refused by containment, and what it imports is dropped", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideTarget(async (target) => {
+      const modelsDir = join(dir, "extensions", "models");
+      const libDir = join(dir, "extensions", "lib");
+      await Deno.mkdir(libDir, { recursive: true });
+      const model = join(modelsDir, "m.ts");
+      const link = join(libDir, "shared.ts");
+      const behind = join(dirname(target), "behind.ts");
+      await Deno.writeTextFile(model, 'import "../lib/shared.ts";\n');
+      await Deno.symlink(target, link, { type: "file" });
+      const { reader } = scriptedReader({
+        [model]: {
+          modules: [
+            { path: model, kind: "code" },
+            { path: link, kind: "code" },
+            { path: behind, kind: "code" },
+          ],
+          edges: [importEdge(model, link, 0), importEdge(link, behind, 0)],
+          missing: [],
+        },
+      });
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath: await writeModelManifest(dir, ["m.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: reader,
+      });
+
+      assertEquals(result.allModelFiles, [link, model].sort());
+      assertEquals(
+        result.sourcePlan.entries.map((e) => e.sourcePath),
+        [model],
+      );
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: the error a graph recorded for a symlinked module is never reported", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideTarget(async (target) => {
+      const modelsDir = join(dir, "extensions", "models");
+      const model = join(modelsDir, "m.ts");
+      const link = join(modelsDir, "pw.ts");
+      await Deno.writeTextFile(model, 'import "./pw.ts";\n');
+      await Deno.symlink(target, link, { type: "file" });
+      const { reader } = scriptedReader({
+        [model]: {
+          modules: [{ path: model, kind: "code" }],
+          edges: [importEdge(model, link, 0)],
+          missing: [{ path: link, importer: model, reason: SECRET }],
+        },
+      });
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath: await writeModelManifest(dir, ["m.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: reader,
+      });
+
+      assertEquals(result.missingModules, []);
+      assertEquals(result.allModelFiles, [model, link].sort());
+      assertEquals(JSON.stringify(result).includes(SECRET), false);
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: lenient resolution (fmt) leaves symlinks out, so nothing writes through one", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideTarget(async (target) => {
+      const modelsDir = join(dir, "extensions", "models");
+      const model = join(modelsDir, "m.ts");
+      const linkedModel = join(modelsDir, "evil.ts");
+      const linkedModule = join(modelsDir, "shared.ts");
+      await Deno.writeTextFile(model, 'import "./shared.ts";\n');
+      await Deno.symlink(target, linkedModel, { type: "file" });
+      await Deno.symlink(target, linkedModule, { type: "file" });
+      const { reader, reads } = scriptedReader({
+        [model]: {
+          modules: [
+            { path: model, kind: "code" },
+            { path: linkedModule, kind: "code" },
+          ],
+          edges: [importEdge(model, linkedModule, 0)],
+          missing: [],
+        },
+      });
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath: await writeModelManifest(dir, ["m.ts", "evil.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: reader,
+        lenientSources: true,
+      });
+
+      assertEquals(reads, [model]);
+      assertEquals(result.allModelFiles, [model]);
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: the package.json bare-specifier scan does not read a symlinked entry point", async () => {
+  await withTempRepo(async (dir) => {
+    const outside = await Deno.makeTempDir({ prefix: "swamp-3420-dir-" });
+    try {
+      const modelsDir = join(dir, "extensions", "models");
+      const link = join(modelsDir, "evil.ts");
+      // A symlink to a directory: reading it as text would throw.
+      await Deno.symlink(outside, link, { type: "dir" });
+      await Deno.writeTextFile(join(dir, "package.json"), "{}");
+      const { reader, reads } = scriptedReader({});
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath: await writeModelManifest(dir, ["evil.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: reader,
+      });
+
+      assertEquals(reads, []);
+      assertEquals(result.allModelFiles, [link]);
+    } finally {
+      await Deno.remove(outside, { recursive: true });
+    }
   });
 });

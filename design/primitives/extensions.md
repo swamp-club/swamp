@@ -225,7 +225,8 @@ collectives, the additionalFiles allowlist, safety, dependency trust,
 skills, fmt/lint, upgrade chain, review errors, archive size) is recorded
 instead of thrown, files a check rejected (hidden, symlink, disallowed type,
 oversized, unreadable, disallowed additionalFiles) are left out of the
-archive (never copied into it), and the rubric is scored and printed beside
+archive (never copied into it) and out of every later gate, since fmt, lint
+and review would read a symlink's target and quote it, and the rubric is scored and printed beside
 the failures. Such an archive is never cached or uploaded. A push enforces:
 the first failure throws.
 
@@ -976,9 +977,17 @@ Each local module goes where its relative imports still resolve:
   specifiers that point at a `_shared/` module are rewritten, and line numbers
   stay the same.
 
+Symlinks are taken out of the graph before it is used (swamp-club#3420). An
+entry point that is a symlink is never read: not by the bare-specifier scan,
+`deno info` or the bundler. A symlink `deno info` reaches is removed along with
+every module it alone leads to and any error recorded for it, since that error
+quotes the target's source. Each symlink is then listed for the safety gate,
+which refuses it by the symlink rule before anything is bundled; `fmt` leaves
+symlinks out, so it never writes through one.
+
 Push fails when a local module is missing, when its real path leaves the
-repository and the extensions root, or when two different files would share an
-archive path. Data modules are packaged, hashed and safety-scanned, but not
+repository and the extensions root (through a symlinked directory), or when two
+different files would share an archive path. Data modules are packaged, hashed and safety-scanned, but not
 formatted, linted or reviewed as TypeScript. Pull does not yet install the
 archive-root shared sources (swamp-club#3384).
 

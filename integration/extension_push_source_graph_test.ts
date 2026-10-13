@@ -43,6 +43,7 @@ import {
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
 } from "../src/libswamp/extensions/push.ts";
+import { analyzeExtensionSafety } from "../src/domain/extensions/extension_safety_analyzer.ts";
 
 const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 const logger = getLogger(["test"]);
@@ -112,6 +113,7 @@ async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
 async function pushDryRun(
   repo: string,
   manifestPath: string,
+  deps: ExtensionPushPrepareDeps = stubDeps,
 ): Promise<Map<string, string>> {
   const { repoContext } = await requireInitializedRepoReadOnly({
     repoDir: repo,
@@ -126,7 +128,7 @@ async function pushDryRun(
   });
   const prepared = await extensionPushPrepare(
     createLibSwampContext(),
-    stubDeps,
+    deps,
     {
       manifest: resolved.manifest,
       repoDir: repo,
@@ -333,15 +335,16 @@ Deno.test({
         await Deno.makeTempDir({ prefix: "swamp-source-graph-outside-" }),
       );
       try {
+        // A symlinked file is refused by the safety gate's symlink rule
+        // (swamp-club#3420); a symlinked directory on the path is what
+        // containment catches.
         await write(join(outside, "x.ts"), "export const x = 1;\n");
         const models = join(repo, "extensions", "models");
         await Deno.mkdir(models, { recursive: true });
-        await Deno.symlink(join(outside, "x.ts"), join(models, "x.ts"), {
-          type: "file",
-        });
+        await Deno.symlink(outside, join(models, "lib"), { type: "dir" });
         await write(
           join(models, "m.ts"),
-          'import { x } from "./x.ts";\nexport const m = x;\n',
+          'import { x } from "./lib/x.ts";\nexport const m = x;\n',
         );
         const manifestPath = join(repo, "manifest.yaml");
         await write(
@@ -486,4 +489,152 @@ Deno.test("extension push: a shared module two kinds reach is listed with one of
       ["lib/cmp.ts"],
     );
   });
+});
+
+// --- Symlinks in the module graph (swamp-club#3420) ---
+
+const SECRET = "SECRET-3420";
+
+/**
+ * Pushes with the real safety analyzer and returns the refusal, after
+ * checking that nothing in it — message or details — quotes the target.
+ */
+async function symlinkRefusal(
+  repo: string,
+  manifestPath: string,
+): Promise<{ file: string; ruleId: string; message: string }[]> {
+  let failure: unknown;
+  try {
+    await pushDryRun(repo, manifestPath, {
+      ...stubDeps,
+      analyzeExtensionSafety,
+    });
+  } catch (error) {
+    failure = error;
+  }
+  const refusal = failure as {
+    code: string;
+    message: string;
+    details: {
+      safetyErrors?: { file: string; ruleId: string; message: string }[];
+    };
+  };
+  assertEquals(refusal?.code, "validation_failed", String(failure));
+  assertEquals(
+    `${refusal.message}${JSON.stringify(refusal.details)}`.includes(SECRET),
+    false,
+  );
+  return refusal.details.safetyErrors ?? [];
+}
+
+async function withOutside(
+  fn: (outside: string) => Promise<void>,
+): Promise<void> {
+  const outside = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp-3420-outside-" }),
+  );
+  try {
+    await fn(outside);
+  } finally {
+    await Deno.remove(outside, { recursive: true });
+  }
+}
+
+async function writeManifest(repo: string, name: string): Promise<string> {
+  const manifestPath = join(repo, "manifest.yaml");
+  await write(
+    manifestPath,
+    stringifyYaml({
+      manifestVersion: 1,
+      name: `@test/${name}`,
+      version: "2026.10.13.1",
+      models: ["m.ts"],
+    }),
+  );
+  return manifestPath;
+}
+
+Deno.test({
+  name:
+    "extension push: a model symlinked to a file that does not parse is refused by the symlink rule, quoting none of it (swamp-club#3420)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (repo) => {
+      await withOutside(async (outside) => {
+        await write(
+          join(outside, "passwd"),
+          `${SECRET}:x:0:0::/root:/bin/sh\n`,
+        );
+        const model = join(repo, "extensions", "models", "m.ts");
+        await Deno.mkdir(dirname(model), { recursive: true });
+        await Deno.symlink(join(outside, "passwd"), model, { type: "file" });
+
+        const errors = await symlinkRefusal(
+          repo,
+          await writeManifest(repo, "linked-model"),
+        );
+
+        assertEquals(errors.map((e) => [e.file, e.ruleId]), [
+          [model, "symlink"],
+        ]);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "extension push: a symlinked shared module outside the models directory is refused by the symlink rule, quoting none of it (swamp-club#3420)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (repo) => {
+      await withOutside(async (outside) => {
+        await write(join(outside, "shared"), `${SECRET} is not code\n`);
+        const shared = join(repo, "extensions", "lib", "shared.ts");
+        await Deno.mkdir(dirname(shared), { recursive: true });
+        await Deno.symlink(join(outside, "shared"), shared, { type: "file" });
+        await write(
+          join(repo, "extensions", "models", "m.ts"),
+          'import "../lib/shared.ts";\nexport const m = 1;\n',
+        );
+
+        const errors = await symlinkRefusal(
+          repo,
+          await writeManifest(repo, "linked-shared"),
+        );
+
+        assertEquals(errors.map((e) => [e.file, e.ruleId]), [
+          [shared, "symlink"],
+        ]);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "extension push: a model symlinked to a valid module outside the repository is refused by the symlink rule, not packaged (swamp-club#3420)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (repo) => {
+      await withOutside(async (outside) => {
+        await write(
+          join(outside, "real.ts"),
+          `export const secret = "${SECRET}";\n`,
+        );
+        const model = join(repo, "extensions", "models", "m.ts");
+        await Deno.mkdir(dirname(model), { recursive: true });
+        await Deno.symlink(join(outside, "real.ts"), model, { type: "file" });
+
+        const errors = await symlinkRefusal(
+          repo,
+          await writeManifest(repo, "linked-valid"),
+        );
+
+        assertEquals(errors.map((e) => [e.file, e.ruleId]), [
+          [model, "symlink"],
+        ]);
+      });
+    });
+  },
 });

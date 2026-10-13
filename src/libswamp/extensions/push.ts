@@ -1175,14 +1175,22 @@ export async function extensionPushPrepare(
     );
   }
 
+  // 6c. A file a check rejected (only `collect` mode gets this far with
+  // one) is left out of every later gate as well as the archive: fmt, lint
+  // and review read a symlink's target and would quote it (swamp-club#3420).
+  const gated = rejectedFiles.size > 0
+    ? withoutFiles(input, rejectedFiles)
+    : input;
+  const notRejected = (file: string) => !rejectedFiles.has(file);
+
   // 7. Dependency trust audit
   let dependencyTrustResult: DependencyTrustResult;
   const sourceFiles = [
-    ...input.allModelFiles,
-    ...input.allVaultFiles,
-    ...input.allDatastoreFiles,
-    ...input.allReportFiles,
-    ...input.allWebhookFiles,
+    ...gated.allModelFiles,
+    ...gated.allVaultFiles,
+    ...gated.allDatastoreFiles,
+    ...gated.allReportFiles,
+    ...gated.allWebhookFiles,
   ];
   const specifiers = await deps.extractDependencySpecifiers(sourceFiles);
   if (specifiers.length > 0) {
@@ -1250,7 +1258,7 @@ export async function extensionPushPrepare(
   // written only after quality checks passed)
   if (!usingCachedArchive) {
     const qualityResult = await deps.checkExtensionQuality(
-      qualityFiles,
+      qualityFiles.filter(notRejected),
       denoPath,
       input.denoConfigPath,
       deps.getDenoEnv(),
@@ -1270,7 +1278,7 @@ export async function extensionPushPrepare(
   // chain terminates at its declared version. Always runs (not gated on
   // cache hit) since it's a fast file read.
   const upgradeChainIssues = await checkUpgradeChainConsistency(
-    input.allModelFiles,
+    gated.allModelFiles,
   );
   if (upgradeChainIssues.length > 0) {
     failGate(
@@ -1286,10 +1294,10 @@ export async function extensionPushPrepare(
   // with `swamp extension quality`, after the mechanical gates (safety,
   // deps, fmt) so those fire first.
   const findings = await runQualityFindings(ctx, deps, {
-    input,
+    input: gated,
     sidecar,
     safetyWarnings: safetyResult.warnings,
-    files: allFiles,
+    files: allFiles.filter(notRejected),
   });
   const reviewRulesResult = findings.reviewRulesResult;
   if (reviewRulesResult.errors.length > 0) {
