@@ -127,6 +127,7 @@ import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
 import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
 import { renderAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 import { ReconcileFromDiskService } from "../libswamp/extensions/reconcile_from_disk_service.ts";
+import { WorkerBundleProber } from "../infrastructure/runtime/worker_bundle_prober.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
@@ -768,6 +769,7 @@ export async function configureStartupExtensions(
         repository,
         lockfileRepository,
         repoDir,
+        bundleProber: new WorkerBundleProber(),
         localManifestIdentity,
         scanOnDiskDatastores: extensionBacked,
         additionalInstalledNames: await transitionalInstalledNames(
@@ -1217,6 +1219,7 @@ async function loadUserModels(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const pulledDirs = await enumeratePulledExtensionDirs(
       lockfilePath,
@@ -1271,9 +1274,18 @@ async function loadUserModels(
     // would. The behaviors dir is watched even before it exists, so
     // creating it counts as an edit.
     const behaviorsCandidate = resolveBehaviorsDir(marker);
+    // The refresher loads what it refreshes, in a long-lived process: it
+    // imports in-process, so an edited add-on to a type already in use is
+    // attached straight away. Probing is for indexing (swamp-club#3374).
     modelRegistry.setSourceRefresher(
       createLocalModelRefresher(
-        loader,
+        new ExtensionLoader(
+          denoRuntime,
+          modelKindAdapter,
+          repoDir,
+          resolver,
+          repository,
+        ),
         absoluteModelsDir,
         [
           ...(behaviorsCandidate ? [resolve(extBase, behaviorsCandidate)] : []),
@@ -1359,6 +1371,7 @@ async function loadUserVaults(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1447,6 +1460,7 @@ async function loadUserDatastores(
       repoDir,
       undefined,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1541,6 +1555,7 @@ async function loadUserReports(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1630,6 +1645,7 @@ async function loadUserWebhooks(
       repoDir,
       resolver,
       repository,
+      new WorkerBundleProber(),
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(

@@ -71,6 +71,12 @@ import {
   type RegistrationContext,
 } from "./kind_adapter.ts";
 import { ValidationError } from "./validation_error.ts";
+import {
+  type BundleProber,
+  type BundleProbeResult,
+  describeProbeFailure,
+  ProbeFailedError,
+} from "./bundle_prober.ts";
 import { DuplicateTypeUserError } from "./duplicate_type_user_error.ts";
 import { makeLocalExtension } from "./extension.ts";
 import {
@@ -265,6 +271,14 @@ export class ExtensionLoader {
   private readonly repository?: ExtensionRepository;
   private readonly adapter: KindAdapter;
   private readonly logger;
+  /**
+   * When set, indexing learns a bundle's type by probing it in isolation
+   * and registers the type lazy, so nothing a source does at import runs
+   * in this isolate until the type is used (swamp-club#3374). Without one
+   * the loader imports in-process: the full-load path, and the one unit
+   * tests use.
+   */
+  private readonly bundleProber: BundleProber | undefined;
 
   constructor(
     denoRuntime: DenoRuntime,
@@ -272,7 +286,9 @@ export class ExtensionLoader {
     repoDir: string | null = null,
     datastoreResolver?: DatastorePathResolver,
     repository?: ExtensionRepository,
+    bundleProber?: BundleProber,
   ) {
+    this.bundleProber = bundleProber;
     this.denoRuntime = denoRuntime;
     this.adapter = adapter;
     this.repoDir = repoDir;
@@ -683,6 +699,22 @@ export class ExtensionLoader {
       indexOnly?: boolean;
     },
   ): Promise<ExtensionLoadResult> {
+    try {
+      return await this.buildIndexPass(dir, options);
+    } finally {
+      // No probe outlives the pass that asked for it.
+      this.bundleProber?.release();
+    }
+  }
+
+  private async buildIndexPass(
+    dir: string,
+    options?: {
+      additionalDirs?: string[];
+      localDirs?: string[];
+      indexOnly?: boolean;
+    },
+  ): Promise<ExtensionLoadResult> {
     const repository = this.requireRepository("buildIndex");
     const catalog = repository.getCatalogStore();
 
@@ -891,14 +923,19 @@ export class ExtensionLoader {
       failed: [],
       removed: [],
     };
-    await this.refreshWarm(
-      dir,
-      repository,
-      denoPath,
-      extraDirs,
-      testFileDirsOf(options?.additionalDirs, localDirs),
-      changes,
-    );
+    try {
+      await this.refreshWarm(
+        dir,
+        repository,
+        denoPath,
+        extraDirs,
+        testFileDirsOf(options?.additionalDirs, localDirs),
+        changes,
+      );
+    } finally {
+      // As for buildIndex: no probe outlives the pass that asked for it.
+      this.bundleProber?.release();
+    }
     return changes;
   }
 
@@ -1045,6 +1082,26 @@ export class ExtensionLoader {
             });
             extensions[extIdx] = failResult.extension;
             repository.saveAll([failResult.extension]);
+          } else if (error instanceof ProbeFailedError) {
+            // A source no aggregate knows yet has no row, so it would be
+            // stale, and probed to its timeout, on every command. The
+            // row pins the failure to this fingerprint (swamp-club#3374).
+            // No aggregate owns it, like the rows a successful rebundle
+            // writes here; the repository derives its owner on load.
+            const stat = await Deno.stat(absolutePath).catch(() => null);
+            catalog.upsert({
+              type_normalized: "",
+              kind: this.adapter.catalogKinds[0],
+              bundle_path: error.bundlePath,
+              source_path: canonicalizePath(absolutePath),
+              version: "",
+              description: "",
+              extends_type: "",
+              source_mtime: stat?.mtime?.toISOString() ?? "",
+              source_fingerprint: error.fingerprint,
+              state: "ValidationFailed",
+              last_error: error.message,
+            });
           }
         }
       }
@@ -1068,7 +1125,11 @@ export class ExtensionLoader {
       catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
     }
 
-    if (this.adapter.attachPendingExtensionsForType) {
+    // A probed pass imports nothing here: a lazy base type attaches its
+    // extensions when it is loaded, and one that is already registered
+    // attaches them through the registry's extension attacher on first
+    // use (swamp-club#2846, swamp-club#3374).
+    if (this.adapter.attachPendingExtensionsForType && !this.bundleProber) {
       for (const type of typesNeedingExtensionAttach) {
         await this.adapter.attachPendingExtensionsForType(
           type,
@@ -1272,6 +1333,30 @@ export class ExtensionLoader {
       args.absolutePath,
       args.baseDir,
     );
+    if (this.bundleProber) {
+      const bundlePath = this.getBundlePath(args.relativePath, args.baseDir);
+      const probed = await this.probeBundle(
+        this.bundleProber,
+        await this.bundleImportTarget(
+          js,
+          args.relativePath,
+          args.baseDir,
+          fingerprint,
+        ),
+        { sourcePath: args.absolutePath, bundlePath, fingerprint },
+      );
+      if (probed.tag === "no-export") return null;
+      return {
+        kind: probed.tag === "primary"
+          ? this.adapter.catalogKinds[0]
+          : this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
+        typeNormalized: probed.typeNormalized,
+        bundlePath,
+        fingerprint,
+        fromCache,
+      };
+    }
+
     const module = await this.importBundle(
       js,
       args.relativePath,
@@ -1382,6 +1467,17 @@ export class ExtensionLoader {
       sourceFingerprint?: string;
     },
   ): Promise<Record<string, unknown>> {
+    return await import(await this.bundleImportTargetByPath(paths));
+  }
+
+  /** The URL to `import()` for an existing bundle file. */
+  private async bundleImportTargetByPath(
+    paths: {
+      bundlePath: string;
+      sourcePath: string;
+      sourceFingerprint?: string;
+    },
+  ): Promise<string> {
     let js: string;
     try {
       js = await Deno.readTextFile(paths.bundlePath);
@@ -1396,12 +1492,11 @@ export class ExtensionLoader {
       js = fixed;
       await Deno.writeTextFile(paths.bundlePath, js);
     }
-    const importUrl = await bundleImportUrl(
+    return await bundleImportUrl(
       paths.bundlePath,
       js,
       paths.sourceFingerprint,
     );
-    return await import(importUrl);
   }
 
   private async recoverMissingBundle(
@@ -1507,18 +1602,28 @@ export class ExtensionLoader {
       if (!row.bundle_path) continue;
       let typeNormalized: string;
       try {
-        const module = await this.importBundleByPath({
+        const paths = {
           bundlePath: row.bundle_path,
           sourcePath: absolutePath,
           sourceFingerprint: row.source_fingerprint || undefined,
-        });
-        const exported = primaryExport(module, this.adapter);
-        if (!exported) continue;
-        const parsed = this.adapter.validatePrimaryExport(exported);
-        if (!parsed.success) continue;
-        typeNormalized = this.adapter.normalizeType(
-          parsed.data as Record<string, unknown>,
-        );
+        };
+        if (this.bundleProber) {
+          const probed = await this.bundleProber.probe({
+            importUrl: await this.bundleImportTargetByPath(paths),
+            kind: this.adapter.kind,
+          });
+          if (probed.tag !== "primary") continue;
+          typeNormalized = probed.typeNormalized;
+        } else {
+          const module = await this.importBundleByPath(paths);
+          const exported = primaryExport(module, this.adapter);
+          if (!exported) continue;
+          const parsed = this.adapter.validatePrimaryExport(exported);
+          if (!parsed.success) continue;
+          typeNormalized = this.adapter.normalizeType(
+            parsed.data as Record<string, unknown>,
+          );
+        }
       } catch (error) {
         this.logger
           .debug`Could not revalidate typeless catalog row ${row.source_path}: ${error}`;
@@ -1874,6 +1979,19 @@ export class ExtensionLoader {
       }
     }
 
+    if (this.bundleProber) {
+      return await this.probeAndUpdateCatalog(this.bundleProber, catalog, {
+        absolutePath,
+        relativePath,
+        baseDir,
+        js,
+        sourceMtime,
+        sourceFingerprint,
+        effectiveFingerprint,
+        fromCache: bundled.fromCache,
+      });
+    }
+
     const module = await this.importBundle(
       js,
       relativePath,
@@ -2001,6 +2119,122 @@ export class ExtensionLoader {
         this.adapter.kind,
         absolutePath,
         sourceFingerprint,
+      );
+    }
+    return {};
+  }
+
+  /**
+   * The probing counterpart of the in-process half of
+   * {@link rebundleAndUpdateCatalog}: the same catalog writes, from a probe
+   * result. Nothing is registered here — the type becomes a lazy entry
+   * when buildIndex registers from the catalog, and is imported into this
+   * isolate only when it is used.
+   */
+  private async probeAndUpdateCatalog(
+    prober: BundleProber,
+    catalog: ExtensionCatalogStore,
+    args: {
+      absolutePath: string;
+      relativePath: string;
+      baseDir: string;
+      js: string;
+      sourceMtime: string;
+      sourceFingerprint: string;
+      effectiveFingerprint: string;
+      fromCache: boolean;
+    },
+  ): Promise<
+    {
+      registeredType?: string;
+      extensionTarget?: string;
+      outranked?: TypelessRow;
+    }
+  > {
+    const { absolutePath, relativePath, baseDir, effectiveFingerprint } = args;
+    const bundlePath = this.getBundlePath(relativePath, baseDir);
+    const probed = await this.probeBundle(
+      prober,
+      await this.bundleImportTarget(
+        args.js,
+        relativePath,
+        baseDir,
+        effectiveFingerprint,
+      ),
+      {
+        sourcePath: absolutePath,
+        bundlePath,
+        fingerprint: effectiveFingerprint,
+      },
+    );
+
+    if (probed.tag === "primary") {
+      const { typeNormalized } = probed;
+      const outranked = this.isOutrankedForType(
+        catalog,
+        typeNormalized,
+        absolutePath,
+      );
+      catalog.upsert({
+        type_normalized: outranked ? "" : typeNormalized,
+        kind: this.adapter.catalogKinds[0],
+        bundle_path: bundlePath,
+        source_path: canonicalizePath(absolutePath),
+        version: probed.version,
+        description: probed.description,
+        extends_type: "",
+        source_mtime: args.sourceMtime,
+        source_fingerprint: effectiveFingerprint,
+        state: "Indexed",
+      });
+      if (outranked) {
+        return {
+          outranked: {
+            absolutePath,
+            relativePath,
+            baseDir,
+            row: {
+              source_path: canonicalizePath(absolutePath),
+              bundle_path: bundlePath,
+              source_fingerprint: effectiveFingerprint,
+              type_normalized: "",
+            },
+          },
+        };
+      }
+      if (
+        this.adapter.hasType(typeNormalized) &&
+        this.adapter.updateSourceFingerprint
+      ) {
+        this.adapter.updateSourceFingerprint(
+          typeNormalized,
+          effectiveFingerprint,
+        );
+      }
+      return { registeredType: typeNormalized };
+    }
+
+    if (probed.tag === "secondary") {
+      catalog.upsert({
+        type_normalized: probed.typeNormalized,
+        kind: this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
+        bundle_path: bundlePath,
+        source_path: canonicalizePath(absolutePath),
+        version: "",
+        description: "",
+        extends_type: probed.typeNormalized,
+        source_mtime: args.sourceMtime,
+        source_fingerprint: effectiveFingerprint,
+        state: "Indexed",
+      });
+      return { extensionTarget: probed.typeNormalized };
+    }
+
+    if (!args.fromCache) {
+      catalog.recordNoExport(
+        this.adapter.kind,
+        absolutePath,
+        args.sourceFingerprint,
       );
     }
     return {};
@@ -2179,14 +2413,16 @@ export class ExtensionLoader {
     return { js, fromCache: false };
   }
 
-  private async importBundle(
+  /**
+   * The URL to `import()` for a bundle: the file in the bundle cache when
+   * it is there, otherwise the bundle text itself as a data URL.
+   */
+  private async bundleImportTarget(
     js: string,
     relativePath: string,
     baseDir?: string,
     sourceFingerprint?: string,
-  ): Promise<Record<string, unknown>> {
-    const rewritten = fixCjsEsmInterop(rewriteZodImports(js, relativePath));
-
+  ): Promise<string> {
     if (this.repoDir) {
       const ns = baseDir ? bundleNamespace(baseDir, this.repoDir) : "";
       const segments = ns
@@ -2194,7 +2430,6 @@ export class ExtensionLoader {
         : [relativePath.replace(/\.ts$/, ".js")];
       const bundlePath = this.resolveBundlePath(...segments);
 
-      let importUrl: string | undefined;
       try {
         await Deno.stat(bundlePath);
         let cachedJs = await Deno.readTextFile(bundlePath);
@@ -2205,7 +2440,7 @@ export class ExtensionLoader {
           cachedJs = fixed;
           await Deno.writeTextFile(bundlePath, cachedJs);
         }
-        importUrl = await bundleImportUrl(
+        return await bundleImportUrl(
           bundlePath,
           cachedJs,
           sourceFingerprint,
@@ -2215,21 +2450,76 @@ export class ExtensionLoader {
           String(error).substring(0, 200)
         }`;
       }
-
-      if (importUrl) {
-        return await import(importUrl);
-      }
     }
 
+    const rewritten = fixCjsEsmInterop(rewriteZodImports(js, relativePath));
+    const encoded = uint8ArrayToBase64(new TextEncoder().encode(rewritten));
+    return `data:application/javascript;base64,${encoded}`;
+  }
+
+  private async importBundle(
+    js: string,
+    relativePath: string,
+    baseDir?: string,
+    sourceFingerprint?: string,
+  ): Promise<Record<string, unknown>> {
+    const importUrl = await this.bundleImportTarget(
+      js,
+      relativePath,
+      baseDir,
+      sourceFingerprint,
+    );
+    if (!importUrl.startsWith("data:")) {
+      return await import(importUrl);
+    }
     try {
-      const encoded = uint8ArrayToBase64(
-        new TextEncoder().encode(rewritten),
-      );
-      return await import(
-        `data:application/javascript;base64,${encoded}`
-      );
+      return await import(importUrl);
     } catch (error) {
       throw new Error(sanitizeDataUrlError(error));
+    }
+  }
+
+  /**
+   * Probes a bundle and maps a failed probe onto the errors an in-process
+   * import and validation would have thrown, so callers record the same
+   * source states.
+   */
+  private async probeBundle(
+    prober: BundleProber,
+    importUrl: string,
+    source: { sourcePath: string; bundlePath: string; fingerprint: string },
+  ): Promise<
+    Extract<BundleProbeResult, { tag: "primary" | "secondary" | "no-export" }>
+  > {
+    const result = await prober.probe({ importUrl, kind: this.adapter.kind });
+    switch (result.tag) {
+      case "primary":
+      case "secondary":
+      case "no-export":
+        return result;
+      case "validation-failed":
+        throw new ValidationError(
+          result.message,
+          source.bundlePath,
+          source.fingerprint,
+        );
+      case "import-failed":
+        throw new Error(
+          importUrl.startsWith("data:")
+            ? sanitizeDataUrlError(result.message)
+            : result.message,
+        );
+      case "timed-out":
+      case "exited": {
+        throw new ProbeFailedError(
+          describeProbeFailure(result, {
+            sourcePath: source.sourcePath,
+            pulled: this.contributorFor(source.sourcePath).pulled,
+          }),
+          source.bundlePath,
+          source.fingerprint,
+        );
+      }
     }
   }
 

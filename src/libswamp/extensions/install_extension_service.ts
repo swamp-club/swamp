@@ -43,6 +43,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
+import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
@@ -106,6 +107,7 @@ type KindDir = typeof KIND_DIRS[number];
 export class InstallExtensionService {
   private readonly denoRuntime: DenoRuntime;
   private readonly repository: ExtensionRepository;
+  private readonly bundleProber: BundleProber | undefined;
   private readonly installExtensionFn: InstallExtensionFn;
 
   constructor(args: {
@@ -122,7 +124,15 @@ export class InstallExtensionService {
      * `install_test_helpers.ts`.
      */
     installExtensionFn?: InstallExtensionFn;
+    /**
+     * Indexes the installed sources by probing their bundles in isolation
+     * instead of importing them into this isolate (swamp-club#3374).
+     * Released once every installed extension has been indexed: the root
+     * and its dependencies are indexed concurrently and share it.
+     */
+    bundleProber?: BundleProber;
   }) {
+    this.bundleProber = args.bundleProber;
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
     this.installExtensionFn = args.installExtensionFn ?? installExtension;
@@ -187,11 +197,18 @@ export class InstallExtensionService {
       const installedResults = flattenInstallResults(result);
       let newExtensions: Extension[];
       try {
-        newExtensions = await Promise.all(
+        // Settled, not raced: a branch still indexing after another failed
+        // would probe again after the release below and leave a worker
+        // running (swamp-club#3374).
+        const settled = await Promise.allSettled(
           installedResults.map((r) =>
             this.buildExtensionFromDisk(r, ctx.repoDir)
           ),
         );
+        newExtensions = settled.map((outcome) => {
+          if (outcome.status === "rejected") throw outcome.reason;
+          return outcome.value;
+        });
       } catch (error) {
         throw new UserError(
           `Install partially applied for ${ref.name} — files extracted but ` +
@@ -200,6 +217,8 @@ export class InstallExtensionService {
             }). Run \`swamp doctor extensions\` to inspect, or retry ` +
             `\`swamp extension pull ${ref.name}\` to reconcile.`,
         );
+      } finally {
+        this.bundleProber?.release();
       }
       const tombstones: Extension[] = [];
       for (const newExt of newExtensions) {
@@ -340,6 +359,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "vaults":
         return new ExtensionLoader(
@@ -348,6 +368,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "datastores":
         return new ExtensionLoader(
@@ -356,6 +377,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "reports":
         return new ExtensionLoader(
@@ -364,6 +386,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "webhooks":
         return new ExtensionLoader(
@@ -372,6 +395,7 @@ export class InstallExtensionService {
           repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
     }
   }

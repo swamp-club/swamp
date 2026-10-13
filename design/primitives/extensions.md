@@ -2974,7 +2974,9 @@ has been fully indexed.
      fingerprint over each entry point plus its transitive local `.ts`
      dependencies. It compares that with the stored fingerprint, rebundles only
      changed files, then registers lazy entries for every type from the catalog
-     without importing bundles.
+     without importing bundles. A changed file's type is learned by probing
+     its new bundle in isolation (see Probed Indexing below), not by importing
+     it into the command's isolate.
 
      Fingerprints replaced mtime-based freshness in issue #125, because mtime
      was unreliable with atomic-rename saves, mtime-preserving sync tools and
@@ -3076,6 +3078,80 @@ has been fully indexed.
    type is already in the registry. `loadSingleType` registers the base type via
    `promoteFromLazy` before attaching extensions, so a caller arriving between
    those steps must wait for the extensions to be merged (swamp-club#521).
+
+### Probed Indexing
+
+Indexing has to evaluate a bundle to learn its type whenever source text is
+not enough: a new or edited source on the warm path, the startup reconcile
+(`ReconcileFromDiskService`), the typeless-row heal, and an install's index
+of pulled sources. Those evaluations **probe** the bundle rather than load it
+(swamp-club#3374). A probe imports the bundle in a Deno worker and answers
+with plain data: the exported type, version and description, or why there is
+none. Loading, which makes a type usable, still imports the bundle into the
+command's isolate, and only happens when the type is used.
+
+`BundleProber` (`src/domain/extensions/bundle_prober.ts`) is the port;
+`WorkerBundleProber` (`src/infrastructure/runtime/worker_bundle_prober.ts`)
+implements it, with `bundle_probe_worker.ts` as the worker entry point, which
+`scripts/compile.ts` includes in the binary by name. The CLI's index loaders,
+its startup reconcile, `swamp doctor extensions` and `swamp extension pull`
+pass one. An `ExtensionLoader` built without a prober imports in-process: the
+full-load path (`load()` without `indexOnly`, serve hot-reload, the
+auto-resolver), the local model refresher a long-lived process runs before
+each run (it loads what it refreshes, so an edited add-on to a type already in
+use is attached straight away), and the path unit tests use.
+
+What a source does at import therefore cannot reach a command that does not
+use it:
+
+- **Exit.** `Deno.exit` in the worker throws, so the import stops there. The
+  source is recorded as `ValidationFailed`.
+- **Hang.** An import that has not settled after 10 seconds
+  (`DEFAULT_PROBE_TIMEOUT_MS`) is abandoned and its worker terminated. The
+  source is recorded as `ValidationFailed`. Only the bundle's own import is
+  timed: the worker reports when it is ready to import, and the timeout
+  starts then, so starting the worker and loading the kind adapter never
+  counts against a source.
+- **Print.** `console` output in the worker is captured and logged at debug.
+- **Throw.** Reported as a failed import and recorded as `BundleBuildFailed`,
+  as an in-process import that threw was, so it is retried on the next
+  command.
+
+An exit or a hang is recorded as `ValidationFailed` because that state is not
+retried until the source fingerprint changes: one command pays the timeout, not
+every command. The exception is a reconcile, which probes every source that is
+not `Indexed`: `swamp doctor extensions` reconciles on each run, so it pays the
+timeout again for a source that still hangs. The user is warned once, with the
+source's path, the reason and how to retry: edit a local source, upgrade or
+re-pull a pulled one. Anything that is not the bundle's doing is reported as a
+failed import, which is retried, and never pinned to the source: a worker that
+does not start, one that dies, or a prober released under a probe. On the warm
+path a source that no aggregate knows yet gets a `ValidationFailed` catalog row
+directly, since without a row it would be stale, and probed again, on every
+scan.
+
+A probed pass registers nothing and imports nothing into the command's
+isolate. A type whose source changed becomes a lazy entry like any other, and
+model add-ons are not attached at index time: a lazy base type attaches them
+when it is loaded, and an already registered one through the registry's
+extension attacher on first use (swamp-club#2846). A source that the same
+command goes on to use is therefore evaluated twice, once in the worker and
+once on load.
+
+The worker is robustness isolation, **not a sandbox**. It shares the
+process's permissions, environment and filesystem, so it does not make
+untrusted extension code safe to index. A bundle that writes to `Deno.stdout`
+directly, bypassing `console`, is not captured.
+
+One worker serves a pass's probes in turn and is replaced after any probe
+that did not finish cleanly. Work a bundle leaves behind (a timer that throws,
+a rejected promise) is swallowed in the worker so it cannot close the worker
+under the next bundle; a worker that dies anyway is dropped, and Deno may
+print its uncaught error on stderr. Each pass releases its prober, which
+terminates the worker. An install indexes an extension and its dependencies
+concurrently through one prober and releases it once, after all of them. The
+worker is started by the first probe, so a pass with nothing to probe starts
+none.
 
 ### Self-Healing
 

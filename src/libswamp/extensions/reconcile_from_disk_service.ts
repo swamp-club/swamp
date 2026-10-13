@@ -66,6 +66,10 @@ import {
   type OnDiskDatastoreExtension,
 } from "./enumerate_pulled.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
+import {
+  type BundleProber,
+  ProbeFailedError,
+} from "../../domain/extensions/bundle_prober.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
@@ -183,6 +187,7 @@ export class ReconcileFromDiskService {
   private readonly pulledExtensionsRoot: string;
   private readonly scanOnDiskDatastores: boolean;
   private readonly additionalInstalledNames: ReadonlySet<string>;
+  private readonly bundleProber: BundleProber | undefined;
   /** Datastore extensions found on disk, by name; set per execute(). */
   private onDiskDatastores = new Map<string, OnDiskDatastoreExtension>();
 
@@ -209,7 +214,14 @@ export class ReconcileFromDiskService {
      * `lockfileRepository` only.
      */
     additionalInstalledNames?: readonly string[];
+    /**
+     * Indexes new and changed sources by probing their bundles in
+     * isolation instead of importing them into this isolate
+     * (swamp-club#3374). Released when each pass ends.
+     */
+    bundleProber?: BundleProber;
   }) {
+    this.bundleProber = args.bundleProber;
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
     this.lockfileRepository = args.lockfileRepository;
@@ -222,6 +234,16 @@ export class ReconcileFromDiskService {
   }
 
   async execute(
+    options?: { dryRun?: boolean },
+  ): Promise<ReconcileResult> {
+    try {
+      return await this.executePass(options);
+    } finally {
+      this.bundleProber?.release();
+    }
+  }
+
+  private async executePass(
     options?: { dryRun?: boolean },
   ): Promise<ReconcileResult> {
     const dryRun = options?.dryRun ?? false;
@@ -820,6 +842,11 @@ export class ReconcileFromDiskService {
           });
         }
       } catch (error) {
+        // Recorded below as deterministic, so this is the one time the
+        // user is told why the source is missing (swamp-club#3374).
+        if (error instanceof ProbeFailedError) {
+          logger.warn`${error.message}`;
+        }
         let failFp: string;
         try {
           failFp = await computeSourceFingerprint(
@@ -944,6 +971,7 @@ export class ReconcileFromDiskService {
           this.repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "vaults":
         return new ExtensionLoader(
@@ -952,6 +980,7 @@ export class ReconcileFromDiskService {
           this.repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "datastores":
         return new ExtensionLoader(
@@ -960,6 +989,7 @@ export class ReconcileFromDiskService {
           this.repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "reports":
         return new ExtensionLoader(
@@ -968,6 +998,7 @@ export class ReconcileFromDiskService {
           this.repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
       case "webhooks":
         return new ExtensionLoader(
@@ -976,6 +1007,7 @@ export class ReconcileFromDiskService {
           this.repoDir,
           undefined,
           this.repository,
+          this.bundleProber,
         );
     }
   }
