@@ -100,7 +100,8 @@ export async function ensureAllVaultTypesLoaded(
     try {
       await registry.ensureTypeLoaded(lazy.type);
     } catch (error) {
-      logger.warn`Failed to load vault type ${lazy.type}: ${
+      logger
+        .warn`Failed to load vault type ${lazy.type} from ${lazy.sourcePath}: ${
         error instanceof Error ? error.message : String(error)
       }`;
     }

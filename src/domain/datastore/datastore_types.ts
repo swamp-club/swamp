@@ -86,7 +86,8 @@ export async function ensureAllDatastoreTypesLoaded(
     try {
       await registry.ensureTypeLoaded(lazy.type);
     } catch (error) {
-      logger.warn`Failed to load datastore type ${lazy.type}: ${
+      logger
+        .warn`Failed to load datastore type ${lazy.type} from ${lazy.sourcePath}: ${
         error instanceof Error ? error.message : String(error)
       }`;
     }

@@ -359,8 +359,9 @@ have their own sections. The group also has:
   (built-in and extension). An extension type is listed under the name and
   description it declares, and the keyword matches the type id, name or
   description. To show them, the command imports the extension vault bundles
-  that are only indexed; one that fails to import is logged as a warning and
-  listed under its type id
+  that are only indexed. One whose import throws is logged as a warning and
+  listed under its type id; one that imports without registering a vault type
+  is dropped from the listing
 - `swamp vault put ... --label k=v`: attach provider-native tags via
   `VaultPutOptions.tags` (repeatable)
 
