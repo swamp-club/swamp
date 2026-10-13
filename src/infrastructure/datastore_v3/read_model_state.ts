@@ -26,7 +26,10 @@
  *
  * A commit's index and version changes land with its applied seq and the
  * cursor in one transaction, so the index is never ahead of, or behind, the
- * cursor. The cursor and every applied seq only move forward.
+ * cursor. The cursor and every applied seq only move forward. A batch
+ * (swamp-club#3337) holds a page of such transactions, each a savepoint, and
+ * makes them durable together: the read model commits it only once the
+ * page's files are durable.
  *
  * Opened like `commits.db`: WAL, `synchronous=FULL`, a busy timeout, schema
  * migrations in `PRAGMA user_version`, and SQLite's default auto-checkpoint.
@@ -164,9 +167,35 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (namespace, partition, name)
   ) STRICT, WITHOUT ROWID;
   `,
+  // 3 → 4: the files a catch-up wrote or removed without syncing them, and
+  // the boot they were written in (swamp-club#3337). They are checked on
+  // the first open in a later boot. IF NOT EXISTS, as in 2 → 3.
+  `
+  CREATE TABLE IF NOT EXISTS unsynced_keys (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS unsynced_boot (
+    only INTEGER PRIMARY KEY CHECK (only = 0),
+    boot TEXT NOT NULL
+  ) STRICT;
+  `,
 ];
 
 export type { FileOwnership };
+
+/**
+ * A file a catch-up wrote or removed without syncing it, and what the state
+ * says it holds: the bytes' SHA-256 when present, null when absent. A file
+ * the state says is present but has no live record for is `unknown`.
+ */
+export type UnsyncedFile =
+  & { readonly namespace: string; readonly record_key: string }
+  & (
+    | { readonly expect: "present"; readonly sha256: string }
+    | { readonly expect: "absent" | "unknown" }
+  );
 
 /** A materialised key a load writes or removes. */
 export interface LoadKey {
@@ -207,6 +236,15 @@ export interface AppliedCommit {
   readonly live: ReadonlyMap<string, readonly LiveDataVersion[]>;
   /** The new ownership of each file the commit wrote or removed; none when absent. */
   readonly files?: ReadonlyMap<string, FileOwnership>;
+  /**
+   * The keys whose files the commit wrote or removed without a sync, and
+   * the boot it ran in (swamp-club#3337): recorded in the same transaction
+   * as the commit, so a commit is never applied without them.
+   */
+  readonly unsynced?: {
+    readonly keys: ReadonlySet<string>;
+    readonly boot: string;
+  };
 }
 
 /** The read model's state database. One connection per instance. */
@@ -225,7 +263,10 @@ export class ReadModelState {
   readonly #insertVersion: StatementSync;
   readonly #selectOwnership: StatementSync;
   readonly #upsertOwnership: StatementSync;
+  readonly #insertUnsynced: StatementSync;
+  readonly #upsertUnsyncedBoot: StatementSync;
   #closed = false;
+  #batchOpen = false;
 
   private constructor(db: DatabaseSync) {
     this.#db = db;
@@ -268,6 +309,12 @@ export class ReadModelState {
     this.#upsertOwnership = db.prepare(
       "INSERT INTO materialised_keys (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?) " +
         "ON CONFLICT (namespace, record_key) DO UPDATE SET owner = excluded.owner, mark = excluded.mark, present = excluded.present",
+    );
+    this.#insertUnsynced = db.prepare(
+      "INSERT OR IGNORE INTO unsynced_keys (namespace, record_key) VALUES (?, ?)",
+    );
+    this.#upsertUnsyncedBoot = db.prepare(
+      "INSERT INTO unsynced_boot (only, boot) VALUES (0, ?) ON CONFLICT (only) DO UPDATE SET boot = excluded.boot",
     );
   }
 
@@ -454,6 +501,13 @@ export class ReadModelState {
           );
         }
         this.#upsertApplied.run(commit.namespace, commit.partition, commit.seq);
+        if (commit.unsynced !== undefined && commit.unsynced.keys.size > 0) {
+          this.#markUnsynced(
+            commit.namespace,
+            commit.unsynced.keys,
+            commit.unsynced.boot,
+          );
+        }
       }
       if (commit.cursor !== undefined) this.#advanceCursor(commit.cursor);
     });
@@ -471,7 +525,7 @@ export class ReadModelState {
   reset(catalogGeneration: number): void {
     this.#transaction(() => {
       this.#db.exec(
-        "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM materialised_keys; DELETE FROM meta;",
+        "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM materialised_keys; DELETE FROM meta; DELETE FROM unsynced_keys; DELETE FROM unsynced_boot;",
       );
       this.#upsertMeta.run("catalog_generation", catalogGeneration);
     });
@@ -702,11 +756,94 @@ export class ReadModelState {
     });
   }
 
+  /**
+   * Opens a batch: until {@link commitBatch}, every change is a savepoint in
+   * one transaction, visible to this connection and durable to no one.
+   */
+  beginBatch(): void {
+    this.#requireOpen();
+    if (this.#batchOpen) throw new Error("A read model state batch is open");
+    this.#db.exec("BEGIN IMMEDIATE");
+    this.#batchOpen = true;
+  }
+
+  /** Makes the open batch's changes durable. */
+  commitBatch(): void {
+    this.#requireOpen();
+    this.#db.exec("COMMIT");
+    this.#batchOpen = false;
+  }
+
+  /** Drops the open batch's changes; does nothing when none is open. */
+  rollbackBatch(): void {
+    if (!this.#batchOpen) return;
+    this.#batchOpen = false;
+    rollbackQuietly(this.#db);
+  }
+
+  /** The boot the unsynced files were written in; undefined when none are. */
+  unsyncedBoot(): string | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare("SELECT boot FROM unsynced_boot").get() as
+      | { boot: string }
+      | undefined;
+    return row?.boot;
+  }
+
+  /** Every unsynced file, with what the state says it holds. */
+  unsyncedFiles(): UnsyncedFile[] {
+    return this.#snapshot(() => {
+      const rows = this.#db.prepare(`
+        SELECT u.namespace, u.record_key, m.present, r.sha256
+        FROM unsynced_keys u
+        LEFT JOIN materialised_keys m
+          ON m.namespace = u.namespace AND m.record_key = u.record_key
+        LEFT JOIN live_records r
+          ON r.namespace = u.namespace AND r.partition = m.owner
+          AND r.record_key = u.record_key
+        ORDER BY u.namespace, u.record_key
+      `).all() as unknown as {
+        namespace: string;
+        record_key: string;
+        present: number | null;
+        sha256: string | null;
+      }[];
+      return rows.map(({ namespace, record_key, present, sha256 }) =>
+        present !== 1
+          ? { namespace, record_key, expect: "absent" as const }
+          : sha256 === null
+          ? { namespace, record_key, expect: "unknown" as const }
+          : { namespace, record_key, expect: "present" as const, sha256 }
+      );
+    });
+  }
+
+  /** Forgets the unsynced files: they are known to be on disk. */
+  clearUnsynced(): void {
+    this.#transaction(() =>
+      this.#db.exec("DELETE FROM unsynced_keys; DELETE FROM unsynced_boot;")
+    );
+  }
+
   /** Closes the connection. Closing again does nothing. */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#db.close();
+  }
+
+  /**
+   * Records keys whose files were written or removed without a sync, in
+   * `boot`, inside the caller's transaction. One boot is kept: the read
+   * model checks and clears the list before it writes in a new boot.
+   */
+  #markUnsynced(
+    namespace: string,
+    keys: Iterable<string>,
+    boot: string,
+  ): void {
+    for (const key of keys) this.#insertUnsynced.run(namespace, key);
+    this.#upsertUnsyncedBoot.run(boot);
   }
 
   #advanceCursor(cursor: number): void {
@@ -725,6 +862,8 @@ export class ReadModelState {
    */
   #snapshot<T>(body: () => T): T {
     this.#requireOpen();
+    // In a batch every read already sees one state: the batch's own.
+    if (this.#batchOpen) return body();
     this.#db.exec("BEGIN");
     try {
       const result = body();
@@ -738,6 +877,26 @@ export class ReadModelState {
 
   #transaction(body: () => void): void {
     this.#requireOpen();
+    if (this.#batchOpen) {
+      this.#db.exec("SAVEPOINT state_change");
+      try {
+        body();
+        this.#db.exec("RELEASE state_change");
+      } catch (error) {
+        try {
+          this.#db.exec("ROLLBACK TO state_change");
+          this.#db.exec("RELEASE state_change");
+        } catch {
+          // SQLite rolled the whole transaction back itself (a full disk,
+          // an I/O error), or the savepoint cannot be undone. Roll back
+          // everything, so the batch cannot commit half of this change:
+          // its commitBatch then fails, and the cause is still `error`.
+          rollbackQuietly(this.#db);
+        }
+        throw error;
+      }
+      return;
+    }
     this.#db.exec("BEGIN IMMEDIATE");
     try {
       body();

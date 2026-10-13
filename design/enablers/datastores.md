@@ -3037,23 +3037,85 @@ fixed order:
 
 1. **Files.** A put is written under the namespace's cache root: inline
    bytes, or streamed from `ChunkStore.read`. The content goes to a temp file
-   that is fsynced and renamed into place, and the directory is fsynced,
-   along with the parent of every directory the write created (except on
-   Windows, which cannot sync a directory). A tombstone removes the
-   file, ignores one already gone, and removes empty directories up to the
-   root. A directory at a tombstoned key (a name directory) is removed only
-   when empty. Every path passes `assertContainedPath` and `assertSafePath`.
+   that is renamed into place, so a reader sees the old file or the new one.
+   It is not synced: see "Durability across reboots" below. A tombstone
+   removes the file, ignores one already gone, and removes empty directories
+   up to the root. A directory at a tombstoned key (a name directory) is
+   removed only when empty. Every path passes `assertContainedPath` and the
+   symlink check `assertSafePath` makes; within one exclusive section a
+   directory's real path and whether it is a directory are looked up once
+   (`PathCache`), and forgotten whenever the read model removes anything.
 2. **Catalog.** The projection's actions.
 3. **State.** One transaction holds the index changes, the live versions, the
-   ownership of each file the commit wrote or removed, the partition's
-   applied seq and, from `catchUp`, the cursor. Neither the cursor nor an
-   applied seq moves back.
+   ownership of each file the commit wrote or removed, the keys it wrote or
+   removed without a sync, the partition's applied seq and, from `catchUp`,
+   the cursor. Neither the cursor nor an applied seq moves back.
+
+Commits are applied a page at a time (`pageSize`, 500 by default): each
+commit's state transaction is a savepoint in one transaction for the page,
+which commits after the page's files are written. An apply error at commit k
+keeps the commits before it, and the error is rethrown.
 
 Each effect is idempotent, so a crash anywhere is repaired by catching up
 again from the unchanged cursor. The index and the cursor are never ahead of
 the files. Calls queue in the process, and an exclusive OS lock on
 `read_model.lock` serializes processes, so a slow catch-up cannot rewrite a
 file a faster one has removed.
+
+**Durability across reboots (swamp-club#3337).** The read model must never
+trust a commit's files while a crash, power loss included, could have lost
+them: a checkout would then believe it is current with a missing or empty
+file, and never repair it. Syncing every file as it was written held that,
+but on macOS `FsFile.sync()` is `F_FULLFSYNC`, a full drive-cache flush: a
+fresh checkout of 1,000 items took 26 s against v2's 1.1 s. Syncing a page's
+files and directories together at one barrier brought that to 5.6 s, still
+about 5x v2, since a 1,000-item clone has some 3,000 files and 2,000 new
+directories to sync and the flushes only partly coalesce.
+
+So the catch-up does not sync files at all. A written file can be lost only
+to an OS crash or a power loss, and either one ends the boot: until then the
+page cache holds what was written, whatever happens to the process. The
+state records each key a catch-up wrote or removed (`unsynced_keys`) and the
+boot it ran in (`unsynced_boot`, from `boot_identity.ts`). On the first
+exclusive section in a
+later boot, every listed file is checked against the state: a present file
+must be a regular file with the live record's SHA-256, an absent one must be
+gone (a directory left at a removed name is fine). If all match, they
+survived the reboot and are on disk, and the list is cleared. If one does
+not, the state is reset and the catch-up applies every commit again, which
+rewrites and removes every file.
+
+The boot must be named by the kernel, never by the clock: the boot time
+(now less the uptime) shifts when the clock steps within one boot, which
+would look like a reboot, and the check would read the files back from the
+page cache, pass, and stop watching them. So the identity is
+`/proc/sys/kernel/random/boot_id` on Linux and the `kern.bootsessionuuid`
+sysctl on macOS, read once per process. Where neither is available
+(Windows), or it cannot be read, the catch-up syncs its files at each
+page's barrier instead and lists nothing; a list left by an earlier boot is
+then not trusted, and every commit is applied again, synced.
+
+The cost moves to the first open after a reboot: it hashes every file
+written since the list was last cleared, holding the read model's lock. The
+list is bounded by the checkout's keys, but a long-running `serve` can
+leave most of its cache on it. A listed file the state shows present with no
+live record for its owner cannot be checked, so it also resets the state; it
+is logged as such, apart from a file that does not match.
+
+What this does not cover: anything that loses page-cache writes without
+ending the boot. A disk detached mid-write, a write-back I/O error (which,
+with no fsync, nobody sees), a filesystem forced to shut down and remounted,
+an NFS server that loses its cache, or a VM restored from a snapshot can all
+lose unsynced files while the boot id stays the same, and the read model
+will not notice. The check runs at the start of an
+exclusive section, so an index read (`liveRecords`, `chunksInUse`) before
+the first catch-up of a new boot is not covered by it. A commit whose apply
+fails is not recorded, so the files it wrote before failing are not listed:
+until its retry rewrites them, a reboot can leave one torn. `commits.db` keeps
+`synchronous=FULL` and stays the source of truth. The compacted-base load
+and recovery's sweep still sync their files at a barrier
+(`DurableWriteBatch`): they are rare. `F_BARRIERFSYNC`, which Deno does not
+expose, stays out of scope.
 
 **Keys two partitions write (swamp-club#3256).** A same-key definition
 rename (two names that are not filename-safe, both stored at the
