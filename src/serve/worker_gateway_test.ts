@@ -1186,6 +1186,114 @@ Deno.test("WorkerGateway: verifyOnEnroll — a worker that reconnects while a st
   assertEquals(setStatusWrites(h).at(-1), "idle");
 });
 
+Deno.test("WorkerGateway: verifyOnEnroll — a worker that reconnects while its enrollment probe is still out on the old socket is probed again (swamp-club#3388)", async () => {
+  const h = createProbingHarness();
+  const first = connectWorkerSocket(h.gateway);
+  let probing = false;
+  // The first probe is lost with the socket: it never answers.
+  first.workerChannel.register(WorkerMethod.dispatch, () => {
+    probing = true;
+    return new Promise(() => {});
+  });
+  await enroll(first.workerChannel);
+  await waitFor(() => probing, "the first probe to reach the worker");
+
+  const second = connectWorkerSocket(h.gateway);
+  const probes: string[] = [];
+  second.workerChannel.register(WorkerMethod.dispatch, (params) => {
+    probes.push((params as DispatchParams).dispatchId);
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await enroll(second.workerChannel);
+  // The lost probe still holds the only slot.
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+  assertEquals(probes, []);
+
+  first.dropSocket();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be probed on its new socket and promoted",
+  );
+  const worker = h.gateway.worker("ci-runner-3");
+  assertEquals(probes, ["enroll-probe"]);
+  assertEquals(worker?.verifyFailureReason, undefined);
+  assertEquals(worker?.activeDispatchIds, []);
+  assertEquals(h.enrolled.length, 1);
+  assertEquals(h.idle.length, 1);
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a held step ending while the reconnect's probe is still being prepared does not start a second probe (swamp-club#3388)", async () => {
+  // As in serve, the probe does asynchronous setup before it takes a slot.
+  let setup = Promise.resolve();
+  let verifications = 0;
+  const h: Harness = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: async (name) => {
+      verifications++;
+      await setup;
+      const result = await h.gateway.dispatch(name, {
+        ...dispatchParams(`enroll-probe-${verifications}`),
+        probeMarker: "verify-on-enroll",
+      });
+      return result.status === "success"
+        ? { ok: true }
+        : { ok: false, failureReason: "probe failed on worker" };
+    },
+  });
+  const answer = (received: string[]) => (params: unknown) => {
+    const p = params as DispatchParams;
+    if (!p.probeMarker) return new Promise(() => {});
+    received.push(p.dispatchId);
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  };
+  const first = connectWorkerSocket(h.gateway);
+  first.workerChannel.register(WorkerMethod.dispatch, answer([]));
+  await enroll(first.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be verified",
+  );
+  const step = h.gateway.dispatch("ci-runner-3", dispatchParams("step-1"));
+  const stepEnded = step.then(() => "resolved", () => "rejected");
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "busy",
+    "the step to be placed",
+  );
+
+  const gate = Promise.withResolvers<void>();
+  setup = gate.promise;
+  const second = connectWorkerSocket(h.gateway);
+  const probes: string[] = [];
+  second.workerChannel.register(WorkerMethod.dispatch, answer(probes));
+  await enroll(second.workerChannel);
+  assertEquals(verifications, 2);
+
+  // The step ends while the reconnect's probe has not yet taken a slot.
+  first.dropSocket();
+  assertEquals(await stepEnded, "rejected");
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+  assertEquals(verifications, 2);
+
+  gate.resolve();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the pending probe to pass",
+  );
+  assertEquals(probes, ["enroll-probe-2"]);
+  assertEquals(h.gateway.worker("ci-runner-3")?.verifyFailureReason, undefined);
+  assertEquals(verifications, 2);
+});
+
 Deno.test("WorkerGateway: without verifyOnEnroll — worker becomes idle immediately", async () => {
   const enrolled: WorkerSnapshot[] = [];
   const h = createHarness({
