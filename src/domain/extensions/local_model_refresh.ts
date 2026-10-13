@@ -29,6 +29,7 @@
  */
 
 import { getLogger } from "@logtape/logtape";
+import { join } from "@std/path";
 import { modelRegistry } from "../models/model.ts";
 import type {
   ExtensionLoader,
@@ -37,6 +38,84 @@ import type {
 import { removeAttachedExtensionsForType } from "./model_kind_adapter.ts";
 
 const logger = getLogger(["swamp", "model", "refresh"]);
+
+/**
+ * Returns a refresher that runs {@link refreshLocalModels} only when a file
+ * under the local model dirs changed since its last pass. Checking costs a
+ * directory walk and a stat per file; a pass rehashes every source, pulled
+ * ones included, so serve would otherwise pay it on every run.
+ *
+ * A change is any file added, removed, or with a new size, mtime, ctime or
+ * inode (an editor's atomic save replaces the inode). A pass that throws
+ * leaves the snapshot alone, so the next call tries again; a source that
+ * fails to bundle or load is not retried until it changes again.
+ *
+ * @param localDirs the mounted source dirs, walked with `dir`
+ * @param pulledDirs the pulled extension dirs, read again for every pass
+ */
+export function createLocalModelRefresher(
+  loader: ExtensionLoader,
+  dir: string,
+  localDirs: string[],
+  pulledDirs: () => Promise<string[]>,
+): () => Promise<void> {
+  let lastSnapshot: string | undefined;
+  return async () => {
+    // Taken before the pass, so an edit made while it runs is seen next time.
+    const snapshot = await snapshotSourceFiles([dir, ...localDirs]);
+    if (snapshot === lastSnapshot) return;
+    await refreshLocalModels(loader, dir, [
+      ...localDirs,
+      ...await pulledDirs(),
+    ]);
+    lastSnapshot = snapshot;
+  };
+}
+
+/**
+ * One line per file under `dirs`, sorted: its path, size, mtime, ctime and
+ * inode. Every file counts, `_`-prefixed helper dirs included, since a
+ * model's fingerprint covers the local modules it imports.
+ */
+async function snapshotSourceFiles(dirs: string[]): Promise<string> {
+  const lines: string[] = [];
+  const visit = async (path: string): Promise<void> => {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await Array.fromAsync(Deno.readDir(path));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    await Promise.all(entries.map(async (entry) => {
+      const child = join(path, entry.name);
+      // Like the loader's file discovery, never descend through a symlink.
+      if (entry.isDirectory) return visit(child);
+      let info: Deno.FileInfo;
+      try {
+        info = await Deno.stat(child);
+      } catch (error) {
+        // Deleted mid-walk, or a dangling symlink: record that it is there.
+        if (error instanceof Deno.errors.NotFound) {
+          lines.push(`${child}\0missing`);
+          return;
+        }
+        throw error;
+      }
+      lines.push(
+        [
+          child,
+          info.size,
+          info.mtime?.getTime(),
+          info.ctime?.getTime(),
+          info.ino,
+        ].join("\0"),
+      );
+    }));
+  };
+  for (const dir of new Set(dirs)) await visit(dir);
+  return lines.sort().join("\n");
+}
 
 /**
  * Re-checks the loader's source dirs and swaps every model type whose

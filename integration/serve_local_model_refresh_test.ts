@@ -30,7 +30,7 @@ import { ModelType } from "../src/domain/models/model_type.ts";
 import { resolveModelType } from "../src/domain/extensions/extension_auto_resolver.ts";
 import { ExtensionLoader } from "../src/domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../src/domain/extensions/model_kind_adapter.ts";
-import { refreshLocalModels } from "../src/domain/extensions/local_model_refresh.ts";
+import { createLocalModelRefresher } from "../src/domain/extensions/local_model_refresh.ts";
 import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
@@ -81,6 +81,12 @@ export const model = {
 };
 `;
 
+/** Sets a file's mtime to a distinct second, as a later save would. */
+async function touch(path: string, second: number): Promise<void> {
+  const at = new Date(Date.UTC(2030, 0, 1, 0, 0, second));
+  await Deno.utime(path, at, at);
+}
+
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -125,8 +131,13 @@ Deno.test("serve run deps resolve an edited local model to its new code and a ne
       );
       await loader.buildIndex(modelsDir, { indexOnly: true });
       await loader.buildIndex(modelsDir, { indexOnly: true });
-      modelRegistry.setSourceRefresher(() =>
-        refreshLocalModels(loader, modelsDir, [])
+      modelRegistry.setSourceRefresher(
+        createLocalModelRefresher(
+          loader,
+          modelsDir,
+          [],
+          () => Promise.resolve([]),
+        ),
       );
 
       const methodDeps = await createModelMethodRunDeps(dir, repo);
@@ -135,6 +146,7 @@ Deno.test("serve run deps resolve an edited local model to its new code and a ne
       const v1Bundle = await sha256Hex(await v1!.bundleSourceFactory!());
 
       await Deno.writeTextFile(source, modelCode(type, "v2"));
+      await touch(source, 1);
       await createWorkflowRunDeps(dir, repo, datastore);
       // How a workflow step resolves its model (execution_service.ts).
       const v2 = await resolveModelType(modelType, null);
@@ -143,6 +155,7 @@ Deno.test("serve run deps resolve an edited local model to its new code and a ne
       assertNotEquals(v2Bundle, v1Bundle);
 
       await Deno.writeTextFile(source, modelCode(type, "v3"));
+      await touch(source, 2);
       const again = await createModelMethodRunDeps(dir, repo);
       assertEquals(
         (await again.getModelDef(modelType))?.methods.plan.description,

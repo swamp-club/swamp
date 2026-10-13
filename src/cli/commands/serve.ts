@@ -372,6 +372,7 @@ import {
   seedPulledTypeSnapshot,
   serveReloadStatus,
 } from "../../serve/extension_reload.ts";
+import { refreshLocalModelsForRun } from "../../serve/local_model_refresh.ts";
 import {
   CA_CERT_DESCRIPTION,
   CA_CERT_FLAG,
@@ -3052,6 +3053,9 @@ export const serveCommand = new Command()
     // On an extension-backed datastore the catalog repair ran in that load,
     // after the baseline record: add what it catalogued.
     await recordPulledTypes();
+    // The first check of local models for edits records what they look
+    // like now, so the first run does not pay for it (swamp-club#3284).
+    await refreshLocalModelsForRun();
 
     // Restriction entries that cannot match restrict nothing; say so now
     // that the model registry is indexed (swamp-club#3129).

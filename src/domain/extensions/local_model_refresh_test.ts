@@ -20,6 +20,7 @@
 import {
   assertEquals,
   assertNotStrictEquals,
+  assertRejects,
   assertStrictEquals,
   assertStringIncludes,
 } from "@std/assert";
@@ -36,7 +37,10 @@ import {
   clearAttachedExtensions,
   modelKindAdapter,
 } from "./model_kind_adapter.ts";
-import { refreshLocalModels } from "./local_model_refresh.ts";
+import {
+  createLocalModelRefresher,
+  refreshLocalModels,
+} from "./local_model_refresh.ts";
 
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/nonexistent/swamp-test/deno"),
@@ -275,7 +279,10 @@ Deno.test("refreshLocalModels: a failed deno bundle keeps the previous code, as 
     );
     bundleFails = true;
     await refresh();
+    assertEquals((await loaded(type("a")))?.methods.run.description, "v1");
 
+    // A second pass over the still-failing source keeps the type too.
+    await refresh();
     assertEquals((await loaded(type("a")))?.methods.run.description, "v1");
   }, async ({ modelsDir, type }) => {
     await Deno.writeTextFile(
@@ -418,4 +425,106 @@ Deno.test("refreshLocalModels: a broken model warns once, not on every later ref
   } finally {
     await reset();
   }
+});
+
+// -- Skipping the pass when nothing changed ---------------------------------
+
+/** Sets a file's mtime to a distinct second, as a later save would. */
+async function touch(path: string, second: number): Promise<void> {
+  const at = new Date(Date.UTC(2030, 0, 1, 0, 0, second));
+  await Deno.utime(path, at, at);
+}
+
+Deno.test("createLocalModelRefresher: runs no pass while nothing under the local dirs changed", async () => {
+  await withRepo(async ({ loader, modelsDir, type }) => {
+    let passes = 0;
+    const refresh = createLocalModelRefresher(loader, modelsDir, [], () => {
+      passes++;
+      return Promise.resolve([]);
+    });
+    await loaded(type("a"));
+    const calls = bundleCalls;
+
+    await refresh();
+    await refresh();
+    await refresh();
+
+    assertEquals(passes, 1);
+    assertEquals(bundleCalls, calls);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("createLocalModelRefresher: a same-size edit, a helper edit and a new file each run a pass", async () => {
+  await withRepo(async ({ loader, modelsDir, type }) => {
+    let passes = 0;
+    const refresh = createLocalModelRefresher(loader, modelsDir, [], () => {
+      passes++;
+      return Promise.resolve([]);
+    });
+    await refresh();
+    const source = join(modelsDir, "a.ts");
+
+    await Deno.writeTextFile(source, modelCode(type("a"), "v2"));
+    await touch(source, 1);
+    await refresh();
+    assertEquals(passes, 2);
+    assertEquals((await loaded(type("a")))?.methods.run.description, "v2");
+
+    await Deno.writeTextFile(
+      join(modelsDir, "_lib", "helper.ts"),
+      "export const x = 2;\n",
+    );
+    await touch(join(modelsDir, "_lib", "helper.ts"), 2);
+    await refresh();
+    assertEquals(passes, 3);
+
+    await Deno.writeTextFile(
+      join(modelsDir, "new.ts"),
+      modelCode(type("new"), "fresh"),
+    );
+    await refresh();
+    assertEquals(passes, 4);
+    assertEquals(
+      (await loaded(type("new")))?.methods.run.description,
+      "fresh",
+    );
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+    await Deno.mkdir(join(modelsDir, "_lib"));
+    await Deno.writeTextFile(
+      join(modelsDir, "_lib", "helper.ts"),
+      "export const x = 1;\n",
+    );
+  });
+});
+
+Deno.test("createLocalModelRefresher: a pass that throws is tried again on the next call", async () => {
+  await withRepo(async ({ loader, modelsDir, type }) => {
+    let passes = 0;
+    const refresh = createLocalModelRefresher(loader, modelsDir, [], () => {
+      passes++;
+      return passes === 1
+        ? Promise.reject(new Error("lockfile mid-write"))
+        : Promise.resolve([]);
+    });
+
+    await assertRejects(() => refresh(), Error, "lockfile mid-write");
+    await refresh();
+    await refresh();
+
+    assertEquals(passes, 2);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+  });
 });
