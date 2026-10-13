@@ -387,6 +387,19 @@ class Client {
     return frame.error;
   }
 
+  /**
+   * Resolves once the server has dispatched every request this client sent
+   * before it. The server answers an unrecognised request as soon as it reads
+   * it and reads a socket's messages in order. A queued request such as
+   * `start.status` can't serve here: it waits behind a held launch.
+   */
+  async dispatched(): Promise<void> {
+    assertEquals(
+      (await this.requestError("start.dispatched")).code,
+      "invalid_request",
+    );
+  }
+
   async close(): Promise<void> {
     if (this.ws.readyState === WebSocket.CLOSED) return;
     const closed = new Promise<void>((resolve) => {
@@ -599,6 +612,7 @@ Deno.test("startStartServer: two launches at once open only one window", async (
         "the first launch to reach the terminal launcher",
       );
       const second = b.request("start.launch", { trustConfirmed: true });
+      await b.dispatched();
       fakes.releaseOpen();
       const [ra, rb] = await Promise.all([first, second]);
       assertEquals(ra.screen, "launched");
@@ -636,7 +650,9 @@ Deno.test("startStartServer: a launch or resume refuses to run on a task another
       // Another tab opens the second task, then this tab asks to resume
       // the first one: the resume must not run on the second task.
       const opening = b.request("start.task.open", { id: second });
+      await b.dispatched();
       const resume = a.requestError("start.resume");
+      await a.dispatched();
       fakes.releaseOpen();
       await launch;
       await opening;
@@ -1309,6 +1325,7 @@ Deno.test("startStartServer: two agent opens at once open only one window", asyn
         "the first open to reach the terminal launcher",
       );
       const second = b.request("start.agent.open", { id: "claude" });
+      await b.dispatched();
       fakes.releaseOpen();
       await Promise.all([first, second]);
       assertEquals(fakes.opened.length, 2);
