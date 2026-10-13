@@ -1592,9 +1592,11 @@ Non-goals for v1:
 
 ## Hot-Reload for Pulled Extension Bundles
 
-`swamp serve` loads extension bundles at startup and keeps them for the process
-lifetime. The `--hot-reload` flag enables SIGHUP-based hot-reload, following
-the nginx pattern.
+`swamp serve` loads extension bundles at startup and keeps pulled ones for the
+process lifetime. The `--hot-reload` flag enables SIGHUP-based hot-reload,
+following the nginx pattern. Repo-local models are checked for edits before
+every run instead; see
+[Refresh of Edited Local Models](#refresh-of-edited-local-models).
 
 ### User Flow
 
@@ -1698,3 +1700,82 @@ promise via `typeLoadPromises` and wait rather than fail.
   module, so each bundle version loaded stays in memory for the life
   of the process. Heap grows once per changed bundle, not per reload;
   reloading unchanged extensions costs no heap (swamp-club#2340).
+
+## Refresh of Edited Local Models
+
+A model under the repo's models dir, or under a directory
+`.swamp-sources.yaml` mounts, is often edited while `swamp serve` runs. Serve
+picks the edit up on the next run, with no reload or restart (swamp-club#3284).
+Before this, serve ran the code it loaded at startup, and shipped that bundle
+to workers under its old fingerprint, so a worker's content-addressed cache
+was right to keep serving it.
+
+`createWorkflowRunDeps` and `createModelMethodRunDeps` (`src/serve/deps.ts`)
+call `refreshLocalModelsForRun()` (`src/serve/local_model_refresh.ts`) before a
+run resolves its models. Every serve run path builds one of these: WebSocket
+workflow and method runs, resumed runs, webhooks and schedules. Serve's own
+bookkeeping runs use `createWorkerModelRunDeps` and skip the check.
+
+The check calls `modelRegistry.refreshSources()`. Its refresher is wired where
+the model loader is (`loadUserModels` in `src/cli/mod.ts`) by
+`createLocalModelRefresher()` (`src/domain/extensions/local_model_refresh.ts`).
+It first walks the models dir, the behaviors dir (`extensions/behaviors`,
+watched even before it exists) and the mounted dirs, and stats every file,
+`_`-prefixed helper dirs included: path, size, mtime, ctime and inode. When
+that snapshot matches the one taken before its last pass, nothing was edited and
+the check ends there, at about 1 ms for 200 models. Otherwise it runs
+`refreshLocalModels()`:
+
+1. `ExtensionLoader.refreshStaleSources()` runs the warm pass of
+   `buildIndex()`, the same pass a CLI command runs at startup: the freshness
+   scan, a rebundle of each stale source, the type-conflict settle, the
+   typeless-row heal and the add-on attach. It walks the same dirs a fresh
+   index would: the models dir, the behaviors dir when it exists, the mounted
+   dirs and the pulled dirs, all resolved again on every pass. The scan drops
+   the rows of every source it does not see, so a narrower walk would delete
+   the rows of pulled extensions and behaviors. It never invalidates the catalog or runs the cold index, which
+   the [Catalog Safety Constraint](#catalog-safety-constraint) rules out for
+   a running serve; its catalog writes are the ones every CLI command's warm
+   start makes. It returns the sources it rebundled, the ones that failed, and
+   the rows it dropped.
+2. For each repo-local change, the type the source claimed or claims, and the
+   type an edited add-on extends, is swapped: `invalidateType`,
+   `removeAttachedExtensionsForType`, re-registered from its catalog row, then
+   `ensureTypeLoaded`. The new definition carries a new `bundleSourceFactory`,
+   so `DispatchService` hashes the new bundle and ships a new fingerprint to
+   workers. A built-in type is never swapped.
+
+Failures behave as in a fresh CLI process. A `deno bundle` that fails keeps the
+previous bundle with a warning. A source that bundles but no longer imports or
+validates has no loadable row, so its type stays unregistered and runs fail as
+`swamp model method run` would, until the edit is fixed. Serve warns once, when
+the pass meets the broken edit; the broken-bundle warning startup gives is not
+repeated on every pass. A deleted source's type goes, and a deleted add-on's
+members leave the type it extended; a new source's type appears. An edited or
+deleted local add-on of a built-in type is the exception: built-ins are never
+swapped, so members it no longer declares stay until serve restarts. Pulled
+sources that changed are rebundled by the same pass but not swapped: they still
+reload through `swamp serve reload`.
+
+Unlike a CLI command, serve does not retry a failed source on every run: the
+snapshot is recorded once the pass ends, so the next pass waits for another
+edit. A pass that throws (a lockfile caught mid-write, a busy catalog) records
+nothing, so the next run tries again.
+
+Serve takes the first snapshot at startup, right after it indexes the
+registries, so the first run does not pay for a full pass.
+
+Passes never overlap. A run that asks while a pass runs waits for the next
+pass, which starts after it asked; runs that ask during the same pass share
+it. Each pass takes its turn with a hot-reload through `withExtensionMutation`
+(`src/serve/extension_reload.ts`). A failed check is logged and the run goes
+on with what is registered. While a pass rebundles an edited model, every run
+that starts meanwhile waits for it, about a second per edited source.
+
+A swap applies to every run from then on, including runs already under way:
+a step that resolves its model after the swap runs the new code, though the
+run's earlier steps ran the old. Edit models between runs when a run must use
+one version throughout.
+
+Repo-local vaults, datastores, reports and webhooks are not refreshed: a running
+serve keeps the code it loaded for them.

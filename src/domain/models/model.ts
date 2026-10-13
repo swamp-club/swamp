@@ -958,6 +958,57 @@ export class ModelRegistry {
   private extensionsAttached = new Set<string>();
   /** Types whose failed extension attach has already been warned about. */
   private extensionAttachWarned = new Set<string>();
+  private sourceRefresher: (() => Promise<void>) | null = null;
+  private sourceRefreshRunning: Promise<void> | null = null;
+  private sourceRefreshQueued: Promise<void> | null = null;
+
+  /**
+   * Configures how {@link refreshSources} brings registered types up to
+   * date with edited extension sources. Set once the index is built;
+   * `null` removes the hook.
+   */
+  setSourceRefresher(refresher: (() => Promise<void>) | null): void {
+    this.sourceRefresher = refresher;
+  }
+
+  /**
+   * Re-checks extension sources and swaps the types whose source changed,
+   * for a long-lived process such as `swamp serve` (swamp-club#3284). A
+   * one-shot command never needs it: it indexed its sources at startup.
+   *
+   * Passes never overlap. A call made while one runs waits for the next
+   * pass, which starts after that call, so it never settles on a pass
+   * that began before an edit it should see. Calls made during the same
+   * pass share that next pass.
+   *
+   * @param schedule runs each pass, e.g. inside a lock the caller shares
+   * with other code that swaps types
+   */
+  refreshSources(
+    schedule: (pass: () => Promise<void>) => Promise<void> = (pass) => pass(),
+  ): Promise<void> {
+    const refresher = this.sourceRefresher;
+    if (!refresher) return Promise.resolve();
+    if (this.sourceRefreshQueued) return this.sourceRefreshQueued;
+    const run = (): Promise<void> => {
+      const pass = schedule(refresher).finally(() => {
+        if (this.sourceRefreshRunning === pass) {
+          this.sourceRefreshRunning = null;
+        }
+      });
+      this.sourceRefreshRunning = pass;
+      return pass;
+    };
+    const running = this.sourceRefreshRunning;
+    if (!running) return run();
+    const next = () => {
+      this.sourceRefreshQueued = null;
+      return run();
+    };
+    const queued = running.then(next, next);
+    this.sourceRefreshQueued = queued;
+    return queued;
+  }
 
   /**
    * Configures the lazy loader for user extensions.
@@ -1050,6 +1101,7 @@ export class ModelRegistry {
   clearLoadersForTesting(): void {
     this.extensionLoader = null;
     this.typeLoader = null;
+    this.sourceRefresher = null;
     this.extensionsLoaded = false;
     this.extensionLoadPromise = null;
   }

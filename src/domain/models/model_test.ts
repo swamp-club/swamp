@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
@@ -1686,4 +1687,64 @@ Deno.test("ModelRegistry.invalidateType: re-register and reload after invalidati
   });
   await registry.ensureTypeLoaded("@myorg/echo");
   assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+});
+
+Deno.test("ModelRegistry.refreshSources: does nothing without a refresher", async () => {
+  await new ModelRegistry().refreshSources();
+});
+
+Deno.test("ModelRegistry.refreshSources: a call during a pass waits for a new pass, shared by its peers", async () => {
+  const registry = new ModelRegistry();
+  const starts: number[] = [];
+  const releases: Array<() => void> = [];
+  registry.setSourceRefresher(() => {
+    starts.push(starts.length + 1);
+    return new Promise<void>((resolve) => releases.push(resolve));
+  });
+
+  const first = registry.refreshSources();
+  assertEquals(starts.length, 1);
+  // Edits made now must not be judged by the pass already running.
+  const second = registry.refreshSources();
+  const third = registry.refreshSources();
+  assertEquals(starts.length, 1);
+
+  releases[0]();
+  await first;
+  await waitFor(() => starts.length === 2, "the second pass");
+  releases[1]();
+  await Promise.all([second, third]);
+  assertEquals(starts.length, 2);
+});
+
+Deno.test("ModelRegistry.refreshSources: a failed pass rejects its callers and does not block the next", async () => {
+  const registry = new ModelRegistry();
+  let calls = 0;
+  registry.setSourceRefresher(() => {
+    calls++;
+    return calls === 1
+      ? Promise.reject(new Error("scan failed"))
+      : Promise.resolve();
+  });
+
+  await assertRejects(() => registry.refreshSources(), Error, "scan failed");
+  await registry.refreshSources();
+  assertEquals(calls, 2);
+});
+
+Deno.test("ModelRegistry.refreshSources: each pass runs through the given schedule", async () => {
+  const registry = new ModelRegistry();
+  const order: string[] = [];
+  registry.setSourceRefresher(() => {
+    order.push("pass");
+    return Promise.resolve();
+  });
+
+  await registry.refreshSources(async (pass) => {
+    order.push("lock");
+    await pass();
+    order.push("unlock");
+  });
+
+  assertEquals(order, ["lock", "pass", "unlock"]);
 });

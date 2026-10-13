@@ -104,6 +104,7 @@ import { ExtensionRepository } from "../infrastructure/persistence/extension_rep
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
+import { createLocalModelRefresher } from "../domain/extensions/local_model_refresh.ts";
 import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
@@ -1262,6 +1263,39 @@ async function loadUserModels(
     // catalog.
     modelRegistry.setExtensionAttacher((type) =>
       loader.attachPendingExtensionsForType(type)
+    );
+    // For long-lived processes (swamp serve) to pick up edited local
+    // models (swamp-club#3284). The behaviors dir and the pulled dirs are
+    // resolved again on each pass: the scan drops catalog rows of every
+    // source it does not see, so it must walk the same dirs a fresh index
+    // would. The behaviors dir is watched even before it exists, so
+    // creating it counts as an edit.
+    const behaviorsCandidate = resolveBehaviorsDir(marker);
+    modelRegistry.setSourceRefresher(
+      createLocalModelRefresher(
+        loader,
+        absoluteModelsDir,
+        [
+          ...(behaviorsCandidate ? [resolve(extBase, behaviorsCandidate)] : []),
+          ...sourceDirs,
+        ],
+        async () => {
+          const behaviors = await existingBehaviorsDir(extBase, marker);
+          return {
+            localDirs: behaviors ? [behaviors] : [],
+            additionalDirs: [
+              ...sourceDirs,
+              ...await enumeratePulledExtensionDirs(
+                lockfilePath,
+                repoDir,
+                "models",
+                undefined,
+                localLockfilePath,
+              ),
+            ],
+          };
+        },
+      ),
     );
 
     for (const failure of result.failed) {

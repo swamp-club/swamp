@@ -1291,7 +1291,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `.swamp/config/pulled-extensions/` when the datastore manages config
   (`src/infrastructure/persistence/paths.ts`).
   [remote-execution §Hot-Reload](../enablers/remote-execution.md#hot-reload-for-pulled-extension-bundles)
-  covers the mechanism and its catalog constraint.
+  covers the mechanism and its catalog constraint. Edited repo-local models
+  need no reload: serve checks them before every run
+  ([remote-execution §Refresh of Edited Local Models](../enablers/remote-execution.md#refresh-of-edited-local-models)).
 
   Use `--hot-reload` for `managedConfig` deployments where pods must recover
   from datastore-only state without `kubectl exec`. Without it, `swamp serve
