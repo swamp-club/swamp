@@ -215,12 +215,7 @@ const PINNED: ReadonlyArray<
   {
     file: "src/cli/resolve_extension_files.ts",
     reason: "files, entry points or warnings of one extension package",
-    calls: [
-      "allDatastoreFiles.push(...datastoreImportResult.resolvedFiles)",
-      "allReportFiles.push(...reportImportResult.resolvedFiles)",
-      "allVaultFiles.push(...vaultImportResult.resolvedFiles)",
-      "allWebhookFiles.push(...webhookImportResult.resolvedFiles)",
-    ],
+    calls: [],
   },
   {
     file: "src/domain/access/grant_file.ts",

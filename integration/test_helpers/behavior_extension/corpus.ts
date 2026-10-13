@@ -32,6 +32,7 @@ import type { ExtensionFixture } from "./fixtures.ts";
 import { extractContentMetadata } from "../../../src/domain/extensions/extension_content_extractor.ts";
 import { modelCatalogGap } from "../../../src/domain/extensions/model_catalog_gap.ts";
 import { resolveExtensionFiles } from "../../../src/cli/resolve_extension_files.ts";
+import { DenoInfoModuleGraphReader } from "../../../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
 import type { RepositoryContext } from "../../../src/infrastructure/persistence/repository_factory.ts";
 import {
   extensionPushPrepare,
@@ -170,6 +171,7 @@ export async function preparePush(
     // Only workflow entries read the repository context; the corpus has none.
     repoContext: {} as RepositoryContext,
     logger: getLogger(["swamp", "test", "behavior-extension"]),
+    moduleGraphReader: new DenoInfoModuleGraphReader(Deno.execPath()),
   });
   return await extensionPushPrepare(createLibSwampContext(), prepareDeps(), {
     ...resolved,

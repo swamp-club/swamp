@@ -40,6 +40,7 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
+  createModuleGraphReader,
   findDenoConfig,
   isPulledExtensionManifest,
   projectConfigBoundary,
@@ -108,6 +109,7 @@ export const extensionQualityCommand = new Command()
         repoContext,
         logger: cliCtx.logger,
         extensionsDir,
+        moduleGraphReader: await createModuleGraphReader(),
       });
 
       const manifestDir = dirname(absoluteManifestPath);
@@ -154,6 +156,9 @@ export const extensionQualityCommand = new Command()
             includeFilePaths: resolved.includeFilePaths,
             additionalFilePaths: resolved.additionalFilePaths,
             binaryFilePaths: resolved.binaryFilePaths,
+            dataFilesByKind: resolved.dataFilesByKind,
+            sourcePlan: resolved.sourcePlan,
+            missingModules: resolved.missingModules,
             dryRun: true,
             registryChecks: "skip",
             denoConfigPath,
@@ -162,11 +167,26 @@ export const extensionQualityCommand = new Command()
             manifest: resolved.manifest,
             rootDir: resolved.extensionsRoot,
             manifestDir,
-            modelFilePaths: resolved.allModelFiles,
-            vaultFilePaths: resolved.allVaultFiles,
-            datastoreFilePaths: resolved.allDatastoreFiles,
-            reportFilePaths: resolved.allReportFiles,
-            webhookFilePaths: resolved.allWebhookFiles,
+            modelFilePaths: [
+              ...resolved.allModelFiles,
+              ...resolved.dataFilesByKind.models,
+            ],
+            vaultFilePaths: [
+              ...resolved.allVaultFiles,
+              ...resolved.dataFilesByKind.vaults,
+            ],
+            datastoreFilePaths: [
+              ...resolved.allDatastoreFiles,
+              ...resolved.dataFilesByKind.datastores,
+            ],
+            reportFilePaths: [
+              ...resolved.allReportFiles,
+              ...resolved.dataFilesByKind.reports,
+            ],
+            webhookFilePaths: [
+              ...resolved.allWebhookFiles,
+              ...resolved.dataFilesByKind.webhooks,
+            ],
             workflowFilePaths: resolved.workflowFiles.map((w) => w.sourcePath),
             additionalFilePaths: resolved.additionalFilePaths,
             binaryFilePaths: resolved.binaryFilePaths,

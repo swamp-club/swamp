@@ -42,6 +42,7 @@ import {
 } from "../src/libswamp/extensions/push.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import type { SwampError } from "../src/libswamp/errors.ts";
+import { kindDirectorySourcePlan } from "../src/libswamp/extensions/push_test_helpers.ts";
 
 const REFUSAL =
   "Private publication requires a paid plan or an eligible collective trial";
@@ -156,34 +157,37 @@ async function withScenario(
     };
     const input = (
       registryChecks: "collect" | "enforce",
-    ): ExtensionPushPrepareInput => ({
-      manifest,
-      repoDir: root,
-      manifestDir: root,
-      modelsDir: root,
-      allModelFiles: [source],
-      modelEntryPoints: [source],
-      vaultsDir: root,
-      allVaultFiles: [],
-      vaultEntryPoints: [],
-      datastoresDir: root,
-      allDatastoreFiles: [],
-      datastoreEntryPoints: [],
-      reportsDir: root,
-      allReportFiles: [],
-      reportEntryPoints: [],
-      webhooksDir: root,
-      allWebhookFiles: [],
-      webhookEntryPoints: [],
-      workflowFiles: [],
-      skillDirs: [],
-      allSkillFiles: [],
-      includeFilePaths: [],
-      additionalFilePaths: [],
-      binaryFilePaths: [],
-      dryRun: registryChecks === "collect",
-      registryChecks,
-    });
+    ): ExtensionPushPrepareInput => {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
+        manifest,
+        repoDir: root,
+        manifestDir: root,
+        modelsDir: root,
+        allModelFiles: [source],
+        modelEntryPoints: [source],
+        vaultsDir: root,
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        datastoresDir: root,
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: root,
+        allReportFiles: [],
+        reportEntryPoints: [],
+        webhooksDir: root,
+        allWebhookFiles: [],
+        webhookEntryPoints: [],
+        workflowFiles: [],
+        skillDirs: [],
+        allSkillFiles: [],
+        includeFilePaths: [],
+        additionalFilePaths: [],
+        binaryFilePaths: [],
+        dryRun: registryChecks === "collect",
+        registryChecks,
+      };
+      return { ...base, sourcePlan: kindDirectorySourcePlan(base) };
+    };
     await run({ registry, deps, input, root });
   } finally {
     await registry.shutdown();

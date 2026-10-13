@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { dirname, join } from "@std/path";
+import { dirname } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
@@ -27,20 +27,17 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
-  findDenoConfig,
-  findPackageJsonDir,
-  projectConfigBoundary,
+  createModuleGraphReader,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
-import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   REGISTRY_FORBIDDEN_CODE,
   REGISTRY_NOT_AUTHENTICATED_MESSAGE,
   REGISTRY_TOKEN_SCOPE_CODE,
 } from "../../infrastructure/http/extension_api_client.ts";
 import { VERSION } from "./version.ts";
-import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import {
   computePackageCacheHash,
@@ -296,35 +293,6 @@ export function buildAcceptedWarnings(prepared: {
   };
 }
 
-/**
- * Validates that node_modules/ exists alongside a package.json project.
- * Throws UserError with clear instructions if missing.
- */
-async function requireNodeModules(projectDir: string): Promise<void> {
-  const nodeModulesPath = join(projectDir, "node_modules");
-  try {
-    const stat = await Deno.stat(nodeModulesPath);
-    if (!stat.isDirectory) {
-      throw markErrorPaths(
-        new UserError(
-          `Expected node_modules/ to be a directory at ${nodeModulesPath}. ` +
-            `Run 'npm install' or 'deno install' in ${projectDir} first.`,
-        ),
-        [nodeModulesPath, projectDir],
-      );
-    }
-  } catch (error) {
-    if (error instanceof UserError) throw error;
-    throw markErrorPaths(
-      new UserError(
-        `No node_modules/ found at ${projectDir}. ` +
-          `Run 'npm install' or 'deno install' to install dependencies before pushing.`,
-      ),
-      [projectDir],
-    );
-  }
-}
-
 export const extensionPushCommand = new Command()
   .name("push")
   .description("Push an extension to the swamp registry")
@@ -437,6 +405,7 @@ export const extensionPushCommand = new Command()
         repoContext,
         logger: cliCtx.logger,
         extensionsDir,
+        moduleGraphReader: await createModuleGraphReader(),
       });
       const {
         manifest: sourceManifest,
@@ -476,51 +445,10 @@ export const extensionPushCommand = new Command()
           .debug`Version overridden with epoch suffix: ${manifest.version}`;
       }
 
-      // 2b. Detect project config for project-aware bundling and quality checks.
-      // The walk up from the manifest stops at the extensions root, so a
-      // manifest outside the repo never picks up a deno.json above it.
+      // 2b. The project config push bundles under, found while resolving
+      // files so the module graph is read under it too.
       const manifestDir = dirname(absoluteManifestPath);
-      const configBoundary = projectConfigBoundary(
-        manifestDir,
-        resolved.extensionsRoot,
-        repoDir,
-      );
-      const denoConfigPath = await findDenoConfig(manifestDir, configBoundary);
-      let packageJsonDir: string | undefined;
-      if (denoConfigPath) {
-        cliCtx.logger.debug`Found deno.json at ${denoConfigPath}`;
-      } else {
-        const candidateDir = await findPackageJsonDir(
-          manifestDir,
-          configBoundary,
-        );
-        if (candidateDir) {
-          const allEntryPoints = [
-            ...modelEntryPoints,
-            ...vaultEntryPoints,
-            ...datastoreEntryPoints,
-            ...reportEntryPoints,
-            ...webhookEntryPoints,
-          ];
-          let hasBare = false;
-          for (const ep of allEntryPoints) {
-            const src = await Deno.readTextFile(ep);
-            if (sourceHasBareSpecifiers(src)) {
-              hasBare = true;
-              break;
-            }
-          }
-          if (hasBare) {
-            packageJsonDir = candidateDir;
-            cliCtx.logger
-              .debug`Found package.json project at ${packageJsonDir}`;
-            await requireNodeModules(packageJsonDir);
-          } else {
-            cliCtx.logger
-              .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
-          }
-        }
-      }
+      const { denoConfigPath, packageJsonDir } = resolved;
 
       // 3. Create libswamp context and deps
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
@@ -548,11 +476,26 @@ export const extensionPushCommand = new Command()
         manifest,
         rootDir: resolved.extensionsRoot,
         manifestDir,
-        modelFilePaths: allModelFiles,
-        vaultFilePaths: allVaultFiles,
-        datastoreFilePaths: allDatastoreFiles,
-        reportFilePaths: allReportFiles,
-        webhookFilePaths: allWebhookFiles,
+        modelFilePaths: [
+          ...allModelFiles,
+          ...resolved.dataFilesByKind.models,
+        ],
+        vaultFilePaths: [
+          ...allVaultFiles,
+          ...resolved.dataFilesByKind.vaults,
+        ],
+        datastoreFilePaths: [
+          ...allDatastoreFiles,
+          ...resolved.dataFilesByKind.datastores,
+        ],
+        reportFilePaths: [
+          ...allReportFiles,
+          ...resolved.dataFilesByKind.reports,
+        ],
+        webhookFilePaths: [
+          ...allWebhookFiles,
+          ...resolved.dataFilesByKind.webhooks,
+        ],
         workflowFilePaths: workflowFiles.map((w) => w.sourcePath),
         additionalFilePaths,
         binaryFilePaths,
@@ -599,6 +542,9 @@ export const extensionPushCommand = new Command()
           includeFilePaths,
           additionalFilePaths,
           binaryFilePaths,
+          dataFilesByKind: resolved.dataFilesByKind,
+          sourcePlan: resolved.sourcePlan,
+          missingModules: resolved.missingModules,
           dryRun: options.dryRun ?? false,
           registryChecks,
           channel: options.channel,
@@ -749,6 +695,9 @@ export const extensionPushCommand = new Command()
                   includeFilePaths,
                   additionalFilePaths,
                   binaryFilePaths,
+                  dataFilesByKind: resolved.dataFilesByKind,
+                  sourcePlan: resolved.sourcePlan,
+                  missingModules: resolved.missingModules,
                   dryRun: options.dryRun ?? false,
                   registryChecks,
                   channel: options.channel,

@@ -352,7 +352,12 @@ examples and helper script details.
   relative to `extensions/models/`)
 - `vaults` paths resolve relative to `extensions/vaults/`
 - `datastores` paths resolve relative to `extensions/datastores/`
-- Only list entry-point files — local imports are auto-resolved and included
+- Only list entry-point files — every local module an entry point imports is
+  packaged, wherever it lives in the repo. A module more than one level above
+  the typed directory is copied to `_shared/` and the archived copies' imports
+  are rewritten to it. A missing local module fails the push, a literal dynamic
+  `import("./x.ts")` included, even inside `try`/`catch` (the bundle would fail
+  on it too)
 - Each entry-point is bundled into a standalone JS file for the registry
 - The registry catalog lists a behavior only when its entry point exports a
   plain `export const behavior = { ... }` (or `export const model = { ... }`)
@@ -579,10 +584,11 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    (private intent only: the collective's reported plan allows private
    extensions) and version exists (on any channel). A dry run reports them; a
    push stops at the first failure.
-3. **Resolve files** — collects behavior entry points, auto-resolves local
-   imports, resolves workflow dependencies. Files from `extensions/behaviors/`
-   are packed under the archive's `models/`; two files that would pack to the
-   same `models/` path fail the push ("would both be packed as").
+3. **Resolve files** — collects behavior entry points, reads each one's module
+   graph with `deno info` to find every local import, resolves workflow
+   dependencies. Files from `extensions/behaviors/` are packed under the
+   archive's `models/`; two files that would pack to the same `models/` path
+   fail the push ("would both be packed as").
 4. **Detect project config** — walks up from manifest directory to repo root
    looking for `deno.json` (takes priority) then `package.json`. If found and
    the extension uses bare specifiers, it is used for bundling. `deno.json` is

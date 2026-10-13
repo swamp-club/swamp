@@ -41,6 +41,8 @@ import {
   assertPathEquals,
   withMockedEnv,
 } from "../infrastructure/persistence/path_test_helpers.ts";
+import type { ModuleGraphReader } from "../domain/extensions/extension_source_graph.ts";
+import { regexModuleGraphReader as graphReader } from "./resolve_extension_files_test_helpers.ts";
 
 const logger = getLogger(["test"]);
 
@@ -90,6 +92,7 @@ Deno.test("resolveExtensionFiles resolves valid manifest with model files", asyn
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.manifest.name, "@test/myext");
@@ -116,6 +119,7 @@ Deno.test("resolveExtensionFiles throws UserError for missing manifest", async (
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Manifest file not found",
@@ -143,6 +147,7 @@ Deno.test("resolveExtensionFiles throws UserError for missing model file", async
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Model file not found",
@@ -177,6 +182,7 @@ Deno.test("resolveExtensionFiles throws UserError for missing additional file", 
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Additional file not found",
@@ -213,6 +219,7 @@ Deno.test("resolveExtensionFiles resolves additional files when present", async 
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.additionalFilePaths, [readmePath]);
@@ -245,6 +252,7 @@ Deno.test("resolveExtensionFiles resolves vault files from manifest", async () =
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.vaultEntryPoints, [join(vaultsDir, "my_vault.ts")]);
@@ -273,6 +281,7 @@ Deno.test("resolveExtensionFiles throws UserError for missing vault file", async
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Vault file not found",
@@ -304,6 +313,7 @@ Deno.test("resolveExtensionFiles returns empty vault arrays when no vaults in ma
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.vaultEntryPoints, []);
@@ -331,6 +341,7 @@ Deno.test("resolveExtensionFiles rejects path traversal in models", async () => 
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "must not contain '..'",
@@ -358,6 +369,7 @@ Deno.test("resolveExtensionFiles rejects absolute path in workflows", async () =
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "must not contain '..'",
@@ -398,6 +410,7 @@ Deno.test("resolveExtensionFiles preserves additionalFiles paths (absolute)", as
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.additionalFilePaths.length, 3);
@@ -443,6 +456,7 @@ Deno.test("resolveExtensionFiles rejects duplicate additionalFiles entries", asy
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Duplicate additionalFiles",
@@ -479,6 +493,7 @@ Deno.test("resolveExtensionFiles rejects case-folded duplicate additionalFiles",
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Duplicate additionalFiles",
@@ -518,6 +533,7 @@ Deno.test("resolveExtensionFiles rejects NFC/NFD unicode collisions", async () =
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Duplicate additionalFiles",
@@ -557,6 +573,7 @@ Deno.test("resolveExtensionFiles rejects symlinks in additionalFiles", async () 
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "symlink",
@@ -610,6 +627,7 @@ for (
             manifestPath,
             repoContext: stubRepoContext,
             logger,
+            moduleGraphReader: graphReader,
           }),
         UserError,
       );
@@ -636,6 +654,7 @@ Deno.test("resolveExtensionFiles: accepts nested files in additionalFiles and in
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     assertPathEquals(
       result.additionalFilePaths[0],
@@ -671,6 +690,7 @@ Deno.test("resolveExtensionFiles accepts zero-byte additionalFiles", async () =>
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     assertEquals(result.additionalFilePaths.length, 1);
   });
@@ -703,6 +723,7 @@ Deno.test("resolveExtensionFiles errors clearly when additionalFile missing", as
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "not found",
@@ -735,6 +756,7 @@ Deno.test("resolveExtensionFiles default paths.base resolves models from typedDi
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.manifest.paths.base, "typedDir");
@@ -768,6 +790,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves models from manife
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.manifest.paths.base, "manifest");
@@ -805,6 +828,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest fails clearly when entry no
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "stray.ts",
@@ -837,6 +861,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest applies to vaults", async (
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.vaultsDir, subdir);
@@ -874,6 +899,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest applies to include", async 
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.includeFilePaths, [join(subdir, "helper.ts")]);
@@ -909,6 +935,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves transitive imports
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     // Both entry and helper should be in the resolved set, sorted.
@@ -950,6 +977,7 @@ Deno.test("resolveExtensionFiles default paths.base preserves swamp-extensions p
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.modelsDir, modelsDir);
@@ -1021,6 +1049,7 @@ Deno.test("resolveExtensionFiles: rejects .ts file with UserError", async () => 
           manifestPath: "extensions/models/my_model.ts",
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Expected a manifest path but got a TypeScript/JavaScript file",
@@ -1037,6 +1066,7 @@ Deno.test("resolveExtensionFiles: rejects .js file with UserError", async () => 
           manifestPath: "extensions/models/my_model.js",
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "Expected a manifest path but got a TypeScript/JavaScript file",
@@ -1112,6 +1142,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves skills from manife
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.skillDirs.length, 1);
@@ -1148,6 +1179,7 @@ Deno.test("resolveExtensionFiles default paths.base resolves skills from repo ro
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.skillDirs.length, 1);
@@ -1190,6 +1222,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative o
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.skillDirs.length, 1);
@@ -1226,6 +1259,7 @@ Deno.test("resolveExtensionFiles multi-tool repo finds skill in secondary tool d
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.skillDirs.length, 1);
@@ -1263,6 +1297,7 @@ Deno.test("resolveExtensionFiles multi-tool deduplicates shared SKILL_DIRS paths
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.skillDirs.length, 1);
@@ -1312,6 +1347,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves workflows from man
       manifestPath,
       repoContext: stubWorkflowRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.workflowFiles.length, 1);
@@ -1363,6 +1399,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative f
       manifestPath,
       repoContext: stubWorkflowRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.workflowFiles.length, 1);
@@ -1400,6 +1437,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest rejects models entry starti
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "starts with 'models/'",
@@ -1434,6 +1472,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest rejects vaults entry starti
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "starts with 'vaults/'",
@@ -1473,6 +1512,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest rejects include entry start
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
       "starts with 'models/'",
@@ -1505,6 +1545,7 @@ Deno.test("resolveExtensionFiles paths.base=manifest allows unrelated subdirecto
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.modelEntryPoints, [join(subdir, "aws", "ec2.ts")]);
@@ -1535,6 +1576,7 @@ Deno.test("resolveExtensionFiles paths.base=typedDir allows models/ prefix in en
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.modelEntryPoints, [
@@ -1574,6 +1616,7 @@ Deno.test("resolveExtensionFiles extensionsDir overrides repo root for typed-key
       repoContext: stubRepoContext,
       logger,
       extensionsDir: extSubdir,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.datastoresDir, datastoresDir);
@@ -1609,6 +1652,7 @@ Deno.test("resolveExtensionFiles without extensionsDir infers the extensions roo
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     assertEquals(result.extensionsRoot, extSubdir);
     assertEquals(result.datastoresDir, datastoresDir);
@@ -1692,6 +1736,7 @@ Deno.test("resolveExtensionFiles: several workflows under one directory keep the
       manifestPath,
       repoContext: recordingWorkflowRepoContext(asked),
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
@@ -1734,6 +1779,7 @@ Deno.test("resolveExtensionFiles: bare workflow entries keep their file names", 
       manifestPath,
       repoContext: recordingWorkflowRepoContext(asked),
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
@@ -1775,6 +1821,7 @@ Deno.test("resolveExtensionFiles: a directory's only workflow is named after the
       manifestPath,
       repoContext: recordingWorkflowRepoContext(asked),
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
@@ -1807,6 +1854,7 @@ Deno.test("resolveExtensionFiles: mixed layouts name each workflow by its own ru
       manifestPath,
       repoContext: stubWorkflowRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(result.workflowFiles.map((wf) => wf.archiveName), [
@@ -1838,6 +1886,7 @@ Deno.test("resolveExtensionFiles: rejects two workflows that would share an arch
           manifestPath,
           repoContext: stubWorkflowRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -1877,11 +1926,82 @@ Deno.test("resolveExtensionFiles: rejects a dependency-resolved workflow that wo
           manifestPath,
           repoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
     assertStringIncludes(err.message, "referenced by a workflow step");
     assertStringIncludes(err.message, "deploy.yaml");
+  });
+});
+
+Deno.test("resolveExtensionFiles: a model a workflow step references has its imports resolved, and a missing one is reported", async () => {
+  await withTempRepo(async (dir) => {
+    await writeWorkflowFixture(dir, "deploy.yaml", "@test/deploy");
+    const manifestPath = await writeWorkflowManifest(dir, ["deploy.yaml"]);
+    // The fixture manifest's models resolve from the repo dir, where the
+    // dependency resolver looks for `<type>/model.ts`.
+    const helper = join(dir, "@test", "helper", "model.ts");
+    await Deno.mkdir(dirname(helper), { recursive: true });
+    await Deno.writeTextFile(helper, 'import "./gone.ts";\n');
+    const gone = join(dirname(helper), "gone.ts");
+    const repoContext = {
+      workflowRepo: {
+        findByName: (name: string) =>
+          Promise.resolve(
+            name === "deploy"
+              ? {
+                id: "deploy-wf",
+                jobs: [{
+                  steps: [{
+                    task: {
+                      isModelMethod: () => true,
+                      isWorkflow: () => false,
+                      data: { type: "model_method", modelIdOrName: "helper" },
+                    },
+                  }],
+                }],
+              }
+              : null,
+          ),
+        getPath: () => join(dir, "deploy.yaml"),
+      },
+      definitionRepo: {
+        findByNameGlobal: (name: string) =>
+          Promise.resolve(
+            name === "helper"
+              ? { type: { toNormalized: () => "@test/helper" } }
+              : null,
+          ),
+      },
+    } as unknown as RepositoryContext;
+    const read: string[] = [];
+    const reader: ModuleGraphReader = {
+      read(entryPoint) {
+        read.push(entryPoint);
+        return Promise.resolve({
+          modules: [{ path: entryPoint, kind: "code" as const }],
+          edges: [],
+          missing: entryPoint === helper
+            ? [{ path: gone, importer: helper, reason: "Module not found" }]
+            : [],
+        });
+      },
+    };
+
+    const resolved = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext,
+      logger,
+      moduleGraphReader: reader,
+    });
+    assertEquals(read.includes(helper), true);
+    assertEquals(resolved.missingModules, [{
+      path: gone,
+      importer: helper,
+      reason: "Module not found",
+    }]);
   });
 });
 
@@ -2007,6 +2127,7 @@ Deno.test("resolveExtensionFiles: --extensions-dir covers workflows and skills a
       repoContext: stubWorkflowRepoContext,
       logger,
       extensionsDir: ext,
+      moduleGraphReader: graphReader,
     });
     assertPackagedWholeExtension(result, ext);
   });
@@ -2021,6 +2142,7 @@ Deno.test("resolveExtensionFiles: an in-repo sub-directory extension resolves wi
       manifestPath,
       repoContext: stubWorkflowRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     assertPackagedWholeExtension(result, ext);
   });
@@ -2039,6 +2161,7 @@ Deno.test("resolveExtensionFiles: a sibling-checkout extension resolves without 
         manifestPath,
         repoContext: stubWorkflowRepoContext,
         logger,
+        moduleGraphReader: graphReader,
       });
       assertPackagedWholeExtension(result, sibling);
     } finally {
@@ -2067,6 +2190,7 @@ Deno.test("resolveExtensionFiles: a sub-directory manifest whose model lives und
       manifestPath: join(ext, "manifest.yaml"),
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     assertPathEquals(result.extensionsRoot, dir);
     assertEquals(result.modelEntryPoints, [
@@ -2093,6 +2217,7 @@ Deno.test("resolveExtensionFiles: a model present under both the repo dir and th
           manifestPath: join(ext, "manifest.yaml"),
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2136,6 +2261,7 @@ Deno.test("resolveExtensionFiles: with --extensions-dir a workflow present under
       repoContext: stubWorkflowRepoContext,
       logger,
       extensionsDir: ext,
+      moduleGraphReader: graphReader,
     });
     assertEquals(result.workflowFiles.length, 1);
     assertPathEquals(
@@ -2171,6 +2297,7 @@ Deno.test("resolveExtensionFiles: without the flag a workflow present under both
           manifestPath,
           repoContext: stubWorkflowRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2220,6 +2347,7 @@ Deno.test("resolveExtensionFiles: under paths.base manifest the manifest-dir cop
       manifestPath,
       repoContext: stubWorkflowRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     assertPathEquals(
       result.workflowFiles[0].sourcePath,
@@ -2245,6 +2373,7 @@ Deno.test("resolveExtensionFiles: with --extensions-dir a skill present under bo
       repoContext: stubRepoContext,
       logger,
       extensionsDir: ext,
+      moduleGraphReader: graphReader,
     });
     assertPathEquals(
       result.skillDirs[0].absolutePath,
@@ -2271,6 +2400,7 @@ Deno.test("resolveExtensionFiles: without the flag a skill present under both th
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2368,6 +2498,7 @@ Deno.test("resolveExtensionFiles: default in-repo search order for workflows and
           manifestPath,
           repoContext: stubWorkflowRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2385,6 +2516,7 @@ Deno.test("resolveExtensionFiles: default in-repo search order for workflows and
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2433,6 +2565,7 @@ Deno.test("resolveExtensionFiles: a skill present only under the home directory 
                 manifestPath,
                 repoContext: stubRepoContext,
                 logger,
+                moduleGraphReader: graphReader,
               }),
             UserError,
           ),
@@ -2465,6 +2598,7 @@ Deno.test("resolveExtensionFiles: a typed-key miss names the looked-in path, the
           repoContext: stubRepoContext,
           logger,
           extensionsDir: join(ext, "extensions"),
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2511,6 +2645,7 @@ Deno.test("resolveExtensionFiles: a typed-key miss points at a copy next to the 
           manifestPath,
           repoContext: stubRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2540,12 +2675,14 @@ Deno.test("resolveExtensionFiles: a directory argument and an absolute manifest 
       manifestPath: ext,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     const viaFile = await resolveExtensionFiles({
       repoDir: dir,
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
     assertPathEquals(viaDir.absoluteManifestPath, manifestPath);
     assertEquals(viaDir.modelEntryPoints, viaFile.modelEntryPoints);
@@ -2645,6 +2782,7 @@ Deno.test("resolveExtensionFiles: a skills-only manifest under the home director
                 manifestPath,
                 repoContext: stubRepoContext,
                 logger,
+                moduleGraphReader: graphReader,
               }),
             UserError,
           ),
@@ -2699,6 +2837,7 @@ Deno.test("resolveExtensionFiles: under paths.base manifest a root copy that is 
           manifestPath,
           repoContext: stubWorkflowRepoContext,
           logger,
+          moduleGraphReader: graphReader,
         }),
       UserError,
     );
@@ -2749,6 +2888,7 @@ Deno.test("resolveExtensionFiles lists a skill's files in per-level name order",
       manifestPath,
       repoContext: stubRepoContext,
       logger,
+      moduleGraphReader: graphReader,
     });
 
     assertEquals(

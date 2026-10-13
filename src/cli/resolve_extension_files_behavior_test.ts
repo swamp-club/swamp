@@ -27,6 +27,7 @@ import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import { resolveExtensionFiles } from "./resolve_extension_files.ts";
+import { regexModuleGraphReader } from "./resolve_extension_files_test_helpers.ts";
 import { UserError } from "../domain/errors.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -83,6 +84,7 @@ const resolveAt = (repoDir: string, manifestPath: string) =>
     manifestPath,
     repoContext: stubRepoContext,
     logger,
+    moduleGraphReader: regexModuleGraphReader,
   });
 
 Deno.test("resolveExtensionFiles: behaviors: entries, their imports and includes resolve from extensions/behaviors/", async () => {
