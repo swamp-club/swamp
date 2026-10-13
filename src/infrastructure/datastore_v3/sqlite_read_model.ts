@@ -488,9 +488,10 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<number> {
     if (page.length === 0) return 0;
     const batch = this.#writeBatch();
+    this.#state.beginBatch();
+    // Set only once the batch is open, so the finally below always clears it.
     const settled = Promise.withResolvers<void>();
     this.#pageInFlight = settled.promise;
-    this.#state.beginBatch();
     try {
       let applied = 0;
       try {

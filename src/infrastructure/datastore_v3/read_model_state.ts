@@ -888,7 +888,10 @@ export class ReadModelState {
           this.#db.exec("RELEASE state_change");
         } catch {
           // SQLite rolled the whole transaction back itself (a full disk,
-          // an I/O error): the savepoint is gone, and the cause is `error`.
+          // an I/O error), or the savepoint cannot be undone. Roll back
+          // everything, so the batch cannot commit half of this change:
+          // its commitBatch then fails, and the cause is still `error`.
+          rollbackQuietly(this.#db);
         }
         throw error;
       }

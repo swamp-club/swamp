@@ -840,6 +840,46 @@ Deno.test("read model: a syncing removal syncs the deepest directory its cleanup
   });
 });
 
+Deno.test("read model: a page that cannot open its state batch leaves reads working (swamp-club#3337)", async () => {
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const readModel = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:1"),
+    });
+    await readModel.catchUp(signal());
+    await env.store.append(
+      modelCommit(6, [deleteVersion("a", 2)], { fence: 1 }),
+    );
+    // Another connection holds the write lock, so the next page's BEGIN
+    // IMMEDIATE fails once the busy timeout runs out.
+    const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      await assertRejects(() => readModel.catchUp(signal()));
+      db.exec("ROLLBACK");
+      // The read settles rather than waiting for a page that never started.
+      const deadline = AbortSignal.timeout(10_000);
+      const outcome = await Promise.race([
+        readModel.chunksInUse("").then(
+          () => "resolved",
+          (error) =>
+            error instanceof ReadModelIncompleteError
+              ? "incomplete"
+              : String(error),
+        ),
+        new Promise<string>((resolve) =>
+          deadline.addEventListener("abort", () => resolve("hung"))
+        ),
+      ]);
+      assertEquals(outcome, "resolved");
+    } finally {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      db.close();
+      await readModel.close();
+    }
+  });
+});
+
 Deno.test("read model: a partition catch-up is not applied again by catchUp", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {
