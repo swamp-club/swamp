@@ -61,6 +61,7 @@ import { ProvenanceMap } from "./provenance_map.ts";
 import {
   failedOnForeignRoot,
   isForeignExpression,
+  unlistedForeignRoots,
 } from "./swamp_namespaces.ts";
 import {
   attachBindingProvenance,
@@ -390,7 +391,8 @@ export interface EvaluatedDefinition {
  * What a pass over data does with another templating system's `${{ ... }}`
  * text (see {@link isForeignExpression}) that fails to evaluate: `"fail"`
  * rethrows, as for any failed expression; `"passThrough"` leaves it raw when
- * it failed on its foreign root (see {@link failedOnForeignRoot}).
+ * it failed on its foreign root (see {@link failedOnForeignRoot}) and reads
+ * no unlisted root (see {@link unlistedForeignRoots}).
  * Only a step's task inputs pass it through. Everything else a step-time
  * pass covers (placement, say) must be resolved by swamp.
  */
@@ -560,7 +562,8 @@ export class ExpressionEvaluationService {
         if (
           foreignText === "passThrough" &&
           isForeignExpression(expr.celExpression) &&
-          failedOnForeignRoot(error)
+          failedOnForeignRoot(error) &&
+          unlistedForeignRoots(expr.celExpression).length === 0
         ) continue;
         throw error;
       }

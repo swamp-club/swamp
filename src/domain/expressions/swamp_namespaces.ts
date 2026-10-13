@@ -23,6 +23,8 @@ import {
   type References,
   transformHyphenatedModelRefs,
 } from "./cel_grammar.ts";
+import { lexSegments } from "./cel_string_lexer.ts";
+import { isDeferredExpression } from "./deferred_expression.ts";
 import { extractExpressions } from "./expression_parser.ts";
 import { levenshteinDistance } from "../string_distance.ts";
 import {
@@ -51,6 +53,58 @@ const SWAMP_ROOT_NAMESPACES: ReadonlySet<string> = new Set([
   "steps",
   "webhook",
 ]);
+
+/**
+ * Root identifiers of other templating systems that share the `${{ ... }}`
+ * syntax: the GitHub Actions contexts swamp does not bind itself, and the
+ * Gitea and Forgejo equivalents of `github`. Only these pass through a
+ * workflow step's arguments (see {@link unlistedForeignRoots}). This set is
+ * the one place the list lives; a new root is added here, with a test.
+ */
+const KNOWN_FOREIGN_ROOTS: ReadonlySet<string> = new Set([
+  "github",
+  "gitea",
+  "forgejo",
+  "matrix",
+  "secrets",
+  "vars",
+  "needs",
+  "runner",
+  "job",
+  "jobs",
+  "strategy",
+]);
+
+/**
+ * A member chain on a known foreign root, written with no spaces and holding
+ * hyphens: `matrix.node-version`, `needs.build-app.outputs.sha`.
+ */
+const HYPHENATED_FOREIGN_REF = new RegExp(
+  `(?<![A-Za-z0-9_.])(?:${[...KNOWN_FOREIGN_ROOTS].join("|")})` +
+    "\\.[A-Za-z0-9_.-]*[A-Za-z0-9_]",
+  "g",
+);
+
+/**
+ * Reads the hyphens in a member chain on a known foreign root as part of its
+ * names. Those systems have no subtraction, and name things with hyphens
+ * (`matrix.node-version`), which CEL parses as `matrix.node - version` with
+ * `version` a root of its own. Text inside string literals and comments is
+ * left alone.
+ */
+function joinHyphenatedForeignRefs(celExpression: string): string {
+  let out = "";
+  for (const seg of lexSegments(celExpression)) {
+    const text = celExpression.slice(seg.start, seg.end);
+    out += seg.kind === "code"
+      ? text.replace(
+        HYPHENATED_FOREIGN_REF,
+        (ref) => ref.replaceAll("-", "_"),
+      )
+      : text;
+  }
+  return out;
+}
 
 /** What a swamp evaluation provides, to judge whether an expression is swamp's. */
 export interface SwampScope {
@@ -113,6 +167,29 @@ export function foreignRootsBesideVault(celExpression: string): string[] {
 }
 
 /**
+ * The free root identifiers of an expression that are neither a swamp
+ * namespace nor a known foreign root (see {@link KNOWN_FOREIGN_ROOTS}), such
+ * as `nonexistent` in `github.sha + nonexistent.variable`. A workflow step
+ * argument passes through as another templating system's text only when
+ * there are none: an unlisted root is far more likely a typo, so it fails
+ * (swamp-club#3400). Empty for text that does not parse.
+ *
+ * A hyphenated name on a known foreign root is one name, so `version` is no
+ * root of `matrix.node-version` (see {@link joinHyphenatedForeignRefs}).
+ * Swamp's own reference to a deferred expression is no unlisted root either:
+ * it is judged where the reference is resolved.
+ */
+export function unlistedForeignRoots(celExpression: string): string[] {
+  const roots = attributedRoots(joinHyphenatedForeignRefs(celExpression)) ??
+    attributedRoots(celExpression);
+  if (roots === undefined) return [];
+  return [...roots].filter((root) =>
+    !SWAMP_ROOT_NAMESPACES.has(root) && !KNOWN_FOREIGN_ROOTS.has(root) &&
+    !isDeferredExpression(root)
+  );
+}
+
+/**
  * The free root identifiers of an expression, with each `vault.get` argument
  * read as the resolver reads it, or undefined when the text does not parse.
  *
@@ -159,20 +236,6 @@ export interface MisspeltNamespace {
 }
 
 /**
- * Words one slip away from a swamp namespace that are far more likely another
- * system's root than a typo, so {@link misspeltSwampNamespace} leaves them be.
- */
-const NOT_A_MISSPELLING: ReadonlySet<string> = new Set([
-  "mode",
-  "modal",
-  "files",
-  "fault",
-  "stops",
-  "shelf",
-  "rune",
-]);
-
-/**
  * Whether `root` is `namespace` with one slip of the hand: a letter dropped
  * or added, two adjacent letters swapped, or, in a namespace of five letters
  * or more, one letter replaced. Replacing a letter in a short namespace
@@ -197,14 +260,12 @@ function isSlipOf(root: string, namespace: string): boolean {
 /**
  * The first free root identifier of a CEL expression that is not a swamp
  * namespace but nearly spells one (see {@link isSlipOf}): `input` for
- * `inputs`, `modle` for `model`. Such text is foreign by
- * {@link isForeignExpression}, yet is far more likely a typo than another
- * templating system's text.
+ * `inputs`, `modle` for `model`. Such a root is unlisted (see
+ * {@link unlistedForeignRoots}), so the expression fails either way; this
+ * only supplies the "Did you mean" hint.
  *
- * The roots GitHub Actions binds that swamp does not (`github`, `matrix`,
- * `secrets`, `vars`, `needs`, `runner`, `job`, `strategy`) are near none, and
- * neither are ordinary words such as `node`, `stats` or `date`. A few words
- * that are one slip away are excluded by name (`mode`, `files`).
+ * The known foreign roots are never named, and are near no namespace anyway.
+ * Neither are ordinary words such as `node`, `stats` or `date`.
  *
  * Returns undefined for text that does not parse.
  */
@@ -224,7 +285,7 @@ export function misspeltSwampNamespace(
   };
   collectReferences(ast, new Set(), refs);
   for (const root of refs.roots) {
-    if (SWAMP_ROOT_NAMESPACES.has(root) || NOT_A_MISSPELLING.has(root)) {
+    if (SWAMP_ROOT_NAMESPACES.has(root) || KNOWN_FOREIGN_ROOTS.has(root)) {
       continue;
     }
     for (const namespace of SWAMP_ROOT_NAMESPACES) {
@@ -235,10 +296,11 @@ export function misspeltSwampNamespace(
 }
 
 /**
- * Whether an evaluation failed because the expression read a root identifier
- * that is not a swamp namespace: CEL's "Unknown variable" error, naming such
- * a root. Any other failure of an expression that mentions a foreign root is
- * a real error. In `has(inputs.cache) ? data.latest("m", "d") : github.sha`,
+ * Whether an evaluation failed because the expression read a known foreign
+ * root (see {@link KNOWN_FOREIGN_ROOTS}): CEL's "Unknown variable" error,
+ * naming such a root, or swamp's own reference to a deferred expression,
+ * which is left raw as before. Any other failure of an expression that mentions a
+ * foreign root is a real error. In `has(inputs.cache) ? data.latest("m", "d") : github.sha`,
  * a datastore error from `data.latest` must surface, not turn the whole
  * expression into literal text.
  */
@@ -251,7 +313,10 @@ export function failedOnForeignRoot(error: unknown): boolean {
     const match = /Unknown variable: ([A-Za-z_][A-Za-z0-9_]*)/.exec(
       current.message,
     );
-    if (match) return !SWAMP_ROOT_NAMESPACES.has(match[1]);
+    if (match) {
+      return KNOWN_FOREIGN_ROOTS.has(match[1]) ||
+        isDeferredExpression(match[1]);
+    }
   }
   return false;
 }

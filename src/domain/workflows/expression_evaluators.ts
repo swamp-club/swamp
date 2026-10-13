@@ -68,6 +68,7 @@ import {
   isForeignExpression,
   type MisspeltNamespace,
   misspeltSwampNamespace,
+  unlistedForeignRoots,
 } from "../expressions/swamp_namespaces.ts";
 
 /** Collect template expressions and bare assertion predicates from source. */
@@ -175,10 +176,23 @@ export interface ForeignTaskArgument {
    * `self.*`, `steps.*` or step output), so it has not been tried yet.
    */
   deferred?: true;
-  /**
-   * Set when a root nearly spells a swamp namespace (`input` for `inputs`),
-   * so the text is more likely a typo than another system's.
-   */
+}
+
+/**
+ * One `${{ ... }}` expression in a step's arguments that reads a root which
+ * is neither a swamp namespace nor a known foreign root (see
+ * {@link unlistedForeignRoots}). A run fails on it.
+ */
+export interface UnlistedTaskArgument {
+  jobName: string;
+  stepName: string;
+  /** Path within the task, such as `inputs.run`. */
+  path: string;
+  /** The text as written, such as `${{ nonexistent.variable }}`. */
+  text: string;
+  /** The unlisted roots it reads, such as `nonexistent`. */
+  roots: string[];
+  /** Set when a root nearly spells a swamp namespace (`input` for `inputs`). */
   misspelt?: MisspeltNamespace;
 }
 
@@ -326,8 +340,13 @@ const TASK_TARGET_OR_RECORD =
 
 /** Another templating system's `${{ ... }}` text in the tasks of a workflow. */
 export interface ForeignTaskText {
-  /** In step arguments: left raw, and reaches the method as literal text. */
+  /**
+   * In step arguments, with every foreign root a known one: left raw, and
+   * reaches the method as literal text.
+   */
   arguments: ForeignTaskArgument[];
+  /** In step arguments, reading an unlisted root: a run fails on it. */
+  unlisted: UnlistedTaskArgument[];
   /**
    * In what the step runs, or as a whole-field record expression: swamp must
    * resolve it, so a run fails on it.
@@ -337,12 +356,26 @@ export interface ForeignTaskText {
 
 /** Finds the foreign `${{ ... }}` text in the tasks of `workflow`, as authored. */
 export function findForeignTaskText(workflow: Workflow): ForeignTaskText {
-  const found: ForeignTaskText = { arguments: [], unresolvable: [] };
+  const found: ForeignTaskText = {
+    arguments: [],
+    unlisted: [],
+    unresolvable: [],
+  };
   for (const expr of extractExpressions(workflow.toData())) {
     const foreign = foreignTaskText(workflow, expr);
     if (!foreign) continue;
     if (NESTED_TASK_ARGUMENT.test(foreign.path)) {
-      found.arguments.push(foreign);
+      const roots = unlistedForeignRoots(expr.celExpression);
+      if (roots.length === 0) {
+        found.arguments.push(foreign);
+        continue;
+      }
+      const misspelt = misspeltSwampNamespace(expr.celExpression);
+      found.unlisted.push({
+        ...foreign,
+        roots,
+        ...(misspelt ? { misspelt } : {}),
+      });
     } else if (TASK_TARGET_OR_RECORD.test(foreign.path)) {
       found.unresolvable.push(foreign);
     }
@@ -359,13 +392,11 @@ function foreignTaskText(
   const job = workflow.jobs[Number(match[1])];
   const step = job?.steps[Number(match[2])];
   if (!job || !step) return undefined;
-  const misspelt = misspeltSwampNamespace(expr.celExpression);
   return {
     jobName: job.name,
     stepName: step.name,
     path: match[3],
     text: expr.raw,
-    ...(misspelt ? { misspelt } : {}),
   };
 }
 
@@ -388,7 +419,9 @@ function foreignTaskText(
  * fails on its foreign root (any other error still propagates), left raw so
  * it reaches the method as literal text, and
  * returned in `foreignTaskArguments`, along with such text deferred to step
- * time.
+ * time. Every root swamp does not bind must be a known foreign one: text
+ * reading any other root, such as `${{ nonexistent.variable }}`, fails like
+ * any expression (swamp-club#3400).
  */
 export class WorkflowExpressionEvaluator {
   constructor(private readonly celEvaluator: CelExpressionEvaluator) {}
@@ -505,7 +538,9 @@ export class WorkflowExpressionEvaluator {
       }
 
       // Strict: per-expression eval errors propagate, except for another
-      // templating system's text in a step argument, which stays raw.
+      // templating system's text in a step argument, which stays raw. CEL
+      // stops at the first unknown name, so the failing root being a known
+      // one says nothing about the others: every root is checked.
       let value: unknown;
       try {
         value = await this.celEvaluator.evaluateAsync(
@@ -516,7 +551,8 @@ export class WorkflowExpressionEvaluator {
         const foreign = foreignTaskText(workflow, expr);
         if (
           !foreign || !NESTED_TASK_ARGUMENT.test(foreign.path) ||
-          !failedOnForeignRoot(error)
+          !failedOnForeignRoot(error) ||
+          unlistedForeignRoots(expr.celExpression).length > 0
         ) throw error;
         failedForeignPaths.add(expr.path);
         continue;
@@ -532,6 +568,8 @@ export class WorkflowExpressionEvaluator {
       if (evaluatedValues.has(expr.raw)) continue;
       const foreign = foreignTaskText(workflow, expr);
       if (!foreign || !NESTED_TASK_ARGUMENT.test(foreign.path)) continue;
+      // Deferred text reading an unlisted root fails when its step runs.
+      if (unlistedForeignRoots(expr.celExpression).length > 0) continue;
       foreignTaskArguments.push(
         failedForeignPaths.has(expr.path)
           ? foreign
