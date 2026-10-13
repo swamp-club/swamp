@@ -114,6 +114,7 @@ const STORES: [string, OpenStore][] = [
     // binds it on a bucket (swamp-club#3364).
     const remote = createInMemoryRemote({ controlPlane: true });
     const store = datastoreWriterLeaseStore({
+      datastoreWideLease: true,
       datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore!(),
     }, "@test/remote");
     return Promise.resolve({ store, close: () => Promise.resolve() });

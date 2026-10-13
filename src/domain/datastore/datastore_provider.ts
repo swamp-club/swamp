@@ -68,9 +68,28 @@ export interface DatastoreProvider {
    * relies on that service not having bound a namespace yet.
    *
    * A provider may return a `WritableDatastoreControlPlaneStore`. The
-   * v3 writer lease needs one, so a v3-capable datastore must.
+   * v3 writer lease needs one, so a v3-capable datastore must, and must
+   * also declare {@link datastoreWideLease}: the store's shape alone does
+   * not show that its records stay at the root.
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+
+  /**
+   * `true` declares that this datastore can hold the v3 writer lease: no
+   * namespaced pull or push moves or copies the records under
+   * `_control/writer/`, so they stay at the datastore root whatever
+   * namespace a checkout syncs, and {@link datastoreControlPlaneStore}
+   * returns a `WritableDatastoreControlPlaneStore`. It promises nothing
+   * about any other `_control/` record.
+   *
+   * Only the literal `true` declares it. Without it swamp refuses to bind
+   * the lease, since a push that moved `_control/writer/` into a namespace
+   * would let a second writer take a fence already in use (swamp-club#3414).
+   * Declare it only in a release whose push skips `_control/writer/`, and
+   * check it with `assertWritableDatastoreControlPlaneStoreConformance`,
+   * namespaced-push case included.
+   */
+  readonly datastoreWideLease?: boolean;
 
   /**
    * Return the `storage/1` chunk storage for a v3 datastore

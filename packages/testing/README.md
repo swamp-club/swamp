@@ -326,6 +326,11 @@ the suite did not write: run it against an empty bucket or prefix, never one a
 swamp uses. It syncs a fresh namespace of its own and leaves that namespace's
 index and the legacy index behind, and can leave its one data file.
 
+Swamp binds the v3 writer lease only to a provider that declares
+`datastoreWideLease: true`; the store's shape is not enough. Declare it only in
+a release whose namespaced push leaves `_control/writer/` at the root, and
+assert in that release's test that the namespaced-push case ran, as below.
+
 ```typescript
 Deno.test("writable datastore-wide control-plane store conformance", async () => {
   const openSyncFixture = async () => {
@@ -335,7 +340,7 @@ Deno.test("writable datastore-wide control-plane store conformance", async () =>
       cacheDir,
     };
   };
-  await assertWritableDatastoreControlPlaneStoreConformance({
+  const result = await assertWritableDatastoreControlPlaneStoreConformance({
     openDatastoreStore: () =>
       provider
         .datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
@@ -352,6 +357,8 @@ Deno.test("writable datastore-wide control-plane store conformance", async () =>
         }),
       ),
   });
+  // The provider declares datastoreWideLease, so the case must have run.
+  assertEquals(result.namespacedPushSkipped, undefined);
 });
 ```
 

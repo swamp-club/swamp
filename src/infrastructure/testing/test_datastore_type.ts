@@ -58,6 +58,11 @@ export interface TestDatastoreTypeOptions {
    * null, so a test can share one lock table between clones.
    */
   createLock?: (options?: LockOptions) => DistributedLock;
+  /**
+   * Sets the provider's `datastoreWideLease`. Unset by default, so the type
+   * never claims the v3 writer lease contract unless a test asks it to.
+   */
+  datastoreWideLease?: boolean;
 }
 
 /**
@@ -113,6 +118,9 @@ export function registerTestDatastoreType(
       // PushManifest; core only hands it back to the same commitPush.
       createSyncService: (_repoDir: string, cachePath: string) =>
         remote.connect(cachePath) as unknown as DatastoreSyncService,
+      ...(options.datastoreWideLease !== undefined
+        ? { datastoreWideLease: options.datastoreWideLease }
+        : {}),
       ...(remote.datastoreControlPlaneStore
         ? {
           datastoreControlPlaneStore: () =>

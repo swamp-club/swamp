@@ -24,9 +24,14 @@
  * `commits.db`, and so one writer, per datastore, so the lease is never
  * scoped to a namespace.
  *
+ * The provider must declare `datastoreWideLease`: a writable store shows
+ * only that the records can be written at the root, not that a namespaced
+ * push leaves them there (swamp-club#3414).
+ *
  * Dormant: format 3 is refused on every datastore but a filesystem one, so
  * nothing calls it until the Phase 4 bucket opt-in binds the lease through
- * it.
+ * it. That opt-in must bind the lease only through this function, so it
+ * cannot be enabled against an extension that does not declare it.
  *
  * @module
  */
@@ -40,13 +45,22 @@ import { UserError } from "../../domain/errors.ts";
 
 /**
  * The provider's writable datastore-wide control plane, for the v3 writer
- * lease. Throws when the provider offers none, or only a read-only one: a
- * sync service's control plane binds a namespace, so it can never stand in.
+ * lease. Throws when the provider does not declare `datastoreWideLease`, or
+ * offers no store or only a read-only one: a sync service's control plane
+ * binds a namespace, so it can never stand in.
  */
 export function datastoreWriterLeaseStore(
-  provider: Pick<DatastoreProvider, "datastoreControlPlaneStore">,
+  provider: Pick<
+    DatastoreProvider,
+    "datastoreControlPlaneStore" | "datastoreWideLease"
+  >,
   datastoreType: string,
 ): WritableDatastoreControlPlaneStore {
+  if (provider.datastoreWideLease !== true) {
+    throw new UserError(
+      `The ${datastoreType} datastore does not declare datastoreWideLease, so it cannot hold a v3 writer lease: nothing says a namespaced push keeps _control/writer/ at the datastore root. Update the datastore extension to a version that declares it.`,
+    );
+  }
   const store = provider.datastoreControlPlaneStore?.();
   if (store !== undefined && isWritableDatastoreControlPlaneStore(store)) {
     return store;
