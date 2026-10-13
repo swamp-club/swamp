@@ -266,7 +266,21 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
       setFocusTarget({ ...target, nonce: failureRequest.nonce });
     }
     setFailureRequest(null);
-  }, [failureRequest, run, setTab, setSelectedJob]);
+    // The request is handled: drop `?focus=failure[&step=]` so closing an
+    // unrelated drawer later (which fires `popstate` via `history.back()`)
+    // doesn't read it off the URL and snap back here again.
+    if (focusParam !== null) setFocusParam(null);
+    if (stepParam !== null) setStepParam(null);
+  }, [
+    failureRequest,
+    run,
+    setTab,
+    setSelectedJob,
+    focusParam,
+    stepParam,
+    setFocusParam,
+    setStepParam,
+  ]);
 
   // A failure link followed while already on this run (see navigateToHref).
   useEffect(() => {
