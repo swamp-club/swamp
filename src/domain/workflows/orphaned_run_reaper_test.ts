@@ -20,6 +20,8 @@ import { assertEquals, assertRejects } from "@std/assert";
 import {
   cancelOrphanedMethodRuns,
   findDeadOwnerMethodRuns,
+  type GoneInstanceCheck,
+  goneInstanceIds,
   matchMethodRunOutputs,
   type MethodRunOutputs,
   ownerExitedReason,
@@ -437,6 +439,7 @@ function trackerRow(
     pid?: number;
     hostname?: string;
     instanceId?: string;
+    heartbeatAt?: string;
   } = {},
 ): ActiveRun {
   const now = new Date().toISOString();
@@ -449,7 +452,7 @@ function trackerRow(
     pid: overrides.pid ?? 4242,
     hostname: overrides.hostname ?? HOST,
     startedAt: now,
-    heartbeatAt: now,
+    heartbeatAt: overrides.heartbeatAt ?? now,
     status: overrides.status ?? "running",
     initiatedBy: null,
     instanceId: overrides.instanceId,
@@ -499,6 +502,103 @@ function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
     recorded,
   };
 }
+
+const GONE_NOW = Date.parse("2026-01-01T00:10:00.000Z");
+const GONE_TTL_MS = 90_000;
+
+function goneCheck(
+  overrides: Partial<GoneInstanceCheck> & { deadPids?: number[] } = {},
+): GoneInstanceCheck {
+  return {
+    liveness: { ...liveness(overrides.deadPids), instanceId: "self" },
+    selfPid: 1,
+    hasHeartbeat: () => false,
+    staleTtlMs: GONE_TTL_MS,
+    now: GONE_NOW,
+    ...overrides,
+  };
+}
+
+function rowAged(
+  ageMs: number,
+  overrides: Parameters<typeof trackerRow>[1] = {},
+): ActiveRun {
+  return trackerRow(crypto.randomUUID(), {
+    instanceId: "old",
+    heartbeatAt: new Date(GONE_NOW - ageMs).toISOString(),
+    ...overrides,
+  });
+}
+
+Deno.test("goneInstanceIds: a row on this host with a dead pid and no heartbeat marks its instance gone", () => {
+  assertEquals(
+    [...goneInstanceIds([rowAged(0)], goneCheck({ deadPids: [4242] }))],
+    ["old"],
+  );
+});
+
+Deno.test("goneInstanceIds: a row on this host carrying the caller's own pid marks its instance gone", () => {
+  assertEquals(
+    [...goneInstanceIds([rowAged(0, { pid: 1 })], goneCheck())],
+    ["old"],
+  );
+});
+
+Deno.test("goneInstanceIds: a row on this host with a live pid keeps its instance, whatever its age", () => {
+  assertEquals(
+    goneInstanceIds([rowAged(GONE_TTL_MS * 10)], goneCheck()).size,
+    0,
+  );
+});
+
+Deno.test("goneInstanceIds: a row owned on another host waits out the stale ttl", () => {
+  const check = goneCheck({ deadPids: [4242] });
+  assertEquals(
+    goneInstanceIds(
+      [rowAged(GONE_TTL_MS, { hostname: "other-host" })],
+      check,
+    ).size,
+    0,
+  );
+  assertEquals(
+    [...goneInstanceIds(
+      [rowAged(GONE_TTL_MS + 1, { hostname: "other-host" })],
+      check,
+    )],
+    ["old"],
+  );
+});
+
+Deno.test("goneInstanceIds: an instance with a heartbeat, the caller's own rows and rows with no instance id are never gone", () => {
+  const check = goneCheck({
+    deadPids: [4242],
+    hasHeartbeat: (id) => id === "beating",
+  });
+  const rows = [
+    rowAged(0, { instanceId: "beating" }),
+    rowAged(0, { instanceId: "self" }),
+    rowAged(0, { instanceId: undefined }),
+  ];
+  assertEquals(goneInstanceIds(rows, check).size, 0);
+});
+
+Deno.test("goneInstanceIds: one live row keeps the whole instance, in either order", () => {
+  const dead = rowAged(0, { pid: 4242 });
+  const alive = rowAged(0, { pid: 7 });
+  const check = goneCheck({ deadPids: [4242] });
+  assertEquals(goneInstanceIds([dead, alive], check).size, 0);
+  assertEquals(goneInstanceIds([alive, dead], check).size, 0);
+});
+
+Deno.test("goneInstanceIds: rows that are not running are ignored", () => {
+  assertEquals(
+    goneInstanceIds(
+      [rowAged(0, { status: "suspended" })],
+      goneCheck({ deadPids: [4242] }),
+    ).size,
+    0,
+  );
+});
 
 Deno.test("trackerShowsDeadOwner: only a local running or interrupted row with a dead pid counts", () => {
   const id = crypto.randomUUID();

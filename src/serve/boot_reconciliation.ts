@@ -32,9 +32,15 @@ import type {
   DatastoreSyncService,
   MarkDirtyHook,
 } from "../domain/datastore/datastore_sync_service.ts";
-import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
+import {
+  DEFAULT_STALE_TTL_MS,
+  InstanceHeartbeatService,
+} from "./instance_heartbeat.ts";
 import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
-import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
+import {
+  localOwnerLiveness,
+  type PendingRunEntry,
+} from "../infrastructure/persistence/run_tracker_store.ts";
 import { isSensitiveHeader } from "./webhook.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
@@ -45,6 +51,10 @@ import type {
   VaultProvider,
 } from "../domain/vaults/vault_provider.ts";
 import type { WorkflowRunRepository } from "../domain/workflows/repositories.ts";
+import {
+  goneInstanceIds,
+  type OwnerLiveness,
+} from "../domain/workflows/orphaned_run_reaper.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
@@ -524,11 +534,21 @@ export interface ReconcileRemoteInterruptedRunsDeps {
    * (swamp-club#3056).
    */
   markDirty?: MarkDirtyHook;
+  /**
+   * How a tracker row's host and pid are judged. Defaults to this host's
+   * name and process table.
+   */
+  ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead">;
 }
 
 /**
  * Scan heartbeats from the control-plane store and interrupt runs
  * belonging to instances that have gone stale (crashed / lost network).
+ *
+ * Runs in the local tracker whose instance has no heartbeat at all are
+ * interrupted too (see {@link goneInstanceIds}): a peer that claimed the
+ * instance first deleted its heartbeat without seeing these runs
+ * (swamp-club#3355).
  *
  * When putIfAbsent is available, claims each stale instance before
  * reaping to prevent multiple instances from reconciling the same peer.
@@ -542,7 +562,6 @@ export async function reconcileRemoteInterruptedRuns(
   deps: ReconcileRemoteInterruptedRunsDeps,
 ): Promise<number> {
   const heartbeatKeys = await deps.controlPlaneStore.list("heartbeats/");
-  if (heartbeatKeys.length === 0) return 0;
 
   const staleInstances: Array<{ instanceId: string; heartbeatKey: string }> =
     [];
@@ -556,8 +575,6 @@ export async function reconcileRemoteInterruptedRuns(
       staleInstances.push({ instanceId: record.instanceId, heartbeatKey: key });
     }
   }
-
-  if (staleInstances.length === 0) return 0;
 
   const claimedInstanceIds: string[] = [];
   const claimedHeartbeatKeys: string[] = [];
@@ -584,16 +601,30 @@ export async function reconcileRemoteInterruptedRuns(
     claimedHeartbeatKeys.push(heartbeatKey);
   }
 
-  if (claimedInstanceIds.length === 0) return 0;
-
-  const claimedSet = new Set(claimedInstanceIds);
   const allRunning = deps.runTracker.findAllRunning();
+  const heartbeatIds = new Set(
+    heartbeatKeys.map((key) => key.slice("heartbeats/".length)),
+  );
+  const deadSet = goneInstanceIds(allRunning, {
+    liveness: {
+      ...(deps.ownerLiveness ?? localOwnerLiveness()),
+      instanceId: deps.instanceId,
+    },
+    selfPid: Deno.pid,
+    hasHeartbeat: (id) => heartbeatIds.has(id),
+    staleTtlMs: deps.staleTtlMs ?? DEFAULT_STALE_TTL_MS,
+    now: Date.now(),
+  });
+  for (const claimedId of claimedInstanceIds) deadSet.add(claimedId);
+
+  if (deadSet.size === 0) return 0;
+
   let reaped = 0;
 
   for (const run of allRunning) {
     if (!run.instanceId) continue;
     if (run.status !== "running") continue;
-    if (!claimedSet.has(run.instanceId)) continue;
+    if (!deadSet.has(run.instanceId)) continue;
     deps.runTracker.complete(run.id, "interrupted", "remote_instance_dead");
     reaped++;
     logger.warn(
@@ -628,7 +659,7 @@ export async function reconcileRemoteInterruptedRuns(
             "running",
           );
           for (const { run, workflowId } of yamlRuns) {
-            if (!run.instanceId || !claimedSet.has(run.instanceId)) continue;
+            if (!run.instanceId || !deadSet.has(run.instanceId)) continue;
             if (run.status !== "running") continue;
             run.interruptOrphaned("remote_instance_dead");
             await workflowRunRepo.save(workflowId, run);

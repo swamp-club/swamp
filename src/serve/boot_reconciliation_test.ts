@@ -1340,6 +1340,128 @@ Deno.test("reconcileRemoteInterruptedRuns: works without workflowRunRepo (existi
   assertEquals(h.completed.length, 1);
 });
 
+function yamlRunRepo(
+  runs: Array<{ id: string; instanceId: string }>,
+): {
+  repo: ReconcileRemoteInterruptedRunsDeps["workflowRunRepo"];
+  interrupted: string[];
+  scans: () => number;
+} {
+  const interrupted: string[] = [];
+  let scans = 0;
+  const repo = {
+    findGlobalByStatus: () => {
+      scans++;
+      return Promise.resolve(runs.map((r) => ({
+        run: {
+          ...r,
+          status: "running",
+          interruptOrphaned: () => {
+            interrupted.push(r.id);
+          },
+        },
+        workflowId: "wf-1",
+      })));
+    },
+    save: () => Promise.resolve(),
+  } as unknown as ReconcileRemoteInterruptedRunsDeps["workflowRunRepo"];
+  return { repo, interrupted, scans: () => scans };
+}
+
+const DEAD_PID = 999_999;
+const deadPidLiveness = {
+  hostname: "this-host",
+  isDead: (pid: number) => pid === DEAD_PID,
+};
+
+Deno.test("reconcileRemoteInterruptedRuns: interrupts local runs of an instance a peer already reaped", async () => {
+  // The peer deleted the dead instance's heartbeat; only its own remains.
+  const h = createReconcileHarness(
+    { "peer": makeHeartbeat("peer", { stale: false }) },
+    [makeActiveRunData({
+      id: "run-1",
+      instanceId: "old-self",
+      hostname: "this-host",
+      pid: DEAD_PID,
+    })],
+  );
+  h.deps.ownerLiveness = deadPidLiveness;
+  const yaml = yamlRunRepo([
+    { id: "yaml-old", instanceId: "old-self" },
+    { id: "yaml-peer", instanceId: "peer" },
+  ]);
+  h.deps.workflowRunRepo = yaml.repo;
+
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+
+  assertEquals(reaped, 2);
+  assertEquals(h.completed, [{
+    runId: "run-1",
+    status: "interrupted",
+    reason: "remote_instance_dead",
+  }]);
+  assertEquals(yaml.interrupted, ["yaml-old"]);
+  // Nothing was claimed, so the store is left as it was.
+  assertEquals(h.controlPlaneStore.deleted, []);
+  assertEquals(
+    await h.controlPlaneStore.list("claims/"),
+    [],
+  );
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: interrupts a gone instance's runs when the store holds no heartbeats", async () => {
+  const h = createReconcileHarness({}, [
+    makeActiveRunData({
+      id: "run-1",
+      instanceId: "old-self",
+      hostname: "this-host",
+      pid: DEAD_PID,
+    }),
+  ]);
+  h.deps.ownerLiveness = deadPidLiveness;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(h.completed.map((c) => c.runId), ["run-1"]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: leaves a heartbeat-less instance whose pid is alive on this host", async () => {
+  const h = createReconcileHarness({}, [
+    makeActiveRunData({
+      instanceId: "sibling",
+      hostname: "this-host",
+      pid: DEAD_PID - 1,
+    }),
+  ]);
+  h.deps.ownerLiveness = deadPidLiveness;
+  const yaml = yamlRunRepo([{ id: "yaml-sibling", instanceId: "sibling" }]);
+  h.deps.workflowRunRepo = yaml.repo;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 0);
+  assertEquals(h.completed.length, 0);
+  // With nothing claimed and nothing gone, the run records are not scanned.
+  assertEquals(yaml.scans(), 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a heartbeat-less row owned on another host is reaped only past the stale ttl", async () => {
+  const row = (ageMs: number) =>
+    makeActiveRunData({
+      id: "run-1",
+      instanceId: "elsewhere",
+      hostname: "other-host",
+      heartbeatAt: new Date(Date.now() - ageMs).toISOString(),
+    });
+
+  const young = createReconcileHarness({}, [row(0)]);
+  young.deps.ownerLiveness = deadPidLiveness;
+  young.deps.staleTtlMs = 60_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(young.deps), 0);
+
+  const old = createReconcileHarness({}, [row(120_000)]);
+  old.deps.ownerLiveness = deadPidLiveness;
+  old.deps.staleTtlMs = 60_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(old.deps), 1);
+});
+
 // ── cleanupExpiredClaims tests ─────────────────────────────────────────
 
 Deno.test("cleanupExpiredClaims: deletes expired claims", async () => {
