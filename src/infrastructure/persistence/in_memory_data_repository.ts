@@ -513,7 +513,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
         latestKey(receipt.type.normalized, receipt.modelId, receipt.dataName),
         receipt.version,
       );
-      if (!this.enableWriteGc) continue;
       const data = this.dataMap.get(
         dataKey(
           receipt.type.normalized,
@@ -522,6 +521,9 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
           receipt.version,
         ),
       );
+      // A deferred version has no catalog row until it is promoted.
+      if (data) this.catalogUpsert(receipt.type, receipt.modelId, data);
+      if (!this.enableWriteGc) continue;
       const gc = data?.garbageCollection;
       if (typeof gc === "number") {
         // Keep the newest `gc` versions, counting the promoted one, as the
@@ -559,6 +561,22 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       }
       this.dataMap.delete(key);
       this.contentMap.delete(key);
+      // A writer that allocated and never finalized still holds a temp file.
+      for (const [path, alloc] of this.allocatedPaths) {
+        if (
+          alloc.typeNormalized === receipt.type.normalized &&
+          alloc.modelId === receipt.modelId &&
+          alloc.data.name === receipt.dataName &&
+          alloc.version === receipt.version
+        ) {
+          try {
+            Deno.removeSync(path);
+          } catch {
+            // Best-effort cleanup — file may already be gone
+          }
+          this.allocatedPaths.delete(path);
+        }
+      }
     }
     return Promise.resolve();
   }

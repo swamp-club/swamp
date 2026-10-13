@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { CompositeUnifiedDataRepository } from "./composite_data_repository.ts";
 import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -372,4 +372,246 @@ Deno.test("CompositeUnifiedDataRepository.isContentAcceptedSync: reaches the sto
   composite.isContentAcceptedSync(TEST_TYPE, TEST_MODEL_ID, "test-data", 1, 0);
   composite.isContentAcceptedSync(TEST_TYPE, TEST_MODEL_ID, "test-data", 2, 0);
   assertEquals(reached, ["ephemeral", "persistent"]);
+});
+
+class FailingSettleRepository extends InMemoryUnifiedDataRepository {
+  override advanceLatestMarkers(): Promise<void> {
+    return Promise.reject(new Error("advance failed"));
+  }
+
+  override rollbackVersions(): Promise<void> {
+    return Promise.reject(new Error("rollback failed"));
+  }
+}
+
+function createCompositeWithFailingPersistent(): {
+  composite: CompositeUnifiedDataRepository;
+  ephemeral: InMemoryUnifiedDataRepository;
+} {
+  const persistent = new FailingSettleRepository(new CatalogStore(":memory:"));
+  const ephemeral = new InMemoryUnifiedDataRepository(
+    new CatalogStore(":memory:"),
+  );
+  return {
+    composite: new CompositeUnifiedDataRepository(persistent, ephemeral),
+    ephemeral,
+  };
+}
+
+Deno.test("CompositeUnifiedDataRepository.saveDeferred: a persistent write is latest only once advanced (swamp-club#3255)", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  const data = createTestData({ lifetime: "infinite" });
+
+  const receipt = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    TEST_CONTENT,
+  );
+  assertEquals(
+    await composite.findByName(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    null,
+  );
+
+  await composite.advanceLatestMarkers([receipt]);
+
+  const promoted = await persistent.findByName(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    "test-data",
+  );
+  assertEquals(promoted?.version, receipt.version);
+  assertEquals(
+    await ephemeral.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [],
+  );
+});
+
+Deno.test("CompositeUnifiedDataRepository.rollbackVersions: removes an ephemeral deferred write from the ephemeral repo (swamp-club#3255)", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  const data = createTestData({ lifetime: "ephemeral" });
+
+  const receipt = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    TEST_CONTENT,
+  );
+  assertEquals(
+    await ephemeral.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [receipt.version],
+  );
+
+  await composite.rollbackVersions([receipt]);
+
+  assertEquals(
+    await ephemeral.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [],
+  );
+  assertEquals(
+    await persistent.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [],
+  );
+});
+
+Deno.test("CompositeUnifiedDataRepository.advanceLatestMarkers: settles a mixed batch in each owning repo (swamp-club#3255)", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+
+  const durable = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "durable", lifetime: "infinite" }),
+    TEST_CONTENT,
+  );
+  const scratch = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "scratch", lifetime: "ephemeral" }),
+    TEST_CONTENT,
+  );
+
+  await composite.advanceLatestMarkers([durable, scratch]);
+
+  assertEquals(
+    persistent.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, "durable"),
+    durable.version,
+  );
+  assertEquals(
+    persistent.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, "scratch"),
+    null,
+  );
+  assertEquals(
+    ephemeral.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, "scratch"),
+    scratch.version,
+  );
+  assertEquals(
+    ephemeral.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, "durable"),
+    null,
+  );
+});
+
+Deno.test("CompositeUnifiedDataRepository.advanceLatestMarkers: routes a streamed deferred write finalized through the composite (swamp-club#3255)", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  const data = createTestData({ lifetime: "ephemeral", streaming: true });
+
+  const allocated = await composite.allocateVersion(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    { deferred: true },
+  );
+  await Deno.writeFile(allocated.contentPath, TEST_CONTENT);
+  const { receipt } = await composite.finalizeVersionDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    allocated.version,
+    allocated.priorVersions,
+  );
+  await composite.advanceLatestMarkers([receipt]);
+
+  assertEquals(
+    ephemeral.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    allocated.version,
+  );
+  assertEquals(
+    persistent.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    null,
+  );
+});
+
+Deno.test("CompositeUnifiedDataRepository.rollbackVersions: releases a pending allocation in the repo that made it (swamp-club#3255)", async () => {
+  const { composite } = createCompositeRepo();
+  const data = createTestData({ lifetime: "ephemeral", streaming: true });
+
+  const allocated = await composite.allocateVersion(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    data,
+    { deferred: true },
+  );
+  await Deno.writeFile(allocated.contentPath, TEST_CONTENT);
+
+  // The receipt a writer builds for a version it never finalized.
+  await composite.rollbackVersions([{
+    type: TEST_TYPE,
+    modelId: TEST_MODEL_ID,
+    dataName: data.name,
+    version: allocated.version,
+  }]);
+
+  await assertRejects(
+    () => Deno.stat(allocated.contentPath),
+    Deno.errors.NotFound,
+  );
+});
+
+Deno.test("CompositeUnifiedDataRepository: settling no receipts does nothing (swamp-club#3255)", async () => {
+  const { composite } = createCompositeWithFailingPersistent();
+
+  await composite.advanceLatestMarkers([]);
+  await composite.rollbackVersions([]);
+});
+
+Deno.test("CompositeUnifiedDataRepository.rollbackVersions: a failing repo does not strand the other's writes (swamp-club#3255)", async () => {
+  const { composite, ephemeral } = createCompositeWithFailingPersistent();
+
+  const durable = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "durable", lifetime: "infinite" }),
+    TEST_CONTENT,
+  );
+  const scratch = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "scratch", lifetime: "ephemeral" }),
+    TEST_CONTENT,
+  );
+
+  await assertRejects(
+    () => composite.rollbackVersions([durable, scratch]),
+    Error,
+    "rollback failed",
+  );
+
+  assertEquals(
+    await ephemeral.listVersions(TEST_TYPE, TEST_MODEL_ID, "scratch"),
+    [],
+  );
+});
+
+Deno.test("CompositeUnifiedDataRepository.rollbackVersions: reaches the owning repo after a failed advance (swamp-club#3255)", async () => {
+  const { composite, ephemeral } = createCompositeWithFailingPersistent();
+
+  const durable = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "durable", lifetime: "infinite" }),
+    TEST_CONTENT,
+  );
+  const scratch = await composite.saveDeferred(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "scratch", lifetime: "ephemeral" }),
+    TEST_CONTENT,
+  );
+
+  await assertRejects(
+    () => composite.advanceLatestMarkers([durable, scratch]),
+    Error,
+    "advance failed",
+  );
+  // The persistent promotion failed first, so nothing ephemeral was promoted.
+  assertEquals(
+    ephemeral.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, "scratch"),
+    null,
+  );
+
+  await assertRejects(() => composite.rollbackVersions([durable, scratch]));
+
+  assertEquals(
+    await ephemeral.listVersions(TEST_TYPE, TEST_MODEL_ID, "scratch"),
+    [],
+  );
 });
