@@ -769,7 +769,12 @@ export async function resolveExtensionFiles(
           throw markErrorPaths(
             new UserError(
               `Manifest field '${field}' entry '${entry}' starts with '${prefix}', ` +
-                `which would double the archive path to ${prefix}${normalized}. ` +
+                (field === "behaviors"
+                  // Behavior files pack under models/, so nothing doubles;
+                  // the prefix names a typed directory the manifest base
+                  // does not use (swamp-club#3338).
+                  ? `a typed directory, but paths.base: manifest resolves entries from the manifest's own directory. `
+                  : `which would double the archive path to ${prefix}${normalized}. `) +
                 `With paths.base: manifest, use the bare filename (e.g. '${
                   normalized.slice(prefix.length)
                 }') ` +

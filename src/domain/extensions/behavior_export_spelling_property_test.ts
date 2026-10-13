@@ -208,6 +208,8 @@ Deno.test("behavior spelling: a lone behavior config without methods is not a de
     const source of [
       'export const behavior = { type: "retry", retries: 3 };\n',
       'export const behavior = { type: "retry" };\nconst methods = {};\n',
+      // A methods property in a different binding does not count.
+      'export const behavior = { type: "@acme/retry", version: "1" };\nexport const handlers = { methods: [] };\n',
     ]
   ) {
     assertEquals(modelKindAdapter.extractTypeFromSource(source), null, source);

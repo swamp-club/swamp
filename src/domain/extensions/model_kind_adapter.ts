@@ -63,10 +63,7 @@ import {
 } from "./export_declaration.ts";
 import { emitExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { parseExtensionManifest } from "./extension_manifest.ts";
-import {
-  declaresMethods,
-  hasBehaviorDefinition,
-} from "./extension_content_extractor.ts";
+import { hasBehaviorDefinition } from "./extension_content_extractor.ts";
 import {
   compareExtensionPrecedence,
   contributorTier,
@@ -835,10 +832,7 @@ export const modelKindAdapter: KindAdapter = {
     // The behavior spelling counts only when it declares methods, matching
     // primaryExport at runtime: a helper whose only export is an unrelated
     // config such as `behavior = { type: "retry" }` gets no catalog type.
-    if (
-      spelledModel === null && !hasBehaviorDefinition(source) &&
-      !declaresMethods(declaration)
-    ) {
+    if (spelledModel === null && !hasBehaviorDefinition(source)) {
       return null;
     }
     const modelMatch = spelledModel === null ||

@@ -319,12 +319,12 @@ export function hasBehaviorDefinition(content: string): boolean {
 
 /**
  * Whether an object body declares a `methods` property, written out
- * (`methods: {`) or as a shorthand (`methods,`). Used to tell a
+ * (`methods: {`) or as a shorthand (`methods,`, or last in the body). Used to tell a
  * behavior-spelled definition from an unrelated `behavior` binding
  * (swamp-club#3338).
  */
 export function declaresMethods(body: string): boolean {
-  return /(?<![.\w])methods\s*[:,}(]/.test(body);
+  return /(?<![.\w])methods\s*(?:[:,}(]|$)/.test(body);
 }
 
 /**
