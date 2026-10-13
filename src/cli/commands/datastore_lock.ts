@@ -84,9 +84,12 @@ const datastoreLockStatusCommand = new Command()
     let customModelLocks: CustomModelLockSource | undefined;
     if (isCustomDatastoreConfig(config)) {
       const provider = await resolveCustomProvider(config);
+      // Under managedConfig the definitions live in the datastore; pull them
+      // so a model another clone created since the last sync is listed.
       const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir,
         outputMode: cliCtx.outputMode,
+        pull: true,
       });
       const definitionRepo = repoContext.definitionRepo;
       customModelLocks = {

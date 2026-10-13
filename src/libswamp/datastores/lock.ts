@@ -361,9 +361,10 @@ const CUSTOM_MODEL_LOCK_INSPECT_CONCURRENCY = 16;
  * directory to walk, so each of the repo's models has its lock built the way
  * a run builds it and inspected.
  *
- * Only models this checkout lists are inspected: a lock held for a model
- * defined only in another clone (e.g. its auto-definitions), or deleted here,
- * is not reported.
+ * Only models this checkout lists are inspected, so a lock is missed for a
+ * model this checkout does not know yet: a git-tracked definition not pulled
+ * here, another clone's auto-definition before this clone's next sync, or a
+ * model deleted here.
  */
 export interface CustomModelLockSource {
   /** The repo's models, as the modelType/modelId pairs runs lock on. */
