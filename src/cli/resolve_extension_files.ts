@@ -1460,14 +1460,17 @@ async function resolveSourceModules(options: {
     k,
     paths: new Set(g.modules.map((m) => m.path)),
   }));
-  // A module inside another kind's directory that the other kind reaches is
-  // listed (and hashed, and checked) with that kind only, as it always was.
-  const ownedElsewhere = (k: SourceModuleKindRoots, path: string) =>
-    !isSameOrUnder(resolve(path), resolve(k.dir)) &&
-    listedBy.some((o) =>
-      o.k.kind !== k.kind && o.paths.has(path) &&
-      isSameOrUnder(resolve(path), resolve(o.k.dir))
+  // A module outside a kind's own directory is listed (and hashed, and sent
+  // to each gate) once: with the kind whose directory holds it, as it
+  // always was, or else with the first kind that reaches it.
+  const ownedElsewhere = (k: SourceModuleKindRoots, path: string) => {
+    if (isSameOrUnder(resolve(path), resolve(k.dir))) return false;
+    const holder = listedBy.find((o) =>
+      o.paths.has(path) && isSameOrUnder(resolve(path), resolve(o.k.dir))
     );
+    const owner = holder ?? listedBy.find((o) => o.paths.has(path));
+    return owner !== undefined && owner.k.kind !== k.kind;
+  };
   for (const { k, graph: g } of kindGraphs) {
     const paths = g.modules.map((m) => m.path).filter((p) => !outside.has(p))
       .sort();

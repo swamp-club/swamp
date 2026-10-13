@@ -441,3 +441,47 @@ Deno.test("extension fmt: lenient resolution tolerates a missing local module an
     assertEquals(resolved.sourcePlan.entries, []);
   });
 });
+
+Deno.test("extension push: a shared module two kinds reach is listed with one of them, so each gate sees it once", async () => {
+  await withRepo(async (repo) => {
+    const lib = join(repo, "extensions", "lib", "cmp.ts");
+    await write(lib, "export const c = 1;\n");
+    await write(
+      join(repo, "extensions", "models", "m.ts"),
+      'import { c } from "../lib/cmp.ts";\nexport const m = c;\n',
+    );
+    await write(
+      join(repo, "extensions", "vaults", "v.ts"),
+      'import { c } from "../lib/cmp.ts";\nexport const v = c;\n',
+    );
+    const manifestPath = join(repo, "manifest.yaml");
+    await write(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/shared-once",
+        version: "2026.10.13.1",
+        models: ["m.ts"],
+        vaults: ["v.ts"],
+      }),
+    );
+    const { repoContext } = await requireInitializedRepoReadOnly({
+      repoDir: repo,
+      outputMode: "log",
+    });
+    const resolved = await resolveExtensionFiles({
+      repoDir: repo,
+      manifestPath,
+      repoContext,
+      logger,
+      moduleGraphReader: graphReader,
+    });
+    assertEquals(resolved.allModelFiles.includes(lib), true);
+    assertEquals(resolved.allVaultFiles.includes(lib), false);
+    assertEquals(
+      resolved.sourcePlan.entries.filter((e) => e.sourcePath === lib)
+        .map((e) => e.archivePath),
+      ["lib/cmp.ts"],
+    );
+  });
+});

@@ -335,7 +335,9 @@ for import style examples and helper script details.
 - Only list entry-point files — every local module an entry point imports is
   packaged, wherever it lives in the repo. A module more than one level above
   the typed directory is copied to `_shared/` and the archived copies' imports
-  are rewritten to it; a missing local module fails the push
+  are rewritten to it. A missing local module fails the push, a literal dynamic
+  `import("./x.ts")` included, even inside `try`/`catch` (the bundle would fail
+  on it too)
 - Each entry-point is bundled into a standalone JS file for the registry
 - The registry catalog lists a model only when its entry point exports a plain
   `export const model = { ... }` object with string-literal `type` and

@@ -1954,6 +1954,77 @@ Deno.test("resolveExtensionFiles: rejects a dependency-resolved workflow that wo
   });
 });
 
+Deno.test("resolveExtensionFiles: a model a workflow step references has its imports resolved, and a missing one fails", async () => {
+  await withTempRepo(async (dir) => {
+    await writeWorkflowFixture(dir, "deploy.yaml", "@test/deploy");
+    const manifestPath = await writeWorkflowManifest(dir, ["deploy.yaml"]);
+    // The fixture manifest's models resolve from the repo dir, where the
+    // dependency resolver looks for `<type>/model.ts`.
+    const helper = join(dir, "@test", "helper", "model.ts");
+    await Deno.mkdir(dirname(helper), { recursive: true });
+    await Deno.writeTextFile(helper, 'import "./gone.ts";\n');
+    const gone = join(dirname(helper), "gone.ts");
+    const repoContext = {
+      workflowRepo: {
+        findByName: (name: string) =>
+          Promise.resolve(
+            name === "deploy"
+              ? {
+                id: "deploy-wf",
+                jobs: [{
+                  steps: [{
+                    task: {
+                      isModelMethod: () => true,
+                      isWorkflow: () => false,
+                      data: { type: "model_method", modelIdOrName: "helper" },
+                    },
+                  }],
+                }],
+              }
+              : null,
+          ),
+        getPath: () => join(dir, "deploy.yaml"),
+      },
+      definitionRepo: {
+        findByNameGlobal: (name: string) =>
+          Promise.resolve(
+            name === "helper"
+              ? { type: { toNormalized: () => "@test/helper" } }
+              : null,
+          ),
+      },
+    } as unknown as RepositoryContext;
+    const read: string[] = [];
+    const reader: ModuleGraphReader = {
+      read(entryPoint) {
+        read.push(entryPoint);
+        return Promise.resolve({
+          modules: [{ path: entryPoint, kind: "code" as const }],
+          edges: [],
+          missing: entryPoint === helper
+            ? [{ path: gone, importer: helper, reason: "Module not found" }]
+            : [],
+        });
+      },
+    };
+
+    const err = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext,
+          logger,
+          moduleGraphReader: reader,
+        }),
+      UserError,
+    );
+    assertEquals(read.includes(helper), true);
+    assertStringIncludes(err.message, gone);
+    assertStringIncludes(err.message, `imported from ${helper}`);
+  });
+});
+
 Deno.test("planWorkflowArchiveNames: clashes are detected case-insensitively", () => {
   const err = assertThrows(
     () =>
