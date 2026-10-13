@@ -35,7 +35,7 @@ Swamp has three CEL surfaces:
 3. **Grant-condition**: `createGrantConditionEnvironment()` is a sealed
    environment for authorization grant conditions
    (`src/infrastructure/cel/grant_condition_environment.ts`). It declares
-   explicit variables per resource kind (workflow, behavior, data, access) and a
+   explicit variables per resource kind (workflow, model, data, access) and a
    `principal.*` namespace. It sets `unlistedVariablesAreDyn: false`, so
    references to undeclared fields fail at write-time validation. It has no
    I/O receivers (`data.*`, `file.*`, `vault.*`, `env.*`), no extension
@@ -350,7 +350,7 @@ is `""` for ephemeral data, for records from another namespace in a shared
 datastore, and when the file cannot be made local. On a lazy-hydration
 datastore, `data.latest()` and `data.version()` download it first, or again
 when the local copy is shorter than the record (another host appended to it;
-see `datastores.md`, "Content-ensuring step"). The behavior map's
+see `datastores.md`, "Content-ensuring step"). The model map's
 `model.<name>.resource` and `.file` and `file.contents()` read the cache
 synchronously; the context downloads what an expression reads through them
 before evaluating it ("Expression reads" in `datastores.md`). The path is
@@ -872,8 +872,8 @@ and through `optional`, `nullable` and `default` wrappers, but not through
 system, such as GitHub Actions `${{ github.sha }}`, is judged the way the
 runtime guard on global arguments judges it (`isForeignExpression`, above), so
 validation never passes text that the run then refuses. It is classified before
-the behavior, self and env reference checks, whose extractors would otherwise
-read `github.event.model.foo` as a behavior reference. Foreign text joins the
+the model, self and env reference checks, whose extractors would otherwise
+read `github.event.model.foo` as a model reference. Foreign text joins the
 `Template syntax passed through` warning, and a declared field silences it there
 too. The `Global arguments` schema check keeps foreign text in, as the run does,
 rather than skipping the check. Two cases still fail: text whose first name is

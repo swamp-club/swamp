@@ -2139,18 +2139,18 @@ step**: the current workflow no longer produces it, typically because a
 `forEach` collection shrank or its iteration names changed. It fails with
 `failureKind: workflow_changed` and the error `Not run: the workflow or a
 forEach collection changed since the run. Start a new run.` The failure is never
-an allowed failure, and its `step_failed` event carries no behavior fields.
-Stranding is detected when the job's walk ends, so a step in the same job that
-depends on the `forEach` step still runs; later jobs do not, because the job
-fails. The run's JSON carries `failureKind` on the step. Retry refuses the run,
-and the CLI prints `To start a new run: swamp workflow run
-<wf>` instead of the retry command, with a `Run inputs:` line pointing to
-`swamp workflow history get <id> --json` when the run had inputs. When the error
+an allowed failure, and its `step_failed` event carries no `modelName` or
+`methodName`. Stranding is detected when the job's walk ends, so a step in the
+same job that depends on the `forEach` step still runs; later jobs do not,
+because the job fails. The run's JSON carries `failureKind` on the step. Retry
+refuses the run, and the CLI prints `To start a new run: swamp workflow run
+<wf>` instead of the retry command, with a `Run inputs:` line pointing to `swamp
+workflow history get <id> --json` when the run had inputs. When the error
 printed above it is a different step's real failure, a line first says that a
-step did not run because the workflow changed. The resolver's status refusals still suggest a retry,
-which then refuses with this reason. Workflow reports and the verification
-summary count a stranded step as an ordinary failure; `failureKind` is not
-carried into report details.
+step did not run because the workflow changed. The resolver's status refusals
+still suggest a retry, which then refuses with this reason. Workflow reports and
+the verification summary count a stranded step as an ordinary failure;
+`failureKind` is not carried into report details.
 
 ### Assert (`assert`)
 

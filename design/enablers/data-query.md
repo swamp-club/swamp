@@ -65,10 +65,10 @@ Add `--single` to any of these to get one bare object under `--json`, as
 `data get --json` printed (see [Single result](#single-result---single)).
 
 `model("<m>")` resolves `<m>` as `data get` does and matches rows by the
-resolved definition's `modelType` and `modelId` (see [Behavior of a data
-item](#behavior-of-a-data-item)). `modelName` is the name stamped on the data
-when it was written, so `modelName == "<m>"` differs from `data get` after a
-behavior rename, for data with no `modelName` tag, and after a behavior is
+resolved definition's `modelType` and `modelId` (see [Owning behavior of a data
+item](#owning-behavior-of-a-data-item)). `modelName` is the name stamped on the
+data when it was written, so `modelName == "<m>"` differs from `data get` after
+a behavior rename, for data with no `modelName` tag, and after a behavior is
 deleted and recreated under the same name. A `--version` read of a data name
 that was since renamed has no query equivalent: the rename drops the old name's
 catalog rows (see [Rename Forwards](#rename-forwards)).
@@ -497,7 +497,7 @@ without `--run` (`WorkflowRunRepository.findLatestByWorkflowId`).
   does. A refusal is audited and fails exactly as an unknown workflow does,
   naming only the argument.
 
-### Behavior of a data item
+### Owning behavior of a data item
 
 `model("<model>")` is true for the rows stored under a behavior's current
 definition, so `model("scanner") && name == "result"` reads what `data get

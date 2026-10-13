@@ -426,9 +426,8 @@ Isolation and environment used to come from `docker` and custom drivers. They
 now come from **how a worker is deployed**: a container for container
 isolation, a GPU host for GPU access, a locked-down VM for a strong sandbox.
 Labels describe the deployment and the scheduler matches on them. The only
-capability lost
-is isolating locally on one host without a worker. Running a local
-containerized worker beside the orchestrator brings it back.
+capability lost is isolating locally on one host without a worker. Running a
+local containerized worker beside the orchestrator brings it back.
 
 ## Enrollment
 

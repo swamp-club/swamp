@@ -52,15 +52,17 @@ scripts depend on them:
 - The extension export `export const model`, the `extensions/models/` directory
   and the manifest `models:` key.
 - Extension API names, such as `context.runModel`.
-- Code names, such as the `Model` and `ModelType` classes, `src/domain/models/`,
-  libswamp names and log categories like `["model", "get"]`.
+- Code names, such as the `ModelType` and `ModelRegistry` classes,
+  `src/domain/models/`, libswamp names and log categories like
+  `["model", "get"]`.
 
-Where swamp accepts a behavior spelling for one of these, it still writes the
-model form, so older swamp releases can read what it wrote.
+Today only the CLI accepts a behavior spelling. When swamp starts accepting one
+for any name above, it must keep writing the model form, so older swamp
+releases can still read what it wrote.
 
 ## Type
 
-Every behavior has a unique _type_, named after the thing it models. For
+Every behavior has a unique _type_, named after the thing it manages. For
 example, a behavior that manages AWS VPCs through the Cloud Control API is named
 'AWS::EC2::VPC', because that is the Cloud Control API's name for it. Types
 should map semantically to the domain.

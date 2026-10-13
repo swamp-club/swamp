@@ -955,9 +955,9 @@ Each datastore subdirectory has a partition key strategy:
 
 | Subdirectory              | Partition key pattern                      | Granularity  |
 |---------------------------|--------------------------------------------|--------------|
-| `data/`                   | `data--{type}--{modelId}`                  | Per behavior    |
-| `outputs/`                | `outputs--{type}--{modelId}`               | Per behavior    |
-| `definitions-evaluated/`  | `definitions-evaluated--{type}--{modelId}` | Per behavior    |
+| `data/`                   | `data--{type}--{modelId}`                  | Per behavior |
+| `outputs/`                | `outputs--{type}--{modelId}`               | Per behavior |
+| `definitions-evaluated/`  | `definitions-evaluated--{type}--{modelId}` | Per behavior |
 | `workflows-evaluated/`    | `workflows-evaluated--{workflowId}`        | Per workflow |
 | `workflow-runs/`          | `workflow-runs--{workflowId}`              | Per workflow |
 | `auto-definitions/`       | `auto-definitions`                         | Single shard |
@@ -5015,7 +5015,7 @@ Two CLI commands inspect and force-release stuck locks:
 ```bash
 swamp datastore lock status                          # Show who holds the lock
 swamp datastore lock release --force                 # Delete the global lock directly
-swamp datastore lock release --force --model type/id # Release one per-model lock
+swamp datastore lock release --force --model type/id # Release one behavior lock
 ```
 
 `--force` is required. Release bypasses `acquire()`/`release()` and deletes the
