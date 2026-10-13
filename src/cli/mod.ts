@@ -1274,9 +1274,18 @@ async function loadUserModels(
     // would. The behaviors dir is watched even before it exists, so
     // creating it counts as an edit.
     const behaviorsCandidate = resolveBehaviorsDir(marker);
+    // The refresher loads what it refreshes, in a long-lived process: it
+    // imports in-process, so an edited add-on to a type already in use is
+    // attached straight away. Probing is for indexing (swamp-club#3374).
     modelRegistry.setSourceRefresher(
       createLocalModelRefresher(
-        loader,
+        new ExtensionLoader(
+          denoRuntime,
+          modelKindAdapter,
+          repoDir,
+          resolver,
+          repository,
+        ),
         absoluteModelsDir,
         [
           ...(behaviorsCandidate ? [resolve(extBase, behaviorsCandidate)] : []),

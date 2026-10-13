@@ -87,6 +87,7 @@ export const vault = {
  */
 class CountingProber implements BundleProber {
   readonly probed: string[] = [];
+  releases = 0;
   private readonly patient = new WorkerBundleProber();
   private readonly impatient = new WorkerBundleProber({ timeoutMs: 500 });
 
@@ -98,6 +99,7 @@ class CountingProber implements BundleProber {
   }
 
   release(): void {
+    this.releases++;
     this.patient.release();
     this.impatient.release();
   }
@@ -334,5 +336,30 @@ export const extension = {
     assertEquals(row?.extends_type, "command/shell");
     assertEquals(row?.state, "Indexed");
     assertEquals((globalThis as Record<string, unknown>)[marker], undefined);
+  });
+});
+
+Deno.test("every index pass releases its prober, including a refresh of stale sources", async () => {
+  await withRepo(async (repo) => {
+    await repo.write("healthy");
+    const loader = new ExtensionLoader(
+      testDenoRuntime,
+      vaultKindAdapter,
+      repo.repoDir,
+      undefined,
+      repo.repository,
+      repo.prober,
+    );
+    await reconcile(repo);
+    assertEquals(repo.prober.releases, 1);
+    await loader.buildIndex(repo.vaultsDir, { indexOnly: true });
+    assertEquals(repo.prober.releases, 2);
+
+    await repo.write("print");
+    const changes = await loader.refreshStaleSources(repo.vaultsDir);
+    assertEquals(changes?.failed, []);
+    assertEquals(repo.prober.countFor("print"), 1);
+    assertEquals(repo.prober.releases, 3);
+    assertEquals(repo.ranInMainIsolate(), []);
   });
 });

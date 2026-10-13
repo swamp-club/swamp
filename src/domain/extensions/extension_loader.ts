@@ -923,14 +923,19 @@ export class ExtensionLoader {
       failed: [],
       removed: [],
     };
-    await this.refreshWarm(
-      dir,
-      repository,
-      denoPath,
-      extraDirs,
-      testFileDirsOf(options?.additionalDirs, localDirs),
-      changes,
-    );
+    try {
+      await this.refreshWarm(
+        dir,
+        repository,
+        denoPath,
+        extraDirs,
+        testFileDirsOf(options?.additionalDirs, localDirs),
+        changes,
+      );
+    } finally {
+      // As for buildIndex: no probe outlives the pass that asked for it.
+      this.bundleProber?.release();
+    }
     return changes;
   }
 

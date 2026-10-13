@@ -3097,7 +3097,9 @@ implements it, with `bundle_probe_worker.ts` as the worker entry point, which
 its startup reconcile, `swamp doctor extensions` and `swamp extension pull`
 pass one. An `ExtensionLoader` built without a prober imports in-process: the
 full-load path (`load()` without `indexOnly`, serve hot-reload, the
-auto-resolver) and the path unit tests use.
+auto-resolver), the local model refresher a long-lived process runs before
+each run (it loads what it refreshes, so an edited add-on to a type already in
+use is attached straight away), and the path unit tests use.
 
 What a source does at import therefore cannot reach a command that does not
 use it:
@@ -3116,16 +3118,17 @@ use it:
   command.
 
 An exit or a hang is recorded as `ValidationFailed` because that state is not
-retried until the source fingerprint changes: one command pays the timeout,
-not every command. The exception is a reconcile, which probes every source
-that is not `Indexed`: `swamp doctor extensions` reconciles on each run, so it
-pays the timeout again for a source that still hangs. The user is warned once, with the source's path, the
-reason and how to retry: edit a local source, upgrade or re-pull a pulled
-one. Anything that is not the bundle's doing is reported as a failed import,
-which is retried, and never pinned to the source: a worker that does not
-start, one that dies, or a prober released under a probe. On the warm path a source that no aggregate knows yet
-gets a `ValidationFailed` catalog row directly, since without a row it would
-be stale, and probed again, on every scan.
+retried until the source fingerprint changes: one command pays the timeout, not
+every command. The exception is a reconcile, which probes every source that is
+not `Indexed`: `swamp doctor extensions` reconciles on each run, so it pays the
+timeout again for a source that still hangs. The user is warned once, with the
+source's path, the reason and how to retry: edit a local source, upgrade or
+re-pull a pulled one. Anything that is not the bundle's doing is reported as a
+failed import, which is retried, and never pinned to the source: a worker that
+does not start, one that dies, or a prober released under a probe. On the warm
+path a source that no aggregate knows yet gets a `ValidationFailed` catalog row
+directly, since without a row it would be stale, and probed again, on every
+scan.
 
 A probed pass registers nothing and imports nothing into the command's
 isolate. A type whose source changed becomes a lazy entry like any other, and
