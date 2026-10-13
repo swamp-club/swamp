@@ -233,6 +233,30 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: skips the namesp
   });
 });
 
+Deno.test("assertWritableDatastoreControlPlaneStoreConformance: skips the namespaced-push case when the root holds records it did not write, and leaves them in place", async () => {
+  await withRemoteDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    remote.seedControlPlane("datastore-format", new TextEncoder().encode("2"));
+    let marked = 0;
+    const result = await assertWritableDatastoreControlPlaneStoreConformance({
+      openDatastoreStore: () => remote.datastoreControlPlaneStore!(),
+      ...remoteFixtures(remote, dir),
+      markNamespaceUpgradedFromSolo: () => {
+        marked++;
+        return Promise.resolve();
+      },
+    });
+    assertEquals(
+      result.namespacedPushSkipped,
+      "the datastore-wide root holds 1 record(s) the suite did not write; run it against an empty datastore or prefix",
+    );
+    assertEquals(marked, 0);
+    assertEquals([...remote.controlPlaneRecords().keys()], [
+      "_control/datastore-format",
+    ]);
+  });
+});
+
 Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a create that overwrites", async () => {
   await withRemoteDir(async (dir) => {
     const remote = createInMemoryRemote({ controlPlane: true });

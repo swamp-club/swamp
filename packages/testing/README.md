@@ -319,9 +319,12 @@ and that a `writer/` record survives a namespaced push. That last case needs
 namespaced push moves root `_control/` records into the namespace: for the S3
 and GCS extensions, a legacy `<prefix>/<namespace>/.datastore-index.json`
 existing. A push into a fresh namespace never triggers that move, so without
-both the case is skipped rather than passing without checking anything. On a
-real bucket it leaves the namespace's index and the legacy index behind, and can
-leave its one data file.
+both the case is skipped rather than passing without checking anything. Check
+`namespacedPushSkipped` in the result to make sure it ran. The move takes every
+root `_control/` record, so the case also skips when the root holds any record
+the suite did not write: run it against an empty bucket or prefix, never one a
+swamp uses. It syncs a fresh namespace of its own and leaves that namespace's
+index and the legacy index behind, and can leave its one data file.
 
 ```typescript
 Deno.test("writable datastore-wide control-plane store conformance", async () => {
@@ -339,7 +342,15 @@ Deno.test("writable datastore-wide control-plane store conformance", async () =>
     openSyncService: async () => (await openSyncFixture()).service,
     openNamespacedSyncFixture: openSyncFixture,
     markNamespaceUpgradedFromSolo: (namespace) =>
-      putObject(`${prefix}/${namespace}/.datastore-index.json`, "{}"),
+      putObject(
+        `${prefix}/${namespace}/.datastore-index.json`,
+        // An empty legacy (v1) index; the extensions parse it.
+        JSON.stringify({
+          version: 1,
+          lastPulled: new Date().toISOString(),
+          entries: {},
+        }),
+      ),
   });
 });
 ```

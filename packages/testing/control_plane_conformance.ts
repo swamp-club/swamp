@@ -423,7 +423,11 @@ export interface WritableDatastoreControlPlaneStoreConformanceResult {
  *   `markNamespaceUpgradedFromSolo` prepared. That is when the S3 and GCS
  *   extensions move root `_control/` records into the namespace; a
  *   datastore-wide record must never move. Skipped without
- *   `openNamespacedSyncFixture` and `markNamespaceUpgradedFromSolo`.
+ *   `openNamespacedSyncFixture` and `markNamespaceUpgradedFromSolo`, and
+ *   when the datastore-wide root holds any record before the case starts:
+ *   the move it triggers takes every root record, so it runs only against
+ *   an empty datastore or prefix. It always uses a fresh namespace of its
+ *   own, which stays marked upgraded.
  *
  * The suite writes only under keys of its own and removes them, a record
  * moved into the namespace included. On a real bucket the namespaced-push
@@ -445,7 +449,11 @@ export interface WritableDatastoreControlPlaneStoreConformanceResult {
  *     openNamespacedSyncFixture: openSyncFixture,
  *     // S3: the legacy index whose presence triggers the root-to-namespace move.
  *     markNamespaceUpgradedFromSolo: (namespace) =>
- *       putObject(`${prefix}/${namespace}/.datastore-index.json`, "{}"),
+ *       putObject(
+ *         `${prefix}/${namespace}/.datastore-index.json`,
+ *         // An empty legacy (v1) index; the extensions parse it.
+ *         JSON.stringify({ version: 1, lastPulled: new Date().toISOString(), entries: {} }),
+ *       ),
  *   });
  * });
  * ```
@@ -473,13 +481,12 @@ export async function assertWritableDatastoreControlPlaneStoreConformance(
       namespacedPushSkipped: "no markNamespaceUpgradedFromSolo was given",
     };
   }
-  await assertWriterRecordSurvivesNamespacedPush(
+  const skipped = await assertWriterRecordSurvivesNamespacedPush(
     options.openDatastoreStore,
     options.openNamespacedSyncFixture,
     options.markNamespaceUpgradedFromSolo,
-    namespace,
   );
-  return {};
+  return skipped === undefined ? {} : { namespacedPushSkipped: skipped };
 }
 
 async function assertWritesStayAtRoot(
@@ -562,16 +569,25 @@ async function assertWriterRecordSurvivesNamespacedPush(
     WritableDatastoreControlPlaneStoreConformanceOptions["openDatastoreStore"],
   openFixture: () => Promise<NamespacedSyncFixture>,
   markNamespaceUpgradedFromSolo: (namespace: string) => Promise<void>,
-  namespace: string,
-): Promise<void> {
+): Promise<string | undefined> {
   const id = crypto.randomUUID();
   // Under `writer/` but not a lease key, so a live lease never reads it.
   const writerKey = `writer/conformance-${id}`;
+  // A namespace of its own: it stays marked upgraded from solo, so every
+  // later push into it would move root records again.
+  const namespace = `conformance-upgraded-${id.slice(0, 8)}`;
   const relPath = `${namespace}/data/conformance/writer-${id}`;
   const store = await openDatastoreStore();
-  const fixture = await openFixture();
-  let pushed = false;
 
+  // The push about to be triggered moves every root record, not only the
+  // suite's own, on a backend that does it at all. Run it only where there
+  // is nothing else to move.
+  const existing = await store.list("");
+  if (existing.length > 0) {
+    return `the datastore-wide root holds ${existing.length} record(s) the suite did not write; run it against an empty datastore or prefix`;
+  }
+
+  const fixture = await openFixture();
   try {
     await store.put(writerKey, encode("datastore-wide"));
     await markNamespaceUpgradedFromSolo(namespace);
@@ -582,7 +598,6 @@ async function assertWriterRecordSurvivesNamespacedPush(
     await fixture.service.markDirty({ relPath, namespace });
     await writeLocal(fixture.cacheDir, relPath, encode("conformance"));
     await fixture.service.pushChanged({ namespace });
-    pushed = true;
 
     assertEquals(
       await text(store, writerKey),
@@ -608,14 +623,13 @@ async function assertWriterRecordSurvivesNamespacedPush(
     try {
       await fixture.service.controlPlaneStore?.().delete(writerKey);
     } catch { /* best-effort cleanup */ }
-    if (pushed) {
-      try {
-        await fixture.service.markDirty({ relPath, namespace });
-        await Deno.remove(join(fixture.cacheDir, ...relPath.split("/")));
-        await fixture.service.pushChanged({ namespace });
-      } catch { /* best-effort cleanup */ }
-    }
+    try {
+      await fixture.service.markDirty({ relPath, namespace });
+      await Deno.remove(join(fixture.cacheDir, ...relPath.split("/")));
+      await fixture.service.pushChanged({ namespace });
+    } catch { /* best-effort cleanup */ }
   }
+  return undefined;
 }
 
 async function writeLocal(
