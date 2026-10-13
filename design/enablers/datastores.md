@@ -2395,9 +2395,11 @@ that.
   the replica 11 times larger (`datastore-litestream.md`). A fitness rule
   refuses `wal_checkpoint` and `wal_autocheckpoint` in v3 code.
 - Solo mode keeps one idle Litestream sidecar across write commands. A
-  sidecar per command re-snapshots `commits.db` on every start and never
-  compacts, so its replica grew to 311 MB for a 4 MB database over a day of
-  commands (Phase 4A in `datastore-litestream.md`).
+  sidecar per command never compacts, so a day's replica of 252 objects took
+  18–121 s to restore against 1.1–5.7 s compacted. A writer closes
+  `commits.db` while its sidecar still holds it (sync, close, then stop), or
+  the next sidecar uploads a full snapshot (Phase 4A in
+  `datastore-litestream.md`).
 - One connection per store, and one writing process per file.
 
 **One `commits.db` per datastore.** Namespaces share one database, keyed by a
