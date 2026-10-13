@@ -1075,7 +1075,7 @@ export class RepoService {
             ? await this.updateOpenCodePlugin(repoPath)
             : await this.createOpenCodePluginIfNotExists(repoPath);
           settingsChanged = changed;
-          if (changed) changedFiles.push(".opencode/plugins/swamp.ts");
+          if (changed) changedFiles.push(".opencode/plugins/swamp-audit.ts");
           break;
         }
         case "copilot": {
@@ -2603,16 +2603,43 @@ export default function (amp: PluginAPI) {
 
   /**
    * Generates the content for OpenCode's .opencode/plugins/swamp-audit.ts.
+   *
+   * One file serves OpenCode 1 and OpenCode 2. OpenCode 1.3.4+ uses
+   * `default.server` and ignores the other exports; OpenCode 2 requires a
+   * default object with `id` and `setup` and ignores named exports. The named
+   * `SwampAudit` export keeps the original V1 shape. OpenCode 1 builds before
+   * 1.3.4 call every export as a function, so they cannot load any file
+   * OpenCode 2 accepts.
    */
   private generateOpenCodePluginContent(): string {
     return `// Swamp audit plugin for OpenCode
-// Records bash tool invocations for the swamp audit timeline.
+// Records shell tool invocations for the swamp audit timeline.
+// Supports OpenCode 1.3.4 or later and OpenCode 2.
 // This is a managed file — it will be overwritten on swamp upgrade.
 
 import type { Plugin } from "@opencode-ai/plugin";
 
 const pendingCommands = new Map();
 
+async function record(command, cwd, sessionID) {
+  try {
+    const payload = JSON.stringify({
+      tool_name: "bash",
+      tool_input: { command },
+      cwd,
+      session_id: sessionID,
+    });
+    const proc = Bun.spawn(
+      ["swamp", "audit", "record", "--from-hook", "--tool", "opencode"],
+      { stdin: new Blob([payload]) },
+    );
+    await proc.exited;
+  } catch {
+    // Must never throw — this is a hook
+  }
+}
+
+// OpenCode 1
 export const SwampAudit: Plugin = async ({ directory }) => {
   return {
     "tool.execute.before": async (input, output) => {
@@ -2627,24 +2654,24 @@ export const SwampAudit: Plugin = async ({ directory }) => {
       const command = pendingCommands.get(input.sessionID);
       pendingCommands.delete(input.sessionID);
       if (!command) return;
-
-      try {
-        const payload = JSON.stringify({
-          tool_name: "bash",
-          tool_input: { command },
-          cwd: directory,
-          session_id: input.sessionID,
-        });
-        const proc = Bun.spawn(
-          ["swamp", "audit", "record", "--from-hook", "--tool", "opencode"],
-          { stdin: new Blob([payload]) },
-        );
-        await proc.exited;
-      } catch {
-        // Must never throw — this is a hook
-      }
+      await record(command, directory, input.sessionID);
     },
   };
+};
+
+export default {
+  id: "swamp.audit",
+  // OpenCode 1.3.4+
+  server: SwampAudit,
+  // OpenCode 2, which names the tool "shell"
+  async setup(ctx) {
+    await ctx.tool.hook("execute.after", async (event) => {
+      if (event.tool !== "shell" && event.tool !== "bash") return;
+      const command = event.input?.command;
+      if (typeof command !== "string" || !command) return;
+      await record(command, ctx.location.directory, event.sessionID);
+    });
+  },
 };
 `;
   }

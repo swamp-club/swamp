@@ -305,6 +305,18 @@ async function checkOpenCode(ctx: CheckContext): Promise<CheckResult> {
       hint: "Run `swamp init --tool opencode --force` to rewrite the plugin.",
     };
   }
+  // OpenCode 2 loads only a default export with `setup`; a plugin written
+  // before OpenCode 2 support is skipped there with a warning.
+  if (!(/export\s+default\b/.test(content) && /\bsetup\b/.test(content))) {
+    return {
+      name: "agent-config-loadable",
+      status: "fail",
+      message:
+        "OpenCode plugin predates OpenCode 2 support (no default export with `setup`)",
+      hint:
+        "The rewritten plugin needs OpenCode 1.3.4 or later, or OpenCode 2 — update OpenCode first if it is older, then run `swamp init --tool opencode --force` to rewrite the plugin.",
+    };
+  }
   return {
     name: "agent-config-loadable",
     status: "pass",

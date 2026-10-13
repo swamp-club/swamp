@@ -24,7 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { join, toFileUrl } from "@std/path";
 import {
   detectLocalBundledSkills,
   detectSupersededSkills,
@@ -36,6 +36,7 @@ import { SKILL_DIRS } from "./skill_dirs.ts";
 import { SUPERSEDED_SKILLS, supersededSkillDirs } from "./superseded_skills.ts";
 import { UserError } from "../errors.ts";
 import { BRIEF_HEADER } from "../start/brief.ts";
+import { normalizeHookInput } from "../audit/hook_input.ts";
 import {
   type AiTool,
   RepoMarkerRepository,
@@ -2802,9 +2803,16 @@ Deno.test("RepoService.init with opencode creates .opencode/plugins/swamp-audit.
 
     const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
     const content = await Deno.readTextFile(pluginPath);
-    assertStringIncludes(content, "SwampAudit");
+    // OpenCode 1 entry points
+    assertStringIncludes(content, "export const SwampAudit");
     assertStringIncludes(content, "tool.execute.before");
     assertStringIncludes(content, "tool.execute.after");
+    assertStringIncludes(content, "server: SwampAudit");
+    // OpenCode 2 entry point
+    assertStringIncludes(content, "export default {");
+    assertStringIncludes(content, 'id: "swamp.audit"');
+    assertStringIncludes(content, 'ctx.tool.hook("execute.after"');
+    assertStringIncludes(content, '"shell"');
     assertStringIncludes(content, '"--from-hook"');
     assertStringIncludes(content, '"opencode"');
   });
@@ -2849,6 +2857,195 @@ Deno.test("RepoService.init with opencode force reinit overwrites plugin", async
     const content = await Deno.readTextFile(pluginPath);
     assertStringIncludes(content, '"--from-hook"');
     assertStringIncludes(content, '"opencode"');
+  });
+});
+
+interface OpenCodeV1Hooks {
+  "tool.execute.before": (
+    input: { tool: string; sessionID: string },
+    output: { args: { command?: string } },
+  ) => Promise<void>;
+  "tool.execute.after": (
+    input: { tool: string; sessionID: string },
+  ) => Promise<void>;
+}
+
+type OpenCodeV1Plugin = (input: { directory: string }) => Promise<
+  OpenCodeV1Hooks
+>;
+
+interface OpenCodeV2ToolEvent {
+  tool: string;
+  sessionID: string;
+  input: unknown;
+}
+
+interface OpenCodePluginModule {
+  SwampAudit: OpenCodeV1Plugin;
+  default: {
+    id: string;
+    server: OpenCodeV1Plugin;
+    setup: (ctx: {
+      location: { directory: string };
+      tool: {
+        hook: (
+          name: string,
+          fn: (event: OpenCodeV2ToolEvent) => Promise<void>,
+        ) => Promise<void>;
+      };
+    }) => Promise<void>;
+  };
+}
+
+interface RecordedSpawn {
+  argv: string[];
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Imports the generated OpenCode plugin with `Bun.spawn` stubbed, so its
+ * hooks can be driven in Deno. Each spawn's argv and stdin payload is
+ * recorded.
+ */
+async function withOpenCodePlugin(
+  pluginPath: string,
+  fn: (mod: OpenCodePluginModule, spawns: RecordedSpawn[]) => Promise<void>,
+): Promise<void> {
+  const spawns: RecordedSpawn[] = [];
+  const g = globalThis as Record<string, unknown>;
+  const hadBun = "Bun" in g;
+  const originalBun = g.Bun;
+  g.Bun = {
+    spawn: (argv: string[], opts: { stdin: Blob }) => ({
+      exited: opts.stdin.text().then((text) => {
+        spawns.push({ argv, payload: JSON.parse(text) });
+        return 0;
+      }),
+    }),
+  };
+  try {
+    const mod: OpenCodePluginModule = await import(toFileUrl(pluginPath).href);
+    await fn(mod, spawns);
+  } finally {
+    if (hadBun) g.Bun = originalBun;
+    else delete g.Bun;
+  }
+}
+
+const AUDIT_RECORD_ARGV = [
+  "swamp",
+  "audit",
+  "record",
+  "--from-hook",
+  "--tool",
+  "opencode",
+];
+
+Deno.test("RepoService.init with opencode writes a plugin whose OpenCode 1 hooks record one bash call", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    await service.init(RepoPath.create(tempDir), { tools: ["opencode"] });
+    const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
+
+    await withOpenCodePlugin(pluginPath, async (mod, spawns) => {
+      // OpenCode 1.3.4+ loads default.server; older loaders call SwampAudit.
+      assertEquals(mod.default.server, mod.SwampAudit);
+
+      const hooks = await mod.SwampAudit({ directory: tempDir });
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: "s1" },
+        { args: { command: "cat x" } },
+      );
+      await hooks["tool.execute.after"]({ tool: "read", sessionID: "s1" });
+      assertEquals(spawns.length, 0);
+
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "s1" },
+        { args: { command: "echo one" } },
+      );
+      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" });
+
+      assertEquals(spawns.length, 1);
+      assertEquals(spawns[0].argv, AUDIT_RECORD_ARGV);
+      const normalized = normalizeHookInput("opencode", spawns[0].payload);
+      assertEquals(normalized?.command, "echo one");
+      assertEquals(normalized?.cwd, tempDir);
+      assertEquals(normalized?.sessionId, "s1");
+    });
+  });
+});
+
+Deno.test("RepoService.init with opencode writes a plugin whose OpenCode 2 setup records one shell call", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    await service.init(RepoPath.create(tempDir), { tools: ["opencode"] });
+    const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
+
+    await withOpenCodePlugin(pluginPath, async (mod, spawns) => {
+      // OpenCode 2 rejects a default export that is not a plain object.
+      assertEquals(typeof mod.default, "object");
+      assertEquals(mod.default.id, "swamp.audit");
+
+      const hooks = new Map<
+        string,
+        (event: OpenCodeV2ToolEvent) => Promise<void>
+      >();
+      await mod.default.setup({
+        location: { directory: tempDir },
+        tool: {
+          hook: (name, fn) => {
+            hooks.set(name, fn);
+            return Promise.resolve();
+          },
+        },
+      });
+      const after = hooks.get("execute.after");
+      assert(after, "setup must register an execute.after hook");
+
+      await after({ tool: "read", sessionID: "s2", input: { path: "x" } });
+      assertEquals(spawns.length, 0);
+
+      await after({
+        tool: "shell",
+        sessionID: "s2",
+        input: { command: "echo two", workdir: "/elsewhere" },
+      });
+
+      assertEquals(spawns.length, 1);
+      assertEquals(spawns[0].argv, AUDIT_RECORD_ARGV);
+      const normalized = normalizeHookInput("opencode", spawns[0].payload);
+      assertEquals(normalized?.command, "echo two");
+      assertEquals(normalized?.cwd, tempDir);
+      assertEquals(normalized?.sessionId, "s2");
+    });
+  });
+});
+
+Deno.test("RepoService.upgrade with opencode replaces a plugin written before OpenCode 2 support", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["opencode"] });
+
+    const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
+    await Deno.writeTextFile(
+      pluginPath,
+      `import type { Plugin } from "@opencode-ai/plugin";
+export const SwampAudit: Plugin = async ({ directory }) => ({});
+`,
+    );
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["opencode"],
+    });
+
+    assertEquals(
+      result.changedFiles.includes(".opencode/plugins/swamp-audit.ts"),
+      true,
+    );
+    const content = await Deno.readTextFile(pluginPath);
+    assertStringIncludes(content, "export default {");
+    assertStringIncludes(content, 'ctx.tool.hook("execute.after"');
   });
 });
 
