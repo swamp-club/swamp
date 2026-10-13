@@ -198,16 +198,17 @@ export function primaryExportNames(
 }
 
 /**
- * True when an alias export reads as a definition: an object with a
- * `type`, and, beside the key's own export, `methods` too. A module that
+ * True when an alias export reads as a definition: an object with both a
+ * `type` and `methods`, as every model definition has. A module that
  * predates the alias may export an unrelated binding of the same name
- * (`export const behavior = "strict"`, or a config object with a `type`);
- * such a binding neither makes a helper module an entry point nor collides
- * with the module's real export.
+ * (`export const behavior = "strict"`, or a config object such as
+ * `{ type: "retry" }`); such a binding neither makes a helper module an
+ * entry point nor collides with the module's real export, so a file that
+ * loaded, or was skipped as a helper, before the alias still does.
  */
-function isDefinitionLike(value: unknown, besideKey: boolean): boolean {
+function isDefinitionLike(value: unknown): boolean {
   return typeof value === "object" && value !== null && "type" in value &&
-    (!besideKey || "methods" in value);
+    "methods" in value;
 }
 
 /**
@@ -227,7 +228,7 @@ export function primaryExport(
   const names = [
     ...(hasKey ? [key] : []),
     ...(adapter.primaryExportAliases ?? []).filter((alias) =>
-      isDefinitionLike(module[alias], hasKey)
+      isDefinitionLike(module[alias])
     ),
   ];
   if (names.length > 1) {

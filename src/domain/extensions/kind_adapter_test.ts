@@ -72,12 +72,20 @@ Deno.test("primaryExport: an unrelated binding under the alias name is not a def
       def,
     );
   }
-  for (const unrelated of ["strict", 3, { retries: 3 }, () => {}]) {
+  // Alone too, a binding without both type and methods is not a definition:
+  // a helper file that exported `behavior = { type: "retry" }` before the
+  // alias existed was skipped, and still is.
+  for (
+    const unrelated of [
+      "strict",
+      3,
+      { retries: 3 },
+      { type: "retry" },
+      () => {},
+    ]
+  ) {
     assertEquals(primaryExport({ behavior: unrelated }, models), undefined);
   }
-  // Alone, an alias with a type is the definition, so validation reports
-  // what it is missing instead of skipping it as a helper.
-  assertEquals(primaryExport({ behavior: { type: "@acme/x" } }, models), {
-    type: "@acme/x",
-  });
+  const definition = { type: "@acme/x", methods: {} };
+  assertEquals(primaryExport({ behavior: definition }, models), definition);
 });

@@ -251,6 +251,32 @@ Deno.test("loader: a model file that also exports an unrelated behavior binding 
   });
 });
 
+Deno.test("loader: a helper file whose only export is an unrelated behavior config is skipped as before", async () => {
+  // Before the alias, a file with no model export was a helper: skipped,
+  // never reported as failed. A lone `behavior = { type: ... }` without
+  // methods must stay that way.
+  await withRepo(async ({ modelsDir, loader }) => {
+    const type = uniqueType("beside-helper");
+    await Deno.writeTextFile(
+      join(modelsDir, "retry_config.ts"),
+      'export const behavior = { type: "retry", retries: 3 };\n',
+    );
+    await Deno.writeTextFile(
+      join(modelsDir, "real.ts"),
+      modelSource("model", type),
+    );
+    try {
+      const result = await loader.load(modelsDir, {
+        skipAlreadyRegistered: true,
+      });
+      assertEquals(result.failed, []);
+      assertEquals(modelRegistry.has(type), true);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
 Deno.test({
   name:
     "loader: a symlinked extensions/behaviors/ is found and loaded like a symlinked models dir",
