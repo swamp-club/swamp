@@ -44,9 +44,9 @@ and the `_control/` records this layout sits beside.
 5. **One replica path per writer lineage.** `<prefix>/_litestream/<fence>/`,
    named by the fence at which the lineage's replication began: in solo mode
    one checkout's run of commands, not each command's own fence (see
-   [Phase 4A](#what-changes-for-phase-4d-and-4e)); in team mode the serve
-   leader's fence. Litestream 0.5 has no generations, and a second writer on
-   the same path corrupts the replica.
+   [What changes for Phase 4D and 4E](#what-changes-for-phase-4d-and-4e)); in
+   team mode the serve leader's fence. Litestream 0.5 has no generations, and
+   a second writer on the same path corrupts the replica.
 6. **Windows: a supported target, gated on an upstream fix.** Litestream 0.5.16
    and 0.5.17 cannot replicate on Windows (litestream#1542, fixed on main by
    #1548, not yet released). Deno has no AF_UNIX client on Windows, so swamp
@@ -277,7 +277,8 @@ nothing stops two writers sharing a path.
   `_litestream/<fence>/`. Paths left by older fences are garbage-collected after
   the next fence's first confirmed sync. In solo mode the path's fence is the
   one at which the checkout's replication lineage began, so consecutive
-  commands share it ([Phase 4A](#what-changes-for-phase-4d-and-4e)).
+  commands share it
+  ([What changes for Phase 4D and 4E](#what-changes-for-phase-4d-and-4e)).
 - A zombie's confirmations on its old path count for nothing. **A leader must
   check it still holds its fence before it acknowledges outbox entries.**
 - A node that already has an older copy gets no incremental catch-up from
