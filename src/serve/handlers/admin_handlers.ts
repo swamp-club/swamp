@@ -1185,6 +1185,7 @@ export async function handleExtensionUpdate(
     const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
 
     const denoRuntime = new EmbeddedDenoRuntime();
+    const mountedSourceDirs = await resolveMountedSourceDirs(repoDir);
     catalog = new ExtensionCatalogStore(
       swampPath(repoDir, "_extension_catalog.db"),
     );
@@ -1213,7 +1214,7 @@ export async function handleExtensionUpdate(
           catalog: catalog!,
           lockfileRepository: installCtx.lockfileRepository,
           repoRoot: repoDir,
-          mountedSourceDirs: await resolveMountedSourceDirs(repoDir),
+          mountedSourceDirs,
         });
         return await new UpgradeExtensionService({
           denoRuntime,

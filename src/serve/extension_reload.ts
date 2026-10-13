@@ -103,7 +103,7 @@ async function mountedSourceDirsForReload(
     return await resolveMountedSourceDirs(repoDir);
   } catch (err) {
     logger.warn(
-      "Hot-reload: could not read the extension sources: {error}",
+      "Hot-reload: could not read .swamp-sources.yaml: {error}",
       { error: err instanceof Error ? err.message : String(err) },
     );
     return [];

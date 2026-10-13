@@ -1778,9 +1778,14 @@ export class ExtensionCatalogStore {
       spellings(d).map(withTrailingSlash)
     );
     // -1 for a local row, the mount's index for a mounted row, undefined
-    // for a pulled row or one outside both.
+    // for a pulled row or one outside both. Pulled is checked first, as the
+    // loader's contributorFor does.
     const rankOf = (canonical: string): number | undefined => {
       const forms = spellings(canonical);
+      const pulled = spellings(canonicalRepoRoot).some((root) =>
+        forms.some((f) => isPulledExtensionPath(f, root))
+      );
+      if (pulled) return undefined;
       const mount = mountPrefixes.findIndex((prefixes) =>
         prefixes.some((m) => forms.some((f) => f.startsWith(m)))
       );
@@ -1788,10 +1793,7 @@ export class ExtensionCatalogStore {
       const inRoot = rootPrefixes.some((r) =>
         forms.some((f) => f.startsWith(r))
       );
-      const pulled = spellings(canonicalRepoRoot).some((root) =>
-        forms.some((f) => isPulledExtensionPath(f, root))
-      );
-      return inRoot && !pulled ? -1 : undefined;
+      return inRoot ? -1 : undefined;
     };
 
     const conflicts: MountedTypeConflict[] = [];
@@ -2115,16 +2117,16 @@ function inferRepoRootFromDbPath(dbPath: string): string {
   return dirname(dirname(dbPath));
 }
 
+function withTrailingSlash(dir: string): string {
+  return dir.endsWith("/") ? dir : `${dir}/`;
+}
+
 /**
  * Builds a `LIKE ... ESCAPE '\'` pattern that matches paths starting with
  * `prefix` literally. Unescaped, `_` in an extension name (`@acme/aws_ec2`)
  * matches any character, so the prefix would also select a sibling such as
  * `@acme/aws-ec2` (swamp-club#2355).
  */
-function withTrailingSlash(dir: string): string {
-  return dir.endsWith("/") ? dir : `${dir}/`;
-}
-
 function likePrefixPattern(prefix: string): string {
   return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
