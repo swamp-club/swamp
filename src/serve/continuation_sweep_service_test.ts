@@ -73,9 +73,22 @@ function gatedRun(workflow: Workflow, decided: boolean): WorkflowRun {
 function harness(
   workflows: Workflow[],
   runs: WorkflowRun[],
-  options: { failListingOf?: string } = {},
-): { ctx: ConnectionContext; registry: ActiveRunRegistry; launched: string[] } {
+  options: {
+    failListingOf?: string;
+    /** Replaces a workflow's listing when it returns a promise. */
+    listing?: (
+      workflowId: string,
+      signal: AbortSignal | undefined,
+    ) => Promise<{ id: string }[]> | undefined;
+  } = {},
+): {
+  ctx: ConnectionContext;
+  registry: ActiveRunRegistry;
+  launched: string[];
+  listed: string[];
+} {
   const launched: string[] = [];
+  const listed: string[] = [];
   const registry = new class extends ActiveRunRegistry {
     override register(run: Parameters<ActiveRunRegistry["register"]>[0]) {
       super.register(run);
@@ -99,7 +112,14 @@ function harness(
         findById: (_workflowId: string, runId: string) =>
           Promise.resolve(runs.find((r) => r.id === runId) ?? null),
         findAllByWorkflowId: () => Promise.resolve(runs),
-        findSummariesByStatus: (workflowId: string, status: string) => {
+        findSummariesByStatus: (
+          workflowId: string,
+          status: string,
+          signal?: AbortSignal,
+        ) => {
+          listed.push(workflowId);
+          const replaced = options.listing?.(workflowId, signal);
+          if (replaced) return replaced;
           if (workflowId === options.failListingOf) {
             return Promise.reject(new Error("index unreadable"));
           }
@@ -112,7 +132,7 @@ function harness(
       },
     },
   } as unknown as ConnectionContext;
-  return { ctx, registry, launched };
+  return { ctx, registry, launched, listed };
 }
 
 async function settle(registry: ActiveRunRegistry, runIds: string[]) {
@@ -168,6 +188,66 @@ Deno.test("sweepContinuations: stops between runs once the server is stopping", 
   });
 
   assertEquals(result, { examined: 0, launched: 0 });
+  assertEquals(launched, []);
+});
+
+Deno.test("sweepContinuations: stops waiting for a listing once its signal aborts", async () => {
+  const held = gatedWorkflow("held", true);
+  const next = gatedWorkflow("next", true);
+  const abort = new AbortController();
+  let listingSignal: AbortSignal | undefined;
+  // A listing that never settles: a rebuild queued behind another reader
+  // of the run index, which does not watch the signal while it waits.
+  const { ctx, launched, listed } = harness(
+    [held, next],
+    [gatedRun(held, true), gatedRun(next, true)],
+    {
+      listing: (workflowId, signal) => {
+        if (workflowId !== held.id) return undefined;
+        listingSignal = signal;
+        return new Promise(() => {});
+      },
+    },
+  );
+
+  const pass = sweepContinuations(ctx, {
+    takeover: true,
+    signal: abort.signal,
+  });
+  await waitFor(() => listed.length === 1, "the listing to start");
+  abort.abort();
+
+  assertEquals(await pass, { examined: 0, launched: 0 });
+  assertEquals(listingSignal, abort.signal);
+  // The pass ended: the next workflow was not listed.
+  assertEquals(listed, [held.id]);
+  assertEquals(launched, []);
+});
+
+Deno.test("sweepContinuations: a listing its signal aborted ends the pass rather than skipping to the next workflow", async () => {
+  const aborted = gatedWorkflow("aborted", true);
+  const next = gatedWorkflow("next", true);
+  const abort = new AbortController();
+  // The repository's own rebuild stops at its next record and rejects.
+  const { ctx, launched, listed } = harness(
+    [aborted, next],
+    [gatedRun(aborted, true), gatedRun(next, true)],
+    {
+      listing: (workflowId, signal) => {
+        if (workflowId !== aborted.id) return undefined;
+        abort.abort(new DOMException("shutting down", "AbortError"));
+        return Promise.reject(signal?.reason);
+      },
+    },
+  );
+
+  const result = await sweepContinuations(ctx, {
+    takeover: true,
+    signal: abort.signal,
+  });
+
+  assertEquals(result, { examined: 0, launched: 0 });
+  assertEquals(listed, [aborted.id]);
   assertEquals(launched, []);
 });
 
@@ -369,11 +449,13 @@ Deno.test("ContinuationSweepService: dispose waits for the pass in flight and te
     release = resolve;
   });
   let sawStopping = false;
+  let sawAborted = false;
   const service = new ContinuationSweepService({
     intervalMs: 3_600_000,
-    sweep: async ({ isStopping }) => {
+    sweep: async ({ isStopping, signal }) => {
       await gate;
       sawStopping = isStopping();
+      sawAborted = signal.aborted;
       return { examined: 0, launched: 0 };
     },
   });
@@ -383,6 +465,7 @@ Deno.test("ContinuationSweepService: dispose waits for the pass in flight and te
   await disposed;
   await pass;
   assertEquals(sawStopping, true);
+  assertEquals(sawAborted, true);
 
   // Nothing starts after dispose.
   service.start();
@@ -409,6 +492,24 @@ Deno.test("ContinuationSweepService: start does not wait for the boot pass, and 
   release();
   await disposed;
   assertEquals(finished, true);
+});
+
+Deno.test("ContinuationSweepService: dispose does not wait for the boot pass's listing of suspended runs", async () => {
+  const workflow = gatedWorkflow("on", true);
+  // The boot pass's listing never settles on its own, as a run index
+  // rebuild queued behind a request's rebuild does not (swamp-club#3472).
+  const { ctx, listed } = harness([workflow], [gatedRun(workflow, true)], {
+    listing: () => new Promise(() => {}),
+  });
+  const service = new ContinuationSweepService({
+    intervalMs: 3_600_000,
+    sweep: ({ isStopping, signal }) =>
+      sweepContinuations(ctx, { takeover: true, isStopping, signal }),
+  });
+
+  service.start();
+  await waitFor(() => listed.length === 1, "the boot pass's listing");
+  await service.dispose();
 });
 
 Deno.test("decideContinuationSweepStart: a synced datastore needs claims every instance reads, and current run records", () => {

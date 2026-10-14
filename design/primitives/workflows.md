@@ -290,7 +290,8 @@ for a signal has an outcome of any kind. `continueSettledRun`
   it every suspended run this instance has, at boot and then every
   `--continuation-sweep-interval` (default 30 s; `0` disables). The boot pass
   runs in the background: it reads every suspended run, and serve does not
-  hold its readiness on that. The sweep is
+  hold its readiness on that, nor its shutdown on a run index rebuild that
+  read needs (swamp-club#3472, see the run index cache). The sweep is
   what retries a launch lost to a full registry, a shutdown or a crash, and
   what continues a run signalled, or on a filesystem datastore approved, by a
   local command. It is also what notices a deadline under serve
@@ -3092,7 +3093,15 @@ stops between records without writing the index. Shutdown does not wait for the
 read in flight to end, though (swamp-club#3468): a plain read of an intact
 index, a load a request started, or a repair queued behind another reader does
 not watch that signal. The warm-up stops waiting for it at once and leaves it
-to finish in the background.
+to finish in the background. The continuation sweep reads each workflow's
+index too, to list its suspended runs, and shutdown disposes it after the
+drain. Disposing aborts the sweep's own signal, which reaches that read in the
+same way (swamp-club#3472): its rebuild or repair stops between records and
+writes no index, and the pass stops waiting at once, even for a read queued
+behind a request's rebuild. A run continuation the pass already started is
+still awaited, so the claim it took is released while the instance is live.
+The run search and run summary handlers pass no signal to their reads, but
+shutdown does not wait for those reads.
 
 Run search and run summary list workflows through
 `WorkflowRepository.findAllListings` (`WorkflowListing`: id, name, whether it

@@ -1299,13 +1299,21 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return { index, dirMtimeMs };
   }
 
+  /**
+   * The workflow's runs with `status`, read through its index. With
+   * `signal`, a read that has to rebuild or repair the index stops between
+   * records once it aborts, writes no index, and rejects with the signal's
+   * reason: serve's continuation sweep passes its own, so shutdown is not
+   * held up by it (swamp-club#3472).
+   */
   async findSummariesByStatus(
     workflowId: WorkflowId,
     status: string,
+    signal?: AbortSignal,
   ): Promise<WorkflowRunSummary[]> {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
-    const index = await this.getValidatedIndex(runsDir, indexDir);
+    const index = await this.getValidatedIndex(runsDir, indexDir, signal);
     if (!index) {
       const all = await this.findAllSummariesByWorkflowId(workflowId);
       return all.filter((s) => s.status === status);

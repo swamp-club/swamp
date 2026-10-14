@@ -35,10 +35,13 @@
  */
 
 import { sweepPendingSignals } from "../domain/workflows/signal_wait_cleanup.ts";
+import type { WorkflowId } from "../domain/workflows/workflow_id.ts";
+import type { WorkflowRunSummary } from "../domain/workflows/workflow_run_summary.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ConnectionContext } from "./handlers/shared.ts";
 import { continueSettledRun } from "./resume_launcher.ts";
+import { STOPPED, stoppedBy, untilStopped } from "./until_stopped.ts";
 
 const logger = getSwampLogger(["serve", "continuation-sweep"]);
 
@@ -68,6 +71,13 @@ export async function sweepContinuations(
   options: {
     takeover: boolean;
     isStopping?: () => boolean;
+    /**
+     * Aborts the listing of a workflow's suspended runs: a rebuild or repair
+     * of its run index stops between records and writes no index, and the
+     * pass stops waiting for the listing at once, even one queued behind
+     * another reader of the index (swamp-club#3472).
+     */
+    signal?: AbortSignal;
     /** The clock deadlines and backoffs are read against, for tests. */
     now?: () => number;
   },
@@ -79,8 +89,15 @@ export async function sweepContinuations(
     if (options.isStopping?.()) break;
     let suspended;
     try {
-      suspended = await runRepo.findSummariesByStatus(workflow.id, "suspended");
+      const listed = await listSuspendedRuns(
+        runRepo,
+        workflow.id,
+        options.signal,
+      );
+      if (listed === STOPPED) break;
+      suspended = listed;
     } catch (error) {
+      if (options.signal?.aborted) break;
       logger.warn(
         "Could not list the suspended runs of workflow {workflow}: {error}",
         {
@@ -113,6 +130,31 @@ export async function sweepContinuations(
     }
   }
   return { examined, launched };
+}
+
+/**
+ * A workflow's suspended runs, or {@link STOPPED} once `signal` aborts
+ * first. The listing is then let go: its own rebuild or repair stops at the
+ * next record and writes no index, and a wait in the index queue or a plain
+ * read of the index finishes unwatched.
+ */
+async function listSuspendedRuns(
+  runRepo: ConnectionContext["repoContext"]["workflowRunRepo"],
+  workflowId: WorkflowId,
+  signal: AbortSignal | undefined,
+): Promise<WorkflowRunSummary[] | typeof STOPPED> {
+  const listing = runRepo.findSummariesByStatus(
+    workflowId,
+    "suspended",
+    signal,
+  );
+  if (!signal) return await listing;
+  const { stopped, release } = stoppedBy(signal);
+  try {
+    return await untilStopped(listing, stopped);
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -179,9 +221,12 @@ export interface ContinuationSweepDeps {
    * can be behind, and a pass would resume it.
    */
   readonly bootPassOnly?: boolean;
-  /** One pass; `boot` is true for the first pass after the server started. */
+  /**
+   * One pass; `boot` is true for the first pass after the server started.
+   * `signal` aborts when the sweep is disposed.
+   */
   sweep(
-    pass: { boot: boolean; isStopping: () => boolean },
+    pass: { boot: boolean; isStopping: () => boolean; signal: AbortSignal },
   ): Promise<ContinuationSweepResult>;
 }
 
@@ -217,6 +262,7 @@ export function decideContinuationSweepStart(options: {
 /** Runs the continuation sweep at boot and then on an interval. */
 export class ContinuationSweepService {
   readonly #deps: ContinuationSweepDeps;
+  readonly #abort = new AbortController();
   #timer: ReturnType<typeof setTimeout> | null = null;
   #running: Promise<void> | null = null;
   #disposed = false;
@@ -244,9 +290,15 @@ export class ContinuationSweepService {
     void this.#passThenSchedule();
   }
 
-  /** Stops the schedule and waits for a pass in flight. */
+  /**
+   * Stops the schedule and waits for a pass in flight. The pass lets go of
+   * its listing of suspended runs at once (swamp-club#3472): a run index
+   * rebuild must not hold shutdown. A run it is continuing is still waited
+   * for, so the claim it took is released while this instance is live.
+   */
   async dispose(): Promise<void> {
     this.#disposed = true;
+    this.#abort.abort();
     if (this.#timer !== null) {
       clearTimeout(this.#timer);
       this.#timer = null;
@@ -270,6 +322,7 @@ export class ContinuationSweepService {
       const result = await this.#deps.sweep({
         boot,
         isStopping: () => this.#disposed,
+        signal: this.#abort.signal,
       });
       if (result.launched > 0) {
         logger.info(

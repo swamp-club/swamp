@@ -7479,12 +7479,13 @@ export const serveCommand = new Command()
       continuationSweepService = new ContinuationSweepService({
         intervalMs: continuationSweepIntervalMs,
         bootPassOnly,
-        sweep: async ({ boot, isStopping }) => {
+        sweep: async ({ boot, isStopping, signal }) => {
           const result = await sweepContinuations(connectionCtx, {
             // A dead holder's claim is replaced only while the run records
             // are current: after boot they go stale on a synced datastore.
             takeover: !synced || boot,
             isStopping,
+            signal,
           });
           if (!isStopping()) await sweepHeldSignalsWhenDue(connectionCtx);
           return result;
