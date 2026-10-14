@@ -1851,6 +1851,7 @@ export {
   startAddTools,
   startBack,
   startCheckFolder,
+  startCheckWorkspaceLocation,
   startChooseHarness,
   type StartContents,
   type StartDeps,
@@ -1864,6 +1865,7 @@ export {
   startListHarnesses,
   startListTasks,
   startListWorkspaces,
+  type StartLocationCheck,
   startOpenAgent,
   startOpenWorkspace,
   startPickFolder,
@@ -1880,6 +1882,7 @@ export {
   startStatus,
   type StartStatusEvent,
   type StartTaskSummary,
+  type StartWorkspaceLocationInput,
   type StartWorkspaceSummary,
 } from "./start/start.ts";
 export {
@@ -1913,3 +1916,7 @@ export {
   type WorkspaceRemoveData,
   type WorkspaceRemoveEvent,
 } from "./workspace/remove.ts";
+export {
+  expandHome,
+  MAX_WORKSPACE_PARENT_LENGTH,
+} from "./workspace/workspace_store.ts";

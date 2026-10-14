@@ -22,13 +22,16 @@ import { groupCommandAction } from "../group_action.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { TelemetryPreferencesFileRepository } from "../../infrastructure/persistence/telemetry_preferences_file_repository.ts";
+import { WorkspacePreferencesFileRepository } from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
+import { expandHome } from "../../libswamp/workspace/workspace_store.ts";
+import { resolve } from "@std/path";
 import {
   createScheduler,
   isRunningAsRoot,
   resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -48,7 +51,49 @@ const CONFIG_KEYS: Record<string, { description: string; values?: string[] }> =
         "Enable or disable usage telemetry for every run, in any repository",
       values: ["enabled", "disabled"],
     },
+    "workspaces.dir": {
+      description:
+        'The folder new workspaces are created in (an existing folder, or "default" for the swamp data dir)',
+    },
   };
+
+/** What `workspaces.dir` shows when no folder is set. */
+const WORKSPACES_DIR_DEFAULT = "default";
+
+/**
+ * The folder a `workspaces.dir` value names, absolute and as it really is,
+ * or undefined for "default".
+ *
+ * @throws {UserError} when it isn't an existing folder
+ */
+async function workspacesDirValue(raw: string): Promise<string | undefined> {
+  const typed = raw.trim();
+  if (typed === WORKSPACES_DIR_DEFAULT) return undefined;
+  if (typed === "") {
+    throw new UserError(
+      `Give workspaces.dir a folder, or "${WORKSPACES_DIR_DEFAULT}" for the swamp data dir.`,
+    );
+  }
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+  const expanded = expandHome(typed, home, Deno.build.os);
+  // A relative folder is taken from where the command runs.
+  const path = resolve(expanded);
+  let isDirectory = false;
+  try {
+    isDirectory = (await Deno.stat(path)).isDirectory;
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    throw markErrorPaths(
+      new UserError(
+        `There's no folder at ${path}. Create it first, or choose another.`,
+      ),
+      [path],
+    );
+  }
+  return await Deno.realPath(path);
+}
 
 const configGetCommand = new Command()
   .description("Get a configuration value")
@@ -81,6 +126,10 @@ const configGetCommand = new Command()
         value = telemetry.disabled ? "disabled" : "enabled";
         break;
       }
+      case "workspaces.dir":
+        value = (await new WorkspacePreferencesFileRepository().read()).dir ??
+          WORKSPACES_DIR_DEFAULT;
+        break;
       default:
         throw new UserError(`Unknown config key: ${key}`);
     }
@@ -114,6 +163,25 @@ const configSetCommand = new Command()
           meta.values.map((v) => `"${v}"`).join(" or ")
         }.`,
       );
+    }
+
+    // Like telemetry, a plain user-level file: no scheduler, no root check.
+    if (key === "workspaces.dir") {
+      const dir = await workspacesDirValue(value);
+      await new WorkspacePreferencesFileRepository().write(
+        dir === undefined ? {} : { dir },
+      );
+      const shown = dir ?? WORKSPACES_DIR_DEFAULT;
+      if (ctx.outputMode === "json") {
+        console.log(JSON.stringify({ key, value: shown }));
+      } else {
+        ctx.logger.info(
+          dir === undefined
+            ? "New workspaces are created under the swamp data dir"
+            : `New workspaces are created in ${dir}`,
+        );
+      }
+      return;
     }
 
     // Telemetry is a plain user-level file with no scheduler behind it, so it
@@ -213,6 +281,9 @@ const configListCommand = new Command()
       "update.auto": prefs.enabled ? "enabled" : "disabled",
       "update.cadence": prefs.cadence,
       "telemetry.collection": telemetry.disabled ? "disabled" : "enabled",
+      "workspaces.dir":
+        (await new WorkspacePreferencesFileRepository().read()).dir ??
+          WORKSPACES_DIR_DEFAULT,
     };
 
     if (ctx.outputMode === "json") {
@@ -222,8 +293,8 @@ const configListCommand = new Command()
 
     for (const [key, meta] of Object.entries(CONFIG_KEYS)) {
       const current = values[key];
-      const allowed = meta.values ? `(${meta.values.join("|")})` : "";
-      ctx.logger.info(`${key} = ${current} ${allowed}`);
+      const allowed = meta.values ? ` (${meta.values.join("|")})` : "";
+      ctx.logger.info(`${key} = ${current}${allowed}`);
     }
   });
 

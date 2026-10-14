@@ -82,6 +82,8 @@ interface Fakes {
   /** When set, the fake chooser waits on it before answering. */
   pickGate: Promise<void> | null;
   picks: number;
+  /** What the fake chooser was asked, in order. */
+  prompts: string[];
 }
 
 function makeFakes(dataDir: string): Fakes {
@@ -97,6 +99,7 @@ function makeFakes(dataDir: string): Fakes {
     picked: null,
     pickGate: null,
     picks: 0,
+    prompts: [],
   };
   const tools = new Map<string, string[]>();
   f.deps = {
@@ -156,8 +159,9 @@ function makeFakes(dataDir: string): Fakes {
     registry: new WorkspaceRegistryFileRepository(join(dataDir, ".config")),
     folderPicker: {
       available: () => Promise.resolve(true),
-      pick: async () => {
+      pick: async (prompt) => {
         f.picks++;
+        f.prompts.push(prompt);
         if (f.pickGate) await f.pickGate;
         return f.picked;
       },
@@ -305,6 +309,10 @@ type Payload = Partial<StartStatus> & {
   readonly harnesses?: readonly StartHarnessInfo[];
   readonly workspaces?: readonly StartWorkspaceSummary[];
   readonly suggestedName?: string;
+  readonly defaultLocation?: string;
+  // start.workspace.location.check
+  readonly field?: string;
+  readonly message?: string;
   // start.folder.pick
   readonly path?: string | null;
   // start.folder.check
@@ -989,7 +997,11 @@ Deno.test("startStartServer: start.workspaces.list answers the workspaces and a 
     const client = await Client.open(handle.port);
     try {
       const empty = await client.request("start.workspaces.list");
-      assertEquals(empty, { workspaces: [], suggestedName: "amber-alligator" });
+      assertEquals(empty, {
+        workspaces: [],
+        suggestedName: "amber-alligator",
+        defaultLocation: join(dataDir, "workspaces"),
+      });
 
       await client.request("start.workspace.choose", {
         name: "amber-alligator",
@@ -1543,6 +1555,133 @@ Deno.test("startStartServer: start.folder.pick answers the chosen folder and nev
       fakes.signedIn = { kind: "not_signed_in" };
       const refused = await c.requestError("start.folder.pick");
       assertEquals(refused.code, "not_signed_in");
+    } finally {
+      await c.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: start.workspace.choose with a parent creates the workspace there and claims that folder", async () => {
+  await withStartServer(async ({ handle, dataDir, claims, opened }) => {
+    const parent = join(dataDir, "dev");
+    await Deno.mkdir(parent);
+    const real = await Deno.realPath(parent);
+    const c = await Client.open(handle.port);
+    try {
+      const status = await c.request("start.workspace.choose", {
+        name: "infra",
+        parent,
+      });
+      const path = join(real, "infra");
+      assertPathEquals(status.workspacePath!, path);
+      assertEquals(claims.claimed, [path]);
+      assertEquals(opened, [{ path, created: true }]);
+      const list = await c.request("start.workspaces.list");
+      const [summary] = list.workspaces ?? [];
+      assertEquals(summary.name, "infra");
+      assertEquals(summary.imported, false);
+    } finally {
+      await c.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: start.workspace.choose refuses a relative or over-long parent, creating nothing", async () => {
+  await withStartServer(async ({ handle, dataDir, claims }) => {
+    const c = await Client.open(handle.port);
+    try {
+      assertEquals(
+        (await c.requestError("start.workspace.choose", {
+          name: "infra",
+          parent: "dev",
+        })).code,
+        "parent_not_absolute",
+      );
+      assertEquals(
+        (await c.requestError("start.workspace.choose", {
+          name: "infra",
+          parent: "/" + "a".repeat(5000),
+        })).code,
+        "invalid_request",
+      );
+      assertEquals(
+        (await c.requestError("start.workspace.choose", {
+          name: "infra",
+          parent: join(dataDir, "nope"),
+        })).code,
+        "parent_not_found",
+      );
+      assertEquals(claims.claimed, []);
+      await assertRejects(() => Deno.stat(join(dataDir, "nope")));
+    } finally {
+      await c.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: start.workspace.location.check previews the folder and reports problems by field", async () => {
+  await withStartServer(async ({ handle, dataDir, claims }) => {
+    const parent = join(dataDir, "dev");
+    await Deno.mkdir(join(parent, "busy"), { recursive: true });
+    await Deno.writeTextFile(join(parent, "busy", "notes.txt"), "x");
+    const real = await Deno.realPath(parent);
+    const c = await Client.open(handle.port);
+    try {
+      const fallback = await c.request("start.workspace.location.check", {
+        name: "infra",
+      });
+      assertEquals(fallback.ok, true);
+      assertPathEquals(fallback.path!, workspaceDir(dataDir, "infra"));
+
+      const chosen = await c.request("start.workspace.location.check", {
+        name: "infra",
+        parent,
+      });
+      assertEquals(chosen.ok, true);
+      assertPathEquals(chosen.path!, join(real, "infra"));
+
+      const busy = await c.request("start.workspace.location.check", {
+        name: "busy",
+        parent,
+      });
+      assertEquals([busy.ok, busy.field, busy.code], [
+        false,
+        "location",
+        "not_a_workspace",
+      ]);
+
+      await c.request("start.workspace.choose", { name: "infra" });
+      const taken = await c.request("start.workspace.location.check", {
+        name: "infra",
+        parent,
+      });
+      assertEquals([taken.ok, taken.field, taken.code], [
+        false,
+        "name",
+        "name_taken",
+      ]);
+      // Only the choose claimed (and created) a workspace.
+      assertEquals(claims.claimed.length, 1);
+    } finally {
+      await c.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: start.folder.pick asks where to create when picking a location", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    const c = await Client.open(handle.port);
+    try {
+      fakes.picked = "/Users/ada/dev";
+      assertEquals(
+        (await c.request("start.folder.pick", { purpose: "location" })).path,
+        "/Users/ada/dev",
+      );
+      await c.request("start.folder.pick");
+      assertEquals(fakes.prompts, [
+        "Choose where to create the workspace",
+        "Choose the swamp repo to import",
+      ]);
     } finally {
       await c.close();
     }

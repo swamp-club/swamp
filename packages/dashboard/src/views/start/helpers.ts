@@ -795,6 +795,36 @@ export function contentsNames(contents: StartStatus["contents"]): {
 }
 
 /**
+ * The hint under the first-run create form: where new workspaces go when
+ * no other folder is chosen.
+ */
+export function workspaceLocationHint(defaultLocation: string): string {
+  return defaultLocation === ""
+    ? "Workspaces live in `~/.swamp/workspaces` on this machine. No Git needed."
+    : `New workspaces go in \`${defaultLocation}\` unless you choose another folder. No Git needed.`;
+}
+
+/** The server's answer to `start.workspace.location.check`. */
+export type LocationCheckReply =
+  | { ok: true; path: string }
+  | {
+    ok: false;
+    field: "name" | "location";
+    code: string;
+    message: string;
+    path?: string;
+  };
+
+/**
+ * What a new-workspace location check is about: the name it would be
+ * created under and the folder typed (empty for the default). A reply is
+ * shown only while it still matches what is typed.
+ */
+export function locationCheckKey(name: string, location: string): string {
+  return `${name}\u0000${location.trim()}`;
+}
+
+/**
  * The workspace name to suggest. The server offers a fresh random name each
  * time the list is read; the page keeps the one it showed first, so the
  * suggestion doesn't change while someone reads, until it is taken.

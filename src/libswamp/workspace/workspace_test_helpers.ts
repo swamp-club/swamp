@@ -39,6 +39,8 @@ export interface WorkspaceFixture {
   readonly locks: string[];
   /** Makes `path` a swamp repo (a folder with a `.swamp.yaml`). */
   makeRepo(path: string): Promise<void>;
+  /** Sets the folder `swamp config set workspaces.dir` names; undefined clears it. */
+  configure(dir: string | undefined): void;
 }
 
 export async function withWorkspaceFixture(
@@ -53,6 +55,10 @@ export async function withWorkspaceFixture(
   const tools = new Map<string, string[]>();
   const open = new Set<string>();
   const locks: string[] = [];
+  let configured: string | undefined;
+  const configure = (folder: string | undefined) => {
+    configured = folder;
+  };
   const makeRepo = async (path: string) => {
     await ensureDir(path);
     await Deno.writeTextFile(join(path, ".swamp.yaml"), "repoId: test\n");
@@ -73,6 +79,7 @@ export async function withWorkspaceFixture(
     },
     now: () => new Date("2026-10-14T10:00:00.000Z"),
     homeDir: dir,
+    configuredParent: () => Promise.resolve(configured),
     enrolledTools: (path) => Promise.resolve([...(tools.get(path) ?? [])]),
     isOpenInStart: (path) => Promise.resolve(open.has(path)),
     withCreateLock: (name, run) => {
@@ -81,7 +88,16 @@ export async function withWorkspaceFixture(
     },
   };
   try {
-    await fn({ deps, dir, dataDir, tools, open, locks, makeRepo });
+    await fn({
+      deps,
+      dir,
+      dataDir,
+      tools,
+      open,
+      locks,
+      makeRepo,
+      configure,
+    });
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

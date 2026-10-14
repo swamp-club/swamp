@@ -18,10 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import fc from "fast-check";
-import { WorkspaceRegistry } from "./workspace_registry.ts";
+import {
+  type WorkspaceOrigin,
+  WorkspaceRegistry,
+} from "./workspace_registry.ts";
 
 type Command =
-  | { kind: "register"; name: string; path: string }
+  | {
+    kind: "register";
+    name: string;
+    path: string;
+    origin: WorkspaceOrigin | undefined;
+  }
   | { kind: "remove"; name: string }
   | { kind: "trust"; path: string };
 
@@ -34,25 +42,37 @@ const arbCommand: fc.Arbitrary<Command> = fc.oneof(
     kind: fc.constant("register" as const),
     name: arbName,
     path: arbPath,
+    origin: fc.constantFrom<WorkspaceOrigin | undefined>(
+      "created",
+      "imported",
+      undefined,
+    ),
   }),
   fc.record({ kind: fc.constant("remove" as const), name: arbName }),
   fc.record({ kind: fc.constant("trust" as const), path: arbPath }),
 );
 
-Deno.test("WorkspaceRegistry: names and paths stay unique, and removed names are gone, across random commands", () => {
+Deno.test("WorkspaceRegistry: names and paths stay unique, removed names are gone, and origins are kept, across random commands", () => {
   fc.assert(
     fc.property(fc.array(arbCommand, { maxLength: 40 }), (commands) => {
       const registry = WorkspaceRegistry.empty();
+      // The origin each name was first registered with.
+      const origins = new Map<string, WorkspaceOrigin | undefined>();
       for (const command of commands) {
         try {
           if (command.kind === "register") {
-            registry.register({
+            const added = registry.register({
               name: command.name,
               path: command.path,
               createdAt: "2026-10-14T00:00:00.000Z",
+              ...(command.origin !== undefined
+                ? { origin: command.origin }
+                : {}),
             });
+            if (added) origins.set(command.name, command.origin);
           } else if (command.kind === "remove") {
             registry.remove(command.name);
+            origins.delete(command.name);
             if (registry.get(command.name)) return false;
           } else {
             registry.markTrusted(command.path, "2026-10-14T01:00:00.000Z");
@@ -66,6 +86,10 @@ Deno.test("WorkspaceRegistry: names and paths stay unique, and removed names are
           return false;
         }
         if (new Set(entries.map((e) => e.path)).size !== entries.length) {
+          return false;
+        }
+        // Trusting or re-registering never changes how an entry was made.
+        if (entries.some((e) => e.origin !== origins.get(e.name))) {
           return false;
         }
         // Trust belongs to a registered entry, so it goes with it.

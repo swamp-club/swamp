@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-14 @ 072d6d16
+last-verified: 2026-10-14 @ 3999f85e
 ---
 
 # Workspaces
@@ -12,8 +12,10 @@ command works in it unchanged.
 
 There are two kinds:
 
-- **Created** workspaces live under `<data dir>/workspaces/<name>`. They are
-  made by `swamp workspace create` or `swamp start`, with no agent set up.
+- **Created** workspaces are made by `swamp workspace create` or
+  `swamp start`, with no agent set up, at `<location>/<name>`. The location is
+  the folder chosen with `--path` (or on the start page), else the one set
+  with `swamp config set workspaces.dir`, else `<data dir>/workspaces`.
 - **Imported** workspaces are existing repos registered where they are, by
   `swamp workspace import` or the import form on the `swamp start` page.
   Nothing is moved or copied.
@@ -25,7 +27,7 @@ There are two kinds:
 
 | Command                             | What it does                                                   |
 | ----------------------------------- | -------------------------------------------------------------- |
-| `workspace create <name>`           | Creates and registers a workspace under the data dir           |
+| `workspace create <name> [--path]`  | Creates and registers a workspace in its location              |
 | `workspace import <path> [--name]`  | Registers an existing repo where it is                         |
 | `workspace list`                    | Lists every registered workspace, flagging gone folders        |
 | `workspace get <name>`              | Shows one workspace: folder, trust, agents, open in start      |
@@ -36,8 +38,16 @@ segment of lowercase letters, digits and dashes, at most 63 characters.
 
 ## The registry
 
-`WorkspaceRegistry` holds the entries: name, folder, `createdAt`, and
-`trustedAt` once the user confirmed that agents may work there. Names are
+`WorkspaceRegistry` holds the entries: name, folder, `createdAt`, `origin`
+(`created` or `imported`), and `trustedAt` once the user confirmed that agents
+may work there. `origin` says whether Swamp made the folder, which the launch
+brief and the `imported` flag of `list`, `get` and the start page report.
+Entries written before it was recorded have none and are told apart by
+location: only created workspaces were under the data dir. It was added
+without a schema bump so older Swamp versions still read the file; an older
+version that rewrites the file drops it, and the entry falls back to the
+location rule. Importing a folder under the data dir's own folder (one
+`remove` left behind) records it as created. Names are
 unique and so are folders. Trust lives only in the registry, never in the
 workspace, because an imported repo can carry any files it likes. The file is
 schema-versioned, written atomically with mode 0600 under
@@ -51,8 +61,18 @@ adopted back later.
 
 ## Creating
 
+The location is worked out once (`newWorkspaceLocation`): `~` is expanded, a
+relative `--path` is taken from the current folder, and the folder must
+already exist (`parent_not_found`, `parent_not_a_folder`); Swamp only ever
+makes the workspace folder itself. A chosen or configured folder is used by
+its real path, so one folder is never registered under two spellings; naming
+the data dir's own folder is the same as the default. A folder inside another
+repo is allowed and makes a nested repo.
+
 `create` takes the workspace's create lock, `<data dir>/workspaces/<name>.lock`,
-the same lock `swamp start` takes. It refuses:
+the same lock `swamp start` takes, wherever the folder goes. The checks below
+(`checkNewWorkspaceFolder`) are shared by `create`, `swamp start` and the start
+page's preview. It refuses:
 
 - a name that is registered (`name_taken`)
 - a folder that is registered under another name, or a repo folder that isn't
@@ -61,6 +81,23 @@ the same lock `swamp start` takes. It refuses:
 
 Re-registering a left-behind folder without a word would bring back its old
 models unnoticed, so `create` points at `import` instead.
+
+If registering fails after the folder was set up, the create is undone: a
+folder it made is removed, and an empty folder that was already there (it may
+be the user's own) is emptied again but kept.
+
+Reopening a registered workspace never recreates its folder unless it is the
+default one under the data dir (`ensureWorkspace`). A workspace created in a
+chosen folder that is later deleted is reported `workspace_missing`, like an
+imported one.
+
+## Default location
+
+`swamp config set workspaces.dir <folder>` sets the folder new workspaces go
+in when none is chosen; it must exist and is stored as its real path in
+`<config dir>/workspaces.yaml`. `swamp config set workspaces.dir default`
+clears it. When the folder is later deleted, creating a workspace without
+`--path` fails with `parent_not_found` and says how to reset the setting.
 
 ## Removing
 
@@ -71,11 +108,13 @@ often the user's own project, so no workspace command deletes a folder. When a
 
 ## Known gaps
 
-`swamp start` doesn't refuse a removed workspace's folder. Its open path
-(`startOpenWorkspace`) reuses any repo under `<data dir>/workspaces/<name>`
-and registers it, so `swamp start --workspace prod` after
-`swamp workspace remove prod` brings the workspace back without saying so.
-`workspace create` refuses the same folder with `folder_exists`.
+`swamp start` doesn't refuse a removed workspace's folder under the data dir.
+Its open path (`startOpenWorkspace`) reuses any repo under
+`<data dir>/workspaces/<name>` and registers it, so
+`swamp start --workspace prod` after `swamp workspace remove prod` brings the
+workspace back without saying so. `workspace create` refuses the same folder
+with `folder_exists`, and so does `swamp start` when the workspace goes in a
+chosen or configured folder.
 
 ## Where the code lives
 

@@ -28,6 +28,7 @@ import { ensureDir } from "@std/fs";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import {
+  type WorkspaceOrigin,
   WorkspaceRegistry,
   type WorkspaceRegistryRepository,
 } from "../../domain/workspace/workspace_registry.ts";
@@ -47,6 +48,11 @@ export interface WorkspaceStoreDeps {
   readonly now: () => Date;
   /** The user's home folder, for `~` in an imported path; unset when unknown. */
   readonly homeDir?: string;
+  /**
+   * The folder new workspaces go in when none is chosen
+   * (`swamp config set workspaces.dir`); unset means under the data dir.
+   */
+  readonly configuredParent?: () => Promise<string | undefined>;
 }
 
 /** The folder new workspaces are created in. */
@@ -55,14 +61,16 @@ export function workspacesRoot(dataDir: string): string {
 }
 
 /**
- * True when the workspace is a folder imported where it was, not one
- * created under the data dir.
+ * True when the workspace is an existing repo imported where it was, not
+ * one Swamp created. Entries registered before the origin was recorded are
+ * told apart by where they are: only created ones were under the data dir.
  */
 export function isImportedWorkspace(
   dataDir: string,
-  workspacePath: string,
+  entry: { readonly path: string; readonly origin?: WorkspaceOrigin },
 ): boolean {
-  return !isUnder(workspacePath, workspacesRoot(dataDir));
+  if (entry.origin !== undefined) return entry.origin === "imported";
+  return !isUnder(entry.path, workspacesRoot(dataDir));
 }
 
 /**
@@ -99,13 +107,23 @@ export async function loadWorkspaceRegistry(
   if (options.readOnly) {
     // Report what adoption would register, without writing anything.
     return WorkspaceRegistry.fromEntries(
-      found.map((name) => ({ name, path: join(root, name), createdAt })),
+      found.map((name) => ({
+        name,
+        path: join(root, name),
+        createdAt,
+        origin: "created" as const,
+      })),
     );
   }
   return await deps.registry.update((registry) => {
     for (const name of found) {
       try {
-        registry.register({ name, path: join(root, name), createdAt });
+        registry.register({
+          name,
+          path: join(root, name),
+          createdAt,
+          origin: "created",
+        });
       } catch {
         // A name or folder already registered by another process meanwhile.
       }
@@ -126,7 +144,10 @@ export async function resolveWorkspacePath(
     defaultWorkspacePath(deps.dataDir, parsed);
 }
 
-/** Registers the workspace unless its name is registered already. */
+/**
+ * Registers the workspace Swamp created at `path` unless its name is
+ * registered already.
+ */
 export async function ensureRegistered(
   deps: WorkspaceStoreDeps,
   name: string,
@@ -134,9 +155,238 @@ export async function ensureRegistered(
 ): Promise<void> {
   await deps.registry.update((registry) => {
     if (!registry.get(name)) {
-      registry.register({ name, path, createdAt: deps.now().toISOString() });
+      registry.register({
+        name,
+        path,
+        createdAt: deps.now().toISOString(),
+        origin: "created",
+      });
     }
   });
+}
+
+/** Where a new workspace would be created. */
+export interface NewWorkspaceLocation {
+  readonly name: string;
+  /** The folder it is created in. */
+  readonly parent: string;
+  /** The workspace folder, `<parent>/<name>`. */
+  readonly path: string;
+  /** True when it goes in the default folder under the data dir. */
+  readonly inDataDir: boolean;
+}
+
+/** The longest folder path accepted for a new workspace's location. */
+export const MAX_WORKSPACE_PARENT_LENGTH = 4096;
+
+/**
+ * The folder new workspaces go in when none is chosen: the one set with
+ * `swamp config set workspaces.dir`, else `<data dir>/workspaces`.
+ */
+export async function defaultWorkspaceParent(
+  deps: Pick<WorkspaceStoreDeps, "dataDir" | "configuredParent">,
+): Promise<string> {
+  return (await deps.configuredParent?.()) ?? workspacesRoot(deps.dataDir);
+}
+
+/**
+ * Where a new workspace of that name goes: in `parent` when one is given,
+ * else in the configured folder, else under the data dir. A chosen or
+ * configured folder must already exist; it is used by its real path
+ * (symlinks resolved), so one folder is only ever registered one way. A
+ * relative `parent` is resolved against `relativeTo` (the CLI's working
+ * folder) and refused without it.
+ *
+ * @throws {UserError} code `invalid_name`, `parent_not_absolute`,
+ *   `parent_not_found` or `parent_not_a_folder`
+ */
+export async function newWorkspaceLocation(
+  deps: Pick<
+    WorkspaceStoreDeps,
+    "dataDir" | "homeDir" | "os" | "configuredParent"
+  >,
+  input: { name: string; parent?: string; relativeTo?: string },
+): Promise<NewWorkspaceLocation> {
+  const name = parseWorkspaceNameWithCode(input.name);
+  const root = workspacesRoot(deps.dataDir);
+  const inDataDir = {
+    name,
+    parent: root,
+    path: defaultWorkspacePath(deps.dataDir, name),
+    inDataDir: true,
+  };
+  const typed = input.parent?.trim() ?? "";
+  let chosen: string;
+  let configured = false;
+  if (typed !== "") {
+    if (typed.length > MAX_WORKSPACE_PARENT_LENGTH) {
+      throw new UserError(
+        "That folder path is too long.",
+        "parent_not_found",
+      );
+    }
+    let expanded: string;
+    try {
+      expanded = expandHome(typed, deps.homeDir, deps.os);
+    } catch (error) {
+      if (error instanceof UserError) {
+        throw new UserError(error.message, "parent_not_found");
+      }
+      throw error;
+    }
+    if (!isAbsolute(expanded)) {
+      if (input.relativeTo === undefined) {
+        throw new UserError(
+          "Enter the folder's full path, or start it with ~.",
+          "parent_not_absolute",
+        );
+      }
+      expanded = resolve(input.relativeTo, expanded);
+    }
+    chosen = resolve(expanded);
+  } else {
+    const fromConfig = await deps.configuredParent?.();
+    if (fromConfig === undefined) return inDataDir;
+    chosen = fromConfig;
+    configured = true;
+  }
+  let isDirectory: boolean;
+  try {
+    isDirectory = (await Deno.stat(chosen)).isDirectory;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    throw markErrorPaths(
+      new UserError(
+        configured
+          ? `The workspaces folder ${chosen} doesn't exist. Create it, or go back to the default with: swamp config set workspaces.dir default`
+          : `There's no folder at ${chosen}. Create it first, or choose another.`,
+        "parent_not_found",
+      ),
+      [chosen],
+    );
+  }
+  if (!isDirectory) {
+    throw markErrorPaths(
+      new UserError(`${chosen} isn't a folder.`, "parent_not_a_folder"),
+      [chosen],
+    );
+  }
+  const real = await Deno.realPath(chosen);
+  // The data dir's own folder, however it was spelled, is the default.
+  if (real === await realPathOrSelf(root)) return inDataDir;
+  return { name, parent: real, path: join(real, name), inDataDir: false };
+}
+
+/**
+ * Refuses a new workspace whose name or folder is taken: a registered
+ * name (`name_taken`), a folder registered under another name or a repo
+ * that isn't registered (`folder_exists`), or a folder holding something
+ * else (`not_a_workspace`). With `reuseRepo`, a repo that isn't registered
+ * is accepted, as `swamp start` reuses one under the data dir. Reads only.
+ */
+export async function checkNewWorkspaceFolder(
+  deps: WorkspaceStoreDeps,
+  registry: WorkspaceRegistry,
+  location: NewWorkspaceLocation,
+  options: { reuseRepo?: boolean } = {},
+): Promise<void> {
+  const { name, path } = location;
+  const registered = registry.get(name);
+  if (registered) {
+    throw markErrorPaths(
+      new UserError(
+        `A workspace named "${name}" already exists at ${registered.path}. Choose another name.`,
+        "name_taken",
+      ),
+      [registered.path],
+    );
+  }
+  // Imports are registered by their real path (/tmp vs /private/tmp).
+  const real = await realPathOrSelf(path);
+  let sameFolder;
+  for (const entry of registry.list()) {
+    if (await realPathOrSelf(entry.path) === real) sameFolder = entry;
+  }
+  if (sameFolder) {
+    throw markErrorPaths(
+      new UserError(
+        `${path} is already registered as the workspace "${sameFolder.name}".`,
+        "folder_exists",
+      ),
+      [path],
+    );
+  }
+  if (await deps.repo.isRepo(path)) {
+    if (options.reuseRepo) return;
+    throw markErrorPaths(
+      new UserError(
+        `A workspace folder is already at ${path}, but it isn't registered. Bring it back with: swamp workspace import "${path}". Or delete the folder first.`,
+        "folder_exists",
+      ),
+      [path],
+    );
+  }
+  if (await folderState(path) === "not_empty") {
+    throw markErrorPaths(
+      new UserError(
+        `${path} exists but isn't a Swamp workspace. Move it aside, or choose another name.`,
+        "not_a_workspace",
+      ),
+      [path],
+    );
+  }
+}
+
+/**
+ * Creates a new workspace at its location and registers it, after
+ * {@link checkNewWorkspaceFolder}. The caller holds the name's create lock.
+ * Registration is strict: a name or folder registered meanwhile (an import
+ * does not take the create lock) fails rather than being reported as
+ * created, and what was made is taken away again.
+ */
+export async function createNewWorkspace(
+  deps: WorkspaceStoreDeps,
+  location: NewWorkspaceLocation,
+): Promise<void> {
+  await checkNewWorkspaceFolder(
+    deps,
+    await loadWorkspaceRegistry(deps),
+    location,
+  );
+  const { name, path } = location;
+  const before = await folderState(path);
+  try {
+    await ensureDir(path);
+    await deps.repo.init(path);
+    await deps.registry.update((registry) => {
+      registry.register({
+        name,
+        path,
+        createdAt: deps.now().toISOString(),
+        origin: "created",
+      });
+    });
+  } catch (error) {
+    await undoCreate(path, before).catch(() => {});
+    throw error;
+  }
+}
+
+/**
+ * Puts a folder back as it was before a create: removed when the create
+ * made it, else emptied again (it was empty, and may be the user's own).
+ */
+async function undoCreate(
+  path: string,
+  before: "missing" | "empty" | "not_empty",
+): Promise<void> {
+  if (before === "missing") {
+    await Deno.remove(path, { recursive: true });
+  } else if (before === "empty") {
+    for await (const entry of Deno.readDir(path)) {
+      await Deno.remove(join(path, entry.name), { recursive: true });
+    }
+  }
 }
 
 /** Whether a folder is missing, empty, or holds something. */
@@ -163,9 +413,9 @@ export async function ensureWorkspace(
   workspacePath: string,
 ): Promise<boolean> {
   if (await deps.repo.isRepo(workspacePath)) return false;
-  // Only the default folder under the data dir is ever created. A workspace
-  // registered elsewhere (an imported repo) that is gone is not recreated
-  // empty in its place.
+  // Reopening only ever recreates the default folder under the data dir. A
+  // workspace registered elsewhere (imported, or created in a chosen
+  // folder) that is gone is not recreated empty in its place.
   if (
     resolve(workspacePath) !==
       resolve(defaultWorkspacePath(deps.dataDir, name))
@@ -253,6 +503,7 @@ export async function importWorkspace(
     ? parseWorkspaceNameWithCode(input.name.trim())
     : null;
   const known = await loadWorkspaceRegistry(deps);
+  const realRoot = await realPathOrSelf(workspacesRoot(deps.dataDir));
   const sameFolder = new Set<string>([real]);
   await Promise.all(
     known.list().map(async (entry) => {
@@ -287,6 +538,12 @@ export async function importWorkspace(
       name,
       path: real,
       createdAt: deps.now().toISOString(),
+      // A folder under the data dir's own folder is one Swamp made and
+      // `workspace remove` left behind: bringing it back keeps it created.
+      origin: isUnder(real, workspacesRoot(deps.dataDir)) ||
+          isUnder(real, realRoot)
+        ? "created"
+        : "imported",
     });
     return { name, path: real, alreadyRegistered: false };
   });

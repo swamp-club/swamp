@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { TelemetryPreferencesFileRepository } from "../../infrastructure/persistence/telemetry_preferences_file_repository.ts";
+import { WorkspacePreferencesFileRepository } from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { configCommand } from "./config.ts";
 import "../../domain/models/models.ts";
@@ -124,5 +125,53 @@ Deno.test("config set telemetry.collection: rejects values other than enabled|di
       () => false,
     );
     assertEquals(exists, false);
+  });
+});
+
+Deno.test("config set workspaces.dir: stores the folder's real path, and default clears it", async () => {
+  await withTempConfigDir(async (dir) => {
+    const folder = join(dir, "dev");
+    await Deno.mkdir(folder);
+    const repo = new WorkspacePreferencesFileRepository(
+      join(dir, "workspaces.yaml"),
+    );
+    await configCommand.parse(["set", "workspaces.dir", folder]);
+    assertEquals((await repo.read()).dir, await Deno.realPath(folder));
+    // Only its own file: the update scheduler is never touched.
+    assertEquals(
+      (await Array.fromAsync(Deno.readDir(dir))).map((e) => e.name).sort(),
+      ["dev", "workspaces.yaml"],
+    );
+    await configCommand.parse(["get", "workspaces.dir"]);
+    await configCommand.parse(["list"]);
+
+    await configCommand.parse(["set", "workspaces.dir", "default"]);
+    assertEquals(await repo.read(), {});
+  });
+});
+
+Deno.test("config set workspaces.dir: expands ~ from the home folder", async () => {
+  await withTempConfigDir(async (dir) => {
+    await Deno.mkdir(join(dir, "projects"));
+    await withMockedEnv({ SWAMP_CONFIG_DIR: dir, HOME: dir }, async () => {
+      await configCommand.parse(["set", "workspaces.dir", "~/projects"]);
+    });
+    const repo = new WorkspacePreferencesFileRepository(
+      join(dir, "workspaces.yaml"),
+    );
+    assertEquals(
+      (await repo.read()).dir,
+      await Deno.realPath(join(dir, "projects")),
+    );
+  });
+});
+
+Deno.test("config set workspaces.dir: rejects a folder that doesn't exist, writing nothing", async () => {
+  await withTempConfigDir(async (dir) => {
+    const error = await assertRejects(() =>
+      configCommand.parse(["set", "workspaces.dir", join(dir, "nope")])
+    );
+    assertStringIncludes((error as Error).message, "There's no folder at");
+    assertEquals(await Array.fromAsync(Deno.readDir(dir)), []);
   });
 });

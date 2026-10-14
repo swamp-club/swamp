@@ -19,12 +19,24 @@
 
 import { markErrorPaths, UserError } from "../errors.ts";
 
+/**
+ * How a workspace came to be registered: made new by Swamp, or an existing
+ * repo registered where it was.
+ */
+export type WorkspaceOrigin = "created" | "imported";
+
 /** One registered workspace. */
 export interface WorkspaceEntry {
   readonly name: string;
   /** Absolute path of the workspace folder. */
   readonly path: string;
   readonly createdAt: string;
+  /**
+   * How the workspace was registered. Unset on entries written before it
+   * was recorded; those are told apart by where the folder is (see
+   * `isImportedWorkspace`).
+   */
+  readonly origin?: WorkspaceOrigin;
   /**
    * When the user confirmed, on this machine, that agents may work in the
    * folder. Kept here, in the config dir, and never read from the workspace:

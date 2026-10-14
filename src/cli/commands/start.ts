@@ -196,8 +196,12 @@ async function inspectAction(options: AnyOptions, path: string[]) {
 
 const WORKSPACE_OPTION_DESCRIPTION =
   "Open this registered workspace, wherever its folder is, instead of " +
-  "choosing one in the browser; a new name is created under the swamp " +
-  "data dir. With --json nothing is created";
+  "choosing one in the browser; a new name is created in --path, else in " +
+  "the folder set with `swamp config set workspaces.dir`, else under the " +
+  "swamp data dir. With --json nothing is created";
+
+const PATH_OPTION_DESCRIPTION =
+  "Create a new --workspace in <dir>/<name>; <dir> must already exist";
 
 export const startStatusCommand = new Command()
   .description(
@@ -219,6 +223,11 @@ export async function runStart(
   landingRepoDir?: string,
 ): Promise<void> {
   const cliCtx = createContext(options as GlobalOptions, commandPath);
+  if (cliCtx.outputMode === "json" && options.path !== undefined) {
+    throw new UserError(
+      "With --json, swamp start only reports and creates nothing, so it can't use --path. Leave out --json to create the workspace.",
+    );
+  }
   if (cliCtx.outputMode === "json") {
     // JSON mode is read-only: no workspace, no server, no browser.
     await inspectAction(options, ["start"]);
@@ -294,7 +303,12 @@ export async function runStart(
   try {
     if (workspaceName !== undefined) {
       try {
-        await server.openWorkspace(workspaceName);
+        await server.openWorkspace(
+          workspaceName,
+          options.path !== undefined
+            ? { parent: options.path, relativeTo: Deno.cwd() }
+            : {},
+        );
       } catch (error) {
         if (error instanceof StartServerError) {
           const message = error.code === "not_signed_in"
@@ -378,11 +392,18 @@ export const startCommand = new Command()
   .example("Start", "swamp start")
   .example("Go straight to a workspace", "swamp start --workspace misty-heron")
   .example(
+    "Create a new workspace in ~/dev/misty-heron",
+    "swamp start --workspace misty-heron --path ~/dev",
+  )
+  .example(
     "Print the page URL instead of opening a browser",
     "swamp start --no-browser",
   )
   .option("--no-browser", "Print the URL instead of opening a browser")
   .option("--workspace <name:string>", WORKSPACE_OPTION_DESCRIPTION)
+  .option("--path <dir:string>", PATH_OPTION_DESCRIPTION, {
+    depends: ["workspace"],
+  })
   .action(async function (options: AnyOptions) {
     await runStart(options, ["start"]);
   })

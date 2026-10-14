@@ -26,8 +26,10 @@ import { RepoService } from "../../domain/repo/repo_service.ts";
 import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { WorkspacePreferencesFileRepository } from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
 import { isStartServing } from "../../infrastructure/process/start_instance_probe.ts";
+import type { WorkspaceEntry } from "../../domain/workspace/workspace_registry.ts";
 import {
   folderState,
   isImportedWorkspace,
@@ -78,6 +80,8 @@ export function createWorkspaceDeps(options: {
       },
     },
     now: () => new Date(),
+    configuredParent: async () =>
+      (await new WorkspacePreferencesFileRepository().read()).dir,
     enrolledTools: async (path) =>
       (await markers.read(RepoPath.create(path)))?.tools ?? [],
     // Read-only: a workspace command never prunes `swamp start`'s records.
@@ -107,7 +111,7 @@ export interface WorkspaceSummary {
   readonly name: string;
   readonly path: string;
   readonly createdAt: string;
-  /** True when the folder is outside the data dir: an imported repo. */
+  /** True when the workspace is an existing repo imported where it was. */
   readonly imported: boolean;
   readonly folder: WorkspaceFolderState;
 }
@@ -115,7 +119,7 @@ export interface WorkspaceSummary {
 /** The summary of one registry entry, checking its folder. */
 export async function summarizeWorkspace(
   deps: WorkspaceDeps,
-  entry: { name: string; path: string; createdAt: string },
+  entry: WorkspaceEntry,
 ): Promise<WorkspaceSummary> {
   let folder: WorkspaceFolderState = "ok";
   if (!await deps.repo.isRepo(entry.path)) {
@@ -128,7 +132,7 @@ export async function summarizeWorkspace(
     name: entry.name,
     path: entry.path,
     createdAt: entry.createdAt,
-    imported: isImportedWorkspace(deps.dataDir, entry.path),
+    imported: isImportedWorkspace(deps.dataDir, entry),
     folder,
   };
 }
