@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join } from "@std/path";
+import { getLogger } from "@logtape/logtape";
 import type { Platform } from "../../domain/update/platform.ts";
 import type { UpdateChecker } from "../../domain/update/update_service.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -29,6 +30,25 @@ import {
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { extractTarGz } from "../archive/tar_archive.ts";
 import { removeAbandonedTempFiles } from "../persistence/abandoned_temp_files.ts";
+import { abortableSleep, type Sleep } from "../http/rate_limit.ts";
+
+const logger = getLogger(["swamp", "update"]);
+
+/** How long one update-check request may take before it is abandoned. */
+const CHECK_TIMEOUT_MS = 5000;
+/** Wait before each retry of the update check: 1s, then 2s, then 4s… */
+const CHECK_RETRY_BASE_DELAY_MS = 1000;
+
+/** Options for {@link HttpUpdateChecker}. */
+export interface HttpUpdateCheckerOptions {
+  /**
+   * How many times `checkForUpdate` sends its request before giving up.
+   * Timeouts, connection errors and HTTP 5xx are retried. Defaults to 1.
+   */
+  maxAttempts?: number;
+  /** Waits between attempts; replaced in tests. */
+  sleep?: Sleep;
+}
 
 async function extractZip(
   archivePath: string,
@@ -223,23 +243,53 @@ async function replaceBinaryWindows(
   }
 }
 
+/** Says why one update-check request failed. */
+function describeCheckFailure(error: unknown): string {
+  if (error instanceof DOMException && error.name === "TimeoutError") {
+    return `the update server did not respond within ${
+      CHECK_TIMEOUT_MS / 1000
+    }s`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The error for an update check whose every attempt failed. Only the last
+ * attempt's failure is named: earlier ones may have failed differently.
+ */
+function checkFailedError(reason: string, attempts: number): UserError {
+  if (attempts === 1) {
+    return new UserError(`Failed to check for updates: ${reason}`);
+  }
+  return new UserError(
+    `Failed to check for updates after ${attempts} attempts. Last attempt: ${reason}`,
+  );
+}
+
 /**
  * HTTP adapter implementing UpdateChecker.
  * Checks artifacts.swamp-club.com for the latest swamp binary.
  */
 export class HttpUpdateChecker implements UpdateChecker {
+  private readonly maxAttempts: number;
+  private readonly sleep: Sleep;
+
+  constructor(options: HttpUpdateCheckerOptions = {}) {
+    this.maxAttempts = Math.max(1, options.maxAttempts ?? 1);
+    this.sleep = options.sleep ?? abortableSleep;
+  }
+
   /**
    * Issue a HEAD request to the stable URL with manual redirect handling.
    * The redirect location header contains the versioned URL.
    * Returns the redirect URL, or null if no redirect (already at latest).
+   *
+   * A timeout, connection error or HTTP 5xx is retried with backoff up to
+   * `maxAttempts`; when the last attempt fails it becomes a UserError.
    */
   async checkForUpdate(platform: Platform): Promise<string | null> {
     const url = platform.stableUrl();
-    const response = await fetch(url, {
-      method: "HEAD",
-      redirect: "manual",
-      signal: AbortSignal.timeout(5000),
-    });
+    const response = await this.headWithRetry(url);
 
     // Check for redirect via Location header or S3 metadata
     const redirectLocation = response.headers.get("location") ||
@@ -264,6 +314,35 @@ export class HttpUpdateChecker implements UpdateChecker {
     throw new UserError(
       `Failed to check for updates: HTTP ${response.status}`,
     );
+  }
+
+  /**
+   * Send the HEAD request, retrying transient failures. Returns the first
+   * response below 500; throws once the last attempt fails too.
+   */
+  private async headWithRetry(url: string): Promise<Response> {
+    for (let attempt = 1;; attempt++) {
+      let reason: string;
+      try {
+        const response = await fetch(url, {
+          method: "HEAD",
+          redirect: "manual",
+          signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+        });
+        if (response.status < 500) return response;
+        await response.body?.cancel();
+        reason = `HTTP ${response.status}`;
+      } catch (error: unknown) {
+        reason = describeCheckFailure(error);
+      }
+      if (attempt >= this.maxAttempts) {
+        throw checkFailedError(reason, attempt);
+      }
+      const delayMs = CHECK_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      logger
+        .debug`Update check attempt ${attempt} of ${this.maxAttempts} failed (${reason}); retrying in ${delayMs}ms`;
+      await this.sleep(delayMs);
+    }
   }
 
   /**

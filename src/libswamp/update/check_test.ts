@@ -17,15 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createUpdateCheckDeps,
+  UPDATE_CHECK_MAX_ATTEMPTS,
   updateCheck,
   type UpdateCheckDeps,
   type UpdateCheckEvent,
 } from "./check.ts";
 import { Platform } from "../../domain/update/platform.ts";
+import { UserError } from "../../domain/errors.ts";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 
 function makeDeps(overrides: Partial<UpdateCheckDeps> = {}): UpdateCheckDeps {
   return {
@@ -84,4 +88,23 @@ Deno.test("updateCheck: yields checking then completed for update", async () => 
   >;
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.status, "updated");
+});
+
+Deno.test("createUpdateCheckDeps: the update check retries a timed-out request (swamp-club#3428)", async () => {
+  const deps = createUpdateCheckDeps("20261001.000000.0-sha.abcdef12", "", {
+    sleep: () => Promise.resolve(),
+  });
+  const { calls } = await withMockedFetch(
+    () => {
+      throw new DOMException("timed out", "TimeoutError");
+    },
+    () =>
+      assertRejects(
+        () => deps.check(Platform.from("linux", "x86_64")),
+        UserError,
+      ),
+  );
+
+  assertEquals(UPDATE_CHECK_MAX_ATTEMPTS, 3);
+  assertEquals(calls.length, UPDATE_CHECK_MAX_ATTEMPTS);
 });

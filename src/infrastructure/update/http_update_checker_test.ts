@@ -19,7 +19,9 @@
 
 import {
   assertEquals,
+  assertInstanceOf,
   assertNotEquals,
+  assertRejects,
   assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
@@ -31,6 +33,8 @@ import {
 } from "./http_update_checker.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { ABANDONED_TEMP_FILE_MAX_AGE_MS } from "../persistence/abandoned_temp_files.ts";
+import { UserError } from "../../domain/errors.ts";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 
 Deno.test("stable URL is constructed correctly for darwin aarch64", () => {
   const platform = Platform.from("darwin", "aarch64");
@@ -433,4 +437,216 @@ Deno.test("cleanupStaleBinary: succeeds silently when no .old file exists", asyn
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
   }
+});
+
+// ============================================================================
+// checkForUpdate retries (swamp-club#3428)
+// ============================================================================
+
+const RETRY_PLATFORM = Platform.from("linux", "x86_64");
+const VERSIONED_URL =
+  "https://artifacts.swamp-club.com/swamp/20261014.015425.0-sha.fd84c826/binary/linux/x86_64/swamp.tar.gz";
+
+function timeoutError(): DOMException {
+  return new DOMException(
+    "The operation was aborted due to timeout",
+    "TimeoutError",
+  );
+}
+
+function recordingSleep(): {
+  delays: number[];
+  sleep: (ms: number) => Promise<void>;
+} {
+  const delays: number[] = [];
+  return {
+    delays,
+    sleep: (ms) => {
+      delays.push(ms);
+      return Promise.resolve();
+    },
+  };
+}
+
+function redirectResponse(): Response {
+  return new Response(null, {
+    status: 302,
+    headers: { location: VERSIONED_URL },
+  });
+}
+
+Deno.test("HttpUpdateChecker.checkForUpdate: retries timeouts with backoff, then returns the redirect", async () => {
+  const { delays, sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  let attempt = 0;
+  const { result, calls } = await withMockedFetch(() => {
+    attempt++;
+    if (attempt < 3) throw timeoutError();
+    return redirectResponse();
+  }, () => checker.checkForUpdate(RETRY_PLATFORM));
+
+  assertEquals(result, VERSIONED_URL);
+  assertEquals(calls.length, 3);
+  assertEquals(calls.every((c) => c.method === "HEAD"), true);
+  assertEquals(delays, [1000, 2000]);
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: every attempt timing out raises a UserError, not a TimeoutError", async () => {
+  const { sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  const { result: error, calls } = await withMockedFetch(
+    () => {
+      throw timeoutError();
+    },
+    () =>
+      assertRejects(
+        () => checker.checkForUpdate(RETRY_PLATFORM),
+        UserError,
+      ),
+  );
+
+  assertEquals(calls.length, 3);
+  assertInstanceOf(error, UserError);
+  assertEquals(
+    error.message,
+    "Failed to check for updates after 3 attempts. Last attempt: the update server did not respond within 5s",
+  );
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: retries a 5xx, then returns the stable URL on 200", async () => {
+  const { delays, sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  const { result, calls } = await withMockedFetch(
+    [
+      new Response("busy", { status: 503 }),
+      new Response(null, { status: 200 }),
+    ],
+    () => checker.checkForUpdate(RETRY_PLATFORM),
+  );
+
+  assertEquals(result, RETRY_PLATFORM.stableUrl());
+  assertEquals(calls.length, 2);
+  assertEquals(delays, [1000]);
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: a 5xx on every attempt keeps the HTTP status wording", async () => {
+  const { sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 2, sleep });
+  const { result: error, calls } = await withMockedFetch(
+    [
+      new Response(null, { status: 502 }),
+      new Response(null, { status: 502 }),
+    ],
+    () =>
+      assertRejects(
+        () => checker.checkForUpdate(RETRY_PLATFORM),
+        UserError,
+      ),
+  );
+
+  assertEquals(calls.length, 2);
+  assertEquals(
+    error.message,
+    "Failed to check for updates after 2 attempts. Last attempt: HTTP 502",
+  );
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: a 404 is not retried", async () => {
+  const { delays, sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  const { result: error, calls } = await withMockedFetch(
+    [new Response(null, { status: 404 })],
+    () =>
+      assertRejects(
+        () => checker.checkForUpdate(RETRY_PLATFORM),
+        UserError,
+      ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(delays, []);
+  assertStringIncludes(error.message, "No binary available");
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: makes a single attempt by default and still raises a UserError", async () => {
+  const { delays, sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ sleep });
+  const { result: error, calls } = await withMockedFetch(
+    () => {
+      throw timeoutError();
+    },
+    () =>
+      assertRejects(
+        () => checker.checkForUpdate(RETRY_PLATFORM),
+        UserError,
+      ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(delays, []);
+  assertEquals(
+    error.message,
+    "Failed to check for updates: the update server did not respond within 5s",
+  );
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: a connection error is wrapped with its message", async () => {
+  const { sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 2, sleep });
+  const { result: error, calls } = await withMockedFetch(
+    () => {
+      throw new TypeError("error sending request: connection refused");
+    },
+    () =>
+      assertRejects(
+        () => checker.checkForUpdate(RETRY_PLATFORM),
+        UserError,
+      ),
+  );
+
+  assertEquals(calls.length, 2);
+  assertEquals(
+    error.message,
+    "Failed to check for updates after 2 attempts. Last attempt: error sending request: connection refused",
+  );
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: names only the last attempt's failure when attempts fail differently", async () => {
+  const { sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  let attempt = 0;
+  const { result: error, calls } = await withMockedFetch(
+    () => {
+      attempt++;
+      if (attempt === 1) return new Response(null, { status: 503 });
+      if (attempt === 2) throw new TypeError("connection reset");
+      throw timeoutError();
+    },
+    () =>
+      assertRejects(
+        () => checker.checkForUpdate(RETRY_PLATFORM),
+        UserError,
+      ),
+  );
+
+  assertEquals(calls.length, 3);
+  assertEquals(
+    error.message,
+    "Failed to check for updates after 3 attempts. Last attempt: the update server did not respond within 5s",
+  );
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: a single-attempt 5xx keeps the original wording", async () => {
+  const checker = new HttpUpdateChecker();
+  const { result: error, calls } = await withMockedFetch(
+    [new Response(null, { status: 500 })],
+    () =>
+      assertRejects(
+        () => checker.checkForUpdate(RETRY_PLATFORM),
+        UserError,
+      ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(error.message, "Failed to check for updates: HTTP 500");
 });
