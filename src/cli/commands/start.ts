@@ -274,6 +274,9 @@ export async function runStart(
     deps,
     token,
     distDir: DASHBOARD_DIST_DIR,
+    // `swamp dashboard` serves no start page, so its token can't change
+    // the swamp start workspaces.
+    startPage: fixed === null,
     hub: createWorkspaceHub({
       token,
       resolveWorkspace: async (name) => {

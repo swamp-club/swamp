@@ -50,7 +50,7 @@ syncing. Actions run as CLI commands instead (see [Actions](#actions)).
 
 | Path | Answered by | Notes |
 | --- | --- | --- |
-| `/dashboard/start` | hub | The start page (`start.*` socket at `/start/ws`, token-checked) |
+| `/dashboard/start` | hub | The start page (`start.*` socket at `/start/ws`, token-checked); `swamp start` only, 404 under `swamp dashboard` |
 | `/dashboard/w/<workspace>/…` | hub | The dashboard bundle; the SPA reads the workspace from the path |
 | `/dashboard/assets/…` | hub | Shared by every page (Vite `base: "/dashboard/"`) |
 | `/api/local/workspaces` | hub | `{ workspaces: [{name, path}], switchable }` for the picker |
@@ -166,6 +166,9 @@ a tab stays open.
 - A child takes requests only with the hub's per-child token (header or
   `bearer.` subprotocol); the browser never talks to it.
 - The start page keeps its own one-time token, as in [start](./start.md).
+- `swamp dashboard` serves no start page: `/`, `/dashboard/start` and the
+  `/start/ws` socket answer 404, so its token reaches only the hub routes and
+  can never add, create or open a `swamp start` workspace.
 
 ## Where the code lives
 

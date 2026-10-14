@@ -114,6 +114,12 @@ export interface StartServerOptions {
    * page does.
    */
   readonly hub?: WorkspaceHub;
+  /**
+   * Serve the start page and its `start.*` socket (default true).
+   * `swamp dashboard` turns it off, so its token reaches only the hub and
+   * can never add, create or open a `swamp start` workspace.
+   */
+  readonly startPage?: boolean;
 }
 
 export interface StartServerHandle {
@@ -323,6 +329,7 @@ export function startStartServer(
 ): StartServerHandle {
   const { ctx, deps, token, distDir } = options;
   const claims = options.claims ?? NO_CLAIMS;
+  const startPage = options.startPage ?? true;
   const timeouts = options.timeouts ?? DEFAULT_START_SERVER_TIMEOUTS;
   // The workspace being served, and the name it was opened under (an
   // imported folder's name can differ from its registered one).
@@ -1076,6 +1083,13 @@ export function startStartServer(
         return new Response("Misdirected request", { status: 421 });
       }
       const url = new URL(req.url);
+      if (
+        !startPage && (url.pathname === "/" || url.pathname === "/start/ws" ||
+          url.pathname === "/dashboard/start" ||
+          url.pathname === "/dashboard/start/")
+      ) {
+        return new Response("Not found", { status: 404 });
+      }
       if (
         url.pathname === "/" && (req.method === "GET" || req.method === "HEAD")
       ) {

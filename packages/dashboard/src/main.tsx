@@ -37,8 +37,9 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./styles.css";
 
-// `swamp dashboard` lands on a workspace's dashboard with the start token in
-// the fragment: keep it, as the start page would, so "All workspaces" works.
+// `swamp dashboard` lands on a workspace's dashboard with the hub's token in
+// the fragment: keep it, as the start page would, for the hub's API and
+// sockets.
 // A workspace page keeps the token its URL carried (or the start page's) for
 // this tab and later ones, and takes it out of the address bar.
 if (PAGE_WORKSPACE !== null) {
