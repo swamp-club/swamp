@@ -255,7 +255,9 @@ index snapshot, which serve keeps in memory and checks with two stats on each
 read. The filters, the read filter, `offset`
 and `limit` are applied while selecting from the snapshots, and search items
 are built for the page only, so a request costs the runs it matches rather than
-the whole run history (swamp-club#3443; see
+the whole run history. Once serve is listening, it reads every workflow's
+snapshot in the background, so the dashboard's first requests find the cache
+warm (swamp-club#3443; see
 [workflows](workflows.md#run-index-and-run-search)). `failed` includes interrupted runs and `running` pending ones; a
 status in no bucket counts in `runs` only.
 

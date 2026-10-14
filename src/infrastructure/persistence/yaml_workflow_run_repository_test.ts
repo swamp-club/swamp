@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertNotEquals,
   assertNotStrictEquals,
+  assertRejects,
   assertStrictEquals,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -2945,5 +2946,63 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
     } finally {
       Deno.readTextFile = original;
     }
+  });
+});
+
+Deno.test("runIndexSnapshot: an aborted signal stops a rebuild before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await saveRunningRuns(repo, workflow, 3);
+    // An index of another schema version: the next read rebuilds it whole.
+    const stale = JSON.stringify({ version: 0, entries: {} });
+    await Deno.writeTextFile(getIndexPath(indexDir), stale);
+
+    // Aborted while the rebuild reads its first record.
+    const abort = new AbortController();
+    const original = Deno.readTextFile;
+    let recordReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) {
+        recordReads++;
+        abort.abort(new DOMException("shutting down", "AbortError"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () => repo.runIndexSnapshot(workflow.id, abort.signal),
+        DOMException,
+        "shutting down",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+    // It stopped before the next record, and wrote nothing.
+    assertEquals(recordReads, 1);
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), stale);
+
+    // Without the signal the same read rebuilds it.
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 3);
+  });
+});
+
+Deno.test("runIndexSnapshot: an aborted signal stops a repair before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [, unlisted] = await saveRunningRuns(repo, workflow, 2);
+    await dropIndexEntries(indexDir, [unlisted.id]);
+    const before = await Deno.readTextFile(getIndexPath(indexDir));
+
+    const abort = new AbortController();
+    abort.abort(new DOMException("shutting down", "AbortError"));
+    await assertRejects(
+      () => repo.runIndexSnapshot(workflow.id, abort.signal),
+      DOMException,
+    );
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), before);
   });
 });

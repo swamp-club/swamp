@@ -26,7 +26,7 @@
  * snapshots must follow it.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { join } from "@std/path";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
@@ -49,6 +49,8 @@ import {
   type WorkflowRunSummaryData,
   type WorkflowRunSummaryEvent,
 } from "../src/libswamp/workflows/run_summary.ts";
+import type { RunIndexSnapshot } from "../src/domain/workflows/run_index_snapshot.ts";
+import { RunIndexWarmup } from "../src/serve/run_index_warmup.ts";
 import "../src/domain/models/models.ts";
 
 async function withRepoDir(fn: (dir: string) => Promise<void>) {
@@ -262,5 +264,43 @@ Deno.test("run index cache: renamed and deleted workflows are seen through the w
       remaining.data.results.every((r) => r.workflowId === deploy.id),
       true,
     );
+  });
+});
+
+Deno.test("run index cache: the serve warm-up leaves each snapshot cached for the first request", async () => {
+  await withRepoDir(async (dir) => {
+    const writer = processOn(dir);
+    const workflows = [workflowNamed("alpha"), workflowNamed("beta")];
+    for (const workflow of workflows) {
+      await writer.workflowRepo.save(workflow);
+      await startRun(writer.runRepo, workflow);
+      await settle(dir, workflow);
+    }
+
+    const serve = processOn(dir);
+    const warmed = new Map<string, RunIndexSnapshot>();
+    const warmup = new RunIndexWarmup({
+      listWorkflowIds: async () =>
+        (await serve.workflowRepo.findAllListings()).map((w) => w.id),
+      warm: async (id) => {
+        warmed.set(
+          id,
+          await serve.runRepo.runIndexSnapshot(createWorkflowId(id)),
+        );
+      },
+    });
+    warmup.start();
+    // A request that arrives during the warm-up shares its loads.
+    const during = await serve.search({});
+    await warmup.dispose();
+
+    assertEquals(during.total, 2);
+    assertEquals(warmed.size, 2);
+    for (const workflow of workflows) {
+      assertStrictEquals(
+        await serve.runRepo.runIndexSnapshot(workflow.id),
+        warmed.get(workflow.id),
+      );
+    }
   });
 });

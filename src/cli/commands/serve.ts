@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
+import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import {
   DASHBOARD_DIST_DIR,
   serveDashboardRoute,
@@ -4475,6 +4477,18 @@ export const serveCommand = new Command()
     let workerGcService: WorkerGcService | undefined;
     let serverTokenGcService: ServerTokenGcService | undefined;
     let continuationSweepService: ContinuationSweepService | undefined;
+    // Fills the run index cache in the background once serve is listening,
+    // so the dashboard's first requests find it warm or wait on the load
+    // already in flight; shutdown stops it (swamp-club#3443).
+    const runIndexWarmup = new RunIndexWarmup({
+      listWorkflowIds: async () =>
+        (await listWorkflows(repoContext.workflowRepo)).map((w) => w.id),
+      warm: (id, signal) =>
+        repoContext.workflowRunRepo.runIndexSnapshot(
+          createWorkflowId(id),
+          signal,
+        ),
+    });
 
     logger.info("Boot: reaping stale runs via tracker");
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
@@ -6829,6 +6843,9 @@ export const serveCommand = new Command()
       if (shuttingDown) return;
       shuttingDown = true;
       isReady = false;
+      // Stopped first, so its load in flight ends between records instead
+      // of competing with the drain; waited on after the drain.
+      runIndexWarmup.stop();
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));
       }
@@ -6870,6 +6887,7 @@ export const serveCommand = new Command()
           logger.info`Interrupted workflow run ${runId} (server shutdown)`;
         },
       });
+      await runIndexWarmup.finished();
       if (workerGcService) {
         await workerGcService.dispose();
       }
@@ -7475,6 +7493,8 @@ export const serveCommand = new Command()
 
     isReady = true;
     logger.info("Startup complete — /ready is now serving 200");
+
+    runIndexWarmup.start();
 
     await server.finished;
 

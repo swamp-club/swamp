@@ -20,6 +20,9 @@
 // `swamp dashboard`: the dashboard for the repo it runs in, with no
 // swamp serve (design/surfaces/local-dashboard.md).
 
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
+import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -126,6 +129,17 @@ async function runChild(options: AnyOptions): Promise<void> {
   await Deno.stdout.write(
     new TextEncoder().encode(JSON.stringify({ port: server.port }) + "\n"),
   );
+  // Fill the run index cache while the hub opens the page (swamp-club#3443).
+  const runIndexWarmup = new RunIndexWarmup({
+    listWorkflowIds: async () =>
+      (await listWorkflows(repo.repoContext.workflowRepo)).map((w) => w.id),
+    warm: (id, signal) =>
+      repo.repoContext.workflowRunRepo.runIndexSnapshot(
+        createWorkflowId(id),
+        signal,
+      ),
+  });
+  runIndexWarmup.start();
 
   // The hub closes stdin when it stops (or dies): stop with it.
   // Handled here: on a signal the process exits without waiting for it.
@@ -139,7 +153,9 @@ async function runChild(options: AnyOptions): Promise<void> {
     await Promise.race([stdinClosed, interrupt]);
   } finally {
     handle.dispose();
+    runIndexWarmup.stop();
     await server.shutdown();
+    await runIndexWarmup.finished();
   }
 }
 

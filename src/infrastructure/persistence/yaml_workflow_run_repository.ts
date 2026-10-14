@@ -1201,14 +1201,22 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * a parse of the whole index. A workflow with no usable index gets a
    * snapshot of its records, which is not kept.
    *
+   * With `signal`, a read that has to rebuild or repair the index stops
+   * between records once it aborts, writes no index, and rejects with the
+   * signal's reason: serve's warm-up passes its own, so shutdown is not
+   * held up by it.
+   *
    * On the concrete repository only, for the same reason as
    * {@link findGlobalById}: only the run search and run summary paths use it.
    */
-  runIndexSnapshot(workflowId: WorkflowId): Promise<RunIndexSnapshot> {
+  runIndexSnapshot(
+    workflowId: WorkflowId,
+    signal?: AbortSignal,
+  ): Promise<RunIndexSnapshot> {
     return this.runIndexCache.get(workflowId, async () => {
       const runsDir = this.getRunsDir(workflowId);
       const indexDir = this.getLocalIndexDir(workflowId);
-      const index = await this.getValidatedIndex(runsDir, indexDir);
+      const index = await this.getValidatedIndex(runsDir, indexDir, signal);
       if (index) {
         return {
           snapshot: RunIndexSnapshot.of(indexToSummaries(index)),
@@ -1221,7 +1229,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         ),
         fromIndex: false,
       };
-    });
+    }, signal);
   }
 
   /** What a cached run index snapshot of the workflow is checked against. */
@@ -1261,6 +1269,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async getValidatedIndex(
     runsDir: string,
     indexDir: string,
+    signal?: AbortSignal,
   ): Promise<WorkflowRunIndex | null> {
     const entries = await listDirEntries(runsDir);
     const yamlCount = countYamlRunFiles(entries);
@@ -1268,7 +1277,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     const result = await readRunIndex(indexDir);
     if (!result || isIndexStale(result, yamlCount)) {
-      return await this.repairIndex(runsDir, indexDir);
+      return await this.repairIndex(runsDir, indexDir, signal);
     }
 
     return result.entries;
@@ -1291,20 +1300,26 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private repairIndex(
     runsDir: string,
     indexDir: string,
+    signal?: AbortSignal,
   ): Promise<WorkflowRunIndex | null> {
     return withIndexQueue(indexDir, async () => {
+      signal?.throwIfAborted();
       const files = await listDirEntries(runsDir);
       const count = countYamlRunFiles(files);
       if (count === 0) return null;
       const result = await readRunIndex(indexDir);
       if (!result || result.version !== INDEX_SCHEMA_VERSION) {
-        return await this.rebuildIndexUnqueued(runsDir, indexDir);
+        return await this.rebuildIndexUnqueued(runsDir, indexDir, signal);
       }
       if (!isIndexStale(result, count)) return result.entries;
 
       const entries = result.entries;
-      const suspects = await this.findSuspectRecords(runsDir, entries);
-      if (await this.reconcileSuspects(runsDir, entries, suspects)) {
+      const suspects = await this.findSuspectRecords(
+        runsDir,
+        entries,
+        signal,
+      );
+      if (await this.reconcileSuspects(runsDir, entries, suspects, signal)) {
         try {
           await ensureDir(indexDir);
           await writeRunIndex(indexDir, entries);
@@ -1397,12 +1412,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     runsDir: string,
     entries: WorkflowRunIndex,
     suspects: Set<string>,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     // Ids that a record names in its body under another file name, which
     // a rebuild indexes by the body id: their entries are not gone.
     const bodyIds = new Set<string>();
     let changed = false;
     for (const runId of suspects) {
+      signal?.throwIfAborted();
       const path = join(runsDir, `workflow-run-${runId}.yaml`);
       const current = await statRecord(path);
       if (current === null) {
@@ -1446,11 +1463,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async findSuspectRecords(
     runsDir: string,
     entries: WorkflowRunIndex,
+    signal?: AbortSignal,
   ): Promise<Set<string>> {
     const suspects = new Set<string>();
     const onDisk = new Set<string>();
     try {
       for await (const entry of Deno.readDir(runsDir)) {
+        signal?.throwIfAborted();
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
@@ -1494,10 +1513,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async rebuildIndexUnqueued(
     runsDir: string,
     indexDir: string,
+    signal?: AbortSignal,
   ): Promise<WorkflowRunIndex | null> {
     const index: WorkflowRunIndex = {};
     try {
       for (const entry of await readDirSorted(runsDir)) {
+        // Before each record: an aborted rebuild writes no index.
+        signal?.throwIfAborted();
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")

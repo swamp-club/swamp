@@ -3058,6 +3058,20 @@ It does not keep:
 - one built from the records because there was no usable index;
 - one read on a platform that reports no mtime.
 
+A read that misses while a load of the same workflow from the same stamp is in
+flight waits for that load instead of starting another, so many readers after
+one write build the snapshot once. A load that started from an older stamp is
+not shared, since it may predate the write. Neither is one whose stamp is too
+recent to trust. A read that waited on a load whose own reader was aborted
+loads for itself. `swamp serve` and the local
+dashboard child fill the cache in the background once they are listening
+(`RunIndexWarmup`, `src/serve/run_index_warmup.ts`). They read one workflow at
+a time, so requests that arrive meanwhile interleave with the warm-up or wait
+on the load it already has in flight. Shutdown aborts the warm-up before it
+drains runs, and waits for it after the drain. The warm-up passes its abort
+signal into each read, so a rebuild or repair in flight stops between records
+without writing the index.
+
 Run search and run summary list workflows through
 `WorkflowRepository.findAllListings` (`WorkflowListing`: id, name, whether it
 declares inputs) rather than `findAll`. `YamlWorkflowRepository` keeps each

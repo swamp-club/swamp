@@ -93,6 +93,18 @@ export class RunIndexCache {
   readonly #now: () => number;
   /** In least-recently-used order: the first entry goes first. */
   readonly #entries = new Map<string, CacheEntry>();
+  /**
+   * Loads in flight, by workflow, with the stamp each started from and the
+   * signal of the read that started it.
+   */
+  readonly #loading = new Map<
+    string,
+    {
+      stamp: RunIndexStamp;
+      snapshot: Promise<RunIndexSnapshot>;
+      signal?: AbortSignal;
+    }
+  >();
   #runs = 0;
 
   constructor(options: RunIndexCacheOptions) {
@@ -109,11 +121,22 @@ export class RunIndexCache {
 
   /**
    * The workflow's snapshot: the cached one while its stamp still matches,
-   * else whatever `load` builds, cached when it is safe to reuse.
+   * else whatever `load` builds, cached when it is safe to reuse. A read
+   * that misses while a load of the same workflow from the same stamp is
+   * in flight waits for that load rather than starting another, so many
+   * readers after one write build the snapshot once. A load started from
+   * an older stamp is not shared: it may predate the write. Nor is one
+   * started from a stamp too recent to trust, which the cache would not
+   * keep either. A read that waited on a load whose own reader was aborted
+   * loads for itself.
+   *
+   * `load` should stop when `signal` aborts; the read then rejects with
+   * the signal's reason.
    */
   async get(
     workflowId: string,
     load: () => Promise<LoadedRunIndex>,
+    signal?: AbortSignal,
   ): Promise<RunIndexSnapshot> {
     const before = await this.#stamp(workflowId);
     const cached = this.#entries.get(workflowId);
@@ -122,8 +145,37 @@ export class RunIndexCache {
       this.#entries.set(workflowId, cached);
       return cached.snapshot;
     }
-    this.delete(workflowId);
+    if (!before || this.#racy(before)) {
+      return await this.#load(workflowId, before, load);
+    }
 
+    const running = this.#loading.get(workflowId);
+    if (running && sameStamp(running.stamp, before)) {
+      try {
+        return await running.snapshot;
+      } catch (error) {
+        // Its reader gave up, not the load: this reader still wants it.
+        if (!running.signal?.aborted || signal?.aborted) throw error;
+      }
+    }
+    const snapshot = this.#load(workflowId, before, load);
+    this.#loading.set(workflowId, { stamp: before, snapshot, signal });
+    try {
+      return await snapshot;
+    } finally {
+      if (this.#loading.get(workflowId)?.snapshot === snapshot) {
+        this.#loading.delete(workflowId);
+      }
+    }
+  }
+
+  /** Builds the workflow's snapshot, and keeps it when that is safe. */
+  async #load(
+    workflowId: string,
+    before: RunIndexStamp | undefined,
+    load: () => Promise<LoadedRunIndex>,
+  ): Promise<RunIndexSnapshot> {
+    this.delete(workflowId);
     const loaded = await load();
     if (!loaded.fromIndex || !before) return loaded.snapshot;
     // A write during the load may or may not be in the snapshot: keep it

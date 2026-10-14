@@ -203,26 +203,131 @@ Deno.test("RunIndexCache.delete: drops a workflow's snapshot", async () => {
   assertEquals(h.loads, 2);
 });
 
-Deno.test("RunIndexCache: overlapping loads of one workflow count its runs once", async () => {
+/** A load the test finishes when it chooses, counting how many started. */
+function deferredLoads() {
+  const releases: Array<(result: LoadedRunIndex | Error) => void> = [];
+  return {
+    releases,
+    load: (snapshot: RunIndexSnapshot) => () =>
+      new Promise<LoadedRunIndex>((resolve, reject) =>
+        releases.push((result) =>
+          result instanceof Error
+            ? reject(result)
+            : resolve(result ?? { snapshot, fromIndex: true })
+        )
+      ),
+  };
+}
+
+Deno.test("RunIndexCache: overlapping reads from the same stamp share one load and count its runs once", async () => {
   const h = harness();
   h.stamps.set("wf", stampAt(OLD, OLD));
-  const releases: Array<() => void> = [];
-  const deferred = (snapshot: RunIndexSnapshot) => () =>
-    new Promise<LoadedRunIndex>((resolve) =>
-      releases.push(() => resolve({ snapshot, fromIndex: true }))
-    );
-  const first = h.cache.get("wf", deferred(snapshotOf(3)));
-  const second = h.cache.get("wf", deferred(snapshotOf(3)));
-  await waitFor(
-    () => Promise.resolve(releases.length === 2),
-    "both reads to start loading",
+  const d = deferredLoads();
+  const snapshot = snapshotOf(3);
+  const reads = Array.from(
+    { length: 5 },
+    () => h.cache.get("wf", d.load(snapshot)),
   );
-  releases[0]();
-  await first;
-  releases[1]();
-  const kept = await second;
+  await waitFor(
+    () => Promise.resolve(d.releases.length >= 1),
+    "the first read to start loading",
+  );
+  // waitFor polls on a timer, so every read has reached the cache by now:
+  // one load, shared.
+  assertEquals(d.releases.length, 1);
+  d.releases[0]({ snapshot, fromIndex: true });
+  for (const read of await Promise.all(reads)) {
+    assertStrictEquals(read, snapshot);
+  }
+  assertEquals(d.releases.length, 1);
   assertEquals(h.cache.runs, 3);
-  assertStrictEquals(await h.cache.get("wf", h.load(snapshotOf(1))), kept);
+  assertStrictEquals(await h.cache.get("wf", h.load(snapshotOf(1))), snapshot);
   h.cache.delete("wf");
   assertEquals(h.cache.runs, 0);
+});
+
+Deno.test("RunIndexCache: a read after a write does not wait on a load from before it", async () => {
+  const h = harness();
+  h.stamps.set("wf", stampAt(OLD, OLD));
+  const d = deferredLoads();
+  const stale = snapshotOf(1);
+  const fresh = snapshotOf(2);
+  const first = h.cache.get("wf", d.load(stale));
+  await waitFor(
+    () => Promise.resolve(d.releases.length >= 1),
+    "the first read to start loading",
+  );
+  h.stamps.set("wf", stampAt(OLD + 1, OLD + 1));
+  const second = h.cache.get("wf", d.load(fresh));
+  await waitFor(
+    () => Promise.resolve(d.releases.length >= 2),
+    "the second read to start its own load",
+  );
+  d.releases[1]({ snapshot: fresh, fromIndex: true });
+  assertStrictEquals(await second, fresh);
+  d.releases[0]({ snapshot: stale, fromIndex: true });
+  assertStrictEquals(await first, stale);
+  // Only the load whose stamp still holds is kept.
+  assertEquals(h.cache.runs, 2);
+  assertStrictEquals(await h.cache.get("wf", h.load(snapshotOf(5))), fresh);
+});
+
+Deno.test("RunIndexCache: a shared load that fails fails every read waiting on it, and the next read loads again", async () => {
+  const h = harness();
+  h.stamps.set("wf", stampAt(OLD, OLD));
+  const d = deferredLoads();
+  const first = h.cache.get("wf", d.load(snapshotOf(1)));
+  const second = h.cache.get("wf", d.load(snapshotOf(1)));
+  await waitFor(
+    () => Promise.resolve(d.releases.length >= 1),
+    "the first read to start loading",
+  );
+  d.releases[0](new Error("boom"));
+  await assertRejects(() => first, Error, "boom");
+  await assertRejects(() => second, Error, "boom");
+  assertEquals(h.cache.runs, 0);
+  await h.cache.get("wf", h.load(snapshotOf(1)));
+  assertEquals(h.loads, 1);
+});
+
+Deno.test("RunIndexCache: reads from a stamp too recent to trust do not share a load", async () => {
+  const h = harness();
+  h.stamps.set("wf", stampAt(NOW - 500, OLD));
+  const d = deferredLoads();
+  const first = h.cache.get("wf", d.load(snapshotOf(1)));
+  const second = h.cache.get("wf", d.load(snapshotOf(1)));
+  await waitFor(
+    () => Promise.resolve(d.releases.length >= 2),
+    "both reads to load for themselves",
+  );
+  d.releases[0]({ snapshot: snapshotOf(1), fromIndex: true });
+  d.releases[1]({ snapshot: snapshotOf(1), fromIndex: true });
+  await Promise.all([first, second]);
+  assertEquals(d.releases.length, 2);
+  assertEquals(h.cache.runs, 0);
+});
+
+Deno.test("RunIndexCache: a read waiting on a load whose own reader was aborted loads for itself", async () => {
+  const h = harness();
+  h.stamps.set("wf", stampAt(OLD, OLD));
+  const d = deferredLoads();
+  const abort = new AbortController();
+  const aborted = h.cache.get("wf", d.load(snapshotOf(1)), abort.signal);
+  const waiting = h.cache.get("wf", d.load(snapshotOf(2)));
+  await waitFor(
+    () => Promise.resolve(d.releases.length >= 1),
+    "the first read to start loading",
+  );
+  assertEquals(d.releases.length, 1);
+  abort.abort();
+  d.releases[0](new DOMException("stopped", "AbortError"));
+  await assertRejects(() => aborted, DOMException, "stopped");
+  await waitFor(
+    () => Promise.resolve(d.releases.length >= 2),
+    "the waiting read to load for itself",
+  );
+  const fresh = snapshotOf(2);
+  d.releases[1]({ snapshot: fresh, fromIndex: true });
+  assertStrictEquals(await waiting, fresh);
+  assertEquals(h.cache.runs, 2);
 });
