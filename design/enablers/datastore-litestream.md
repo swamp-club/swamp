@@ -755,7 +755,9 @@ deadline is 60 s.
 > **Decision:** in D1 the sync runs at teardown, after the command has printed
 > its result, so `--json` stdout can hold a success document while stderr holds
 > the error and the exit code is 75. Phase 4E moves the confirmation before the
-> command's output, once users can turn replication on.
+> command's output, once users can turn replication on. The rethrow also ends
+> the CLI's teardown before its auth-gate refresh and telemetry; 4E finishes the
+> teardown and then rethrows.
 
 **Lineage.** A listener on the writer lease (`onV3LeaseTaken`) records every
 fence this process takes in `lineage.json`, including serve's retake and a

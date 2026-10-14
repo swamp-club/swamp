@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
   V3ReplicationError,
   V3ReplicationUnavailableError,
@@ -185,7 +185,7 @@ class FakeWorld {
         // Lets a launched fake supervisor take its lock.
         await new Promise((resolve) => setTimeout(resolve, 2));
       },
-      privateRoot: join(dirname(this.paths.privateDir)),
+      privateRoot: dirname(this.paths.privateDir),
       ...over,
     };
   }
@@ -208,10 +208,6 @@ class FakeWorld {
   close(): void {
     for (const sidecar of this.live) sidecar.lock.close();
   }
-}
-
-function dirname(path: string): string {
-  return path.slice(0, path.lastIndexOf("/"));
 }
 
 async function withWorld(

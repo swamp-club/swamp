@@ -110,3 +110,23 @@ Deno.test("parseReplicationLineage: reads back a record and rejects anything els
     undefined,
   );
 });
+
+Deno.test("decideLineage: a lower fence restarts with lastFence following it", () => {
+  assertEquals(decideLineage(lineage(90, 100), ROOT, 5), {
+    kind: "restart",
+    lineage: lineage(5, 5, [90]),
+  });
+  // So the next fence continues rather than restarting every time.
+  assertEquals(decideLineage(lineage(5, 5, [90]), ROOT, 6).kind, "continue");
+});
+
+Deno.test("decideLineage: a restart onto a path this copy used before is a conflict", () => {
+  const previous = lineage(7, 20, [3]);
+  assertEquals(decideLineage(previous, ROOT, 3), {
+    kind: "conflict",
+    lineage: previous,
+  });
+  assertEquals(decideLineage(previous, ROOT, 7).kind, "conflict");
+  // Another root has no such history.
+  assertEquals(decideLineage(previous, "/other", 3).kind, "restart");
+});

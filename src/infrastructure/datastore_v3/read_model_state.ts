@@ -818,6 +818,33 @@ export class ReadModelState {
     });
   }
 
+  /** Up to `limit` unsynced keys, in key order. */
+  unsyncedKeys(limit: number): { namespace: string; record_key: string }[] {
+    return this.#snapshot(() =>
+      this.#db.prepare(
+        "SELECT namespace, record_key FROM unsynced_keys ORDER BY namespace, record_key LIMIT ?",
+      ).all(limit) as unknown as { namespace: string; record_key: string }[]
+    );
+  }
+
+  /**
+   * Forgets `keys` as unsynced: they are known to be on disk. The boot they
+   * were written in is forgotten once no unsynced key is left.
+   */
+  forgetUnsynced(
+    keys: readonly { namespace: string; record_key: string }[],
+  ): void {
+    this.#transaction(() => {
+      const remove = this.#db.prepare(
+        "DELETE FROM unsynced_keys WHERE namespace = ? AND record_key = ?",
+      );
+      for (const key of keys) remove.run(key.namespace, key.record_key);
+      const left = this.#db.prepare("SELECT count(*) AS n FROM unsynced_keys")
+        .get() as { n: number };
+      if (left.n === 0) this.#db.exec("DELETE FROM unsynced_boot;");
+    });
+  }
+
   /** Forgets the unsynced files: they are known to be on disk. */
   clearUnsynced(): void {
     this.#transaction(() =>

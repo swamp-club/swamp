@@ -61,6 +61,9 @@ export const DEFAULT_SYNC_DEADLINE_MS = 60_000;
 /** The shortest closing sync serve gets, whatever its drain left. */
 export const MIN_SERVE_SYNC_DEADLINE_MS = 10_000;
 
+/** The longest closing sync: a day, well inside what setTimeout holds. */
+export const MAX_SYNC_DEADLINE_MS = 24 * 60 * 60 * 1000;
+
 let replicator: LitestreamReplicator | undefined;
 let testDeps: Partial<ReplicatorDeps> | undefined;
 let syncDeadlineMs: number | undefined;
@@ -76,9 +79,11 @@ export function v3SyncDeadlineMs(): number {
  * restores the CLI default.
  */
 export function setV3SyncDeadline(ms: number | undefined): void {
+  // Floored so a zero drain still syncs, and capped below what setTimeout
+  // can hold (about 24.8 days), past which it fires at once.
   syncDeadlineMs = ms === undefined
     ? undefined
-    : Math.max(ms, MIN_SERVE_SYNC_DEADLINE_MS);
+    : Math.min(Math.max(ms, MIN_SERVE_SYNC_DEADLINE_MS), MAX_SYNC_DEADLINE_MS);
 }
 
 /**
@@ -136,6 +141,12 @@ export async function recordV3Lineage(
       replicaRootOf(replica),
       fence,
     );
+    if (decided.kind === "conflict") {
+      // Kept as it is: the writer refuses to replicate onto a used path.
+      logger
+        .warn`The writer lease of the v3 datastore at ${datastorePath} went back to fence ${fence}, where this copy's replication began before; its writers cannot replicate until that is resolved`;
+      return;
+    }
     await writeLineage(paths, decided.lineage);
   } catch (error) {
     logger

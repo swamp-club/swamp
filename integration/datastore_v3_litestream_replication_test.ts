@@ -187,7 +187,9 @@ Deno.test({
       await holdV3Writer(env.config, env.repoDir);
       const presence = (await presenceOf(env))!;
       const heldSince = Date.now();
-      // Well past the idle timeout and many supervisor ticks.
+      // Well past the idle timeout and many supervisor ticks. A wall-clock
+      // wait on purpose: the idle timeout is real time in another process,
+      // with no event to wait on.
       await waitFor(
         () => Date.now() - heldSince > 6_000,
         "the idle timeout to pass",

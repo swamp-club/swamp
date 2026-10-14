@@ -108,6 +108,11 @@ import {
 } from "./record_path_guard.ts";
 import { type ReadModelCatalog, V3Catalog } from "./v3_catalog.ts";
 
+/** How many unsynced files one locked section of syncUnsyncedFiles syncs. */
+export const UNSYNCED_SYNC_BATCH = 500;
+
+/** How many batches one syncUnsyncedFiles call runs at most. */
+const MAX_UNSYNCED_SYNC_BATCHES = 1_000;
 const logger = getLogger(["swamp", "datastore", "read-model"]);
 
 /** Commits read per page by default. */
@@ -438,57 +443,74 @@ export class SqliteReadModel implements ReadModel {
    * Makes the files written unsynced durable and forgets them
    * (swamp-club#3416): serve calls it from its maintenance timer, so a
    * long-running serve's first open after a reboot does not hash most of its
-   * cache. Each listed file is synced, then each of their directories,
-   * deepest first; a file that is gone has its directory synced. Resolves
-   * with how many files were listed.
+   * cache. It works in batches of {@link UNSYNCED_SYNC_BATCH}, each in its
+   * own section of the read model's lock, so a long list never holds every
+   * other command back for long. In a batch each file is synced, then each
+   * of their directories, deepest first; a file that is gone has its
+   * directory synced. Resolves with how many files it synced.
    */
-  syncUnsyncedFiles(): Promise<number> {
-    return this.#exclusive(async () => {
-      const files = this.#state.unsyncedFiles();
-      if (files.length === 0) return 0;
-      const dirs = new Set<string>();
-      for (const file of files) {
-        const path = join(
-          this.#cacheRoot(file.namespace),
-          ...file.record_key.split("/"),
-        );
-        dirs.add(dirname(path));
-        let handle: Deno.FsFile;
+  async syncUnsyncedFiles(): Promise<number> {
+    let synced = 0;
+    // Bounded: entries that keep arriving wait for the next tick.
+    for (let batch = 0; batch < MAX_UNSYNCED_SYNC_BATCHES; batch++) {
+      const done = await this.#exclusive(() => this.#syncUnsyncedBatch());
+      synced += done;
+      if (done < UNSYNCED_SYNC_BATCH) break;
+    }
+    return synced;
+  }
+
+  /** Syncs and forgets one batch of unsynced files; runs inside {@link #exclusive}. */
+  async #syncUnsyncedBatch(): Promise<number> {
+    const keys = this.#state.unsyncedKeys(UNSYNCED_SYNC_BATCH);
+    const dirs = new Set<string>();
+    for (const key of keys) {
+      const path = join(
+        this.#cacheRoot(key.namespace),
+        ...key.record_key.split("/"),
+      );
+      dirs.add(dirname(path));
+      let handle: Deno.FsFile;
+      try {
+        // Writable: Windows flushes only a handle opened for writing.
+        handle = await Deno.open(path, { read: true, write: true });
+      } catch (error) {
+        if (
+          error instanceof Deno.errors.NotFound ||
+          error instanceof Deno.errors.NotADirectory ||
+          error instanceof Deno.errors.IsADirectory
+        ) {
+          continue;
+        }
+        if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+        // A read-only file must not stall the list for good. Windows
+        // flushes only a writable handle, so there it is left to the
+        // reboot check's earlier coverage; POSIX syncs a read handle, and
+        // a file that cannot be read either is skipped the same way.
+        if (Deno.build.os === "windows") continue;
         try {
-          // Writable: Windows flushes only a handle opened for writing.
-          handle = await Deno.open(path, { read: true, write: true });
-        } catch (error) {
-          if (
-            error instanceof Deno.errors.NotFound ||
-            error instanceof Deno.errors.NotADirectory ||
-            error instanceof Deno.errors.IsADirectory
-          ) {
-            continue;
-          }
-          if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
-          // A read-only file must not stall the list for good. Windows
-          // flushes only a writable handle, so there it is left to the
-          // reboot check's earlier coverage; POSIX syncs a read handle.
-          if (Deno.build.os === "windows") continue;
           handle = await Deno.open(path, { read: true });
-        }
-        try {
-          await handle.sync();
-        } finally {
-          handle.close();
+        } catch (reopen) {
+          if (reopen instanceof Deno.errors.PermissionDenied) continue;
+          throw reopen;
         }
       }
-      // A path is longer than any of its ancestors: deepest first.
-      for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
-        try {
-          await syncDirectory(dir);
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
-        }
+      try {
+        await handle.sync();
+      } finally {
+        handle.close();
       }
-      this.#state.clearUnsynced();
-      return files.length;
-    });
+    }
+    // A path is longer than any of its ancestors: deepest first.
+    for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+      try {
+        await syncDirectory(dir);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    this.#state.forgetUnsynced(keys);
+    return keys.length;
   }
 
   /**

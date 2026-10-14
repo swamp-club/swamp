@@ -230,9 +230,10 @@ async function superviseHeld(
     exited = true;
   });
   let stopRequested = false;
+  // Observed, never awaited: the loop below polls the flags these set.
   deps.stopRequested?.then(() => {
     stopRequested = true;
-  });
+  }, () => {});
   try {
     await writePresence(paths, { ...presence, litestreamPid: child.pid });
     while (true) {

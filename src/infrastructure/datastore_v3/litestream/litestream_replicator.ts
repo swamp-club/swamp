@@ -293,9 +293,16 @@ export class LitestreamReplicator {
     ) {
       return recorded;
     }
-    const decided = decideLineage(recorded, root, request.fence).lineage;
-    await writeLineage(paths, decided);
-    return decided;
+    const decided = decideLineage(recorded, root, request.fence);
+    if (decided.kind === "conflict") {
+      throw new V3ReplicationUnavailableError(
+        `the writer lease's fence ${request.fence} would restart replication ` +
+          `on a replica path this copy used before; the lease's records ` +
+          `were recreated`,
+      );
+    }
+    await writeLineage(paths, decided.lineage);
+    return decided.lineage;
   }
 
   /** Polls a lock on `file` until it is taken, or throws past the wait. */

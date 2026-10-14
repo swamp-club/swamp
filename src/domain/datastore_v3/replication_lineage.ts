@@ -39,6 +39,7 @@
  * @module
  */
 
+import { join } from "@std/path/posix";
 import { padFence } from "./writer_lease.ts";
 
 /** What a copy of `commits.db` records about its replication lineage. */
@@ -60,11 +61,21 @@ export interface ReplicationLineage {
 export type LineageDecisionKind = "new" | "continue" | "restart";
 
 /** The outcome of {@link decideLineage}. */
-export interface LineageDecision {
-  readonly kind: LineageDecisionKind;
-  /** The record to keep from now on. */
-  readonly lineage: ReplicationLineage;
-}
+export type LineageDecision =
+  | {
+    readonly kind: LineageDecisionKind;
+    /** The record to keep from now on. */
+    readonly lineage: ReplicationLineage;
+  }
+  | {
+    /**
+     * The fence went back to one this copy already began a lineage at:
+     * restarting there would put a second history on a used replica path.
+     */
+    readonly kind: "conflict";
+    /** The record, unchanged. */
+    readonly lineage: ReplicationLineage;
+  };
 
 /**
  * Decides the lineage of a lease this copy took at `fence`, replicating
@@ -76,7 +87,10 @@ export interface LineageDecision {
  * - `fence` one above the last one, under the same root: no other writer
  *   took the lease in between, so the lineage continues.
  * - Anything else (a gap, a lower fence, another root): the lineage restarts
- *   at `fence`, and the old one is kept for garbage collection.
+ *   at `fence`, and the old one is kept for garbage collection. A lower
+ *   fence means the lease's records were recreated; `lastFence` follows it.
+ * - A restart at a fence this copy already began a lineage at, under the
+ *   same root, is a conflict: that replica path holds an old history.
  */
 export function decideLineage(
   previous: ReplicationLineage | undefined,
@@ -104,12 +118,19 @@ export function decideLineage(
       return { kind: "continue", lineage: { ...previous, lastFence: fence } };
     }
   }
+  if (
+    previous.replicaRoot === replicaRoot &&
+    (fence === previous.lineageFence ||
+      previous.previousLineages.includes(fence))
+  ) {
+    return { kind: "conflict", lineage: previous };
+  }
   return {
     kind: "restart",
     lineage: {
       replicaRoot,
       lineageFence: fence,
-      lastFence: Math.max(fence, previous.lastFence),
+      lastFence: fence,
       previousLineages: [...previous.previousLineages, previous.lineageFence],
     },
   };
@@ -120,8 +141,8 @@ export function replicaPathFor(
   replicaRoot: string,
   lineageFence: number,
 ): string {
-  const root = replicaRoot.replace(/\/+$/, "");
-  return `${root}/_litestream/${padFence(lineageFence)}`;
+  // A replica path is a POSIX-style object key or Unix path on every host.
+  return join(replicaRoot, "_litestream", padFence(lineageFence));
 }
 
 /**
