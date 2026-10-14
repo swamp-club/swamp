@@ -42,6 +42,7 @@ import {
   serveCtx,
   UNSET_ENV,
 } from "./usecase_sync_fixtures.ts";
+import { linkSharedSwampDenoCache } from "./test_helpers.ts";
 import { datastoreRecords, withV3RowRepos } from "./usecase_v3_fixtures.ts";
 import { openV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 
@@ -151,6 +152,7 @@ async function withV3Registry(
   ]);
   const home = await Deno.makeTempDir({ prefix: "swamp_3279_home_" });
   try {
+    await linkSharedSwampDenoCache(home);
     await withMockedEnv(
       {
         ...UNSET_ENV,

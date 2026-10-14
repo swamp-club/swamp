@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
+import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import {
   DASHBOARD_DIST_DIR,
@@ -4472,10 +4473,17 @@ export const serveCommand = new Command()
     let continuationSweepService: ContinuationSweepService | undefined;
     // Fills the run index cache in the background once serve is listening,
     // so the dashboard's first requests find it warm or wait on the load
-    // already in flight; shutdown stops it (swamp-club#3443).
+    // already in flight; shutdown stops it (swamp-club#3443) without waiting
+    // for that load (swamp-club#3468).
     const runIndexWarmup = new RunIndexWarmup({
       listWorkflowIds: async () =>
         (await listWorkflows(repoContext.workflowRepo)).map((w) => w.id),
+      countRunRecords: (id, signal) =>
+        repoContext.workflowRunRepo.countRunRecords(
+          createWorkflowId(id),
+          signal,
+        ),
+      maxRuns: RUN_INDEX_CACHE_MAX_RUNS,
       warm: (id, signal) =>
         repoContext.workflowRunRepo.runIndexSnapshot(
           createWorkflowId(id),
@@ -6836,8 +6844,9 @@ export const serveCommand = new Command()
       if (shuttingDown) return;
       shuttingDown = true;
       isReady = false;
-      // Stopped first, so its load in flight ends between records instead
-      // of competing with the drain; waited on after the drain.
+      // Stopped first, so it lets go of its load in flight instead of
+      // competing with the drain; waited on after the drain, which no
+      // longer waits for that load to end (swamp-club#3468).
       runIndexWarmup.stop();
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));

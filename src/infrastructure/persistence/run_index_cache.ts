@@ -30,7 +30,10 @@ export const RUN_INDEX_CACHE_MAX_RUNS = 250_000;
  * How recent a file time may be before a cached snapshot built from it is
  * not trusted. A change landing within one tick of a coarse file clock, or
  * on a datastore whose clock runs ahead, could otherwise leave both stats
- * unchanged (the racy-git problem).
+ * unchanged (the racy-git problem). It covers the index file's ctime too,
+ * which Deno reports in whole seconds (swamp-club#3467): a ctime of second
+ * S stands for a change anywhere in that second, so a stamp is trusted
+ * only once S has passed, and any later change moves it to a later second.
  */
 export const RUN_INDEX_RACY_WINDOW_MS = 2_000;
 
@@ -50,7 +53,12 @@ export interface RunIndexStamp {
 /** A loaded snapshot, and whether it was built from the index. */
 export interface LoadedRunIndex {
   snapshot: RunIndexSnapshot;
-  /** False for a snapshot built some other way, which is never cached. */
+  /**
+   * Whether it was built from an index file that lists exactly the
+   * workflow's run records. Any other snapshot — built from the records, or
+   * from entries repaired in memory that could not be written back — is
+   * never cached: nothing on disk would move when its records change.
+   */
   fromIndex: boolean;
 }
 
@@ -205,12 +213,16 @@ export class RunIndexCache {
 
   /**
    * Whether a stamp's times are too recent to rule out a change within the
-   * same clock tick. A time in the future is never trusted.
+   * same clock tick. A time in the future is never trusted. The index's
+   * ctime counts as well as its mtime: a rewrite in place that sets the
+   * mtime back moves only the ctime.
    */
   #racy(stamp: RunIndexStamp): boolean {
     const threshold = this.#now() - this.#racyWindowMs;
     if (stamp.dirMtimeMs !== null && stamp.dirMtimeMs > threshold) return true;
-    return stamp.index !== null && stamp.index.mtimeMs > threshold;
+    if (stamp.index === null) return false;
+    return stamp.index.mtimeMs > threshold ||
+      (stamp.index.ctimeMs !== undefined && stamp.index.ctimeMs > threshold);
   }
 
   #evict(): void {

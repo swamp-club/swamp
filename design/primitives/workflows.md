@@ -3058,10 +3058,20 @@ this process's own saves are all seen on the next read, without any hook. The
 cache holds at most 250,000 runs, dropping the least recently used workflows.
 It does not keep:
 
-- a snapshot whose file times are within two seconds of the time it was read,
-  or in the future;
+- a snapshot whose file times, the index file's ctime among them, are within
+  two seconds of the time it was read, or in the future. Deno reports ctime
+  in whole seconds, and a rewrite in place that sets the mtime back moves only
+  the ctime (swamp-club#3467);
 - one built from the records because there was no usable index;
+- one whose index could not be brought in step with its records: the
+  repaired or rebuilt index could not be written, or a record still has no
+  entry (an empty one, say). Each read repairs it again, as before the cache;
 - one read on a platform that reports no mtime.
+
+On a platform that reports neither ctime nor inode (Windows), a rewrite of the
+index in place that keeps its size and sets its mtime back is not seen until
+the stamp moves. Swamp's own index writes replace the file and always move its
+mtime.
 
 A read that misses while a load of the same workflow from the same stamp is in
 flight waits for that load instead of starting another, so many readers after
@@ -3072,10 +3082,17 @@ loads for itself. `swamp serve` and the local
 dashboard child fill the cache in the background once they are listening
 (`RunIndexWarmup`, `src/serve/run_index_warmup.ts`). They read one workflow at
 a time, so requests that arrive meanwhile interleave with the warm-up or wait
-on the load it already has in flight. Shutdown aborts the warm-up before it
-drains runs, and waits for it after the drain. The warm-up passes its abort
-signal into each read, so a rebuild or repair in flight stops between records
-without writing the index.
+on the load it already has in flight. Before loading a workflow, the warm-up
+counts its record files; a workflow with more runs than the cache holds is
+skipped, since its snapshot would not be kept. That listing is repeated when
+the index is then read, a cost the warm-up pays only once at startup. Shutdown
+aborts the warm-up before it drains runs, and waits for it after the drain. The
+warm-up passes its abort signal into each read, so its own rebuild or repair
+stops between records without writing the index. Shutdown does not wait for the
+read in flight to end, though (swamp-club#3468): a plain read of an intact
+index, a load a request started, or a repair queued behind another reader does
+not watch that signal. The warm-up stops waiting for it at once and leaves it
+to finish in the background.
 
 Run search and run summary list workflows through
 `WorkflowRepository.findAllListings` (`WorkflowListing`: id, name, whether it

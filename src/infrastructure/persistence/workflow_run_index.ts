@@ -129,15 +129,16 @@ export async function deleteRunIndex(
   }
 }
 
+/** Whether a directory entry is a workflow run record. */
+export function isYamlRunFile(entry: Deno.DirEntry): boolean {
+  return entry.isFile && entry.name.startsWith("workflow-run-") &&
+    entry.name.endsWith(".yaml");
+}
+
 export function countYamlRunFiles(entries: Deno.DirEntry[]): number {
   let count = 0;
   for (const entry of entries) {
-    if (
-      entry.isFile && entry.name.startsWith("workflow-run-") &&
-      entry.name.endsWith(".yaml")
-    ) {
-      count++;
-    }
+    if (isYamlRunFile(entry)) count++;
   }
   return count;
 }

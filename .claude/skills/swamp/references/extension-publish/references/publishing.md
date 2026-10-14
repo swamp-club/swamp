@@ -380,6 +380,10 @@ examples and helper script details.
   are rewritten to it. A missing local module fails the push, a literal dynamic
   `import("./x.ts")` included, even inside `try`/`catch` (the bundle would fail
   on it too)
+- Pull installs these shared modules beside the typed directories, so the pulled
+  source resolves as yours does. Push refuses a shared module pull would not
+  install: a hidden path, `node_modules`, or a `deno.json`, `deno.jsonc` or
+  `package.json` imported from outside the typed directory
 - Each entry-point is bundled into a standalone JS file for the registry
 - The registry catalog lists a behavior only when its entry point exports a
   plain `export const behavior = { ... }` (or `export const model = { ... }`)

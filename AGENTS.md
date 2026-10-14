@@ -137,6 +137,11 @@ generators, tests in `src/libswamp/`) may import names `mod.ts` does not list.
   variable to `undefined` to read it as unset. Child processes never see it, so
   pass them an explicit `env`. `integration/test_env_mutation_rules_test.ts`
   fails on any `Deno.env.set` / `Deno.env.delete` in a test file.
+- A test that points `SWAMP_HOME` at a fresh directory and runs a real extension
+  bundle calls `linkSharedSwampDenoCache(home)` from
+  `integration/test_helpers.ts` first. The bundler's `DENO_DIR` lives under
+  `SWAMP_HOME`, so an empty one makes `deno bundle` download esbuild from npm on
+  every run — a network dependency `withMockedFetch` cannot stub.
 - **Integration tests** (`integration/`): wire real components together
   in-process — repositories on a real temp filesystem, services + event buses,
   port-0 mock servers. Must NOT spawn the CLI as a subprocess.

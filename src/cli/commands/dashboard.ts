@@ -22,6 +22,7 @@
 
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
+import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { Command } from "@cliffy/command";
 import {
@@ -133,6 +134,12 @@ async function runChild(options: AnyOptions): Promise<void> {
   const runIndexWarmup = new RunIndexWarmup({
     listWorkflowIds: async () =>
       (await listWorkflows(repo.repoContext.workflowRepo)).map((w) => w.id),
+    countRunRecords: (id, signal) =>
+      repo.repoContext.workflowRunRepo.countRunRecords(
+        createWorkflowId(id),
+        signal,
+      ),
+    maxRuns: RUN_INDEX_CACHE_MAX_RUNS,
     warm: (id, signal) =>
       repo.repoContext.workflowRunRepo.runIndexSnapshot(
         createWorkflowId(id),

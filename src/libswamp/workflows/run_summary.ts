@@ -100,6 +100,12 @@ export interface WorkflowRunSummaryData {
   /** One entry per workflow with a counted run, ordered by name. */
   workflows: WorkflowRunSummaryWorkflow[];
   /**
+   * The start time of the oldest counted run, absent when no counted run
+   * has one. With `since`, it tells a caller when that run leaves a moving
+   * window, on this clock.
+   */
+  oldestStartedAt?: string;
+  /**
    * Hourly buckets, ascending, only for hours with runs. Runs without a
    * start time are left out. Present only when asked for.
    */
@@ -190,8 +196,11 @@ export function summarizeWorkflowRuns(
   const totals = { ...emptyCounts(), workflows: 0, durationMs: 0 };
   const byWorkflow = new Map<string, WorkflowRunSummaryWorkflow>();
   const buckets = new Map<number, WorkflowRunSummaryBucket>();
+  // Newest first, so the last dated run is the oldest.
+  let oldestStartedAt: string | undefined;
 
   for (const { run, ms } of ordered) {
+    if (ms !== undefined) oldestStartedAt = run.startedAt;
     let entry = byWorkflow.get(run.workflowId);
     if (!entry) {
       entry = {
@@ -269,6 +278,7 @@ export function summarizeWorkflowRuns(
     ...(options.until ? { until: options.until } : {}),
     totals,
     workflows,
+    ...(oldestStartedAt ? { oldestStartedAt } : {}),
     ...(options.timeline
       ? {
         timeline: [...buckets.entries()]
