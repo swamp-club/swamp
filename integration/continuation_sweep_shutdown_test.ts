@@ -126,17 +126,29 @@ Deno.test({
       const holder = Promise.withResolvers<void>();
       const held = withIndexQueue(indexDir, () => holder.promise);
 
-      // The boot pass reads the missing index, then queues its repair.
+      // The boot pass reads the missing index, then queues its repair. The
+      // repair is queued in the same chain of microtasks that ends the read,
+      // so once the read has settled and `waitFor` polls again, the repair is
+      // queued behind the holder, ahead of anything this test queues next.
       const original = Deno.readTextFile;
-      let indexReads = 0;
+      let indexReadSettled = false;
       Deno.readTextFile = ((...args: Parameters<typeof original>) => {
-        if (String(args[0]) === indexPath) indexReads++;
-        return original(...args);
+        const read = original(...args);
+        if (String(args[0]) === indexPath) {
+          read.then(
+            () => indexReadSettled = true,
+            () => indexReadSettled = true,
+          );
+        }
+        return read;
       }) as typeof original;
       const service = sweepService(repo);
       try {
         service.start();
-        await waitFor(() => indexReads > 0, "the boot pass to read the index");
+        await waitFor(
+          () => indexReadSettled,
+          "the boot pass to read the missing index",
+        );
         // Resolves while the other reader still holds the queue.
         await service.dispose();
       } finally {
