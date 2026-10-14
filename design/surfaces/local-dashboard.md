@@ -143,14 +143,15 @@ process in the repo, heartbeat within `STALE_TTL_MS`) to its own active runs
 live and the views' refresh-on-change covers them. Model-method rows carry no
 model name and are left out.
 
-Refresh-on-change is the only clock the dashboard has. Run summaries are
-re-read when a run starts or stops being driven and when the tab comes back
-into view, at most once per 30 seconds (`RUN_ACTIVITY_REFETCH_MS`) and never
-while the tab is hidden. A live run's page polls only the run and its logs; its
-run-search row is re-read when the run's status or the active runs change. A
-preset time range is sent as a duration (`since: "7d"`), so the request does
-not change as the clock moves. Request volume follows run activity, not how long
-a tab stays open.
+Refresh-on-change is the only clock the dashboard has. Run summaries, and the
+model output searches behind the Models page and a model's page, are re-read
+when a run starts or stops being driven and when the tab comes back into view,
+at most once per 30 seconds (`RUN_ACTIVITY_REFETCH_MS`) and never while the tab
+is hidden. A live run's page polls only the run and its logs; its run-search row
+is re-read when the run's status or the active runs change. A preset time range
+is sent as a duration (`since: "7d"`) to the run queries and to
+`model.output.search`, so the request does not change as the clock moves.
+Request volume follows run activity, not how long a tab stays open.
 
 ## Security
 

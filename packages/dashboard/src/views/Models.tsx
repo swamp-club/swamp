@@ -19,6 +19,7 @@
 
 import { type MouseEvent, useMemo } from "react";
 import { useRequest } from "../client/useRequest.ts";
+import { useModelOutputSearch } from "../client/model_outputs.ts";
 import { extractArray } from "../client/extract.ts";
 import {
   asString,
@@ -111,13 +112,9 @@ export function Models({ onOpenModel }: ModelsProps) {
   const { data, error, refetch } = useRequest("model.search");
   const bounds = useTimeBounds();
   const { range } = useTimeRange();
-  const { data: outputData, error: outputError } = useRequest(
-    "model.output.search",
-    {
-      ...bounds,
-      limit: OUTPUT_LIMIT,
-    },
-  );
+  const { data: outputData, error: outputError } = useModelOutputSearch({
+    limit: OUTPUT_LIMIT,
+  });
   const usageState: UsageState = outputData !== null
     ? "loaded"
     : outputError

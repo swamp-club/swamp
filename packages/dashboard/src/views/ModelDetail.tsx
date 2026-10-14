@@ -20,6 +20,7 @@
 import * as yaml from "js-yaml";
 import { useMemo } from "react";
 import { useRequest } from "../client/useRequest.ts";
+import { useModelOutputSearch } from "../client/model_outputs.ts";
 import { extractArray, extractObject } from "../client/extract.ts";
 import {
   describeTimeRange,
@@ -264,10 +265,10 @@ export function ModelExecutions(
 ) {
   const bounds = useTimeBounds();
   const { range } = useTimeRange();
-  const { data, loading, error, refetch } = useRequest(
-    "model.output.search",
-    { model: modelName, ...bounds, limit: EXECUTION_LIMIT },
-  );
+  const { data, error, refetch } = useModelOutputSearch({
+    model: modelName,
+    limit: EXECUTION_LIMIT,
+  });
   const outputs = useMemo(
     () =>
       filterOutputs(extractArray<ModelOutput>(data), {
@@ -278,7 +279,9 @@ export function ModelExecutions(
     [data, modelName, modelId, bounds],
   );
   // Nothing in range: ask once more without the window, for "Last used".
-  const needLastUsed = data !== null && !loading && outputs.length === 0;
+  // A refetch keeps its data, so this holds (and the answer stays) while
+  // the search is re-read on run activity.
+  const needLastUsed = data !== null && outputs.length === 0;
   const { data: lastData } = useRequest(
     "model.output.search",
     { model: modelName, limit: 1 },

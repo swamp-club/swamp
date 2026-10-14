@@ -350,9 +350,15 @@ export interface ModelOutputSearchPayload {
   query?: string;
   /** Only outputs of this model, by exact name or id. */
   model?: string;
-  /** Only outputs started at or after this ISO 8601 instant. */
+  /**
+   * Only outputs started at or after this ISO 8601 instant, or this long
+   * ago by serve's clock for a duration like `7d`.
+   */
   since?: string;
-  /** Only outputs started before this ISO 8601 instant (exclusive). */
+  /**
+   * Only outputs started before this ISO 8601 instant or duration ago
+   * (exclusive).
+   */
   until?: string;
   /**
    * At most this many results, most recent first, counted among the outputs
