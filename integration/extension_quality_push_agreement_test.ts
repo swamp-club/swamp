@@ -216,6 +216,11 @@ async function runQuality(
     cache,
     ensureDenoPath: () => Promise.resolve(DENO),
     makeScoreDeps: () => scoreDeps(),
+    privateSourceLookup: {
+      loadCredentials: () => Promise.resolve(null),
+      whoami: () => Promise.reject(new Error("not called")),
+      getExtensionVisibility: () => Promise.reject(new Error("not called")),
+    },
   }, { prepareInput: fixture.prepareInput, hashInput: fixture.hashInput }));
   const last = events[events.length - 1];
   if (last.kind !== "completed") {

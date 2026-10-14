@@ -149,8 +149,10 @@ COPYING, COPYING.md, COPYING.txt
 
 ### `repository-verified` (2 pts)
 
-Earned when the `repository:` URL points to a public repository on an
-allowlisted host, confirmed via that host's public API.
+Earned on the server in one of two ways: the `repository:` URL points to a
+public repository on an allowlisted host, confirmed via that host's public API;
+or the extension is private and Swamp Club has marked its collective for private
+source hosting (any URL, or none).
 
 Allowlisted hosts and the API endpoints used:
 
@@ -165,12 +167,25 @@ The URL is parsed to extract owner/repo (nested group paths supported for
 GitLab). A 200 response with the repo reporting itself public earns the factor.
 404, private, rate-limited, or any network error means not verified.
 
-Self-hosted Git (GitHub Enterprise, self-hosted GitLab, private Gitea, Azure
-DevOps, Bitbucket Server) cannot earn this factor — verification requires the
-public API, which only the SaaS instances of those four hosts expose.
+Self-hosted Git (GitHub Enterprise, self-hosted GitLab, Gitea, Forgejo, Azure
+DevOps, Bitbucket Server) and private repositories cannot pass the public check.
+A **private** extension from one earns the factor when its collective has
+private source hosting; the scorecard then reads "Private repository (collective
+attested)". A public extension needs a verified public repository.
 
-Verification is cached for 7 days on the extension record. URL changes clear the
-cache and trigger re-verification.
+`swamp extension quality` reaches the same verdict before publish. It reads the
+collective's private source hosting from Swamp Club's whoami response and
+predicts the extension's visibility the way the registry sets it: a republish
+keeps the published visibility; a first publish is private when the manifest
+says `visibility: private` or the collective's namespace is private. When that
+applies, the factor is **provisional** with the collective-attested label.
+Otherwise an allowlisted HTTPS URL is provisional and anything else is
+**missing**. If quality cannot get an answer (not logged in, key rejected, Swamp
+Club unreachable, or nothing reported for the collective), it scores the URL
+alone and the remediation says private source hosting could not be checked.
+
+A verified result is cached for 7 days on the extension record, an unverified
+one for an hour. URL changes clear the cache and trigger re-verification.
 
 ### `dependency-trust` (2 pts)
 

@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { join } from "@std/path";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { buildPrepareInput } from "./push_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -38,15 +39,19 @@ import {
   type RubricScoreDeps,
 } from "../../domain/extensions/extension_rubric_scorer.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import type {
   ExtensionPushPrepareDeps,
   ExtensionPushPrepareInput,
 } from "./push.ts";
 import {
+  createExtensionQualityDeps,
   extensionQuality,
   type ExtensionQualityDeps,
   type ExtensionQualityEvent,
   type ExtensionQualityInput,
+  type PrivateSourceLookupDeps,
+  resolvePrivateSourceStanding,
 } from "./quality.ts";
 
 const ctx = createLibSwampContext();
@@ -236,6 +241,7 @@ function makeQualityDeps(
     pushPrepareOverrides?: Partial<ExtensionPushPrepareDeps>;
     ensureDenoPath?: () => Promise<string>;
     onRunDeno?: (args: string[], cwd: string) => void;
+    privateSourceLookup?: PrivateSourceLookupDeps;
   },
 ): ExtensionQualityDeps {
   return {
@@ -244,6 +250,11 @@ function makeQualityDeps(
     ensureDenoPath: options?.ensureDenoPath ??
       (() => Promise.resolve("/fake/deno")),
     makeScoreDeps: () => fakeScoreDeps(options?.onRunDeno),
+    privateSourceLookup: options?.privateSourceLookup ?? {
+      loadCredentials: () => Promise.resolve(null),
+      whoami: () => Promise.reject(new Error("not called")),
+      getExtensionVisibility: () => Promise.reject(new Error("not called")),
+    },
   };
 }
 
@@ -988,5 +999,260 @@ Deno.test("extensionQuality: a declared license is reported, and a non-SPDX one 
         );
       },
     );
+  }
+});
+
+// ── private source hosting (swamp-club#3406) ───────────────────────────
+
+const CREDS = { serverUrl: "https://club.test", apiKey: "swamp_test_key" };
+
+/** A lookup whose whoami reports `entries` and counts visibility reads. */
+function fakeLookup(options: {
+  entries?: unknown;
+  authenticated?: boolean;
+  existing?: { isPrivate: boolean } | null;
+  whoamiError?: Error;
+  credentials?: typeof CREDS | null;
+}): PrivateSourceLookupDeps & { visibilityReads: number } {
+  const lookup = {
+    visibilityReads: 0,
+    loadCredentials: () =>
+      Promise.resolve(
+        options.credentials === undefined ? CREDS : options.credentials,
+      ),
+    whoami: () =>
+      options.whoamiError
+        ? Promise.reject(options.whoamiError)
+        : Promise.resolve({
+          authenticated: options.authenticated ?? true,
+          ...(options.entries === undefined
+            ? {}
+            : { collectiveSourceHosting: options.entries }),
+        } as unknown as WhoamiResponse),
+    getExtensionVisibility: () => {
+      lookup.visibilityReads++;
+      return Promise.resolve(options.existing ?? null);
+    },
+  };
+  return lookup;
+}
+
+function hosting(privateSourceHosting: boolean, privateNamespace = false) {
+  return [
+    { slug: "other", privateSourceHosting: true, privateNamespace: true },
+    { slug: "testuser", privateSourceHosting, privateNamespace },
+  ];
+}
+
+Deno.test("resolvePrivateSourceStanding: unknown whenever the registry's answer cannot be read", async () => {
+  const cases: Array<[string, Parameters<typeof fakeLookup>[0]]> = [
+    ["no credentials", { credentials: null, entries: hosting(true) }],
+    ["rejected key", { authenticated: false, entries: hosting(true) }],
+    ["server predates the field", {}],
+    ["collective not reported", { entries: [hosting(true)[0]] }],
+    ["malformed entry", {
+      entries: [{ slug: "testuser", privateSourceHosting: "yes" }],
+    }],
+    ["field not an array", { entries: { testuser: true } }],
+    ["whoami fails", { whoamiError: new Error("connection refused") }],
+  ];
+  for (const [label, options] of cases) {
+    const lookup = fakeLookup(options);
+    assertEquals(
+      await resolvePrivateSourceStanding(ctx, lookup, makeManifest()),
+      { kind: "unknown" },
+      label,
+    );
+    assertEquals(lookup.visibilityReads, 0, label);
+  }
+});
+
+Deno.test("resolvePrivateSourceStanding: a collective without private source hosting never reads visibility", async () => {
+  const lookup = fakeLookup({ entries: hosting(false, true) });
+  assertEquals(
+    await resolvePrivateSourceStanding(ctx, lookup, makeManifest()),
+    { kind: "not_attested", reason: "no_private_source_hosting" },
+  );
+  assertEquals(lookup.visibilityReads, 0);
+});
+
+Deno.test("resolvePrivateSourceStanding: attested exactly when the extension will publish as private", async () => {
+  const attested = { kind: "attested" };
+  const publicExtension = { kind: "not_attested", reason: "public_extension" };
+  const cases: Array<
+    [
+      string,
+      { isPrivate: boolean } | null,
+      "public" | "private" | undefined,
+      boolean,
+      unknown,
+    ]
+  > = [
+    ["published private", { isPrivate: true }, "public", false, attested],
+    [
+      "published public",
+      { isPrivate: false },
+      "private",
+      true,
+      publicExtension,
+    ],
+    ["first publish, private requested", null, "private", false, attested],
+    ["first publish, private namespace", null, "public", true, attested],
+    [
+      "first publish, public namespace",
+      null,
+      undefined,
+      false,
+      publicExtension,
+    ],
+  ];
+  for (
+    const [label, existing, visibility, privateNamespace, expected] of cases
+  ) {
+    const lookup = fakeLookup({
+      entries: hosting(true, privateNamespace),
+      existing,
+    });
+    assertEquals(
+      await resolvePrivateSourceStanding(
+        ctx,
+        lookup,
+        makeManifest(visibility ? { visibility } : {}),
+      ),
+      expected,
+      label,
+    );
+    assertEquals(lookup.visibilityReads, 1, label);
+  }
+});
+
+Deno.test("resolvePrivateSourceStanding: a lookup that outlasts the timeout is unknown", async () => {
+  const hanging: PrivateSourceLookupDeps = {
+    loadCredentials: () => Promise.resolve(CREDS),
+    whoami: (_url, _key, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+    getExtensionVisibility: () => Promise.reject(new Error("not called")),
+  };
+  assertEquals(
+    await resolvePrivateSourceStanding(ctx, hanging, makeManifest(), 1),
+    { kind: "unknown" },
+  );
+});
+
+Deno.test("extensionQuality: an attested private extension on a self-hosted forge passes repository-verified", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest({
+      repository: "https://git.example-corp.internal/team/test-ext",
+      visibility: "private",
+    });
+    const run = async (lookup: PrivateSourceLookupDeps) =>
+      completedData(
+        await collect(
+          extensionQuality(
+            ctx,
+            makeQualityDeps(cacheRoot, { privateSourceLookup: lookup }),
+            makeQualityInput(repoDir, manifest),
+          ),
+        ),
+      ).score.factors.find((f) => f.id === "repository-verified")!;
+
+    const attested = await run(fakeLookup({ entries: hosting(true) }));
+    assertEquals(attested.status, "provisional");
+    assertEquals(attested.label, "Private repository (collective attested)");
+
+    const notAttested = await run(fakeLookup({ entries: hosting(false) }));
+    assertEquals(notAttested.status, "missing");
+  });
+});
+
+/** The real lookup wiring, reading swamp-club through a mocked fetch. */
+async function realLookupStanding(
+  cacheRoot: string,
+  extension: Record<string, unknown> | null,
+): Promise<{ standing: unknown; paths: string[] }> {
+  const lookup = createExtensionQualityDeps(
+    makePushPrepareDeps({
+      loadCredentials: () => Promise.resolve({ ...CREDS, username: "t" }),
+    }),
+    new ExtensionPackageCache(cacheRoot, "test-version"),
+  ).privateSourceLookup;
+  const { result, calls } = await withMockedFetch((req) => {
+    if (new URL(req.url).pathname === "/api/whoami") {
+      return Response.json({
+        authenticated: true,
+        collectiveSourceHosting: hosting(true),
+      });
+    }
+    return extension
+      ? Response.json(extension)
+      : Response.json({ error: "not found" }, { status: 404 });
+  }, () => resolvePrivateSourceStanding(ctx, lookup, makeManifest()));
+  return {
+    standing: result,
+    paths: calls.map((c) => new URL(c.url).pathname),
+  };
+}
+
+Deno.test("createExtensionQualityDeps: the lookup reads whoami, then the extension, from the credentials' server", async () => {
+  const cacheRoot = await Deno.makeTempDir();
+  try {
+    const { standing, paths } = await realLookupStanding(cacheRoot, {
+      name: "@testuser/test-ext",
+      isPrivate: true,
+    });
+    assertEquals(standing, { kind: "attested" });
+    assertEquals(paths, [
+      "/api/whoami",
+      "/api/v1/extensions/%40testuser%2Ftest-ext",
+    ]);
+    assertEquals(
+      (await realLookupStanding(cacheRoot, null)).standing,
+      { kind: "not_attested", reason: "public_extension" },
+    );
+  } finally {
+    await Deno.remove(cacheRoot, { recursive: true });
+  }
+});
+
+Deno.test("createExtensionQualityDeps: an extension answer without visibility is unknown, not public", async () => {
+  const cacheRoot = await Deno.makeTempDir();
+  try {
+    const { standing } = await realLookupStanding(cacheRoot, {
+      name: "@testuser/test-ext",
+    });
+    assertEquals(standing, { kind: "unknown" });
+  } finally {
+    await Deno.remove(cacheRoot, { recursive: true });
+  }
+});
+
+Deno.test("ExtensionApiClient.getExtension: the caller's signal reaches fetch", async () => {
+  const cacheRoot = await Deno.makeTempDir();
+  try {
+    const lookup = createExtensionQualityDeps(
+      makePushPrepareDeps(),
+      new ExtensionPackageCache(cacheRoot, "test-version"),
+    ).privateSourceLookup;
+    const controller = new AbortController();
+    const seen: boolean[] = [];
+    await withMockedFetch((req) => {
+      seen.push(req.signal.aborted);
+      controller.abort();
+      seen.push(req.signal.aborted);
+      return Response.json({ name: "@testuser/test-ext", isPrivate: false });
+    }, () =>
+      lookup.getExtensionVisibility(
+        CREDS.serverUrl,
+        "@testuser/test-ext",
+        CREDS.apiKey,
+        controller.signal,
+      ));
+    assertEquals(seen, [false, true]);
+  } finally {
+    await Deno.remove(cacheRoot, { recursive: true });
   }
 });

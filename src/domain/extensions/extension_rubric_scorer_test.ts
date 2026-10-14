@@ -29,6 +29,8 @@ import {
   type DocOutput,
   hasFencedCodeBlock,
   hasModuleDoc,
+  predictPublishedPrivate,
+  type PrivateSourceStanding,
   repositoryLikelyVerifiable,
   RUBRIC_VERSION,
   type RubricScoreDeps,
@@ -424,6 +426,122 @@ Deno.test("composeScore: repository-verified is missing when URL is not verifiab
   assertEquals(factor.maxPoints, 2);
   assertEquals(factor.earnedPoints, 0);
   assertEquals(factor.status, "missing");
+});
+
+// ── private source hosting (swamp-club#3396, swamp-club#3406) ──────────
+
+const SELF_HOSTED = "https://git.example-corp.internal/team/ext";
+
+function repositoryFactor(
+  repository: string | undefined,
+  privateSource?: PrivateSourceStanding,
+) {
+  const score = composeScore(
+    factorsAllEarned(),
+    makeManifest({ repository }),
+    privateSource,
+  );
+  return {
+    score,
+    factor: score.factors.find((f) => f.id === "repository-verified")!,
+  };
+}
+
+Deno.test("predictPublishedPrivate: a republish keeps the stored visibility", () => {
+  assertEquals(
+    predictPublishedPrivate({ isPrivate: true }, "public", false),
+    true,
+  );
+  assertEquals(
+    predictPublishedPrivate({ isPrivate: false }, "private", true),
+    false,
+  );
+});
+
+Deno.test("predictPublishedPrivate: a first publish is private when asked or when the namespace is private", () => {
+  assertEquals(predictPublishedPrivate(null, "private", false), true);
+  assertEquals(predictPublishedPrivate(null, "public", true), true);
+  assertEquals(predictPublishedPrivate(null, undefined, true), true);
+  assertEquals(predictPublishedPrivate(null, undefined, false), false);
+  assertEquals(predictPublishedPrivate(null, "public", false), false);
+});
+
+Deno.test("composeScore: an attested private extension scores repository-verified like a public forge, whatever its URL", () => {
+  const publicForge = repositoryFactor("https://github.com/example/test");
+  for (const repository of [SELF_HOSTED, undefined, "http://bad/x"]) {
+    const { score, factor } = repositoryFactor(repository, {
+      kind: "attested",
+    });
+    assertEquals(factor.status, "provisional", String(repository));
+    assertEquals(factor.label, "Private repository (collective attested)");
+    assertEquals(factor.earnedPoints, 0);
+    assertEquals(factor.remediation, undefined);
+    assertEquals(score.allPassed, true);
+    assertEquals(score.percentage, publicForge.score.percentage);
+    assertEquals(
+      score.maxClientEarnablePoints,
+      publicForge.score.maxClientEarnablePoints,
+    );
+    assertEquals(score.provisionalPoints, publicForge.score.provisionalPoints);
+  }
+});
+
+Deno.test("composeScore: without attestation a self-hosted URL stays missing, as the registry scores it", () => {
+  for (
+    const privateSource of [
+      undefined,
+      { kind: "unknown" },
+      { kind: "not_attested", reason: "no_private_source_hosting" },
+      { kind: "not_attested", reason: "public_extension" },
+    ] satisfies Array<PrivateSourceStanding | undefined>
+  ) {
+    const { score, factor } = repositoryFactor(SELF_HOSTED, privateSource);
+    assertEquals(factor.status, "missing", JSON.stringify(privateSource));
+    assertEquals(score.allPassed, false);
+    assertStringIncludes(
+      factor.remediation ?? "",
+      "Set `repository:` to a public HTTPS URL on github.com",
+    );
+  }
+});
+
+Deno.test("composeScore: the missing remediation says why private source hosting does not apply", () => {
+  assertStringIncludes(
+    repositoryFactor(SELF_HOSTED).factor.remediation ?? "",
+    "which could not be checked",
+  );
+  assertStringIncludes(
+    repositoryFactor(SELF_HOSTED, {
+      kind: "not_attested",
+      reason: "no_private_source_hosting",
+    }).factor.remediation ?? "",
+    "ask Swamp Club to mark the collective for private source hosting",
+  );
+  assertStringIncludes(
+    repositoryFactor(SELF_HOSTED, {
+      kind: "not_attested",
+      reason: "public_extension",
+    }).factor.remediation ?? "",
+    "this extension will publish as public",
+  );
+});
+
+Deno.test("composeScore: a public-forge URL scores as before whatever the private source standing", () => {
+  const released = repositoryFactor("https://github.com/example/test");
+  for (
+    const privateSource of [
+      { kind: "unknown" },
+      { kind: "not_attested", reason: "no_private_source_hosting" },
+      { kind: "not_attested", reason: "public_extension" },
+    ] satisfies PrivateSourceStanding[]
+  ) {
+    const { score, factor } = repositoryFactor(
+      "https://github.com/example/test",
+      privateSource,
+    );
+    assertEquals(factor, released.factor, JSON.stringify(privateSource));
+    assertEquals(score, released.score);
+  }
 });
 
 Deno.test("composeScore: bad manifest fails several factors", () => {

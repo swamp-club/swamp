@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join, resolve, SEPARATOR } from "@std/path";
-import type { ExtensionManifest } from "./extension_manifest.ts";
+import type {
+  ExtensionManifest,
+  PublishVisibility,
+} from "./extension_manifest.ts";
 import { markErrorPaths } from "../errors.ts";
 import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
 import { isValidManifestLicense } from "../licensing/manifest_license_policy.ts";
@@ -31,8 +34,10 @@ import { isValidManifestLicense } from "../licensing/manifest_license_policy.ts"
  * `lib/domain/scorecard/score.ts` in the swamp-club repo). Factors the
  * CLI can fully evaluate use the same logic as the server. The
  * `repository-verified` factor is marked "provisional" locally because
- * only the server can HTTP-HEAD the URL — its points are excluded from
- * the client-side total and tracked separately as `provisionalPoints`.
+ * only the server can award it — by HTTP-HEADing the URL, or through the
+ * collective's private source hosting for a private extension — so its
+ * points are excluded from the client-side total and tracked separately
+ * as `provisionalPoints`.
  *
  * Distinct from `extension_quality_checker.ts` in this directory —
  * that module runs `deno fmt` / `deno lint` / dynamic-import checks as
@@ -313,6 +318,44 @@ export function repositoryLikelyVerifiable(
 }
 
 /**
+ * Whether the registry will award `repository-verified` through the
+ * collective's private source hosting, as far as the CLI can tell before
+ * publish. The registry awards it to a private extension whose collective
+ * has private source hosting, whatever the repository URL
+ * (`repositoryVerifiedFactor` in swamp-club's `score.ts`).
+ *   attested     → the registry awards the factor
+ *   not_attested → it does not; `reason` says which half is missing
+ *   unknown      → the CLI could not tell (no credentials, swamp-club
+ *                  unreachable, or a server that does not report it), so
+ *                  the factor is scored on the repository URL alone
+ */
+export type PrivateSourceStanding =
+  | { kind: "attested" }
+  | {
+    kind: "not_attested";
+    reason: "public_extension" | "no_private_source_hosting";
+  }
+  | { kind: "unknown" };
+
+/**
+ * Whether a publish of this extension will be private, mirroring the
+ * registry's `confirm-push.ts`: a republish keeps the stored visibility,
+ * and a first publish is private when the manifest asks for it or the
+ * collective's namespace is private, whatever the manifest says otherwise.
+ *
+ * @param existing the published extension, or null when it is not
+ *   published yet
+ */
+export function predictPublishedPrivate(
+  existing: { isPrivate: boolean } | null,
+  manifestVisibility: PublishVisibility | undefined,
+  privateNamespace: boolean,
+): boolean {
+  if (existing) return existing.isPrivate;
+  return manifestVisibility === "private" || privateNamespace;
+}
+
+/**
  * Compose a RubricScore from the per-version analysis factors and the
  * manifest. Mirrors score.ts#composeScore but restricted to the
  * signals the CLI can observe (no access to server-side `license`
@@ -325,6 +368,7 @@ export function repositoryLikelyVerifiable(
 export function composeScore(
   factors: AnalysisFactors,
   manifest: ExtensionManifest,
+  privateSource: PrivateSourceStanding = { kind: "unknown" },
 ): RubricScore {
   const rows: RubricFactor[] = [
     boolRow("has-readme", "Has README or module doc", 2, factors.hasReadme, {
@@ -393,7 +437,7 @@ export function composeScore(
           "(manifest beside LICENSE), opt in with `paths.base: manifest`.",
       },
     ),
-    repositoryVerifiedRow(manifest.repository),
+    repositoryVerifiedRow(manifest.repository, privateSource),
     dependencyTrustRow(
       factors.dependencyTrustPassed,
       factors.dependencyTrustBlockerCount,
@@ -442,9 +486,42 @@ function boolRow(
   };
 }
 
+const PUBLIC_REPOSITORY_REMEDIATION =
+  "Set `repository:` to a public HTTPS URL on github.com, gitlab.com, " +
+  "codeberg.org, or bitbucket.org. Server will verify it resolves publicly.";
+
+/** What the missing-row remediation adds about private source hosting. */
+function privateSourceNote(privateSource: PrivateSourceStanding): string {
+  switch (privateSource.kind) {
+    case "attested":
+      return "";
+    case "unknown":
+      return " A private extension also earns this when its collective has " +
+        "private source hosting, which could not be checked (not logged in, " +
+        "key rejected, Swamp Club unreachable, or no answer for this " +
+        "collective); `swamp auth whoami` shows the login in use.";
+    case "not_attested":
+      return privateSource.reason === "public_extension"
+        ? " Private source hosting covers only private extensions, and this " +
+          "extension will publish as public."
+        : " Or, for a private extension, ask Swamp Club to mark the " +
+          "collective for private source hosting.";
+  }
+}
+
 function repositoryVerifiedRow(
   repository: string | undefined,
+  privateSource: PrivateSourceStanding,
 ): RubricFactor {
+  if (privateSource.kind === "attested") {
+    return {
+      id: "repository-verified",
+      label: "Private repository (collective attested)",
+      earnedPoints: 0,
+      maxPoints: 2,
+      status: "provisional",
+    };
+  }
   const verifiable = repositoryLikelyVerifiable(repository);
   if (verifiable) {
     return {
@@ -461,9 +538,8 @@ function repositoryVerifiedRow(
     earnedPoints: 0,
     maxPoints: 2,
     status: "missing",
-    remediation:
-      "Set `repository:` to a public HTTPS URL on github.com, gitlab.com, " +
-      "codeberg.org, or bitbucket.org. Server will verify it resolves publicly.",
+    remediation: PUBLIC_REPOSITORY_REMEDIATION +
+      privateSourceNote(privateSource),
   };
 }
 
@@ -633,6 +709,7 @@ export async function scoreExtensionTarball(
     dependencyTrustBlockerCount?: number;
     dependencyNotAuditedCount?: number;
     importMap?: Record<string, string>;
+    privateSource?: PrivateSourceStanding;
   },
 ): Promise<RubricScore> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_quality_" });
@@ -700,7 +777,7 @@ export async function scoreExtensionTarball(
       dependencyNotAuditedCount: options?.dependencyNotAuditedCount,
     });
 
-    return composeScore(analysisFactors, manifest);
+    return composeScore(analysisFactors, manifest, options?.privateSource);
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }

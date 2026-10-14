@@ -41,7 +41,8 @@ Fields to double-check before publishing:
 
 - `description` is not `"TODO"`, `"tbd"`, or an empty string
 - `repository` is HTTPS and on github.com, gitlab.com, codeberg.org, or
-  bitbucket.org
+  bitbucket.org — unless the extension is private and its collective has private
+  source hosting
 - `license:` is a valid SPDX expression (e.g. `MIT`) — optional, earns a point
 - Both `README.md` and a LICENSE file are listed in `additionalFiles:`
 - `platforms:` is either empty or has ≥2 entries (a single explicit platform
@@ -222,6 +223,6 @@ before pushing.
 | Missing return type on one exported function                     | `fast-check` 0/1 = -1 pt                                           | Add explicit `: ReturnType` annotation                                                                                                                                                                           |
 | Description set to `"TODO"`                                      | technically passes, wastes the signal                              | Write a real one-sentence description                                                                                                                                                                            |
 | `repository:` URL is HTTP not HTTPS                              | `repository-verified` 0/2 = -2 pts                                 | Switch to `https://`                                                                                                                                                                                             |
-| `repository:` on self-hosted GitLab or Gitea                     | `repository-verified` 0/2 = -2 pts                                 | Use a public mirror on github.com or gitlab.com if possible                                                                                                                                                      |
+| `repository:` on self-hosted GitLab or Gitea                     | `repository-verified` 0/2 = -2 pts                                 | Private extension: ask Swamp Club to mark the collective for private source hosting. Public extension: use a public mirror on github.com or gitlab.com                                                           |
 | `platforms:` has exactly one entry                               | `platforms-two` 0/1 = -1 pt                                        | Either leave empty (universal) or list ≥2                                                                                                                                                                        |
 | One exported helper without a JSDoc comment, out of five exports | `symbols-docs` 0/1 = -1 pt                                         | Add JSDoc to hit ≥80% coverage                                                                                                                                                                                   |

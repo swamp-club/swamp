@@ -22,6 +22,7 @@ import {
   keyFingerprint,
 } from "../../domain/auth/auth_credentials.ts";
 import type {
+  WhoamiCollectiveSourceHostingResponse,
   WhoamiResponse,
   WhoamiTrial,
 } from "../../infrastructure/http/swamp_club_client.ts";
@@ -173,6 +174,38 @@ export function entitlementsOf(
       : {}),
     ...(entitlement.trial !== undefined ? { trial: entitlement.trial } : {}),
   }));
+}
+
+/**
+ * One collective's source hosting from a whoami response, or undefined when
+ * the server did not report it for that collective — an older server, a
+ * failed lookup on its side, or a collective the caller is not in.
+ *
+ * Reads the dedicated `collectiveSourceHosting` field, never `organizations`.
+ * An entry without boolean flags counts as unreported, so a malformed answer
+ * falls back to the repository URL instead of guessing.
+ */
+export function sourceHostingOf(
+  response: WhoamiResponse,
+  slug: string,
+): WhoamiCollectiveSourceHostingResponse | undefined {
+  const entries: unknown = response.collectiveSourceHosting;
+  if (!Array.isArray(entries)) return undefined;
+  for (const entry of entries) {
+    if (
+      typeof entry === "object" && entry !== null &&
+      entry.slug === slug &&
+      typeof entry.privateSourceHosting === "boolean" &&
+      typeof entry.privateNamespace === "boolean"
+    ) {
+      return {
+        slug,
+        privateSourceHosting: entry.privateSourceHosting,
+        privateNamespace: entry.privateNamespace,
+      };
+    }
+  }
+  return undefined;
 }
 
 /** Verifies the current authenticated identity via the swamp-club API. */

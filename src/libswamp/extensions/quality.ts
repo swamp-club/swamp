@@ -24,11 +24,21 @@ import {
 } from "../../domain/extensions/extension_package_cache.ts";
 import {
   createRubricScoreDeps,
+  predictPublishedPrivate,
+  type PrivateSourceStanding,
   RUBRIC_VERSION,
   type RubricScore,
   type RubricScoreDeps,
   scoreExtensionTarball,
 } from "../../domain/extensions/extension_rubric_scorer.ts";
+import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import { collectiveOf } from "../../domain/extensions/extension_publish_checks.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
+import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import {
+  SwampClubClient,
+  type WhoamiResponse,
+} from "../../infrastructure/http/swamp_club_client.ts";
 import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -48,6 +58,7 @@ import {
   type QualityFindings,
   readImportMap,
 } from "./push.ts";
+import { sourceHostingOf } from "../auth/whoami.ts";
 
 /** Emitted by the extension quality generator. */
 export type ExtensionQualityEvent =
@@ -94,18 +105,42 @@ export interface ExtensionQualityInput {
   hashInput: PackageCacheHashInput;
 }
 
+/**
+ * The swamp-club reads behind {@link resolvePrivateSourceStanding}. Each
+ * call takes the lookup's signal, so one timeout bounds them all.
+ */
+export interface PrivateSourceLookupDeps {
+  loadCredentials: () => Promise<
+    { serverUrl: string; apiKey: string } | null
+  >;
+  whoami: (
+    serverUrl: string,
+    apiKey: string,
+    signal: AbortSignal,
+  ) => Promise<WhoamiResponse>;
+  /** The published extension's visibility, or null when it is not published. */
+  getExtensionVisibility: (
+    serverUrl: string,
+    name: string,
+    apiKey: string,
+    signal: AbortSignal,
+  ) => Promise<{ isPrivate: boolean } | null>;
+}
+
 /** Dependencies injected into the quality generator. */
 export interface ExtensionQualityDeps {
   pushPrepareDeps: ExtensionPushPrepareDeps;
   cache: ExtensionPackageCache;
   ensureDenoPath: () => Promise<string>;
   makeScoreDeps: (denoPath: string) => RubricScoreDeps;
+  privateSourceLookup: PrivateSourceLookupDeps;
 }
 
 /** Wires real infrastructure into ExtensionQualityDeps. */
 export function createExtensionQualityDeps(
   pushPrepareDeps: ExtensionPushPrepareDeps,
   cache: ExtensionPackageCache,
+  identity?: ClientIdentity,
 ): ExtensionQualityDeps {
   const denoRuntime = new EmbeddedDenoRuntime();
   return {
@@ -114,7 +149,85 @@ export function createExtensionQualityDeps(
     ensureDenoPath: () => denoRuntime.ensureDeno(),
     makeScoreDeps: (denoPath) =>
       createRubricScoreDeps(denoPath, extractTarGz, denoRuntime.getDenoEnv()),
+    privateSourceLookup: {
+      loadCredentials: () => pushPrepareDeps.loadCredentials(),
+      whoami: (serverUrl, apiKey, signal) =>
+        new SwampClubClient(serverUrl, identity).whoami(apiKey, signal),
+      getExtensionVisibility: async (serverUrl, name, apiKey, signal) => {
+        const info = await new ExtensionApiClient(serverUrl, identity)
+          .getExtension(name, apiKey, signal);
+        if (!info) return null;
+        // An answer without visibility cannot say which way a republish
+        // goes, so the lookup counts as unanswered rather than public.
+        if (typeof info.isPrivate !== "boolean") {
+          throw new Error("Registry did not report the extension's visibility");
+        }
+        return { isPrivate: info.isPrivate };
+      },
+    },
   };
+}
+
+/** Upper bound on the swamp-club reads that decide private source hosting. */
+export const PRIVATE_SOURCE_LOOKUP_TIMEOUT_MS = 5_000;
+
+/**
+ * Whether the registry will award `repository-verified` to this extension
+ * through its collective's private source hosting. Reads the collective's
+ * standing from whoami and, only when the collective has private source
+ * hosting, the published extension's visibility.
+ *
+ * Never throws and never blocks past the timeout: no credentials, a
+ * rejected key, an unreachable or older server, or any error answers
+ * `unknown`, and the factor is then scored on the repository URL alone,
+ * as it was before the registry offered private source hosting.
+ */
+export async function resolvePrivateSourceStanding(
+  ctx: LibSwampContext,
+  deps: PrivateSourceLookupDeps,
+  manifest: ExtensionManifest,
+  timeoutMs = PRIVATE_SOURCE_LOOKUP_TIMEOUT_MS,
+): Promise<PrivateSourceStanding> {
+  const unknown: PrivateSourceStanding = { kind: "unknown" };
+  try {
+    const creds = await deps.loadCredentials();
+    if (!creds) {
+      ctx.logger.debug`Private source hosting not checked: no credentials`;
+      return unknown;
+    }
+    const signal = AbortSignal.timeout(timeoutMs);
+    const whoami = await deps.whoami(creds.serverUrl, creds.apiKey, signal);
+    if (whoami.authenticated === false) {
+      ctx.logger.debug`Private source hosting not checked: key rejected`;
+      return unknown;
+    }
+    const collective = sourceHostingOf(whoami, collectiveOf(manifest.name));
+    if (!collective) {
+      ctx.logger
+        .debug`Private source hosting not reported for ${manifest.name}`;
+      return unknown;
+    }
+    if (!collective.privateSourceHosting) {
+      return { kind: "not_attested", reason: "no_private_source_hosting" };
+    }
+    const existing = await deps.getExtensionVisibility(
+      creds.serverUrl,
+      manifest.name,
+      creds.apiKey,
+      signal,
+    );
+    return predictPublishedPrivate(
+        existing,
+        manifest.visibility,
+        collective.privateNamespace,
+      )
+      ? { kind: "attested" }
+      : { kind: "not_attested", reason: "public_extension" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.logger.debug`Private source hosting not checked: ${message}`;
+    return unknown;
+  }
 }
 
 /**
@@ -195,6 +308,11 @@ export async function* extensionQuality(
       );
 
       yield { kind: "scoring" };
+      const privateSource = await resolvePrivateSourceStanding(
+        ctx,
+        deps.privateSourceLookup,
+        input.prepareInput.manifest,
+      );
       const denoPath = await deps.ensureDenoPath();
       const scoreDeps = deps.makeScoreDeps(denoPath);
       const importMap = await readImportMap(
@@ -212,6 +330,7 @@ export async function* extensionQuality(
             prepared.dependencyTrustResult,
           ),
           importMap,
+          privateSource,
         },
       );
 
