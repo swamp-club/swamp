@@ -15,6 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
  * swamp-club#3405: serve's control-plane runs (enrollment-token redeem,
@@ -76,6 +77,7 @@ Deno.test("worker enroll ignores a user definition of another type that shares t
     provider,
   );
   const disconnected: string[] = [];
+  let workerChannel: RpcChannel | null = null;
   const gateway = new WorkerGateway({
     repoDir,
     repoContext,
@@ -130,14 +132,15 @@ Deno.test("worker enroll ignores a user definition of another type that shares t
       ].join("\n"),
     );
 
-    const workerChannel: RpcChannel = new RpcChannel({
+    const channel: RpcChannel = new RpcChannel({
       send: (data) => void Promise.resolve().then(() => attached.feed(data)),
     });
+    workerChannel = channel;
     const attached = gateway.attachTransport({
       send: (data) =>
-        void Promise.resolve().then(() => workerChannel.handleRaw(data)),
+        void Promise.resolve().then(() => channel.handleRaw(data)),
     });
-    const result = await workerChannel.call<EnrollResult>(
+    const result = await channel.call<EnrollResult>(
       RemoteMethod.enroll,
       {
         token,
@@ -155,7 +158,7 @@ Deno.test("worker enroll ignores a user definition of another type that shares t
 
     // The disconnect record runs set_status through the same lookup.
     attached.closed();
-    workerChannel.close("test done");
+    channel.close("test done");
     await waitFor(() => disconnected.includes(name), "disconnect seen");
     // Runs on the gateway's transition tail, after the disconnect record.
     await gateway.revokeToken("no-such-token", "revoked");
@@ -171,6 +174,7 @@ Deno.test("worker enroll ignores a user definition of another type that shares t
       return false;
     }, "worker definition created in auto-definitions");
   } finally {
+    workerChannel?.close("test done");
     gateway.dispose();
     VaultService.unregisterGlobalProvider(TOKEN_SECRETS_VAULT_NAME);
     repoContext.catalogStore.close();
