@@ -63,9 +63,14 @@ function isSharedSourceRoot(name: string): boolean {
   return name === SHARED_ARCHIVE_DIR || !isReservedArchiveRootName(name);
 }
 
-/** Segments of `path` with any leading `./` and empty segments dropped. */
+/**
+ * Segments of `path` with any leading `./` and empty segments dropped.
+ * Splits on `\` as well as `/`: a tar header may hold either, and on
+ * Windows the extractor writes `\` as a separator, so classifying on `/`
+ * alone would let `lib\deno.json` pass as one harmless segment.
+ */
 function segmentsOf(path: string): string[] {
-  return path.split("/").filter((s) => s !== "" && s !== ".");
+  return path.split(/[\\/]/).filter((s) => s !== "" && s !== ".");
 }
 
 /**
@@ -95,8 +100,9 @@ function aliasesReservedName(name: string): boolean {
  * - A symlink or hardlink anywhere in the archive: push never writes one,
  *   and its safety gate refuses them in sources.
  * - Under a top-level entry holding shared sources (a name that is not
- *   reserved, or `_shared/`; swamp-club#3384): a hidden segment, a Deno or npm resolution
- *   config file or `node_modules`, or a top-level name that differs from a
+ *   reserved, or `_shared/`; swamp-club#3384): a backslash (push always
+ *   writes `/`), a hidden or `..` segment, a Deno or npm resolution config
+ *   file or `node_modules`, or a top-level name that differs from a
  *   reserved one only by case.
  *
  * Entries under reserved names keep the rules pull applied before.
@@ -113,6 +119,12 @@ export function archiveEntryRefusal(
   const segments = extensionSegments(entry.path);
   if (segments === undefined || !isSharedSourceRoot(segments[0])) {
     return undefined;
+  }
+  if (entry.path.includes("\\")) {
+    return {
+      path: entry.path,
+      reason: "contains a backslash; archive paths use forward slashes",
+    };
   }
   if (aliasesReservedName(segments[0])) {
     return {

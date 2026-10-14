@@ -141,6 +141,36 @@ Deno.test("archiveEntryRefusal: resolution config files and node_modules under a
   }
 });
 
+Deno.test("archiveEntryRefusal: a backslash under a shared source is refused, whatever it hides", () => {
+  for (
+    const path of [
+      "extension/lib\\deno.json",
+      "extension/lib\\x.ts",
+      "extension\\lib\\x.ts",
+      "extension/a\\..\\..\\journal",
+      "extension/Models\\x.ts",
+      "extension/_shared/_up\\x.ts",
+    ]
+  ) {
+    const refusal = archiveEntryRefusal(file(path));
+    assertEquals(refusal?.path, path);
+    assertStringIncludes(refusal!.reason, "backslash", path);
+  }
+});
+
+Deno.test("archiveEntryRefusal: a backslash inside a reserved directory keeps pull's earlier rules", () => {
+  assertEquals(archiveEntryRefusal(file("extension/models\\x.ts")), undefined);
+});
+
+Deno.test("planArchiveRootSources: a backslash path is never installed", () => {
+  const plan = planArchiveRootSources([
+    file("extension/lib\\deno.json"),
+    file("extension/lib/ok.ts"),
+  ]);
+  assertEquals(plan.sources, ["lib/ok.ts"]);
+  assertEquals(plan.refusals.map((r) => r.path), ["extension/lib\\deno.json"]);
+});
+
 Deno.test("archiveEntryRefusal: a case variant of a reserved name is refused", () => {
   const refusal = archiveEntryRefusal(file("extension/Models/x.ts"));
   assertStringIncludes(refusal!.reason, "reserved archive directory models");

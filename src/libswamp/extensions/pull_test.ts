@@ -23,6 +23,7 @@ import { assertStringIncludes } from "@std/assert/string-includes";
 import { ensureDir, walk } from "@std/fs";
 import { dirname, join, relative } from "@std/path";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
+import { TarStream, type TarStreamInput } from "@std/tar/tar-stream";
 import {
   applyInstall,
   computeOrphanDiff,
@@ -666,6 +667,28 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
   } finally {
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }
+}
+
+/** A .tar.gz holding exactly `files`, keyed by raw tar header path. */
+async function buildRawArchive(
+  files: Record<string, string>,
+): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  const entries: TarStreamInput[] = Object.entries(files).map(
+    ([path, content]) => {
+      const bytes = encoder.encode(content);
+      return {
+        type: "file",
+        path,
+        size: bytes.length,
+        readable: ReadableStream.from([bytes]),
+      };
+    },
+  );
+  const stream = ReadableStream.from(entries)
+    .pipeThrough(new TarStream())
+    .pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 async function withSkillRepo(
@@ -3229,6 +3252,54 @@ Deno.test(
         assertEquals(await exists(extRootOf(repoDir, name)), false);
       });
     }
+  },
+);
+
+Deno.test(
+  "installExtension: a backslash in a shared source's archive path refuses the archive",
+  async () => {
+    // On Windows the extractor treats the backslash as a separator, so
+    // this would otherwise install lib/deno.json past the config rule.
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      // createTarGz writes forward slashes, so build the header by hand.
+      const archive = await buildRawArchive({
+        "extension/manifest.yaml":
+          `manifestVersion: 1\nname: "${name}"\nversion: "${SKILL_VERSION}"\n` +
+          "skills:\n  - guide\n",
+        "extension/skills/guide/SKILL.md": "guide\n",
+        "extension/lib\\deno.json": "{}\n",
+      });
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+        UserError,
+      );
+      assertStringIncludes(error.message, "backslash");
+      assertEquals(await exists(extRootOf(repoDir, name)), false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a dangling symlink at a shared source path is reported as a conflict",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const root = extRootOf(repoDir, name);
+      await ensureDir(join(root, "lib"));
+      await Deno.symlink("missing.ts", join(root, "lib", "cmp.ts"), {
+        type: "file",
+      });
+      const archive = await buildSkillArchive(swapSpec(name, SHARED_FILES));
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+        ConflictError,
+      );
+      assertStringIncludes(
+        error.message,
+        relative(repoDir, join(root, "lib", "cmp.ts")),
+      );
+    });
   },
 );
 

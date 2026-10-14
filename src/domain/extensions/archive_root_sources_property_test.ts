@@ -47,6 +47,8 @@ const segment = fc.constantFrom(
   "Package.json",
   "node_modules",
   "..",
+  "lib\\deno.json",
+  "a\\..",
 );
 
 const entry: fc.Arbitrary<ArchiveEntry> = fc.record({
@@ -92,6 +94,7 @@ Deno.test("planArchiveRootSources: an installed source never takes a reserved, h
             segs[0] === SHARED_ARCHIVE_DIR,
           source,
         );
+        assert(!source.includes("\\"), source);
         for (const s of segs) {
           assert(!s.startsWith("."), source);
           assert(
@@ -125,7 +128,8 @@ Deno.test("planArchiveRootSources: installs exactly the accepted files under sha
       const expected = new Set<string>();
       for (const e of list) {
         if (e.kind !== "file" || archiveEntryRefusal(e)) continue;
-        const segs = e.path.split("/").slice(1);
+        const segs = e.path.split(/[\\/]/).filter((s) => s !== "")
+          .slice(1);
         if (
           segs[0] === SHARED_ARCHIVE_DIR || !isReservedArchiveRootName(segs[0])
         ) {

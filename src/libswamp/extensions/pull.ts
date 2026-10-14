@@ -826,7 +826,7 @@ async function detectRootSourceConflicts(
   const conflicts: string[] = [];
   for (const source of rootSources) {
     const destPath = join(extensionRoot, ...source.split("/"));
-    if (await fileExists(destPath)) {
+    if (await pathExistsNoFollow(destPath)) {
       conflicts.push(relative(repoDir, destPath));
     }
   }
@@ -2232,6 +2232,10 @@ export async function applyInstall(
     // under the extension root, so the installed sources' relative
     // imports resolve as they do in the archive (swamp-club#3384).
     for (const source of prepared.rootSources) {
+      // The plan refuses `..`, hidden segments and backslashes; check the
+      // destination and source lexically as well before copying.
+      assertContainedPath(source, stagedExtRoot);
+      assertContainedPath(source, extractDir);
       const segments = source.split("/");
       const stagedPath = join(stagedExtRoot, ...segments);
       await Deno.mkdir(dirname(stagedPath), { recursive: true });

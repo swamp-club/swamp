@@ -1031,7 +1031,8 @@ other installed file on upgrade, conflict detection and `extension rm`. It
 refuses an archive, before writing the entry, that holds:
 
 - a symlink or hardlink anywhere, as push never writes one;
-- under a shared source, a hidden path segment, `node_modules`, or a
+- under a shared source, a backslash (push writes `/`; on Windows the extractor
+  would split on it), a hidden or `..` segment, `node_modules`, or a
   `deno.json`, `deno.jsonc` or `package.json` (any case), which would change how
   the installed source resolves;
 - a top-level name that differs from a reserved one only by case.
