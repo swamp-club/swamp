@@ -53,8 +53,9 @@ function setup(options: AnyOptions, path: string[]) {
 const workspaceCreateCommand = new Command()
   .name("create")
   .description(
-    "Create a workspace: a new swamp repo with no agent set up, in <name> under the folder\n" +
-      "set with `swamp config set workspaces.dir`, else under the swamp data dir",
+    "Create a workspace: a new swamp repo with no agent set up\n" +
+      "It goes in <name> under --path, else under the folder set with\n" +
+      "`swamp config set workspaces.dir`, else under the swamp data dir",
   )
   .arguments("<name:string>")
   .example("Create a workspace", "swamp workspace create prod")

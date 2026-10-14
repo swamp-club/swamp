@@ -356,3 +356,60 @@ Deno.test("workspaceCreate: refuses an over-long --path with its own code", asyn
     );
   });
 });
+
+Deno.test({
+  name:
+    "workspaceCreate: refuses a link where the folder would go and leaves it in place",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withWorkspaceFixture(async (f) => {
+      const parent = join(f.dir, "dev");
+      await Deno.mkdir(parent);
+      const link = join(parent, "prod");
+      await Deno.symlink(join(f.dir, "nowhere"), link, { type: "dir" });
+      assertEquals(
+        await errorCode(
+          workspaceCreate(ctx, f.deps, { name: "prod", parent }),
+        ),
+        "not_a_workspace",
+      );
+      assertEquals((await Deno.lstat(link)).isSymlink, true);
+    });
+  },
+});
+
+Deno.test({
+  name: "workspaceCreate: a --path that can't be opened is a clear refusal",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withWorkspaceFixture(async (f) => {
+      const locked = join(f.dir, "locked");
+      await Deno.mkdir(join(locked, "inner"), { recursive: true });
+      await Deno.chmod(locked, 0o000);
+      try {
+        assertEquals(
+          await errorCode(
+            workspaceCreate(ctx, f.deps, {
+              name: "prod",
+              parent: join(locked, "inner"),
+            }),
+          ),
+          "parent_unreadable",
+        );
+      } finally {
+        await Deno.chmod(locked, 0o755);
+      }
+      const file = join(f.dir, "file.txt");
+      await Deno.writeTextFile(file, "x");
+      assertEquals(
+        await errorCode(
+          workspaceCreate(ctx, f.deps, {
+            name: "prod",
+            parent: join(file, "below"),
+          }),
+        ),
+        "parent_unreadable",
+      );
+    });
+  },
+});

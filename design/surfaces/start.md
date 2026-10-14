@@ -100,10 +100,12 @@ works the folder out, so the page never joins paths itself, and
 The page only sends absolute or `~` folders; the server refuses a relative
 one (`parent_not_absolute`) rather than resolving it against its own working
 folder. `swamp start --workspace <name> --path <dir>` does the same from the
-command line, where a relative `<dir>` is taken from the current folder. The first read adopts folders already
-under `<data dir>/workspaces/`; `swamp start --json` and `swamp start status`
-adopt in memory only, writing nothing. Workspace locks always live in
-`<data dir>/workspaces/<name>.lock`, never beside an imported repo.
+command line, where a relative `<dir>` is taken from the current folder.
+
+The first read adopts folders already under `<data dir>/workspaces/`;
+`swamp start --json` and `swamp start status` adopt in memory only, writing
+nothing. Workspace locks always live in `<data dir>/workspaces/<name>.lock`,
+never beside an imported repo or a workspace created in a chosen folder.
 
 A workspace keeps every task it has had, each with its own record and brief,
 so two agents can work on two tasks in one workspace without one brief

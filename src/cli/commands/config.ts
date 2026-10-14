@@ -24,6 +24,8 @@ import { UpdatePreferencesFileRepository } from "../../infrastructure/update/upd
 import { TelemetryPreferencesFileRepository } from "../../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import { WorkspacePreferencesFileRepository } from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
 import { resolveChosenFolder } from "../../libswamp/workspace/workspace_store.ts";
+import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
+import { join } from "@std/path";
 import {
   createScheduler,
   isRunningAsRoot,
@@ -163,11 +165,9 @@ const configSetCommand = new Command()
       if (ctx.outputMode === "json") {
         console.log(JSON.stringify({ key, value: shown }));
       } else {
-        ctx.logger.info(
-          dir === undefined
-            ? "New workspaces are created under the swamp data dir"
-            : `New workspaces are created in ${dir}`,
-        );
+        ctx.logger.info`New workspaces are created in ${
+          dir ?? join(getSwampDataDir(), "workspaces")
+        }`;
       }
       return;
     }

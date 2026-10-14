@@ -238,7 +238,7 @@ export async function newWorkspaceLocation(
  * without it). The folder must already exist.
  *
  * @throws {UserError} code `parent_too_long`, `parent_not_absolute`,
- *   `parent_not_found` or `parent_not_a_folder`
+ *   `parent_not_found`, `parent_not_a_folder` or `parent_unreadable`
  */
 export async function resolveChosenFolder(
   deps: Pick<WorkspaceStoreDeps, "homeDir" | "os">,
@@ -276,20 +276,33 @@ export async function resolveChosenFolder(
 
 /** The real path of an existing folder; `missing` says what to do if not. */
 async function existingFolder(path: string, missing: string): Promise<string> {
-  let isDirectory: boolean;
   try {
-    isDirectory = (await Deno.stat(path)).isDirectory;
+    if (!(await Deno.stat(path)).isDirectory) {
+      throw markErrorPaths(
+        new UserError(`${path} isn't a folder.`, "parent_not_a_folder"),
+        [path],
+      );
+    }
+    return await Deno.realPath(path);
   } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-    throw markErrorPaths(new UserError(missing, "parent_not_found"), [path]);
+    if (error instanceof UserError) throw error;
+    if (error instanceof Deno.errors.NotFound) {
+      throw markErrorPaths(new UserError(missing, "parent_not_found"), [path]);
+    }
+    if (
+      error instanceof Deno.errors.PermissionDenied ||
+      error instanceof Deno.errors.NotADirectory
+    ) {
+      throw markErrorPaths(
+        new UserError(
+          `Swamp can't open ${path}. Check its permissions, or choose another folder.`,
+          "parent_unreadable",
+        ),
+        [path],
+      );
+    }
+    throw error;
   }
-  if (!isDirectory) {
-    throw markErrorPaths(
-      new UserError(`${path} isn't a folder.`, "parent_not_a_folder"),
-      [path],
-    );
-  }
-  return await Deno.realPath(path);
 }
 
 /**
@@ -327,6 +340,17 @@ export async function checkNewWorkspaceFolder(
       new UserError(
         `${path} is already registered as the workspace "${sameFolder.name}".`,
         "folder_exists",
+      ),
+      [path],
+    );
+  }
+  // A link where the folder would go is never followed or removed: a
+  // failed create would otherwise take away the user's link.
+  if (await isSymlink(path)) {
+    throw markErrorPaths(
+      new UserError(
+        `${path} is a link. Move it aside, or choose another name or folder.`,
+        "not_a_workspace",
       ),
       [path],
     );
@@ -401,6 +425,16 @@ async function undoCreate(
     for await (const entry of Deno.readDir(path)) {
       await Deno.remove(join(path, entry.name), { recursive: true });
     }
+  }
+}
+
+/** True when `path` is a symbolic link, dangling or not. */
+async function isSymlink(path: string): Promise<boolean> {
+  try {
+    return (await Deno.lstat(path)).isSymlink;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
   }
 }
 
