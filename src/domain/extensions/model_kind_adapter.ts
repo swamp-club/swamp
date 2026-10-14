@@ -467,7 +467,7 @@ const UserModelSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message:
-        `Last upgrade toVersion "${last.toVersion}" does not match model ` +
+        `Last upgrade toVersion "${last.toVersion}" does not match behavior ` +
         `version "${model.version}". ` +
         `The upgrade chain must terminate at the current version.`,
     });
@@ -490,7 +490,7 @@ function formatUserModelError(error: z.ZodError): string {
   if (dataOutputSpecsIssue) {
     return (
       "Missing required 'dataOutputSpecs' field. " +
-      "Add dataOutputSpecs to declare what data your model produces.\n\n" +
+      "Add dataOutputSpecs to declare what data your behavior produces.\n\n" +
       "Example:\n" +
       "  dataOutputSpecs: {\n" +
       "    result: {\n" +
@@ -571,7 +571,7 @@ function formatUserModelError(error: z.ZodError): string {
       `Missing 'description' on method '${methodName}'. ` +
       "Every method must have a description string.\n\n" +
       "Example:\n" +
-      '  description: "Execute the model",'
+      '  description: "Execute the behavior",'
     );
   }
 
@@ -601,11 +601,11 @@ function formatUserModelError(error: z.ZodError): string {
   if (methodsMissingIssue) {
     return (
       "Missing required 'methods' field. " +
-      "Add at least one method to your model.\n\n" +
+      "Add at least one method to your behavior.\n\n" +
       "Example:\n" +
       "  methods: {\n" +
       "    run: {\n" +
-      '      description: "Execute the model",\n' +
+      '      description: "Execute the behavior",\n' +
       "      arguments: z.object({}),\n" +
       "      execute: async (args, context) => {\n" +
       "        // Your logic here\n" +
@@ -702,7 +702,7 @@ function validateUserCollective(rawType: string): string | undefined {
   const normalized = ModelType.create(rawType).normalized;
   const segmentCount = ModelType.getSegmentCount(normalized);
   if (segmentCount < 2) {
-    return `Model type '${rawType}' must have at least 2 segments. Expected format: @<collective>/<name> or <collective>/<name> (e.g., @myorg/my-model or myorg/my-model)`;
+    return `Behavior type '${rawType}' must have at least 2 segments. Expected format: @<collective>/<name> or <collective>/<name> (e.g., @myorg/my-model or myorg/my-model)`;
   }
   return undefined;
 }
@@ -1008,7 +1008,7 @@ export const modelKindAdapter: KindAdapter = {
     if (isControlPlaneModelType(ext.type)) {
       result.failed.push({
         file,
-        error: `Cannot extend control-plane model type: ${ext.type}`,
+        error: `Cannot extend control-plane behavior type: ${ext.type}`,
       });
       return;
     }
@@ -1017,7 +1017,7 @@ export const modelKindAdapter: KindAdapter = {
     if (!targetModel) {
       result.failed.push({
         file,
-        error: `Cannot extend unregistered model type: ${ext.type}`,
+        error: `Cannot extend unregistered behavior type: ${ext.type}`,
       });
       return;
     }
@@ -1147,7 +1147,7 @@ export const modelKindAdapter: KindAdapter = {
               kind: "extension",
               file: contributor.sourcePath,
               error:
-                `${section.kind} '${name}' already exists on '${ext.type}' as a base model ${section.kind}, which wins; ${section.kind} not registered`,
+                `${section.kind} '${name}' already exists on '${ext.type}' as a base behavior ${section.kind}, which wins; ${section.kind} not registered`,
               category: "MemberCollision",
             });
             break;
@@ -1242,7 +1242,7 @@ export const modelKindAdapter: KindAdapter = {
     if (!module.extension) {
       if (module.model || module.behavior) {
         logger
-          .warn`Skipping standalone model bundle cataloged as extension: ${entry.bundle_path}`;
+          .warn`Skipping standalone behavior bundle cataloged as extension: ${entry.bundle_path}`;
         // Mark it so every later attach pass does not re-import and re-warn.
         if (entry.extends_type) {
           markExtensionAttached(
@@ -1274,7 +1274,7 @@ export const modelKindAdapter: KindAdapter = {
 
     for (const failure of result.failed) {
       logger
-        .warn`Failed to extend model from ${failure.file}: ${failure.error}`;
+        .warn`Failed to extend behavior from ${failure.file}: ${failure.error}`;
     }
   },
 

@@ -28,6 +28,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
@@ -48,7 +49,7 @@ class LogModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -106,7 +107,7 @@ class JsonModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

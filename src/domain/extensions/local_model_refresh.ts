@@ -165,7 +165,7 @@ async function applyLocalModelChanges(
     if (change.previousType) {
       affected.add(change.previousType);
       logger
-        .warn`Edited model ${change.sourcePath} no longer loads, so ${change.previousType} is unavailable until it is fixed: ${change.error}`;
+        .warn`Edited behavior ${change.sourcePath} no longer loads, so ${change.previousType} is unavailable until it is fixed: ${change.error}`;
     }
     if (change.extendsType) affected.add(change.extendsType);
   }
@@ -194,9 +194,9 @@ async function applyLocalModelChanges(
     if (!modelRegistry.has(type)) continue;
     try {
       await modelRegistry.ensureTypeLoaded(type);
-      logger.info`Reloaded edited model ${type}`;
+      logger.info`Reloaded edited behavior ${type}`;
     } catch (error) {
-      logger.warn`Edited model ${type} failed to load: ${
+      logger.warn`Edited behavior ${type} failed to load: ${
         error instanceof Error ? error.message : String(error)
       }`;
     }

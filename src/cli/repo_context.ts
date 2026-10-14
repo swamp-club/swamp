@@ -3093,7 +3093,7 @@ export async function acquireModelLocks(
       if (customSyncService) {
         try {
           write(
-            dim(`Syncing model ${modelType}/${modelId} from datastore...`),
+            dim(`Syncing behavior ${modelType}/${modelId} from datastore...`),
           );
 
           const syncService = customSyncService;
@@ -3106,7 +3106,7 @@ export async function acquireModelLocks(
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           write(
-            dim(`Failed to pull model data from datastore: ${msg}`),
+            dim(`Failed to pull behavior data from datastore: ${msg}`),
           );
           throw new Error(
             `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,

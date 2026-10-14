@@ -126,7 +126,7 @@ async function displayDataDetail(
 
   if (!data) {
     throw new UserError(
-      `Data "${item.name}" not found for model "${item.modelName}"`,
+      `Data "${item.name}" not found for behavior "${item.modelName}"`,
     );
   }
 

@@ -18,15 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
-import { type SwampError, validationFailed } from "../errors.ts";
+import {
+  type SwampError,
+  validationFailed,
+  wordedSwampError,
+} from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import { selectLookup } from "../lookup_by_id.ts";
-import { UserError } from "../../domain/errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import { markOutcomeReported, withUnitOfWork } from "../unit_of_work.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { createModelUpdated } from "../../domain/events/types.ts";
+import { envVarWarningText } from "../../domain/models/validation_service.ts";
+import {
+  carryModelWording,
+  markModelWording,
+  wordedText,
+  wordedUserError,
+} from "../../domain/behavior_wording.ts";
 import {
   executeReports,
   type ReportExecutionResult,
@@ -477,10 +487,10 @@ export async function* modelMethodRun(
                         input.expectedDefinitionId &&
                       !adoptable
                     ) {
-                      throw new UserError(
-                        `Model ${name} changed while the request was being ` +
-                          `authorized; run it again`,
-                      );
+                      throw wordedUserError(wordedText((w) =>
+                        `${w.Noun} ${name} changed while the request was being ` +
+                        `authorized; run it again`
+                      ));
                     }
                     return found;
                   },
@@ -650,13 +660,13 @@ export async function* modelMethodRun(
           // --- Check for env var usage and warn ---
           const envVarUsages = detectEnvVarUsageInDefinition(definition);
           if (envVarUsages.length > 0) {
-            yield {
-              kind: "env_var_warning",
+            const worded = envVarWarningText();
+            yield markModelWording({
+              kind: "env_var_warning" as const,
               modelName: definition.name,
               envVars: envVarUsages,
-              message:
-                "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
-            };
+              message: worded.text,
+            }, worded.modelText);
           }
 
           // --- Set up logging ---
@@ -719,7 +729,9 @@ export async function* modelMethodRun(
             let inputsProvenance = ProvenanceMap.authored();
             if (input.literalInputs) {
               for (const key of Object.keys(inputs)) {
-                if (!callerInputKeys.has(key)) continue;
+                if (!callerInputKeys.has(key)) {
+                  continue;
+                }
                 inputsProvenance = inputsProvenance.withWholeData(
                   keySegment(key),
                 );
@@ -868,7 +880,8 @@ export async function* modelMethodRun(
               const shape = getObjectShape(method.arguments);
               if (shape) {
                 const unknownKeys = Object.keys(overrideInputs).filter(
-                  (k) => !Object.hasOwn(shape, k),
+                  (k) =>
+                    !Object.hasOwn(shape, k),
                 );
                 if (unknownKeys.length > 0) {
                   const validInputs = Object.keys(shape).join(", ");
@@ -922,10 +935,13 @@ export async function* modelMethodRun(
               setupSpan.end();
               yield {
                 kind: "error",
-                error: validationFailed(error.message, {
-                  path: error.path,
-                  expression: error.expression,
-                }),
+                error: carryModelWording(
+                  error,
+                  validationFailed(error.message, {
+                    path: error.path,
+                    expression: error.expression,
+                  }),
+                ),
               };
               return;
             }
@@ -1663,20 +1679,20 @@ export async function* modelMethodRun(
  * Creates a SwampError for a missing model.
  */
 export function modelNotFound(idOrName: string): SwampError {
-  return {
-    code: "model_not_found",
-    message: `Model not found: ${idOrName}`,
-  };
+  return wordedSwampError(
+    "model_not_found",
+    wordedText((w) => `${w.Noun} not found: ${idOrName}`),
+  );
 }
 
 /**
  * Creates a SwampError for an unknown model type.
  */
 export function unknownModelType(type: string): SwampError {
-  return {
-    code: "unknown_model_type",
-    message: `Unknown model type: ${type}`,
-  };
+  return wordedSwampError(
+    "unknown_model_type",
+    wordedText((w) => `Unknown ${w.noun} type: ${type}`),
+  );
 }
 
 /**
@@ -1737,11 +1753,12 @@ export function evaluatedCacheProvenanceUnreadable(name: string): SwampError {
  */
 export function methodExecutionFailed(cause: unknown): SwampError {
   const message = cause instanceof Error ? cause.message : String(cause);
-  return {
+  // Keeps the cause's model spelling for `swamp model …` (swamp-club#3437).
+  return carryModelWording(cause, {
     code: "method_execution_failed",
     message,
     cause: cause instanceof Error ? cause : undefined,
-  };
+  });
 }
 
 /**

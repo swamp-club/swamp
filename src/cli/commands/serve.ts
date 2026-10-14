@@ -1729,7 +1729,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types whose models only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated behavior types whose behaviors only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
@@ -2410,7 +2410,7 @@ export const serveCommand = new Command()
       "unit automatically. If you author a service unit manually, set " +
       "SWAMP_HOME or HOME in the unit environment, e.g. " +
       "`Environment=SWAMP_HOME=/opt/swamp`. Without it, scheduled workflow " +
-      'runs fail with "Unknown model type" for pulled extension types. ' +
+      'runs fail with "Unknown behavior type" for pulled extension types. ' +
       "SWAMP_HOME also moves the config directory, where `swamp auth login` " +
       "stores credentials, to $SWAMP_HOME/config; for --auth-mode token or " +
       "oauth, also set SWAMP_CONFIG_DIR to the config directory holding " +
@@ -2520,7 +2520,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types whose models only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated behavior types whose behaviors only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",

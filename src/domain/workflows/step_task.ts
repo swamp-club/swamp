@@ -209,7 +209,7 @@ export const StepTaskSchema = z.preprocess((input) => {
     if (d.type === "shell") {
       throw new Error(
         `Step task type "shell" is no longer supported. ` +
-          `Use 'type: model_method' with the 'command/shell' model instead.\n\n` +
+          `Use 'type: model_method' with the 'command/shell' behavior instead.\n\n` +
           `Example:\n` +
           `  task:\n` +
           `    type: model_method\n` +

@@ -79,7 +79,7 @@ export const dataVersionsCommand = withRemoteOptions(
 
     if (!modelIdOrName || !dataName) {
       throw new UserError(
-        "Both model and data name are required. Use positional arguments (swamp data versions <model> <name>) or flags (--model <model> --name <name>).",
+        "Both behavior and data name are required. Use positional arguments (swamp data versions <behavior> <name>) or flags (--behavior <behavior> --name <name>).",
       );
     }
 

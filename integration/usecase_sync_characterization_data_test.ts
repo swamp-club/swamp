@@ -188,7 +188,7 @@ const EXPECTED: Record<string, PinnedRow> = {
     cli: {
       "ops": ["pull[0]", "prepare[0]", "commit[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
-      "error": 'No data named "missing" exists for model m1',
+      "error": 'No data named "missing" exists for behavior m1',
     },
     serve: null,
   },

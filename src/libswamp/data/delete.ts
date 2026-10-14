@@ -37,6 +37,7 @@ import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /** Data structure for the data delete completed event. */
@@ -209,8 +210,11 @@ export async function* dataDelete(
         } catch (error) {
           yield {
             kind: "error",
-            error: validationFailed(
-              error instanceof Error ? error.message : String(error),
+            error: carryModelWording(
+              error,
+              validationFailed(
+                error instanceof Error ? error.message : String(error),
+              ),
             ),
           };
           return;
@@ -314,8 +318,11 @@ export async function* dataBatchDelete(
           } catch (error) {
             yield {
               kind: "error" as const,
-              error: validationFailed(
-                error instanceof Error ? error.message : String(error),
+              error: carryModelWording(
+                error,
+                validationFailed(
+                  error instanceof Error ? error.message : String(error),
+                ),
               ),
             };
             return;
@@ -342,8 +349,11 @@ export async function* dataBatchDelete(
         } catch (error) {
           yield {
             kind: "error" as const,
-            error: validationFailed(
-              error instanceof Error ? error.message : String(error),
+            error: carryModelWording(
+              error,
+              validationFailed(
+                error instanceof Error ? error.message : String(error),
+              ),
             ),
           };
           return;

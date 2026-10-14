@@ -52,7 +52,7 @@ function renderContentMetadata(
 ): void {
   if (meta.models.length > 0) {
     logger.info``;
-    logger.info`Models (${meta.models.length}):`;
+    logger.info`Behaviors (${meta.models.length}):`;
     for (const model of meta.models) {
       const methods = model.methods.map((m) => m.name).join(", ");
       const name = model.type || model.fileName;

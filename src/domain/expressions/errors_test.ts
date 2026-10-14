@@ -18,11 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
+import { modelWording } from "../behavior_wording.ts";
 import {
   CyclicDependencyError,
   ExpressionError,
   InvalidExpressionError,
   ModelNotFoundError,
+  UnresolvedExpressionError,
 } from "./errors.ts";
 
 Deno.test("ExpressionError stores message and optional fields", () => {
@@ -56,7 +58,8 @@ Deno.test("ExpressionError stores cause", () => {
 Deno.test("ModelNotFoundError contains model ref in message", () => {
   const error = new ModelNotFoundError("missing-model");
 
-  assertEquals(error.message, "Model not found: missing-model");
+  assertEquals(error.message, "Behavior not found: missing-model");
+  assertEquals(modelWording(error), "Model not found: missing-model");
   assertEquals(error.modelRef, "missing-model");
   assertEquals(error.name, "ModelNotFoundError");
   assertInstanceOf(error, ExpressionError);
@@ -110,4 +113,25 @@ Deno.test("CyclicDependencyError handles two-node cycle", () => {
 
   assertEquals(error.message, "Cyclic dependency detected: x -> y -> x");
   assertEquals(error.cycle.length, 3);
+});
+
+Deno.test("UnresolvedExpressionError: builds its model spelling from a worded cause", () => {
+  const error = new UnresolvedExpressionError(
+    "${{ model.x.resource }}",
+    "methods.run.arguments.a",
+    new ModelNotFoundError("x"),
+  );
+  assertEquals(
+    error.message,
+    "Expression in methods.run.arguments.a could not be evaluated: Behavior not found: x",
+  );
+  assertEquals(
+    modelWording(error),
+    "Expression in methods.run.arguments.a could not be evaluated: Model not found: x",
+  );
+});
+
+Deno.test("UnresolvedExpressionError: a cause without a model spelling leaves none", () => {
+  const error = new UnresolvedExpressionError("e", "p", new Error("boom"));
+  assertEquals(modelWording(error), undefined);
 });

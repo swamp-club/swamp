@@ -25,7 +25,11 @@ import {
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
-import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
+import {
+  surfaceMethodNoun,
+  surfaceNoun,
+  surfaceNounCapitalized,
+} from "../../presentation/command_surface.ts";
 import type { Logger } from "@logtape/logtape";
 import { hostname } from "node:os";
 import {
@@ -516,7 +520,9 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
 
       if (!options.all && !modelIdOrName) {
         throw new UserError(
-          "Provide a model name or ID, or use --all to cancel all running runs",
+          `Provide a ${
+            surfaceNoun(syntax.surface)
+          } name or ID, or use --all to cancel all running runs`,
         );
       }
 
@@ -619,7 +625,9 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
         const resolved = await definitionRepo.findByNameGlobal(modelIdOrName!);
         if (!resolved) {
           throw new UserError(
-            `Model '${modelIdOrName}' not found`,
+            `${
+              surfaceNounCapitalized(syntax.surface)
+            } '${modelIdOrName}' not found`,
           );
         }
 
@@ -642,11 +650,12 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
         );
 
         if (trackerRuns.length === 0) {
+          const noun = surfaceNoun(syntax.surface);
           throw new UserError(
             unattributed.length === 0
-              ? `No running method runs found for model '${definition.name}'`
-              : `No running method runs found for model '${definition.name}'. ` +
-                `${unattributed.length} running ${type.normalized} method run(s) were started by an older swamp that did not record which model they belong to; ` +
+              ? `No running method runs found for ${noun} '${definition.name}'`
+              : `No running method runs found for ${noun} '${definition.name}'. ` +
+                `${unattributed.length} running ${type.normalized} method run(s) were started by an older swamp that did not record which ${noun} they belong to; ` +
                 cancelAllHint(syntax),
           );
         }
@@ -658,7 +667,9 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
         if (latest === undefined) {
           const [{ run, instanceId }] = skipped;
           throw new UserError(
-            `Method run ${run.id} for model '${definition.name}' belongs to swamp serve instance ${instanceId} and cannot be cancelled locally. ` +
+            `Method run ${run.id} for ${
+              surfaceNoun(syntax.surface)
+            } '${definition.name}' belongs to swamp serve instance ${instanceId} and cannot be cancelled locally. ` +
               `To cancel it: ${SERVE_CANCEL_GUIDANCE}.`,
           );
         }

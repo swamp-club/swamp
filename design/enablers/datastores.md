@@ -386,7 +386,7 @@ another namespace and left its old data behind.
 `swamp data delete` and `swamp data gc` both fail on it. The on-disk layout and
 the catalog `DELETE` predicate are keyed by behavior type
 (`{typeDir}/{modelId}/...` and `type_normalized`), and the type normally comes
-from the definition. So `delete` throws `Model not found`, and `gc` only applies
+from the definition. So `delete` throws `Behavior not found`, and `gc` only applies
 each item's frozen `lifetime`/`garbageCollection` policy, never collecting
 `infinite`-lifetime orphans. The rows pile up, growing the index and the sync
 cost of every write.

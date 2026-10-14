@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import type { BatchDeleteFilter } from "./data_delete_service.ts";
 import { DataDeleteService } from "./data_delete_service.ts";
+import { messageFor } from "../behavior_wording.ts";
 import { ModelType } from "../models/model_type.ts";
 import { Definition } from "../definitions/definition.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -128,7 +129,7 @@ Deno.test("DataDeleteService.delete: throws when model not found", async () => {
   await assertRejects(
     () => service.delete("missing-model", "my-data"),
     Error,
-    "Model not found: missing-model",
+    "Behavior not found: missing-model",
   );
 });
 
@@ -139,6 +140,24 @@ Deno.test("DataDeleteService.delete: throws when artifact has no versions", asyn
   await assertRejects(
     () => service.delete("my-model", "my-data"),
     Error,
+    'No data named "my-data" exists for behavior my-model',
+  );
+});
+
+Deno.test("DataDeleteService.delete: a missing data name reads in both spellings", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("other-data", [1]);
+
+  const error = await assertRejects(
+    () => service.delete("my-model", "my-data"),
+    Error,
+  );
+  assertEquals(
+    messageFor(error, "behavior"),
+    'No data named "my-data" exists for behavior my-model',
+  );
+  assertEquals(
+    messageFor(error, "model"),
     'No data named "my-data" exists for model my-model',
   );
 });
@@ -190,7 +209,7 @@ Deno.test("DataDeleteService.previewDelete: throws when model not found", async 
   await assertRejects(
     () => service.previewDelete("missing-model", "my-data"),
     Error,
-    "Model not found: missing-model",
+    "Behavior not found: missing-model",
   );
 });
 
@@ -200,7 +219,7 @@ Deno.test("DataDeleteService.previewDelete: throws when artifact has no versions
   await assertRejects(
     () => service.previewDelete("my-model", "my-data"),
     Error,
-    'No data named "my-data" exists for model my-model',
+    'No data named "my-data" exists for behavior my-model',
   );
 });
 
@@ -246,7 +265,7 @@ Deno.test("DataDeleteService.batchDelete: throws when no items match prefix", as
   await assertRejects(
     () => service.batchDelete("my-model", filter),
     Error,
-    'No data matching prefix "run-" found for model my-model',
+    'No data matching prefix "run-" found for behavior my-model',
   );
 });
 
@@ -257,7 +276,7 @@ Deno.test("DataDeleteService.batchDelete: throws when model not found", async ()
   await assertRejects(
     () => service.batchDelete("missing-model", filter),
     Error,
-    "Model not found: missing-model",
+    "Behavior not found: missing-model",
   );
 });
 
@@ -300,7 +319,7 @@ Deno.test("DataDeleteService.batchPreviewDelete: throws when no items match", as
   await assertRejects(
     () => service.batchPreviewDelete("my-model", filter),
     Error,
-    'No data matching prefix "run-" found for model my-model',
+    'No data matching prefix "run-" found for behavior my-model',
   );
 });
 
@@ -390,7 +409,7 @@ Deno.test("DataDeleteService.delete: byId with a name rejects as model not found
       () =>
         service.delete("target-model", "my-data", undefined, { byId: true }),
       Error,
-      "Model not found: target-model",
+      "Behavior not found: target-model",
     );
     assertEquals(dataRepo.deleteCalls.length, 0);
   });

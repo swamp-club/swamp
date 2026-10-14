@@ -41,7 +41,13 @@ import {
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import {
+  notFound,
+  type SwampError,
+  validationFailed,
+  wordedSwampError,
+} from "../errors.ts";
+import { wordedText } from "../../domain/behavior_wording.ts";
 import {
   type OutputIdReference,
   type OutputIdReferenceDeps,
@@ -357,9 +363,17 @@ export async function* modelOutputData(
       if (!data) {
         yield {
           kind: "error",
-          error: notFound(
-            "Data",
-            `"${dataArtifact.name}" (v${version}) for model "${definition.name}"`,
+          // The details keep notFound's shape; only the text is worded.
+          error: wordedSwampError(
+            "not_found",
+            wordedText((w) =>
+              `Data not found: "${dataArtifact.name}" (v${version}) for ${w.noun} "${definition.name}"`
+            ),
+            {
+              entityType: "Data",
+              idOrName:
+                `"${dataArtifact.name}" (v${version}) for model "${definition.name}"`,
+            },
           ),
         };
         return;

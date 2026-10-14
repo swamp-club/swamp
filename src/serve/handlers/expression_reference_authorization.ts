@@ -125,7 +125,7 @@ export async function authorizeExpressionReferences(
         message: `Access denied: expression ${shown(raw)} reads env, which ` +
           `is only available in ` +
           `run inputs to principals with write on ${env.refusedFor}; ` +
-          `reference it in the model definition instead`,
+          `reference it in the behavior definition instead`,
       };
     }
     let allowed = true;
@@ -172,7 +172,7 @@ export async function authorizeExpressionReferences(
     if (!allowed) {
       return {
         message: `Access denied: expression ${shown(raw)} reads data or ` +
-          `models that are not readable here; ask an admin for read on ` +
+          `behaviors that are not readable here; ask an admin for read on ` +
           `what it references`,
       };
     }

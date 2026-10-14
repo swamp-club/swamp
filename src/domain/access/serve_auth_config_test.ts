@@ -429,12 +429,12 @@ Deno.test("findIneffectiveRestrictions: reports a bare entry that is not a built
     [
       "comand/shell",
       "unknown-type",
-      'restricted-model-types entry "comand/shell" is not a built-in model type — check the spelling; if it names an extension type, write it as @comand/shell',
+      'restricted-model-types entry "comand/shell" is not a built-in behavior type — check the spelling; if it names an extension type, write it as @comand/shell',
     ],
     [
       "exp/probe",
       "unknown-type",
-      'restricted-model-types entry "exp/probe" is not a built-in model type — check the spelling; if it names an extension type, write it as @exp/probe',
+      'restricted-model-types entry "exp/probe" is not a built-in behavior type — check the spelling; if it names an extension type, write it as @exp/probe',
     ],
   ]);
 });
@@ -450,7 +450,7 @@ Deno.test("findIneffectiveRestrictions: prefers the registry lookup over the bui
   assertEquals(found.map((f) => [f.entry, f.message]), [
     [
       "comand/shell",
-      'restricted-model-types entry "comand/shell" names no registered model type — check the spelling, or write an extension type as @comand/shell',
+      'restricted-model-types entry "comand/shell" names no registered behavior type — check the spelling, or write an extension type as @comand/shell',
     ],
   ]);
 });

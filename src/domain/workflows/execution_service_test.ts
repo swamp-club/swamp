@@ -4030,7 +4030,7 @@ Deno.test({
     );
     assertStringIncludes(
       (error as Error).message,
-      'Model validation failed for "dd-monitor"',
+      'Behavior validation failed for "dd-monitor"',
     );
     assertStringIncludes((error as Error).message, "{{self.name}}");
     // The multi-line error sits under its check name, every line indented

@@ -229,8 +229,8 @@ individual versions, unless `--version` is given.
 
 **Errors are loud, not silent:**
 
-- Missing behavior → `Model not found: <ref>`
-- Missing artifact → `No data named "<name>" exists for model <model>`
+- Missing behavior → `Behavior not found: <ref>`
+- Missing artifact → `No data named "<name>" exists for behavior <model>`
 - Missing version →
   `Version <V> does not exist for "<name>" (available
   versions: 1, 2, 3)`

@@ -21,6 +21,7 @@ import { z } from "zod";
 import { normalizeModelTypeName } from "../models/control_plane_types.ts";
 import { ModelType } from "../models/model_type.ts";
 import { canonicalResourceKind } from "../terminology/behavior_aliases.ts";
+import { wordedError, wordedText } from "../behavior_wording.ts";
 
 export const ResourceKindSchema = z.enum([
   "workflow",
@@ -64,9 +65,10 @@ export function parseResourceSelector(value: string): ResourceSelector {
   }
   const parsed = ResourceKindSchema.safeParse(kind);
   if (!parsed.success) {
-    throw new Error(
-      `Invalid resource kind "${kind}": expected "workflow", "model", "data", "access", or "vault"`,
+    const worded = wordedText((w) =>
+      `Invalid resource kind "${kind}": expected "workflow", "${w.noun}", "data", "access", or "vault"`
     );
+    throw wordedError(worded);
   }
   const starIndex = pattern.indexOf("*");
   if (starIndex !== -1 && starIndex !== pattern.length - 1) {

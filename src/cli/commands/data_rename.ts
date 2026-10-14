@@ -93,7 +93,7 @@ export const dataRenameCommand = withRemoteOptions(
 
     if (!modelIdOrName || !oldName || !newName) {
       throw new UserError(
-        "Model, current name, and new name are all required. Use positional arguments (swamp data rename <model> <old-name> <new-name>) or flags (--model <model> --name <name> --new-name <new-name>).",
+        "Behavior, current name, and new name are all required. Use positional arguments (swamp data rename <behavior> <old-name> <new-name>) or flags (--behavior <behavior> --name <name> --new-name <new-name>).",
       );
     }
     const cliCtx = createContext(options as GlobalOptions, [
@@ -147,7 +147,7 @@ export const dataRenameCommand = withRemoteOptions(
       modelIdOrName,
     );
     if (!preResult) {
-      throw new UserError(`Model not found: ${modelIdOrName}`);
+      throw new UserError(`Behavior not found: ${modelIdOrName}`);
     }
 
     const lockResult = await acquireModelLocks(

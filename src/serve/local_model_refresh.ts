@@ -34,7 +34,7 @@ export async function refreshLocalModelsForRun(): Promise<void> {
   try {
     await modelRegistry.refreshSources(withExtensionMutation);
   } catch (error) {
-    logger.warn("Could not check local models for edits: {error}", {
+    logger.warn("Could not check local behaviors for edits: {error}", {
       error: error instanceof Error ? error.message : String(error),
     });
   }

@@ -18,6 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
+import {
+  carryModelWording,
+  markModelWording,
+  type WordedText,
+  wordedText,
+} from "../domain/behavior_wording.ts";
 
 /** Structured error returned in event streams. */
 export interface SwampError {
@@ -77,6 +83,39 @@ export function notFound(entityType: string, idOrName: string): SwampError {
   };
 }
 
+/**
+ * A SwampError whose message is `worded`, carrying its model spelling for
+ * `swamp model …` (swamp-club#3437).
+ */
+export function wordedSwampError(
+  code: string,
+  worded: WordedText,
+  details?: unknown,
+): SwampError {
+  const error: SwampError = details === undefined
+    ? { code, message: worded.text }
+    : { code, message: worded.text, details };
+  return markModelWording(error, worded.modelText);
+}
+
+/** `Behavior not found: <id>`, or `Model not found: <id>` under `swamp model`. */
+export function behaviorNotFound(idOrName: string): SwampError {
+  return wordedSwampError(
+    "not_found",
+    wordedText((w) => `${w.Noun} not found: ${idOrName}`),
+    { entityType: "Model", idOrName },
+  );
+}
+
+/** `Behavior type not found: <type>`, or the model spelling. */
+export function behaviorTypeNotFound(type: string): SwampError {
+  return wordedSwampError(
+    "not_found",
+    wordedText((w) => `${w.Noun} type not found: ${type}`),
+    { entityType: "Model type", idOrName: type },
+  );
+}
+
 export function alreadyExists(entityType: string, name: string): SwampError {
   return {
     code: "already_exists",
@@ -109,8 +148,11 @@ export function validationFailed(
  * over, so telemetry can still remove them exactly (swamp-club#2830).
  */
 export function userErrorFromSwampError(error: SwampError): UserError {
-  return markErrorPaths(
-    new UserError(error.message, error.code),
-    errorPaths(error.cause),
+  return carryModelWording(
+    error,
+    markErrorPaths(
+      new UserError(error.message, error.code),
+      errorPaths(error.cause),
+    ),
   );
 }

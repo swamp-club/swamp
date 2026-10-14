@@ -512,7 +512,7 @@ behavior argument does: definition name first, then exact definition id
   (`src/domain/data/query_predicate.ts` `collectModelReferences`), and a
   predicate may name at most 32 distinct behaviors (`MAX_MODEL_REFERENCES`); a
   per-row argument such as `model(modelName)` is an error.
-- An unknown behavior is an error (`Model not found`), as in `data get`.
+- An unknown behavior is an error (`Behavior not found`), as in `data get`.
 - The caller passes the resolver per query (`DataQueryOptions.modelResolver`).
   The CLI and TUI pass `createModelReferenceResolver`
   (`src/domain/models/model_lookup.ts`); `data.query()` in CEL and

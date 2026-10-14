@@ -21,9 +21,10 @@
  * The CLI spelling a command was reached through: the legacy `swamp model …`
  * tree or the preferred `swamp behavior …` tree (swamp-club#3331). Behavior
  * is the product term for a model (design/primitives/behaviors.md); the two
- * trees run the same application code, and only the words a person reads in
- * log-mode output differ. JSON output, error messages, error codes and log
- * categories never depend on the surface.
+ * trees run the same application code, and only the words a person reads
+ * differ: log-mode output, and the text of errors and warnings in both log
+ * and JSON mode (swamp-club#3437, see domain/behavior_wording.ts). JSON field
+ * names, error codes and log categories never depend on the surface.
  */
 export type CommandSurface = "model" | "behavior";
 
@@ -51,22 +52,4 @@ export function surfaceNounCapitalized(surface: CommandSurface): string {
  */
 export function surfaceMethodNoun(surface: CommandSurface): string {
   return surface === "model" ? "model method" : "method";
-}
-
-/**
- * The env-var warning `message` worded for `surface` (swamp-club#3409). The
- * text comes from the application layer in model words; on the behavior
- * surface the exact phrases "this model" and "separate models" read "this
- * behavior" and "separate behaviors", so the rest of the sentence tracks
- * whatever the application says. A message without those phrases is
- * returned unchanged. JSON output always carries the original.
- */
-export function envVarWarningMessage(
-  surface: CommandSurface,
-  message: string,
-): string {
-  if (surface === "model") return message;
-  return message
-    .replaceAll("this model", "this behavior")
-    .replaceAll("separate models", "separate behaviors");
 }

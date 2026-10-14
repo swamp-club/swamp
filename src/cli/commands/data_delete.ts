@@ -131,7 +131,7 @@ export const dataDeleteCommand = withRemoteOptions(
     if (isBatchMode) {
       if (!modelIdOrName) {
         throw new UserError(
-          "Model is required for batch delete. Use positional argument (swamp data delete <model> --prefix <prefix>) or flag (--model <model>).",
+          "Behavior is required for batch delete. Use positional argument (swamp data delete <behavior> --prefix <prefix>) or flag (--behavior <behavior>).",
         );
       }
       if (dataName) {
@@ -157,7 +157,7 @@ export const dataDeleteCommand = withRemoteOptions(
     } else {
       if (!modelIdOrName || !dataName) {
         throw new UserError(
-          "Both model and data name are required. Use positional arguments (swamp data delete <model> <name>) or flags (--model <model> --name <name>).",
+          "Both behavior and data name are required. Use positional arguments (swamp data delete <behavior> <name>) or flags (--behavior <behavior> --name <name>).",
         );
       }
       if (dryRun) {
@@ -224,7 +224,7 @@ export const dataDeleteCommand = withRemoteOptions(
       modelIdOrName!,
     );
     if (!preResult) {
-      throw new UserError(`Model not found: ${modelIdOrName}`);
+      throw new UserError(`Behavior not found: ${modelIdOrName}`);
     }
 
     const lockResult = await acquireModelLocks(

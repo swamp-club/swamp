@@ -30,6 +30,7 @@ import type {
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import type { CommandSurface } from "../command_surface.ts";
 
@@ -109,7 +110,7 @@ class JsonModelOutputSearchRenderer implements ModelOutputSearchRenderer {
         console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -184,7 +185,7 @@ class InkModelOutputSearchRenderer implements ModelOutputSearchRenderer {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

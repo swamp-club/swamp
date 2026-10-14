@@ -221,6 +221,6 @@ Deno.test("modelOutputGet reports a passed model with no outputs as today", asyn
   const error = events[1] as Extract<ModelOutputGetEvent, { kind: "error" }>;
   assertEquals(
     error.error.message,
-    "Output not found: no outputs for model: my-model",
+    "Output not found: no outputs for behavior: my-model",
   );
 });

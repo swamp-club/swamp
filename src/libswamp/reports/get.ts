@@ -21,7 +21,7 @@ import type { Data } from "../../domain/data/data.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound, validationFailed } from "../errors.ts";
+import { behaviorNotFound, notFound, validationFailed } from "../errors.ts";
 import type { ReportGetEvent, StoredReportDetail } from "./report_views.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -113,7 +113,7 @@ export async function* reportGet(
       if (input.model) {
         const result = await deps.lookupDefinition(input.model);
         if (!result) {
-          yield { kind: "error", error: notFound("Model", input.model) };
+          yield { kind: "error", error: behaviorNotFound(input.model) };
           return;
         }
         const items = await deps.findAllForModel(

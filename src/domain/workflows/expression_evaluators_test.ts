@@ -777,7 +777,7 @@ Deno.test("DefinitionExpressionEvaluator: skips expressions referencing missing 
     result.failedExpressions.get(
       "${{ model.foo.resource.bar.attributes.vpc_id }}",
     )?.message,
-    "Model foo has no resource data",
+    "Behavior foo has no resource data",
   );
 });
 

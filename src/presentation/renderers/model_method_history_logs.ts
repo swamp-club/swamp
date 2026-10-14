@@ -22,6 +22,7 @@ import type { ModelMethodHistoryLogsEvent } from "../../libswamp/models/method_h
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 
 class LogModelMethodHistoryLogsRenderer
   implements Renderer<ModelMethodHistoryLogsEvent> {
@@ -51,7 +52,7 @@ class LogModelMethodHistoryLogsRenderer
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -103,7 +104,7 @@ class JsonModelMethodHistoryLogsRenderer
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

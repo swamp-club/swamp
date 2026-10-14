@@ -1250,13 +1250,13 @@ export class ModelRegistry {
   register(model: ModelDefinition): void {
     const key = model.type.normalized;
     if (this.models.has(key)) {
-      throw new Error(`Model type already registered: ${key}`);
+      throw new Error(`Behavior type already registered: ${key}`);
     }
 
     // Validate CalVer version
     if (!CalVer.isValid(model.version)) {
       throw new Error(
-        `Invalid CalVer version "${model.version}" for model type "${key}". ` +
+        `Invalid CalVer version "${model.version}" for behavior type "${key}". ` +
           `Expected format YYYY.MM.DD.MICRO (e.g., "2025.01.15.1")`,
       );
     }
@@ -1270,7 +1270,7 @@ export class ModelRegistry {
         if (!CalVer.isValid(upgrade.toVersion)) {
           throw new Error(
             `Invalid CalVer version "${upgrade.toVersion}" in upgrade at index ${i} ` +
-              `for model type "${key}"`,
+              `for behavior type "${key}"`,
           );
         }
 
@@ -1280,7 +1280,7 @@ export class ModelRegistry {
           const curr = CalVer.create(upgrade.toVersion);
           if (CalVer.compare(prev, curr) >= 0) {
             throw new Error(
-              `Upgrades for model type "${key}" are not in chronological order: ` +
+              `Upgrades for behavior type "${key}" are not in chronological order: ` +
                 `"${prev.value}" must be before "${curr.value}"`,
             );
           }
@@ -1291,8 +1291,8 @@ export class ModelRegistry {
       const lastUpgrade = model.upgrades[model.upgrades.length - 1];
       if (lastUpgrade.toVersion !== model.version) {
         throw new Error(
-          `Last upgrade toVersion "${lastUpgrade.toVersion}" does not match model ` +
-            `version "${model.version}" for model type "${key}"`,
+          `Last upgrade toVersion "${lastUpgrade.toVersion}" does not match behavior ` +
+            `version "${model.version}" for behavior type "${key}"`,
         );
       }
     }
@@ -1322,17 +1322,17 @@ export class ModelRegistry {
     const existing = this.models.get(key);
 
     if (!existing) {
-      throw new Error(`Cannot extend unregistered model type: ${key}`);
+      throw new Error(`Cannot extend unregistered behavior type: ${key}`);
     }
     if (isControlPlaneModelType(key)) {
-      throw new Error(`Cannot extend control-plane model type: ${key}`);
+      throw new Error(`Cannot extend control-plane behavior type: ${key}`);
     }
 
     // Check for method name conflicts
     for (const methodName of Object.keys(methods)) {
       if (existing.methods[methodName]) {
         throw new Error(
-          `Method '${methodName}' already exists on model type '${key}'`,
+          `Method '${methodName}' already exists on behavior type '${key}'`,
         );
       }
     }
@@ -1342,7 +1342,7 @@ export class ModelRegistry {
       for (const checkName of Object.keys(checks)) {
         if (existing.checks?.[checkName]) {
           throw new Error(
-            `Check '${checkName}' already exists on model type '${key}'`,
+            `Check '${checkName}' already exists on behavior type '${key}'`,
           );
         }
       }
@@ -1353,7 +1353,7 @@ export class ModelRegistry {
       for (const specName of Object.keys(resources)) {
         if (existing.resources?.[specName]) {
           throw new Error(
-            `Resource spec '${specName}' already exists on model type '${key}'`,
+            `Resource spec '${specName}' already exists on behavior type '${key}'`,
           );
         }
       }
@@ -1410,10 +1410,10 @@ export class ModelRegistry {
     const existing = this.models.get(key);
 
     if (!existing) {
-      throw new Error(`Cannot extend unregistered model type: ${key}`);
+      throw new Error(`Cannot extend unregistered behavior type: ${key}`);
     }
     if (isControlPlaneModelType(key)) {
-      throw new Error(`Cannot extend control-plane model type: ${key}`);
+      throw new Error(`Cannot extend control-plane behavior type: ${key}`);
     }
 
     const current: Record<keyof ExtensionMemberSet, Record<string, unknown>> = {
@@ -1430,7 +1430,9 @@ export class ModelRegistry {
       for (const name of Object.keys(additions[kind] ?? {})) {
         if (Object.hasOwn(current[kind], name)) {
           throw new Error(
-            `${labels[kind]} '${name}' already exists on model type '${key}'`,
+            `${
+              labels[kind]
+            } '${name}' already exists on behavior type '${key}'`,
           );
         }
       }
@@ -1439,7 +1441,7 @@ export class ModelRegistry {
           throw new Error(
             `${
               labels[kind]
-            } '${name}' does not exist on model type '${key}'; nothing to override`,
+            } '${name}' does not exist on behavior type '${key}'; nothing to override`,
           );
         }
       }

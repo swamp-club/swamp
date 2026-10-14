@@ -112,7 +112,7 @@ export const SLOW_LOCK_NAMESPACE_ADVICE =
  * a LogTape template.
  */
 export const SLOW_LOCK_MODEL_CONTENTION_ADVICE =
-  "concurrent runs against one model instance take turns on its lock";
+  "concurrent runs against one behavior instance take turns on its lock";
 
 /** Internal entry tracking a single lock/sync pair. */
 interface SyncEntry {
@@ -301,7 +301,7 @@ function logSlowLock(
     );
   } else if (advice === "model-contention" && scope.kind === "model") {
     logger.warn(
-      `Lock on model {model} took {ms}ms — ${SLOW_LOCK_MODEL_CONTENTION_ADVICE}`,
+      `Lock on behavior {model} took {ms}ms — ${SLOW_LOCK_MODEL_CONTENTION_ADVICE}`,
       { model: `${scope.modelType}/${scope.modelId}`, ms: lockMs },
     );
   }

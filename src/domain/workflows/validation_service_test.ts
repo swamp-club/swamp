@@ -726,7 +726,7 @@ Deno.test("validateStepInputs: model not found produces warning", async () => {
   assertEquals(inputResult?.passed, true);
   assertEquals(inputResult?.warning, true);
   assertEquals(inputResult?.name.includes("skipped"), false);
-  assertEquals(inputResult?.name.includes("model not found"), true);
+  assertEquals(inputResult?.name.includes("behavior not found"), true);
   assertEquals(inputResult?.error?.includes("not found"), true);
 });
 
@@ -757,7 +757,7 @@ Deno.test("WorkflowValidationResult.equals: distinguishes warning from pass", ()
   assertEquals(warn.equals(pass), false);
 });
 
-Deno.test("validateStepInputs: method not found on model produces failure", async () => {
+Deno.test("validateStepInputs: method not found on a behavior type fails in behavior words", async () => {
   const resolver = mockResolver({
     "my-model.nonexistent": {
       status: "method_not_found",
@@ -784,7 +784,10 @@ Deno.test("validateStepInputs: method not found on model produces failure", asyn
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, false);
-  assertEquals(inputResult?.error?.includes("not found"), true);
+  assertEquals(
+    inputResult?.error,
+    "Method 'nonexistent' not found on behavior type 'test/model'",
+  );
 });
 
 Deno.test("validateStepInputs: method with no required args and no inputs passes", async () => {
@@ -1521,7 +1524,7 @@ Deno.test("validateStepInputs: CEL methodName on a missing model still warns", a
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.warning, true);
-  assertEquals(inputResult?.name.includes("model not found"), true);
+  assertEquals(inputResult?.name.includes("behavior not found"), true);
 });
 
 Deno.test("validateStepInputs: CEL methodName with an unresolvable modelType fails", async () => {

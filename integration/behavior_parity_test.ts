@@ -49,6 +49,8 @@ import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
+import { messageFor } from "../src/domain/behavior_wording.ts";
+import { commandSurfaceFromArgs } from "../src/cli/command_surface_args.ts";
 
 await initializeLogging({});
 
@@ -231,16 +233,21 @@ Deno.test({
           assertEquals(preferred, legacy, preferredWords.join(" "));
         }
 
-        // Errors are the same text through both spellings: UserError
-        // messages and codes do not depend on the surface.
+        // Errors read in the spelling the user typed (swamp-club#3437): the
+        // text the CLI boundary prints for each tree, with the same codes.
         const failure = async (words: string[]) => {
           const error = await assertRejects(() => runJson(words, repo));
-          return (error as Error).message;
+          return messageFor(error as Error, commandSurfaceFromArgs(words));
         };
         for (const word of ["get", "delete", "validate"]) {
           assertEquals(
             await failure(["behavior", word, "no-such-def"]),
+            "Behavior not found: no-such-def",
+            word,
+          );
+          assertEquals(
             await failure(["model", word, "no-such-def"]),
+            "Model not found: no-such-def",
             word,
           );
         }

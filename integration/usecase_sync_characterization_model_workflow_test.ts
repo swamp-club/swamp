@@ -838,7 +838,7 @@ const EXPECTED: Record<string, PinnedRow> = {
     cli: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
-      "error": "Model already exists: m2",
+      "error": "Behavior already exists: m2",
     },
     serve: null,
   },

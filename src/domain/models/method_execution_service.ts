@@ -76,6 +76,11 @@ import type { RpcStreamEvent } from "../remote/protocol.ts";
 import type { Logger } from "@logtape/logtape";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import { hasPlacement } from "../remote/scheduler.ts";
+import {
+  wordedError,
+  wordedText,
+  wordedUserError,
+} from "../behavior_wording.ts";
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 
@@ -611,7 +616,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }, async () => {
       const method = modelDef.methods[methodName];
       if (!method) {
-        throw new Error(`Method '${methodName}' not found in model`);
+        throw wordedError(
+          wordedText((w) => `Method '${methodName}' not found in ${w.noun}`),
+        );
       }
 
       // Upgrade definition if needed
@@ -884,10 +891,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         const hasVault = context.vaultService &&
           context.vaultService.getUserVaultNames().length > 0;
         if (!hasVault) {
-          throw new UserError(
-            `Behavior "${currentDefinition.name}" has sensitive resource output ` +
+          throw wordedUserError(
+            wordedText((w) =>
+              `${w.Noun} "${currentDefinition.name}" has sensitive resource output ` +
               `fields but no vault is configured. Create a vault before ` +
-              `running this method: swamp vault create <type> <name>`,
+              `running this method: swamp vault create <type> <name>`
+            ),
           );
         }
         // A refusal at the put would land after the method's side effects,
@@ -913,10 +922,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                 );
               } catch (error) {
                 if (!(error instanceof VaultAccessDeniedError)) throw error;
-                throw new UserError(
-                  `Model "${currentDefinition.name}" stores sensitive ` +
+                throw wordedUserError(
+                  wordedText((w) =>
+                    `${w.Noun} "${currentDefinition.name}" stores sensitive ` +
                     `output in vault '${vaultName}', which this run may not ` +
-                    `${action}: ${preRunRefusalHint(error, vaultName)}`,
+                    `${action}: ${preRunRefusalHint(error, vaultName)}`
+                  ),
                   "vault_access_denied",
                 );
               }
@@ -1074,12 +1085,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           isRemoteOnlyMode() &&
           !modelRegistry.isInternal(context.modelType)
         ) {
-          throw new UserError(
-            `Step '${methodName}' on model '${context.modelType.normalized}' ` +
+          throw wordedUserError(
+            wordedText((w) =>
+              `Step '${methodName}' on ${w.noun} '${context.modelType.normalized}' ` +
               `has no placement but the server is running in remote-only mode. ` +
               `Add a placement block (target, labels, or platform) to the ` +
               `workflow step, job, or workflow so it can be dispatched to a ` +
-              `remote worker.`,
+              `remote worker.`
+            ),
           );
         } else {
           // Execute in-process — the single-host path (see

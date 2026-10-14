@@ -248,9 +248,9 @@ swamp data rename <model> <old-name> <new-name>
 **Solution**: This is a bug — the deduplication logic should prevent this. File
 a bug report with `swamp issue`.
 
-### "Model not found" during rename
+### "Behavior not found" during rename
 
-**Symptom**: `swamp data rename <model> old new` fails with "Model not found"
+**Symptom**: `swamp data rename <model> old new` fails with "Behavior not found"
 
 **Solution**: The first argument must be a valid behavior ID or name. Check
 available behaviors:

@@ -23,6 +23,7 @@ import type { ModelOutputDataEvent } from "../../libswamp/models/output_data.ts"
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 
 class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
   handlers(): EventHandlers<ModelOutputDataEvent> {
@@ -40,7 +41,7 @@ class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -54,7 +55,7 @@ class JsonModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

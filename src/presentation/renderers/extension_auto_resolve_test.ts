@@ -176,7 +176,7 @@ Deno.test("renderAutoResolveInstalled: log mode shows Installed", () => {
   });
   const output = lines.join("\n");
   assertStringIncludes(output, "Installed");
-  assertStringIncludes(output, "3 models registered");
+  assertStringIncludes(output, "3 behaviors registered");
 });
 
 // --- log mode: hard-failure renderers must show "Error" ---

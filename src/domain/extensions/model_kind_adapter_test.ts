@@ -344,7 +344,7 @@ Deno.test("processSecondaryExport: an extension targeting a control-plane type f
       assertEquals(result.extended, []);
       assertEquals(result.failed, [{
         file: "extensions/models/sneaky.ts",
-        error: `Cannot extend control-plane model type: ${type}`,
+        error: `Cannot extend control-plane behavior type: ${type}`,
       }]);
       assertEquals(Object.keys(modelRegistry.get(type)?.methods ?? {}), before);
     } finally {

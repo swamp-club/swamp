@@ -39,7 +39,12 @@ import {
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import {
+  behaviorNotFound,
+  notFound,
+  type SwampError,
+  validationFailed,
+} from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { v3RunArtifactCheck } from "./run_artifact_check.ts";
@@ -431,7 +436,7 @@ async function* modelScopedList(
   );
   const result = await lookupDefinition(modelIdOrName);
   if (!result) {
-    yield { kind: "error", error: notFound("Model", modelIdOrName) };
+    yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
     return;
   }
   const { definition, type: modelType } = result;
@@ -484,7 +489,7 @@ export async function* dataList(
         yield {
           kind: "error",
           error: validationFailed(
-            "Cannot specify both a model and --workflow. Use one or the other.",
+            "Cannot specify both a behavior and --workflow. Use one or the other.",
           ),
         };
         return;
@@ -494,7 +499,7 @@ export async function* dataList(
         yield {
           kind: "error",
           error: validationFailed(
-            "Either a model name or --workflow is required.",
+            "Either a behavior name or --workflow is required.",
           ),
         };
         return;

@@ -31,7 +31,8 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
-import { alreadyExists, validationFailed } from "../errors.ts";
+import { validationFailed, wordedSwampError } from "../errors.ts";
+import { wordedText } from "../../domain/behavior_wording.ts";
 import {
   type MethodDescribeData,
   toMethodDescribeData,
@@ -151,8 +152,11 @@ export async function* modelCreate(
         if (nameViolation) {
           yield {
             kind: "error",
-            error: validationFailed(
-              `Invalid model name: ${input.name}. ${nameViolation}`,
+            error: wordedSwampError(
+              "validation_failed",
+              wordedText((w) =>
+                `Invalid ${w.noun} name: ${input.name}. ${nameViolation}`
+              ),
             ),
           };
           return;
@@ -165,10 +169,13 @@ export async function* modelCreate(
           const availableTypes = deps.listAvailableTypes().join(", ");
           yield {
             kind: "error",
-            error: validationFailed(
-              `Unknown model type: ${input.typeArg}. Available types: ${
-                availableTypes || "none"
-              }`,
+            error: wordedSwampError(
+              "validation_failed",
+              wordedText((w) =>
+                `Unknown ${w.noun} type: ${input.typeArg}. Available types: ${
+                  availableTypes || "none"
+                }`
+              ),
             ),
           };
           return;
@@ -179,7 +186,11 @@ export async function* modelCreate(
         if (exists) {
           yield {
             kind: "error",
-            error: alreadyExists("Model", input.name),
+            error: wordedSwampError(
+              "already_exists",
+              wordedText((w) => `${w.Noun} already exists: ${input.name}`),
+              { entityType: "Model", name: input.name },
+            ),
           };
           return;
         }

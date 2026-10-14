@@ -35,7 +35,7 @@ import { redactSensitiveValues } from "../../domain/models/sensitive_field_extra
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound } from "../errors.ts";
+import { behaviorNotFound } from "../errors.ts";
 import { type LookupOptions, selectLookup } from "../lookup_by_id.ts";
 import {
   type MethodDescribeData,
@@ -152,7 +152,7 @@ export async function* modelGet(
       );
       const result = await lookup(modelIdOrName);
       if (!result) {
-        yield { kind: "error", error: notFound("Model", modelIdOrName) };
+        yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
         return;
       }
 

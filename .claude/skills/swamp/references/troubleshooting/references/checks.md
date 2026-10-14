@@ -36,11 +36,11 @@ When a method fails with a check-related error (e.g., "Pre-flight check failed:
 
 When `behavior validate` reports `Check selection` failed:
 
-- **"Required check X not found on model type Y"** — the definition's
+- **"Required check X not found on behavior type Y"** — the definition's
   `checks.require` references a check name that doesn't exist on the behavior
   type. Fix: run `swamp behavior type describe <type>` to see available checks,
   then correct the name in the YAML definition.
-- **"Skipped check X not found on model type Y"** — same issue but for
+- **"Skipped check X not found on behavior type Y"** — same issue but for
   `checks.skip`. The check was removed or renamed in the extension.
 - **"Check X is in both require and skip lists"** — the definition lists the
   same check in both `require` and `skip`. `skip` wins, but this is likely
@@ -48,7 +48,7 @@ When `behavior validate` reports `Check selection` failed:
 
 ## Extension Check Conflicts
 
-When an extension fails to load with "Check 'X' already exists on model type
+When an extension fails to load with "Check 'X' already exists on behavior type
 'Y'":
 
 - Two extensions define the same check name for the same behavior type.

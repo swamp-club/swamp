@@ -165,7 +165,7 @@ Deno.test("authorizeExpressionReferences: env without write is refused, and says
   const refused = { refusedFor: "echo-x" };
   assertStringIncludes(
     (await check(ctx, { a: "${{ env.HOME }}" }, refused))!.message,
-    "reference it in the model definition",
+    "reference it in the behavior definition",
   );
   assertStringIncludes(
     (await check(ctx, { a: "${{ env.( }}" }, refused))!.message,

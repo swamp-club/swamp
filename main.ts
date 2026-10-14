@@ -37,6 +37,7 @@ import {
   shutdownTracing,
 } from "./src/infrastructure/tracing/mod.ts";
 import { VERSION } from "./src/cli/commands/version.ts";
+import { commandSurfaceFromArgs } from "./src/cli/command_surface_args.ts";
 import {
   isDispatchRunnerInvocation,
   redirectConsoleToStderr,
@@ -70,7 +71,7 @@ if (import.meta.main) {
     await initializeLogging({
       jsonMode: outputMode === "json",
     });
-    renderError(error, outputMode);
+    renderError(error, outputMode, commandSurfaceFromArgs(Deno.args));
     errorExitCode = exitCodeForError(error);
   } finally {
     // Drain the OTLP logs signal before spans — shutdownLogs() awaits the

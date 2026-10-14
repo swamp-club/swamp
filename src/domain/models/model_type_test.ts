@@ -60,7 +60,7 @@ Deno.test("ModelType.create throws on empty string", () => {
   assertThrows(
     () => ModelType.create(""),
     Error,
-    "Model type cannot be empty",
+    "Behavior type cannot be empty",
   );
 });
 
@@ -68,7 +68,7 @@ Deno.test("ModelType.create throws on whitespace-only string", () => {
   assertThrows(
     () => ModelType.create("   "),
     Error,
-    "Model type cannot be empty",
+    "Behavior type cannot be empty",
   );
 });
 

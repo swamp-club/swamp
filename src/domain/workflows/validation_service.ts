@@ -931,8 +931,8 @@ export class DefaultWorkflowValidationService
         return [
           WorkflowValidationResult.warning(
             checkName +
-              " (model not found)",
-            "Model instance not found — may be created at runtime, " +
+              " (behavior not found)",
+            "Behavior instance not found — may be created at runtime, " +
               "or could be a typo",
           ),
         ];
@@ -940,7 +940,7 @@ export class DefaultWorkflowValidationService
         return [
           WorkflowValidationResult.fail(
             checkName,
-            `Model type '${resolution.modelType}' could not be resolved — ` +
+            `Behavior type '${resolution.modelType}' could not be resolved — ` +
               `ensure the extension is available so its step ` +
               `inputs can be validated`,
           ),
@@ -952,7 +952,7 @@ export class DefaultWorkflowValidationService
         return [
           WorkflowValidationResult.fail(
             checkName,
-            `Method '${methodName}' not found on model type '${resolution.modelType}'`,
+            `Method '${methodName}' not found on behavior type '${resolution.modelType}'`,
           ),
         ];
       case "resolved": {
@@ -1087,7 +1087,7 @@ export class DefaultWorkflowValidationService
           results.push(
             WorkflowValidationResult.fail(
               checkName,
-              `Model definition references input(s) not supplied by step: ${
+              `Behavior definition references input(s) not supplied by step: ${
                 missing.join(", ")
               }`,
             ),

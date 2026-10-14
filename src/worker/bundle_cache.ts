@@ -32,6 +32,7 @@
 
 import { dirname, join, toFileUrl } from "@std/path";
 import { modelRegistry } from "../domain/models/model.ts";
+import { wordedError, wordedText } from "../domain/behavior_wording.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { DataPlaneClient } from "./data_plane_client.ts";
 import { primaryExport } from "../domain/extensions/kind_adapter.ts";
@@ -82,9 +83,11 @@ export class WorkerBundleCache {
       const type = fingerprint.slice(BUILTIN_BUNDLE_PREFIX.length);
       const modelDef = modelRegistry.get(type);
       if (!modelDef) {
-        throw new Error(
-          `Built-in model '${type}' is not registered in this worker — ` +
-            "orchestrator and worker binaries disagree",
+        throw wordedError(
+          wordedText((w) =>
+            `Built-in ${w.noun} '${type}' is not registered in this worker — ` +
+            "orchestrator and worker binaries disagree"
+          ),
         );
       }
       return { modelDef };
@@ -120,8 +123,10 @@ export class WorkerBundleCache {
       primaryExportAliases: [BEHAVIOR_EXPORT_NAME],
     }) ?? module.default) as ModelDefinition | undefined;
     if (!modelDef || typeof modelDef !== "object" || !("methods" in modelDef)) {
-      throw new Error(
-        `Bundle '${fingerprint}' does not export a model definition`,
+      throw wordedError(
+        wordedText((w) =>
+          `Bundle '${fingerprint}' does not export a ${w.noun} definition`
+        ),
       );
     }
     return {

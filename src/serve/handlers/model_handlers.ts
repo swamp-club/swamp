@@ -1354,7 +1354,7 @@ export async function handleModelGet(
     }
 
     if (!result) {
-      sendError(socket, requestId, "not_found", "Model not found");
+      sendError(socket, requestId, "not_found", "Behavior not found");
       return;
     }
 
@@ -1473,7 +1473,7 @@ export async function handleModelCreate(
             socket,
             requestId,
             "model_create_failed",
-            "Model creation failed",
+            "Behavior creation failed",
           );
           return;
         }
@@ -1570,7 +1570,7 @@ export async function handleModelDelete(
             socket,
             requestId,
             "has_data",
-            `Model has associated data (${preview.dataArtifactCount} artifacts, ${preview.outputCount} outputs). Use force to delete.`,
+            `Behavior has associated data (${preview.dataArtifactCount} artifacts, ${preview.outputCount} outputs). Use force to delete.`,
           );
           return;
         }
@@ -1604,7 +1604,7 @@ export async function handleModelDelete(
             socket,
             requestId,
             "model_delete_failed",
-            "Model deletion failed",
+            "Behavior deletion failed",
           );
           return;
         }
@@ -2475,7 +2475,7 @@ export async function handleModelEvaluate(
     // the error may name it, so such a caller gets no detail.
     const message = !model &&
         !(await readsEveryModel(socket, principal, ctx))
-      ? "Evaluating every model failed"
+      ? "Evaluating every behavior failed"
       : sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_evaluate_failed", message);
   }
@@ -2547,7 +2547,7 @@ export async function handleModelEdit(
       socket,
       requestId,
       "not_found",
-      `Model not found: ${payload.modelIdOrName}`,
+      `Behavior not found: ${payload.modelIdOrName}`,
     );
     return;
   }
@@ -2562,7 +2562,7 @@ export async function handleModelEdit(
           ? pushChangedToRemote(ctx, {
             onError: (error) =>
               logger.warn(
-                "Failed to push model edit to remote datastore: {error}",
+                "Failed to push behavior edit to remote datastore: {error}",
                 { error },
               ),
           })

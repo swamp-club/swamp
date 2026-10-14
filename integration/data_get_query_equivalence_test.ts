@@ -650,7 +650,7 @@ Deno.test("data query model(): a model with no definition fails as data get does
     await assertRejects(
       () => queryDocumented(repo, "no-such-model", "result"),
       UserError,
-      "Model not found: no-such-model",
+      "Behavior not found: no-such-model",
     );
   });
 });

@@ -3902,7 +3902,7 @@ Deno.test("lockTimeoutErrorForClient: sanitizes absolute filesystem path in lock
     5000,
   );
   const result = lockTimeoutErrorForClient(err);
-  assertStringIncludes(result.message, '"model lock"');
+  assertStringIncludes(result.message, '"behavior lock"');
   assertEquals(result.message.includes("/Users/"), false);
 });
 
@@ -3913,7 +3913,7 @@ Deno.test("lockTimeoutErrorForClient: sanitizes Windows path in lockKey", () => 
     5000,
   );
   const result = lockTimeoutErrorForClient(err);
-  assertStringIncludes(result.message, '"model lock"');
+  assertStringIncludes(result.message, '"behavior lock"');
 });
 
 Deno.test("lockTimeoutErrorForClient: sanitizes .swamp internal path in lockKey", () => {
@@ -3923,7 +3923,7 @@ Deno.test("lockTimeoutErrorForClient: sanitizes .swamp internal path in lockKey"
     5000,
   );
   const result = lockTimeoutErrorForClient(err);
-  assertStringIncludes(result.message, '"model lock"');
+  assertStringIncludes(result.message, '"behavior lock"');
 });
 
 // ── data.query validation tests ─────────────────────────────────────────

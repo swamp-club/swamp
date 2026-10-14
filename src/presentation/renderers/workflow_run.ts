@@ -548,7 +548,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             displayName,
             "warning",
             STATUS_COLORS.warn,
-            "Environment variables detected in model definition",
+            "Environment variables detected in behavior definition",
           ),
         );
         for (const detail of e.envVars) {

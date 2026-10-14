@@ -468,7 +468,7 @@ export const workflowRunCommand = new Command()
 
                   if (!modelDef) {
                     throw new Error(
-                      `Unknown model type: ${resolvedType.normalized}`,
+                      `Unknown behavior type: ${resolvedType.normalized}`,
                     );
                   }
                   resolvedType = modelDef.type;

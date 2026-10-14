@@ -25,6 +25,7 @@ import {
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
+import { surfaceNounCapitalized } from "../../presentation/command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createModelEditDeps,
@@ -165,7 +166,9 @@ export function createModelEditCommand(syntax: CommandSyntax) {
       if (!modelIdOrName) {
         if (cliCtx.outputMode === "json") {
           throw new UserError(
-            "Model ID or name is required in non-interactive mode",
+            `${
+              surfaceNounCapitalized(syntax.surface)
+            } ID or name is required in non-interactive mode`,
           );
         }
 

@@ -484,7 +484,7 @@
       {
         "ruleId": "uncatalogued-model",
         "file": "extensions/models/typed.ts",
-        "message": "Model export has a type annotation, so it is not read as a plain export const model = { ... } object, so the registry catalog will not list this model type. The extension still installs and the model still runs."
+        "message": "Behavior export has a type annotation, so it is not read as a plain export const model = { ... } object, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
       }
     ]
   },
@@ -534,7 +534,7 @@
       {
         "ruleId": "uncatalogued-model",
         "file": "extensions/models/noversion.ts",
-        "message": "Model export has no string-literal version in its export const model object, so the registry catalog will not list this model type. The extension still installs and the model still runs."
+        "message": "Behavior export has no string-literal version in its export const model object, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
       }
     ]
   },
@@ -582,7 +582,7 @@
       {
         "ruleId": "uncatalogued-model",
         "file": "extensions/models/wrapped.ts",
-        "message": "Model export is not a plain export const model = { ... } object literal, so the registry catalog will not list this model type. The extension still installs and the model still runs."
+        "message": "Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
       }
     ]
   },

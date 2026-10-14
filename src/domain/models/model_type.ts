@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { wordedError, wordedText } from "../behavior_wording.ts";
+
 /**
  * ModelType is a value object representing the type of a model.
  *
@@ -47,12 +49,16 @@ export class ModelType {
     }
     const trimmed = rawType.trim();
     if (trimmed.length === 0) {
-      throw new Error("Model type cannot be empty");
+      throw wordedError(wordedText((w) => `${w.Noun} type cannot be empty`));
     }
 
     const normalized = ModelType.normalize(trimmed);
     if (normalized.length === 0) {
-      throw new Error("Model type normalization resulted in empty string");
+      throw wordedError(
+        wordedText((w) =>
+          `${w.Noun} type normalization resulted in empty string`
+        ),
+      );
     }
 
     return new ModelType(trimmed, normalized);

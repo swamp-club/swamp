@@ -948,7 +948,7 @@ Deno.test("executeWorkflow - throws error for unknown method", async () => {
   await assertRejects(
     () => service.executeWorkflow(definition, model, "nonexistent", context),
     Error,
-    "Method 'nonexistent' not found in model",
+    "Method 'nonexistent' not found in behavior",
   );
 });
 

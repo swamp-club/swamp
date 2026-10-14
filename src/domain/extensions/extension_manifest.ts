@@ -164,7 +164,7 @@ const ExtensionManifestSchemaV1 = z.object({
     (data.skills && data.skills.length > 0),
   {
     message:
-      "Extension must include at least one model, workflow, vault, datastore, report, webhook, or skill",
+      "Extension must include at least one behavior, workflow, vault, datastore, report, webhook, or skill",
   },
 );
 

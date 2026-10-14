@@ -37,6 +37,11 @@ import type {
   MethodContext,
 } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import {
+  markModelWording,
+  wordedError,
+  wordedText,
+} from "../domain/behavior_wording.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { Data } from "../domain/data/data.ts";
 import { createDataId, generateDataId } from "../domain/data/data_id.ts";
@@ -85,6 +90,18 @@ export class UnsupportedOnRemoteWorkerError extends Error {
 
 function unsupported(member: string): never {
   throw new UnsupportedOnRemoteWorkerError(member);
+}
+
+/**
+ * The failure a remote worker returns for a context call that needs the
+ * orchestrator, in behavior words with the model spelling (swamp-club#3437).
+ */
+function remoteRefusal(call: string, what: string): { message: string } {
+  const worded = wordedText((w) =>
+    `${call} is not available in remote execution — ` +
+    `move ${what} to a local orchestrator ${w.noun} or workflow.`
+  );
+  return markModelWording({ message: worded.text }, worded.modelText);
 }
 
 function toDataHandle(remote: RemoteDataHandle): DataHandle {
@@ -717,8 +734,10 @@ export function createRemoteMethodContext(
     onEvent,
     extensionFile: (relPath: string) => {
       if (extensionFilesDir === undefined) {
-        throw new Error(
-          "This model has no co-located extension files to resolve",
+        throw wordedError(
+          wordedText((w) =>
+            `This ${w.noun} has no co-located extension files to resolve`
+          ),
         );
       }
       return join(extensionFilesDir, ...relPath.split("/"));
@@ -727,29 +746,17 @@ export function createRemoteMethodContext(
     runModel: () =>
       Promise.resolve({
         ok: false as const,
-        error: {
-          message:
-            "context.runModel() is not available in remote execution — " +
-            "move the runModel call to a local orchestrator model or workflow.",
-        },
+        error: remoteRefusal("context.runModel()", "the runModel call"),
       }),
     approveWorkflowGate: () =>
       Promise.resolve({
         ok: false as const,
-        error: {
-          message:
-            "context.approveWorkflowGate() is not available in remote execution — " +
-            "move the call to a local orchestrator model or workflow.",
-        },
+        error: remoteRefusal("context.approveWorkflowGate()", "the call"),
       }),
     rejectWorkflowGate: () =>
       Promise.resolve({
         ok: false as const,
-        error: {
-          message:
-            "context.rejectWorkflowGate() is not available in remote execution — " +
-            "move the call to a local orchestrator model or workflow.",
-        },
+        error: remoteRefusal("context.rejectWorkflowGate()", "the call"),
       }),
   };
 

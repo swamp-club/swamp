@@ -24,6 +24,7 @@ import {
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
 } from "../models/model_lookup.ts";
+import { wordedError, wordedText } from "../behavior_wording.ts";
 
 /**
  * Result of a data delete operation.
@@ -143,7 +144,9 @@ export class DataDeleteService {
       options,
     );
     if (!lookup) {
-      throw new Error(`Model not found: ${modelRef}`);
+      throw wordedError(
+        wordedText((w) => `${w.Noun} not found: ${modelRef}`),
+      );
     }
     const { definition, type: modelType } = lookup;
 
@@ -153,8 +156,10 @@ export class DataDeleteService {
       dataName,
     );
     if (versions.length === 0) {
-      throw new Error(
-        `No data named "${dataName}" exists for model ${definition.name}`,
+      throw wordedError(
+        wordedText((w) =>
+          `No data named "${dataName}" exists for ${w.noun} ${definition.name}`
+        ),
       );
     }
 
@@ -190,7 +195,9 @@ export class DataDeleteService {
       options,
     );
     if (!lookup) {
-      throw new Error(`Model not found: ${modelRef}`);
+      throw wordedError(
+        wordedText((w) => `${w.Noun} not found: ${modelRef}`),
+      );
     }
     const { definition, type: modelType } = lookup;
 
@@ -200,8 +207,10 @@ export class DataDeleteService {
       dataName,
     );
     if (versions.length === 0) {
-      throw new Error(
-        `No data named "${dataName}" exists for model ${definition.name}`,
+      throw wordedError(
+        wordedText((w) =>
+          `No data named "${dataName}" exists for ${w.noun} ${definition.name}`
+        ),
       );
     }
 
@@ -223,7 +232,9 @@ export class DataDeleteService {
       modelRef,
     );
     if (!lookup) {
-      throw new Error(`Model not found: ${modelRef}`);
+      throw wordedError(
+        wordedText((w) => `${w.Noun} not found: ${modelRef}`),
+      );
     }
     const { definition, type: modelType } = lookup;
 
@@ -237,8 +248,10 @@ export class DataDeleteService {
       const desc = filter.kind === "prefix"
         ? `prefix "${filter.value}"`
         : "any data";
-      throw new Error(
-        `No data matching ${desc} found for model ${definition.name}`,
+      throw wordedError(
+        wordedText((w) =>
+          `No data matching ${desc} found for ${w.noun} ${definition.name}`
+        ),
       );
     }
 
@@ -287,7 +300,9 @@ export class DataDeleteService {
       modelRef,
     );
     if (!lookup) {
-      throw new Error(`Model not found: ${modelRef}`);
+      throw wordedError(
+        wordedText((w) => `${w.Noun} not found: ${modelRef}`),
+      );
     }
     const { definition, type: modelType } = lookup;
 
@@ -301,8 +316,10 @@ export class DataDeleteService {
       const desc = filter.kind === "prefix"
         ? `prefix "${filter.value}"`
         : "any data";
-      throw new Error(
-        `No data matching ${desc} found for model ${definition.name}`,
+      throw wordedError(
+        wordedText((w) =>
+          `No data matching ${desc} found for ${w.noun} ${definition.name}`
+        ),
       );
     }
 

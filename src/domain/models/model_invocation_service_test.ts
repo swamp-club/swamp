@@ -46,6 +46,7 @@ import { ExpressionEvaluationService } from "../expressions/expression_evaluatio
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { z } from "zod";
+import { messageFor } from "../behavior_wording.ts";
 
 await initializeLogging({});
 
@@ -134,7 +135,7 @@ Deno.test("ModelInvocationService: rejects when depth limit exceeded", async () 
   assertEquals(result.ok, false);
   assertStringIncludes(
     (result as RunModelResult & { ok: false }).error.message,
-    "Maximum cross-model invocation depth",
+    "Maximum cross-behavior invocation depth",
   );
 });
 
@@ -155,7 +156,7 @@ Deno.test("ModelInvocationService: rejects when breadth limit exceeded", async (
   assertEquals(result.ok, false);
   assertStringIncludes(
     (result as RunModelResult & { ok: false }).error.message,
-    "Maximum cross-model invocation count",
+    "Maximum cross-behavior invocation count",
   );
 });
 
@@ -186,7 +187,7 @@ Deno.test("ModelInvocationService: breadth counter is shared across calls", asyn
   assertEquals(result.ok, false);
   assertStringIncludes(
     (result as RunModelResult & { ok: false }).error.message,
-    "Maximum cross-model invocation count",
+    "Maximum cross-behavior invocation count",
   );
 });
 
@@ -252,7 +253,7 @@ Deno.test("ModelInvocationService: breadth limit enforced from fresh context wit
   assertEquals(result.ok, false);
   assertStringIncludes(
     (result as RunModelResult & { ok: false }).error.message,
-    "Maximum cross-model invocation count",
+    "Maximum cross-behavior invocation count",
   );
 });
 
@@ -691,6 +692,39 @@ Deno.test("ModelInvocationService: routes method args for by-type auto-creation"
   assertEquals(savedDef!.globalArguments, { region: "us-west-2" });
   assertEquals(capturedDef!.getMethodArguments("greet"), { name: "World" });
   assertEquals(capturedCtx!.globalArgs, { region: "us-west-2" });
+});
+
+Deno.test("ModelInvocationService: a missing method reads in behavior words, with the model spelling for swamp model", async () => {
+  const svc = makeArgRoutingSvc({
+    captureDefinition: () => {},
+    captureContext: () => {},
+    targetDefName: "__no_match__",
+    targetDef: Definition.create({
+      name: "unused",
+      type: "test/arg-routing-target",
+      globalArguments: {},
+    }),
+  });
+
+  const result = await svc.invoke(
+    {
+      modelType: "test/arg-routing-target",
+      name: "new-instance",
+      method: "missing",
+    },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, false);
+  const error = (result as RunModelResult & { ok: false }).error;
+  assertEquals(
+    error.message,
+    'Method "missing" not found on behavior type "test/arg-routing-target".',
+  );
+  assertEquals(
+    messageFor(error, "model"),
+    'Method "missing" not found on model type "test/arg-routing-target".',
+  );
 });
 
 // ── z.record() argument routing tests ──

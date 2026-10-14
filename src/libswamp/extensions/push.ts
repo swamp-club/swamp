@@ -1102,7 +1102,7 @@ export async function extensionPushPrepare(
         "content-collectives",
         validationFailed(
           "Extension content uses collectives that don't match the extension package. " +
-            "All model types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.",
+            "All behavior types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.",
           {
             expectedCollective,
             mismatches: collectiveResult.mismatches,
@@ -1290,7 +1290,7 @@ export async function extensionPushPrepare(
     failGate(
       "upgrade-chain",
       validationFailed(
-        "Extension has model upgrade chain errors that must be resolved before pushing.",
+        "Extension has behavior upgrade chain errors that must be resolved before pushing.",
         { upgradeChainErrors: upgradeChainIssues },
       ),
     );
@@ -1666,18 +1666,18 @@ function uncataloguedModelMessage(
 ): string {
   const cause = gap.kind === "not-plain-object"
     ? gap.annotated
-      ? "Model export has a type annotation, so it is not read as a plain " +
+      ? "Behavior export has a type annotation, so it is not read as a plain " +
         `export const ${exportName} = { ... } object`
-      : `Model export is not a plain export const ${exportName} = { ... } ` +
+      : `Behavior export is not a plain export const ${exportName} = { ... } ` +
         "object literal"
     : gap.missing.length === 2
-    ? "Model export has neither a string-literal type nor a string-literal " +
+    ? "Behavior export has neither a string-literal type nor a string-literal " +
       `version in its export const ${exportName} object`
-    : `Model export has no string-literal ${
+    : `Behavior export has no string-literal ${
       gap.missing[0]
     } in its export const ${exportName} object`;
-  return `${cause}, so the registry catalog will not list this model type. ` +
-    "The extension still installs and the model still runs.";
+  return `${cause}, so the registry catalog will not list this behavior type. ` +
+    "The extension still installs and the behavior still runs.";
 }
 
 /**

@@ -1602,7 +1602,7 @@ async function emptyConfigTierWarning(
       code: "empty_config_tier",
       message:
         `managedConfig is on, but the config tier at ${tier.tierPath} has ` +
-        `no model, workflow or vault definitions, so this repo will not ` +
+        `no behavior, workflow or vault definitions, so this repo will not ` +
         `find any. Run 'swamp datastore config migrate' to copy this repo's ` +
         `models/, workflows/ and vaults/ into the tier. Setup does not move ` +
         `definitions that were only in the previous datastore's config ` +

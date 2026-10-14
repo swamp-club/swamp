@@ -151,11 +151,11 @@ Deno.test(
           kind: "error",
           error: {
             code: "quality_failed",
-            message: "Extension has model upgrade chain errors",
+            message: "Extension has behavior upgrade chain errors",
           },
         }),
       UserError,
-      "Extension has model upgrade chain errors",
+      "Extension has behavior upgrade chain errors",
     );
   },
 );

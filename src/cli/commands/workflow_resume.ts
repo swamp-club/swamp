@@ -410,7 +410,7 @@ export const workflowResumeCommand = withRemoteOptions(
         }
       }
       if (!modelDef) {
-        throw new Error(`Unknown model type: ${resolvedType.normalized}`);
+        throw new Error(`Unknown behavior type: ${resolvedType.normalized}`);
       }
       resolvedType = modelDef.type;
       const autoDefRepo = new YamlDefinitionRepository(

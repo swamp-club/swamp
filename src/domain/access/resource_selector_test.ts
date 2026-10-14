@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { messageFor } from "../behavior_wording.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   canonicalTypePattern,
@@ -67,7 +68,22 @@ Deno.test("parseResourceSelector: rejects invalid kind", () => {
   assertThrows(
     () => parseResourceSelector("secret:my-secret"),
     Error,
-    'expected "workflow", "model", "data", "access", or "vault"',
+    'expected "workflow", "behavior", "data", "access", or "vault"',
+  );
+});
+
+Deno.test("parseResourceSelector: an invalid kind names the behavior kind in both spellings", () => {
+  const error = assertThrows(
+    () => parseResourceSelector("secret:my-secret"),
+    Error,
+  );
+  assertEquals(
+    error.message,
+    'Invalid resource kind "secret": expected "workflow", "behavior", "data", "access", or "vault"',
+  );
+  assertEquals(
+    messageFor(error, "model"),
+    'Invalid resource kind "secret": expected "workflow", "model", "data", "access", or "vault"',
   );
 });
 

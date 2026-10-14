@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { markModelWording, wordedText } from "../behavior_wording.ts";
 import type { DefinitionData } from "../definitions/definition.ts";
 import type {
   CelExpressionEvaluator,
@@ -159,12 +160,14 @@ export async function evaluateDefinitionExpressions(
     for (const expr of batch) {
       const missingModel = findMissingModelDependency(expr.celExpression, ctx);
       if (missingModel) {
+        const worded = wordedText((w) =>
+          `${w.Noun} ${missingModel.modelRef} has no ${missingModel.type} data`
+        );
         failedExpressions.set(
           expr.raw,
-          new ExpressionError(
-            `Model ${missingModel.modelRef} has no ${missingModel.type} data`,
-            expr.celExpression,
-            expr.path,
+          markModelWording(
+            new ExpressionError(worded.text, expr.celExpression, expr.path),
+            worded.modelText,
           ),
         );
         continue;

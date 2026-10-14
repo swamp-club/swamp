@@ -193,7 +193,10 @@ import {
   recoveredDataHandles,
   writtenVersionsOf,
 } from "../models/method_execution_service.ts";
-import { DefaultModelValidationService } from "../models/validation_service.ts";
+import {
+  DefaultModelValidationService,
+  envVarWarningText,
+} from "../models/validation_service.ts";
 import { buildMethodContext } from "../models/method_context.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
@@ -1058,7 +1061,7 @@ class InFlightMethodRuns {
       performance.now();
     if (remaining <= 0) return;
     getSwampLogger(["workflow", "cancel"]).info(
-      "Waiting up to {seconds}s for {count} model method(s) to stop",
+      "Waiting up to {seconds}s for {count} method(s) to stop",
       {
         seconds: Math.ceil(remaining / 1000),
         count: this.#pending.size,
@@ -2079,7 +2082,7 @@ export class DefaultStepExecutor implements StepExecutor {
         task.modelIdOrName,
       );
       if (!lookupResult) {
-        throw new Error(`Model not found: ${task.modelIdOrName}`);
+        throw new Error(`Behavior not found: ${task.modelIdOrName}`);
       }
       originalDefinition = lookupResult.definition;
       modelType = lookupResult.type;
@@ -2128,15 +2131,14 @@ export class DefaultStepExecutor implements StepExecutor {
         stepId: ctx.stepName,
         modelName: originalDefinition.name,
         envVars: envVarUsages,
-        message:
-          "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+        message: envVarWarningText().text,
       });
     }
 
     // Get the model definition from registry (auto-resolve if needed)
     const modelDef = await resolveModelType(modelType, getAutoResolver());
     if (!modelDef) {
-      throw new Error(`Unknown model type: ${modelType.normalized}`);
+      throw new Error(`Unknown behavior type: ${modelType.normalized}`);
     }
 
     // Validate the model definition (including expression paths) BEFORE evaluation
@@ -2158,7 +2160,7 @@ export class DefaultStepExecutor implements StepExecutor {
           : `  ${f.name}: ${f.error}`
       ).join("\n");
       throw new Error(
-        `Model validation failed for "${originalDefinition.name}":\n${errors}`,
+        `Behavior validation failed for "${originalDefinition.name}":\n${errors}`,
       );
     }
 

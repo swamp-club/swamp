@@ -301,7 +301,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       );
     }
     if (data.models.length > 0) {
-      this.logger.info`Models (${data.models.length}):`;
+      this.logger.info`Behaviors (${data.models.length}):`;
       for (const m of data.models) {
         this.logger.info`  ${m.type} (${this.resolvedFile(m.fileName)})`;
         if (m.globalArguments && m.globalArguments.length > 0) {
@@ -579,7 +579,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         this.logger.info`Extension ID: ${e.data.extensionId}`;
         this.logger.info`Archive size: ${formatBytes(e.data.archiveSize)}`;
         const parts = [
-          `Models: ${e.data.modelCount}`,
+          `Behaviors: ${e.data.modelCount}`,
           `Workflows: ${e.data.workflowCount}`,
           `Vaults: ${e.data.vaultCount}`,
         ];

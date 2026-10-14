@@ -57,11 +57,30 @@ import { InputValidationService } from "../inputs/input_validation_service.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 import { keyPath, ProvenanceMap } from "../expressions/provenance_map.ts";
 import { attachBindingProvenance } from "../expressions/splice_origin.ts";
+import {
+  type BehaviorWords,
+  markModelWording,
+  wordedText,
+} from "../behavior_wording.ts";
 
 const MAX_INVOCATION_DEPTH = 10;
 const MAX_INVOCATION_BREADTH = 100;
 
 const logger = getLogger(["swamp", "model", "invocation"]);
+
+/**
+ * A runModel failure whose message reads in behavior words, carrying its
+ * model spelling for `swamp model …` (swamp-club#3437).
+ */
+function wordedFailure(
+  build: (words: BehaviorWords) => string,
+): RunModelResult {
+  const worded = wordedText(build);
+  return {
+    ok: false,
+    error: markModelWording({ message: worded.text }, worded.modelText),
+  };
+}
 
 export interface ModelInvocationServiceDeps {
   executionService: MethodExecutionService;
@@ -115,13 +134,9 @@ function routeArguments(
 ): RoutedArgs | RunModelResult {
   const method = modelDef.methods[methodName];
   if (!method) {
-    return {
-      ok: false,
-      error: {
-        message:
-          `Method "${methodName}" not found on model type "${modelDef.type.normalized}".`,
-      },
-    };
+    return wordedFailure((w) =>
+      `Method "${methodName}" not found on ${w.noun} type "${modelDef.type.normalized}".`
+    );
   }
 
   const methodShape = getObjectShape(method.arguments);
@@ -220,26 +235,18 @@ export class ModelInvocationService {
     const tracking = callerContext._invocationTracking;
 
     if (tracking.depth >= MAX_INVOCATION_DEPTH) {
-      return {
-        ok: false,
-        error: {
-          message:
-            `Maximum cross-model invocation depth (${MAX_INVOCATION_DEPTH}) exceeded. ` +
-            `Check for deep nesting chains in your runModel calls.`,
-        },
-      };
+      return wordedFailure((w) =>
+        `Maximum cross-${w.noun} invocation depth (${MAX_INVOCATION_DEPTH}) exceeded. ` +
+        `Check for deep nesting chains in your runModel calls.`
+      );
     }
 
     tracking.breadthCounter.count++;
     if (tracking.breadthCounter.count > MAX_INVOCATION_BREADTH) {
-      return {
-        ok: false,
-        error: {
-          message:
-            `Maximum cross-model invocation count (${MAX_INVOCATION_BREADTH}) exceeded ` +
-            `in this execution. Reduce the number of runModel calls.`,
-        },
-      };
+      return wordedFailure((w) =>
+        `Maximum cross-${w.noun} invocation count (${MAX_INVOCATION_BREADTH}) exceeded ` +
+        `in this execution. Reduce the number of runModel calls.`
+      );
     }
 
     let definition: Definition;
@@ -553,23 +560,15 @@ export class ModelInvocationService {
       getAutoResolver(),
     );
     if (!modelDef) {
-      return {
-        ok: false,
-        error: {
-          message:
-            `Model type "${lookup.type}" not found for definition "${options.definition}".`,
-        },
-      };
+      return wordedFailure((w) =>
+        `${w.Noun} type "${lookup.type}" not found for definition "${options.definition}".`
+      );
     }
 
     if (!modelDef.methods[options.method]) {
-      return {
-        ok: false,
-        error: {
-          message:
-            `Method "${options.method}" not found on model type "${modelDef.type.normalized}".`,
-        },
-      };
+      return wordedFailure((w) =>
+        `Method "${options.method}" not found on ${w.noun} type "${modelDef.type.normalized}".`
+      );
     }
 
     return { ok: true, definition: lookup.definition, modelDef };
@@ -583,22 +582,15 @@ export class ModelInvocationService {
       getAutoResolver(),
     );
     if (!modelDef) {
-      return {
-        ok: false,
-        error: {
-          message: `Model type "${options.modelType}" not found.`,
-        },
-      };
+      return wordedFailure((w) =>
+        `${w.Noun} type "${options.modelType}" not found.`
+      );
     }
 
     if (!modelDef.methods[options.method]) {
-      return {
-        ok: false,
-        error: {
-          message:
-            `Method "${options.method}" not found on model type "${options.modelType}".`,
-        },
-      };
+      return wordedFailure((w) =>
+        `Method "${options.method}" not found on ${w.noun} type "${options.modelType}".`
+      );
     }
 
     const definitionRepo = this.#deps.commonDeps.definitionRepository;
@@ -695,15 +687,11 @@ export class ModelInvocationService {
       return null;
     }
 
-    return {
-      ok: false,
-      error: {
-        message:
-          `Extension "${callerModelDef.extensionName}" cannot invoke model type ` +
-          `"${targetType}" from extension "${targetExtension}" — add ` +
-          `"${targetExtension}" to dependencies in manifest.yaml.`,
-      },
-    };
+    return wordedFailure((w) =>
+      `Extension "${callerModelDef.extensionName}" cannot invoke ${w.noun} type ` +
+      `"${targetType}" from extension "${targetExtension}" — add ` +
+      `"${targetExtension}" to dependencies in manifest.yaml.`
+    );
   }
 
   #manifestCache = new Map<string, string[]>();

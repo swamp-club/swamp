@@ -24,6 +24,7 @@ import {
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
+import { surfaceNounCapitalized } from "../../presentation/command_surface.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -179,7 +180,11 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
         modelIdOrName,
       );
       if (!lookupResult) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
+        throw new UserError(
+          `${
+            surfaceNounCapitalized(syntax.surface)
+          } not found: ${modelIdOrName}`,
+        );
       }
 
       const { definition, type } = lookupResult;

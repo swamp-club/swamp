@@ -193,7 +193,7 @@ export class AutocompleteProvider {
       items.push({
         text: `${MODEL_FUNCTION}(`,
         label: `${MODEL_FUNCTION}(`,
-        detail: "model name or definition id",
+        detail: "behavior name or definition id",
         kind: "builtin",
       });
     }

@@ -21,6 +21,7 @@ import {
   ALWAYS_LOCAL_SUBDIRS,
   DEFAULT_DATASTORE_SUBDIRS,
 } from "../datastore/datastore_config.ts";
+import { wordedError, wordedText } from "../behavior_wording.ts";
 
 export type Namespace = string & { readonly _brand: unique symbol };
 
@@ -113,7 +114,9 @@ export interface NamespacedModelName {
 
 export function parseNamespacedModelName(input: string): NamespacedModelName {
   if (input === "") {
-    throw new Error("Invalid namespaced model name: input is empty");
+    throw wordedError(
+      wordedText((w) => `Invalid namespaced ${w.noun} name: input is empty`),
+    );
   }
 
   const colonIndex = input.indexOf(":");
@@ -125,10 +128,12 @@ export function parseNamespacedModelName(input: string): NamespacedModelName {
   const modelName = input.slice(colonIndex + 1);
 
   if (modelName === "") {
-    throw new Error(
-      `Invalid namespaced model name: model name is empty in ${
-        JSON.stringify(input)
-      }`,
+    throw wordedError(
+      wordedText((w) =>
+        `Invalid namespaced ${w.noun} name: ${w.noun} name is empty in ${
+          JSON.stringify(input)
+        }`
+      ),
     );
   }
 

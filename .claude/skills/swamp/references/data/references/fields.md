@@ -81,7 +81,7 @@ each of those cases.
 
 - The argument must be a non-empty string literal; up to 32 distinct behaviors
   per predicate.
-- An unknown behavior is an error (`Model not found`), as in `data get`. Over
+- An unknown behavior is an error (`Behavior not found`), as in `data get`. Over
   `--server`, a behavior you may not read fails the same way.
 - Predicates only, not `--select`. It is resolved by `swamp data query` and
   serve's `data.query`; CEL `data.query()` in behaviors and workflows rejects it
