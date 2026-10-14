@@ -28,33 +28,47 @@ import {
 
 const DB = "/private/tmp/d/commits.db";
 
-Deno.test("isSupervisorFor: the marker and this database, whatever the build or timings", () => {
+Deno.test("isSupervisorFor: the marker and exactly this database, whatever the build or timings", () => {
   assertEquals(
     isSupervisorFor(
-      `/usr/local/bin/swamp ${SUPERVISOR_MARKER} --db ${DB} --idle-ms 300000`,
+      `/usr/local/bin/swamp ${SUPERVISOR_MARKER} --db ${DB} --private-root /tmp/swamp-501 --idle-ms 300000`,
       DB,
     ),
     true,
   );
   assertEquals(
     isSupervisorFor(
-      `/opt/deno run -A /src/entry.ts ${SUPERVISOR_MARKER} --db ${DB} --idle-ms 2000`,
+      `/opt/deno run -A /src/entry.ts ${SUPERVISOR_MARKER} --db ${DB} --private-root /p --idle-ms 2000`,
       DB,
     ),
     true,
   );
+  // Another database whose path ends with this one's.
   assertEquals(
-    isSupervisorFor(`swamp ${SUPERVISOR_MARKER} --db /other/commits.db`, DB),
+    isSupervisorFor(
+      `swamp ${SUPERVISOR_MARKER} --db /x${DB} --private-root /p`,
+      DB,
+    ),
+    false,
+  );
+  assertEquals(
+    isSupervisorFor(
+      `swamp ${SUPERVISOR_MARKER} --db /other/commits.db --private-root /p`,
+      DB,
+    ),
     false,
   );
   assertEquals(isSupervisorFor(`vim ${DB}`, DB), false);
   assertEquals(isSupervisorFor(undefined, DB), false);
 });
 
-Deno.test("isLitestreamFor: replicate with this database's config only", () => {
+Deno.test("isLitestreamFor: replicate with exactly this database's config", () => {
   const config = "/tmp/swamp-501/abcd1234/litestream.yml";
   assertEquals(
-    isLitestreamFor(`litestream replicate -config ${config}`, config),
+    isLitestreamFor(
+      `/bin/litestream replicate -config ${config} -no-expand-env`,
+      config,
+    ),
     true,
   );
   assertEquals(
@@ -62,9 +76,13 @@ Deno.test("isLitestreamFor: replicate with this database's config only", () => {
     false,
   );
   assertEquals(
-    isLitestreamFor("litestream replicate -config /etc/x.yml", config),
+    isLitestreamFor(
+      `litestream replicate -config /x${config} -no-expand-env`,
+      config,
+    ),
     false,
   );
+  assertEquals(isLitestreamFor("echo replicate " + config, config), false);
   assertEquals(isLitestreamFor(undefined, config), false);
 });
 

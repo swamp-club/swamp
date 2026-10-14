@@ -527,11 +527,11 @@ export function startV3ReplicationUpkeep(
       // This process's own shared hold goes first: a replacement waits for
       // the use lock exclusively.
       await Promise.allSettled(uses.map((use) => use.release()));
+      // Owed until a sidecar is held again, even while serve has no lease:
+      // a shutdown before then must not pass serve's commits as replicated.
+      owedReplications.add(key);
       const fence = v3WriterFence(datastorePath);
       if (fence === undefined || stopped) return;
-      // Owed until a sidecar is held again: a shutdown before then must not
-      // report serve's commits as replicated.
-      owedReplications.add(key);
       const next = await acquireV3Replication(datastorePath, fence);
       if (next !== undefined) {
         replications.set(key, [next]);

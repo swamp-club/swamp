@@ -132,8 +132,10 @@ export async function controlRequest(
     : new TextEncoder().encode(JSON.stringify(options.body));
   let conn: Deno.UnixConn | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      timedOut = true;
       // Closing the connection ends the read in flight.
       try {
         conn?.close();
@@ -156,7 +158,16 @@ export async function controlRequest(
       (async () => {
         try {
           conn = await Deno.connect({ transport: "unix", path: socketPath });
+          // Connected after the deadline: nothing would close it later.
+          if (timedOut) {
+            conn.close();
+            throw new LitestreamControlError(
+              "connected after the deadline",
+              true,
+            );
+          }
         } catch (error) {
+          if (error instanceof LitestreamControlError) throw error;
           throw new LitestreamControlError(
             `cannot connect to ${socketPath}: ${messageOf(error)}`,
             false,

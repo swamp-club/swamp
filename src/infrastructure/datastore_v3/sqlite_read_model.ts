@@ -465,14 +465,11 @@ export class SqliteReadModel implements ReadModel {
           ) {
             continue;
           }
-          if (
-            !(error instanceof Deno.errors.PermissionDenied) ||
-            Deno.build.os === "windows"
-          ) {
-            throw error;
-          }
-          // A read-only file: a read handle syncs it on POSIX, so one file
-          // cannot stall the list for good.
+          if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+          // A read-only file must not stall the list for good. Windows
+          // flushes only a writable handle, so there it is left to the
+          // reboot check's earlier coverage; POSIX syncs a read handle.
+          if (Deno.build.os === "windows") continue;
           handle = await Deno.open(path, { read: true });
         }
         try {

@@ -97,7 +97,7 @@ class FakeWorld {
       this.commandLines.set(supervisorPid, `swamp ${launch.args.join(" ")}`);
       this.commandLines.set(
         litestreamPid,
-        `litestream replicate -config ${this.paths.config}`,
+        `litestream replicate -config ${this.paths.config} -no-expand-env`,
       );
       const lock = Deno.openSync(this.paths.supervisorLock, {
         read: true,
@@ -666,6 +666,40 @@ Deno.test({
         [],
         "the newer supervisor was not killed",
       );
+      assertEquals(world.live.length, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a failed launch releases its lock probe, so the next acquire starts a sidecar",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      let failures = 1;
+      const replicator = new LitestreamReplicator({
+        ...world.deps(),
+        resolveBinary: () =>
+          failures-- > 0
+            ? Promise.reject(new Error("download failed"))
+            : Promise.resolve("/bin/litestream"),
+      });
+      await assertRejects(
+        () => replicator.acquire(world.request(db, 1)),
+        Error,
+        "download failed",
+      );
+      const probe = await Deno.open(world.paths.supervisorLock, {
+        read: true,
+        write: true,
+      });
+      try {
+        assertEquals(await probe.tryLock(true), true, "no lock left held");
+      } finally {
+        probe.close();
+      }
+      await (await replicator.acquire(world.request(db, 1))).release();
       assertEquals(world.live.length, 1);
     });
   },

@@ -74,8 +74,12 @@ export function isSupervisorFor(
   // The marker and the database, not the exact line: a supervisor started
   // by another swamp build (another install path, `deno run` from source,
   // other timings) is still this database's, and replaceable.
+  // The database is matched as the whole `--db` argument, bounded by the
+  // argument after it, so `/x/tmp/d/commits.db` is not `/tmp/d/commits.db`.
   return commandLine !== undefined &&
-    commandLine.includes(SUPERVISOR_MARKER) && commandLine.includes(commitsDb);
+    commandLine.includes(
+      `${SUPERVISOR_MARKER} --db ${commitsDb} --private-root `,
+    );
 }
 
 /** Whether `commandLine` is a Litestream replicating with `configPath`. */
@@ -83,8 +87,10 @@ export function isLitestreamFor(
   commandLine: string | undefined,
   configPath: string,
 ): boolean {
-  return commandLine !== undefined && commandLine.includes("replicate") &&
-    commandLine.includes(configPath);
+  // The whole argument list the supervisor gives it, so only a Litestream
+  // started for this config matches.
+  return commandLine !== undefined &&
+    commandLine.includes(` replicate -config ${configPath} -no-expand-env`);
 }
 
 /** The processes of this host. */

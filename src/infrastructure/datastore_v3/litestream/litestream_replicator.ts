@@ -351,13 +351,17 @@ export class LitestreamReplicator {
             await this.deps.sleep(timings.pollMs);
             continue;
           }
-          if (action.orphanPid !== undefined) {
-            this.deps.processes.signal(action.orphanPid, "SIGKILL");
+          try {
+            if (action.orphanPid !== undefined) {
+              this.deps.processes.signal(action.orphanPid, "SIGKILL");
+            }
+            await this.#launch(paths, replica, lineageFence, replicaPath);
+          } finally {
+            // The probe lock goes once the supervisor is launched (it retries
+            // the lock for long enough to get it), and on a failed launch
+            // too: a lock left held would block every later start.
+            step.release();
           }
-          await this.#launch(paths, replica, lineageFence, replicaPath);
-          // The probe lock goes once the supervisor is launched: it retries
-          // the lock for long enough to get it.
-          step.release();
           launched = true;
           waitingSince = this.deps.now();
           await this.deps.sleep(timings.pollMs);
@@ -527,6 +531,8 @@ export class LitestreamReplicator {
     action: Extract<SidecarAction, { kind: "replace" }>,
     use: Deno.FsFile,
   ): Promise<void> {
+    // Converting a flock is not atomic: if this wait times out, the shared
+    // hold may already be gone. The caller closes `use` on the error.
     await this.#waitForLock(
       use,
       true,
