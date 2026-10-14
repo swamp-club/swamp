@@ -29,8 +29,13 @@ import {
 } from "../../domain/update/integrity.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { extractTarGz } from "../archive/tar_archive.ts";
-import { removeAbandonedTempFiles } from "../persistence/abandoned_temp_files.ts";
+import {
+  removeAbandonedTempDirs,
+  removeAbandonedTempFiles,
+} from "../persistence/abandoned_temp_files.ts";
 import { abortableSleep, type Sleep } from "../http/rate_limit.ts";
+import type { DownloadOptions } from "../../domain/update/download_progress.ts";
+import { downloadToFile } from "./resumable_download.ts";
 
 const logger = getLogger(["swamp", "update"]);
 
@@ -38,6 +43,8 @@ const logger = getLogger(["swamp", "update"]);
 const CHECK_TIMEOUT_MS = 5000;
 /** Wait before each retry of the update check: 1s, then 2s, then 4s… */
 const CHECK_RETRY_BASE_DELAY_MS = 1000;
+/** Name prefix of the temp directory each update downloads into. */
+const UPDATE_TEMP_DIR_PREFIX = "swamp-update-";
 
 /** Options for {@link HttpUpdateChecker}. */
 export interface HttpUpdateCheckerOptions {
@@ -48,7 +55,19 @@ export interface HttpUpdateCheckerOptions {
   maxAttempts?: number;
   /** Waits between attempts; replaced in tests. */
   sleep?: Sleep;
+  /**
+   * Where update temp directories go; defaults to the OS temp dir. Tests set
+   * it: an install also sweeps abandoned update directories from it, and a
+   * test must not touch the real temp dir.
+   */
+  tempRoot?: string;
+  /** Replaced in tests; see {@link downloadToFile}. */
+  downloadStallTimeoutMs?: number;
+  downloadMaxAttempts?: number;
 }
+
+/** One request's result: a value, or the reason to try again. */
+type AttemptResult<T> = { ok: true; value: T } | { ok: false; reason: string };
 
 async function extractZip(
   archivePath: string,
@@ -266,6 +285,16 @@ function checkFailedError(reason: string, attempts: number): UserError {
   );
 }
 
+/** The error for a checksum fetch whose every attempt failed. */
+function checksumFailedError(reason: string, attempts: number): UserError {
+  if (attempts === 1) {
+    return new UserError(`Failed to fetch checksum: ${reason}`);
+  }
+  return new UserError(
+    `Failed to fetch checksum after ${attempts} attempts. Last attempt: ${reason}`,
+  );
+}
+
 /**
  * HTTP adapter implementing UpdateChecker.
  * Checks artifacts.swamp-club.com for the latest swamp binary.
@@ -273,10 +302,16 @@ function checkFailedError(reason: string, attempts: number): UserError {
 export class HttpUpdateChecker implements UpdateChecker {
   private readonly maxAttempts: number;
   private readonly sleep: Sleep;
+  private readonly tempRoot: string | undefined;
+  private readonly downloadStallTimeoutMs: number | undefined;
+  private readonly downloadMaxAttempts: number | undefined;
 
   constructor(options: HttpUpdateCheckerOptions = {}) {
     this.maxAttempts = Math.max(1, options.maxAttempts ?? 1);
     this.sleep = options.sleep ?? abortableSleep;
+    this.tempRoot = options.tempRoot;
+    this.downloadStallTimeoutMs = options.downloadStallTimeoutMs;
+    this.downloadMaxAttempts = options.downloadMaxAttempts;
   }
 
   /**
@@ -286,10 +321,28 @@ export class HttpUpdateChecker implements UpdateChecker {
    *
    * A timeout, connection error or HTTP 5xx is retried with backoff up to
    * `maxAttempts`; when the last attempt fails it becomes a UserError.
+   * Aborting `signal` stops at once, with no further attempt.
    */
-  async checkForUpdate(platform: Platform): Promise<string | null> {
+  async checkForUpdate(
+    platform: Platform,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
     const url = platform.stableUrl();
-    const response = await this.headWithRetry(url);
+    const response = await this.withRetry(
+      "Update check",
+      async (attemptSignal) => {
+        const response = await fetch(url, {
+          method: "HEAD",
+          redirect: "manual",
+          signal: attemptSignal,
+        });
+        if (response.status < 500) return { ok: true, value: response };
+        await response.body?.cancel();
+        return { ok: false, reason: `HTTP ${response.status}` };
+      },
+      checkFailedError,
+      signal,
+    );
 
     // Check for redirect via Location header or S3 metadata
     const redirectLocation = response.headers.get("location") ||
@@ -317,106 +370,106 @@ export class HttpUpdateChecker implements UpdateChecker {
   }
 
   /**
-   * Send the HEAD request, retrying transient failures. Returns the first
-   * response below 500; throws once the last attempt fails too.
+   * Run `request` with a per-attempt timeout, retrying a timeout, connection
+   * error or retryable result with backoff up to `maxAttempts`. A UserError
+   * from `request` is not retried. Aborting `signal` rethrows its reason at
+   * once.
    */
-  private async headWithRetry(url: string): Promise<Response> {
+  private async withRetry<T>(
+    what: string,
+    request: (attemptSignal: AbortSignal) => Promise<AttemptResult<T>>,
+    failedError: (reason: string, attempts: number) => UserError,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
     for (let attempt = 1;; attempt++) {
+      signal?.throwIfAborted();
+      const timeout = AbortSignal.timeout(CHECK_TIMEOUT_MS);
+      const attemptSignal = signal
+        ? AbortSignal.any([signal, timeout])
+        : timeout;
       let reason: string;
       try {
-        const response = await fetch(url, {
-          method: "HEAD",
-          redirect: "manual",
-          signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
-        });
-        if (response.status < 500) return response;
-        await response.body?.cancel();
-        reason = `HTTP ${response.status}`;
+        const result = await request(attemptSignal);
+        if (result.ok) return result.value;
+        reason = result.reason;
       } catch (error: unknown) {
+        if (signal?.aborted) throw signal.reason;
+        if (error instanceof UserError) throw error;
         reason = describeCheckFailure(error);
       }
       if (attempt >= this.maxAttempts) {
-        throw checkFailedError(reason, attempt);
+        throw failedError(reason, attempt);
       }
       const delayMs = CHECK_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
       logger
-        .debug`Update check attempt ${attempt} of ${this.maxAttempts} failed (${reason}); retrying in ${delayMs}ms`;
-      await this.sleep(delayMs);
+        .debug`${what} attempt ${attempt} of ${this.maxAttempts} failed (${reason}); retrying in ${delayMs}ms`;
+      await this.sleep(delayMs, signal);
     }
   }
 
   /**
-   * Fetch the expected SHA-256 checksum for a tarball.
+   * Fetch the expected SHA-256 checksum for a tarball, retrying transient
+   * failures like the update check does.
    */
-  async fetchChecksum(tarballUrl: string): Promise<string> {
+  async fetchChecksum(
+    tarballUrl: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const checksumUrl = checksumUrlFromTarballUrl(tarballUrl);
-
-    let response: Response;
-    try {
-      response = await fetch(checksumUrl);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new UserError(`Failed to fetch checksum: ${message}`);
-    }
-
-    if (!response.ok) {
-      throw new UserError(
-        `Failed to fetch checksum: HTTP ${response.status} from ${checksumUrl}`,
-      );
-    }
-
-    const content = await response.text();
+    const content = await this.withRetry(
+      "Checksum fetch",
+      async (attemptSignal) => {
+        const response = await fetch(checksumUrl, { signal: attemptSignal });
+        if (response.status >= 500) {
+          await response.body?.cancel();
+          return { ok: false, reason: `HTTP ${response.status}` };
+        }
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new UserError(
+            `Failed to fetch checksum: HTTP ${response.status} from ${checksumUrl}`,
+          );
+        }
+        return { ok: true, value: await response.text() };
+      },
+      checksumFailedError,
+      signal,
+    );
     return parseChecksumFile(content);
   }
 
   /**
    * Download the archive, verify its checksum, and install the binary.
+   * Aborting `options.signal` before the binary is replaced rejects with its
+   * reason; the temp directory is removed either way.
    */
   async downloadAndInstall(
     url: string,
     binaryPath: string,
     expectedChecksum: string,
+    options: DownloadOptions = {},
   ): Promise<void> {
+    const { signal } = options;
     const isZip = url.endsWith(".zip");
-    const tempDir = await Deno.makeTempDir({ prefix: "swamp-update-" });
+    const tempDir = await Deno.makeTempDir({
+      dir: this.tempRoot,
+      prefix: UPDATE_TEMP_DIR_PREFIX,
+    });
+    // Remove what an earlier update killed mid-download left behind. The new
+    // directory is fresh, so the sweep keeps it.
+    await removeAbandonedTempDirs(dirname(tempDir), UPDATE_TEMP_DIR_PREFIX);
 
     try {
       const archiveExt = isZip ? "zip" : "tar.gz";
       const archivePath = `${tempDir}/swamp.${archiveExt}`;
 
-      // Download the archive
-      let response: Response;
-      try {
-        response = await fetch(url);
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new UserError(`Download failed: ${message}`);
-      }
-      if (!response.ok) {
-        throw new UserError(
-          `Failed to download update: HTTP ${response.status}`,
-        );
-      }
-      if (!response.body) {
-        throw new UserError("Failed to download update: empty response body");
-      }
-
-      const file = await Deno.open(archivePath, {
-        write: true,
-        create: true,
+      await downloadToFile(url, archivePath, {
+        ...options,
+        stallTimeoutMs: this.downloadStallTimeoutMs,
+        maxAttempts: this.downloadMaxAttempts,
+        sleep: this.sleep,
       });
-      try {
-        await response.body.pipeTo(file.writable);
-      } catch (error: unknown) {
-        // Clean up partial download
-        try {
-          await Deno.remove(archivePath);
-        } catch {
-          // Best-effort cleanup
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new UserError(`Download failed: ${message}`);
-      }
+      signal?.throwIfAborted();
 
       // Verify archive integrity before extraction
       const archiveBytes = await Deno.readFile(archivePath);
@@ -462,6 +515,10 @@ export class HttpUpdateChecker implements UpdateChecker {
       if (Deno.build.os === "darwin") {
         await removeQuarantine(extractedBinary);
       }
+
+      // The last point the update can be cancelled. Once the swap starts it
+      // runs to the end, so a Ctrl+C never leaves a half-replaced install.
+      signal?.throwIfAborted();
 
       // Replace the current binary (atomic rename to preserve running processes)
       await replaceBinary(extractedBinary, binaryPath);

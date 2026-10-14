@@ -19,6 +19,7 @@
 
 import { dirname, join } from "@std/path";
 import type { Platform } from "./platform.ts";
+import type { DownloadOptions } from "./download_progress.ts";
 import { validateRedirectUrl } from "./integrity.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 
@@ -30,23 +31,31 @@ export interface UpdateChecker {
   /**
    * Check the latest available version by inspecting the stable URL redirect.
    * Returns the redirect URL containing the version, or null if no redirect.
+   * Aborting `signal` rejects with its reason.
    */
-  checkForUpdate(platform: Platform): Promise<string | null>;
+  checkForUpdate(
+    platform: Platform,
+    signal?: AbortSignal,
+  ): Promise<string | null>;
 
   /**
    * Fetch the expected SHA-256 checksum for a tarball.
    * Derives the checksum URL from the tarball URL by appending ".sha256".
+   * Aborting `signal` rejects with its reason.
    */
-  fetchChecksum(tarballUrl: string): Promise<string>;
+  fetchChecksum(tarballUrl: string, signal?: AbortSignal): Promise<string>;
 
   /**
    * Download the tarball, verify its SHA-256 checksum, extract, and install.
-   * Throws UserError if checksum verification fails.
+   * Throws UserError if checksum verification fails. Aborting
+   * `options.signal` before the binary is replaced rejects with its reason
+   * and leaves the installed binary untouched.
    */
   downloadAndInstall(
     url: string,
     binaryPath: string,
     expectedChecksum: string,
+    options?: DownloadOptions,
   ): Promise<void>;
 }
 
@@ -119,8 +128,11 @@ export class UpdateService {
   /**
    * Check whether an update is available without installing.
    */
-  async check(platform: Platform): Promise<UpdateResult> {
-    const redirectUrl = await this.checker.checkForUpdate(platform);
+  async check(
+    platform: Platform,
+    signal?: AbortSignal,
+  ): Promise<UpdateResult> {
+    const redirectUrl = await this.checker.checkForUpdate(platform, signal);
     if (!redirectUrl) {
       return {
         status: "up_to_date",
@@ -202,11 +214,16 @@ export class UpdateService {
   /**
    * Check for and install an update.
    * Downloads from the resolved versioned URL, not the stable redirect pointer.
+   * `options` reports download progress and can cancel the update.
    */
-  async update(platform: Platform): Promise<UpdateResult> {
+  async update(
+    platform: Platform,
+    options: DownloadOptions = {},
+  ): Promise<UpdateResult> {
+    const { signal } = options;
     await this.checkWritePermission();
 
-    const redirectUrl = await this.checker.checkForUpdate(platform);
+    const redirectUrl = await this.checker.checkForUpdate(platform, signal);
     if (!redirectUrl) {
       return {
         status: "up_to_date",
@@ -226,11 +243,17 @@ export class UpdateService {
       };
     }
 
-    const expectedChecksum = await this.checker.fetchChecksum(redirectUrl);
+    signal?.throwIfAborted();
+    const expectedChecksum = await this.checker.fetchChecksum(
+      redirectUrl,
+      signal,
+    );
+    signal?.throwIfAborted();
     await this.checker.downloadAndInstall(
       redirectUrl,
       this.binaryPath,
       expectedChecksum,
+      options,
     );
 
     return {
