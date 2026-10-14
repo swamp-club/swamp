@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { SEPARATOR } from "@std/path";
 import {
   handleDataDelete,
@@ -485,6 +486,51 @@ Deno.test("handleDataGet: returns the requested version without error details", 
     assertEquals(response.type, "data.get");
     assertEquals(response.payload.data.version, 1);
     assertEquals(response.payload.data.content, "hello");
+  });
+});
+
+Deno.test("handleDataGet: logs the original of an error it withholds from the client (swamp-club#3465)", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx, dataRepo } = await createSyncFixture(dir, {
+      syncService: false,
+    });
+    const original =
+      "Permission denied (os error 13): readfile '/tmp/repo/.swamp/data/raw'";
+    dataRepo.getContent = () => Promise.reject(new Error(original));
+    const socket = createMockSocket();
+
+    const records: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => records.push(record) },
+      loggers: [
+        {
+          category: ["serve", "error"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      await handleDataGet(
+        socket,
+        ctx,
+        "req-get-withheld",
+        { modelIdOrName: "sync-model", dataName: "result", version: 1 },
+        new AbortController(),
+        null,
+      );
+    } finally {
+      await reset();
+    }
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "error");
+    assertEquals(response.error.code, "data_get_failed");
+    assertEquals(response.error.message, "An internal error occurred");
+    assertEquals(records.length, 1);
+    assertEquals(records[0].properties.message, original);
   });
 });
 
