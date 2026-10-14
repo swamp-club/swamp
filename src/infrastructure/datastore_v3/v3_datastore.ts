@@ -37,7 +37,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { ensureDirSync } from "@std/fs";
 import { createHash } from "node:crypto";
-import { dirname, join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import {
   restoreNamespace,
   SOLO_NAMESPACE,
@@ -136,15 +136,24 @@ export function v3CommitsDbPath(
   if (v3ReplicaSetting() === undefined) {
     return join(datastorePath, COMMITS_DB_FILE);
   }
-  const canonical = Deno.realPathSync(datastorePath);
-  const key = createHash("sha256").update(canonical).digest("hex")
-    .slice(0, 16);
+  const key = createHash("sha256").update(canonicalPath(datastorePath))
+    .digest("hex").slice(0, 16);
   return swampPath(
-    Deno.realPathSync(repoDir),
+    canonicalPath(repoDir),
     V3_LOCAL_COPIES_DIR,
     key,
     COMMITS_DB_FILE,
   );
+}
+
+/** `path` with symlinks resolved, or as given when it does not exist yet. */
+function canonicalPath(path: string): string {
+  try {
+    return Deno.realPathSync(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return resolve(path);
+    throw error;
+  }
 }
 
 /** The cache root of namespace `namespace` in a checkout. */

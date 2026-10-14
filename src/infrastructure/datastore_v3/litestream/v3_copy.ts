@@ -523,9 +523,15 @@ export async function collectV3Lineages(
       const fence of collectableLineages(lineages, abandoned, root, current)
     ) {
       // A read fetches only the starts the current state needs: a lineage
-      // another replica root started is left alone, records included.
+      // another replica root started, or whose start does not parse, is
+      // left alone, records included.
       const started = await registry.started(fence);
-      if (started !== undefined && started.replicaRoot !== root) continue;
+      if (
+        started === "unreadable" ||
+        (started !== undefined && started.replicaRoot !== root)
+      ) {
+        continue;
+      }
       if (await removeReplicaPath(replica, fence)) {
         await registry.remove(fence);
         collected.push(fence);

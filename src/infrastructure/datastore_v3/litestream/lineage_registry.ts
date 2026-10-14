@@ -134,12 +134,23 @@ export class LineageRegistry {
     return fences.map((fence) => ({ fence, ...(found.get(fence) ?? {}) }));
   }
 
-  /** The start of the lineage at `fence`, or undefined when it has none. */
-  async started(fence: number): Promise<LineageStarted | undefined> {
-    const record = parseLineageStarted(
-      await this.#get(keyOf(fence, "started")),
-    );
-    return record?.fence === fence ? record : undefined;
+  /**
+   * The start of the lineage at `fence`: undefined when it has none,
+   * "unreadable" when its record does not parse.
+   */
+  async started(
+    fence: number,
+  ): Promise<LineageStarted | "unreadable" | undefined> {
+    const data = await this.store.get(keyOf(fence, "started"));
+    if (data === null) return undefined;
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder().decode(data));
+    } catch {
+      return "unreadable";
+    }
+    const record = parseLineageStarted(value);
+    return record?.fence === fence ? record : "unreadable";
   }
 
   /** Claims the lineage at `record.fence`; false when it was claimed before. */

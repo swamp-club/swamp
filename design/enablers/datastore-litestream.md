@@ -993,9 +993,23 @@ or three writers with crashes at every step, zombies, late heads and
 recovery holds, checking that the restore keeps every acknowledged commit and
 nothing unacknowledged but a failed writer's published head.
 
-**Known limits, dormant.** `swamp datastore namespace list` reads the
-checkout's copy as it is, without refreshing it. Windows stays unavailable
-while the pin is below 0.5.18.
+**Known limits, dormant.**
+
+- `swamp datastore namespace list` reads the checkout's copy as it is,
+  without refreshing it.
+- A fenced writer can publish heads on its old lineage until the new
+  writer's lineage is confirmed, so the new writer's next refresh can
+  restore commits whose command failed, and they become durable in its
+  lineage. This is the head-first trade-off above. Before chunk garbage
+  collection runs against replicated copies, 4E must account for it:
+  truncation releases chunk references that another copy may still
+  restore.
+- Turning replication on over a datastore that already has a shared
+  `commits.db` starts every checkout from an empty copy, because nothing
+  is published yet. The shared commits are ignored without a warning. 4E
+  needs a migration step (publish the shared database as the first
+  lineage) before the setting is exposed.
+- Windows stays unavailable while the pin is below 0.5.18.
 
 ## Upgrades
 
