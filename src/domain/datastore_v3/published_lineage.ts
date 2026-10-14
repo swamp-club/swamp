@@ -184,7 +184,10 @@ export type LocalCopyDecision =
  * - The copy is current when it holds the current lineage at or past its
  *   head, or when its own writer's lineage, started after the current one
  *   and not yet confirmed, is still the newest started: that writer's
- *   commits are on their way.
+ *   commits are on their way. Its writer started it only once the copy was
+ *   current under the lease, so any head published on an older lineage since
+ *   came from a fenced writer, over commits nobody acknowledged, and does not
+ *   make the copy behind.
  */
 export function decideLocalCopy(
   local: {
@@ -206,8 +209,7 @@ export function decideLocalCopy(
   if (
     own !== undefined && own.replicaRoot === replicaRoot &&
     own.lineageFence > current.fence &&
-    newestStartedFence(lineages, replicaRoot) === own.lineageFence &&
-    copyAtOrPast(local.copy, current.fence, head.txid, replicaRoot)
+    newestStartedFence(lineages, replicaRoot) === own.lineageFence
   ) {
     return { kind: "current" };
   }
@@ -221,21 +223,6 @@ export function decideLocalCopy(
   return compareTxid(copy.txid, head.txid) >= 0
     ? { kind: "current" }
     : restore("behind");
-}
-
-/**
- * Whether the copy holds lineage `fence` at or past `txid`, or a later
- * lineage this copy itself started from it.
- */
-function copyAtOrPast(
-  copy: LocalCopyState | undefined,
-  fence: number,
-  txid: string,
-  replicaRoot: string,
-): boolean {
-  if (copy === undefined || copy.replicaRoot !== replicaRoot) return false;
-  if (copy.lineageFence > fence) return true;
-  return copy.lineageFence === fence && compareTxid(copy.txid, txid) >= 0;
 }
 
 /**
@@ -286,6 +273,10 @@ export function restartLineage(
  * The lineages garbage collection may remove once `current` is confirmed:
  * every other one under `replicaRoot` below it. Never `current`, and never
  * a lineage started after it, which may yet be confirmed.
+ *
+ * A lineage whose start the caller did not read is included: the caller
+ * must read each one's start, and skip any another root started or whose
+ * start does not parse, before removing it (`collectV3Lineages` does).
  */
 export function collectableLineages(
   lineages: readonly PublishedLineage[],

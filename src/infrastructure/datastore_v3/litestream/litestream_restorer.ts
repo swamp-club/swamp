@@ -208,7 +208,14 @@ export async function installByLink(
     await Deno.link(temp, target);
   } catch (error) {
     if (error instanceof Deno.errors.AlreadyExists) return false;
-    throw error;
+    // A filesystem without hard links: rename, unless a file appeared.
+    try {
+      await Deno.lstat(target);
+      return false;
+    } catch (missing) {
+      if (!(missing instanceof Deno.errors.NotFound)) throw error;
+    }
+    await Deno.rename(temp, target);
   }
   await syncFile(dirname(target));
   return true;

@@ -173,6 +173,16 @@ Deno.test("decideLocalCopy: a writer's own newest pending lineage is current", (
   assertEquals(decideLocalCopy({ copy, lineage: own(8, 9) }, lineages, ROOT), {
     kind: "current",
   });
+  // A fenced writer published a later head on the old lineage since: it
+  // covers nothing acknowledged, and the copy stays current.
+  assertEquals(
+    decideLocalCopy(
+      { copy: { ...copy, txid: txid(4) }, lineage: own(8, 9) },
+      [published(3, { confirmed: 2, head: 7 }), published(8)],
+      ROOT,
+    ),
+    { kind: "current" },
+  );
   // Another writer started after it: this copy's pending commits were never
   // acknowledged, and the current state is restored.
   assertEquals(

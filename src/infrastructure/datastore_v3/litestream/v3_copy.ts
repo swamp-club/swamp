@@ -232,15 +232,26 @@ export async function makeV3CopyCurrent(
       : async (temp: string) => {
         if (!await installByLink(temp, target)) await intoExisting(temp);
       };
-    const restored = await restoreV3Copy({
-      binary: await resolveV3LitestreamBinary(),
-      replica,
-      head: decision.lineage.head,
-      target,
-      configDir: paths.privateDir,
-      install,
-      deadlineMs: restoreDeadlineMs,
-    });
+    let restored: V3RestoreResult;
+    try {
+      restored = await restoreV3Copy({
+        binary: await resolveV3LitestreamBinary(),
+        replica,
+        head: decision.lineage.head,
+        target,
+        configDir: paths.privateDir,
+        install,
+        deadlineMs: restoreDeadlineMs,
+      });
+    } catch (error) {
+      // A reader whose restore fails (the replica unreachable, or the
+      // lineage collected while it read) reads the copy as it is; a writer
+      // fails, its copy unchanged.
+      if (options.mode === "read") {
+        return refuseOrSkip("read", copy, messageOf(error), error);
+      }
+      throw error;
+    }
     // The commit the read model last applied is still where it was, or
     // the restore moved it (swamp-club#3482): one from another lineage, or
     // one that dropped commits never acknowledged. Then the checkout is

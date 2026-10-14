@@ -745,6 +745,10 @@ async function syncAndPublishNow(
     await use.sync(deadlineMs);
     return;
   }
+  // Taken before the sync: what the sync covers. A serve that lost its lease
+  // meanwhile still publishes this head on its old lineage before its lease
+  // check fails; it covers only commits nobody acknowledged, which a newer
+  // lineage's writer ignores (`decideLocalCopy`).
   const mark = handle.commitStore.highWaterMark();
   let first = false;
   await use.sync(deadlineMs, {
