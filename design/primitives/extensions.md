@@ -1813,13 +1813,21 @@ from `@bixu/wheelshop`:
 
 ### Not audited
 
+OSV is asked about one exact version, resolved from the specifier the way the
+registry's scorecard resolves it: an exact version as-is, a range to the highest
+published version that satisfies it, a dist-tag through the packument's
+`dist-tags`, and no version to `latest`. The audit summary's `version` is that
+resolved version.
+
 A dependency whose npm registry or OSV.dev lookup fails (an error status, no
-network, a timeout) is **not audited**. It is never reported as passed: its
-audit summary has `passed: false`, `cause: "not-audited"` and a `reason` naming
-each failed lookup, and a warning with the same cause joins
-`warnings.dependencyTrust`. When npm fails but the specifier pins a version,
-OSV is still queried, so a HIGH or CRITICAL vulnerability still blocks; an
-unpinned specifier cannot be queried. A failed weekly-downloads lookup alone
+network, a timeout), or whose specifier no published version matches, is **not
+audited**. It is never reported as passed: its audit summary has
+`passed: false`, `cause: "not-audited"` and a `reason` naming each failed lookup
+(or `OSV not queried (no published version matches <spec>)`), and a warning
+with the same cause joins `warnings.dependencyTrust`. When npm fails but the
+specifier is an exact version, OSV is still queried, so a HIGH or CRITICAL
+vulnerability still blocks; a range, dist-tag or missing version cannot be
+resolved without npm and is not queried. A failed weekly-downloads lookup alone
 leaves the dependency audited. Unaudited dependencies join the push warnings
 gate (an interactive push prompts; `--yes` waives them), never block on their
 own, and never change the exit code. `DependencyTrustResult.passed` keeps

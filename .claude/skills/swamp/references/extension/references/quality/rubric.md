@@ -199,10 +199,10 @@ audits them against OSV.dev advisories and the npm registry.
 - Deprecated packages (npm registry `deprecated` field)
 
 **Not audited (fails the factor, does not block):** a dependency whose OSV.dev
-or npm registry lookup failed is reported as not audited (`cause:
-"not-audited"`
-with a `reason`) and never as passed. Re-run when both services are reachable to
-earn the factor.
+or npm registry lookup failed, or whose specifier no published version matches,
+is reported as not audited (`cause:
+"not-audited"` with a `reason`) and never as
+passed. Re-run when both services are reachable to earn the factor.
 
 **Warnings (displayed but do not block):**
 
