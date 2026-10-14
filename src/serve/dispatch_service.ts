@@ -38,6 +38,7 @@ import {
 import { join } from "@std/path";
 import { createLibSwampContext } from "../libswamp/context.ts";
 import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import { modelMethodRun } from "../libswamp/models/run.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
@@ -1088,6 +1089,7 @@ export class DispatchService {
     const deps = await createWorkerModelRunDeps(
       this.#options.repoDir,
       this.#options.repoContext,
+      { definitionType: ModelType.create(input.typeArg) },
     );
     const libCtx = createLibSwampContext({
       openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
