@@ -217,7 +217,7 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
   `.swamp/outputs/`, even when outputs are stored in a datastore. A `logFile`
   outside the output's own method directory is left alone: a workflow step's
   output points at its workflow run's log, which workflow-run gc removes.
-  `swamp model delete` removes an output's run log the same way.
+  `swamp behavior delete` removes an output's run log the same way.
 - **Orphaned run logs**: gc also removes run logs in the repo-local
   `.swamp/outputs/` that no remaining output references. These include logs
   left behind by earlier gc runs, and logs from runs that failed before saving

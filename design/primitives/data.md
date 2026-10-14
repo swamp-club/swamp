@@ -97,7 +97,7 @@ each workflow step's latest version for `findBySpec`/`findByTag`;
 `artifacts.dataArtifacts` (a list of `{dataId, name, version, tags}`). It is YAML
 under `outputs/` (`src/infrastructure/persistence/yaml_output_repository.ts`),
 read with
-`swamp model output ...` or `swamp model output data <output_id>`
+`swamp behavior output ...` or `swamp behavior output data <output_id>`
 (`src/cli/commands/model_output_data.ts`). It points at data; it is not data.
 
 ## Writing data
@@ -150,7 +150,7 @@ stores. Rollback attempts both stores even when one fails
 auto-tag, the definition's `tags`, the spec's default tags, per-call
 `overrides.tags`, the `specName` and `modelName` auto-tags, then workflow step
 tag overrides (which also feed `ownerDefinition.workflowRunId` etc.). Next come
-runtime tags from `--tag KEY=VALUE` on `swamp model method run` /
+runtime tags from `--tag KEY=VALUE` on `swamp behavior run` /
 `swamp workflow run` (`src/cli/commands/model_method_run.ts`,
 `workflow_run.ts`). Last is the definition-level `dataOutputOverrides` for that
 spec: lifetime, GC, tags, vary, vault name (`data_output_override.ts`).
@@ -216,7 +216,7 @@ removes every version.
   highest-versioned match (the first step on a tie) when several steps wrote
   the name (swamp-club#2948) and warns
   with the other matches. `data get`, serve's `data.get` and
-  `swamp model output data` return content without loss: text when the
+  `swamp behavior output data` return content without loss: text when the
   stored bytes are valid UTF-8 (less a leading byte-order mark), otherwise
   base64, with a `contentEncoding` of `utf-8` or `base64` saying which
   (`content_encoding.ts` `encodeContent`). Also `swamp data list` (grouped by
@@ -241,7 +241,7 @@ versions:
 | Mechanism                       | Removes                                                                                                                                                | Source                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
 | Write-time cap (`autoGc: true`) | On each save, and when a deferred write is promoted, versions beyond an **integer** `garbageCollection` cap — for direct runs and workflow steps alike | `unified_data_repository.ts` `pruneExcessVersions`; `.swamp.yaml` `autoGc`     |
-| Post-run GC (`autoGc: true`)    | After each `model method run`: the behavior's `collectGarbage` plus lifetime expiry of its names                                                       | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
+| Post-run GC (`autoGc: true`)    | After each `behavior run`: the behavior's `collectGarbage` plus lifetime expiry of its names                                                           | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
 | `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC                                                                            | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
 | `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a behavior                                                                                | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
 | `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                                                                               | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |

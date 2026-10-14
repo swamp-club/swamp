@@ -20,7 +20,7 @@ Evaluate whether the change requires end-to-end UAT coverage in the
 
 - **CLI UAT tests** (`tests/cli/`) — verify CLI commands, flags, and output from
   a user's perspective. File paths mirror CLI command paths (e.g.
-  `swamp model create` → `tests/cli/model/create_test.ts`).
+  `swamp behavior run` → `tests/cli/behavior/run_test.ts`).
 - **Adversarial tests** (`tests/cli/adversarial/`) — verify robustness under
   edge conditions: concurrency, resource exhaustion, security boundaries, state
   corruption, process lifecycle.

@@ -87,5 +87,15 @@
     "query": "Run swamp model validate my-check",
     "should_trigger": false,
     "note": "Legacy model command -> swamp skill"
+  },
+  {
+    "query": "Create a behavior for me",
+    "should_trigger": false,
+    "note": "Behavior creation -> swamp skill"
+  },
+  {
+    "query": "Run swamp behavior validate my-check",
+    "should_trigger": false,
+    "note": "Behavior command -> swamp skill"
   }
 ]

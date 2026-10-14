@@ -189,7 +189,7 @@ Validation reads static global arguments the way the next method run will.
 `DefaultModelValidationService` (`src/domain/models/validation_service.ts`)
 applies the same chain to an in-memory copy before it checks global arguments
 and runs pre-flight checks, and never saves it. That covers both
-`swamp model validate` and the check before each workflow step, so a stale
+`swamp behavior validate` and the check before each workflow step, so a stale
 definition is not refused before the run that would migrate it. An upgrade that
 throws fails the Global arguments item. Arguments holding a swamp expression are
 not upgraded in validation: the run upgrades their evaluated values, and the
@@ -209,8 +209,9 @@ nothing.
 `typeVersion` records the behavior type version a definition's global arguments
 were written or migrated for. Only two things may set it:
 
-1. **Creation**: `model create`, direct type execution, and the internal grant
-   and server-token definition writers set it to the registered type's version.
+1. **Creation**: `behavior create`, direct type execution, and the internal
+   grant and server-token definition writers set it to the registered type's
+   version.
 2. **`DefinitionUpgradeService`**, when it migrates the arguments.
 
 Persistence must never set it. `YamlDefinitionRepository.save()` used to
@@ -240,12 +241,12 @@ states:
 | `unknown`    | No `typeVersion` recorded. Nobody said which version the arguments were written for, so the chain does not run. |
 | `invalid`    | A `typeVersion` is recorded but does not parse as CalVer. Method runs against it fail. |
 
-`model get` reports `typeVersion`, `currentTypeVersion` and `staleness` in both
-output modes. A method run warns once when an instance is `stranded`, and once
-when it is `unknown` *and* the type declares an upgrade chain. An unstamped
+`behavior get` reports `typeVersion`, `currentTypeVersion` and `staleness` in
+both output modes. A method run warns once when an instance is `stranded`, and
+once when it is `unknown` *and* the type declares an upgrade chain. An unstamped
 definition is only worth mentioning when there is a chain it is declining to
 run; without one the warning would fire on every run of every hand-written
-definition. `resolveStaleness` never throws. `model get` is the command you
+definition. `resolveStaleness` never throws. `behavior get` is the command you
 reach for to diagnose a broken definition, so it has to survive the file it is
 describing. Refusing to act on an `invalid` version is
 `DefinitionUpgradeService`'s job.
@@ -334,7 +335,7 @@ version the arguments were written for and the ambiguity is gone.
 `UserError` instead of running. Someone meant to say something and got the
 format wrong. Ignoring what they wrote is the same defect as corrupting it
 silently. The schema turns a number into its string form rather than discarding
-it, so the value survives for `model get` to name. Rejecting it at the Zod
+it, so the value survives for `behavior get` to name. Rejecting it at the Zod
 boundary would make the definition unloadable by the very command you would use
 to diagnose it.
 
@@ -344,19 +345,19 @@ written once, as `CalVer.isValid`, so they cannot drift:
 | Layer | Posture |
 | ----- | ------- |
 | `DefinitionSchema` | Permissive. The value survives into the definition so it can be reported. |
-| `ModelValidationService` | Reports. A `Type version` item fails in `model validate`, and `model edit` gives the same warning when it writes. |
+| `ModelValidationService` | Reports. A `Type version` item fails in `behavior validate`, and `behavior edit` gives the same warning when it writes. |
 | `DefinitionUpgradeService` | Refuses. A method run against a malformed version fails. |
 
 Detection deliberately does not live in `YamlDefinitionRepository.save()`. That
 would guard only the paths where swamp itself wrote the value, which would
 already be well formed, and would miss the git-tracked file someone edited by
-hand, which never passes through `save()` at all. `model edit` checks after a
+hand, which never passes through `save()` at all. `behavior edit` checks after a
 blocking editor exits and after a stdin write. A non-blocking editor returns
 before the person has typed anything, so there is nothing to check yet.
 
 A stdin write does not rename. The piped body carries a `name`, and a body
-written for one behavior is easily piped at another, so `model edit` refuses a
-stdin update whose `name` differs from the stored one unless `--allow-rename`
+written for one behavior is easily piped at another, so `behavior edit` refuses
+a stdin update whose `name` differs from the stored one unless `--allow-rename`
 is passed, and refuses a name another behavior holds even then.
 `workflow edit` applies the same rule.
 
@@ -370,12 +371,12 @@ with a one-line fix instead of silently receiving a whole upgrade chain.
 
 There are two ways to create a definition:
 
-### Direct Instantiation (`model create`)
+### Direct Instantiation (`behavior create`)
 
 Use this to manage values in the definition file. Global arguments live in the
-YAML, are edited with `model edit`, and are version-controlled in git. Good for
-static configuration that rarely changes, definitions with CEL expressions in
-global arguments, and definitions shared across several workflow steps.
+YAML, are edited with `behavior edit`, and are version-controlled in git. Good
+for static configuration that rarely changes, definitions with CEL expressions
+in global arguments, and definitions shared across several workflow steps.
 
 These definitions live in the repository's top-level `models/` directory, under
 a directory for the normalized type. The file is `<name>.yaml` when the name is
@@ -419,10 +420,10 @@ way parameterized workflows that vary inputs per run always use current values.
 **Storage:** Auto-created definitions live in `.swamp/auto-definitions/`, not
 `models/`. They give behavior data an ownership boundary without a hand-written
 definition file. They are local runtime state, are not tracked in git, and do
-not appear in `swamp model search` results. `model get`, `behavior run`
-and workflow references can find them by name. `model get` shows
+not appear in `swamp behavior search` results. `behavior get`, `behavior run`
+and workflow references can find them by name. `behavior get` shows
 `Auto-created: yes` for them. Saving an existing auto-definition, whether a lazy
-`typeVersion` upgrade or `model edit`, writes it back to
+`typeVersion` upgrade or `behavior edit`, writes it back to
 `.swamp/auto-definitions/`; it never moves into `models/`.
 
 ### Choosing Between the Two
@@ -432,7 +433,7 @@ and workflow references can find them by name. `model get` shows
 | Do you manage values in the definition file?    | Yes                  | No                    |
 | Are values passed at runtime via `--input`?     | Sometimes            | Always                |
 | Is the definition git-tracked?                  | Yes                  | No                    |
-| Visible in `model search`?                      | Yes                  | No                    |
+| Visible in `behavior search`?                   | Yes                  | No                    |
 | Stored in                                       | `models/`            | `.swamp/auto-definitions/` |
 
 ### Definition Properties
@@ -774,12 +775,12 @@ checks:
   respect `appliesTo` method scoping.
 - **`skip`**: these checks are always skipped. `skip` wins over `require` if a
   check appears in both.
-- Validation (`model validate`) warns on require/skip overlap and errors if a
+- Validation (`behavior validate`) warns on require/skip overlap and errors if a
   referenced check does not exist on the behavior type.
 
-### model validate Integration
+### behavior validate Integration
 
-`swamp model validate` runs checks as part of validation. It runs all checks
+`swamp behavior validate` runs checks as part of validation. It runs all checks
 regardless of `appliesTo`, so validate surfaces the same errors method
 execution would. It honors definition-level `skip` lists as well as CLI flags.
 Two flags narrow which checks run:
@@ -993,7 +994,7 @@ keeps the outputs directory and the datastore index from growing without bound.
 
 The ModelRepository emits domain events when behavior data changes:
 
-- `ModelCreated`: a new behavior definition is created via `model create`
+- `ModelCreated`: a new behavior definition is created via `behavior create`
 - `ModelUpdated`: a behavior definition or data is modified
 - `ModelDeleted`: a behavior is deleted
 

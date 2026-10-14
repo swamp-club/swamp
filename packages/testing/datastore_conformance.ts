@@ -360,7 +360,7 @@ export async function assertLockConformance(
  * holder keeps the lock past `maxWaitMs`.
  *
  * Swamp core translates the rejection into its own lock-timeout error, which
- * `swamp model method run` reports as `"code": "lock_timeout"` with exit code
+ * `swamp behavior run` reports as `"code": "lock_timeout"` with exit code
  * 75, so callers know to retry. The translation relies on this shape:
  *
  * - `code` is `"lock_timeout"`, matched in any case (`"LOCK_TIMEOUT"` is fine)

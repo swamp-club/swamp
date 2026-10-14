@@ -394,7 +394,7 @@ cost of every write.
 `swamp data prune` reclaims them. It walks the data root (`findAllGlobal`),
 groups by `(type, modelId)`, and checks whether each group's definition still
 exists. The check uses the definition repository's `findById`, which searches
-both `models/` and `.swamp/auto-definitions/`, like `swamp model get`. So
+both `models/` and `.swamp/auto-definitions/`, like `swamp behavior get`. So
 auto-definition-backed behaviors (ones auto-created by a direct run or a
 workflow, and installed `@swamp/*` behaviors) count as live and are never
 pruned. Groups with
@@ -1572,7 +1572,7 @@ operation inside a unit of work:
     updates and revokes, `model.validate` (whose behavior checks receive the
     hooked repositories), `run.doctor`'s fix, worker data-plane writes and
     capability deletes, and the CLI's
-    `workflow cancel`, `workflow recover`, `model cancel` and `run doctor`.
+    `workflow cancel`, `workflow recover`, `behavior cancel` and `run doctor`.
   - Hand marks never pass through `signalChange` and are not reported; they
     stay pinned in `PINNED_MARK_CALL_SITES`.
   - Route 2 is removed in a follow-up once nothing reports: no route-2
@@ -1594,9 +1594,9 @@ operation inside a unit of work:
 - `PINNED_TRANSACTIONAL_USE_CASES` lists the wrapped use cases.
 
 Deliberately unbound: commands whose deps build their own unhooked repositories
-(`model create`, `workflow create`, `vault create`, `vault migrate` on the CLI),
-read-only contexts, and commands with no repository context. Their writes have
-no hook to bind to, so nothing changes for them.
+(`behavior create`, `workflow create`, `vault create`, `vault migrate` on the
+CLI), read-only contexts, and commands with no repository context. Their writes
+have no hook to bind to, so nothing changes for them.
 
 What still marks by hand, all owned by Phase 2 (`PINNED_MARK_CALL_SITES` lists
 each site):
@@ -2888,10 +2888,10 @@ on a stray directory. Neither `clearAll` nor `clear` has a production
 caller.
 
 **Writers with no hook.** These write the same files through repositories
-built without a hook: CLI `model create` and `model edit` and `workflow
-create`, `model evaluate` and `workflow evaluate`, editor-mode `model edit`,
-and serve's `migrateGrantDefinitions`. On v3 their typed changes stage into
-the commit-log unit around them (swamp-club#3279, "v3 opt-in"), and
+built without a hook: CLI `behavior create` and `behavior edit` and `workflow
+create`, `behavior evaluate` and `workflow evaluate`, editor-mode `behavior
+edit`, and serve's `migrateGrantDefinitions`. On v3 their typed changes stage
+into the commit-log unit around them (swamp-club#3279, "v3 opt-in"), and
 `runManagedConfigMutation` stages no bulk change there: it has no sync
 service.
 
@@ -3980,7 +3980,7 @@ repairs are v2's and take no writer lock.
 
 **Run artifacts.** On v3 a data save reports its content's checksum, and the
 `DataArtifactRef`s built from it record `sha256`. A streamed version reports
-none and falls back to `resolveRunArtifact`'s run or time rule. `model output
+none and falls back to `resolveRunArtifact`'s run or time rule. `behavior output
 data` and the run reads of `data get` and `data list` resolve a run's
 artifacts through `resolveRunArtifact`, so a later re-save of the same version
 is reported as no longer available. v2 records and outputs carry no `sha256`.
@@ -4249,8 +4249,8 @@ carries (`UnifiedDataRepository.fetchForeignContent`). The fetcher travels with
 the repository, as the lazy-hydration hook does, so a query service built from
 a repo context's repository can fetch wherever it is built: every repo context
 constructor wires it from the sync service, and the paths that build a
-repository of their own (workflow runs, `workflow evaluate`, `model evaluate`,
-`model validate`) are handed it.
+repository of their own (workflow runs, `workflow evaluate`, `behavior
+evaluate`, `behavior validate`) are handed it.
 
 Every reader hydrates a foreign JSON record: `query()` (before projection, so a
 `select` over `attributes` sees them, and after the `include` filter, so a
@@ -4778,7 +4778,7 @@ manages the lock lifecycle:
   metadataOnly?, namespace?, slowLockScope? })`: take the lock, pull if S3.
 - `flushDatastoreSync()`: push if S3, release the lock.
 
-Per-behavior commands (`model method run`) take only per-behavior locks, via
+Per-behavior commands (`behavior run`) take only per-behavior locks, via
 `acquireModelLocks`. They do not take the global lock, but `inspect()` it to
 wait out any running structural command. That `inspect()` must target the
 same namespaced global-lock key the structural command takes
@@ -4792,7 +4792,7 @@ Workflow commands (`workflow run`, `workflow resume`) and serve-hosted workflow
 runs do not lock up front. A `StepLockHook` callback injected into the
 workflow engine takes per-behavior locks per step. Each method step takes its
 lock before running and releases it in a finally block afterwards. This avoids
-deadlock when a method starts a subprocess `swamp model method run` on a
+deadlock when a method starts a subprocess `swamp behavior run` on a
 behavior the parent workflow would otherwise hold.
 
 A run that lent its locks to a shell command or a dispatch takes them back
@@ -4876,7 +4876,7 @@ clears the first two from its own env:
 - `SWAMP_LOCK_HOLDER_PID`, which older binaries read alone: the swamp's own
   pid from the first time it takes a per-behavior lock (`acquireModelLocks`).
   Until then it keeps the value it inherited, so through a swamp that takes
-  no locks (e.g. a read-only `model method run`) it still names the real lock
+  no locks (e.g. a read-only `behavior run`) it still names the real lock
   holder.
 - `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never written to a swamp's
   own process env (a dispatch runner is started with one, below):
@@ -4899,7 +4899,7 @@ clears the first two from its own env:
   `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
 
 A run requested through `--server` crosses no process boundary to inherit
-through. When a step runs `swamp model method run --server` (or
+through. When a step runs `swamp behavior run --server` (or
 `workflow run` / `workflow resume`), the requested run starts in a request
 handler, outside the step's scope, so on its own it would tell its children
 only about its own locks and they would wait on the step's (swamp-club#2982).
@@ -5151,7 +5151,7 @@ not safe: per-step workflow locks and concurrent `swamp serve` runs hold locks
 side by side in one process, and the first flush would clear the marker while
 the others still held theirs (swamp-club#2659). The ancestor chain keeps a
 nested swamp working when a swamp between it and the lock holder takes no
-locks itself, such as a read-only `model method run`.
+locks itself, such as a read-only `behavior run`.
 
 With mixed versions, a child still skips the locks of the nearest swamp above
 it that holds locks, as before this change:
@@ -5697,7 +5697,7 @@ A CLI config write whose push fails, or times out, exits non-zero with
 helper that cannot resolve the datastore after the write fails the same way,
 as does a lockfile that cannot be read after the command. The local write is
 kept, never rolled back, and the error names `swamp datastore sync --push` as
-the retry. `model delete` fails this way only when its lock flush fails after
+the retry. `behavior delete` fails this way only when its lock flush fails after
 the delete completed; a flush failure while an earlier error propagates is
 logged, so it cannot replace that error (swamp-club#2752).
 

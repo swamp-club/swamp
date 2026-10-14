@@ -640,7 +640,7 @@ names, not free identifiers, and the expression is swamp's. An unquoted argument
 holding a `.` is evaluated as CEL. `inputs.vaultName` keeps its roots and is
 judged like any other reference. One that reads nothing swamp provides, such as
 `db.password` or `github.repo`, fails that evaluation rather than passing
-through, so it does not make the expression another system's: `swamp model
+through, so it does not make the expression another system's: `swamp behavior
 validate` reports it as an `Expression paths` error that says to quote the name
 (`unresolvableVaultArguments`). The resolver, the classifier and the vault
 reference extractor all decide literal versus evaluated through
@@ -651,7 +651,7 @@ An expression that reads the `vault` namespace is never another templating
 system's text, whatever else it reads. The runtime pass resolves every such
 expression and then evaluates it, so `${{ vault.get(t, KEY) + github.sha }}`
 fails on `github` rather than reaching the method as written
-(`isForeignExpression`). `swamp model validate` reports the other root as an
+(`isForeignExpression`). `swamp behavior validate` reports the other root as an
 `Expression paths` error (`foreignRootsBesideVault`), and the global-argument
 guards keep the value guarded. `isSwampExpression` is unchanged: it still
 answers whether every root is swamp's.
@@ -736,7 +736,7 @@ still reads an unlisted root (`assertNoUnlistedForeignArguments`,
 expression deferred past run start it also fails a root in a branch that
 would not have been evaluated.
 
-Model definitions keep the looser rule above: `swamp model method run` on a
+Model definitions keep the looser rule above: `swamp behavior run` on a
 definition holding `${{ nonexistent.variable }}` passes it through
 (swamp-club#2491). A definition is often a file for another system, written
 whole; a workflow step argument is a value handed to a method. The guard on
@@ -787,8 +787,8 @@ their zod defaults, exactly as when every global argument resolved; an
 unresolved field is never replaced by its default, so the Proxy still guards
 it. The check is lenient, so missing fields are not required
 (`parseGlobalArgumentsLeniently` in `src/domain/models/zod_type_coercion.ts`,
-shared with `swamp model validate` and direct type execution; `model validate`
-still skips the global-argument check entirely when any field holds an
+shared with `swamp behavior validate` and direct type execution; `behavior
+validate` still skips the global-argument check entirely when any field holds an
 expression, and direct type execution checks only the static fields). It uses the
 schema's `.partial()`. An object schema with refinements refuses `.partial()`
 in zod 4, so its fields are checked one by one. When they all pass and no field
@@ -812,12 +812,12 @@ is swamp's syntax.
 Validation looks for text that resembles a swamp expression with its syntax
 slightly wrong: `{{ ... }}` with no leading `$`, and `${ ... }` with a single
 brace (`scanTemplateSyntax`, `src/domain/models/template_syntax_scan.ts`). This
-runs in `swamp model validate` and in the validation a workflow step runs before
-its method. It reads authored text, never evaluated values. A workflow step that
-runs a behavior type directly (`modelType`, `modelName` and inline `globalArgs`)
-validates a definition built from its arguments after the workflow evaluator
-substituted them, so there the scan reads the step's arguments as written in the
-workflow instead, key by key (`templateScanGlobalArguments`,
+runs in `swamp behavior validate` and in the validation a workflow step runs
+before its method. It reads authored text, never evaluated values. A workflow
+step that runs a behavior type directly (`modelType`, `modelName` and inline
+`globalArgs`) validates a definition built from its arguments after the workflow
+evaluator substituted them, so there the scan reads the step's arguments as
+written in the workflow instead, key by key (`templateScanGlobalArguments`,
 `src/domain/workflows/execution_service.ts`). Text that evaluation produced,
 from a `literal()` call, a workflow input or a step output, is never flagged.
 Each match is classified with the rule the runtime applies to
@@ -979,7 +979,7 @@ they are another run's evaluated arguments, not authored text
 (`StepExecutorDeps.isAutoDefinition`, answered by
 `YamlDefinitionRepository.isAutoDefinition`, which compares definition IDs).
 Arguments that step supplies are still scanned as written, and a definition in
-`models/` is scanned as stored. Running `swamp model validate` on the
+`models/` is scanned as stored. Running `swamp behavior validate` on the
 auto-definition by name can still report the braces. When it reports anything,
 it adds an `Auto-definition` warning saying that swamp wrote the definition from
 a run's evaluated arguments, that its findings may be text evaluation produced
@@ -1038,10 +1038,10 @@ argument must be a runtime reference, not a value stored in the definition
 value made only of expressions that read nothing, such as
 `${{ literal('hunter2') }}` or `${{ 'hunter2' }}`, evaluates to the text it
 holds, so the definition YAML stores the secret in cleartext. It is rejected as
-a literal secret everywhere one is: on save, `swamp model create`, a method run
-and direct execution, and `swamp doctor secrets` reports stored ones. The empty
-string and null carry no text and stay allowed, and so does an expression that
-does not parse, which never evaluates to a value.
+a literal secret everywhere one is: on save, `swamp behavior create`, a method
+run and direct execution, and `swamp doctor secrets` reports stored ones. The
+empty string and null carry no text and stay allowed, and so does an expression
+that does not parse, which never evaluates to a value.
 
 ### Example
 
@@ -1084,7 +1084,7 @@ feeding a run are unioned:
 | -------------------------- | --------------------------------------------------------------------------- |
 | Behavior definition        | the definition on disk, in both the normal and `--last-evaluated` paths     |
 | Workflow                   | the workflow YAML on disk, before evaluation, at fresh-run and resume seams |
-| Method-run `--input` flags | operator-typed values, on `swamp model ... method run` only                 |
+| Method-run `--input` flags | operator-typed values, on `swamp behavior run` only                         |
 | Parent workflow            | the parent's set, unioned into a nested child run's set                     |
 | Evaluated caches           | the set persisted with each evaluated definition and evaluated workflow     |
 
@@ -1214,8 +1214,8 @@ are authored at their new positions.
 | `swamp workflow run/resume` caller inputs, webhook payloads | data       |
 | Workflow input defaults, static trigger input literals      | authored   |
 | Definition input-schema defaults                            | authored   |
-| `swamp model method run` inputs                             | authored   |
-| `swamp model method run --literal-inputs` inputs            | data       |
+| `swamp behavior run` inputs                                 | authored   |
+| `swamp behavior run --literal-inputs` inputs                | data       |
 | Child workflow inputs                                       | parent's   |
 
 **Where it is enforced.** Every evaluated-cache save states its map: the

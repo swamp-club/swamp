@@ -250,5 +250,59 @@
     "guide": "extension",
     "answerable_from_guide": false,
     "note": "ModelType interface implementation details are in reference.md"
+  },
+  {
+    "query": "Search for behavior types that handle payments",
+    "guide": "behavior",
+    "answerable_from_guide": true,
+    "note": "Quick Reference table has swamp behavior type search"
+  },
+  {
+    "query": "Run the validate method on my behavior",
+    "guide": "behavior",
+    "answerable_from_guide": true,
+    "note": "Quick Reference table has behavior run and validate commands"
+  },
+  {
+    "query": "What is the output shape of swamp behavior create?",
+    "guide": "behavior",
+    "answerable_from_guide": false,
+    "note": "Output shapes for create are in reference.md"
+  },
+  {
+    "query": "Query all data artifacts for a specific behavior",
+    "guide": "data",
+    "answerable_from_guide": true,
+    "note": "Quick Reference and shortcut mapping cover this"
+  },
+  {
+    "query": "How do I smoke test my extension behavior before publishing?",
+    "guide": "extension",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has swamp doctor extensions for verification"
+  },
+  {
+    "query": "How do I write the execute function for a custom behavior extension?",
+    "guide": "extension",
+    "answerable_from_guide": false,
+    "note": "ModelType interface implementation details are in reference.md"
+  },
+  {
+    "query": "Get a stored report for a behavior in JSON format",
+    "guide": "report",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has the report get command"
+  },
+  {
+    "query": "Should I build a behavior or a workflow to automate a three-step deploy?",
+    "guide": "architecture",
+    "answerable_from_guide": true,
+    "note": "Decision tree and primitive table are in guide.md — this guide is self-contained"
+  },
+  {
+    "query": "What are the vault expression functions for referencing secrets in behavior definitions?",
+    "guide": "vault",
+    "answerable_from_guide": false,
+    "note": "Vault expression syntax details are in reference.md"
   }
 ]

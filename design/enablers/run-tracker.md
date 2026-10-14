@@ -10,7 +10,7 @@ A local SQLite subsystem that tracks in-flight method and workflow runs.
 
 ## Problem
 
-`model method run` writes a `ModelOutput` YAML file with `status: "running"` at
+`behavior run` writes a `ModelOutput` YAML file with `status: "running"` at
 start and updates it when the run ends. If the process dies (OOM, SIGKILL,
 power failure), the YAML stays "running" and nothing notices.
 
@@ -64,7 +64,7 @@ CREATE TABLE pending_runs (             -- queued webhook/cron fires
 
 (`src/infrastructure/persistence/run_tracker_store.ts`.) A method-run row
 records the definition it executes in `definition_id`, and
-`swamp model cancel <model>` selects a behavior's runs by it, never by
+`swamp behavior cancel <behavior>` selects a behavior's runs by it, never by
 `model_type` alone. A row an older swamp registered has none, and is
 attributed from what its run left behind (`findMethodRunsOfModel`,
 `src/cli/commands/model_cancel.ts`): its method-run record, which a workflow
@@ -72,7 +72,7 @@ step saves while it runs and which carries the definition id; failing that,
 the behavior's own lock, which a mutating direct run holds, when the row's
 process holds it and runs no other method. A row neither places (a direct run
 of a method that does not mutate takes no lock) is no behavior's, and only
-`swamp model cancel --all` stops it. The
+`swamp behavior cancel --all` stops it. The
 `run_tracker_meta` table holds the schema version. Terminal rows older than 7
 days are purged at startup, except a workflow or method row reaped
 `interrupted` with no reason (`cancel_reason` null): its workflow or method run
@@ -95,14 +95,14 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    cancel when the abort named one (`timed out`, `cleanup grace expired`, or
    the reason a cancel through serve or the scheduler gave; see `cancelCause`
    in `src/domain/models/cancel_cause.ts`), and without a reason for a plain
-   abort. `swamp model cancel` stops its run with a plain abort, so it then
+   abort. `swamp behavior cancel` stops its run with a plain abort, so it then
    records its `--reason` with `recordCancelReason`, which only fills the
    reason on a `cancelled` row that has none.
 4. **Reap**: find rows with a heartbeat older than 90s. On the same machine,
    check `isProcessDead(pid)` first; across machines, use the TTL alone. Reaped
    runs become `interrupted`, not `failed`, so they are eligible for checkpoint
-   recovery. Reaping runs at `swamp serve` boot, `swamp model method run`,
-   `swamp model cancel`, and `swamp run doctor --fix` (local or via the
+   recovery. Reaping runs at `swamp serve` boot, `swamp behavior run`,
+   `swamp behavior cancel`, and `swamp run doctor --fix` (local or via the
    `run.doctor` handler), not on every CLI call (`reapStaleRuns` callers in
    `src/cli/commands/` and `src/serve/handlers/admin_handlers.ts`). The
    continuous reconciler also reconciles YAML workflow-run records from dead
@@ -196,12 +196,12 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    settled row is not read again. Settling outputs never blocks the command
    around it: `settleDeadOwnerRun` and serve boot log a failure and keep the
    row; `run doctor` reports it (`orphanedMethodError`) and still diagnoses
-   workflow runs; `workflow cancel` and `model cancel` still settle their
+   workflow runs; `workflow cancel` and `behavior cancel` still settle their
    runs and leave a row whose output failed `interrupted` for
    `run doctor --fix`. Serve
    boot judges these rows on host and pid, not instance id, since its own
    instance id is new each start. `swamp workflow cancel` and
-   `swamp model cancel` cancel the outputs of an owner they killed after its
+   `swamp behavior cancel` cancel the outputs of an owner they killed after its
    grace with `OWNER_STOPPED_STEP_ERROR`, as the step is recorded. A step
    output saved before its row was registered has no row and stays
    `running`, as a workflow record with no row does. Method-run outputs have
@@ -231,13 +231,13 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
 
 ### Coverage
 
-- **CLI `model method run`** and **`swamp serve` method runs** both go
+- **CLI `behavior run`** and **`swamp serve` method runs** both go
   through `modelMethodRun()` in `run.ts`, which registers with the tracker.
 - **Workflow-triggered method runs** register via
   `DefaultStepExecutor.executeModelMethod()` in `execution_service.ts`.
 - A method run that serve executes (a workflow step or a direct method run)
   records serve's instance id in `instance_id`, as serve's workflow rows do, so
-  `swamp model cancel` can tell its pid is the serve process. A later serve
+  `swamp behavior cancel` can tell its pid is the serve process. A later serve
   boot treats those rows as another instance's: it reaps them on heartbeat age
   (90s), not as soon as their pid is dead.
 - **Workflow runs** register in `WorkflowExecutionService.run()` for the whole

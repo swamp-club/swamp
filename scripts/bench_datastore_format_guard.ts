@@ -64,7 +64,7 @@
  *   swamp datastore setup extension @swamp/s3-datastore --config \
  *     '{"bucket":"bench","prefix":"solo","region":"us-east-1",
  *       "endpoint":"http://localhost:47291","forcePathStyle":true}'
- *   swamp model create command/shell bench
+ *   swamp behavior create command/shell bench
  *
  * Usage:
  *

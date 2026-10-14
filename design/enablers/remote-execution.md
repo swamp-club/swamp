@@ -1748,7 +1748,7 @@ the check ends there, at about 1 ms for 200 models. Otherwise it runs
 Failures behave as in a fresh CLI process. A `deno bundle` that fails keeps the
 previous bundle with a warning. A source that bundles but no longer imports or
 validates has no loadable row, so its type stays unregistered and runs fail as
-`swamp model method run` would, until the edit is fixed. Serve warns once, when
+`swamp behavior run` would, until the edit is fixed. Serve warns once, when
 the pass meets the broken edit; the broken-bundle warning startup gives is not
 repeated on every pass. A deleted source's type goes, and a deleted add-on's
 members leave the type it extended; a new source's type appears. An edited or

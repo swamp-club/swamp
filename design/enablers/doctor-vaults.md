@@ -32,7 +32,7 @@ swamp-club#562 added two runtime guards:
 
 `doctor vaults` is the validation-time counterpart. It scans every behavior
 definition ahead of time, so users find the problem before they even attempt a
-`method run`.
+`behavior run`.
 
 ## What it scans
 
