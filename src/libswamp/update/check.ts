@@ -22,7 +22,10 @@ import {
   type UpdateResult,
   UpdateService,
 } from "../../domain/update/update_service.ts";
-import { HttpUpdateChecker } from "../../infrastructure/update/http_update_checker.ts";
+import {
+  HttpUpdateChecker,
+  type HttpUpdateCheckerOptions,
+} from "../../infrastructure/update/http_update_checker.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -49,12 +52,26 @@ export interface UpdateCheckDeps {
   update: (platform: Platform) => Promise<UpdateResult>;
 }
 
-/** Wires real infrastructure into UpdateCheckDeps. */
+/**
+ * How many times `swamp update` sends its update-check request before
+ * giving up (swamp-club#3428). The check after every other command makes
+ * one attempt so it never slows them down.
+ */
+export const UPDATE_CHECK_MAX_ATTEMPTS = 3;
+
+/**
+ * Wires real infrastructure into UpdateCheckDeps. `checkerOptions`
+ * overrides the checker's settings; tests pass a no-op `sleep`.
+ */
 export function createUpdateCheckDeps(
   currentVersion: string,
   binaryPath: string,
+  checkerOptions: HttpUpdateCheckerOptions = {},
 ): UpdateCheckDeps {
-  const checker = new HttpUpdateChecker();
+  const checker = new HttpUpdateChecker({
+    maxAttempts: UPDATE_CHECK_MAX_ATTEMPTS,
+    ...checkerOptions,
+  });
   const service = new UpdateService(checker, currentVersion, binaryPath);
   return {
     check: (platform) => service.check(platform),
