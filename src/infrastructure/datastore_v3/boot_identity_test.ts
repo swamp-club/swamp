@@ -96,3 +96,93 @@ Deno.test("readBootIdentity: other systems name no boot and run nothing", async 
   assertEquals(result, undefined);
   assertEquals(calls, []);
 });
+
+// The released binary's grant has no `--allow-all`, and Deno refuses any
+// read under `/proc` without it (swamp-club#3418). Denying read refuses the
+// read the same way, with NotCapable.
+const BOOT_ID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+const BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id";
+
+Deno.test({
+  name:
+    "readBootIdentity: a Linux boot id the permissions refuse is read by running cat (swamp-club#3418)",
+  permissions: { read: false },
+  async fn() {
+    const { result, calls } = await withMockedCommand(
+      [{ stdout: `${BOOT_ID}\n`, code: 0 }],
+      () => readBootIdentity("linux", BOOT_ID_FILE),
+    );
+    assertEquals(result, `boot-id:${BOOT_ID}`);
+    assertEquals(calls.map((c) => [c.command, c.args]), [
+      ["/bin/cat", [BOOT_ID_FILE]],
+    ]);
+  },
+});
+
+Deno.test({
+  name:
+    "readBootIdentity: a refused Linux boot id runs /usr/bin/cat only when /bin/cat does not exist (swamp-club#3418)",
+  permissions: { read: false },
+  async fn() {
+    const { result, calls } = await withMockedCommand(
+      (command) => {
+        if (command === "/bin/cat") {
+          throw new Deno.errors.NotFound("Failed to spawn '/bin/cat'");
+        }
+        return { stdout: `${BOOT_ID}\n`, code: 0 };
+      },
+      () => readBootIdentity("linux", BOOT_ID_FILE),
+    );
+    assertEquals(result, `boot-id:${BOOT_ID}`);
+    assertEquals(calls.map((c) => c.command), ["/bin/cat", "/usr/bin/cat"]);
+  },
+});
+
+Deno.test({
+  name:
+    "readBootIdentity: a refused Linux boot id names no boot when cat is missing, fails, times out or prints anything but a UUID (swamp-club#3418)",
+  permissions: { read: false },
+  async fn() {
+    const cases: [string, Parameters<typeof withMockedCommand>[0], number][] = [
+      ["no cat", () => {
+        throw new Deno.errors.NotFound("Failed to spawn");
+      }, 2],
+      [
+        "a non-zero exit",
+        () => ({ stdout: "", stderr: "No such file", code: 1 }),
+        1,
+      ],
+      ["a timeout", () => {
+        throw new DOMException("Signal timed out.", "TimeoutError");
+      }, 1],
+      ["empty output", () => ({ stdout: "\n", code: 0 }), 1],
+      ["garbage", () => ({ stdout: "not-a-boot-id\n", code: 0 }), 1],
+      ["an uppercase UUID", () => ({
+        stdout: `${BOOT_ID.toUpperCase()}\n`,
+        code: 0,
+      }), 1],
+      ["two UUIDs", () => ({ stdout: `${BOOT_ID}\n${BOOT_ID}\n`, code: 0 }), 1],
+    ];
+    for (const [label, handler, runs] of cases) {
+      const { result, calls } = await withMockedCommand(
+        handler,
+        () => readBootIdentity("linux", BOOT_ID_FILE),
+      );
+      assertEquals(result, undefined, label);
+      assertEquals(calls.length, runs, label);
+    }
+  },
+});
+
+Deno.test("readBootIdentity: a readable or missing Linux boot id runs nothing (swamp-club#3418)", async () => {
+  await withTempDir(async (dir) => {
+    const file = join(dir, "boot_id");
+    await Deno.writeTextFile(file, `${BOOT_ID}\n`);
+    const { result, calls } = await withMockedCommand([], async () => [
+      await readBootIdentity("linux", file),
+      await readBootIdentity("linux", join(dir, "missing")),
+    ]);
+    assertEquals(result, [`boot-id:${BOOT_ID}`, undefined]);
+    assertEquals(calls, []);
+  });
+});
