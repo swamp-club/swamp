@@ -26,6 +26,7 @@ import {
 } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { generateShellCompletions } from "@cliffy/command/completions";
+import { generatePowerShellCompletions } from "./completion_powershell.ts";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { fromFileUrl } from "@std/path";
 import { registerCompletionTypes } from "../completion_types.ts";
@@ -215,12 +216,15 @@ function captureSurface(
       stripGlobalOptions: true,
     }),
     help,
-    completions: Object.fromEntries(
-      (["bash", "fish", "zsh"] as const).map((shell) => [
-        shell,
-        normalize(generateShellCompletions(root, shell)),
-      ]),
-    ),
+    completions: {
+      ...Object.fromEntries(
+        (["bash", "fish", "zsh"] as const).map((shell) => [
+          shell,
+          normalize(generateShellCompletions(root, shell)),
+        ]),
+      ),
+      powershell: normalize(generatePowerShellCompletions("swamp", root)),
+    },
   };
 }
 

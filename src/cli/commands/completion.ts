@@ -18,14 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { CompletionsCommand } from "@cliffy/command/completions";
+import { powerShellCompletionsCommand } from "./completion_powershell.ts";
 
 /**
- * Shell completion command using Cliffy's built-in CompletionsCommand.
+ * Shell completion command using Cliffy's built-in CompletionsCommand, plus a
+ * swamp-owned PowerShell generator (Cliffy has none).
  *
  * Usage:
  *   swamp completions bash    # Generate bash completion script
  *   swamp completions zsh     # Generate zsh completion script
  *   swamp completions fish    # Generate fish completion script
+ *   swamp completions powershell  # Generate PowerShell completion script
  *
  * Installation:
  *
@@ -43,15 +46,23 @@ import { CompletionsCommand } from "@cliffy/command/completions";
  *   # Fish - save to completions directory:
  *   swamp completions fish > ~/.config/fish/completions/swamp.fish
  *
+ *   # PowerShell (Windows PowerShell 5.1 and PowerShell 7) - add to the
+ *   # file the PROFILE variable names:
+ *   swamp completions powershell | Out-String | Invoke-Expression
+ *
  * Note: Model and workflow name completions are directory-dependent.
  * They return names from the current working directory's swamp repository.
  *
- * Note: command aliases complete only in zsh. Cliffy 1.0.1's zsh generator
- * reads each command's aliases, but its bash and fish generators do not, so
- * `swamp behaviour …` (the British alias of `swamp behavior`) and alias
- * words such as `list` complete in zsh only. Typing them works in every
+ * Note: command aliases complete only in zsh and PowerShell. Cliffy 1.0.1's
+ * zsh generator reads each command's aliases, but its bash and fish
+ * generators do not, so `swamp behaviour …` (the British alias of `swamp
+ * behavior`) and alias words such as `list` complete in zsh and PowerShell
+ * only. Typing them works in every
  * shell; behavior_cli_surface_test.ts pins this.
  */
 export const completionCommand = new CompletionsCommand()
   .example("Generate zsh completions", "swamp completions zsh")
-  .example("Generate bash completions", "swamp completions bash");
+  .example("Generate bash completions", "swamp completions bash")
+  .example("Generate PowerShell completions", "swamp completions powershell")
+  .command("powershell", powerShellCompletionsCommand)
+  .reset();
