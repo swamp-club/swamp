@@ -2040,3 +2040,116 @@ Deno.test("withWrittenVersions: attaches the versions, and leaves an error witho
     "not an object",
   );
 });
+
+Deno.test("DispatchService: a step skips a worker whose enrollment finished after its socket closed (swamp-club#3405)", async () => {
+  let redeemGate: Promise<void> | null = null;
+  let openRedeem = () => {};
+  let redeems = 0;
+  const gateway = new WorkerGateway({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    capabilityService: { registerHandlers: () => {} },
+    graceWindowMs: 60_000,
+    onWorkerIdle: (worker) => service.notifyWorkerIdle(worker),
+    onWorkerEnrolled: (worker) => service.notifyWorkerEnrolled(worker),
+    runModelMethod: async (input) => {
+      if (input.methodName === "redeem") {
+        redeems++;
+        if (redeemGate !== null) await redeemGate;
+      }
+    },
+    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
+    readTokenExpiresAt: () => Promise.resolve(null),
+    readTokenRecord: (name) =>
+      Promise.resolve({
+        name,
+        state: "enrolled",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        vaultName: "local",
+        secretKey: `worker-token-${name}`,
+        maxEnrollments: 1,
+        bindings: [],
+      }),
+  });
+  const service = new DispatchService({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    dispatches: new DispatchRegistry(),
+    bundles: new BundleRegistry(),
+    queueTimeoutMs: 60_000,
+    runModelMethod: () => Promise.resolve(),
+    captureEnvironment: () => ({}),
+  });
+  service.bindGateway(gateway);
+  const connect = () => {
+    const workerChannel: RpcChannel = new RpcChannel({
+      send: (data) => void Promise.resolve().then(() => attached.feed(data)),
+    });
+    const attached = gateway.attachTransport({
+      send: (data) =>
+        void Promise.resolve().then(() => workerChannel.handleRaw(data)),
+    }, () => attached.closed());
+    return { workerChannel, dropSocket: () => attached.closed() };
+  };
+  const enrollParams = (token: string, instanceUuid: string) => ({
+    token,
+    instanceUuid,
+    machineId: `machine-${instanceUuid}`,
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
+    swampVersion: "1.0.0",
+    platform: "linux",
+    arch: "x86_64",
+    labels: {},
+  });
+
+  // "a-dead" sorts before "b-live", so the scheduler offers it first.
+  redeemGate = new Promise<void>((resolve) => {
+    openRedeem = () => {
+      redeemGate = null;
+      resolve();
+    };
+  });
+  const dead = connect();
+  const deadEnroll = dead.workerChannel.call(
+    RemoteMethod.enroll,
+    enrollParams("a-dead.s3cret", "uuid-a"),
+    { timeoutMs: null },
+  ).catch(() => {});
+  await waitFor(() => redeems === 1, "dead enrollment reached redeem");
+  dead.dropSocket();
+  openRedeem();
+  await waitFor(() => gateway.worker("a-dead") !== null, "late enrollment");
+
+  const live = connect();
+  await live.workerChannel.call<EnrollResult>(
+    RemoteMethod.enroll,
+    enrollParams("b-live.s3cret", "uuid-b"),
+  );
+  // On a dead session reported as connected, the step re-dispatches to it
+  // in a loop that never yields to timers; stop it after a few attempts.
+  const abort = new AbortController();
+  const dispatchedTo: string[] = [];
+  const dispatchOnGateway = gateway.dispatch.bind(gateway);
+  gateway.dispatch = (name, params, options) => {
+    dispatchedTo.push(name);
+    if (dispatchedTo.length > 5) abort.abort();
+    return dispatchOnGateway(name, params, options);
+  };
+  live.workerChannel.register(
+    WorkerMethod.dispatch,
+    () =>
+      Promise.resolve<DispatchResult>({
+        status: "success",
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+      }),
+  );
+
+  await service.executeRemote(stepRequest({ signal: abort.signal }));
+  assertEquals(dispatchedTo, ["b-live"]);
+  dead.workerChannel.close("test done");
+  await deadEnroll;
+  gateway.dispose();
+});

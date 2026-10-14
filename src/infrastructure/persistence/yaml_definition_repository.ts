@@ -362,6 +362,20 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         }
         this.nameToActualPath.delete(hintKey);
       }
+      // The name-derived file answers without parsing every definition of the
+      // type: serve's control-plane lookups land here for each new worker.
+      if (isFilenameSafeDefinitionName(name)) {
+        const namePath = this.getNamePath(type, name, this.secondaryBaseDir);
+        const named = await this.readDefinitionIfNamed(namePath, name);
+        if (named) {
+          this.idToActualPath.set(named.id as DefinitionId, namePath);
+          this.nameToActualPath.set(hintKey, {
+            path: namePath,
+            primary: false,
+          });
+          return named;
+        }
+      }
       const secondaryDir = join(this.secondaryBaseDir, type.toDirectoryPath());
       const secondaryDefs = await this.findAllInDir(secondaryDir);
       const secondaryMatch = secondaryDefs.find((d) =>

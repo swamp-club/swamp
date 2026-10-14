@@ -34,8 +34,8 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { createLibSwampContext } from "../libswamp/context.ts";
 import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import { modelMethodRun } from "../libswamp/models/run.ts";
-import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import {
   ChannelClosedError,
   RpcChannel,
@@ -353,10 +353,10 @@ export class WorkerGateway {
       ((input) => this.#defaultRunModelMethod(input));
     this.#findTokenDefinitionId = options.findTokenDefinitionId ??
       (async (tokenName) =>
-        (await findDefinitionByIdOrName(
-          options.repoContext.definitionRepo,
+        (await options.repoContext.definitionRepo.findByName(
+          ENROLLMENT_TOKEN_MODEL_TYPE,
           tokenName,
-        ))?.definition.id ?? null);
+        ))?.id ?? null);
     this.#readTokenExpiresAt = options.readTokenExpiresAt ??
       ((_tokenName, record) => Promise.resolve(record.expiresAt));
     this.#readTokenMaxEnrollments = options.readTokenMaxEnrollments ??
@@ -709,6 +709,14 @@ export class WorkerGateway {
     }
 
     return await this.#recordTransition<EnrollResult>(async () => {
+      // The worker gave up on this attempt while it waited for its turn (its
+      // enroll call timed out). Nothing is recorded yet, so skip it rather
+      // than delay the live enrollments queued behind it (swamp-club#3405).
+      if (state.channel.closed) {
+        throw new ChannelClosedError(
+          "control socket closed before enrollment began",
+        );
+      }
       // Redeem validates state, expiry, the secret, and allowance — and
       // appends a binding on first enrollment or re-auths a known machine.
       // Must happen before the already-connected check because the worker
@@ -742,7 +750,7 @@ export class WorkerGateway {
 
       const existing = this.#workers.get(workerName);
       if (
-        existing && existing.channel !== null &&
+        existing && existing.channel !== null && !existing.channel.closed &&
         existing.instanceUuid !== params.instanceUuid
       ) {
         throw new RpcError({
@@ -843,6 +851,21 @@ export class WorkerGateway {
       entry.tokenCreatedAt = tokenCreatedAt;
       this.#workers.set(workerName, entry);
       state.workerName = workerName;
+
+      // The socket closed while the enrollment was being recorded, and its
+      // close handler found no worker to disconnect. Disconnect it now, so it
+      // gets the usual grace window instead of staying in the pool as a live
+      // worker on a dead socket (swamp-club#3405).
+      if (state.channel.closed) {
+        logger.info(
+          "Worker {worker} closed its socket before enrollment finished",
+          { worker: workerName },
+        );
+        this.#handleSocketClosed(state);
+        throw new ChannelClosedError(
+          "control socket closed during enrollment",
+        );
+      }
 
       // The token lifetime is a hard deadline: when it elapses, disconnect
       // the worker. Re-enrollment is then rejected as expired, so the
@@ -1332,6 +1355,7 @@ export class WorkerGateway {
     const deps = await createWorkerModelRunDeps(
       this.#options.repoDir,
       this.#options.repoContext,
+      { definitionType: ModelType.create(input.typeArg) },
     );
     const libCtx = createLibSwampContext({
       openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
