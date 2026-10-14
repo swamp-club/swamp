@@ -125,6 +125,7 @@ import "../domain/datastore/datastore_types.ts";
 // Import builtin reports to trigger registration
 import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
+import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
 import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
 import { renderAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
@@ -1230,6 +1231,7 @@ async function loadUserModels(
       resolver,
       repository,
       new WorkerBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const pulledDirs = await enumeratePulledExtensionDirs(
       lockfilePath,
@@ -1295,6 +1297,8 @@ async function loadUserModels(
           repoDir,
           resolver,
           repository,
+          undefined,
+          createDenoInfoModuleGraphReader,
         ),
         absoluteModelsDir,
         [
@@ -1386,6 +1390,7 @@ async function loadUserVaults(
       resolver,
       repository,
       new WorkerBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1475,6 +1480,7 @@ async function loadUserDatastores(
       undefined,
       repository,
       new WorkerBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1570,6 +1576,7 @@ async function loadUserReports(
       resolver,
       repository,
       new WorkerBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1660,6 +1667,7 @@ async function loadUserWebhooks(
       resolver,
       repository,
       new WorkerBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(

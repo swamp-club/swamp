@@ -39,8 +39,11 @@ import {
   type FreshnessScan,
   removeUnseenCatalogRows,
   scanCatalogFreshness,
+  type SourceModuleLookup,
   type TypelessRow,
 } from "./bundle_freshness.ts";
+import type { ModuleGraphReaderFactory } from "./extension_source_graph.ts";
+import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import {
   BUNDLE_LAYOUT_VERSION,
   type ExtensionCatalogStore,
@@ -222,6 +225,11 @@ function testFileDirsOf(
   return new Set((additionalDirs ?? []).filter((d) => !local.has(d)));
 }
 
+/** The lookup for a loader with no catalog: no source has recorded modules. */
+const NO_RECORDED_SOURCE_MODULES: SourceModuleLookup = {
+  findSourceModules: () => undefined,
+};
+
 /** One source a {@link ExtensionLoader.refreshStaleSources} pass rebundled. */
 export interface RefreshedSource {
   sourcePath: string;
@@ -279,6 +287,13 @@ export class ExtensionLoader {
    * tests use.
    */
   private readonly bundleProber: BundleProber | undefined;
+  /**
+   * Reads the module graph a source is bundled from, so its fingerprint
+   * covers every local module the bundle includes (swamp-club#3385).
+   * Without one, the relative imports within the kind's directory stand
+   * in.
+   */
+  private readonly moduleGraphReader: ModuleGraphReaderFactory | undefined;
 
   constructor(
     denoRuntime: DenoRuntime,
@@ -287,14 +302,75 @@ export class ExtensionLoader {
     datastoreResolver?: DatastorePathResolver,
     repository?: ExtensionRepository,
     bundleProber?: BundleProber,
+    moduleGraphReader?: ModuleGraphReaderFactory,
   ) {
     this.bundleProber = bundleProber;
+    this.moduleGraphReader = moduleGraphReader;
     this.denoRuntime = denoRuntime;
     this.adapter = adapter;
     this.repoDir = repoDir;
     this.datastoreResolver = datastoreResolver;
     this.repository = repository;
     this.logger = getLogger(["swamp", adapter.kind, "loader"]);
+  }
+
+  /** The catalog's recorded source modules, or none without a catalog. */
+  private sourceModules(): SourceModuleLookup {
+    return this.repository?.getCatalogStore() ?? NO_RECORDED_SOURCE_MODULES;
+  }
+
+  /**
+   * Records the local modules `absolutePath` was just bundled from, so its
+   * fingerprint covers each of them wherever it lives and however it is
+   * imported (swamp-club#3385). The module graph names them all; when it
+   * cannot be read, the relative imports within `boundaryDir` stand in.
+   */
+  private async recordSourceModules(
+    absolutePath: string,
+    boundaryDir: string,
+    denoPath: string,
+    denoConfigPath: string | undefined,
+  ): Promise<void> {
+    const catalog = this.repository?.getCatalogStore();
+    if (!catalog) return;
+    let modules: string[] | undefined;
+    if (this.moduleGraphReader) {
+      try {
+        const graph = await this.moduleGraphReader(
+          denoPath,
+          this.denoRuntime.getDenoEnv(),
+        ).read(absolutePath, { denoConfigPath });
+        modules = [
+          ...graph.modules.map((m) => m.path),
+          ...graph.missing.map((m) => m.path),
+          ...(denoConfigPath ? [denoConfigPath] : []),
+        ];
+      } catch (error) {
+        this.logger
+          .debug`Could not read the module graph of ${absolutePath}: ${error}`;
+      }
+    }
+    modules ??=
+      (await resolveLocalImports([absolutePath], boundaryDir)).resolvedFiles;
+    catalog.recordSourceModules(absolutePath, modules);
+  }
+
+  /**
+   * After a failed bundle, records the relative imports within
+   * `boundaryDir` for a source with no recorded modules, so the warm scan
+   * does not treat it as unrecorded and retry it on every command.
+   */
+  private async recordFallbackSourceModules(
+    absolutePath: string,
+    boundaryDir: string,
+  ): Promise<void> {
+    const catalog = this.repository?.getCatalogStore();
+    if (!catalog || catalog.findSourceModules(absolutePath)) return;
+    const { resolvedFiles } = await resolveLocalImports(
+      [absolutePath],
+      boundaryDir,
+    );
+    catalog.recordSourceModules(absolutePath, resolvedFiles);
   }
 
   private requireRepository(method: string): ExtensionRepository {
@@ -615,7 +691,11 @@ export class ExtensionLoader {
 
         let fingerprint: string | undefined;
         try {
-          fingerprint = await computeSourceFingerprint(absolutePath, baseDir);
+          fingerprint = await computeSourceFingerprint(
+            absolutePath,
+            baseDir,
+            this.sourceModules(),
+          );
         } catch {
           // Non-fatal — fingerprint is best-effort on cold load
         }
@@ -664,6 +744,7 @@ export class ExtensionLoader {
           fingerprint = await computeSourceFingerprint(
             resolve(baseDir, file),
             baseDir,
+            this.sourceModules(),
             fingerprintCache,
           );
         } catch {
@@ -805,7 +886,11 @@ export class ExtensionLoader {
 
         let failFp: string;
         try {
-          failFp = await computeSourceFingerprint(absolutePath, resolveDir);
+          failFp = await computeSourceFingerprint(
+            absolutePath,
+            resolveDir,
+            catalog,
+          );
         } catch {
           failFp = "";
         }
@@ -1065,7 +1150,11 @@ export class ExtensionLoader {
             );
             let failFp: string;
             try {
-              failFp = await computeSourceFingerprint(absolutePath, baseDir);
+              failFp = await computeSourceFingerprint(
+                absolutePath,
+                baseDir,
+                catalog,
+              );
             } catch {
               failFp = "";
             }
@@ -1332,6 +1421,7 @@ export class ExtensionLoader {
     const fingerprint = await computeSourceFingerprint(
       args.absolutePath,
       args.baseDir,
+      this.sourceModules(),
     );
     if (this.bundleProber) {
       const bundlePath = this.getBundlePath(args.relativePath, args.baseDir);
@@ -1787,6 +1877,7 @@ export class ExtensionLoader {
         const sourceFingerprint = await computeSourceFingerprint(
           absolutePath,
           dir,
+          catalog,
           cache,
         ).catch(() => undefined);
 
@@ -1929,8 +2020,11 @@ export class ExtensionLoader {
     // is only inside a string), bundling and importing it again would find
     // nothing, on every command (swamp-club#2876).
     if (catalog.findBySourcePath(absolutePath) === undefined) {
-      const fingerprint = await computeSourceFingerprint(absolutePath, baseDir)
-        .catch(() => "");
+      const fingerprint = await computeSourceFingerprint(
+        absolutePath,
+        baseDir,
+        catalog,
+      ).catch(() => "");
       if (
         catalog.isKnownNoExport(this.adapter.kind, absolutePath, fingerprint)
       ) {
@@ -1951,6 +2045,7 @@ export class ExtensionLoader {
     const sourceFingerprint = await computeSourceFingerprint(
       absolutePath,
       baseDir,
+      catalog,
     );
 
     let effectiveFingerprint = sourceFingerprint;
@@ -2337,8 +2432,9 @@ export class ExtensionLoader {
         };
       }
 
+      let denoConfigPath: string | undefined;
+      let js: string;
       try {
-        let denoConfigPath: string | undefined;
         if (this.adapter.resolveDenoConfig) {
           denoConfigPath = this.adapter.resolveDenoConfig(
             absolutePath,
@@ -2349,7 +2445,7 @@ export class ExtensionLoader {
               .warn`Using discovered deno config for ${relativePath}: ${denoConfigPath}`;
           }
         }
-        const js = await bundleExtension(absolutePath, denoPath, {
+        js = await bundleExtension(absolutePath, denoPath, {
           denoConfigPath,
           env: this.denoRuntime.getDenoEnv(),
         });
@@ -2358,8 +2454,13 @@ export class ExtensionLoader {
         await Deno.mkdir(dirname(bundlePath), { recursive: true });
         await Deno.writeTextFile(bundlePath, js);
         this.logger.debug`Wrote bundle cache: ${bundlePath}`;
-        return { js, fromCache: false };
       } catch (bundleError) {
+        // A catalog error here must not replace the bundle error.
+        await this.recordFallbackSourceModules(absolutePath, boundaryDir)
+          .catch((error) => {
+            this.logger
+              .debug`Could not record the modules of ${absolutePath}: ${error}`;
+          });
         if (bundleExists) {
           try {
             const cached = await Deno.readTextFile(bundlePath);
@@ -2393,6 +2494,13 @@ export class ExtensionLoader {
         }
         throw bundleError;
       }
+      await this.recordSourceModules(
+        absolutePath,
+        boundaryDir,
+        denoPath,
+        denoConfigPath,
+      );
+      return { js, fromCache: false };
     }
 
     let denoConfigPath: string | undefined;
@@ -2535,6 +2643,7 @@ export class ExtensionLoader {
       catalog,
       discoverFiles: (d) => this.discoverFiles(d, "", testFileDirs.has(d)),
       kinds: [...this.adapter.catalogKinds],
+      repoDir: this.repoDir ?? undefined,
     });
   }
 

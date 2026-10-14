@@ -899,8 +899,8 @@ during `repo init` or in tests), loaders fall back to the local `.swamp/` path.
 Vault, datastore, report and webhook entry points are bundled like behaviors.
 Each gets a compiled `.js` file in its `-bundles/` directory (`vault-bundles/`,
 `datastore-bundles/`, `report-bundles/`, `webhook-bundles/`). Local imports are
-followed recursively within the directory. The install-time `KIND_DIRS` array
-covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
+followed as for behaviors, wherever they live. The install-time `KIND_DIRS`
+array covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
 
 Each bundle's export is validated against a Zod schema:
 
@@ -2978,6 +2978,30 @@ with reason `"renamed"`. Cross-aggregate uniqueness (I-Repo-1) still throws
 pulled-vs-pulled conflicts. Both checks skip `extension`-kind
 Sources: an extension's type is the base type it adds methods to, and one
 package may ship several extension files for the same base type.
+
+**Recorded source modules.** A source's fingerprint covers every local module
+its bundle was built from, wherever it lives and however it is imported: a model
+in `extensions/models/` that imports `../lib/msg.ts`, or side-effect imports
+`./side.ts`, goes stale when either changes (swamp-club#3385). Each time the
+loader bundles a source (`bundleWithCache`), it reads the entry point's module
+graph with `deno info`, the same source of truth push uses, under the same
+project config as the bundle. It records the graph's local modules, its missing
+modules and the deno config in the catalog's `source_modules` table.
+`computeSourceFingerprint` hashes that list, so the warm scan never spawns a
+process. A recorded list stays valid until the source changes: a relative import
+can only reach a new module if a recorded module's content changes or a recorded
+missing module appears, and either changes the fingerprint. A source with no
+recorded list falls back to the relative imports `resolveLocalImports` finds
+within the kind's directory. Pulled sources, whose bundles ship pre-built and
+cannot rebundle locally, stay on that fallback. A local source with no list (a
+catalog an earlier binary wrote) is stale once, so its bundle is rebuilt and its
+list recorded. A bundle attempt that fails, or a graph that cannot be read,
+records the fallback, so a failing source is not retried on every command.
+Production loaders get the reader from `createDenoInfoModuleGraphReader`;
+`integration/extension_loader_wiring_rules_test.ts` keeps each construction that
+has a catalog passing it. Two changes are not seen: adding a `deno.json` that
+was not discovered at bundle time, and a pulled extension's shared sources
+outside its kind's directory.
 
 **Unreadable dependencies.** `computeSourceFingerprint`
 (`src/domain/extensions/bundle_freshness.ts`) substitutes the internal

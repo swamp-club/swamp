@@ -27,10 +27,16 @@ import {
   type FreshnessKind,
   normalizeFreshnessPath,
   scanCatalogFreshness,
+  type SourceModuleLookup,
 } from "./bundle_freshness.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 // -- Test fixture -------------------------------------------------------
+
+/** A lookup with no recorded modules: fingerprints walk relative imports. */
+const noRecordedModules: SourceModuleLookup = {
+  findSourceModules: () => undefined,
+};
 
 class FakeCatalog implements FreshnessCatalog {
   private rows: ExtensionTypeRow[] = [];
@@ -63,6 +69,16 @@ class FakeCatalog implements FreshnessCatalog {
     this.rows = this.rows.filter((r) => r.source_path !== rawSourcePath);
   }
 
+  readonly sourceModules = new Map<string, readonly string[]>();
+
+  findSourceModules(sourcePath: string): readonly string[] | undefined {
+    return this.sourceModules.get(sourcePath);
+  }
+
+  deleteSourceModules(sourcePath: string): void {
+    this.sourceModules.delete(sourcePath);
+  }
+
   snapshot(): ExtensionTypeRow[] {
     return [...this.rows];
   }
@@ -85,7 +101,7 @@ Deno.test("computeSourceFingerprint: produces a 64-char hex sha-256", async () =
   try {
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const x = 1;");
-    const fp = await computeSourceFingerprint(file, dir);
+    const fp = await computeSourceFingerprint(file, dir, noRecordedModules);
     assertEquals(fp.length, 64);
     assertEquals(/^[0-9a-f]{64}$/.test(fp), true);
   } finally {
@@ -98,8 +114,8 @@ Deno.test("computeSourceFingerprint: is deterministic across runs", async () => 
   try {
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const x = 1;");
-    const first = await computeSourceFingerprint(file, dir);
-    const second = await computeSourceFingerprint(file, dir);
+    const first = await computeSourceFingerprint(file, dir, noRecordedModules);
+    const second = await computeSourceFingerprint(file, dir, noRecordedModules);
     assertEquals(first, second);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -111,9 +127,9 @@ Deno.test("computeSourceFingerprint: changes when content changes", async () => 
   try {
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const x = 1;");
-    const before = await computeSourceFingerprint(file, dir);
+    const before = await computeSourceFingerprint(file, dir, noRecordedModules);
     await Deno.writeTextFile(file, "export const x = 2;");
-    const after = await computeSourceFingerprint(file, dir);
+    const after = await computeSourceFingerprint(file, dir, noRecordedModules);
     assertNotEquals(before, after);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -127,12 +143,12 @@ Deno.test("computeSourceFingerprint: changes when content changes even with pres
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const x = 1;");
     const origMtime = (await Deno.stat(file)).mtime!;
-    const before = await computeSourceFingerprint(file, dir);
+    const before = await computeSourceFingerprint(file, dir, noRecordedModules);
 
     await Deno.writeTextFile(file, "export const x = 2;");
     await Deno.utime(file, origMtime, origMtime);
 
-    const after = await computeSourceFingerprint(file, dir);
+    const after = await computeSourceFingerprint(file, dir, noRecordedModules);
     assertNotEquals(before, after);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -149,10 +165,14 @@ Deno.test("computeSourceFingerprint: tracks transitive dependency changes", asyn
       entry,
       "import { greeting } from './dep.ts';\nexport const g = greeting;",
     );
-    const before = await computeSourceFingerprint(entry, dir);
+    const before = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     await Deno.writeTextFile(dep, "export const greeting = 'goodbye';");
-    const after = await computeSourceFingerprint(entry, dir);
+    const after = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertNotEquals(before, after);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -170,11 +190,15 @@ Deno.test("computeSourceFingerprint: ignores non-local (npm/jsr) imports", async
     const entry = join(dir, "entry.ts");
     const src = "import { z } from 'npm:zod@4';\nexport const s = z.string();";
     await Deno.writeTextFile(entry, src);
-    const first = await computeSourceFingerprint(entry, dir);
+    const first = await computeSourceFingerprint(entry, dir, noRecordedModules);
 
     // Rewrite with identical bytes — fingerprint must match.
     await Deno.writeTextFile(entry, src);
-    const second = await computeSourceFingerprint(entry, dir);
+    const second = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     assertEquals(first, second);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -188,8 +212,8 @@ Deno.test("computeSourceFingerprint: different files in same dir produce differe
     const b = join(dir, "b.ts");
     await Deno.writeTextFile(a, "export const x = 1;");
     await Deno.writeTextFile(b, "export const x = 1;");
-    const fpA = await computeSourceFingerprint(a, dir);
-    const fpB = await computeSourceFingerprint(b, dir);
+    const fpA = await computeSourceFingerprint(a, dir, noRecordedModules);
+    const fpB = await computeSourceFingerprint(b, dir, noRecordedModules);
     assertNotEquals(
       fpA,
       fpB,
@@ -232,7 +256,7 @@ Deno.test("findStaleFiles: matching fingerprint → not stale", async () => {
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const a = 1;");
 
-    const fp = await computeSourceFingerprint(file, dir);
+    const fp = await computeSourceFingerprint(file, dir, noRecordedModules);
     const catalog = new FakeCatalog();
     catalog.add({
       source_path: file,
@@ -295,7 +319,7 @@ Deno.test("findStaleFiles: catches mtime-preserving content change (#125)", asyn
   try {
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const a = 1;");
-    const origFp = await computeSourceFingerprint(file, dir);
+    const origFp = await computeSourceFingerprint(file, dir, noRecordedModules);
     const origMtime = (await Deno.stat(file)).mtime!;
 
     const catalog = new FakeCatalog();
@@ -347,7 +371,11 @@ Deno.test("findStaleFiles: deleted file is removed from catalog", async () => {
       description: "",
       extends_type: "",
       source_mtime: "",
-      source_fingerprint: await computeSourceFingerprint(survivor, dir),
+      source_fingerprint: await computeSourceFingerprint(
+        survivor,
+        dir,
+        noRecordedModules,
+      ),
     });
     catalog.add({
       source_path: deletedPath,
@@ -389,8 +417,16 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
     await Deno.writeTextFile(reportFile, "export const d = 1;");
     await Deno.writeTextFile(vaultFile, "export const v = 1;");
 
-    const reportFp = await computeSourceFingerprint(reportFile, reportDir);
-    const vaultFp = await computeSourceFingerprint(vaultFile, vaultDir);
+    const reportFp = await computeSourceFingerprint(
+      reportFile,
+      reportDir,
+      noRecordedModules,
+    );
+    const vaultFp = await computeSourceFingerprint(
+      vaultFile,
+      vaultDir,
+      noRecordedModules,
+    );
 
     // Catalog has rows for BOTH kinds, plus a stale report row whose
     // source file has been deleted from disk.
@@ -507,7 +543,7 @@ Deno.test("findStaleFiles: matching fingerprint + missing bundle → stale (#212
   try {
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const a = 1;");
-    const fp = await computeSourceFingerprint(file, dir);
+    const fp = await computeSourceFingerprint(file, dir, noRecordedModules);
 
     const catalog = new FakeCatalog();
     catalog.add({
@@ -544,7 +580,7 @@ Deno.test("findStaleFiles: matching fingerprint + missing bundle + state=Validat
   try {
     const file = join(dir, "broken.ts");
     await Deno.writeTextFile(file, "export const broken = 1;");
-    const fp = await computeSourceFingerprint(file, dir);
+    const fp = await computeSourceFingerprint(file, dir, noRecordedModules);
 
     const catalog = new FakeCatalog();
     catalog.add({
@@ -583,7 +619,7 @@ Deno.test("findStaleFiles: matching fingerprint + state=BundleBuildFailed → st
   try {
     const file = join(dir, "needs_npm.ts");
     await Deno.writeTextFile(file, "export const needsNpm = 1;");
-    const fp = await computeSourceFingerprint(file, dir);
+    const fp = await computeSourceFingerprint(file, dir, noRecordedModules);
 
     const catalog = new FakeCatalog();
     catalog.add({
@@ -619,7 +655,7 @@ Deno.test("findStaleFiles: matching fingerprint + bundle exists → not stale (#
     const bundle = join(dir, "a.js");
     await Deno.writeTextFile(file, "export const a = 1;");
     await Deno.writeTextFile(bundle, "/* fake compiled bundle */");
-    const fp = await computeSourceFingerprint(file, dir);
+    const fp = await computeSourceFingerprint(file, dir, noRecordedModules);
 
     const catalog = new FakeCatalog();
     catalog.add({
@@ -653,7 +689,7 @@ Deno.test("findStaleFiles: empty bundle_path → bundle-existence check skipped 
   try {
     const file = join(dir, "a.ts");
     await Deno.writeTextFile(file, "export const a = 1;");
-    const fp = await computeSourceFingerprint(file, dir);
+    const fp = await computeSourceFingerprint(file, dir, noRecordedModules);
 
     const catalog = new FakeCatalog();
     catalog.add({
@@ -699,12 +735,12 @@ Deno.test("computeSourceFingerprint: broken transitive symlink does not throw", 
     );
     await Deno.symlink("/nonexistent/path/broken.ts", broken, { type: "file" });
 
-    const fp = await computeSourceFingerprint(entry, dir);
+    const fp = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertEquals(fp.length, 64);
     assertEquals(/^[0-9a-f]{64}$/.test(fp), true);
 
     // Stable across repeated calls.
-    const again = await computeSourceFingerprint(entry, dir);
+    const again = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertEquals(fp, again);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -721,13 +757,21 @@ Deno.test("computeSourceFingerprint: absence of dep is captured in fingerprint",
       "import { x } from './dep.ts';\nexport const e = x;",
     );
     await Deno.writeTextFile(dep, "export const x = 1;");
-    const allPresent = await computeSourceFingerprint(entry, dir);
+    const allPresent = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     // Replace the readable dep with a broken symlink. Same path, same
     // import — different readability state. Fingerprint must differ.
     await Deno.remove(dep);
     await Deno.symlink("/nonexistent/path/dep.ts", dep, { type: "file" });
-    const oneBroken = await computeSourceFingerprint(entry, dir);
+    const oneBroken = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     assertNotEquals(
       allPresent,
@@ -760,7 +804,7 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
     );
     await Deno.writeTextFile(dep, "export const x = 1;");
 
-    const f1 = await computeSourceFingerprint(entry, dir);
+    const f1 = await computeSourceFingerprint(entry, dir, noRecordedModules);
     const catalog = new FakeCatalog();
     catalog.add({
       source_path: entry,
@@ -790,7 +834,7 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
     );
     assertEquals(firstPass[0].relativePath, "entry.ts");
 
-    const f2 = await computeSourceFingerprint(entry, dir);
+    const f2 = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertNotEquals(f1, f2);
     catalog.removeByRawSourcePath(entry);
     catalog.add({
@@ -832,12 +876,20 @@ Deno.test("computeSourceFingerprint: restoring a broken dep changes the fingerpr
     );
     await Deno.symlink("/nonexistent/path/dep.ts", dep, { type: "file" });
 
-    const broken = await computeSourceFingerprint(entry, dir);
+    const broken = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     // Restore the dep as a real file with content.
     await Deno.remove(dep);
     await Deno.writeTextFile(dep, "export const x = 42;");
-    const restored = await computeSourceFingerprint(entry, dir);
+    const restored = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     assertNotEquals(
       broken,
@@ -882,7 +934,11 @@ Deno.test("scanCatalogFreshness: removed lists unseen non-failure rows and keeps
     catalog.add(catalogRow({
       source_path: seen,
       type_normalized: "@user/seen",
-      source_fingerprint: await computeSourceFingerprint(seen, dir),
+      source_fingerprint: await computeSourceFingerprint(
+        seen,
+        dir,
+        noRecordedModules,
+      ),
     }));
     catalog.add(catalogRow({
       source_path: gone,
@@ -944,7 +1000,11 @@ Deno.test("scanCatalogFreshness: typeless lists seen Indexed primary-kind rows t
     for (const name of names) {
       paths[name] = join(dir, name);
       await Deno.writeTextFile(paths[name], `export const x = "${name}";`);
-      fps[name] = await computeSourceFingerprint(paths[name], dir);
+      fps[name] = await computeSourceFingerprint(
+        paths[name],
+        dir,
+        noRecordedModules,
+      );
     }
 
     const catalog = new FakeCatalog();
@@ -1038,4 +1098,171 @@ Deno.test("normalizeFreshnessPath: folds case and separators only on Windows", (
   const input = ["Repo", "Extensions", "Models", "A.ts"].join(SEPARATOR);
   const expected = SEPARATOR === "\\" ? "repo/extensions/models/a.ts" : input;
   assertEquals(normalizeFreshnessPath(input), expected);
+});
+
+// -- Recorded source modules (swamp-club#3385) ---------------------------
+
+/** A lookup that answers from a fixed map of recorded modules. */
+function recordedModules(
+  entries: Record<string, readonly string[]>,
+): SourceModuleLookup {
+  return { findSourceModules: (path) => entries[path] };
+}
+
+Deno.test("computeSourceFingerprint: covers a recorded module outside the boundary dir (swamp-club#3385)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_3385_outside_" });
+  try {
+    const modelsDir = join(dir, "models");
+    await Deno.mkdir(modelsDir);
+    await Deno.mkdir(join(dir, "lib"));
+    const entry = join(modelsDir, "echo.ts");
+    const lib = join(dir, "lib", "msg.ts");
+    await Deno.writeTextFile(
+      entry,
+      'import { MSG } from "../lib/msg.ts";\nexport const m = MSG;',
+    );
+    await Deno.writeTextFile(lib, 'export const MSG = "v1";');
+    const recorded = recordedModules({ [entry]: [entry, lib] });
+
+    const before = await computeSourceFingerprint(entry, modelsDir, recorded);
+    const walkedBefore = await computeSourceFingerprint(
+      entry,
+      modelsDir,
+      noRecordedModules,
+    );
+    await Deno.writeTextFile(lib, 'export const MSG = "v2";');
+
+    assertNotEquals(
+      await computeSourceFingerprint(entry, modelsDir, recorded),
+      before,
+    );
+    assertEquals(
+      await computeSourceFingerprint(entry, modelsDir, noRecordedModules),
+      walkedBefore,
+      "the relative-import walk stops at the boundary dir",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("computeSourceFingerprint: a recorded missing module is stable until it appears (swamp-club#3385)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_3385_missing_" });
+  try {
+    const entry = join(dir, "a.ts");
+    const missing = join(dir, "later.ts");
+    await Deno.writeTextFile(entry, "export const a = 1;");
+    const recorded = recordedModules({ [entry]: [entry, missing] });
+
+    const first = await computeSourceFingerprint(entry, dir, recorded);
+    assertEquals(await computeSourceFingerprint(entry, dir, recorded), first);
+    await Deno.writeTextFile(missing, "export const later = 1;");
+    assertNotEquals(
+      await computeSourceFingerprint(entry, dir, recorded),
+      first,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("computeSourceFingerprint: recording the walked modules keeps the walked fingerprint (swamp-club#3385)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_3385_same_" });
+  try {
+    const entry = join(dir, "a.ts");
+    const dep = join(dir, "b.ts");
+    await Deno.writeTextFile(entry, 'import { b } from "./b.ts";\n');
+    await Deno.writeTextFile(dep, "export const b = 1;");
+
+    assertEquals(
+      await computeSourceFingerprint(
+        entry,
+        dir,
+        recordedModules({ [entry]: [entry, dep] }),
+      ),
+      await computeSourceFingerprint(entry, dir, noRecordedModules),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Scans one source whose row's fingerprint matches, with `repoDir` set
+ * unless `withoutRepoDir`, and returns whether the scan found it stale.
+ */
+async function scanOneMatchingSource(args: {
+  pulled?: boolean;
+  recorded?: boolean;
+  withoutRepoDir?: boolean;
+}): Promise<boolean> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_3385_heal_" });
+  try {
+    const modelsDir = args.pulled
+      ? join(dir, ".swamp", "pulled-extensions", "@test", "ext", "models")
+      : join(dir, "extensions", "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const file = join(modelsDir, "a.ts");
+    await Deno.writeTextFile(file, "export const a = 1;");
+
+    const catalog = new FakeCatalog();
+    if (args.recorded) catalog.sourceModules.set(file, [file]);
+    catalog.add(catalogRow({
+      source_path: file,
+      type_normalized: "@user/a",
+      source_fingerprint: await computeSourceFingerprint(
+        file,
+        modelsDir,
+        catalog,
+      ),
+    }));
+    const scan = await scanCatalogFreshness({
+      modelsDir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+      repoDir: args.withoutRepoDir ? undefined : dir,
+    });
+    return scan.stale.length === 1;
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("scanCatalogFreshness: a local source with no recorded modules is stale (swamp-club#3385)", async () => {
+  assertEquals(await scanOneMatchingSource({}), true);
+});
+
+Deno.test("scanCatalogFreshness: a local source with recorded modules and a matching fingerprint is fresh (swamp-club#3385)", async () => {
+  assertEquals(await scanOneMatchingSource({ recorded: true }), false);
+});
+
+Deno.test("scanCatalogFreshness: a pulled source with no recorded modules is fresh (swamp-club#3385)", async () => {
+  assertEquals(await scanOneMatchingSource({ pulled: true }), false);
+});
+
+Deno.test("scanCatalogFreshness: without repoDir a source with no recorded modules is fresh (swamp-club#3385)", async () => {
+  assertEquals(await scanOneMatchingSource({ withoutRepoDir: true }), false);
+});
+
+Deno.test("scanCatalogFreshness: a removed row's recorded modules are forgotten (swamp-club#3385)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_3385_prune_" });
+  try {
+    const gone = join(dir, "gone.ts");
+    const catalog = new FakeCatalog();
+    catalog.add(catalogRow({ source_path: gone, type_normalized: "@user/g" }));
+    catalog.sourceModules.set(gone, [gone]);
+
+    const scan = await scanCatalogFreshness({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+
+    assertEquals(scan.removed.map((r) => r.source_path), [gone]);
+    assertEquals(catalog.findSourceModules(gone), undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

@@ -31,7 +31,13 @@ import type { SourceFingerprint } from "./source_fingerprint.ts";
 import {
   computeSourceFingerprint,
   createFreshnessCache,
+  type SourceModuleLookup,
 } from "./bundle_freshness.ts";
+
+/** A lookup with no recorded modules: fingerprints walk relative imports. */
+const noRecordedModules: SourceModuleLookup = {
+  findSourceModules: () => undefined,
+};
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -66,6 +72,7 @@ Deno.test("computeSourceFingerprint: identical content yields identical fingerpr
     const first: SourceFingerprint = await computeSourceFingerprint(
       entry,
       dir,
+      noRecordedModules,
     );
 
     // Rewrite both files with identical bytes — a fresh write, new
@@ -75,6 +82,7 @@ Deno.test("computeSourceFingerprint: identical content yields identical fingerpr
     const second: SourceFingerprint = await computeSourceFingerprint(
       entry,
       dir,
+      noRecordedModules,
     );
     assertEquals(second, first);
   });
@@ -84,12 +92,31 @@ Deno.test("computeSourceFingerprint: deterministic across repeated runs and cach
   await withTempDir(async (dir) => {
     const { entry } = await writeEntryAndDep(dir);
 
-    const noCache = await computeSourceFingerprint(entry, dir);
+    const noCache = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     const cacheA = createFreshnessCache();
-    const withCacheA = await computeSourceFingerprint(entry, dir, cacheA);
-    const repeatCacheA = await computeSourceFingerprint(entry, dir, cacheA);
+    const withCacheA = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+      cacheA,
+    );
+    const repeatCacheA = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+      cacheA,
+    );
     const cacheB = createFreshnessCache();
-    const withCacheB = await computeSourceFingerprint(entry, dir, cacheB);
+    const withCacheB = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+      cacheB,
+    );
 
     assertEquals(withCacheA, noCache);
     assertEquals(repeatCacheA, noCache);
@@ -103,8 +130,16 @@ Deno.test("computeSourceFingerprint: identical content trees in different direct
       const a = await writeEntryAndDep(dirA);
       const b = await writeEntryAndDep(dirB);
 
-      const fpA = await computeSourceFingerprint(a.entry, dirA);
-      const fpB = await computeSourceFingerprint(b.entry, dirB);
+      const fpA = await computeSourceFingerprint(
+        a.entry,
+        dirA,
+        noRecordedModules,
+      );
+      const fpB = await computeSourceFingerprint(
+        b.entry,
+        dirB,
+        noRecordedModules,
+      );
       assertEquals(
         fpA,
         fpB,
@@ -117,13 +152,17 @@ Deno.test("computeSourceFingerprint: identical content trees in different direct
 Deno.test("computeSourceFingerprint: mtime-only change leaves fingerprint unchanged", async () => {
   await withTempDir(async (dir) => {
     const { entry, dep } = await writeEntryAndDep(dir);
-    const before = await computeSourceFingerprint(entry, dir);
+    const before = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     const later = new Date(Date.now() + 60_000);
     await Deno.utime(entry, later, later);
     await Deno.utime(dep, later, later);
 
-    const after = await computeSourceFingerprint(entry, dir);
+    const after = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertEquals(after, before, "content-based, not mtime-based");
   });
 });
@@ -131,14 +170,18 @@ Deno.test("computeSourceFingerprint: mtime-only change leaves fingerprint unchan
 Deno.test("computeSourceFingerprint: unimported sibling files do not affect the fingerprint", async () => {
   await withTempDir(async (dir) => {
     const { entry } = await writeEntryAndDep(dir);
-    const before = await computeSourceFingerprint(entry, dir);
+    const before = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     await Deno.writeTextFile(
       join(dir, "unrelated.ts"),
       "export const noise = 42;\n",
     );
 
-    const after = await computeSourceFingerprint(entry, dir);
+    const after = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertEquals(after, before);
   });
 });
@@ -148,14 +191,26 @@ Deno.test("computeSourceFingerprint: unimported sibling files do not affect the 
 Deno.test("computeSourceFingerprint: content edit changes the value and reverting restores it", async () => {
   await withTempDir(async (dir) => {
     const { entry, dep } = await writeEntryAndDep(dir);
-    const original = await computeSourceFingerprint(entry, dir);
+    const original = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     await Deno.writeTextFile(dep, "export const greeting = 'goodbye';\n");
-    const edited = await computeSourceFingerprint(entry, dir);
+    const edited = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     assertNotEquals(edited, original);
 
     await Deno.writeTextFile(dep, DEP_SOURCE);
-    const reverted = await computeSourceFingerprint(entry, dir);
+    const reverted = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     assertEquals(
       reverted,
       original,
@@ -168,7 +223,11 @@ Deno.test("computeSourceFingerprint: adding an imported file changes the fingerp
   await withTempDir(async (dir) => {
     const entry = join(dir, "entry.ts");
     await Deno.writeTextFile(entry, "export const x = 1;\n");
-    const standalone = await computeSourceFingerprint(entry, dir);
+    const standalone = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     await Deno.writeTextFile(
       join(dir, "extra.ts"),
@@ -178,7 +237,11 @@ Deno.test("computeSourceFingerprint: adding an imported file changes the fingerp
       entry,
       "import { extra } from './extra.ts';\nexport const x = extra;\n",
     );
-    const withDep = await computeSourceFingerprint(entry, dir);
+    const withDep = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     assertNotEquals(withDep, standalone);
   });
 });
@@ -186,18 +249,30 @@ Deno.test("computeSourceFingerprint: adding an imported file changes the fingerp
 Deno.test("computeSourceFingerprint: removing a dependency file changes the fingerprint; restoring it restores the value", async () => {
   await withTempDir(async (dir) => {
     const { entry, dep } = await writeEntryAndDep(dir);
-    const healthy = await computeSourceFingerprint(entry, dir);
+    const healthy = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     // Delete the imported file — the entry point's bytes are unchanged
     // but the content graph is now broken, so the value must move.
     await Deno.remove(dep);
-    const broken = await computeSourceFingerprint(entry, dir);
+    const broken = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     assertNotEquals(broken, healthy);
 
     // Restoring identical content restores the original value — no
     // rebundle is needed once the graph is byte-identical again.
     await Deno.writeTextFile(dep, DEP_SOURCE);
-    const restored = await computeSourceFingerprint(entry, dir);
+    const restored = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     assertEquals(restored, healthy);
   });
 });
@@ -207,8 +282,16 @@ Deno.test("computeSourceFingerprint: broken dependency state is stable across ru
     const { entry, dep } = await writeEntryAndDep(dir);
     await Deno.remove(dep);
 
-    const firstBroken = await computeSourceFingerprint(entry, dir);
-    const secondBroken = await computeSourceFingerprint(entry, dir);
+    const firstBroken = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
+    const secondBroken = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
     assertEquals(
       secondBroken,
       firstBroken,
@@ -231,10 +314,14 @@ Deno.test("computeSourceFingerprint: transitive content change through an import
       "import { l } from './leaf.ts';\nexport const m = l;\n",
     );
     await Deno.writeTextFile(leaf, "export const l = 1;\n");
-    const before = await computeSourceFingerprint(entry, dir);
+    const before = await computeSourceFingerprint(
+      entry,
+      dir,
+      noRecordedModules,
+    );
 
     await Deno.writeTextFile(leaf, "export const l = 2;\n");
-    const after = await computeSourceFingerprint(entry, dir);
+    const after = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertNotEquals(
       after,
       before,
