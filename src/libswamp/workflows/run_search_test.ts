@@ -401,6 +401,55 @@ Deno.test("workflowRunSearch: since and until together bound a window", async ()
   assertEquals(completedRunIds(events), ["run-3", "run-2"]);
 });
 
+Deno.test("workflowRunSearch: with since, echoes it as ISO and the oldest match's start beyond the page", async () => {
+  const since = new Date(now - 10_000).toISOString();
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {
+      since,
+      limit: 1,
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.map((r) => r.runId), ["run-1"]);
+  assertEquals(completed.total, 3);
+  assertEquals(completed.since, since);
+  // run-2, the oldest of the three matches, is not on the page.
+  assertEquals(
+    completed.oldestStartedAt,
+    new Date(now - 5000).toISOString(),
+  );
+});
+
+Deno.test("workflowRunSearch: without since, reports neither since nor the oldest start", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {}),
+  );
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals("since" in completed, false);
+  assertEquals("oldestStartedAt" in completed, false);
+});
+
+Deno.test("workflowRunSearch: with since and no match, reports since alone", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {
+      since: new Date(now + 60_000).toISOString(),
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.total, 0);
+  assertEquals(typeof completed.since, "string");
+  assertEquals("oldestStartedAt" in completed, false);
+});
+
 Deno.test("workflowRunSearch: workflows keeps runs of any listed workflow by exact name", async () => {
   const deps = makeDeps();
   const only = await collect<WorkflowRunSearchEvent>(

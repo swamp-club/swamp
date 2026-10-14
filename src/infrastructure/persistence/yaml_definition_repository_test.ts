@@ -2798,3 +2798,68 @@ Deno.test("YamlDefinitionRepository.findAllGlobal: walks type directories and fi
     );
   });
 });
+
+Deno.test("YamlDefinitionRepository.findByName answers a secondary definition from its name-derived file (swamp-club#3405)", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+    const named = createTestDefinition("worker-x");
+    await secondaryRepo.save(testType, named);
+    // An earlier-sorting file declaring the same name: a scan of the type
+    // directory would return it first, the name-derived file does not.
+    const stray = createTestDefinition("worker-x");
+    const typeDir = join(secondaryDir, testType.toDirectoryPath());
+    const strayData = stray.toData();
+    strayData.type = testType.normalized;
+    await Deno.writeTextFile(
+      join(typeDir, "a-stray.yaml"),
+      toCleanYaml(strayData),
+    );
+
+    const found = await repo.findByName(testType, "worker-x");
+    assertEquals(found?.id, named.id);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName prefers a primary definition over the secondary name-derived file (swamp-club#3405)", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+    const primaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      false,
+    );
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+    const primaryDef = createTestDefinition("shared-worker");
+    await primaryRepo.save(testType, primaryDef);
+    await secondaryRepo.save(testType, createTestDefinition("shared-worker"));
+
+    const found = await repo.findByName(testType, "shared-worker");
+    assertEquals(found?.id, primaryDef.id);
+  });
+});

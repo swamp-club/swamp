@@ -24,8 +24,10 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { useRequest } from "./useRequest.ts";
-import { extractArray, extractTotal } from "./extract.ts";
+import { extractArray, extractSearchWindow, extractTotal } from "./extract.ts";
+import { ageOutDelayMs, useRefetchOnAgeOut } from "./run_activity.ts";
 import {
+  isRelativeBound,
   useRequestTimeBounds,
   useTimeBounds,
   useTimeRange,
@@ -188,6 +190,15 @@ function useTriggerSearch(
     { ...payload, ...requestBounds },
     { enabled },
   );
+  // On a preset range, read again once the oldest match leaves the window
+  // (swamp-club#3450). An older serve reports no window: nothing is armed.
+  const searchWindow = extractSearchWindow(current.data);
+  useRefetchOnAgeOut(current.refetch, {
+    answer: current.data,
+    delayMs: isRelativeBound(requestBounds.since)
+      ? ageOutDelayMs(searchWindow.since, searchWindow.oldestStartedAt)
+      : null,
+  }, enabled);
   const legacy = enabled && current.error !== null;
   // Minute-stable, like the bounds, so the request key doesn't churn.
   const minute = Math.floor(Date.now() / 60_000) * 60_000;

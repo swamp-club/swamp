@@ -57,6 +57,22 @@ export function extractTotal(payload: unknown): number | null {
 }
 
 /**
+ * Extract a run search's window from a paged response: serve's resolved
+ * `since` and the oldest match's start, beside `total`. Older serves send
+ * neither.
+ */
+export function extractSearchWindow(
+  payload: unknown,
+): { since?: string; oldestStartedAt?: string } {
+  if (!payload || typeof payload !== "object") return {};
+  const { since, oldestStartedAt } = payload as Record<string, unknown>;
+  return {
+    ...(typeof since === "string" ? { since } : {}),
+    ...(typeof oldestStartedAt === "string" ? { oldestStartedAt } : {}),
+  };
+}
+
+/**
  * Extract a single object from a WS response payload.
  */
 export function extractObject<T>(payload: unknown): T | null {

@@ -467,6 +467,18 @@ positional `<name>` given to `swamp worker token create`) and its
 `instanceUuid`, and a step may target either (see
 [Scheduling](#scheduling-fan-out-and-provisioning)).
 
+Enrollments are recorded one at a time on the gateway's transition tail, so a
+worker's control socket can close while its enrollment waits or is being
+recorded: its enroll call times out and it gives up on that socket. One that
+closed before its turn is skipped without being recorded. One that closed
+while it was being recorded is not admitted as connected: it is treated as a
+disconnect, with the usual reconnection grace window. The worker's next
+connection then enrolls normally, and the scheduler never offers a worker on
+a dead socket. Serve's control-plane runs (token redeem, worker enroll and
+status) look up their definitions by type, in `models/<type>` and then the
+auto-definitions directory, so enrollment does not slow down as a repository
+gains definitions (swamp-club#3405).
+
 A worker needs no swamp-club credential. `gatePass` is the serve's auth gate
 pass, and a worker without a key of its own passes the gate on it. Such a
 worker sets `needsGatePass`, and a serve with no pass to give refuses it with

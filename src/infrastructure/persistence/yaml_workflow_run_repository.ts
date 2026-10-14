@@ -1319,19 +1319,26 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   /**
    * Brings an index that disagrees with its records' count back in line,
-   * queued with the index updates of the same workflow. The check is made
-   * again in the queue first: a save writes its record before its index
-   * entry, so a reader that counted in between usually finds the entry
-   * landed. Otherwise every record is stat'ed against the fingerprint its
-   * entry was built from, and only the records the index does not list, or
-   * that changed since their entry was written, are read; the entries of
-   * records that are gone are dropped. A new run costs a stat per record,
-   * not a read of every record (swamp-club#3443, swamp-club#3407), and a
-   * record another writer replaced is still corrected, as the rebuild this
-   * replaces corrected it. An index of another schema version, or none, is
-   * rebuilt whole. The entries are in step only when the index file holds
-   * them and lists one per record: a repair that could not be written, or
-   * a record that cannot be indexed (an empty one), leaves them out of step.
+   * queued with the index updates of the same workflow. Every record is
+   * stat'ed against the fingerprint its entry was built from, and only the
+   * records the index does not list, or that changed since their entry was
+   * written, are read; the entries of records that are gone are dropped. A
+   * new run costs a stat per record, not a read of every record
+   * (swamp-club#3443, swamp-club#3407), and a record another writer
+   * replaced is still corrected, as the rebuild this replaces corrected it.
+   * An index of another schema version, or none, is rebuilt whole.
+   *
+   * The stats are made even when the count agrees by the time the queue is
+   * reached, as it usually does: a save writes its record before its index
+   * entry, so a reader that counted in between finds the entry landed. Index
+   * updates are queued only within one process, so a save in another one
+   * can overwrite an entry this one wrote, leaving it with the status and
+   * fingerprint of an earlier write of its record and the count unchanged;
+   * a reader that has seen a mismatch is what corrects it (swamp-club#3452).
+   *
+   * The entries are in step only when the index file holds them and lists
+   * one per record: a repair that could not be written, or a record that
+   * cannot be indexed (an empty one), leaves them out of step.
    */
   private repairIndex(
     runsDir: string,
@@ -1346,9 +1353,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       const result = await readRunIndex(indexDir);
       if (!result || result.version !== INDEX_SCHEMA_VERSION) {
         return await this.rebuildIndexUnqueued(runsDir, indexDir, signal);
-      }
-      if (!isIndexStale(result, count)) {
-        return { entries: result.entries, inStep: true };
       }
 
       const entries = result.entries;

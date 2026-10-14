@@ -21,6 +21,7 @@ import type { TriggerType } from "../../domain/models/model_output.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
+import { parseRunTimeBound } from "../workflows/run_search.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -136,26 +137,39 @@ export interface ModelOutputSearchInput {
   includeProvenance?: boolean;
   /** Only outputs of this model, by exact name or id. */
   model?: string;
-  /** Only outputs started at or after this ISO 8601 instant. */
+  /**
+   * Only outputs started at or after this ISO 8601 instant, or this long
+   * ago for a duration like `7d`.
+   */
   since?: string;
   /**
-   * Only outputs started before this ISO 8601 instant (exclusive), as run
-   * search and the run summary read `until`.
+   * Only outputs started before this ISO 8601 instant or duration ago
+   * (exclusive), as run search and the run summary read `until`.
    */
   until?: string;
   /** At most this many results, most recent first. */
   limit?: number;
 }
 
+/**
+ * A time bound as a Date: a duration (`7d`) counts back from `now`, as the
+ * run queries read one; anything else must parse as a date-time.
+ */
 function parseInstant(
   field: "since" | "until",
   value: string | undefined,
+  now: number,
 ): Date | undefined | SwampError {
   if (value === undefined) return undefined;
-  const date = new Date(value);
+  let date: Date;
+  try {
+    date = new Date(parseRunTimeBound(value, now));
+  } catch {
+    date = new Date(value);
+  }
   if (Number.isNaN(date.getTime())) {
     return validationFailed(
-      `Invalid ${field}: ${value} is not an ISO 8601 date-time`,
+      `Invalid ${field}: ${value} is not a duration like 7d or an ISO 8601 date-time`,
     );
   }
   return date;
@@ -180,12 +194,13 @@ export async function* modelOutputSearch(
     (async function* () {
       yield { kind: "resolving" };
 
-      const since = parseInstant("since", input.since);
+      const now = Date.now();
+      const since = parseInstant("since", input.since, now);
       if (since !== undefined && !(since instanceof Date)) {
         yield { kind: "error", error: since };
         return;
       }
-      const until = parseInstant("until", input.until);
+      const until = parseInstant("until", input.until, now);
       if (until !== undefined && !(until instanceof Date)) {
         yield { kind: "error", error: until };
         return;

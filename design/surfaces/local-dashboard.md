@@ -143,14 +143,27 @@ process in the repo, heartbeat within `STALE_TTL_MS`) to its own active runs
 live and the views' refresh-on-change covers them. Model-method rows carry no
 model name and are left out.
 
-Refresh-on-change is the only clock the dashboard has. Run summaries are
-re-read when a run starts or stops being driven and when the tab comes back
-into view, at most once per 30 seconds (`RUN_ACTIVITY_REFETCH_MS`) and never
-while the tab is hidden. A live run's page polls only the run and its logs; its
-run-search row is re-read when the run's status or the active runs change. A
-preset time range is sent as a duration (`since: "7d"`), so the request does
-not change as the clock moves. Request volume follows run activity, not how long
-a tab stays open.
+Refresh-on-change is the only clock the dashboard has. Run summaries, and the
+model output searches behind the Models page and a model's page, are re-read
+when a run starts or stops being driven and when the tab comes back into view,
+at most once per 30 seconds (`RUN_ACTIVITY_REFETCH_MS`) and never while the tab
+is hidden. A live run's page polls only the run and its logs; its run-search row
+is re-read when the run's status or the active runs change. A preset time range
+is sent as a duration (`since: "7d"`) to the run queries and to
+`model.output.search`, so the request does not change as the clock moves.
+
+A preset's window still moves, so a counted run eventually leaves it. Serve's
+run summary reports `oldestStartedAt`, the start of the oldest counted run, and
+a run search with a `since` bound reports the resolved `since` and the oldest
+match's `oldestStartedAt` beside `total`. On a preset range the dashboard
+schedules one refetch for when that run leaves the window: `oldestStartedAt`
+minus the echoed `since`, both on serve's clock, so the browser's clock does not
+matter. It goes through the same throttle and is held while the tab is hidden;
+each answer sets the next deadline. Run summaries, the Executions list and the
+schedule and webhook run lists do this. Custom and all-time ranges do not move
+and schedule nothing, nor does a serve that predates the fields. Request volume
+follows run activity and runs ageing out of the window, not how long a tab stays
+open.
 
 ## Security
 
