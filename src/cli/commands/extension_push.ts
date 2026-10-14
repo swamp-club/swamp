@@ -62,6 +62,7 @@ import { registryChecksVerdict } from "../../domain/extensions/extension_publish
 import { resolvePublishVisibility } from "../../domain/extensions/extension_manifest.ts";
 import { RUBRIC_VERSION } from "../../domain/extensions/extension_rubric_scorer.ts";
 import {
+  acceptedWarningCount,
   type AcceptedWarnings,
   createExtensionPushRenderer,
   renderExtensionPushCancelled,
@@ -269,12 +270,18 @@ export function resolveExistingVersionResponse(input: {
  * Collects the warnings the gate covers into the record the summary prints
  * when they are accepted. Findings drop their report skeleton and their
  * remediation: `warnings.review` and `warnings.safety` already carry them,
- * and repeating them would bury the summary.
+ * and repeating them would bury the summary. Of the dependency trust
+ * warnings only the unaudited dependencies are gated; the list is left out
+ * when there are none.
  */
 export function buildAcceptedWarnings(prepared: {
   safetyWarnings: SafetyIssue[];
   reviewRulesResult: { warnings: ReviewFinding[] };
+  dependencyTrustResult: { warnings: DependencyTrustIssue[] };
 }): AcceptedWarnings {
+  const notAudited = prepared.dependencyTrustResult.warnings.filter((w) =>
+    w.cause === "not-audited"
+  );
   return {
     safety: prepared.safetyWarnings.map((w) => ({
       ruleId: w.ruleId,
@@ -290,6 +297,7 @@ export function buildAcceptedWarnings(prepared: {
       ...(w.line !== undefined ? { line: w.line } : {}),
       message: w.message,
     })),
+    ...(notAudited.length > 0 ? { dependencyTrust: notAudited } : {}),
   };
 }
 
@@ -788,7 +796,7 @@ export const extensionPushCommand = new Command()
       // here; the warnings were rendered above either way.
       const gatedWarnings = buildAcceptedWarnings(prepared);
       const gate = resolveWarningsGate({
-        warningCount: gatedWarnings.safety.length + gatedWarnings.review.length,
+        warningCount: acceptedWarningCount(gatedWarnings),
         waiver: resolveWarningsWaiver(options),
         dryRun: prepared.isDryRun,
         outputMode: cliCtx.outputMode,

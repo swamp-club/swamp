@@ -347,6 +347,80 @@ Deno.test("extensionPushRenderer: log completed summary lists accepted warnings,
   assertStringIncludes(output, "models/a.ts");
 });
 
+const notAuditedWarning = {
+  dependency: "leftpad",
+  message: "not audited: OSV lookup failed (HTTP 503)",
+  cause: "not-audited" as const,
+};
+
+Deno.test("extensionPushRenderer: JSON dry run records unaudited dependencies under acceptedWarnings.dependencyTrust and warnings.dependencyTrust", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const withDeps: AcceptedWarnings = {
+    ...accepted,
+    dependencyTrust: [notAuditedWarning],
+  };
+  const logs = await capture(() => {
+    renderer.renderDependencyTrustWarnings([
+      { dependency: "tiny", message: "low weekly downloads (10 < 1000)" },
+      notAuditedWarning,
+    ]);
+    renderer.renderDryRun({
+      ...dryRunBase,
+      accepted: { warnings: withDeps, waivedBy: "--yes" },
+    });
+  });
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.acceptedWarnings.dependencyTrust, [notAuditedWarning]);
+  assertEquals(doc.warnings.dependencyTrust[1], notAuditedWarning);
+  assertEquals("cause" in doc.warnings.dependencyTrust[0], false);
+});
+
+Deno.test("extensionPushRenderer: log prints unaudited dependencies in their own block and counts them in the accepted record", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() => {
+    renderer.renderDependencyTrustWarnings([
+      { dependency: "tiny", message: "low weekly downloads (10 < 1000)" },
+      notAuditedWarning,
+    ]);
+    renderer.renderDryRun({
+      ...dryRunBase,
+      accepted: {
+        warnings: { ...accepted, dependencyTrust: [notAuditedWarning] },
+        waivedBy: "--yes",
+      },
+    });
+  });
+  const output = logs.join("\n");
+  const notAuditedAt = output.indexOf(
+    "Dependencies not audited (re-run when OSV and npm are reachable; --yes accepts):",
+  );
+  const advisoryAt = output.indexOf(
+    "Dependency trust warnings (non-blocking):",
+  );
+  assertEquals(notAuditedAt >= 0, true);
+  assertEquals(advisoryAt > notAuditedAt, true);
+  assertEquals(
+    output.slice(notAuditedAt, advisoryAt).includes("low weekly downloads"),
+    false,
+  );
+  const headerAt = output.indexOf("Accepted 3 warnings with --yes:");
+  assertEquals(headerAt >= 0, true);
+  assertStringIncludes(
+    output.slice(headerAt),
+    "OSV lookup failed (HTTP 503)",
+  );
+});
+
+Deno.test("extensionPushRenderer: log prints only the not-audited block when every dependency warning is unaudited", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() =>
+    renderer.renderDependencyTrustWarnings([notAuditedWarning])
+  );
+  const output = logs.join("\n");
+  assertStringIncludes(output, "Dependencies not audited");
+  assertEquals(output.includes("Dependency trust warnings"), false);
+});
+
 Deno.test("extensionPushRenderer: log summaries say nothing about acceptance when none", async () => {
   const renderer = createExtensionPushRenderer("log");
   const logs = await capture(async () => {

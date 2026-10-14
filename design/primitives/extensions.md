@@ -1283,7 +1283,8 @@ env vars.
 ### Push confirmation and warning acceptance
 
 `swamp extension push` asks one question on the way to a publish: whether the
-safety and review warnings it found are acceptable and the push should happen.
+safety and review warnings, and any unaudited dependencies, it found are
+acceptable and the push should happen.
 `--yes` (and its alias `--force`) answers it, in every mode:
 
 - Interactive runs prompt once for the warnings and once for the push.
@@ -1296,8 +1297,11 @@ safety and review warnings it found are acceptable and the push should happen.
 - A log-mode run without a terminal and without `--yes` fails in the prompt,
   whose error names the flag.
 
-Advisory warnings (dependency trust, version drift, missing upgrade entries)
-never gate a push and are outside the record.
+Unaudited dependencies (see [Not audited](#not-audited)) are gated like the
+safety and review warnings and recorded under `acceptedWarnings.dependencyTrust`,
+a list present only when there is at least one. The other advisory warnings
+(the rest of dependency trust, version drift, missing upgrade entries) never
+gate a push and are outside the record.
 
 History: swamp 20261005.154947.0 (issue #3015) split the two consents, made
 `--accept-warnings` the only waiver and had non-interactive runs refuse
@@ -1807,6 +1811,20 @@ from `@bixu/wheelshop`:
 - Weekly downloads below 1,000
 - Last publish more than 24 months ago
 
+### Not audited
+
+A dependency whose npm registry or OSV.dev lookup fails (an error status, no
+network, a timeout) is **not audited**. It is never reported as passed: its
+audit summary has `passed: false`, `cause: "not-audited"` and a `reason` naming
+each failed lookup, and a warning with the same cause joins
+`warnings.dependencyTrust`. When npm fails but the specifier pins a version,
+OSV is still queried, so a HIGH or CRITICAL vulnerability still blocks; an
+unpinned specifier cannot be queried. A failed weekly-downloads lookup alone
+leaves the dependency audited. Unaudited dependencies join the push warnings
+gate (an interactive push prompts; `--yes` waives them), never block on their
+own, and never change the exit code. `DependencyTrustResult.passed` keeps
+meaning "no blockers".
+
 ### jsr Dependencies
 
 jsr packages rely on jsr's own enforcement (SPDX license requirement,
@@ -1816,7 +1834,8 @@ provenance, no install scripts) and skip gates that lack data.
 
 Dependency trust is a rubric factor (`dependency-trust`, worth 2 points) in both
 `swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores
-when every dependency passes the trust gates with no hard errors.
+when every dependency passes the trust gates with no hard errors. In the CLI an
+unaudited dependency loses the factor the same way a hard error does.
 
 ## Registry
 

@@ -232,7 +232,11 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         const { dependencyTrustResult } = e.data;
         if (dependencyTrustResult.audited.length > 0) {
           for (const dep of dependencyTrustResult.audited) {
-            const mark = dep.passed ? "✓" : "✗";
+            const mark = dep.cause === "not-audited"
+              ? "?"
+              : dep.passed
+              ? "✓"
+              : "✗";
             const parts: string[] = [];
             if (dep.registry === "jsr") {
               parts.push("jsr (trusted)");
@@ -243,6 +247,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
               }
               if (dep.publishedAgo) parts.push(dep.publishedAgo);
             }
+            if (dep.reason) parts.push(`not audited: ${dep.reason}`);
             const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
             logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
           }
@@ -255,9 +260,22 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             logger.error`  ${err.dependency}: ${err.message}`;
           }
         }
-        if (dependencyTrustResult.warnings.length > 0) {
+        const notAudited = dependencyTrustResult.warnings.filter((w) =>
+          w.cause === "not-audited"
+        );
+        const advisory = dependencyTrustResult.warnings.filter((w) =>
+          w.cause !== "not-audited"
+        );
+        if (notAudited.length > 0) {
+          logger
+            .warn`Dependencies not audited (re-run when OSV and npm are reachable):`;
+          for (const w of notAudited) {
+            logger.warn`  ${w.dependency}: ${w.message}`;
+          }
+        }
+        if (advisory.length > 0) {
           logger.warn`Dependency trust warnings (non-blocking):`;
-          for (const w of dependencyTrustResult.warnings) {
+          for (const w of advisory) {
             logger.warn`  ${w.dependency}: ${w.message}`;
           }
         }

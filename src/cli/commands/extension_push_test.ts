@@ -144,6 +144,7 @@ Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review ske
         },
       ],
     },
+    dependencyTrustResult: { warnings: [] },
   });
   assertEquals(record, {
     safety: [{
@@ -170,6 +171,31 @@ Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review ske
     ],
   });
   assertEquals("skeleton" in record.review[0], false);
+  // No unaudited dependency, no dependencyTrust list.
+  assertEquals("dependencyTrust" in record, false);
+});
+
+Deno.test("buildAcceptedWarnings: records unaudited dependencies and leaves the advisory dependency warnings out", () => {
+  const notAudited = {
+    dependency: "leftpad",
+    message: "not audited: OSV lookup failed (HTTP 503)",
+    cause: "not-audited" as const,
+  };
+  const record = buildAcceptedWarnings({
+    safetyWarnings: [],
+    reviewRulesResult: { warnings: [] },
+    dependencyTrustResult: {
+      warnings: [
+        { dependency: "tiny", message: "low weekly downloads (10 < 1000)" },
+        notAudited,
+      ],
+    },
+  });
+  assertEquals(record, {
+    safety: [],
+    review: [],
+    dependencyTrust: [notAudited],
+  });
 });
 
 // ── Existing version (swamp-club#2939) ────────────────────────────────

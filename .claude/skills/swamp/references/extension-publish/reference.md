@@ -144,20 +144,22 @@ swamp extension push manifest.yaml --dry-run --json
 **Verify:** Exit code 0. Confirm any warnings with the user. The output is one
 JSON document: `status` (`dry_run`), `resolved` (the extension's contents, file
 paths absolute), `warnings` grouped by family (`safety`, `review`,
-`dependencyTrust`, `versionDrift`, `versionBumpUpgrade`; omitted when empty),
-then the run summary. It lists `registryChecks` (authentication, reserved
-collective, collective membership, version exists) with the wording the real
-push uses; a `failed` check exits non-zero and a `not-run` check names the
-missing prerequisite (no credentials). `apiCalls` lists every HTTP call the run
-made, and `contentHash` is the hash the adversarial-review report is keyed by.
-`unresolvedWarnings` lists each remaining warning with its `remediation` and,
-for rules that can be accepted, an `acceptance` object describing the edit: a
-comment (`file`, `line`, `position`, `text`) or one `entry` for the `accept`
-list of `quality.yaml` beside the manifest; `declaredAcceptances` lists what the
-extension already accepts. Offer the user the fix first and apply the acceptance
-only when they decide the finding is not right for this extension; add sidecar
-entries to the existing `accept` list rather than writing a new file. The reason
-is optional; ask for one only when it helps a reviewer. See
+`dependencyTrust`, `versionDrift`, `versionBumpUpgrade`; omitted when empty; a
+`dependencyTrust` entry with `cause: "not-audited"` is a dependency whose OSV or
+npm lookup failed), then the run summary. It lists `registryChecks`
+(authentication, reserved collective, collective membership, version exists)
+with the wording the real push uses; a `failed` check exits non-zero and a
+`not-run` check names the missing prerequisite (no credentials). `apiCalls`
+lists every HTTP call the run made, and `contentHash` is the hash the
+adversarial-review report is keyed by. `unresolvedWarnings` lists each remaining
+warning with its `remediation` and, for rules that can be accepted, an
+`acceptance` object describing the edit: a comment (`file`, `line`, `position`,
+`text`) or one `entry` for the `accept` list of `quality.yaml` beside the
+manifest; `declaredAcceptances` lists what the extension already accepts. Offer
+the user the fix first and apply the acceptance only when they decide the
+finding is not right for this extension; add sidecar entries to the existing
+`accept` list rather than writing a new file. The reason is optional; ask for
+one only when it helps a reviewer. See
 [applying an acceptance](references/publishing.md#applying-an-acceptance).
 
 A dry run prints the same `contentHash` CI's publish computes whenever the

@@ -32,7 +32,10 @@ import {
 import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import {
+  type DependencyTrustResult,
+  notAuditedCount,
+} from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -205,6 +208,9 @@ export async function* extensionQuality(
           dependencyTrustPassed: prepared.dependencyTrustResult.passed,
           dependencyTrustBlockerCount:
             prepared.dependencyTrustResult.errors.length,
+          dependencyNotAuditedCount: notAuditedCount(
+            prepared.dependencyTrustResult,
+          ),
           importMap,
         },
       );

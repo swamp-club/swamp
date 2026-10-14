@@ -198,6 +198,8 @@ export interface AnalysisFactors {
   hasLicenseFile: boolean;
   dependencyTrustPassed: boolean;
   dependencyTrustBlockerCount: number;
+  /** Dependencies a failed OSV or npm lookup left unaudited. */
+  dependencyNotAuditedCount: number;
 }
 
 /**
@@ -213,6 +215,7 @@ export function computeAnalysisFactors(input: {
   rawLintOutput: string;
   dependencyTrustPassed?: boolean;
   dependencyTrustBlockerCount?: number;
+  dependencyNotAuditedCount?: number;
 }): AnalysisFactors {
   const { entrypointUrls, readme, hasLicenseFile, doc, rawLintOutput } = input;
 
@@ -254,6 +257,7 @@ export function computeAnalysisFactors(input: {
     hasLicenseFile,
     dependencyTrustPassed: input.dependencyTrustPassed ?? false,
     dependencyTrustBlockerCount: input.dependencyTrustBlockerCount ?? 0,
+    dependencyNotAuditedCount: input.dependencyNotAuditedCount ?? 0,
   };
 }
 
@@ -393,6 +397,7 @@ export function composeScore(
     dependencyTrustRow(
       factors.dependencyTrustPassed,
       factors.dependencyTrustBlockerCount,
+      factors.dependencyNotAuditedCount,
     ),
   ];
 
@@ -492,13 +497,20 @@ function richReadmeRow(
 }
 
 function dependencyTrustRow(
-  passed: boolean,
+  noBlockers: boolean,
   blockerCount: number,
+  notAuditedCount: number,
 ): RubricFactor {
+  // An unaudited dependency is unknown, not partly trusted: it loses the
+  // factor exactly as a blocker does.
+  const passed = noBlockers && notAuditedCount === 0;
   const remediation = blockerCount > 0
     ? `${blockerCount} dependency blocker(s) found (deprecated packages or ` +
       `HIGH/CRITICAL vulnerabilities). See the blocker details above, ` +
       `then update or replace the flagged dependencies.`
+    : notAuditedCount > 0
+    ? `${notAuditedCount} dependency(ies) not audited because an OSV or npm ` +
+      `registry lookup failed. Re-run when both are reachable.`
     : "Resolve dependency trust issues — update or replace flagged dependencies.";
   return {
     id: "dependency-trust",
@@ -619,6 +631,7 @@ export async function scoreExtensionTarball(
   options?: {
     dependencyTrustPassed?: boolean;
     dependencyTrustBlockerCount?: number;
+    dependencyNotAuditedCount?: number;
     importMap?: Record<string, string>;
   },
 ): Promise<RubricScore> {
@@ -684,6 +697,7 @@ export async function scoreExtensionTarball(
       rawLintOutput: lintOutput,
       dependencyTrustPassed: options?.dependencyTrustPassed,
       dependencyTrustBlockerCount: options?.dependencyTrustBlockerCount,
+      dependencyNotAuditedCount: options?.dependencyNotAuditedCount,
     });
 
     return composeScore(analysisFactors, manifest);

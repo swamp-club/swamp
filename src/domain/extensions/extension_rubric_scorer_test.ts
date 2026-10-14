@@ -387,6 +387,7 @@ function factorsAllEarned(): Parameters<typeof composeScore>[0] {
     hasLicenseFile: true,
     dependencyTrustPassed: true,
     dependencyTrustBlockerCount: 0,
+    dependencyNotAuditedCount: 0,
   };
 }
 
@@ -754,6 +755,7 @@ Deno.test(
       hasLicenseFile: false,
       dependencyTrustPassed: false,
       dependencyTrustBlockerCount: 0,
+      dependencyNotAuditedCount: 0,
     });
   },
 );
@@ -886,6 +888,7 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       hasLicenseFile: false,
       dependencyTrustPassed: false,
       dependencyTrustBlockerCount: 0,
+      dependencyNotAuditedCount: 0,
     },
     makeManifest({
       description: "",
@@ -989,6 +992,39 @@ Deno.test("composeScore: dependency-trust fails with blockers", () => {
   assertEquals(factor.earnedPoints, 0);
   assertEquals(factor.status, "missing");
   assertStringIncludes(factor.remediation ?? "", "3 dependency blocker(s)");
+});
+
+Deno.test("composeScore: dependency-trust earns nothing while a dependency is not audited", () => {
+  const score = composeScore(
+    { ...factorsAllEarned(), dependencyNotAuditedCount: 2 },
+    makeManifest(),
+  );
+  const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+  assertEquals(factor.earnedPoints, 0);
+  assertEquals(factor.status, "missing");
+  assertStringIncludes(
+    factor.remediation ?? "",
+    "2 dependency(ies) not audited",
+  );
+  assertStringIncludes(
+    factor.remediation ?? "",
+    "Re-run when both are reachable",
+  );
+});
+
+Deno.test("composeScore: dependency-trust remediation names blockers before unaudited dependencies", () => {
+  const score = composeScore(
+    {
+      ...factorsAllEarned(),
+      dependencyTrustPassed: false,
+      dependencyTrustBlockerCount: 1,
+      dependencyNotAuditedCount: 1,
+    },
+    makeManifest(),
+  );
+  const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+  assertEquals(factor.earnedPoints, 0);
+  assertStringIncludes(factor.remediation ?? "", "1 dependency blocker(s)");
 });
 
 // ── scoreExtensionTarball: import map merging ────────────────────────

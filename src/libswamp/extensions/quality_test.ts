@@ -572,6 +572,49 @@ Deno.test("extensionQuality: cache hit re-audits dependency trust and folds the 
   });
 });
 
+Deno.test("extensionQuality: a dependency that was not audited loses the dependency-trust factor", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot, {
+      pushPrepareOverrides: {
+        extractDependencySpecifiers: () =>
+          Promise.resolve([{
+            name: "leftpad",
+            version: "1.0.0",
+            registry: "npm" as const,
+            sourceFile: join(repoDir, "models", "echo.ts"),
+          }]),
+        checkDependencyTrust: () =>
+          Promise.resolve({
+            errors: [],
+            warnings: [{
+              dependency: "leftpad",
+              message: "not audited: OSV lookup failed (HTTP 503)",
+              cause: "not-audited" as const,
+            }],
+            audited: [],
+            passed: true,
+          }),
+      },
+    });
+
+    const data = completedData(
+      await collect(extensionQuality(ctx, deps, input)),
+    );
+    assertEquals(data.dependencyTrustResult.passed, true);
+    const trustFactor = data.score.factors.find((f) =>
+      f.id === "dependency-trust"
+    )!;
+    assertEquals(trustFactor.status, "missing");
+    assertEquals(trustFactor.earnedPoints, 0);
+    assertStringIncludes(
+      trustFactor.remediation ?? "",
+      "1 dependency(ies) not audited",
+    );
+  });
+});
+
 Deno.test("extensionQuality: cache hit audits webhook source dependencies", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const webhookPath = join(repoDir, "webhooks", "hook.ts");
