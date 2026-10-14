@@ -26,6 +26,7 @@ import {
 } from "./update_service.ts";
 import { Platform } from "./platform.ts";
 import { UserError } from "../errors.ts";
+import type { DownloadOptions } from "./download_progress.ts";
 
 interface MockCheckerCalls {
   downloadUrls: string[];
@@ -276,6 +277,73 @@ Deno.test("update fetches checksum and passes it to downloadAndInstall", async (
   assertEquals(result.status, "updated");
   assertEquals(calls.checksumUrls, [redirectUrl]);
   assertEquals(calls.expectedChecksums, [expectedHash]);
+});
+
+Deno.test("update passes the signal to every checker call and the options to the download", async () => {
+  const redirectUrl =
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+  const signals: (AbortSignal | undefined)[] = [];
+  let downloadOptions: DownloadOptions | undefined;
+  const checker: UpdateChecker = {
+    checkForUpdate: (_platform, signal) => {
+      signals.push(signal);
+      return Promise.resolve(redirectUrl);
+    },
+    fetchChecksum: (_url, signal) => {
+      signals.push(signal);
+      return Promise.resolve("a".repeat(64));
+    },
+    downloadAndInstall: (_url, _binaryPath, _checksum, options) => {
+      downloadOptions = options;
+      return Promise.resolve();
+    },
+  };
+  const service = new UpdateService(
+    checker,
+    "20260207.123456.0-sha.abc12345",
+    "/usr/local/bin/swamp",
+  );
+  const controller = new AbortController();
+  const onProgress = () => {};
+
+  await service.update(platform, { signal: controller.signal, onProgress });
+
+  assertEquals(signals, [controller.signal, controller.signal]);
+  assertEquals(downloadOptions?.signal, controller.signal);
+  assertEquals(downloadOptions?.onProgress, onProgress);
+});
+
+Deno.test("update stops before the checksum fetch once the signal is aborted", async () => {
+  const redirectUrl =
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+  const controller = new AbortController();
+  const calls: MockCheckerCalls = {
+    downloadUrls: [],
+    checksumUrls: [],
+    expectedChecksums: [],
+  };
+  const mock = createMockChecker(redirectUrl, calls);
+  const checker: UpdateChecker = {
+    ...mock,
+    checkForUpdate: (p) => {
+      // Ctrl+C lands just as the update check returns.
+      controller.abort();
+      return mock.checkForUpdate(p);
+    },
+  };
+  const service = new UpdateService(
+    checker,
+    "20260207.123456.0-sha.abc12345",
+    "/usr/local/bin/swamp",
+  );
+
+  const error = await assertRejects(() =>
+    service.update(platform, { signal: controller.signal })
+  );
+
+  assertEquals((error as DOMException).name, "AbortError");
+  assertEquals(calls.checksumUrls, []);
+  assertEquals(calls.downloadUrls, []);
 });
 
 // --- Pre-flight permission check tests ---

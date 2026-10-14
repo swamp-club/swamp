@@ -20,6 +20,7 @@ import { join } from "@std/path";
 import { exists } from "@std/fs";
 import {
   ABANDONED_TEMP_FILE_MAX_AGE_MS,
+  removeAbandonedTempDirs,
   removeAbandonedTempFiles,
 } from "./abandoned_temp_files.ts";
 
@@ -108,4 +109,95 @@ Deno.test("removeAbandonedTempFiles: tolerates a missing directory", async () =>
   await withTempDir(async (dir) => {
     await removeAbandonedTempFiles(join(dir, "missing"), PREFIX);
   });
+});
+
+const DIR_PREFIX = "swamp-update-";
+const OLD = ABANDONED_TEMP_FILE_MAX_AGE_MS + 60_000;
+
+/** Makes a prefixed directory holding one file, both aged `ageMs`. */
+async function makeAgedDir(parent: string, ageMs: number): Promise<string> {
+  const path = join(parent, `${DIR_PREFIX}${crypto.randomUUID()}`);
+  await Deno.mkdir(path);
+  const file = join(path, "swamp.tar.gz");
+  await Deno.writeTextFile(file, "partial");
+  await setAge(file, ageMs);
+  await setAge(path, ageMs);
+  return path;
+}
+
+Deno.test("removeAbandonedTempDirs: removes a prefixed directory whose contents are all old", async () => {
+  await withTempDir(async (dir) => {
+    const stale = await makeAgedDir(dir, OLD);
+
+    await removeAbandonedTempDirs(dir, DIR_PREFIX);
+
+    assertEquals(await exists(stale), false);
+  });
+});
+
+Deno.test("removeAbandonedTempDirs: keeps a directory a live download is still writing", async () => {
+  await withTempDir(async (dir) => {
+    const live = await makeAgedDir(dir, OLD);
+    // The download appends to its archive, which updates the file's mtime
+    // but not the directory's.
+    await setAge(join(live, "swamp.tar.gz"), 0);
+
+    await removeAbandonedTempDirs(dir, DIR_PREFIX);
+
+    assertEquals(await exists(live), true);
+  });
+});
+
+Deno.test("removeAbandonedTempDirs: leaves old directories without the prefix alone", async () => {
+  await withTempDir(async (dir) => {
+    const other = join(dir, "someone-elses-dir");
+    await Deno.mkdir(other);
+    await setAge(other, OLD);
+
+    await removeAbandonedTempDirs(dir, DIR_PREFIX);
+
+    assertEquals(await exists(other), true);
+  });
+});
+
+Deno.test("removeAbandonedTempDirs: leaves an old prefixed file alone", async () => {
+  await withTempDir(async (dir) => {
+    const file = join(dir, `${DIR_PREFIX}${crypto.randomUUID()}`);
+    await Deno.writeTextFile(file, "not a directory");
+    await setAge(file, OLD);
+
+    await removeAbandonedTempDirs(dir, DIR_PREFIX);
+
+    assertEquals(await exists(file), true);
+  });
+});
+
+Deno.test({
+  name:
+    "removeAbandonedTempDirs: never follows a prefixed symlink to an old directory",
+  // Creating symlinks on Windows needs a privilege CI does not have.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const target = join(dir, "precious");
+      await Deno.mkdir(target);
+      await Deno.writeTextFile(join(target, "keep"), "data");
+      await setAge(join(target, "keep"), OLD);
+      await setAge(target, OLD);
+      const link = join(dir, `${DIR_PREFIX}${crypto.randomUUID()}`);
+      await Deno.symlink(target, link, { type: "dir" });
+
+      await removeAbandonedTempDirs(dir, DIR_PREFIX);
+
+      assertEquals(await exists(join(target, "keep")), true);
+      assertEquals((await Deno.lstat(link)).isSymlink, true);
+    });
+  },
+});
+
+Deno.test("removeAbandonedTempDirs: tolerates a missing directory", async () => {
+  await removeAbandonedTempDirs(
+    join(Deno.cwd(), `missing-${crypto.randomUUID()}`),
+    DIR_PREFIX,
+  );
 });

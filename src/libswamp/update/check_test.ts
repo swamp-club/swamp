@@ -108,3 +108,117 @@ Deno.test("createUpdateCheckDeps: the update check retries a timed-out request (
   assertEquals(UPDATE_CHECK_MAX_ATTEMPTS, 3);
   assertEquals(calls.length, UPDATE_CHECK_MAX_ATTEMPTS);
 });
+
+Deno.test("updateCheck: streams download progress and retries in order before completed", async () => {
+  const deps = makeDeps({
+    update: (_platform, options) => {
+      options?.onProgress?.({ receivedBytes: 0, totalBytes: 100 });
+      options?.onRetry?.({
+        attempt: 1,
+        maxAttempts: 5,
+        reason: "no data received for 30s",
+        resumeFromBytes: 40,
+      });
+      options?.onProgress?.({ receivedBytes: 100, totalBytes: 100 });
+      return Promise.resolve({
+        status: "updated" as const,
+        previousVersion: "1.0.0",
+        newVersion: "2.0.0",
+      });
+    },
+  });
+
+  const events = await collect<UpdateCheckEvent>(
+    updateCheck(createLibSwampContext(), deps, {
+      checkOnly: false,
+      platform: Platform.detect(),
+    }),
+  );
+
+  assertEquals(events.map((e) => e.kind), [
+    "checking",
+    "download_progress",
+    "download_retrying",
+    "download_progress",
+    "completed",
+  ]);
+  assertEquals(events[3], {
+    kind: "download_progress",
+    data: { receivedBytes: 100, totalBytes: 100 },
+  });
+});
+
+Deno.test("updateCheck: passes the context's signal to the check and the update", async () => {
+  const controller = new AbortController();
+  const seen: (AbortSignal | undefined)[] = [];
+  const deps = makeDeps({
+    check: (_platform, signal) => {
+      seen.push(signal);
+      return Promise.resolve({
+        status: "up_to_date" as const,
+        currentVersion: "1.0.0",
+      });
+    },
+    update: (_platform, options) => {
+      seen.push(options?.signal);
+      return Promise.resolve({
+        status: "up_to_date" as const,
+        currentVersion: "1.0.0",
+      });
+    },
+  });
+  const ctx = createLibSwampContext({ signal: controller.signal });
+
+  for (const checkOnly of [true, false]) {
+    await collect<UpdateCheckEvent>(
+      updateCheck(ctx, deps, { checkOnly, platform: Platform.detect() }),
+    );
+  }
+
+  assertEquals(seen, [controller.signal, controller.signal]);
+});
+
+Deno.test("updateCheck: a cancelled update ends with a cancelled error", async () => {
+  const controller = new AbortController();
+  const deps = makeDeps({
+    update: (_platform, options) => {
+      options?.onProgress?.({ receivedBytes: 10, totalBytes: 100 });
+      controller.abort();
+      return Promise.reject(options?.signal?.reason);
+    },
+  });
+
+  const events = await collect<UpdateCheckEvent>(
+    updateCheck(
+      createLibSwampContext({ signal: controller.signal }),
+      deps,
+      { checkOnly: false, platform: Platform.detect() },
+    ),
+  );
+
+  assertEquals(events.map((e) => e.kind), [
+    "checking",
+    "download_progress",
+    "error",
+  ]);
+  const error = events[2] as Extract<UpdateCheckEvent, { kind: "error" }>;
+  assertEquals(error.error.code, "cancelled");
+});
+
+Deno.test("updateCheck: an update failure that is not a cancel is rethrown", async () => {
+  const deps = makeDeps({
+    update: () => Promise.reject(new UserError("Download failed")),
+  });
+
+  await assertRejects(
+    () =>
+      collect<UpdateCheckEvent>(
+        updateCheck(createLibSwampContext(), deps, {
+          checkOnly: false,
+          platform: Platform.detect(),
+        }),
+      ),
+    UserError,
+    "Download failed",
+  );
+});

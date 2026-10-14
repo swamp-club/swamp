@@ -650,3 +650,239 @@ Deno.test("HttpUpdateChecker.checkForUpdate: a single-attempt 5xx keeps the orig
   assertEquals(calls.length, 1);
   assertEquals(error.message, "Failed to check for updates: HTTP 500");
 });
+
+// ============================================================================
+// Cancellation, checksum retries and temp cleanup (swamp-club#3447)
+// ============================================================================
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted", "AbortError");
+}
+
+Deno.test("HttpUpdateChecker.checkForUpdate: aborting during the retry wait stops with no further attempt", async () => {
+  const controller = new AbortController();
+  const checker = new HttpUpdateChecker({
+    maxAttempts: 3,
+    sleep: (_ms, signal) => {
+      controller.abort();
+      return Promise.reject(signal?.reason);
+    },
+  });
+  const { result: error, calls } = await withMockedFetch(
+    () => {
+      throw timeoutError();
+    },
+    () =>
+      assertRejects(() =>
+        checker.checkForUpdate(RETRY_PLATFORM, controller.signal)
+      ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertInstanceOf(error, DOMException);
+  assertEquals((error as DOMException).name, "AbortError");
+});
+
+Deno.test("HttpUpdateChecker.checkForUpdate: an abort during the request is not retried", async () => {
+  const controller = new AbortController();
+  const { sleep, delays } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  const { result: error, calls } = await withMockedFetch(
+    () => {
+      controller.abort();
+      throw abortError();
+    },
+    () =>
+      assertRejects(() =>
+        checker.checkForUpdate(RETRY_PLATFORM, controller.signal)
+      ),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(delays, []);
+  assertEquals((error as DOMException).name, "AbortError");
+});
+
+Deno.test("HttpUpdateChecker.fetchChecksum: retries a timeout, then parses the checksum", async () => {
+  const { delays, sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  const hash = "a".repeat(64);
+  let attempt = 0;
+  const { result, calls } = await withMockedFetch(() => {
+    attempt++;
+    if (attempt === 1) throw timeoutError();
+    return new Response(`${hash}  swamp.tar.gz\n`);
+  }, () => checker.fetchChecksum(VERSIONED_URL));
+
+  assertEquals(result, hash);
+  assertEquals(calls.length, 2);
+  assertEquals(calls[1].url, `${VERSIONED_URL}.sha256`);
+  assertEquals(delays, [1000]);
+});
+
+Deno.test("HttpUpdateChecker.fetchChecksum: every attempt timing out raises a UserError", async () => {
+  const { sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  const { result: error } = await withMockedFetch(
+    () => {
+      throw timeoutError();
+    },
+    () => assertRejects(() => checker.fetchChecksum(VERSIONED_URL), UserError),
+  );
+
+  assertEquals(
+    error.message,
+    "Failed to fetch checksum after 3 attempts. Last attempt: the update server did not respond within 5s",
+  );
+});
+
+Deno.test("HttpUpdateChecker.fetchChecksum: a 404 is not retried and names the URL", async () => {
+  const { delays, sleep } = recordingSleep();
+  const checker = new HttpUpdateChecker({ maxAttempts: 3, sleep });
+  const { result: error, calls } = await withMockedFetch(
+    [new Response("missing", { status: 404 })],
+    () => assertRejects(() => checker.fetchChecksum(VERSIONED_URL), UserError),
+  );
+
+  assertEquals(calls.length, 1);
+  assertEquals(delays, []);
+  assertEquals(
+    error.message,
+    `Failed to fetch checksum: HTTP 404 from ${VERSIONED_URL}.sha256`,
+  );
+});
+
+/** The names of the update temp directories under `root`. */
+async function updateTempDirs(root: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const entry of Deno.readDir(root)) {
+    if (entry.name.startsWith("swamp-update-")) names.push(entry.name);
+  }
+  return names;
+}
+
+/**
+ * Runs `downloadAndInstall` against a local server that sends `body`, with
+ * temp directories under `root/tmp` and an existing binary at `root/swamp`.
+ */
+async function installFromLocalServer(
+  root: string,
+  body: ArrayBuffer | ReadableStream<Uint8Array>,
+  checksum: string,
+  options: Parameters<HttpUpdateChecker["downloadAndInstall"]>[3],
+): Promise<void> {
+  const tempRoot = join(root, "tmp");
+  await Deno.mkdir(tempRoot, { recursive: true });
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    () =>
+      new Response(body, {
+        headers: { "content-type": "application/gzip" },
+      }),
+  );
+  try {
+    const checker = new HttpUpdateChecker({ tempRoot });
+    await checker.downloadAndInstall(
+      `http://localhost:${server.addr.port}/swamp.tar.gz`,
+      join(root, "swamp"),
+      checksum,
+      options,
+    );
+  } finally {
+    await server.shutdown();
+  }
+}
+
+Deno.test({
+  name:
+    "HttpUpdateChecker.downloadAndInstall: Ctrl+C mid-download removes the temp dir and keeps the binary",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      await Deno.writeTextFile(join(root, "swamp"), "original");
+      const controller = new AbortController();
+      // Sends a first chunk, then nothing, like a download on a slow link.
+      // The user presses Ctrl+C once the download is under way.
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(c) {
+          if (sent) {
+            controller.abort();
+            return new Promise<void>(() => {});
+          }
+          sent = true;
+          c.enqueue(new Uint8Array(1024));
+        },
+      });
+
+      const error = await assertRejects(() =>
+        installFromLocalServer(root, body, "0".repeat(64), {
+          signal: controller.signal,
+        })
+      );
+
+      assertEquals((error as DOMException).name, "AbortError");
+      assertEquals(await updateTempDirs(join(root, "tmp")), []);
+      assertEquals(await Deno.readTextFile(join(root, "swamp")), "original");
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "HttpUpdateChecker.downloadAndInstall: Ctrl+C after the download but before the swap keeps the binary",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      await Deno.writeTextFile(join(root, "swamp"), "original");
+      const { body, checksum } = await buildFakeSwampTarball();
+      const controller = new AbortController();
+
+      await assertRejects(() =>
+        installFromLocalServer(root, body, checksum, {
+          signal: controller.signal,
+          onProgress: (p) => {
+            if (p.receivedBytes === p.totalBytes) controller.abort();
+          },
+        })
+      );
+
+      assertEquals(await updateTempDirs(join(root, "tmp")), []);
+      assertEquals(await Deno.readTextFile(join(root, "swamp")), "original");
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "HttpUpdateChecker.downloadAndInstall: removes a temp dir a killed update left behind",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      const tempRoot = join(root, "tmp");
+      const leftover = join(tempRoot, "swamp-update-killed");
+      await Deno.mkdir(leftover, { recursive: true });
+      const partial = join(leftover, "swamp.tar.gz");
+      await Deno.writeTextFile(partial, "53 MB of a partial download");
+      const staleTime = new Date(
+        Date.now() - ABANDONED_TEMP_FILE_MAX_AGE_MS - 60_000,
+      );
+      await Deno.utime(partial, staleTime, staleTime);
+      await Deno.utime(leftover, staleTime, staleTime);
+      const { body, checksum } = await buildFakeSwampTarball();
+
+      await installFromLocalServer(root, body, checksum, {});
+
+      assertEquals(await updateTempDirs(tempRoot), []);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  },
+});

@@ -17,14 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { UpdateChecker } from "../../domain/update/update_service.ts";
 import { UpdateService } from "../../domain/update/update_service.ts";
 import { Platform } from "../../domain/update/platform.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
-import type { UpdateCheckEvent } from "../../libswamp/update/check.ts";
+import type {
+  UpdateCheckDeps,
+  UpdateCheckEvent,
+} from "../../libswamp/update/check.ts";
+import { updateWithin } from "./update.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 
 await initializeLogging({});
@@ -213,4 +217,51 @@ Deno.test("createUpdateCheckRenderer: newVersion is the installed version after 
     await consumeStream(fakeUpdateStream("up_to_date"), upToDate.handlers());
     assertEquals(upToDate.newVersion, null);
   }
+});
+
+// --- Background update timeout (swamp-club#3447) ---
+
+Deno.test("updateWithin: a timed-out background update aborts its download", async () => {
+  let downloadSignal: AbortSignal | undefined;
+  const update: UpdateCheckDeps["update"] = (_platform, options) => {
+    downloadSignal = options?.signal;
+    // Like a stalled download: it ends only when its signal aborts.
+    return new Promise((_, reject) =>
+      options?.signal?.addEventListener(
+        "abort",
+        () => reject(options.signal?.reason),
+      )
+    );
+  };
+
+  await assertRejects(
+    () => updateWithin(update, platform, 10),
+    Error,
+    "Background update timed out",
+  );
+  assertEquals(downloadSignal?.aborted, true);
+});
+
+Deno.test("updateWithin: an update that finishes in time returns its result", async () => {
+  const update: UpdateCheckDeps["update"] = () =>
+    Promise.resolve({
+      status: "updated",
+      previousVersion: currentVersion,
+      newVersion: newerVersion,
+    });
+
+  const result = await updateWithin(update, platform, 60_000);
+
+  assertEquals(result.status, "updated");
+});
+
+Deno.test("updateWithin: other failures keep their message", async () => {
+  const update: UpdateCheckDeps["update"] = () =>
+    Promise.reject(new Error("permission denied"));
+
+  await assertRejects(
+    () => updateWithin(update, platform, 60_000),
+    Error,
+    "permission denied",
+  );
 });

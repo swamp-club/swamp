@@ -26,21 +26,134 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  type DownloadProgress,
+  type DownloadRetry,
+  formatBytes,
+} from "../../domain/update/download_progress.ts";
+
+/** How often a progress line is written when stderr is not a terminal. */
+const PROGRESS_LINE_INTERVAL_MS = 10_000;
+/** The span the download speed is averaged over. */
+const SPEED_WINDOW_MS = 5_000;
+
+/** Where the log renderer shows download progress. */
+export interface UpdateCheckRendererOptions {
+  /** The live spinner on a terminal; its message becomes the progress. */
+  spinner?: { update(message: string): void } | null;
+  /** True when stderr is a terminal, so the spinner shows progress. */
+  stderrIsTerminal?: boolean;
+  /** Writes one line to stderr; used when there is no terminal. */
+  writeStderr?: (line: string) => void;
+  now?: () => number;
+}
 
 export interface UpdateCheckRenderer extends Renderer<UpdateCheckEvent> {
   readonly updated: boolean;
   /** The version installed by this run, when it updated. */
   readonly newVersion: string | null;
+  /** True when the user cancelled the update; the binary is unchanged. */
+  readonly cancelled: boolean;
+}
+
+/**
+ * Turns download progress into one line of text, with a speed averaged over
+ * the last few seconds.
+ */
+class DownloadProgressFormatter {
+  private samples: { at: number; bytes: number }[] = [];
+
+  constructor(private readonly now: () => number) {}
+
+  format(progress: DownloadProgress): string {
+    const at = this.now();
+    const last = this.samples.at(-1);
+    // A download restarted from zero makes the old samples meaningless.
+    if (last && progress.receivedBytes < last.bytes) this.samples = [];
+    this.samples.push({ at, bytes: progress.receivedBytes });
+    while (
+      this.samples.length > 2 && at - this.samples[1].at >= SPEED_WINDOW_MS
+    ) {
+      this.samples.shift();
+    }
+
+    const received = formatBytes(progress.receivedBytes);
+    const parts = progress.totalBytes
+      ? [
+        `Downloading update ${received} / ${formatBytes(progress.totalBytes)}`,
+        `(${
+          Math.floor((progress.receivedBytes / progress.totalBytes) * 100)
+        }%)`,
+      ]
+      : [`Downloading update ${received}`];
+    const first = this.samples[0];
+    const elapsedMs = at - first.at;
+    if (elapsedMs >= 1000) {
+      const perSecond = ((progress.receivedBytes - first.bytes) * 1000) /
+        elapsedMs;
+      parts.push(`\u00b7 ${formatBytes(Math.round(perSecond))}/s`);
+    }
+    return parts.join(" ");
+  }
+}
+
+function formatRetry(retry: DownloadRetry): string {
+  const from = retry.resumeFromBytes > 0
+    ? ` from ${formatBytes(retry.resumeFromBytes)}`
+    : "";
+  return `Download interrupted (${retry.reason}); retrying${from} (attempt ${
+    retry.attempt + 1
+  } of ${retry.maxAttempts})`;
 }
 
 class LogUpdateCheckRenderer implements UpdateCheckRenderer {
   updated = false;
   newVersion: string | null = null;
+  cancelled = false;
+  private readonly spinner: { update(message: string): void } | null;
+  private readonly stderrIsTerminal: boolean;
+  private readonly writeStderr: (line: string) => void;
+  private readonly now: () => number;
+  private readonly progress: DownloadProgressFormatter;
+  private lastLineAt = Number.NEGATIVE_INFINITY;
+
+  constructor(options: UpdateCheckRendererOptions) {
+    this.spinner = options.spinner ?? null;
+    this.stderrIsTerminal = options.stderrIsTerminal ??
+      Deno.stderr.isTerminal();
+    this.writeStderr = options.writeStderr ??
+      // deno-lint-ignore no-console
+      ((line) => console.error(line));
+    this.now = options.now ?? Date.now;
+    this.progress = new DownloadProgressFormatter(this.now);
+  }
+
+  /**
+   * On a terminal the spinner shows `message` live. Elsewhere (agents, CI,
+   * pipes) a line goes to stderr at most every few seconds, or at once when
+   * `force` is set, so a long download is visibly alive.
+   */
+  private show(message: string, force: boolean): void {
+    if (this.stderrIsTerminal) {
+      this.spinner?.update(message);
+      return;
+    }
+    const at = this.now();
+    if (!force && at - this.lastLineAt < PROGRESS_LINE_INTERVAL_MS) return;
+    this.lastLineAt = at;
+    this.writeStderr(message);
+  }
 
   handlers(): EventHandlers<UpdateCheckEvent> {
     const logger = getSwampLogger(["update"]);
     return {
       checking: () => {},
+      download_progress: (e) => {
+        this.show(this.progress.format(e.data), false);
+      },
+      download_retrying: (e) => {
+        this.show(formatRetry(e.data), true);
+      },
       completed: (e) => {
         const data = e.data;
         switch (data.status) {
@@ -72,6 +185,10 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
         }
       },
       error: (e) => {
+        if (e.error.code === "cancelled") {
+          this.cancelled = true;
+          return;
+        }
         throw new UserError(e.error.message);
       },
     };
@@ -81,10 +198,14 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
 class JsonUpdateCheckRenderer implements UpdateCheckRenderer {
   updated = false;
   newVersion: string | null = null;
+  cancelled = false;
 
   handlers(): EventHandlers<UpdateCheckEvent> {
     return {
       checking: () => {},
+      // stdout carries one JSON document, so progress is not shown.
+      download_progress: () => {},
+      download_retrying: () => {},
       completed: (e) => {
         if (e.data.status === "updated") {
           this.updated = true;
@@ -93,6 +214,10 @@ class JsonUpdateCheckRenderer implements UpdateCheckRenderer {
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
+        if (e.error.code === "cancelled") {
+          this.cancelled = true;
+          return;
+        }
         throw new UserError(e.error.message);
       },
     };
@@ -101,11 +226,12 @@ class JsonUpdateCheckRenderer implements UpdateCheckRenderer {
 
 export function createUpdateCheckRenderer(
   mode: OutputMode,
+  options: UpdateCheckRendererOptions = {},
 ): UpdateCheckRenderer {
   switch (mode) {
     case "json":
       return new JsonUpdateCheckRenderer();
     case "log":
-      return new LogUpdateCheckRenderer();
+      return new LogUpdateCheckRenderer(options);
   }
 }

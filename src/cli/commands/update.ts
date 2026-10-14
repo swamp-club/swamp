@@ -26,7 +26,11 @@ import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createUpdateCheckDeps,
   updateCheck,
+  type UpdateCheckDeps,
 } from "../../libswamp/update/check.ts";
+import type { UpdateResult } from "../../domain/update/update_service.ts";
+import { renderError } from "../../presentation/output/error_output.ts";
+import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
@@ -272,6 +276,25 @@ function backgroundLogFilePath(): string | undefined {
   return undefined;
 }
 
+/**
+ * Runs an update that must finish within `timeoutMs`. On timeout the
+ * download is aborted, so its temp directory is removed rather than left
+ * to a download still running unawaited.
+ */
+export async function updateWithin(
+  update: UpdateCheckDeps["update"],
+  platform: Platform,
+  timeoutMs: number,
+): Promise<UpdateResult> {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  try {
+    return await update(platform, { signal: timeout });
+  } catch (error) {
+    if (timeout.aborted) throw new Error("Background update timed out");
+    throw error;
+  }
+}
+
 async function runBackgroundUpdate(
   ctx: { logger: ReturnType<typeof getSwampLogger> },
 ): Promise<void> {
@@ -286,24 +309,18 @@ async function runBackgroundUpdate(
     outcome: "up_to_date",
   };
 
-  let timeoutId: ReturnType<typeof setTimeout>;
   try {
-    const timeout = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(
-        () => reject(new Error("Background update timed out")),
-        BACKGROUND_TIMEOUT_MS,
-      );
-      Deno.unrefTimer(timeoutId);
-    });
-    const result = await Promise.race([deps.update(platform), timeout]);
-    clearTimeout(timeoutId!);
+    const result = await updateWithin(
+      deps.update,
+      platform,
+      BACKGROUND_TIMEOUT_MS,
+    );
 
     if (result.status === "updated") {
       entry.versionAfter = result.newVersion;
       entry.outcome = "updated";
     }
   } catch (error) {
-    clearTimeout(timeoutId!);
     entry.outcome = "error";
     entry.error = error instanceof Error ? error.message : String(error);
   }
@@ -604,16 +621,44 @@ export const updateCommand = new Command()
         : "Updating swamp...";
       spinner?.start(message);
 
-      const libCtx = createLibSwampContext({ logger: ctx.logger });
+      // Ctrl+C cancels the check or download; the temp directory is removed
+      // and the installed binary is left alone. A second Ctrl+C force-exits.
+      const abort = new AbortController();
+      const libCtx = createLibSwampContext({
+        logger: ctx.logger,
+        signal: abort.signal,
+      });
       const deps = createUpdateCheckDeps(VERSION, Deno.execPath());
-      const renderer = createUpdateCheckRenderer(ctx.outputMode);
-      await consumeStream(
-        updateCheck(libCtx, deps, {
-          checkOnly: options.check ?? false,
-          platform,
-        }),
-        renderer.handlers(),
-      );
+      const renderer = createUpdateCheckRenderer(ctx.outputMode, { spinner });
+      const shutdown = registerShutdownHandler({
+        handler: () => abort.abort(),
+        forceExitOnRepeat: true,
+      });
+      try {
+        await consumeStream(
+          updateCheck(libCtx, deps, {
+            checkOnly: options.check ?? false,
+            platform,
+          }),
+          renderer.handlers(),
+        );
+      } finally {
+        shutdown.dispose();
+      }
+
+      if (renderer.cancelled) {
+        spinner?.stop();
+        renderError(
+          new UserError(
+            options.check
+              ? "Update check cancelled."
+              : "Update cancelled. The installed swamp binary was not changed.",
+          ),
+          ctx.outputMode,
+        );
+        Deno.exitCode = 130;
+        return;
+      }
 
       if (renderer.updated) {
         spinner?.update("Syncing global skills...");

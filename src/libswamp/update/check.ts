@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Platform } from "../../domain/update/platform.ts";
+import type {
+  DownloadOptions,
+  DownloadProgress,
+  DownloadRetry,
+} from "../../domain/update/download_progress.ts";
 import {
   type UpdateResult,
   UpdateService,
@@ -27,7 +32,8 @@ import {
   type HttpUpdateCheckerOptions,
 } from "../../infrastructure/update/http_update_checker.ts";
 import type { LibSwampContext } from "../context.ts";
-import type { SwampError } from "../errors.ts";
+import { cancelled, type SwampError } from "../errors.ts";
+import { AsyncQueue } from "../stream/async_queue.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -37,6 +43,8 @@ export type UpdateCheckData = UpdateResult;
 
 export type UpdateCheckEvent =
   | { kind: "checking" }
+  | { kind: "download_progress"; data: DownloadProgress }
+  | { kind: "download_retrying"; data: DownloadRetry }
   | { kind: "completed"; data: UpdateCheckData }
   | { kind: "error"; error: SwampError };
 
@@ -48,8 +56,11 @@ export interface UpdateCheckInput {
 
 /** Dependencies for the update check/install operation. */
 export interface UpdateCheckDeps {
-  check: (platform: Platform) => Promise<UpdateResult>;
-  update: (platform: Platform) => Promise<UpdateResult>;
+  check: (platform: Platform, signal?: AbortSignal) => Promise<UpdateResult>;
+  update: (
+    platform: Platform,
+    options?: DownloadOptions,
+  ) => Promise<UpdateResult>;
 }
 
 /**
@@ -74,12 +85,16 @@ export function createUpdateCheckDeps(
   });
   const service = new UpdateService(checker, currentVersion, binaryPath);
   return {
-    check: (platform) => service.check(platform),
-    update: (platform) => service.update(platform),
+    check: (platform, signal) => service.check(platform, signal),
+    update: (platform, options) => service.update(platform, options),
   };
 }
 
-/** Checks for or installs updates. */
+/**
+ * Checks for or installs updates. While installing, it streams the
+ * download's progress and retries. Aborting `ctx.signal` ends the stream with
+ * a `cancelled` error; the installed binary is untouched.
+ */
 export async function* updateCheck(
   ctx: LibSwampContext,
   deps: UpdateCheckDeps,
@@ -93,11 +108,48 @@ export async function* updateCheck(
 
       yield { kind: "checking" };
 
-      const result = input.checkOnly
-        ? await deps.check(input.platform)
-        : await deps.update(input.platform);
-
-      yield { kind: "completed", data: result };
+      try {
+        const result = input.checkOnly
+          ? await deps.check(input.platform, ctx.signal)
+          : yield* streamUpdate(ctx, deps, input.platform);
+        yield { kind: "completed", data: result };
+      } catch (error: unknown) {
+        if (ctx.signal.aborted) {
+          yield {
+            kind: "error",
+            error: cancelled(error instanceof Error ? error : undefined),
+          };
+          return;
+        }
+        throw error;
+      }
     })(),
   );
+}
+
+/**
+ * Runs the update, yielding its download events as they happen, and returns
+ * its result.
+ */
+async function* streamUpdate(
+  ctx: LibSwampContext,
+  deps: UpdateCheckDeps,
+  platform: Platform,
+): AsyncGenerator<UpdateCheckEvent, UpdateResult> {
+  const queue = new AsyncQueue<UpdateCheckEvent>();
+  // Settles to an outcome rather than rejecting, so a failure while events
+  // are still being yielded is never an unhandled rejection.
+  const outcome = deps.update(platform, {
+    signal: ctx.signal,
+    onProgress: (data) => queue.push({ kind: "download_progress", data }),
+    onRetry: (data) => queue.push({ kind: "download_retrying", data }),
+  }).then(
+    (result) => ({ ok: true as const, result }),
+    (error: unknown) => ({ ok: false as const, error }),
+  ).finally(() => queue.close());
+
+  yield* queue;
+  const settled = await outcome;
+  if (!settled.ok) throw settled.error;
+  return settled.result;
 }

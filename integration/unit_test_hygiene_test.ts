@@ -214,6 +214,8 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/infrastructure/telemetry/http_telemetry_sender_test.ts",
   // Localhost server plus `xattr` to verify quarantine-flag handling.
   "src/infrastructure/update/http_update_checker_test.ts",
+  // Localhost server that drops, stalls and range-resumes a download body.
+  "src/infrastructure/update/resumable_download_test.ts",
   // Runs `tar` to verify the push/pull bundle round-trip byte-for-byte.
   "src/libswamp/extensions/push_pull_roundtrip_test.ts",
   // OAuth adapter test: real localhost server drives the token flows.
