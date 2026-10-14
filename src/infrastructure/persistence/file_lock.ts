@@ -146,27 +146,56 @@ export async function readLockFileState(
 }
 
 /**
- * Whether a failed exclusive create of `lockPath` means another holder has
- * the lock. On Windows, creating a file another process is deleting or
- * replacing fails with Access Denied rather than AlreadyExists; that counts
- * as contention while the lock file still exists (or cannot be stat'ed for
- * the same reason), and a genuine permission error, with no lock file
- * present, does not. `isWindows` is a parameter so tests cover both branches.
+ * What a failed exclusive create of `lockPath` means. On Windows, creating a
+ * file another process is deleting or replacing fails with Access Denied
+ * rather than AlreadyExists: that is contention while the lock file still
+ * exists (or cannot be stat'ed for the same reason), and worth one more
+ * create when it is gone, since it may have finished deleting after the
+ * create failed. `isWindows` is a parameter so tests cover both branches.
  */
-export async function isLockCreateContention(
+export async function classifyLockCreateError(
   error: unknown,
   lockPath: string,
   isWindows: boolean,
-): Promise<boolean> {
-  if (error instanceof Deno.errors.AlreadyExists) return true;
+): Promise<"contention" | "retry" | "error"> {
+  if (error instanceof Deno.errors.AlreadyExists) return "contention";
   if (!isWindows || !(error instanceof Deno.errors.PermissionDenied)) {
-    return false;
+    return "error";
   }
   try {
     await Deno.stat(lockPath);
-    return true;
+    return "contention";
   } catch (statError) {
-    return statError instanceof Deno.errors.PermissionDenied;
+    return statError instanceof Deno.errors.PermissionDenied
+      ? "contention"
+      : "retry";
+  }
+}
+
+/**
+ * Creates `lockPath` exclusively. Resolves to null when another holder has
+ * the lock. A Windows Access Denied with no lock file left is retried once;
+ * a genuine permission error fails the second create too and is thrown.
+ */
+export async function createLockFileExclusive(
+  lockPath: string,
+  isWindows: boolean,
+  open: (path: string, options: Deno.OpenOptions) => Promise<Deno.FsFile> =
+    Deno.open,
+): Promise<Deno.FsFile | null> {
+  for (let attempt = 1;; attempt++) {
+    try {
+      return await open(lockPath, { createNew: true, write: true });
+    } catch (error) {
+      const outcome = await classifyLockCreateError(
+        error,
+        lockPath,
+        isWindows,
+      );
+      if (outcome === "contention") return null;
+      if (outcome === "retry" && attempt === 1) continue;
+      throw error;
+    }
   }
 }
 
@@ -476,25 +505,20 @@ export class FileLock implements DistributedLock {
    */
   private async tryCreate(nonce: string): Promise<boolean> {
     const content = JSON.stringify(buildLockInfo(this.ttlMs, nonce), null, 2);
+    const file = await createLockFileExclusive(
+      this.lockPath,
+      Deno.build.os === "windows",
+    );
+    if (!file) return false;
     try {
-      const file = await Deno.open(this.lockPath, {
-        createNew: true,
-        write: true,
-      });
       await file.write(new TextEncoder().encode(content));
-      file.close();
     } catch (error) {
-      if (
-        await isLockCreateContention(
-          error,
-          this.lockPath,
-          Deno.build.os === "windows",
-        )
-      ) {
-        return false;
-      }
+      // The file is ours and incomplete: remove it so no one waits on it.
+      file.close();
+      await Deno.remove(this.lockPath).catch(() => {});
       throw error;
     }
+    file.close();
     this.nonce = nonce;
     this.held = true;
     this.startHeartbeat();

@@ -244,7 +244,8 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
       throw markErrorPaths(
         new UserError(
           `deno info listed no local module for ${entryPoint}, so push cannot ` +
-            `tell which local modules to include`,
+            `tell which local modules to include. Check that the project's ` +
+            `import map does not remap the entry point's path`,
         ),
         [entryPoint],
       );
