@@ -20,7 +20,7 @@
 import { getLogger } from "@logtape/logtape";
 import type { FolderPicker } from "../../domain/start/folder_picker.ts";
 import { createSystemFolderPicker } from "../../infrastructure/process/folder_picker.ts";
-import { basename, isAbsolute, join, relative, resolve } from "@std/path";
+import { basename, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -48,11 +48,20 @@ import type { TerminalLauncher } from "../../domain/start/terminal_launcher.ts";
 import {
   parseWorkspaceName,
   suggestWorkspaceName,
-} from "../../domain/start/workspace_name.ts";
+} from "../../domain/workspace/workspace_name.ts";
+import type { WorkspaceRegistryRepository } from "../../domain/workspace/workspace_registry.ts";
 import {
-  WorkspaceRegistry,
-  type WorkspaceRegistryRepository,
-} from "../../domain/workspace/workspace_registry.ts";
+  defaultWorkspacePath,
+  ensureRegistered,
+  ensureWorkspace,
+  importableFolder,
+  importWorkspace,
+  isImportedWorkspace,
+  loadWorkspaceRegistry,
+  realPathOrSelf,
+  resolveWorkspacePath,
+  workspacesRoot,
+} from "../workspace/workspace_store.ts";
 import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -76,6 +85,8 @@ import {
   createAuthLoginDeps,
 } from "../auth/login.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
+
+export { expandHome } from "../workspace/workspace_store.ts";
 
 /** Whether the user is signed in to Swamp Club, as the auth gate sees it. */
 export type SignedInState =
@@ -297,66 +308,12 @@ async function requireSignedIn(
   return signedIn;
 }
 
-/** The folder new workspaces are created in. */
-function workspacesRoot(deps: StartDeps): string {
-  return join(deps.dataDir, "workspaces");
-}
-
-/**
- * True when the workspace is a folder imported where it was, not one
- * `swamp start` created under the data dir.
- */
-function isImported(deps: StartDeps, workspacePath: string): boolean {
-  return !isUnder(workspacePath, workspacesRoot(deps));
-}
-
 /**
  * The folder a new workspace of that name gets: under the data dir. A
  * registered workspace may live anywhere; see {@link resolveStartWorkspacePath}.
  */
 export function startWorkspacePath(dataDir: string, name: string): string {
-  return join(dataDir, "workspaces", parseWorkspaceName(name));
-}
-
-/**
- * The registry, adopting the workspaces already under the data dir the
- * first time it is read (before the registry existed, `swamp start` only
- * created folders there).
- */
-async function workspaceRegistry(
-  deps: StartDeps,
-  options: { readOnly?: boolean } = {},
-): Promise<WorkspaceRegistry> {
-  const existing = await deps.registry.load();
-  if (existing) return existing;
-  const root = workspacesRoot(deps);
-  const found: string[] = [];
-  try {
-    for await (const entry of Deno.readDir(root)) {
-      if (entry.isDirectory && await deps.repo.isRepo(join(root, entry.name))) {
-        found.push(entry.name);
-      }
-    }
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-  }
-  const createdAt = deps.now().toISOString();
-  if (options.readOnly) {
-    // Report what adoption would register, without writing anything.
-    return WorkspaceRegistry.fromEntries(
-      found.map((name) => ({ name, path: join(root, name), createdAt })),
-    );
-  }
-  return await deps.registry.update((registry) => {
-    for (const name of found) {
-      try {
-        registry.register({ name, path: join(root, name), createdAt });
-      } catch {
-        // A name or folder already registered by another process meanwhile.
-      }
-    }
-    return registry;
-  });
+  return defaultWorkspacePath(dataDir, name);
 }
 
 /** The folder of a workspace: where it is registered, else the default. */
@@ -364,22 +321,8 @@ export async function resolveStartWorkspacePath(
   deps: StartDeps,
   name: string,
 ): Promise<string> {
-  const parsed = parseWorkspaceName(name);
   // Only a lookup: opening the workspace registers it, after sign-in.
-  const registry = await workspaceRegistry(deps, { readOnly: true });
-  return registry.get(parsed)?.path ?? startWorkspacePath(deps.dataDir, parsed);
-}
-
-async function ensureRegistered(
-  deps: StartDeps,
-  name: string,
-  path: string,
-): Promise<void> {
-  await deps.registry.update((registry) => {
-    if (!registry.get(name)) {
-      registry.register({ name, path, createdAt: deps.now().toISOString() });
-    }
-  });
+  return await resolveWorkspacePath(deps, name);
 }
 
 // ---------------------------------------------------------------------------
@@ -821,7 +764,7 @@ export function startChooseHarness(
     s.chooseHarness(harness.id, extras);
     // Adopt first: the first write of the registry must not skip the
     // workspaces already under the data dir.
-    await workspaceRegistry(deps);
+    await loadWorkspaceRegistry(deps);
     await deps.registry.update((registry) =>
       registry.rememberAgent(harness.id)
     );
@@ -846,58 +789,6 @@ export type StartPrepareEvent =
   | { kind: "workspace_ready"; path: string; created: boolean }
   | { kind: "completed"; data: StartStatus }
   | { kind: "error"; error: SwampError };
-
-async function folderState(
-  path: string,
-): Promise<"missing" | "empty" | "not_empty"> {
-  try {
-    for await (const _entry of Deno.readDir(path)) return "not_empty";
-    return "empty";
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return "missing";
-    throw error;
-  }
-}
-
-/**
- * Creates the workspace folder and initialises it as a repo with no tools,
- * or reuses it. Refuses a folder that holds something other than a
- * workspace. Returns true when it created the workspace.
- */
-async function ensureWorkspace(
-  deps: StartDeps,
-  name: string,
-  workspacePath: string,
-): Promise<boolean> {
-  if (await deps.repo.isRepo(workspacePath)) return false;
-  // Only the default folder under the data dir is ever created. A workspace
-  // registered elsewhere (an imported repo) that is gone is not recreated
-  // empty in its place.
-  if (
-    resolve(workspacePath) !== resolve(startWorkspacePath(deps.dataDir, name))
-  ) {
-    throw markErrorPaths(
-      new UserError(
-        `The workspace "${name}" is registered at ${workspacePath}, but there's no Swamp workspace there any more. Put the folder back, or import it again from where it is now.`,
-        "workspace_missing",
-      ),
-      [workspacePath],
-    );
-  }
-  const state = await folderState(workspacePath);
-  if (state === "not_empty") {
-    throw markErrorPaths(
-      new UserError(
-        `${workspacePath} exists but isn't a Swamp workspace. Move it aside, or choose another name.`,
-        "not_a_workspace",
-      ),
-      [workspacePath],
-    );
-  }
-  await ensureDir(workspacePath);
-  await deps.repo.init(workspacePath);
-  return true;
-}
 
 /**
  * Converts a workspace's files from before every task had its own record
@@ -1045,8 +936,8 @@ export async function startListWorkspaces(
   deps: StartDeps,
   options: { readOnly?: boolean } = {},
 ): Promise<{ workspaces: StartWorkspaceSummary[]; suggestedName: string }> {
-  const root = workspacesRoot(deps);
-  const registry = await workspaceRegistry(deps, options);
+  const root = workspacesRoot(deps.dataDir);
+  const registry = await loadWorkspaceRegistry(deps, options);
   // Folder names under the data dir count as taken too, so a suggestion
   // never collides with a folder that isn't registered.
   const taken = new Set(registry.list().map((e) => e.name));
@@ -1090,7 +981,7 @@ export async function startListWorkspaces(
       createdAt: (await deps.repo.createdAt?.(path)) ?? null,
       updatedAt: updated,
       running: await deps.isRunning(path),
-      imported: isImported(deps, path),
+      imported: isImportedWorkspace(deps.dataDir, path),
     };
     return summary;
   }
@@ -1104,20 +995,6 @@ export async function startListWorkspaces(
     workspaces,
     suggestedName: suggestWorkspaceName(taken, deps.random),
   };
-}
-
-function isUnder(path: string, dir: string): boolean {
-  const rel = relative(dir, path);
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-}
-
-/** A workspace name made from a folder name: lowercase, dashes, ≤ 63. */
-function nameFromFolder(folder: string): string {
-  const slug = folder.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
-    /^-+|-+$/g,
-    "",
-  ).slice(0, 63).replace(/-+$/, "");
-  return slug || "workspace";
 }
 
 /** What the folder chooser asks. */
@@ -1143,51 +1020,6 @@ export async function startPickFolder(
     );
   }
   return { path: await deps.folderPicker!.pick(PICK_FOLDER_PROMPT) };
-}
-
-/**
- * Registers an existing swamp repo as a workspace where it is: nothing is
- * moved or copied. The name defaults to the folder's name; a clash gets a
- * numeric suffix. Importing a folder that is already registered answers
- * with its existing name.
- */
-/**
- * The folder a typed path names, checked the way an import checks it: it
- * exists and holds a \`.swamp.yaml\`.
- *
- * @throws {UserError} code \`not_found\` or \`not_a_repo\`
- */
-async function importableFolder(
-  deps: StartDeps,
-  typed: string,
-): Promise<string> {
-  const raw = typed.trim();
-  if (raw === "") {
-    throw new UserError("Enter the folder to import.", "not_found");
-  }
-  const path = resolve(expandHome(raw, deps.homeDir, deps.os));
-  let isDirectory = false;
-  try {
-    isDirectory = (await Deno.stat(path)).isDirectory;
-  } catch {
-    isDirectory = false;
-  }
-  if (!isDirectory) {
-    throw markErrorPaths(
-      new UserError(`There's no folder at ${path}.`, "not_found"),
-      [path],
-    );
-  }
-  if (!await deps.repo.isRepo(path)) {
-    throw markErrorPaths(
-      new UserError(
-        `${path} isn't a swamp folder.`,
-        "not_a_repo",
-      ),
-      [path],
-    );
-  }
-  return path;
 }
 
 /** What the import form shows for a folder before it is imported. */
@@ -1235,7 +1067,7 @@ export async function startCheckFolder(
     throw error;
   }
   const real = await realPathOrSelf(path);
-  const registry = await workspaceRegistry(deps, { readOnly: true });
+  const registry = await loadWorkspaceRegistry(deps, { readOnly: true });
   for (const entry of registry.list()) {
     if (await realPathOrSelf(entry.path) === real) {
       return { ok: true, path, registeredAs: entry.name };
@@ -1244,93 +1076,20 @@ export async function startCheckFolder(
   return { ok: true, path };
 }
 
+/**
+ * Registers an existing swamp repo as a workspace where it is: nothing is
+ * moved or copied. The name defaults to the folder's name; a clash gets a
+ * numeric suffix. Importing a folder that is already registered answers
+ * with its existing name.
+ */
 export async function startImportWorkspace(
   _ctx: LibSwampContext,
   deps: StartDeps,
   input: { path: string; name?: string },
 ): Promise<{ name: string; path: string }> {
   await requireSignedIn(deps, "before you import a workspace");
-  const path = await importableFolder(deps, input.path);
-  // The folder as it really is (symlinks and /tmp vs /private/tmp
-  // resolved), so one folder is only ever registered once.
-  const real = await Deno.realPath(path);
-  const wanted = input.name?.trim()
-    ? parseWorkspaceNameWithCode(input.name.trim())
-    : null;
-  const known = await workspaceRegistry(deps);
-  const sameFolder = new Set<string>([real]);
-  await Promise.all(
-    known.list().map(async (entry) => {
-      if (await realPathOrSelf(entry.path) === real) sameFolder.add(entry.path);
-    }),
-  );
-  return await deps.registry.update((registry) => {
-    const existing = registry.list().find((e) => sameFolder.has(e.path));
-    if (existing) return { name: existing.name, path: existing.path };
-    let name = wanted ?? nameFromFolder(basename(real));
-    if (registry.get(name)) {
-      if (wanted) {
-        throw new UserError(
-          `A workspace named "${name}" already exists. Choose another name.`,
-          "name_taken",
-        );
-      }
-      const base = name;
-      for (let n = 2; registry.get(name); n++) {
-        const suffix = `-${n}`;
-        // Names are at most 63 characters, suffix included.
-        name = `${base.slice(0, 63 - suffix.length)}${suffix}`;
-      }
-    }
-    registry.register({
-      name,
-      path: real,
-      createdAt: deps.now().toISOString(),
-    });
-    return { name, path: real };
-  });
-}
-
-/**
- * Expands a leading `~` (`~/…`, or `~\…` on Windows) to the home folder.
- *
- * @throws {UserError} code `not_found` when there is a `~` to expand but
- *   the home folder is unknown
- */
-export function expandHome(
-  raw: string,
-  homeDir: string | undefined,
-  os: string,
-): string {
-  const tilde = raw === "~" || raw.startsWith("~/") ||
-    (os === "windows" && raw.startsWith("~\\"));
-  if (!tilde) return raw;
-  if (!homeDir) {
-    throw new UserError(
-      "Swamp can't tell where your home folder is. Enter the folder's full path.",
-      "not_found",
-    );
-  }
-  return raw === "~" ? homeDir : join(homeDir, raw.slice(2));
-}
-
-async function realPathOrSelf(path: string): Promise<string> {
-  try {
-    return await Deno.realPath(path);
-  } catch {
-    return path;
-  }
-}
-
-function parseWorkspaceNameWithCode(name: string): string {
-  try {
-    return parseWorkspaceName(name);
-  } catch (error) {
-    if (error instanceof UserError) {
-      throw new UserError(error.message, "invalid_name");
-    }
-    throw error;
-  }
+  const { name, path } = await importWorkspace(deps, input);
+  return { name, path };
 }
 
 // ---------------------------------------------------------------------------
@@ -1577,7 +1336,7 @@ export async function* startLaunch(
         task: session.task!,
         workspacePath: input.workspacePath,
         harnessDisplayName: harness.displayName,
-        imported: isImported(deps, input.workspacePath),
+        imported: isImportedWorkspace(deps.dataDir, input.workspacePath),
       }),
     );
     yield {

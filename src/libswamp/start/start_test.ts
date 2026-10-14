@@ -33,7 +33,7 @@ import type { HarnessLaunchSpec } from "../../domain/start/harness.ts";
 import { StartSession } from "../../domain/start/start_session.ts";
 import type { StartSessionRepository } from "../../domain/start/start_session_repository.ts";
 import { StartTask } from "../../domain/start/start_task.ts";
-import { parseWorkspaceName } from "../../domain/start/workspace_name.ts";
+import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import type { LaunchOutcome } from "../../domain/start/terminal_launcher.ts";
 import { StartSessionFileRepository } from "../../infrastructure/persistence/start_session_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";

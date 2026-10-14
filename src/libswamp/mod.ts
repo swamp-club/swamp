@@ -1882,3 +1882,34 @@ export {
   type StartTaskSummary,
   type StartWorkspaceSummary,
 } from "./start/start.ts";
+export {
+  workspaceCreate,
+  type WorkspaceCreateData,
+  type WorkspaceCreateEvent,
+} from "./workspace/create.ts";
+export {
+  createWorkspaceDeps,
+  type WorkspaceDeps,
+  type WorkspaceFolderState,
+  type WorkspaceSummary,
+} from "./workspace/deps.ts";
+export {
+  workspaceGet,
+  type WorkspaceGetData,
+  type WorkspaceGetEvent,
+} from "./workspace/get.ts";
+export {
+  workspaceImport,
+  type WorkspaceImportData,
+  type WorkspaceImportEvent,
+} from "./workspace/import.ts";
+export {
+  workspaceList,
+  type WorkspaceListData,
+  type WorkspaceListEvent,
+} from "./workspace/list.ts";
+export {
+  workspaceRemove,
+  type WorkspaceRemoveData,
+  type WorkspaceRemoveEvent,
+} from "./workspace/remove.ts";
