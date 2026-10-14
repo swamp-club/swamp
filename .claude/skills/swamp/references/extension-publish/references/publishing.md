@@ -380,6 +380,10 @@ examples and helper script details.
   are rewritten to it. A missing local module fails the push, a literal dynamic
   `import("./x.ts")` included, even inside `try`/`catch` (the bundle would fail
   on it too)
+- Pull installs these shared modules beside the typed directories, so the pulled
+  source resolves as yours does. Push refuses a shared module pull would not
+  install: a hidden path, `node_modules`, or a `deno.json`, `deno.jsonc` or
+  `package.json` imported from outside the typed directory
 - Each entry-point is bundled into a standalone JS file for the registry
 - The registry catalog lists a behavior only when its entry point exports a
   plain `export const behavior = { ... }` (or `export const model = { ... }`)
@@ -569,9 +573,12 @@ too. A real drift finding has no `cause`. None of these block the push.
 ### Unaudited dependencies
 
 The dependency trust audit queries OSV.dev and the npm registry for each `npm:`
-import. When either lookup fails, the dependency is **not audited**, never
-passed: its `warnings.dependencyTrust` entry carries `cause: "not-audited"` and
-a message naming the failed lookup and the HTTP status or network error, and in
+import, asking OSV about the exact version the specifier resolves to (a range
+resolves to its highest published match). When either lookup fails, or no
+published version matches the specifier, the dependency is **not audited**,
+never passed: its `warnings.dependencyTrust` entry carries
+`cause: "not-audited"` and a message naming the failed lookup (with the HTTP
+status or network error) or the unmatched specifier, and in
 `swamp extension quality` it is marked `?` and loses the `dependency-trust`
 factor. Unaudited dependencies are gated like safety and review warnings: an
 interactive push prompts, `--yes` waives them, and the summaries list them under

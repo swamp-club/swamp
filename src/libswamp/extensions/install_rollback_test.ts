@@ -996,22 +996,31 @@ Deno.test("InstallExtensionService.execute: reusing the collective check's index
       await repo.publish(n.a, V1, {
         models: { "a.ts": n.own("a"), "lib/b.ts": n.own("b") },
       });
-      // An empty index covers none of the files, so the service runs its
-      // own full pass instead of reusing it.
-      await repo.install(
-        n.a,
-        V1,
-        reuse ? realIndexer(repo) : { indexExtensionTree: emptyTreeIndexer },
-      );
       const ctx = await repo.ctx();
-      const [extension] = repo.repository(ctx).loadByName(n.a);
+      const repository = repo.repository(ctx);
+      await new InstallExtensionService({
+        denoRuntime: testDenoRuntime,
+        repository,
+        // Without the check's index the catalog save runs its own full pass.
+        ...(reuse ? {} : {
+          installExtensionFn: (ref, installCtx, options) =>
+            installExtension(ref, installCtx, {
+              underLock: (pending) => options!.underLock!(pending),
+            }),
+        }),
+      }).execute({ name: n.a, version: V1 }, ctx);
+      const [extension] = repository.loadByName(n.a);
+      const recorded = [...extension.sources.values()].map((s) =>
+        repo.catalog.findSourceModules(s.id.canonicalPath) ?? null
+      );
       catalogs.push(
-        JSON.stringify(
+        JSON.stringify({
           // sourceMtime is when each repo wrote its copy of the file.
-          [...extension.sources.values()]
+          sources: [...extension.sources.values()]
             .map(({ sourceMtime: _, ...rest }) => rest)
             .sort((x, y) => x.id.relativePath.localeCompare(y.id.relativePath)),
-        ).replaceAll(repo.repoDir, "<repo>"),
+          recorded,
+        }).replaceAll(repo.repoDir, "<repo>"),
       );
     });
   }

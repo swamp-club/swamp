@@ -78,6 +78,7 @@ import {
   renderAutoResolveTruncated,
 } from "../presentation/renderers/extension_auto_resolve.ts";
 import { createExtensionTreeIndexer } from "../libswamp/extensions/extension_tree_index.ts";
+import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
@@ -384,6 +385,8 @@ export function createAutoResolveInstallerAdapter(
         repoDir,
         datastoreResolver,
         repository,
+        undefined,
+        createDenoInfoModuleGraphReader,
       );
       const [primary, ...rest] = pulledDirs;
       const result = await loader.load(primary, {
@@ -429,6 +432,8 @@ export function createAutoResolveInstallerAdapter(
         repoDir,
         datastoreResolver,
         repository,
+        undefined,
+        createDenoInfoModuleGraphReader,
       );
       const [primary, ...rest] = pulledDirs;
       await loader.load(primary, {
@@ -450,6 +455,8 @@ export function createAutoResolveInstallerAdapter(
         repoDir,
         undefined,
         repository,
+        undefined,
+        createDenoInfoModuleGraphReader,
       );
       const [primary, ...rest] = pulledDirs;
       await loader.load(primary, {
@@ -471,6 +478,8 @@ export function createAutoResolveInstallerAdapter(
         repoDir,
         datastoreResolver,
         repository,
+        undefined,
+        createDenoInfoModuleGraphReader,
       );
       const [primary, ...rest] = pulledDirs;
       await loader.load(primary, {

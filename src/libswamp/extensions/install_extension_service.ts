@@ -52,8 +52,10 @@ import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import {
   collectExtensionTsFiles,
+  createExtensionTreeIndexer,
   type ExtensionTreeIndex,
 } from "./extension_tree_index.ts";
+import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
 /** Subdirectories of a per-extension subtree, paired with their kind. */
 const KIND_DIRS = [
@@ -163,7 +165,18 @@ export class InstallExtensionService {
     // save and the commit or rollback cannot interleave with another
     // install or removal on this checkout (swamp-club#2709). Deps recurse
     // inside apply, land in the same section, and are part of `pending`.
-    return await this.installExtensionFn(ref, ctx, {
+    // The collective check loads every source; give it loaders bound to
+    // this service's repository, so the catalog save below can reuse what
+    // it loaded instead of loading every source again (swamp-club#3456).
+    const checkedCtx: InstallContext = {
+      ...ctx,
+      indexExtensionTree: createExtensionTreeIndexer({
+        denoRuntime: this.denoRuntime,
+        repoDir: ctx.repoDir,
+        repository: this.repository,
+      }),
+    };
+    return await this.installExtensionFn(ref, checkedCtx, {
       underLock: (pending, indexed) =>
         this.indexInstalled(ref, pending, ctx, indexed),
     });
@@ -294,7 +307,10 @@ export class InstallExtensionService {
     // Install's collective check has already loaded every source the way
     // this pass would; reuse it, but only when it covered exactly the files
     // this pass indexes, so the catalog never records less than a full pass.
-    if (checked && await coversExtensionTree(checked, extRoot)) {
+    if (
+      checked?.repository === this.repository &&
+      await coversExtensionTree(checked, extRoot)
+    ) {
       if (checked.failures.length > 0) {
         throw new Error(checked.failures[0].reason);
       }
@@ -403,6 +419,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "vaults":
         return new ExtensionLoader(
@@ -412,6 +429,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "datastores":
         return new ExtensionLoader(
@@ -421,6 +439,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "reports":
         return new ExtensionLoader(
@@ -430,6 +449,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "webhooks":
         return new ExtensionLoader(
@@ -439,6 +459,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
     }
   }

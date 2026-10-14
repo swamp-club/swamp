@@ -86,6 +86,16 @@ export interface ModuleGraphReader {
 }
 
 /**
+ * Builds a {@link ModuleGraphReader} that runs the deno binary at
+ * `denoPath` with `env`, for callers that resolve the binary only when
+ * they first bundle.
+ */
+export type ModuleGraphReaderFactory = (
+  denoPath: string,
+  env: Record<string, string>,
+) => ModuleGraphReader;
+
+/**
  * Unions graphs, keeping the first occurrence of each module and each
  * edge. Edges are identified by importer and span, so the same import read
  * from two entry points counts once.

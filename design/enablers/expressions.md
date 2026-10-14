@@ -761,6 +761,9 @@ step-time passes leave such text raw without a report of their own, so the
 warning for a deferred occurrence says it applies unless the expression
 evaluates when the step runs. It is logged once for the step as authored, not
 once per `forEach` iteration.
+Both reports read authored step arguments only. Foreign text that reaches a
+step argument as data, through a workflow input or a step output, is passed
+through as literal text with no report.
 
 `swamp workflow validate` fails `Task expressions in job '<job>' step
 '<step>'` for text a run fails on: where a task names what it runs, in a
@@ -922,6 +925,14 @@ allowlist entry, and causes no deferred-binding read (`maskLiteralCalls`,
 expression that reads no root identifier, a constant such as
 `literal('{{a}}') + ' on-call'`.
 
+`literal()` can carry swamp-shaped vendor text, such as GitHub Actions
+`${{ inputs.version }}`, through a workflow step's `inputs` to a method
+argument. The later step-time passes refuse that text without a warning, as
+constant output (see the inert-data rule below). A nested child workflow
+inherits the parent's constants whose output its inputs hold, so the child's
+steps stay quiet too. A constant reads no binding, so inheriting one grants
+the child nothing.
+
 `literal()` is registered only in the internal evaluator, not in the extension
 baseline. Remote workers need no upgrade for it: they receive arguments the
 orchestrator has already evaluated, so the worker protocol version did not
@@ -1074,7 +1085,39 @@ behavior's sensitive field, would read one through the evaluation context.
 **A pass that runs after substitution evaluates an expression only if its raw
 text was written in the workflow or behavior definition source.**
 Expression syntax that arrives as data content is inert. It stays literal text
-and a warning naming the path is logged.
+and a warning naming the path is logged (`partitionAuthored`,
+`partitionAuthoredAt`).
+
+The warning is left out where there is nothing to report (swamp-club#3402):
+
+- **Constant output.** Text that an authored constant produces, such as the
+  `${{ inputs.version }}` that `${{ literal('${{ inputs.version }}') }}`
+  evaluates to, is the author's own words. A constant is an expression with no
+  free roots, so it reads no binding. The texts each authored constant
+  evaluates to are derived from the authored set, which data cannot extend, and
+  are still refused, only silently. Data whose raw text happens to equal one of
+  them is refused silently too. Output whose raw text changes on splicing
+  still warns: a constant map rendered as JSON, text a sensitive-value
+  sanitizer rewrote, and an expression assembled from the `${{ literal('${{') }}`
+  fragment idiom.
+- **Foreign text.** Text that no swamp evaluation could own
+  (`isForeignExpression`), such as `${{ github.sha }}`, reads no swamp root and
+  no vault, so refusing it hides nothing. Foreign text that arrived as data is
+  refused with no report at all; the `Template syntax passed through` report
+  below covers only authored step arguments.
+
+A step reports each refused raw text once. The step-time passes over its
+arguments (task, placement and selector resolution, the step-input and
+definition passes, the runtime pass) share a rejection report
+(`expression_rejection_report.ts`) that the step executor enters for each step
+and `forEach` iteration, so injected text is still named once for every step it
+reaches. Passes outside a step (run-start evaluation, `forEach` expansion,
+guards, assertion messages) warn once per occurrence.
+
+The silence is decided from raw text, never from provenance. An occurrence in
+an authored range is not enough: several passes are handed
+`ProvenanceMap.authored()` when they do not know where data sits, so a
+position rule would silence text injected through them.
 
 `collectAuthoredExpressions()` collects the authored set from each source
 before any CEL evaluation runs. The sets from every author-written source
@@ -1085,7 +1128,7 @@ feeding a run are unioned:
 | Behavior definition        | the definition on disk, in both the normal and `--last-evaluated` paths     |
 | Workflow                   | the workflow YAML on disk, before evaluation, at fresh-run and resume seams |
 | Method-run `--input` flags | operator-typed values, on `swamp behavior run` only                         |
-| Parent workflow            | the parent's set, unioned into a nested child run's set                     |
+| Parent workflow            | the parent's expressions the child's inputs still hold, and its constants   |
 | Evaluated caches           | the set persisted with each evaluated definition and evaluated workflow     |
 
 Evaluated caches carry their own set because `--last-evaluated` runs the

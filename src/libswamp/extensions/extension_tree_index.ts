@@ -29,6 +29,8 @@ import type { KindAdapter } from "../../domain/extensions/kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { RuntimeContentType } from "../../domain/extensions/extension_collective_validator.ts";
 import type { StoredArchiveIndex } from "../../domain/extensions/extension_package_cache.ts";
+import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { WorkerBundleProber } from "../../infrastructure/runtime/worker_bundle_prober.ts";
 
 /** The source directories of an extension tree that a consumer indexes. */
@@ -72,6 +74,12 @@ export interface ExtensionTreeFailure {
 export interface ExtensionTreeIndex {
   sources: ExtensionTreeSource[];
   failures: ExtensionTreeFailure[];
+  /**
+   * The repository whose catalog the loaders recorded each source's modules
+   * in, and fingerprinted against. A catalog save reuses the index only when
+   * it is its own repository: any other index fingerprints differently.
+   */
+  repository?: ExtensionRepository;
 }
 
 /** Indexes the extension tree rooted at `extRoot`. */
@@ -100,6 +108,12 @@ export function createExtensionTreeIndexer(options: {
    * differs from its source would be judged instead of the source.
    */
   trustShippedBundles?: boolean;
+  /**
+   * The repository whose catalog records each source's modules, as the
+   * install service's loaders record them, so the index fingerprints sources
+   * exactly as they do.
+   */
+  repository?: ExtensionRepository;
 }): ExtensionTreeIndexer {
   return async (extRoot) => {
     const files: Array<
@@ -133,8 +147,9 @@ export function createExtensionTreeIndexer(options: {
               ADAPTERS[kindDir],
               options.repoDir,
               undefined,
-              undefined,
+              options.repository,
               prober,
+              createDenoInfoModuleGraphReader,
             );
             loaders.set(kindDir, loader);
           }
@@ -178,7 +193,11 @@ export function createExtensionTreeIndexer(options: {
       if (outcome.ok) sources.push(outcome.source);
       else failures.push(outcome.failure);
     }
-    return { sources, failures };
+    return {
+      sources,
+      failures,
+      ...(options.repository ? { repository: options.repository } : {}),
+    };
   };
 }
 

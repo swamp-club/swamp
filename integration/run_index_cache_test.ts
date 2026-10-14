@@ -51,6 +51,7 @@ import {
 } from "../src/libswamp/workflows/run_summary.ts";
 import type { RunIndexSnapshot } from "../src/domain/workflows/run_index_snapshot.ts";
 import { RunIndexWarmup } from "../src/serve/run_index_warmup.ts";
+import { RUN_INDEX_CACHE_MAX_RUNS } from "../src/infrastructure/persistence/run_index_cache.ts";
 import "../src/domain/models/models.ts";
 
 async function withRepoDir(fn: (dir: string) => Promise<void>) {
@@ -341,6 +342,9 @@ Deno.test("run index cache: the serve warm-up leaves each snapshot cached for th
     const warmup = new RunIndexWarmup({
       listWorkflowIds: async () =>
         (await serve.workflowRepo.findAllListings()).map((w) => w.id),
+      countRunRecords: (id, signal) =>
+        serve.runRepo.countRunRecords(createWorkflowId(id), signal),
+      maxRuns: RUN_INDEX_CACHE_MAX_RUNS,
       warm: async (id) => {
         warmed.set(
           id,
@@ -351,7 +355,9 @@ Deno.test("run index cache: the serve warm-up leaves each snapshot cached for th
     warmup.start();
     // A request that arrives during the warm-up shares its loads.
     const during = await serve.search({});
-    await warmup.dispose();
+    // Waited on, not disposed: a stopped warm-up lets go of the load in
+    // flight rather than waiting for it (swamp-club#3468).
+    await warmup.finished();
 
     assertEquals(during.total, 2);
     assertEquals(warmed.size, 2);

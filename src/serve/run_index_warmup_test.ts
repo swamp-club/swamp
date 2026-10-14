@@ -20,16 +20,29 @@
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
-import { RunIndexWarmup } from "./run_index_warmup.ts";
+import { RunIndexWarmup, type RunIndexWarmupDeps } from "./run_index_warmup.ts";
 
 await initializeLogging({});
+
+/** Deps for a warm-up over `ids`, each with one run, under a 10-run cap. */
+function warmupDeps(
+  ids: string[],
+  overrides: Partial<RunIndexWarmupDeps> = {},
+): RunIndexWarmupDeps {
+  return {
+    listWorkflowIds: () => Promise.resolve(ids),
+    countRunRecords: () => Promise.resolve(1),
+    maxRuns: 10,
+    warm: () => Promise.resolve(),
+    ...overrides,
+  };
+}
 
 Deno.test("RunIndexWarmup: reads every workflow's snapshot in the background, one at a time", async () => {
   const warmed: string[] = [];
   let inFlight = 0;
   let maxInFlight = 0;
-  const warmup = new RunIndexWarmup({
-    listWorkflowIds: () => Promise.resolve(["a", "b", "c"]),
+  const warmup = new RunIndexWarmup(warmupDeps(["a", "b", "c"], {
     warm: async (id) => {
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
@@ -37,7 +50,7 @@ Deno.test("RunIndexWarmup: reads every workflow's snapshot in the background, on
       warmed.push(id);
       inFlight--;
     },
-  });
+  }));
   warmup.start();
   await warmup.finished();
   assertEquals(warmed, ["a", "b", "c"]);
@@ -46,14 +59,13 @@ Deno.test("RunIndexWarmup: reads every workflow's snapshot in the background, on
 
 Deno.test("RunIndexWarmup: a workflow that fails to load does not stop the rest", async () => {
   const warmed: string[] = [];
-  const warmup = new RunIndexWarmup({
-    listWorkflowIds: () => Promise.resolve(["a", "broken", "c"]),
+  const warmup = new RunIndexWarmup(warmupDeps(["a", "broken", "c"], {
     warm: (id) => {
       if (id === "broken") return Promise.reject(new Error("unreadable"));
       warmed.push(id);
       return Promise.resolve();
     },
-  });
+  }));
   warmup.start();
   await warmup.finished();
   assertEquals(warmed, ["a", "c"]);
@@ -61,50 +73,59 @@ Deno.test("RunIndexWarmup: a workflow that fails to load does not stop the rest"
 
 Deno.test("RunIndexWarmup: a listing that fails ends the warm-up without throwing", async () => {
   let warms = 0;
-  const warmup = new RunIndexWarmup({
+  const warmup = new RunIndexWarmup(warmupDeps([], {
     listWorkflowIds: () => Promise.reject(new Error("no workflows dir")),
     warm: () => {
       warms++;
       return Promise.resolve();
     },
-  });
+  }));
   warmup.start();
   await warmup.finished();
   assertEquals(warms, 0);
 });
 
-Deno.test("RunIndexWarmup: dispose stops after the workflow in flight and waits for it", async () => {
+Deno.test("RunIndexWarmup: dispose resolves while the workflow in flight is still loading, and warms no more", async () => {
   const warmed: string[] = [];
-  let release!: () => void;
-  const warmup = new RunIndexWarmup({
-    listWorkflowIds: () => Promise.resolve(["a", "b", "c"]),
+  const { promise: loaded, resolve: release } = Promise.withResolvers<void>();
+  let reached = false;
+  const warmup = new RunIndexWarmup(warmupDeps(["a", "b", "c"], {
     warm: async (id) => {
       if (id === "b") {
-        await new Promise<void>((resolve) => release = resolve);
+        reached = true;
+        await loaded;
       }
       warmed.push(id);
     },
-  });
-  warmup.start();
+  }));
+  try {
+    warmup.start();
+    await waitFor(
+      () => Promise.resolve(reached),
+      "the warm-up to reach the second workflow",
+    );
+    await warmup.dispose();
+    assertEquals(warmed, ["a"]);
+  } finally {
+    release();
+  }
+  await loaded;
+  // b's load ended on its own after the warm-up let go of it; c never ran.
   await waitFor(
-    () => Promise.resolve(release !== undefined),
-    "the warm-up to reach the second workflow",
+    () => Promise.resolve(warmed.length === 2),
+    "the released load to end",
   );
-  const disposing = warmup.dispose();
-  release();
-  await disposing;
   assertEquals(warmed, ["a", "b"]);
 });
 
 Deno.test("RunIndexWarmup: never starts once disposed, and starts only once", async () => {
   let lists = 0;
-  const deps = {
+  const deps = warmupDeps([], {
     listWorkflowIds: () => {
       lists++;
       return Promise.resolve(["a"]);
     },
-    warm: () => Promise.resolve(),
-  };
+  });
   const disposed = new RunIndexWarmup(deps);
   await disposed.dispose();
   disposed.start();
@@ -118,32 +139,151 @@ Deno.test("RunIndexWarmup: never starts once disposed, and starts only once", as
   assertEquals(lists, 1);
 });
 
-Deno.test("RunIndexWarmup: stop aborts the load in flight through its signal, and finished waits for it to end", async () => {
-  const warmed: string[] = [];
+Deno.test("RunIndexWarmup: stop passes its signal to the load in flight", async () => {
+  let aborted = false;
   let reached = false;
-  const warmup = new RunIndexWarmup({
-    listWorkflowIds: () => Promise.resolve(["slow", "next"]),
+  const warmup = new RunIndexWarmup(warmupDeps(["slow", "next"], {
     warm: (id, signal) => {
-      if (id !== "slow") {
-        warmed.push(id);
-        return Promise.resolve();
-      }
+      if (id !== "slow") return Promise.resolve();
       reached = true;
       // A load that only ends when it is aborted, as a rebuild stops
       // between records.
       return new Promise((_, reject) =>
-        signal.addEventListener("abort", () => reject(signal.reason), {
-          once: true,
-        })
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true })
       );
     },
-  });
+  }));
   warmup.start();
   await waitFor(
     () => Promise.resolve(reached),
     "the warm-up to start the slow workflow",
   );
-  warmup.stop();
+  await warmup.dispose();
+  assertEquals(aborted, true);
+});
+
+Deno.test("RunIndexWarmup: finished does not wait for a load that ignores the signal", async () => {
+  // A plain index read, a load a request started, or a repair queued behind
+  // another reader: none of them watches the warm-up's signal
+  // (swamp-club#3468).
+  const warmed: string[] = [];
+  const { promise: loaded, resolve: release } = Promise.withResolvers<void>();
+  let reached = false;
+  const warmup = new RunIndexWarmup(warmupDeps(["shared", "next"], {
+    warm: (id) => {
+      if (id === "shared") {
+        reached = true;
+        return loaded;
+      }
+      warmed.push(id);
+      return Promise.resolve();
+    },
+  }));
+  try {
+    warmup.start();
+    await waitFor(
+      () => Promise.resolve(reached),
+      "the warm-up to join the shared load",
+    );
+    warmup.stop();
+    await warmup.finished();
+    assertEquals(warmed, []);
+  } finally {
+    release();
+  }
+});
+
+Deno.test("RunIndexWarmup: a load that fails after the warm-up let go of it is not reported", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (event: PromiseRejectionEvent) => {
+    unhandled.push(event.reason);
+    event.preventDefault();
+  };
+  globalThis.addEventListener("unhandledrejection", onUnhandled);
+  try {
+    const { promise: loaded, reject: fail } = Promise.withResolvers<void>();
+    let reached = false;
+    const warmup = new RunIndexWarmup(warmupDeps(["slow"], {
+      warm: () => {
+        reached = true;
+        return loaded;
+      },
+    }));
+    warmup.start();
+    await waitFor(
+      () => Promise.resolve(reached),
+      "the warm-up to start the slow workflow",
+    );
+    await warmup.dispose();
+    // Rejects with nothing in the test awaiting it; one macrotask lets the
+    // runtime report it if the warm-up left it unhandled.
+    fail(new Error("unreadable"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assertEquals(unhandled, []);
+  } finally {
+    globalThis.removeEventListener("unhandledrejection", onUnhandled);
+  }
+});
+
+Deno.test("RunIndexWarmup: skips a workflow with more runs than the cache keeps", async () => {
+  const warmed: string[] = [];
+  const counts: Record<string, number> = { small: 10, huge: 11, last: 3 };
+  const warmup = new RunIndexWarmup(warmupDeps(["small", "huge", "last"], {
+    countRunRecords: (id) => Promise.resolve(counts[id]),
+    warm: (id) => {
+      warmed.push(id);
+      return Promise.resolve();
+    },
+  }));
+  warmup.start();
   await warmup.finished();
-  assertEquals(warmed, []);
+  assertEquals(warmed, ["small", "last"]);
+});
+
+Deno.test("RunIndexWarmup: a stop while counting a workflow's runs loads nothing", async () => {
+  const { promise: counted, resolve: count } = Promise.withResolvers<number>();
+  let reached = false;
+  let warms = 0;
+  const warmup = new RunIndexWarmup(warmupDeps(["a", "b"], {
+    countRunRecords: () => {
+      reached = true;
+      return counted;
+    },
+    warm: () => {
+      warms++;
+      return Promise.resolve();
+    },
+  }));
+  try {
+    warmup.start();
+    await waitFor(
+      () => Promise.resolve(reached),
+      "the warm-up to count the first workflow",
+    );
+    await warmup.dispose();
+  } finally {
+    count(1);
+  }
+  await counted;
+  assertEquals(warms, 0);
+});
+
+Deno.test("RunIndexWarmup: a workflow whose runs cannot be counted is skipped", async () => {
+  const warmed: string[] = [];
+  const warmup = new RunIndexWarmup(warmupDeps(["broken", "b"], {
+    countRunRecords: (id) =>
+      id === "broken"
+        ? Promise.reject(new Error("permission denied"))
+        : Promise.resolve(1),
+    warm: (id) => {
+      warmed.push(id);
+      return Promise.resolve();
+    },
+  }));
+  warmup.start();
+  await warmup.finished();
+  assertEquals(warmed, ["b"]);
 });

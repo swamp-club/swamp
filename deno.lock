@@ -2757,6 +2757,7 @@
       "jsr:@std/fmt@^1.0.10",
       "jsr:@std/fs@^1.0.23",
       "jsr:@std/path@^1.1.4",
+      "jsr:@std/semver@^1.0.8",
       "jsr:@std/streams@^1.1.0",
       "jsr:@std/tar@~0.1.10",
       "jsr:@std/yaml@^1.1.0",

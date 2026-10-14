@@ -60,9 +60,10 @@ Argument names in help follow the spelling too: `behavior_id_or_name`,
 `behavior_or_type` and `output_id_or_behavior_name` under `swamp behavior`,
 `model_id_or_name`, `model_or_type` and `output_id_or_model_name` under
 `swamp model`. They are positional, so a script passes the same values.
-Shell completion offers the `behaviour` alias in zsh only: the bash and fish
-scripts Cliffy generates leave command aliases out, though typing
-`swamp behaviour` works in every shell. Arguments under `swamp behavior`
+Shell completion offers the `behaviour` alias in zsh and PowerShell only: the
+bash and fish scripts Cliffy generates leave command aliases out, though typing
+`swamp behaviour` works in every shell. Cliffy has no PowerShell generator, so
+swamp generates that script itself (`src/cli/commands/completion_powershell.ts`). Arguments under `swamp behavior`
 complete through the `behavior_name` and `behavior_type` completion types,
 and the `swamp model` tree keeps `model_name` and `model_type`
 (swamp-club#3410). All four stay registered with the same completions, so an

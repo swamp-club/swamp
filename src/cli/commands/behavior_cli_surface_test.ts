@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { generateShellCompletions } from "@cliffy/command/completions";
+import { generatePowerShellCompletions } from "./completion_powershell.ts";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { fromFileUrl } from "@std/path";
 import { registerCompletionTypes } from "../completion_types.ts";
@@ -115,12 +116,15 @@ function captureSurface(): BehaviorCliSurface {
       stripGlobalOptions: true,
     }),
     help,
-    completions: Object.fromEntries(
-      (["bash", "fish", "zsh"] as const).map((shell) => [
-        shell,
-        normalize(generateShellCompletions(root, shell)),
-      ]),
-    ),
+    completions: {
+      ...Object.fromEntries(
+        (["bash", "fish", "zsh"] as const).map((shell) => [
+          shell,
+          normalize(generateShellCompletions(root, shell)),
+        ]),
+      ),
+      powershell: normalize(generatePowerShellCompletions("swamp", root)),
+    },
   };
 }
 
@@ -145,12 +149,18 @@ Deno.test("behavior CLI surface: matches the golden file", async () => {
   assertEquals(actual.completions, expected.completions);
 });
 
-Deno.test("behavior CLI surface: only the zsh completion script offers the behaviour alias", () => {
+Deno.test("behavior CLI surface: only the zsh and PowerShell completion scripts offer the behaviour alias", () => {
   // Cliffy 1.0.1's bash and fish generators ignore command aliases; see
   // src/cli/commands/completion.ts. A Cliffy upgrade that changes this
   // should update that note and design/primitives/behaviors.md.
   const { completions } = captureSurface();
   assertEquals(completions.zsh.includes("behavior|behaviour"), true);
+  assertEquals(
+    completions.powershell.includes(
+      "Name = 'behavior'; Aliases = @('behaviour')",
+    ),
+    true,
+  );
   assertEquals(completions.bash.includes("behaviour"), false);
   assertEquals(completions.fish.includes("behaviour"), false);
 });

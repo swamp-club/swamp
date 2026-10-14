@@ -23,6 +23,7 @@ import { assertStringIncludes } from "@std/assert/string-includes";
 import { ensureDir, walk } from "@std/fs";
 import { dirname, join, relative } from "@std/path";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
+import { TarStream, type TarStreamInput } from "@std/tar/tar-stream";
 import {
   applyInstall,
   computeOrphanDiff,
@@ -56,6 +57,7 @@ import {
   SimulatedInstallCrash,
 } from "../../infrastructure/persistence/test_helpers/install_crash.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
+import { detectLocalEditsForExtension } from "./local_edits.ts";
 import { STAGING_DIR_NAME } from "../../domain/extensions/install_journal.ts";
 import type { ExtensionReplacement } from "../../domain/extensions/extension_replacement.ts";
 import { emptyTreeIndexer } from "./extension_tree_index_test_helpers.ts";
@@ -618,6 +620,8 @@ interface SkillArchiveSpec {
   dependencies?: string[];
   /** Extra files keyed by path under the extension root, e.g. `models/a.ts`. */
   files?: Record<string, string>;
+  /** Symlinks keyed by path under the extension root, valued by target. */
+  symlinks?: Record<string, string>;
   /** Leaves manifest.yaml out of the archive. */
   omitManifest?: boolean;
   /** The manifest version; defaults to SKILL_VERSION. */
@@ -651,6 +655,10 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
       await ensureDir(dirname(join(extDir, file)));
       await Deno.writeTextFile(join(extDir, file), content);
     }
+    for (const [file, target] of Object.entries(spec.symlinks ?? {})) {
+      await ensureDir(dirname(join(extDir, file)));
+      await Deno.symlink(target, join(extDir, file), { type: "file" });
+    }
     for (const [skill, files] of Object.entries(spec.skills)) {
       for (const [file, content] of Object.entries(files)) {
         await ensureDir(join(extDir, "skills", skill));
@@ -663,6 +671,28 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
   } finally {
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }
+}
+
+/** A .tar.gz holding exactly `files`, keyed by raw tar header path. */
+async function buildRawArchive(
+  files: Record<string, string>,
+): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  const entries: TarStreamInput[] = Object.entries(files).map(
+    ([path, content]) => {
+      const bytes = encoder.encode(content);
+      return {
+        type: "file",
+        path,
+        size: bytes.length,
+        readable: ReadableStream.from([bytes]),
+      };
+    },
+  );
+  const stream = ReadableStream.from(entries)
+    .pipeThrough(new TarStream())
+    .pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 async function withSkillRepo(
@@ -3125,5 +3155,312 @@ Deno.test(
       assertEquals(ctx.replacements[0].current, null);
       assertEquals(ctx.replacements[0].change, "unknown");
     });
+  },
+);
+
+// ===== Archive-root shared sources (swamp-club#3384) =====
+//
+// Push places a shared module outside its kind's directory at the archive
+// root (lib/, _lib/, a bare file, or _shared/). Pull installs it at the
+// same path under the extension root so the installed sources resolve.
+
+const SHARED_FILES = {
+  "models/a.ts": 'import { cmp } from "../lib/cmp.ts";\n' +
+    'import { s } from "../_shared/_up/shared/s.ts";\n' +
+    "export const model = { cmp, s };\n",
+  "bundles/a.js": "// bundle\n",
+  "lib/cmp.ts": "export const cmp = 1;\n",
+  "lib/data/table.json": "{}\n",
+  "_shared/_up/shared/s.ts": "export const s = 2;\n",
+  "helpers.ts": "export const h = 3;\n",
+};
+
+Deno.test(
+  "installExtension: installs archive-root shared sources at their archive paths and records them",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive(swapSpec(name, {
+        ...SHARED_FILES,
+        "drivers/legacy.ts": "export const d = 1;\n",
+        "driver-bundles/legacy.js": "// legacy\n",
+      }));
+      await installArchive(repoDir, lockfile, { [name]: archive }, name);
+      const root = extRootOf(repoDir, name);
+      for (
+        const rel of [
+          "lib/cmp.ts",
+          "lib/data/table.json",
+          "_shared/_up/shared/s.ts",
+          "helpers.ts",
+        ]
+      ) {
+        assertEquals(
+          await Deno.readTextFile(join(root, ...rel.split("/"))),
+          SHARED_FILES[rel as keyof typeof SHARED_FILES],
+        );
+        assertEquals(
+          lockfile.getEntry(name)!.files!.includes(
+            relative(repoDir, join(root, ...rel.split("/"))),
+          ),
+          true,
+          rel,
+        );
+      }
+      assertEquals(await exists(join(root, "drivers")), false);
+      assertEquals(await exists(join(root, "driver-bundles")), false);
+    });
+  },
+);
+
+for (
+  const [where, path] of [
+    ["a kind directory", "models/link.ts"],
+    ["a shared source", "lib/link.ts"],
+  ]
+) {
+  Deno.test(
+    `installExtension: a symlink in ${where} refuses the archive before anything is written`,
+    async () => {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        const name = uniqueExtName();
+        const spec = swapSpec(name, SHARED_FILES);
+        spec.symlinks = { [path]: "../lib/cmp.ts" };
+        const archive = await buildSkillArchive(spec);
+        const error = await assertRejects(
+          () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+          UserError,
+        );
+        assertStringIncludes(error.message, `extension/${path}`);
+        assertStringIncludes(error.message, "may not contain links");
+        assertStringIncludes(error.message, "cannot be installed");
+        assertEquals(await exists(extRootOf(repoDir, name)), false);
+        assertEquals(lockfile.getEntry(name), null);
+      });
+    },
+  );
+}
+
+Deno.test(
+  "installExtension: a hidden file or resolution config under a shared source refuses the archive",
+  async () => {
+    for (const path of ["lib/.env", "lib/deno.json", "package.json"]) {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive(swapSpec(name, {
+          ...SHARED_FILES,
+          [path]: "{}\n",
+        }));
+        const error = await assertRejects(
+          () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+          UserError,
+        );
+        assertStringIncludes(error.message, `extension/${path}`);
+        assertEquals(await exists(extRootOf(repoDir, name)), false);
+      });
+    }
+  },
+);
+
+Deno.test(
+  "installExtension: a backslash in a shared source's archive path refuses the archive",
+  async () => {
+    // On Windows the extractor treats the backslash as a separator, so
+    // this would otherwise install lib/deno.json past the config rule.
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      // createTarGz writes forward slashes, so build the header by hand.
+      const archive = await buildRawArchive({
+        "extension/manifest.yaml":
+          `manifestVersion: 1\nname: "${name}"\nversion: "${SKILL_VERSION}"\n` +
+          "skills:\n  - guide\n",
+        "extension/skills/guide/SKILL.md": "guide\n",
+        "extension/lib\\deno.json": "{}\n",
+      });
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+        UserError,
+      );
+      assertStringIncludes(error.message, "backslash");
+      assertEquals(await exists(extRootOf(repoDir, name)), false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a dangling symlink at a shared source path is reported as a conflict",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const root = extRootOf(repoDir, name);
+      await ensureDir(join(root, "lib"));
+      await Deno.symlink("missing.ts", join(root, "lib", "cmp.ts"), {
+        type: "file",
+      });
+      const archive = await buildSkillArchive(swapSpec(name, SHARED_FILES));
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+        ConflictError,
+      );
+      assertStringIncludes(
+        error.message,
+        relative(repoDir, join(root, "lib", "cmp.ts")),
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a shared source the safety analyzer rejects refuses the archive",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive(swapSpec(name, {
+        ...SHARED_FILES,
+        "lib/run.sh": "echo hi\n",
+      }));
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+        UserError,
+      );
+      assertStringIncludes(error.message, "safety errors");
+      assertStringIncludes(error.message, "run.sh");
+      assertEquals(await exists(extRootOf(repoDir, name)), false);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an existing file at a shared source path is reported as a conflict",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const root = extRootOf(repoDir, name);
+      await ensureDir(join(root, "lib"));
+      await Deno.writeTextFile(join(root, "lib", "cmp.ts"), "// mine\n");
+      const archive = await buildSkillArchive(swapSpec(name, SHARED_FILES));
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+        ConflictError,
+      );
+      assertStringIncludes(
+        error.message,
+        relative(repoDir, join(root, "lib", "cmp.ts")),
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an upgrade prunes a shared source it stops shipping and keeps the user's files",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const root = extRootOf(repoDir, name);
+      const v1 = await buildSkillArchive(swapSpec(name, {
+        ...SHARED_FILES,
+        "lib/old.ts": "export const old = 1;\n",
+      }));
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name);
+      await Deno.writeTextFile(join(root, "lib", "mine.ts"), "// mine\n");
+
+      const v2 = await buildSkillArchive({
+        ...swapSpec(name, SHARED_FILES),
+        version: "2026.02.01.1",
+      });
+      await installArchive(repoDir, lockfile, { [name]: v2 }, name, {
+        force: true,
+      });
+      assertEquals(await exists(join(root, "lib", "old.ts")), false);
+      assertEquals(await exists(join(root, "lib", "cmp.ts")), true);
+      assertEquals(
+        await Deno.readTextFile(join(root, "lib", "mine.ts")),
+        "// mine\n",
+      );
+      const files = lockfile.getEntry(name)!.files!;
+      assertEquals(
+        files.includes(relative(repoDir, join(root, "lib", "old.ts"))),
+        false,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an edit to an installed shared source is a local edit",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive(swapSpec(name, SHARED_FILES));
+      await installArchive(repoDir, lockfile, { [name]: archive }, name);
+      const status = () =>
+        detectLocalEditsForExtension(repoDir, name, lockfile.lockfilePath);
+      assertEquals(await status(), "match");
+      await Deno.writeTextFile(
+        join(extRootOf(repoDir, name), "lib", "cmp.ts"),
+        "export const cmp = 2;\n",
+      );
+      assertEquals(await status(), "mismatch");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: refuses a parent whose nested entry sits where it keeps shared sources",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/lib`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, SHARED_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, {
+          "models/c.ts": "export const c = 1;\n",
+        })),
+      };
+      await installArchive(repoDir, lockfile, archives, child);
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, parent),
+        UserError,
+      );
+      assertStringIncludes(error.message, "keeps its shared sources");
+      assertStringIncludes(error.message, `swamp extension rm ${child}`);
+      assertEquals(lockfile.getEntry(parent), null);
+      assertEquals(
+        await exists(join(extRootOf(repoDir, child), "models", "c.ts")),
+        true,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: refuses a nested entry that would land on its parent's shared sources",
+  async () => {
+    for (const withEntry of [true, false]) {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        const parent = uniqueExtName();
+        const child = `${parent}/lib`;
+        const archives = {
+          [parent]: await buildSkillArchive(swapSpec(parent, SHARED_FILES)),
+          [child]: await buildSkillArchive(swapSpec(child, {
+            "models/c.ts": "export const c = 1;\n",
+          })),
+        };
+        await installArchive(repoDir, lockfile, archives, parent);
+        // Without a lockfile entry only the parent's tree says what it
+        // keeps.
+        if (!withEntry) await lockfile.removeEntry(parent);
+        const tree = await installedTree(repoDir);
+
+        const error = await assertRejects(
+          () => installArchive(repoDir, lockfile, archives, child),
+          UserError,
+        );
+        assertStringIncludes(error.message, "keeps its shared sources");
+        assertStringIncludes(error.message, `swamp extension rm ${parent}`);
+        assertEquals(await installedTree(repoDir), tree);
+        assertEquals(lockfile.getEntry(child), null);
+      });
+    }
   },
 );

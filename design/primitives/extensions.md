@@ -751,8 +751,15 @@ extension.tar.gz
     ├── reports/              # Source TypeScript report files
     ├── report-bundles/       # Compiled report JavaScript bundles
     ├── skills/               # Skill directories (SKILL.md + references)
-    └── files/                # Additional files
+    ├── files/                # Additional files
+    ├── lib/                  # Shared sources mirrored from one level above a kind's directory, any unreserved name
+    └── _shared/              # Shared sources from anywhere else in the repository
 ```
+
+Pull installs the archive at `.swamp/pulled-extensions/<name>/`, each entry at
+its archive path. Shared sources (see [Import Resolution](#import-resolution))
+go there too, so the installed sources' relative imports resolve as they do in
+the archive.
 
 ### Behaviors
 
@@ -892,8 +899,8 @@ during `repo init` or in tests), loaders fall back to the local `.swamp/` path.
 Vault, datastore, report and webhook entry points are bundled like behaviors.
 Each gets a compiled `.js` file in its `-bundles/` directory (`vault-bundles/`,
 `datastore-bundles/`, `report-bundles/`, `webhook-bundles/`). Local imports are
-followed recursively within the directory. The install-time `KIND_DIRS` array
-covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
+followed as for behaviors, wherever they live. The install-time `KIND_DIRS`
+array covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
 
 Each bundle's export is validated against a Zod schema:
 
@@ -1011,8 +1018,29 @@ target declares cannot reach the content-collective check, and a symlinked
 Push fails when a local module is missing, when its real path leaves the
 repository and the extensions root (through a symlinked directory), or when two
 different files would share an archive path. Data modules are packaged, hashed
-and safety-scanned, but not formatted, linted or reviewed as TypeScript. Pull
-does not yet install the archive-root shared sources (swamp-club#3384).
+and safety-scanned, but not formatted, linted or reviewed as TypeScript.
+
+Pull installs the shared sources at the same path under the extension's install
+root (swamp-club#3384): every file under `_shared/` or under a top-level entry
+whose name the archive does not reserve. `isReservedArchiveRootName` is the one
+list push and pull both read. It also holds `drivers` and `driver-bundles`,
+which push wrote before driver support was removed and pull has always ignored.
+Pull passes each shared source, data modules included, to the safety analyzer
+push uses, records it in the lockfile entry's `files`, and treats it like any
+other installed file on upgrade, conflict detection and `extension rm`. It
+refuses an archive, before writing the entry, that holds:
+
+- a symlink or hardlink anywhere, as push never writes one;
+- under a shared source, a backslash (push writes `/`; on Windows the extractor
+  would split on it), a hidden or `..` segment, `node_modules`, or a
+  `deno.json`, `deno.jsonc` or `package.json` (any case), which would change how
+  the installed source resolves;
+- a top-level name that differs from a reserved one only by case.
+
+An extension nested under another (`@a/b/lib` under `@a/b`) cannot be installed
+at a directory where its parent keeps shared sources, nor the parent installed
+over such a nested entry. Either install fails and names the extension to remove
+first.
 
 ## Per-Subdirectory Extension Identity
 
@@ -1813,13 +1841,21 @@ from `@bixu/wheelshop`:
 
 ### Not audited
 
+OSV is asked about one exact version, resolved from the specifier the way the
+registry's scorecard resolves it: an exact version as-is, a range to the highest
+published version that satisfies it, a dist-tag through the packument's
+`dist-tags`, and no version to `latest`. The audit summary's `version` is that
+resolved version.
+
 A dependency whose npm registry or OSV.dev lookup fails (an error status, no
-network, a timeout) is **not audited**. It is never reported as passed: its
-audit summary has `passed: false`, `cause: "not-audited"` and a `reason` naming
-each failed lookup, and a warning with the same cause joins
-`warnings.dependencyTrust`. When npm fails but the specifier pins a version,
-OSV is still queried, so a HIGH or CRITICAL vulnerability still blocks; an
-unpinned specifier cannot be queried. A failed weekly-downloads lookup alone
+network, a timeout), or whose specifier no published version matches, is **not
+audited**. It is never reported as passed: its audit summary has
+`passed: false`, `cause: "not-audited"` and a `reason` naming each failed lookup
+(or `OSV not queried (no published version matches <spec>)`), and a warning
+with the same cause joins `warnings.dependencyTrust`. When npm fails but the
+specifier is an exact version, OSV is still queried, so a HIGH or CRITICAL
+vulnerability still blocks; a range, dist-tag or missing version cannot be
+resolved without npm and is not queried. A failed weekly-downloads lookup alone
 leaves the dependency audited. Unaudited dependencies join the push warnings
 gate (an interactive push prompts; `--yes` waives them), never block on their
 own, and never change the exit code. `DependencyTrustResult.passed` keeps
@@ -2950,6 +2986,30 @@ with reason `"renamed"`. Cross-aggregate uniqueness (I-Repo-1) still throws
 pulled-vs-pulled conflicts. Both checks skip `extension`-kind
 Sources: an extension's type is the base type it adds methods to, and one
 package may ship several extension files for the same base type.
+
+**Recorded source modules.** A source's fingerprint covers every local module
+its bundle was built from, wherever it lives and however it is imported: a model
+in `extensions/models/` that imports `../lib/msg.ts`, or side-effect imports
+`./side.ts`, goes stale when either changes (swamp-club#3385). Each time the
+loader bundles a source (`bundleWithCache`), it reads the entry point's module
+graph with `deno info`, the same source of truth push uses, under the same
+project config as the bundle. It records the graph's local modules, its missing
+modules and the deno config in the catalog's `source_modules` table.
+`computeSourceFingerprint` hashes that list, so the warm scan never spawns a
+process. A recorded list stays valid until the source changes: a relative import
+can only reach a new module if a recorded module's content changes or a recorded
+missing module appears, and either changes the fingerprint. A source with no
+recorded list falls back to the relative imports `resolveLocalImports` finds
+within the kind's directory. Pulled sources, whose bundles ship pre-built and
+cannot rebundle locally, stay on that fallback. A local source with no list (a
+catalog an earlier binary wrote) is stale once, so its bundle is rebuilt and its
+list recorded. A bundle attempt that fails, or a graph that cannot be read,
+records the fallback, so a failing source is not retried on every command.
+Production loaders get the reader from `createDenoInfoModuleGraphReader`;
+`integration/extension_loader_wiring_rules_test.ts` keeps each construction that
+has a catalog passing it. Two changes are not seen: adding a `deno.json` that
+was not discovered at bundle time, and a pulled extension's shared sources
+outside its kind's directory.
 
 **Unreadable dependencies.** `computeSourceFingerprint`
 (`src/domain/extensions/bundle_freshness.ts`) substitutes the internal

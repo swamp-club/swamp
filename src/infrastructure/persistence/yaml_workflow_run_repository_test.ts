@@ -963,6 +963,52 @@ async function copyRecord(
   );
 }
 
+Deno.test("countRunRecords: counts the workflow's run records and nothing else in their directory", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    assertEquals(await repo.countRunRecords(workflow.id), 0);
+
+    for (let i = 0; i < 3; i++) {
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      await repo.save(workflow.id, run);
+    }
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.writeTextFile(join(runsDir, "workflow-run-stray.log"), "");
+    await Deno.writeTextFile(join(runsDir, "notes.yaml"), "");
+
+    assertEquals(await repo.countRunRecords(workflow.id), 3);
+  });
+});
+
+Deno.test("countRunRecords: stops listing once its signal aborts", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const aborted = new AbortController();
+    aborted.abort(new Error("stopped"));
+    // No runs directory yet: an aborted count still rejects.
+    await assertRejects(
+      () => repo.countRunRecords(workflow.id, aborted.signal),
+      Error,
+      "stopped",
+    );
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    const abort = new AbortController();
+    abort.abort(new Error("stopped"));
+    await assertRejects(
+      () => repo.countRunRecords(workflow.id, abort.signal),
+      Error,
+      "stopped",
+    );
+  });
+});
+
 Deno.test("runIndexSnapshot: reuses the snapshot while the index and records are unchanged", async () => {
   await withTempDir(async (dir) => {
     let offset = 0;
@@ -1302,6 +1348,68 @@ Deno.test("findSummariesByStatus: rebuilds stale index", async () => {
     );
     assertEquals(suspended.length, 1);
     assertEquals(suspended[0].id, run2.id);
+  });
+});
+
+Deno.test("findSummariesByStatus: an aborted signal stops a rebuild before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await saveRunningRuns(repo, workflow, 3);
+    // An index of another schema version: the next read rebuilds it whole.
+    const stale = JSON.stringify({ version: 0, entries: {} });
+    await Deno.writeTextFile(getIndexPath(indexDir), stale);
+
+    // Aborted while the rebuild reads its first record.
+    const abort = new AbortController();
+    const original = Deno.readTextFile;
+    let recordReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) {
+        recordReads++;
+        abort.abort(new DOMException("shutting down", "AbortError"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () =>
+          repo.findSummariesByStatus(workflow.id, "suspended", abort.signal),
+        DOMException,
+        "shutting down",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+    // It stopped before the next record, and wrote nothing.
+    assertEquals(recordReads, 1);
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), stale);
+
+    // Without the signal the same read rebuilds it.
+    assertEquals(
+      (await repo.findSummariesByStatus(workflow.id, "running")).length,
+      3,
+    );
+  });
+});
+
+Deno.test("findSummariesByStatus: an aborted signal stops a repair before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [, unlisted] = await saveRunningRuns(repo, workflow, 2);
+    await dropIndexEntries(indexDir, [unlisted.id]);
+    const before = await Deno.readTextFile(getIndexPath(indexDir));
+
+    const abort = new AbortController();
+    abort.abort(new DOMException("shutting down", "AbortError"));
+    await assertRejects(
+      () => repo.findSummariesByStatus(workflow.id, "running", abort.signal),
+      DOMException,
+    );
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), before);
   });
 });
 

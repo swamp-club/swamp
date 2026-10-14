@@ -80,6 +80,12 @@ const DEDUP_NON_CANONICAL_MIGRATION_KEY =
 const NO_EXPORT_KEY_PREFIX = "no-export:";
 
 /**
+ * The most modules {@link ExtensionCatalogStore.findSourceModules} accepts
+ * for one source. A longer stored list was not written by swamp.
+ */
+const MAX_SOURCE_MODULES = 10_000;
+
+/**
  * Per-kind `bundle_meta` key prefix recording that the loader has
  * revalidated the kind's typeless Indexed rows (swamp-club#2490). Absent
  * on the first run after upgrade, and cleared whenever a row that claims
@@ -401,6 +407,11 @@ export class ExtensionCatalogStore {
       CREATE TABLE IF NOT EXISTS bundle_meta (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS source_modules (
+        source_path TEXT NOT NULL PRIMARY KEY,
+        modules     TEXT NOT NULL
       );
     `);
   }
@@ -886,6 +897,7 @@ export class ExtensionCatalogStore {
     this.db.exec("BEGIN");
     try {
       this.db.exec("DELETE FROM bundle_types");
+      this.db.exec("DELETE FROM source_modules");
       this.db.exec("DELETE FROM bundle_meta WHERE key LIKE 'populated:%'");
       this.db.exec(
         `DELETE FROM bundle_meta WHERE key LIKE '${TYPELESS_ROW_HEAL_KEY_PREFIX}%'`,
@@ -1597,6 +1609,45 @@ export class ExtensionCatalogStore {
     this.db.prepare(
       "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, ?)",
     ).run(noExportKey(kind, sourcePath), fingerprint);
+  }
+
+  /**
+   * The local modules recorded for `sourcePath` when it was last bundled,
+   * or `undefined` when none are recorded or the stored value is not a list
+   * of at most {@link MAX_SOURCE_MODULES} paths.
+   */
+  findSourceModules(sourcePath: string): readonly string[] | undefined {
+    const row = this.db.prepare(
+      "SELECT modules FROM source_modules WHERE source_path = ?",
+    ).get(canonicalizePath(sourcePath)) as { modules: string } | undefined;
+    if (!row) return undefined;
+    let modules: unknown;
+    try {
+      modules = JSON.parse(row.modules);
+    } catch {
+      return undefined;
+    }
+    if (
+      !Array.isArray(modules) || modules.length > MAX_SOURCE_MODULES ||
+      !modules.every((m) => typeof m === "string")
+    ) {
+      return undefined;
+    }
+    return modules;
+  }
+
+  /** Records the local modules `sourcePath` was bundled from. */
+  recordSourceModules(sourcePath: string, modules: readonly string[]): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO source_modules (source_path, modules) VALUES (?, ?)",
+    ).run(canonicalizePath(sourcePath), JSON.stringify(modules));
+  }
+
+  /** Forgets the local modules recorded for `sourcePath`. */
+  deleteSourceModules(sourcePath: string): void {
+    this.db.prepare("DELETE FROM source_modules WHERE source_path = ?").run(
+      canonicalizePath(sourcePath),
+    );
   }
 
   private isDeduplicateNonCanonicalApplied(): boolean {

@@ -92,6 +92,13 @@ import {
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { readDirSorted } from "../../infrastructure/persistence/sorted_dir_entries.ts";
 import {
+  type ArchiveEntry,
+  type ArchiveEntryRefusal,
+  archiveEntryRefusal,
+  archiveRootSourceDirs,
+  planArchiveRootSources,
+} from "../../domain/extensions/archive_root_sources.ts";
+import {
   assertContainedPath,
   PathTraversalError,
 } from "../../infrastructure/persistence/safe_path.ts";
@@ -626,6 +633,26 @@ async function listFilesAndLinks(dir: string): Promise<string[]> {
 }
 
 /**
+ * The error pull raises for an archive it refuses because of one entry:
+ * names the extension, the version and the entry, and says the version
+ * cannot be installed.
+ */
+function archiveRefusalError(
+  name: string,
+  version: string,
+  refusal: ArchiveEntryRefusal,
+): UserError {
+  return markErrorPaths(
+    new UserError(
+      `Extension archive ${name}@${version} cannot be installed: ` +
+        `${refusal.path} ${refusal.reason}. Ask the extension author to ` +
+        `publish a corrected version.`,
+    ),
+    [refusal.path],
+  );
+}
+
+/**
  * Recursively validates that no symlink under `path` resolves to a target
  * outside `resolvedTmpDir`. Throws a UserError if a symlink escapes.
  */
@@ -803,6 +830,26 @@ export async function detectConflicts(
     }
   }
 
+  return conflicts;
+}
+
+/**
+ * The archive-root shared sources (swamp-club#3384) that already exist
+ * under the extension root, as repo-relative paths: like
+ * {@link detectConflicts}, a re-install of the same extension.
+ */
+async function detectRootSourceConflicts(
+  rootSources: readonly string[],
+  extensionRoot: string,
+  repoDir: string,
+): Promise<string[]> {
+  const conflicts: string[] = [];
+  for (const source of rootSources) {
+    const destPath = join(extensionRoot, ...source.split("/"));
+    if (await pathExistsNoFollow(destPath)) {
+      conflicts.push(relative(repoDir, destPath));
+    }
+  }
   return conflicts;
 }
 
@@ -1175,6 +1222,7 @@ interface PreparedInstallFields {
   safetyWarnings: ExtensionSafetyWarning[];
   publishedChannel: string | null;
   knownChannels: ReadonlyMap<string, string>;
+  rootSources: string[];
 }
 
 /**
@@ -1208,6 +1256,11 @@ class PreparedInstall {
    * one and, on a replacement, the installed one.
    */
   readonly knownChannels: ReadonlyMap<string, string>;
+  /**
+   * The archive-root shared sources to install, as forward-slash paths
+   * below `extension/` (swamp-club#3384), already safety-checked.
+   */
+  readonly rootSources: string[];
   readonly #tmpDir: string;
   #disposed = false;
 
@@ -1224,6 +1277,7 @@ class PreparedInstall {
     this.safetyWarnings = fields.safetyWarnings;
     this.publishedChannel = fields.publishedChannel;
     this.knownChannels = fields.knownChannels;
+    this.rootSources = fields.rootSources;
   }
 
   /** Removes the temp dir. Idempotent and best-effort. */
@@ -1506,6 +1560,11 @@ export async function prepareInstall(
       }
     }
 
+    // Every entry's header, checked before the entry is written: a link
+    // or a refused shared source stops extraction, so nothing of it lands
+    // in the temp dir.
+    const extractedEntries: ArchiveEntry[] = [];
+    let refused: UserError | undefined;
     try {
       const extractFile = await Deno.open(archivePath, { read: true });
       // The Deno-native extractor doesn't shell out to BSD tar, so the macOS
@@ -1515,12 +1574,29 @@ export async function prepareInstall(
       await extractTarGz(
         extractFile.readable,
         tmpDir,
-        undefined,
+        (entry) => {
+          const archiveEntry: ArchiveEntry = {
+            path: entry.archivePath,
+            kind: entry.isDirectory
+              ? "directory"
+              : entry.isFile
+              ? "file"
+              : "link",
+          };
+          const refusal = archiveEntryRefusal(archiveEntry);
+          if (refusal) {
+            refused = archiveRefusalError(ref.name, version, refusal);
+            throw refused;
+          }
+          extractedEntries.push(archiveEntry);
+        },
         readOptions,
       );
     } catch (error: unknown) {
+      if (refused !== undefined && error === refused) throw error;
       throw archiveReadError("extract archive", error);
     }
+    const { sources: rootSources } = planArchiveRootSources(extractedEntries);
 
     const extractDir = join(tmpDir, "extension");
 
@@ -1566,12 +1642,18 @@ export async function prepareInstall(
     const webhookTsFiles = (
       await listFiles(join(extractDir, "webhooks"))
     ).filter((f) => f.endsWith(".ts"));
+    // Shared sources at the archive root are scanned whole, data modules
+    // included, as push scans them (swamp-club#3384).
+    const rootSourceFiles = rootSources.map((source) =>
+      join(extractDir, ...source.split("/"))
+    );
     const tsFiles = [
       ...modelTsFiles,
       ...vaultTsFiles,
       ...datastoreTsFiles,
       ...reportTsFiles,
       ...webhookTsFiles,
+      ...rootSourceFiles,
     ];
     if (tsFiles.length > 0) {
       const safetyResult = await analyzeExtensionSafety(tsFiles);
@@ -1605,6 +1687,7 @@ export async function prepareInstall(
       safetyWarnings,
       publishedChannel,
       knownChannels,
+      rootSources,
     });
   } catch (error) {
     try {
@@ -2057,6 +2140,15 @@ export async function applyInstall(
     absoluteWebhooksDir,
     webhookBundlesDir,
   );
+  for (
+    const conflict of await detectRootSourceConflicts(
+      prepared.rootSources,
+      absoluteExtRoot,
+      repoDir,
+    )
+  ) {
+    conflicts.push(conflict);
+  }
   // Skill dirs are shared across extensions and with the user. Only
   // the top-level extension raises them as conflicts: a dependency
   // installs after its parent's lockfile entry is written, so failing
@@ -2137,7 +2229,17 @@ export async function applyInstall(
           `\`swamp extension rm ${ancestor}\` first.`,
       );
     }
+    if (await ancestorKeepsSourcesAt(ancestor, first, ctx)) {
+      throw new UserError(
+        `Cannot install ${ref.name}: its files would go to ` +
+          `${ancestor}/${first}/, where the installed extension ` +
+          `${ancestor} keeps its shared sources. Run ` +
+          `\`swamp extension rm ${ancestor}\` first.`,
+      );
+    }
   }
+  // Directories this version's archive-root shared sources take.
+  const rootSourceDirs = new Set(archiveRootSourceDirs(prepared.rootSources));
   for (const relDir of nestedRelDirs) {
     const first = relDir.split("/")[0];
     if (EXTENSION_ROOT_ENTRIES.has(first)) {
@@ -2145,6 +2247,14 @@ export async function applyInstall(
         `Cannot install ${ref.name}: the installed extension ` +
           `${ref.name}/${relDir} lives at ${first}/ inside its root, where ` +
           `${ref.name} keeps its own files. Run ` +
+          `\`swamp extension rm ${ref.name}/${relDir}\` first.`,
+      );
+    }
+    if (rootSourceDirs.has(first)) {
+      throw new UserError(
+        `Cannot install ${ref.name}: the installed extension ` +
+          `${ref.name}/${relDir} lives at ${first}/ inside its root, where ` +
+          `${ref.name} keeps its shared sources. Run ` +
           `\`swamp extension rm ${ref.name}/${relDir}\` first.`,
       );
     }
@@ -2234,6 +2344,22 @@ export async function applyInstall(
     await stage("webhooks", absoluteWebhooksDir);
     await stage("webhook-bundles", webhookBundlesDir);
     await stage("files", absoluteFilesDir);
+    // Shared sources push placed at the archive root go to the same path
+    // under the extension root, so the installed sources' relative
+    // imports resolve as they do in the archive (swamp-club#3384).
+    for (const source of prepared.rootSources) {
+      // The plan refuses `..`, hidden segments and backslashes; check the
+      // destination and source lexically as well before copying.
+      assertContainedPath(source, stagedExtRoot);
+      assertContainedPath(source, extractDir);
+      const segments = source.split("/");
+      const stagedPath = join(stagedExtRoot, ...segments);
+      await Deno.mkdir(dirname(stagedPath), { recursive: true });
+      await Deno.copyFile(join(extractDir, ...segments), stagedPath);
+      extractedFiles.push(
+        relative(repoDir, join(absoluteExtRoot, ...segments)),
+      );
+    }
 
     // Restore executable bits for declared binaries
     if (Deno.build.os !== "windows" && manifest.binaries.length > 0) {
@@ -2851,6 +2977,37 @@ async function copyTimes(src: string, dest: string): Promise<void> {
 }
 
 /** True when `path` is a directory itself, not a symlink to one. */
+/**
+ * Whether the installed extension `ancestor` keeps files at `first/` in
+ * its root, where an extension nested under it at `first` would be
+ * installed: archive-root shared sources (swamp-club#3384), which its
+ * lockfile entry lists. Without an entry only the tree can say: a
+ * directory there that is not an extension root (no manifest.yaml) and
+ * holds no other entry is the ancestor's.
+ */
+async function ancestorKeepsSourcesAt(
+  ancestor: string,
+  first: string,
+  ctx: InstallContext,
+): Promise<boolean> {
+  const dir = join(resolvePulledExtensionsRoot(ctx.repoDir), ancestor, first);
+  const entry = ctx.lockfileRepository.getEntry(ancestor);
+  if (entry) {
+    return claimsPath(entry.files ?? [], relative(ctx.repoDir, dir));
+  }
+  // Another entry rooted at or below `first/` accounts for the directory.
+  const nested = `${ancestor}/${first}`;
+  if (
+    Object.keys(ctx.lockfileRepository.getAllEntries()).some((name) =>
+      name === nested || name.startsWith(`${nested}/`)
+    )
+  ) {
+    return false;
+  }
+  return await isPlainDir(dir) &&
+    !await pathExistsNoFollow(join(dir, "manifest.yaml"));
+}
+
 async function isPlainDir(path: string): Promise<boolean> {
   try {
     const stat = await Deno.lstat(path);

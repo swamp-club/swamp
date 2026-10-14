@@ -30,6 +30,7 @@ import {
   notAuditedCount,
   parseCvssV3BaseScore,
   parseSpdxLicense,
+  resolveAuditVersion,
 } from "./extension_dependency_trust_checker.ts";
 
 // ── Pure function tests ─────────────────────────────────────────────────
@@ -502,7 +503,7 @@ Deno.test("checkDependencyTrust: npm down still blocks on a HIGH vulnerability O
   assertEquals(result.audited[0].cause, "not-audited");
 });
 
-Deno.test("checkDependencyTrust: npm down with no pinned version cannot query OSV", async () => {
+Deno.test("checkDependencyTrust: npm down with no version cannot query OSV", async () => {
   const calls: string[] = [];
   const result = await checkDependencyTrust(
     [npmSpec("some-pkg", null)],
@@ -515,10 +516,10 @@ Deno.test("checkDependencyTrust: npm down with no pinned version cannot query OS
 
   assertEquals(calls.some((u) => u.includes(OSV_URL)), false);
   const [summary] = result.audited;
-  assertEquals(summary.version, "unknown");
+  assertEquals(summary.version, "latest");
   assertEquals(
     summary.reason,
-    "npm registry lookup failed (HTTP 404); OSV not queried (no pinned version)",
+    "npm registry lookup failed (HTTP 404); OSV not queried (no resolvable version)",
   );
   assertEquals(summary.passed, false);
 });
@@ -601,4 +602,200 @@ Deno.test("checkDependencyTrust: empty specifiers passes", async () => {
   assertEquals(result.passed, true);
   assertEquals(result.errors.length, 0);
   assertEquals(result.warnings.length, 0);
+});
+
+// ── Audited version resolution ──────────────────────────────────────────
+// Vectors mirror swamp-club tests/domain/dependency_trust_test.ts, so push
+// and the registry scorecard ask OSV about the same version.
+
+const PUBLISHED = [
+  "3.9.0",
+  "4.17.0",
+  "4.18.2",
+  "4.21.1",
+  "5.0.0",
+  "5.1.0-rc.1",
+];
+const TAGS = { latest: "5.0.0", next: "5.1.0-rc.1" };
+
+Deno.test("resolveAuditVersion: an exact version is used as-is", () => {
+  assertEquals(resolveAuditVersion("4.18.2", PUBLISHED, TAGS), "4.18.2");
+});
+
+Deno.test("resolveAuditVersion: an exact version needs no npm data", () => {
+  assertEquals(resolveAuditVersion("1.0.0", [], {}), "1.0.0");
+});
+
+Deno.test("resolveAuditVersion: no version resolves to latest", () => {
+  assertEquals(resolveAuditVersion(null, PUBLISHED, TAGS), "5.0.0");
+});
+
+Deno.test("resolveAuditVersion: no version without npm data is unresolvable", () => {
+  assertEquals(resolveAuditVersion(null, [], {}), null);
+});
+
+Deno.test("resolveAuditVersion: a caret range resolves to the highest match", () => {
+  assertEquals(resolveAuditVersion("^4.18.0", PUBLISHED, TAGS), "4.21.1");
+});
+
+Deno.test("resolveAuditVersion: a tilde range resolves to the highest match", () => {
+  assertEquals(resolveAuditVersion("~4.18.0", PUBLISHED, TAGS), "4.18.2");
+});
+
+Deno.test("resolveAuditVersion: a bare major resolves within it", () => {
+  assertEquals(resolveAuditVersion("4", PUBLISHED, TAGS), "4.21.1");
+});
+
+Deno.test("resolveAuditVersion: a dist-tag resolves through dist-tags", () => {
+  assertEquals(resolveAuditVersion("next", PUBLISHED, TAGS), "5.1.0-rc.1");
+});
+
+Deno.test("resolveAuditVersion: a range nothing satisfies is unresolvable", () => {
+  assertEquals(resolveAuditVersion("^9.0.0", PUBLISHED, TAGS), null);
+});
+
+Deno.test("resolveAuditVersion: a range without npm data is unresolvable", () => {
+  assertEquals(resolveAuditVersion("^4.18.0", [], {}), null);
+});
+
+const RANGE_NPM_BODY = {
+  "dist-tags": { latest: "4.21.1" },
+  versions: {
+    "4.17.0": { license: "MIT", maintainers: [{ name: "a" }] },
+    "4.18.2": { license: "MIT", maintainers: [{ name: "a" }] },
+    "4.21.1": { license: "MIT", maintainers: [{ name: "a" }] },
+    "5.0.0-beta.1": { license: "MIT", maintainers: [{ name: "a" }] },
+  },
+  time: { "4.21.1": new Date().toISOString() },
+};
+
+/** Like `routedFetcher`, also recording each OSV request body. */
+function osvRecordingFetcher(
+  routes: Record<string, { status: number; body: unknown } | "throw">,
+  osvBodies: unknown[],
+): Fetcher {
+  const inner = routedFetcher(routes);
+  return (url: string | URL, init?: RequestInit) => {
+    if (url.toString().includes(OSV_URL)) {
+      osvBodies.push(JSON.parse(String(init?.body)));
+    }
+    return inner(url, init);
+  };
+}
+
+Deno.test("checkDependencyTrust: a range asks OSV about the highest published match", async () => {
+  const osvBodies: unknown[] = [];
+  const result = await checkDependencyTrust(
+    [npmSpec("express", "^4.18.0")],
+    osvRecordingFetcher({
+      [OSV_URL]: { status: 200, body: { vulns: [] } },
+      [NPM_URL]: { status: 200, body: RANGE_NPM_BODY },
+      [DOWNLOADS_URL]: { status: 200, body: { downloads: 50_000 } },
+    }, osvBodies),
+  );
+
+  assertEquals(osvBodies, [{
+    package: { name: "express", ecosystem: "npm" },
+    version: "4.21.1",
+  }]);
+  const [summary] = result.audited;
+  assertEquals(summary.version, "4.21.1");
+  assertEquals(summary.passed, true);
+  assertEquals(summary.cause, undefined);
+  assertEquals(notAuditedCount(result), 0);
+});
+
+Deno.test("checkDependencyTrust: a range nothing satisfies is not audited", async () => {
+  const osvBodies: unknown[] = [];
+  const result = await checkDependencyTrust(
+    [npmSpec("express", "^9.0.0")],
+    osvRecordingFetcher({
+      [OSV_URL]: { status: 200, body: { vulns: [] } },
+      [NPM_URL]: { status: 200, body: RANGE_NPM_BODY },
+      [DOWNLOADS_URL]: { status: 200, body: { downloads: 50_000 } },
+    }, osvBodies),
+  );
+
+  assertEquals(osvBodies, []);
+  assertEquals(result.warnings, [{
+    dependency: "express",
+    message:
+      "not audited: OSV not queried (no published version matches ^9.0.0)",
+    cause: "not-audited",
+  }]);
+  const [summary] = result.audited;
+  assertEquals(summary.version, "^9.0.0");
+  assertEquals(summary.passed, false);
+  assertEquals(summary.cause, "not-audited");
+  assertEquals(
+    summary.reason,
+    "OSV not queried (no published version matches ^9.0.0)",
+  );
+});
+
+Deno.test("checkDependencyTrust: npm down with a range cannot query OSV", async () => {
+  const osvBodies: unknown[] = [];
+  const result = await checkDependencyTrust(
+    [npmSpec("express", "^4.18.0")],
+    osvRecordingFetcher({
+      [OSV_URL]: { status: 200, body: { vulns: [] } },
+      [NPM_URL]: { status: 503, body: {} },
+      [DOWNLOADS_URL]: { status: 503, body: {} },
+    }, osvBodies),
+  );
+
+  assertEquals(osvBodies, []);
+  const [summary] = result.audited;
+  assertEquals(summary.version, "^4.18.0");
+  assertEquals(summary.passed, false);
+  assertEquals(
+    summary.reason,
+    "npm registry lookup failed (HTTP 503); OSV not queried (no resolvable version)",
+  );
+});
+
+Deno.test("checkDependencyTrust: no version and no latest tag is not audited", async () => {
+  const osvBodies: unknown[] = [];
+  const result = await checkDependencyTrust(
+    [npmSpec("express", null)],
+    osvRecordingFetcher({
+      [OSV_URL]: { status: 200, body: { vulns: [] } },
+      [NPM_URL]: {
+        status: 200,
+        body: { ...RANGE_NPM_BODY, "dist-tags": {} },
+      },
+      [DOWNLOADS_URL]: { status: 200, body: { downloads: 50_000 } },
+    }, osvBodies),
+  );
+
+  assertEquals(osvBodies, []);
+  const [summary] = result.audited;
+  assertEquals(summary.version, "latest");
+  assertEquals(
+    summary.reason,
+    "OSV not queried (no published version matches latest)",
+  );
+});
+
+Deno.test("checkDependencyTrust: a malformed packument leaves a range not audited", async () => {
+  const osvBodies: unknown[] = [];
+  const result = await checkDependencyTrust(
+    [npmSpec("express", "^4.18.0")],
+    osvRecordingFetcher({
+      [OSV_URL]: { status: 200, body: { vulns: [] } },
+      [NPM_URL]: {
+        status: 200,
+        body: { "dist-tags": { latest: 4 }, versions: "4.21.1" },
+      },
+      [DOWNLOADS_URL]: { status: 200, body: { downloads: 50_000 } },
+    }, osvBodies),
+  );
+
+  assertEquals(osvBodies, []);
+  const [summary] = result.audited;
+  assertEquals(summary.passed, false);
+  assertEquals(
+    summary.reason,
+    "OSV not queried (no published version matches ^4.18.0)",
+  );
 });

@@ -19,6 +19,7 @@
 
 import { relative, resolve, SEPARATOR } from "@std/path";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
+import { isPulledExtensionPath } from "./extension_precedence.ts";
 
 /**
  * The extension-catalog kinds this helper can query. Declared
@@ -161,28 +162,61 @@ export interface FreshnessScan {
 const UNREADABLE_PLACEHOLDER = "MISSING";
 
 /**
+ * Where {@link computeSourceFingerprint} finds the local modules a source
+ * was last bundled from. The extension catalog records them from the
+ * entry point's module graph each time it is bundled (swamp-club#3385).
+ */
+export interface SourceModuleLookup {
+  /**
+   * The local modules recorded for `sourcePath`, or `undefined` when none
+   * are recorded.
+   */
+  findSourceModules(sourcePath: string): readonly string[] | undefined;
+}
+
+/**
  * Computes a content-based fingerprint covering an entry point and every
- * local .ts file it transitively imports via relative paths.
+ * local module it was bundled from.
  *
- * The fingerprint is sha-256 over a sorted list of
- * `{relPath}:{sha256(content)}` entries — so it changes when either the
- * content of any dep changes, or when the dep set changes (rename, add,
- * remove). Non-local imports (npm/jsr/etc.) are excluded because
- * resolveLocalImports stops at the boundary dir, matching the bundler's
- * own dependency scope.
+ * The modules are the ones `modules` recorded for the entry point from its
+ * module graph, wherever they live and however they are imported. A
+ * source with no recorded modules falls back to the relative imports
+ * resolveLocalImports finds within `boundaryDir`, which is how pulled
+ * extensions, whose bundles ship pre-built, are fingerprinted.
  *
- * Unreadable deps produce a stable placeholder entry instead of
- * throwing, so a stable broken state yields a stable fingerprint (#208).
+ * A recorded list stays valid until the source changes: a relative import
+ * can only reach a new module if a recorded module's content changes or a
+ * recorded missing module appears, and either changes the fingerprint.
  */
 export async function computeSourceFingerprint(
   absolutePath: string,
   boundaryDir: string,
+  modules: SourceModuleLookup,
   cache?: FreshnessCache,
 ): Promise<string> {
-  const resolvedFiles = await resolveDeps(absolutePath, boundaryDir, cache);
+  const recorded = modules.findSourceModules(absolutePath);
+  const files = recorded
+    ? [absolutePath, ...recorded]
+    : await resolveDeps(absolutePath, boundaryDir, cache);
+  return await fingerprintSourceModules(files, boundaryDir, cache);
+}
 
+/**
+ * The sha-256 over a sorted list of `{relPath}:{sha256(content)}` entries,
+ * one per distinct file, with paths relative to `boundaryDir`. It changes
+ * when either the content of any file changes, or when the file set
+ * changes (rename, add, remove).
+ *
+ * Unreadable files produce a stable placeholder entry instead of
+ * throwing, so a stable broken state yields a stable fingerprint (#208).
+ */
+async function fingerprintSourceModules(
+  files: readonly string[],
+  boundaryDir: string,
+  cache?: FreshnessCache,
+): Promise<string> {
   const entries: string[] = [];
-  for (const file of resolvedFiles) {
+  for (const file of new Set(files)) {
     const relPath = relative(boundaryDir, file);
     let fileHash: string;
     try {
@@ -254,10 +288,12 @@ function toHex(buffer: ArrayBuffer): string {
  * Lets loaders pass their ExtensionCatalogStore without coupling this
  * module to every catalog method.
  */
-export interface FreshnessCatalog {
+export interface FreshnessCatalog extends SourceModuleLookup {
   findByKind(kind: FreshnessKind): FreshnessCatalogRow[];
   /** Deletes the row stored at exactly this (un-canonicalized) path. */
   removeByRawSourcePath(rawSourcePath: string): void;
+  /** Forgets the local modules recorded for `sourcePath`. */
+  deleteSourceModules(sourcePath: string): void;
 }
 
 export interface FindStaleFilesParams {
@@ -277,6 +313,12 @@ export interface FindStaleFilesParams {
    * (["report"], ["datastore"], etc.).
    */
   kinds: FreshnessKind[];
+  /**
+   * The repository root. When given, a local (non-pulled) source with no
+   * recorded modules is stale, so a bundle an earlier binary built is
+   * rebuilt once and its modules recorded (swamp-club#3385).
+   */
+  repoDir?: string;
 }
 
 /**
@@ -323,7 +365,8 @@ export async function findStaleFiles(
 export async function scanCatalogFreshness(
   params: FindStaleFilesParams,
 ): Promise<FreshnessScan> {
-  const { modelsDir, additionalDirs, catalog, discoverFiles, kinds } = params;
+  const { modelsDir, additionalDirs, catalog, discoverFiles, kinds, repoDir } =
+    params;
   const stale: StaleFile[] = [];
   const typeless: TypelessRow[] = [];
   const cache = createFreshnessCache();
@@ -362,9 +405,25 @@ export async function scanCatalogFreshness(
         const fingerprint = await computeSourceFingerprint(
           absolutePath,
           dir,
+          catalog,
           cache,
         );
         if (fingerprint !== catalogEntry.source_fingerprint) {
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+          continue;
+        }
+
+        // A fingerprint without recorded modules only covers the relative
+        // imports inside `dir`. Pulled sources keep it: they cannot
+        // rebundle locally.
+        if (
+          repoDir !== undefined &&
+          catalog.findSourceModules(absolutePath) === undefined &&
+          !isPulledExtensionPath(
+            normalizeFreshnessPath(absolutePath),
+            normalizeFreshnessPath(resolve(repoDir)),
+          )
+        ) {
           stale.push({ absolutePath, relativePath, baseDir: dir });
           continue;
         }
@@ -465,6 +524,7 @@ export function removeUnseenCatalogRows(
     if (seenSources.has(normalizeFreshnessPath(entry.source_path))) continue;
     if (CATALOG_FAILURE_STATES.has(entry.state ?? "Indexed")) continue;
     catalog.removeByRawSourcePath(entry.source_path);
+    catalog.deleteSourceModules(entry.source_path);
     removed.push(entry);
   }
   return removed;

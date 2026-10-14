@@ -93,6 +93,13 @@ const EXEMPT_COMMAND_PATHS = new Map<string, string>([
     "completions complete",
     "framework-provided completion-candidate emitter (shell-internal)",
   ],
+  // swamp's own PowerShell generator (Cliffy has none), the sibling of the
+  // three above: it emits PowerShell source for `Invoke-Expression`, so it
+  // cannot have a JSON mode either.
+  [
+    "completions powershell",
+    "shell completion script emitter (PowerShell source for Invoke-Expression)",
+  ],
 
   // Always emits JSON, in both modes, by design: it exists to hand the whole
   // CLI schema to AI agents. `--json` is a no-op rather than unsupported.

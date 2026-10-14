@@ -93,6 +93,7 @@ import {
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
+import { archiveEntryRefusal } from "../../domain/extensions/archive_root_sources.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { validateExtensionSkills } from "../../domain/extensions/extension_skill_validator.ts";
 import {
@@ -2144,6 +2145,30 @@ function modelsArchiveBase(
 }
 
 /**
+ * Refuses a source plan whose archive pull would refuse to install
+ * (swamp-club#3384): a shared module packed at a path pull's entry rules
+ * reject, such as a `deno.json` imported from one level above a kind's
+ * directory. Publishing it would ship a version nobody can pull.
+ */
+function assertPullInstallsSourcePlan(input: ExtensionPushPrepareInput): void {
+  for (const entry of input.sourcePlan.entries) {
+    const refusal = archiveEntryRefusal({
+      path: `extension/${entry.archivePath}`,
+      kind: "file",
+    });
+    if (refusal) {
+      throw validationFailed(
+        `Extension pull would refuse this archive: ${refusal.path} ` +
+          `${refusal.reason}. It is packed from ${entry.sourcePath}; move ` +
+          "or rename the module, or import it from inside the kind's " +
+          "directory.",
+        { archivePath: entry.archivePath, files: [entry.sourcePath] },
+      );
+    }
+  }
+}
+
+/**
  * Refuses two model sources or include files that would be packed at the
  * same `models/` path, one from the models directory and one from the
  * behaviors directory (swamp-club#3338): the archive can hold only one.
@@ -2821,6 +2846,7 @@ async function bundleAndArchive(
     : undefined;
 
   assertDistinctModelArchivePaths(input);
+  assertPullInstallsSourcePlan(input);
 
   const bundles = new Map<string, string>();
   const compilationErrors: CompilationError[] = [];

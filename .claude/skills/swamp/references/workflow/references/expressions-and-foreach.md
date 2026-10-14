@@ -309,7 +309,10 @@ schema, enabling dynamic configuration at workflow runtime.
 Behavior inputs can contain CEL expressions using `${{ <expression> }}` syntax.
 To keep another service's template text literal in the same value, pass it
 through with `literal()`:
-`${{ inputs.env }} alert on ${{ literal('{{host.name}}') }}`.
+`${{ inputs.env }} alert on ${{ literal('{{host.name}}') }}`. `literal()` also
+carries vendor text that looks like a swamp expression, such as GitHub Actions
+`${{ literal('${{ inputs.version }}') }}`, through a step's `inputs` unchanged
+and without warnings.
 
 ### Environment Variables
 
