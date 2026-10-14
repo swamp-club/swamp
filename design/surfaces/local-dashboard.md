@@ -168,7 +168,8 @@ a tab stays open.
 - The start page keeps its own one-time token, as in [start](./start.md).
 - `swamp dashboard` serves no start page: `/`, `/dashboard/start` and the
   `/start/ws` socket answer 404, so its token reaches only the hub routes and
-  can never add, create or open a `swamp start` workspace.
+  the `/start/ping` liveness check, and can never add, create or open a
+  `swamp start` workspace.
 
 ## Where the code lives
 
