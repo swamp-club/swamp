@@ -1351,6 +1351,68 @@ Deno.test("findSummariesByStatus: rebuilds stale index", async () => {
   });
 });
 
+Deno.test("findSummariesByStatus: an aborted signal stops a rebuild before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await saveRunningRuns(repo, workflow, 3);
+    // An index of another schema version: the next read rebuilds it whole.
+    const stale = JSON.stringify({ version: 0, entries: {} });
+    await Deno.writeTextFile(getIndexPath(indexDir), stale);
+
+    // Aborted while the rebuild reads its first record.
+    const abort = new AbortController();
+    const original = Deno.readTextFile;
+    let recordReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) {
+        recordReads++;
+        abort.abort(new DOMException("shutting down", "AbortError"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () =>
+          repo.findSummariesByStatus(workflow.id, "suspended", abort.signal),
+        DOMException,
+        "shutting down",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+    // It stopped before the next record, and wrote nothing.
+    assertEquals(recordReads, 1);
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), stale);
+
+    // Without the signal the same read rebuilds it.
+    assertEquals(
+      (await repo.findSummariesByStatus(workflow.id, "running")).length,
+      3,
+    );
+  });
+});
+
+Deno.test("findSummariesByStatus: an aborted signal stops a repair before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [, unlisted] = await saveRunningRuns(repo, workflow, 2);
+    await dropIndexEntries(indexDir, [unlisted.id]);
+    const before = await Deno.readTextFile(getIndexPath(indexDir));
+
+    const abort = new AbortController();
+    abort.abort(new DOMException("shutting down", "AbortError"));
+    await assertRejects(
+      () => repo.findSummariesByStatus(workflow.id, "running", abort.signal),
+      DOMException,
+    );
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), before);
+  });
+});
+
 Deno.test("index: corrupt JSON triggers rebuild on read", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
