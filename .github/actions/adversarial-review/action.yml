@@ -189,13 +189,23 @@ runs:
 
           If there are NO critical or high severity findings:
           ```
-          gh pr review ${{ github.event.pull_request.number }} --comment --body "your review here"
+          gh pr review ${{ github.event.pull_request.number }} --comment --body-file - <<'EOF'
+          ## Adversarial Review
+          ...the rest of your review...
+          EOF
           ```
 
           If there ARE critical or high severity findings:
           ```
-          gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+          gh pr review ${{ github.event.pull_request.number }} --request-changes --body-file - <<'EOF'
+          ## Adversarial Review
+          ...the rest of your review...
+          EOF
           ```
+
+          Pass the body on stdin through the quoted heredoc exactly as shown. Do not put the
+          body in a quoted --body argument and do not swap the # headings for bold text: a
+          quoted argument with a line starting with # is refused, and no one can approve it in CI.
 
           Format your review body as:
           ## Adversarial Review
@@ -219,11 +229,19 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
+        # Only the review for the commit under review counts; a review on an
+        # older commit must never decide this one (swamp-club#3425).
         latest_state=$(gh pr view ${{ github.event.pull_request.number }} \
           --json reviews \
-          --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Adversarial Review")))] | last | .state')
-        if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
-          echo "::error::Adversarial review requested changes — blocking merge"
-          exit 1
-        fi
+          --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(#+ |\\*\\*)?Adversarial Review")) and .commit.oid == env.HEAD_SHA)] | last | .state // ""')
+        case "$latest_state" in
+          APPROVED|COMMENTED) ;;
+          CHANGES_REQUESTED)
+            echo "::error::Adversarial review requested changes — blocking merge"
+            exit 1 ;;
+          *)
+            echo "::error::No adversarial review was posted for $HEAD_SHA — blocking merge"
+            exit 1 ;;
+        esac

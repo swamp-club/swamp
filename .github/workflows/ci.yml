@@ -32,6 +32,9 @@ jobs:
               - 'src/worker/**'
             ci:
               - '.github/workflows/**'
+              # Local composite actions, e.g. the adversarial review's prompt
+              # and gate, are CI configuration too.
+              - '.github/actions/**'
             trust_root:
               - 'CLAUDE.md'
               - 'AGENTS.md'
@@ -83,19 +86,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          review_state=$(gh pr view ${{ github.event.pull_request.number }} \
+          # State and commit come from the same review, matched with or
+          # without markdown emphasis on the heading (swamp-club#3425).
+          review=$(gh pr view ${{ github.event.pull_request.number }} \
             --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?CI Security Review")))] | last | .state')
+            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(#+ |\\*\\*)?CI Security Review")))] | last | "\(.state // "") \(.commit.oid // "")"')
+          read -r review_state approved_sha <<< "$review"
           if [ "$review_state" != "APPROVED" ] && [ "$review_state" != "COMMENTED" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          approved_sha=$(gh pr view ${{ github.event.pull_request.number }} \
-            --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?CI Security Review")))] | last | .commit.oid')
           head_sha="${{ github.event.pull_request.head.sha }}"
           domain_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^\\.github/workflows/"))] | length' 2>/dev/null) || domain_changes=1
+            --jq '[.files[].filename | select(test("^\\.github/(workflows|actions)/"))] | length' 2>/dev/null) || domain_changes=1
           if [ "$domain_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -122,8 +125,9 @@ jobs:
             that could allow attackers to compromise the CI pipeline, exfiltrate secrets, or
             manipulate automated processes.
 
-            First, read every changed workflow file in this PR thoroughly. Then review each
-            file against the following checklist.
+            First, read every changed workflow file (.github/workflows/) and local composite
+            action (.github/actions/) in this PR thoroughly. Then review each file against the
+            following checklist.
 
             ## 1. Prompt Injection
 
@@ -217,13 +221,23 @@ jobs:
 
             If there are NO critical or high severity findings:
             ```
-            gh pr review ${{ github.event.pull_request.number }} --approve --body "your review here"
+            gh pr review ${{ github.event.pull_request.number }} --approve --body-file - <<'EOF'
+            ## CI Security Review
+            ...the rest of your review...
+            EOF
             ```
 
             If there ARE critical or high severity findings:
             ```
-            gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+            gh pr review ${{ github.event.pull_request.number }} --request-changes --body-file - <<'EOF'
+            ## CI Security Review
+            ...the rest of your review...
+            EOF
             ```
+
+            Pass the body on stdin through the quoted heredoc exactly as shown. Do not put the
+            body in a quoted --body argument and do not swap the # headings for bold text: a
+            quoted argument with a line starting with # is refused, and no one can approve it in CI.
 
             Format your review body as:
             ## CI Security Review
@@ -248,14 +262,22 @@ jobs:
         if: steps.check-review.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Only the review for the commit under review counts; a review on an
+          # older commit must never decide this one (swamp-club#3425).
           latest_state=$(gh pr view ${{ github.event.pull_request.number }} \
             --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?CI Security Review")))] | last | .state')
-          if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
-            echo "::error::CI security review requested changes — blocking merge"
-            exit 1
-          fi
+            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(#+ |\\*\\*)?CI Security Review")) and .commit.oid == env.HEAD_SHA)] | last | .state // ""')
+          case "$latest_state" in
+            APPROVED|COMMENTED) ;;
+            CHANGES_REQUESTED)
+              echo "::error::CI security review requested changes — blocking merge"
+              exit 1 ;;
+            *)
+              echo "::error::No CI security review was posted for $HEAD_SHA — blocking merge"
+              exit 1 ;;
+          esac
 
   claude-adversarial-review:
     name: Adversarial Code Review
@@ -281,16 +303,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          review_state=$(gh pr view ${{ github.event.pull_request.number }} \
+          # State and commit come from the same review, matched with or
+          # without markdown emphasis on the heading (swamp-club#3425).
+          review=$(gh pr view ${{ github.event.pull_request.number }} \
             --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Adversarial Review")))] | last | .state')
+            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(#+ |\\*\\*)?Adversarial Review")))] | last | "\(.state // "") \(.commit.oid // "")"')
+          read -r review_state approved_sha <<< "$review"
           if [ "$review_state" != "APPROVED" ] && [ "$review_state" != "COMMENTED" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          approved_sha=$(gh pr view ${{ github.event.pull_request.number }} \
-            --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Adversarial Review")))] | last | .commit.oid')
           head_sha="${{ github.event.pull_request.head.sha }}"
           domain_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
             --jq '[.files[].filename | select(test("^src/(domain|infrastructure|libswamp|serve|worker)/"))] | length' 2>/dev/null) || domain_changes=1
@@ -331,16 +353,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          review_state=$(gh pr view ${{ github.event.pull_request.number }} \
+          # State and commit come from the same review, matched with or
+          # without markdown emphasis on the heading (swamp-club#3425).
+          review=$(gh pr view ${{ github.event.pull_request.number }} \
             --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Review Integrity")))] | last | .state')
+            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(#+ |\\*\\*)?Review Integrity")))] | last | "\(.state // "") \(.commit.oid // "")"')
+          read -r review_state approved_sha <<< "$review"
           if [ "$review_state" != "APPROVED" ] && [ "$review_state" != "COMMENTED" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          approved_sha=$(gh pr view ${{ github.event.pull_request.number }} \
-            --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Review Integrity")))] | last | .commit.oid')
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
             --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
@@ -447,13 +469,23 @@ jobs:
 
             If there are NO critical or high severity findings:
             ```
-            gh pr review ${{ github.event.pull_request.number }} --approve --body "your review here"
+            gh pr review ${{ github.event.pull_request.number }} --approve --body-file - <<'EOF'
+            ## Review Integrity
+            ...the rest of your review...
+            EOF
             ```
 
             If there ARE critical or high severity findings:
             ```
-            gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+            gh pr review ${{ github.event.pull_request.number }} --request-changes --body-file - <<'EOF'
+            ## Review Integrity
+            ...the rest of your review...
+            EOF
             ```
+
+            Pass the body on stdin through the quoted heredoc exactly as shown. Do not put the
+            body in a quoted --body argument and do not swap the # headings for bold text: a
+            quoted argument with a line starting with # is refused, and no one can approve it in CI.
 
             Format your review body as:
             ## Review Integrity
@@ -479,14 +511,22 @@ jobs:
         if: steps.check-review.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Only the review for the commit under review counts; a review on an
+          # older commit must never decide this one (swamp-club#3425).
           latest_state=$(gh pr view ${{ github.event.pull_request.number }} \
             --json reviews \
-            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(## )?Review Integrity")))] | last | .state')
-          if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
-            echo "::error::Review integrity check requested changes — blocking merge"
-            exit 1
-          fi
+            --jq '[.reviews[] | select(.author.login == "github-actions" and ((.body // "") | test("^(#+ |\\*\\*)?Review Integrity")) and .commit.oid == env.HEAD_SHA)] | last | .state // ""')
+          case "$latest_state" in
+            APPROVED|COMMENTED) ;;
+            CHANGES_REQUESTED)
+              echo "::error::Review integrity check requested changes — blocking merge"
+              exit 1 ;;
+            *)
+              echo "::error::No review integrity check was posted for $HEAD_SHA — blocking merge"
+              exit 1 ;;
+          esac
 
   validate-attestation:
     name: Validate Attestation
