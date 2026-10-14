@@ -19,6 +19,7 @@
 
 import { assertEquals, assertInstanceOf, assertThrows } from "@std/assert";
 import { gunzipSync } from "node:zlib";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
@@ -56,6 +57,7 @@ import {
   removeConnection,
   resolveConnectionCompression,
   resolveDisplayPrincipal,
+  sanitizeErrorForClient,
   send,
   setConnectionCollectives,
   setConnectionCompression,
@@ -1817,4 +1819,83 @@ Deno.test("isAuthorizedForAll: any deny that applies to the kind refuses, whatev
     true,
   );
   assertEquals(frames, []);
+});
+
+// ── sanitizeErrorForClient logging (swamp-club#3465) ───────────────────────
+
+async function captureWithheldErrors(fn: () => void): Promise<LogRecord[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "error"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    fn();
+  } finally {
+    await reset();
+  }
+  return records;
+}
+
+for (
+  const [label, message] of [
+    ["an absolute Unix path", "deno bundle failed for /tmp/abc/m.ts"],
+    ["a .swamp path", "cannot read repo/.swamp/data/x/raw"],
+    ["a Windows path", "cannot open C:\\Users\\me\\m.ts"],
+  ]
+) {
+  Deno.test(`sanitizeErrorForClient: logs the original message it withholds for ${label}`, async () => {
+    let result = "";
+    const records = await captureWithheldErrors(() => {
+      result = sanitizeErrorForClient(new Error(message));
+    });
+
+    assertEquals(result, "An internal error occurred");
+    assertEquals(records.length, 1);
+    assertEquals(records[0].level, "warning");
+    assertEquals(records[0].properties.message, message);
+    assertEquals(records[0].properties.type, "Error");
+  });
+}
+
+Deno.test("sanitizeErrorForClient: logs the class name of a withheld custom error", async () => {
+  class PermissionDenied extends Error {}
+  const records = await captureWithheldErrors(() => {
+    sanitizeErrorForClient(
+      new PermissionDenied("Permission denied: readfile '/tmp/x/raw'"),
+    );
+  });
+
+  assertEquals(records.length, 1);
+  assertEquals(records[0].properties.type, "PermissionDenied");
+});
+
+Deno.test("sanitizeErrorForClient: logs a withheld non-Error value with its typeof", async () => {
+  const records = await captureWithheldErrors(() => {
+    sanitizeErrorForClient("failed at /home/user/file");
+  });
+
+  assertEquals(records.length, 1);
+  assertEquals(records[0].properties.type, "string");
+  assertEquals(records[0].properties.message, "failed at /home/user/file");
+});
+
+Deno.test("sanitizeErrorForClient: logs nothing for a message the client receives", async () => {
+  const long = "x".repeat(600);
+  let truncated = "";
+  const records = await captureWithheldErrors(() => {
+    sanitizeErrorForClient(new Error("Model not found: my-model"));
+    truncated = sanitizeErrorForClient(new Error(long));
+  });
+
+  assertEquals(truncated, "x".repeat(512) + "...");
+  assertEquals(records, []);
 });
