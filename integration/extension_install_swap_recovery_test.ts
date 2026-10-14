@@ -43,6 +43,7 @@ import {
   installExtension,
 } from "../src/libswamp/extensions/pull.ts";
 import { recoverPulledExtensionStaging } from "../src/libswamp/extensions/recover_staging.ts";
+import { emptyTreeIndexer } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 // swamp-club#2723: an extension install stages the new version and swaps
 // it in, with a journal that makes a crash at any point recoverable.
@@ -126,6 +127,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         force,
         alreadyPulled: new Set(),
         depth: 0,
+        indexExtensionTree: emptyTreeIndexer,
       };
       return installExtension({ name, version }, ctx);
     };

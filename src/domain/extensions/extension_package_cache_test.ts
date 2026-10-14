@@ -27,6 +27,7 @@ import {
   defaultPackageCacheRoot,
   ExtensionPackageCache,
   type PackageCacheHashInput,
+  parseStoredArchiveIndex,
 } from "./extension_package_cache.ts";
 
 function makeManifest(
@@ -439,5 +440,31 @@ Deno.test("computePackageCacheHash: the quality.yaml sidecar beside the manifest
     assertNotEquals(withSidecar, changed);
   } finally {
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("parseStoredArchiveIndex: keeps a well-formed index and drops any other value (swamp-club#3456)", () => {
+  const good = {
+    sources: [{
+      kindDir: "models",
+      fileName: "a.ts",
+      kind: "model",
+      typeNormalized: "@acme/a",
+    }],
+    failures: [{ kindDir: "models", fileName: "b.ts", reason: "boom" }],
+  };
+  assertEquals(parseStoredArchiveIndex(good), good);
+  for (
+    const bad of [
+      undefined,
+      null,
+      "index",
+      { sources: [] },
+      { sources: "x", failures: [] },
+      { sources: [{ kindDir: "models", fileName: "a.ts" }], failures: [] },
+      { sources: [], failures: [{ kindDir: "models", fileName: 1 }] },
+    ]
+  ) {
+    assertEquals(parseStoredArchiveIndex(bad), undefined, JSON.stringify(bad));
   }
 });

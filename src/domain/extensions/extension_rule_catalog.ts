@@ -172,6 +172,17 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       'Write type and version as string literals directly in an unannotated export const model = { ... } object, repeating both after a spread of a shared factory\'s result (e.g. { ...definition, type: "@acme/thing", version: "2026.09.25.1" }). Check the shape with satisfies after the object instead of a type annotation.',
   },
+  // Not acceptable: a source whose type push could neither read nor load
+  // has an unchecked collective, and one that does not load on push will
+  // not load for consumers either (swamp-club#3456).
+  {
+    id: "unverified-collective",
+    severity: "warning",
+    scope: "file",
+    acceptable: false,
+    remediation:
+      "Make the source load on its own: fix the import or top-level error the warning names, so push can read the type it registers. Or write its type as a string literal in the export object.",
+  },
   // Acceptable: the behavior spelling is the new product term, and an
   // author who only targets current releases may acknowledge that older
   // clients and workers cannot load the extension (swamp-club#3338).

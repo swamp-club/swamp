@@ -274,7 +274,12 @@ export async function* extensionQuality(
             dryRun: true,
             registryChecks: "skip",
             localGates: "collect",
-            ...(cached ? { cachedArchive: cached.archiveBytes } : {}),
+            ...(cached
+              ? {
+                cachedArchive: cached.archiveBytes,
+                cachedArchiveIndex: cached.metadata.archiveIndex,
+              }
+              : {}),
           },
         );
       } catch (error) {
@@ -296,6 +301,7 @@ export async function* extensionQuality(
           extensionName: input.prepareInput.manifest.name,
           extensionVersion: input.prepareInput.manifest.version,
           rubricVersion: RUBRIC_VERSION,
+          archiveIndex: prepared.archiveIndex,
         });
         ctx.logger.debug`Cache put: ${archiveBytes.length} bytes at ${hash}`;
       }

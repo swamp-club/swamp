@@ -50,6 +50,10 @@ import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_ada
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
 import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
+import {
+  collectExtensionTsFiles,
+  type ExtensionTreeIndex,
+} from "./extension_tree_index.ts";
 
 /** Subdirectories of a per-extension subtree, paired with their kind. */
 const KIND_DIRS = [
@@ -160,7 +164,8 @@ export class InstallExtensionService {
     // install or removal on this checkout (swamp-club#2709). Deps recurse
     // inside apply, land in the same section, and are part of `pending`.
     return await this.installExtensionFn(ref, ctx, {
-      underLock: (pending) => this.indexInstalled(ref, pending, ctx),
+      underLock: (pending, indexed) =>
+        this.indexInstalled(ref, pending, ctx, indexed),
     });
   }
 
@@ -175,6 +180,7 @@ export class InstallExtensionService {
     ref: ExtensionRef,
     pending: PendingInstall,
     ctx: InstallContext,
+    indexed: ReadonlyMap<string, ExtensionTreeIndex> | undefined,
   ): Promise<void> {
     const result = pending.result;
     // Phase 8: build Extension aggregates for top-level + each freshly-
@@ -202,7 +208,7 @@ export class InstallExtensionService {
         // running (swamp-club#3374).
         const settled = await Promise.allSettled(
           installedResults.map((r) =>
-            this.buildExtensionFromDisk(r, ctx.repoDir)
+            this.buildExtensionFromDisk(r, ctx.repoDir, indexed?.get(r.name))
           ),
         );
         newExtensions = settled.map((outcome) => {
@@ -276,13 +282,50 @@ export class InstallExtensionService {
   private async buildExtensionFromDisk(
     result: InstallResult,
     repoDir: string,
-    pulledExtensionsRoot?: string,
+    checked?: ExtensionTreeIndex,
   ): Promise<Extension> {
     const absoluteRepoDir = resolvePath(repoDir);
-    const effectivePulledRoot = pulledExtensionsRoot ??
-      resolvePulledExtensionsRoot(absoluteRepoDir);
-    const extRoot = join(effectivePulledRoot, result.name);
+    const extRoot = join(
+      resolvePulledExtensionsRoot(absoluteRepoDir),
+      result.name,
+    );
     const sources: ReturnType<typeof makeSource>[] = [];
+
+    // Install's collective check has already loaded every source the way
+    // this pass would; reuse it, but only when it covered exactly the files
+    // this pass indexes, so the catalog never records less than a full pass.
+    if (checked && await coversExtensionTree(checked, extRoot)) {
+      if (checked.failures.length > 0) {
+        throw new Error(checked.failures[0].reason);
+      }
+      for (const { absolutePath, indexed } of checked.sources) {
+        if (!indexed) continue;
+        const stat = await Deno.stat(absolutePath);
+        sources.push(
+          makeSource({
+            id: makeSourceLocation(absolutePath, extRoot),
+            kind: indexed.kind,
+            fingerprint: indexed.fingerprint,
+            state: {
+              tag: "Indexed",
+              type: indexed.typeNormalized,
+              bundle: makeBundleLocation(
+                indexed.bundlePath,
+                indexed.fingerprint,
+              ),
+            },
+            sourceMtime: stat.mtime?.toISOString() ?? "",
+          }),
+        );
+      }
+      return makeExtension({
+        name: result.name,
+        version: result.version,
+        origin: "pulled",
+        extensionRoot: extRoot,
+        sources,
+      });
+    }
 
     for (const kindDir of KIND_DIRS) {
       const dir = join(extRoot, kindDir);
@@ -399,6 +442,28 @@ export class InstallExtensionService {
         );
     }
   }
+}
+
+/**
+ * Whether `index` holds every `.ts` file this service would index under
+ * `extRoot`, and no other, so its results can stand in for a full pass.
+ */
+async function coversExtensionTree(
+  index: ExtensionTreeIndex,
+  extRoot: string,
+): Promise<boolean> {
+  const expected: string[] = [];
+  for (const kindDir of KIND_DIRS) {
+    for (const file of await collectExtensionTsFiles(join(extRoot, kindDir))) {
+      expected.push(file);
+    }
+  }
+  const covered = new Set([
+    ...index.sources.map((s) => s.absolutePath),
+    ...index.failures.map((f) => f.absolutePath),
+  ]);
+  return covered.size === expected.length &&
+    expected.every((file) => covered.has(file));
 }
 
 /**

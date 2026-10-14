@@ -39,6 +39,7 @@ import {
 } from "../src/libswamp/extensions/push.ts";
 import { RUBRIC_VERSION } from "../src/domain/extensions/extension_rubric_scorer.ts";
 import { kindDirectorySourcePlan } from "../src/libswamp/extensions/push_test_helpers.ts";
+import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const selections: Array<{
   name: string;
@@ -193,6 +194,7 @@ for (
           }),
         checkReviewRules: () =>
           Promise.resolve({ errors: [], warnings: [], passed: true }),
+        indexArchive: emptyArchiveIndex,
         bundleEntryPoint: () => {
           bundles++;
           return Promise.resolve("export const model = {};\n");

@@ -77,6 +77,7 @@ import {
   renderAutoResolveSearching,
   renderAutoResolveTruncated,
 } from "../presentation/renderers/extension_auto_resolve.ts";
+import { createExtensionTreeIndexer } from "../libswamp/extensions/extension_tree_index.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
@@ -304,6 +305,10 @@ export function createAutoResolveInstallerAdapter(
           force,
           alreadyPulled: new Set<string>(teamInstalled),
           depth: 0,
+          indexExtensionTree: createExtensionTreeIndexer({
+            denoRuntime,
+            repoDir,
+          }),
           ...(pinnedEntry?.checksum
             ? { expectedChecksum: pinnedEntry.checksum }
             : {}),

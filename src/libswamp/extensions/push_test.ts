@@ -45,6 +45,11 @@ import type { ReviewFinding } from "../../domain/extensions/extension_review_rul
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 import { listTarGzEntries } from "../../infrastructure/archive/tar_archive.ts";
 import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
+import { emptyArchiveIndex } from "./extension_tree_index_test_helpers.ts";
+import type {
+  ExtensionKindDir,
+  ExtensionTreeIndex,
+} from "./extension_tree_index.ts";
 
 function makeManifest(
   overrides?: Partial<ExtensionManifest>,
@@ -114,6 +119,7 @@ function makePrepareDeps(
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
+    indexArchive: emptyArchiveIndex,
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getDenoEnv: () => Deno.env.toObject(),
@@ -3055,4 +3061,345 @@ Deno.test("extensionPushPrepare: an invalid or non-SPDX license warns and never 
       assertEquals(result.resolvedData.license, license);
     });
   }
+});
+
+/** An archive index whose sources load as `loaded` and fail as `failed`. */
+function archiveIndex(
+  loaded: Array<
+    {
+      fileName: string;
+      type: string;
+      kind?: "model" | "extension" | "vault";
+      kindDir?: ExtensionKindDir;
+    }
+  >,
+  failed: Array<{ fileName: string; reason: string }> = [],
+): () => Promise<ExtensionTreeIndex> {
+  return () =>
+    Promise.resolve({
+      sources: loaded.map((s) => ({
+        kindDir: s.kindDir ?? "models",
+        absolutePath: `/archive/models/${s.fileName}`,
+        fileName: s.fileName,
+        indexed: {
+          kind: s.kind ?? "model",
+          typeNormalized: s.type,
+          bundlePath: "",
+          fingerprint: "f",
+          fromCache: false,
+        },
+      })),
+      failures: failed.map((f) => ({
+        kindDir: "models" as const,
+        absolutePath: `/archive/models/${f.fileName}`,
+        fileName: f.fileName,
+        reason: f.reason,
+      })),
+    });
+}
+
+const CONSTANT_TYPE_SOURCE = 'const TYPE = "@testuser/thing";\n' +
+  'export const model = {\n  type: TYPE,\n  version: "2026.09.25.1",\n};\n';
+
+Deno.test("extensionPushPrepare: a model whose type is not a literal shows the type it registers when loaded, not its path (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": CONSTANT_TYPE_SOURCE,
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        indexArchive: archiveIndex([{
+          fileName: "a.ts",
+          type: "@testuser/thing",
+        }]),
+      }),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(result.resolvedData.models[0].type, "@testuser/thing");
+    assertEquals(result.gateFailures, []);
+  });
+});
+
+Deno.test("extensionPushPrepare: a model whose type is neither readable nor loadable has no type, not its path (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": CONSTANT_TYPE_SOURCE,
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        indexArchive: archiveIndex([], [{
+          fileName: "a.ts",
+          reason: "Module not found\nat line 1",
+        }]),
+      }),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(result.resolvedData.models[0].type, undefined);
+    assertEquals(
+      result.resolvedData.models[0].fileName.endsWith("a.ts"),
+      true,
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a loaded type outside the collective blocks a push even when the source writes no literal type (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": CONSTANT_TYPE_SOURCE,
+  }, async (dir, paths) => {
+    const error = await assertRejects(
+      () =>
+        extensionPushPrepare(
+          ctx,
+          makePrepareDeps({
+            indexArchive: archiveIndex([{
+              fileName: "a.ts",
+              type: "@swamp/aws-ec2",
+            }]),
+          }),
+          {
+            ...acceptanceInput(dir, [paths["models/a.ts"]]),
+            localGates: undefined,
+          },
+        ),
+    ) as SwampError;
+    assertStringIncludes(error.message, "don't match the extension package");
+    assertEquals(error.details, {
+      expectedCollective: "@testuser/",
+      mismatches: [{
+        kind: "model",
+        identifier: "@swamp/aws-ec2",
+        fileName: "a.ts",
+      }],
+    });
+  });
+});
+
+Deno.test("extensionPushPrepare: a helper file that registers a foreign type is a collective mismatch (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": CONSTANT_TYPE_SOURCE,
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        indexArchive: archiveIndex([
+          { fileName: "a.ts", type: "@testuser/thing" },
+          { fileName: "lib/helper.ts", type: "@swamp/aws-ec2" },
+          // An extension source adds methods to another type; it registers
+          // none of its own, so it is not checked.
+          { fileName: "ext.ts", type: "@swamp/aws-s3", kind: "extension" },
+        ]),
+      }),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"]]),
+        localGates: "collect",
+      },
+    );
+    assertEquals(result.gateFailures.map((f) => f.gate), [
+      "content-collectives",
+    ]);
+    assertEquals(
+      (result.gateFailures[0].details as {
+        mismatches: Array<{ fileName: string }>;
+      }).mismatches.map((m) => m.fileName),
+      ["lib/helper.ts"],
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a file the static check already reported is listed once, beside a mismatch only loading finds (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": 'export const model = { type: "@other/x" };\n',
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractContentMetadata: () =>
+          Promise.resolve({
+            models: [{
+              fileName: "a.ts",
+              type: "@other/x",
+              version: "2026.09.25.1",
+              globalArguments: [],
+              methods: [],
+              resources: [],
+              files: [],
+            }],
+            extensions: [],
+            workflows: [],
+            vaults: [],
+            datastores: [],
+            reports: [],
+            webhooks: [],
+            skills: [],
+          }),
+        indexArchive: archiveIndex([
+          { fileName: "a.ts", type: "@other/x" },
+          { fileName: "b.ts", type: "@evil/y" },
+        ]),
+      }),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"]]),
+        localGates: "collect",
+      },
+    );
+    const collectives = result.gateFailures.filter((f) =>
+      f.gate === "content-collectives"
+    );
+    assertEquals(collectives.length, 1);
+    assertEquals(
+      (collectives[0].details as {
+        mismatches: Array<{ fileName: string; identifier: string }>;
+      }).mismatches.map((m) => [m.fileName, m.identifier]),
+      [["a.ts", "@other/x"], ["b.ts", "@evil/y"]],
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a literal type in the collective still fails when the loaded type is outside it (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": SPREAD_MODEL_SOURCE,
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        indexArchive: archiveIndex([{ fileName: "a.ts", type: "@evil/y" }]),
+      }),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"]]),
+        localGates: "collect",
+      },
+    );
+    assertEquals(result.gateFailures.map((f) => f.gate), [
+      "content-collectives",
+    ]);
+  });
+});
+
+Deno.test("extensionPushPrepare: a source that neither reads nor loads gets an unverified-collective warning; one that reads does not (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": CONSTANT_TYPE_SOURCE,
+    "models/b.ts": 'export const model = { type: "@testuser/b" };\n',
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractContentMetadata: () =>
+          Promise.resolve({
+            models: [{
+              fileName: "b.ts",
+              type: "@testuser/b",
+              version: "2026.09.25.1",
+              globalArguments: [],
+              methods: [],
+              resources: [],
+              files: [],
+            }],
+            extensions: [],
+            workflows: [],
+            vaults: [],
+            datastores: [],
+            reports: [],
+            webhooks: [],
+            skills: [],
+          }),
+        indexArchive: archiveIndex([], [
+          { fileName: "a.ts", reason: "Uncaught Error: boom\n    at x" },
+          { fileName: "b.ts", reason: "Uncaught Error: boom" },
+        ]),
+      }),
+      acceptanceInput(dir, [paths["models/a.ts"], paths["models/b.ts"]]),
+    );
+    const unverified = result.reviewRulesResult.warnings.filter((w) =>
+      w.ruleId === "unverified-collective"
+    );
+    assertEquals(unverified.map((w) => w.file), [paths["models/a.ts"]]);
+    assertStringIncludes(unverified[0].message, "(Uncaught Error: boom)");
+    assertEquals(result.gateFailures, []);
+  });
+});
+
+Deno.test("extensionPushPrepare: when the archive cannot be indexed the push goes on, warning for each source without a literal type (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": CONSTANT_TYPE_SOURCE,
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        indexArchive: () => Promise.reject(new Error("over the limit")),
+      }),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(
+      result.reviewRulesResult.warnings
+        .filter((w) => w.ruleId === "unverified-collective")
+        .map((w) => w.file),
+      [paths["models/a.ts"]],
+    );
+    assertEquals(result.resolvedData.models[0].type, undefined);
+  });
+});
+
+Deno.test("extensionPushPrepare: an extension source shows the type it extends, not its path (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/ext.ts": 'export const extension = { type: "@other/base" };\n',
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractContentMetadata: () =>
+          Promise.resolve({
+            models: [],
+            extensions: [{
+              fileName: "ext.ts",
+              extendsType: "@other/base",
+              methods: [],
+              resources: [],
+            }],
+            workflows: [],
+            vaults: [],
+            datastores: [],
+            reports: [],
+            webhooks: [],
+            skills: [],
+          }),
+      }),
+      acceptanceInput(dir, [paths["models/ext.ts"]]),
+    );
+    assertEquals(result.resolvedData.models[0].type, "@other/base");
+    assertEquals(result.gateFailures, []);
+  });
+});
+
+Deno.test("extensionPushPrepare: bundles that finish out of order are packed in entry point order (swamp-club#3456)", async () => {
+  const names = ["a", "b", "c", "d", "e", "f"];
+  await withAcceptanceFixture(
+    Object.fromEntries(
+      names.map((n) => [`models/${n}.ts`, `export const ${n} = 1;\n`]),
+    ),
+    async (dir, paths) => {
+      const entryPoints = names.map((n) => paths[`models/${n}.ts`]);
+      const result = await extensionPushPrepare(
+        ctx,
+        makePrepareDeps({
+          // Earlier entry points take more turns to finish, so with several
+          // running at once the later ones complete first.
+          bundleEntryPoint: async (entryPoint) => {
+            const turns = names.length - entryPoints.indexOf(entryPoint);
+            for (let i = 0; i < turns * 10; i++) await Promise.resolve();
+            return `/* ${entryPoint} */`;
+          },
+        }),
+        acceptanceInput(dir, entryPoints),
+      );
+      const entries = await listTarGzEntries(
+        ReadableStream.from([result.archiveBytes]),
+      );
+      assertEquals(
+        entries.filter((e) =>
+          e.startsWith("extension/bundles/") && e.endsWith(".js")
+        ),
+        names.map((n) => `extension/bundles/${n}.js`),
+      );
+    },
+  );
 });

@@ -41,6 +41,7 @@ import {
   type ExtensionUpdateEvent,
 } from "../src/libswamp/extensions/update.ts";
 import { UpgradeExtensionService } from "../src/libswamp/extensions/upgrade_extension_service.ts";
+import { emptyTreeIndexer } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 // swamp-club#2724: an `extension update` whose new version collides with
 // a type another extension already claims must leave the repo exactly as
@@ -200,6 +201,7 @@ async function withFixture(
       force: true,
       alreadyPulled: new Set(),
       depth: 0,
+      indexExtensionTree: emptyTreeIndexer,
     });
     const repositoryFor = (ctx: InstallContext) =>
       new ExtensionRepository({

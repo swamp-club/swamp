@@ -1137,6 +1137,10 @@ export {
   validateExtensionName,
 } from "./extensions/pull.ts";
 export {
+  createExtensionTreeIndexer,
+  type ExtensionTreeIndexer,
+} from "./extensions/extension_tree_index.ts";
+export {
   createExtensionRmDeps,
   extensionRm,
   type ExtensionRmData,
