@@ -43,6 +43,7 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { acquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { v3CommitsDbPath } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
+import { replicationPathsFor } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { commitIn, TEST_TIMINGS } from "./datastore_v3_litestream_helpers.ts";
 
@@ -81,7 +82,13 @@ export type MachineRequest =
   /** The record files the checkout's read model materialised. */
   | { readonly kind: "files" }
   /** Catches the open handle's read model up, as a context opening does. */
-  | { readonly kind: "catchUp" };
+  | { readonly kind: "catchUp" }
+  /** One commit on the held writer; resolves with the refusal, if any. */
+  | { readonly kind: "tryCommit" }
+  /** Chunk collection on the open handle; resolves with the refusal, if any. */
+  | { readonly kind: "gc" }
+  /** The checkout copy's restore lock. */
+  | { readonly kind: "restoreLock" };
 
 /** A machine's answer. */
 export type MachineResponse =
@@ -232,6 +239,27 @@ async function handle(request: MachineRequest): Promise<unknown> {
       return undefined;
     case "pids":
       return [...launched];
+    case "tryCommit":
+      try {
+        await commitIn({ repoDir: init!.repoDir, config: config() }, 1);
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    case "gc":
+      try {
+        await v3DatastoreFor(init!.repoDir, config()).collectChunks(
+          AbortSignal.timeout(30_000),
+        );
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    case "restoreLock":
+      return (await replicationPathsFor(
+        v3CommitsDbPath(init!.datastorePath, init!.repoDir),
+        init!.privateRoot,
+      )).restoreLock;
     case "catchUp":
       await v3DatastoreFor(init!.repoDir, config()).catchUp();
       return undefined;

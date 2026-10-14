@@ -80,6 +80,7 @@ import {
   writeWriterMarker,
 } from "./interrupted_writer_recovery.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
@@ -197,8 +198,18 @@ export function v3DatastoreFor(
         : {}),
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
       writerFence: () => v3WriterFence(config.path),
-      assertWriterCurrent: () => assertV3WriterCurrent(config.path),
+      assertWriterCurrent: () => {
+        assertV3WriterCurrent(config.path);
+        // While replicating, nothing commits onto a copy that is not current
+        // (swamp-club#3482): after serve's retake, until its restore lands.
+        if (v3ReplicationEnabled() && !currentCopies.has(key)) {
+          throw new WriterFencedError(v3WriterFence(config.path), undefined);
+        }
+      },
       assertCopyCurrent: () => {
+        // A lost hold is no lease: its copy may lack the new writer's
+        // commits, whose chunks a collection would delete.
+        assertV3WriterCurrent(config.path);
         if (
           v3ReplicationEnabled() &&
           (!currentCopies.has(key) || !holdsV3WriterLock(config.path))
@@ -836,9 +847,15 @@ export function startV3ReplicationUpkeep(
       replacing = undefined;
     });
   };
-  // Runs inside the lease's renewal: it only starts the replacement.
+  // Runs inside the lease's renewal: it only starts the replacement. A
+  // retake may follow another writer's commits, so the copy stops being
+  // current at once, before the retaken lease admits a commit: nothing
+  // commits onto it, nor collects its chunks, until the replacement has
+  // made it current again (swamp-club#3482).
   const unsubscribe = onV3LeaseTaken((path) => {
-    if (resolve(path) === key) replace();
+    if (resolve(path) !== key) return;
+    currentCopies.delete(copyKey);
+    replace();
   });
   const timer = setInterval(() => {
     if (stopped || probing !== undefined || replacing !== undefined) return;

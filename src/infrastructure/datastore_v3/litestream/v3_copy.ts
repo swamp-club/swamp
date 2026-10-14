@@ -532,9 +532,17 @@ export async function collectV3Lineages(
       ) {
         continue;
       }
-      if (await removeReplicaPath(replica, fence)) {
-        await registry.remove(fence);
-        collected.push(fence);
+      // One lineage that cannot be removed now (its old sidecar may still
+      // be writing there) never stops the others; the next first
+      // confirmation tries again.
+      try {
+        if (await removeReplicaPath(replica, fence)) {
+          await registry.remove(fence);
+          collected.push(fence);
+        }
+      } catch (error) {
+        logger
+          .debug`Collecting replication lineage ${fence} of the v3 datastore at ${copy.datastorePath} failed; the next collection retries: ${error}`;
       }
     }
     if (own !== undefined) {
@@ -581,8 +589,17 @@ async function removeReplicaPath(
   }
   if (!info.isDirectory || info.isSymlink) return false;
   if (resolve(await Deno.realPath(path), "..") !== canonicalBase) return false;
-  await Deno.remove(path, { recursive: true });
-  return true;
+  // A sidecar still idling on the old lineage may add a file while the
+  // directory is removed: a few attempts.
+  for (let attempt = 1;; attempt++) {
+    try {
+      await Deno.remove(path, { recursive: true });
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return true;
+      if (attempt >= 3) throw error;
+    }
+  }
 }
 
 function messageOf(error: unknown): string {

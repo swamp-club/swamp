@@ -61,6 +61,8 @@ interface Machine {
   send(request: MachineRequest): Promise<unknown>;
   /** Ends the worker as a crash would: no teardown. */
   crash(): Promise<void>;
+  /** Kills the sidecars this machine launched, as an idle exit ends them. */
+  stopSidecars(): Promise<void>;
 }
 
 interface World {
@@ -145,6 +147,17 @@ async function withMachines(
       });
       return {
         send,
+        async stopSidecars() {
+          for (const pid of await remember()) {
+            hostLitestreamProcesses.signalGroup(pid, "SIGKILL");
+          }
+          const launched = await remember();
+          await waitFor(
+            () =>
+              launched.every((pid) => !hostLitestreamProcesses.isAlive(pid)),
+            "the machine's sidecars to stop",
+          );
+        },
         async crash() {
           await remember();
           alive = false;
@@ -375,6 +388,58 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 restore: after serve's retake nothing commits or collects chunks on its copy until the restore lands",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const serve = await world.machine("serve");
+      await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
+      await serve.send({ kind: "write", commits: 1, close: false });
+      await serve.send({ kind: "upkeep", probeMs: 300 });
+      await waitFor(
+        async () => (await world.lineages()).current !== undefined,
+        "serve's head",
+      );
+      const paused = serve.send({ kind: "pause", ms: STALL_MS });
+      const other = await world.machine("other");
+      await other.send({ kind: "write", commits: 2, close: true });
+      // Serve's restore after its retake waits on this lock.
+      const lock = await Deno.open(
+        await serve.send({ kind: "restoreLock" }) as string,
+        { read: true, write: true, create: true },
+      );
+      await lock.lock(true);
+      try {
+        await paused;
+        // Once serve retook the lease, a commit is still refused: its copy
+        // is not current until the restore lands.
+        // The lost lease's refusal names the fence that took over; the
+        // retaken lease's, on a copy not yet current, names none.
+        await waitFor(async () => {
+          const refused = await serve.send({ kind: "tryCommit" });
+          return typeof refused === "string" &&
+            refused.includes("took over") && !refused.includes("(fence ");
+        }, "a commit refused after the retake");
+        const gc = await serve.send({ kind: "gc" }) as string | null;
+        assert(gc !== null && gc.includes("made current"), `gc: ${gc}`);
+      } finally {
+        await lock.unlock();
+        lock.close();
+      }
+      await waitFor(
+        async () => await serve.send({ kind: "tryCommit" }) === null,
+        "a commit once the restore landed",
+      );
+      await serve.send({ kind: "stopUpkeep" });
+      await serve.send({ kind: "close" });
+      const c = await world.machine("c");
+      assertEquals((await read(c)).commits, 4);
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 restore: GC removes only abandoned lineage paths under the current root",
   ignore,
   async fn() {
@@ -404,6 +469,9 @@ Deno.test({
           startedAt: new Date().toISOString(),
         });
       });
+      // A's idle sidecar exits, as it would after its idle timeout:
+      // nothing writes the abandoned path while GC removes it.
+      await a.stopSidecars();
       const b = await world.machine("b");
       await b.send({ kind: "write", commits: 1, close: true });
       const second = (await world.lineages()).current!;

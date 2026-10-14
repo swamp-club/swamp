@@ -943,7 +943,10 @@ replicate passively. A takeover after serve dies keeps every commit up to its
 last probe; that interval is serve's loss window in solo mode. A retake after
 another writer makes the copy current through the same path, restoring into
 serve's open store in place, then prepares its lineage before it holds a
-sidecar again.
+sidecar again. From the retake until that restore lands, the copy is not
+current: serve's commits are refused as fenced, and chunks are not collected,
+so nothing lands on, or is collected from, a copy that lacks the other
+writer's commits.
 
 **Garbage collection.** After a lineage's first confirmation, once the
 writer's lease check passed, the lineages below it under the current replica
