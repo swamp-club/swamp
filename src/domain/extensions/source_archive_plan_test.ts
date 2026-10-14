@@ -23,6 +23,7 @@ import { UserError } from "../errors.ts";
 import type { LocalEdge, SourceModuleGraph } from "./extension_source_graph.ts";
 import {
   applySpecifierRewrites,
+  isReservedArchiveRootName,
   planSourceArchive,
   type SourceArchiveKindInput,
 } from "./source_archive_plan.ts";
@@ -145,6 +146,52 @@ Deno.test("planSourceArchive: a module one level up under a reserved name goes u
       rewrites: ["../bundles/helper.ts -> ../_shared/bundles/helper.ts"],
     },
   ]);
+});
+
+Deno.test("planSourceArchive: a module one level up under a legacy driver directory goes under _shared", () => {
+  const rel = p("extensions", "models", "rel.ts");
+  const driver = p("extensions", "drivers", "util.ts");
+  const result = plan(
+    [{ kind: "models", dir: MODELS, modules: [rel, driver] }],
+    [edge(rel, driver, "../drivers/util.ts")],
+  );
+  assertEquals(summary(result), [
+    { archivePath: "_shared/drivers/util.ts", rewrites: [] },
+    {
+      archivePath: "models/rel.ts",
+      rewrites: ["../drivers/util.ts -> ../_shared/drivers/util.ts"],
+    },
+  ]);
+});
+
+Deno.test("isReservedArchiveRootName: names push writes or ignores itself are reserved", () => {
+  for (
+    const name of [
+      "manifest.yaml",
+      "quality.yaml",
+      "models",
+      "bundles",
+      "workflows",
+      "vaults",
+      "vault-bundles",
+      "datastores",
+      "datastore-bundles",
+      "reports",
+      "report-bundles",
+      "webhooks",
+      "webhook-bundles",
+      "skills",
+      "files",
+      "drivers",
+      "driver-bundles",
+      "_shared",
+    ]
+  ) {
+    assertEquals(isReservedArchiveRootName(name), true, name);
+  }
+  for (const name of ["lib", "_lib", "helpers.ts", "Models", "shared"]) {
+    assertEquals(isReservedArchiveRootName(name), false, name);
+  }
 });
 
 Deno.test("planSourceArchive: imports between shared modules are rewritten when they no longer line up", () => {

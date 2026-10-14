@@ -94,8 +94,10 @@ const UP_SEGMENT = "_up";
 
 /**
  * Top-level archive names a mirrored shared module may not take: push writes
- * them itself, pull installs them as a kind's sources or bundles, or they are
- * reserved for shared modules.
+ * them itself, pull installs them as a kind's sources or bundles, they are
+ * reserved for shared modules, or (`drivers`, `driver-bundles`) push wrote
+ * them before driver support was removed (swamp-club#1924) and pull ignores
+ * them.
  */
 const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
   "manifest.yaml",
@@ -113,8 +115,21 @@ const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
   "webhook-bundles",
   "skills",
   "files",
+  "drivers",
+  "driver-bundles",
   SHARED_ARCHIVE_DIR,
 ]);
+
+/**
+ * Whether `name`, a top-level entry of the archive's `extension/` directory,
+ * is one push writes or ignores itself rather than a shared module it
+ * mirrored there. Pull installs every other top-level entry, and
+ * `_shared/`, as shared source (swamp-club#3384), so push and pull read the
+ * same names.
+ */
+export function isReservedArchiveRootName(name: string): boolean {
+  return RESERVED_ROOT_NAMES.has(name);
+}
 
 function toForwardSlashes(p: string): string {
   return SEPARATOR === "\\" ? p.replaceAll("\\", "/") : p;
@@ -155,7 +170,8 @@ function sharedPlacement(
 ): string {
   const mirrored = mirroredRootPath(kindDir, path);
   if (
-    mirrored !== undefined && !RESERVED_ROOT_NAMES.has(mirrored.split("/")[0])
+    mirrored !== undefined &&
+    !isReservedArchiveRootName(mirrored.split("/")[0])
   ) {
     return mirrored;
   }

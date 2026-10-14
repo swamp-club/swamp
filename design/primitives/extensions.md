@@ -751,8 +751,15 @@ extension.tar.gz
     ├── reports/              # Source TypeScript report files
     ├── report-bundles/       # Compiled report JavaScript bundles
     ├── skills/               # Skill directories (SKILL.md + references)
-    └── files/                # Additional files
+    ├── files/                # Additional files
+    ├── lib/                  # Shared sources mirrored from one level above a kind's directory, any unreserved name
+    └── _shared/              # Shared sources from anywhere else in the repository
 ```
+
+Pull installs the archive at `.swamp/pulled-extensions/<name>/`, each entry at
+its archive path. Shared sources (see [Import Resolution](#import-resolution))
+go there too, so the installed sources' relative imports resolve as they do in
+the archive.
 
 ### Behaviors
 
@@ -1011,8 +1018,29 @@ target declares cannot reach the content-collective check, and a symlinked
 Push fails when a local module is missing, when its real path leaves the
 repository and the extensions root (through a symlinked directory), or when two
 different files would share an archive path. Data modules are packaged, hashed
-and safety-scanned, but not formatted, linted or reviewed as TypeScript. Pull
-does not yet install the archive-root shared sources (swamp-club#3384).
+and safety-scanned, but not formatted, linted or reviewed as TypeScript.
+
+Pull installs the shared sources at the same path under the extension's install
+root (swamp-club#3384): every file under `_shared/` or under a top-level entry
+whose name the archive does not reserve. `isReservedArchiveRootName` is the one
+list push and pull both read. It also holds `drivers` and `driver-bundles`,
+which push wrote before driver support was removed and pull has always ignored.
+Pull passes each shared source, data modules included, to the safety analyzer
+push uses, records it in the lockfile entry's `files`, and treats it like any
+other installed file on upgrade, conflict detection and `extension rm`. It
+refuses an archive, before writing the entry, that holds:
+
+- a symlink or hardlink anywhere, as push never writes one;
+- under a shared source, a backslash (push writes `/`; on Windows the extractor
+  would split on it), a hidden or `..` segment, `node_modules`, or a
+  `deno.json`, `deno.jsonc` or `package.json` (any case), which would change how
+  the installed source resolves;
+- a top-level name that differs from a reserved one only by case.
+
+An extension nested under another (`@a/b/lib` under `@a/b`) cannot be installed
+at a directory where its parent keeps shared sources, nor the parent installed
+over such a nested entry. Either install fails and names the extension to remove
+first.
 
 ## Per-Subdirectory Extension Identity
 
