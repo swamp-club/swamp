@@ -25,7 +25,8 @@
       "plan": "team",
       "planName": "Team",
       "subscriptionStatus": "active",
-      "trial": null
+      "trial": null,
+      "privateExtensions": "allowed"
     },
     {
       "slug": "keeb",
@@ -41,7 +42,8 @@
         "daysRemaining": 13,
         "totalDays": 30,
         "extended": false
-      }
+      },
+      "privateExtensions": "allowed"
     }
   ]
 }

@@ -462,9 +462,8 @@ const checks: RegistryCheckResult[] = [
   {
     name: "private-entitlement",
     status: "failed",
-    message:
-      'Collective "@test" is on the Free plan and its trial ended on 2026-08-19. ' +
-      "Private publication requires a paid plan; upgrade at https://swamp-club.com/o/test/billing.",
+    message: `Collective "@test"'s 30-day free trial has ended. ` +
+      "Private extensions need a paid plan; upgrade at https://swamp-club.com/o/test/billing.",
   },
   {
     name: "version-exists",
@@ -586,8 +585,8 @@ Deno.test("extensionPushRenderer: log dry run prints the content hash, each chec
   );
   assertStringIncludes(
     output,
-    'private entitlement: failed — Collective "@test" is on the Free plan and its trial ended on 2026-08-19. ' +
-      "Private publication requires a paid plan; upgrade at https://swamp-club.com/o/test/billing.",
+    `private entitlement: failed — Collective "@test"'s 30-day free trial has ended. ` +
+      "Private extensions need a paid plan; upgrade at https://swamp-club.com/o/test/billing.",
   );
   assertStringIncludes(
     output,

@@ -134,6 +134,7 @@ export interface WhoamiTrial {
   trigger?: string | null;
   dayNumber?: number;
   daysRemaining: number;
+  totalDays?: number;
 }
 
 /**
@@ -167,6 +168,12 @@ export interface WhoamiCollectiveEntitlementResponse {
   /** Owner/admin only — the server omits it for plain members. */
   subscriptionStatus?: string | null;
   trial?: WhoamiTrial | null;
+  /**
+   * The registry's verdict on private extensions for the collective
+   * (`allowed`, `trial-ended` or `paywalled` today). Kept as a string so a
+   * value added later reaches the caller instead of failing the parse.
+   */
+  privateExtensions?: string;
 }
 
 /**

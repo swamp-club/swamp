@@ -1036,9 +1036,10 @@ Deno.test("extensionPushPrepare: skip mode never loads credentials or contacts t
 
 const PRIVATE_REFUSAL =
   "Private publication requires a paid plan or an eligible collective trial";
+const BILLING = "https://test.swamp-club.com/o/testuser/billing";
 const EXPIRED_REFUSAL =
-  'Collective "@testuser" is on the Free plan and its trial ended on 2026-08-19. ' +
-  "Private publication requires a paid plan; upgrade at https://test.swamp-club.com/o/testuser/billing.";
+  `Collective "@testuser"'s 30-day free trial has ended. ` +
+  `Private extensions need a paid plan; upgrade at ${BILLING}.`;
 
 /** The caller's own collective as the registry reports it. */
 function testuserPlan(
@@ -1052,13 +1053,19 @@ const EXPIRED = testuserPlan({
     state: "expired",
     endsAt: "2026-08-19T00:00:00.000Z",
     daysRemaining: 0,
+    totalDays: 30,
   },
 });
 const PAID = testuserPlan({ plan: "team", planName: "Team" });
 const NO_TRIAL = testuserPlan({ trial: null });
 const NO_TRIAL_REFUSAL =
-  'Collective "@testuser" is on the Free plan and has no trial. ' +
-  "Private publication requires a paid plan; upgrade at https://test.swamp-club.com/o/testuser/billing.";
+  `Private extensions in "@testuser" need a paid plan; upgrade at ${BILLING}.`;
+/**
+ * The issue's repro (swamp-club#3311): the personal trial ended, but a paid
+ * collective the owner belongs to covers the personal namespace.
+ */
+const COVERED = { ...EXPIRED, privateExtensions: "allowed" };
+const PAYWALLED = { ...EXPIRED, privateExtensions: "paywalled" };
 
 function privateInput(
   overrides?: Partial<ExtensionPushPrepareInput>,
@@ -1121,7 +1128,7 @@ Deno.test("extensionPushPrepare: a private dry run passes on an active trial and
   assertEquals(check?.status, "passed");
   assertEquals(
     check?.message,
-    'Collective "@testuser" is on the Free plan with an active trial (13 days left, ends 2026-08-19), which allows private extensions.',
+    'Collective "@testuser" is in its free trial (13 days left, ends 2026-08-19), which allows private extensions.',
   );
 });
 
@@ -1283,6 +1290,40 @@ Deno.test("extensionPushPrepare: a private push refuses an ended trial or no tri
   }
 });
 
+Deno.test("extensionPushPrepare: a private push to a personal namespace the registry covers goes ahead (swamp-club#3311)", async () => {
+  // Enforce mode: a failed check would throw here instead of returning.
+  const result = await extensionPushPrepare(
+    ctx,
+    entitledDeps([COVERED]),
+    privateInput({ dryRun: false }),
+  );
+  const check = result.registryChecks.find((c) =>
+    c.name === "private-entitlement"
+  );
+  assertEquals(check?.status, "passed");
+  assertEquals(
+    check?.message,
+    '"@testuser" is your personal namespace, covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
+  );
+  assertEquals(result.collectiveEntitlement, COVERED);
+});
+
+Deno.test("extensionPushPrepare: a private push the registry reports paywalled is refused before packaging, claiming no trial", async () => {
+  let bundled = 0;
+  const deps = entitledDeps([PAYWALLED], {
+    bundleEntryPoint: () => {
+      bundled++;
+      return Promise.resolve("/* bundled */");
+    },
+  });
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, privateInput({ dryRun: false })),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertEquals(error.message, NO_TRIAL_REFUSAL);
+  assertEquals(bundled, 0);
+});
+
 Deno.test("extensionPushPrepare: a private push lets the registry decide an unreported entitlement", async () => {
   const result = await extensionPushPrepare(
     ctx,
@@ -1323,8 +1364,8 @@ Deno.test("extensionPush: a refused private publication carries what the registr
   assertEquals(atInitiate.code, "validation_failed");
   assertEquals(
     atInitiate.message,
-    `${PRIVATE_REFUSAL}. At sign-in the registry reported "@testuser" on the Free plan; its trial ended on 2026-08-19. ` +
-      "Private publication requires a paid plan; upgrade at https://test.swamp-club.com/o/testuser/billing.",
+    `${PRIVATE_REFUSAL}. At sign-in the registry reported that collective "@testuser"'s 30-day free trial has ended. ` +
+      `Private extensions need a paid plan; upgrade at ${BILLING}.`,
   );
 
   const atConfirm = await lastError(
@@ -1336,7 +1377,7 @@ Deno.test("extensionPush: a refused private publication carries what the registr
   );
   assertEquals(
     atConfirm.message,
-    `${PRIVATE_REFUSAL}. At sign-in the registry reported "@testuser" on the Team plan.`,
+    `${PRIVATE_REFUSAL}. At sign-in the registry reported that collective "@testuser" is on the Team plan, which allows private extensions.`,
   );
 });
 

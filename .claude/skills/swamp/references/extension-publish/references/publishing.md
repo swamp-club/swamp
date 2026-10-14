@@ -486,15 +486,16 @@ non-zero, since the registry never confirmed what the push needs;
 what it reported does not settle private entitlement (no entitlement reported
 for the collective). The dry run never prompts and never writes to the registry.
 
-`private-entitlement` fails for a free plan with no trial or whose trial has
-ended — the registry never starts a trial at publish — with the message the push
-throws (`… is on the Free plan and has no trial. …` when there is none):
-`Collective "@acme" is on the Free plan and its trial
-ended on 2026-08-19. Private publication requires a paid plan; upgrade at
-https://swamp-club.com/o/acme/billing.`
-A real push the registry refuses on entitlement reports the registry's sentence
-followed by what it had reported for the collective at sign-in; it names no plan
-the registry did not send.
+`private-entitlement` follows the registry's `privateExtensions` verdict for the
+extension's collective: `allowed` passes, `trial-ended` and `paywalled` fail, an
+unknown value is `entitlement-undecided`. A personal namespace covered by
+another collective's paid plan or trial passes even though its own trial ended.
+A failure carries the message the push throws, e.g.
+`Collective "@acme"'s 30-day free trial has ended. Private extensions need a
+paid plan; upgrade at https://swamp-club.com/o/acme/billing.`
+or `Private extensions in "@acme" need a paid plan; upgrade at …`. A real push
+the registry refuses on entitlement reports the registry's sentence followed by
+what it had reported for the collective at sign-in.
 
 `apiCalls` lists every HTTP call the run made (registry, OSV, npm) with its
 method, URL and outcome; the log summary says "No API calls were made." only

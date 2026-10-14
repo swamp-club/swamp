@@ -157,19 +157,33 @@ a version is unique across them. A rejected key fails authentication; it never
 falls back to the username.
 
 Private entitlement is decided from the `collectiveEntitlements` the same
-whoami call returns (Lab #1544), never from a cached plan. A paid plan passes,
-naming the plan; a free plan with an active trial passes, naming the trial. A
-free plan whose trial has ended fails with the message the push throws:
-`Collective "@acme" is on the Free plan and its trial ended on 2026-08-19.
-Private publication requires a paid plan; upgrade at <registry>/o/acme/billing.`
-A free plan with no trial fails the same way (`… is on the Free plan and has no
-trial. …`): a trial starts only when its collective is created, never at
-publish (swamp-club#3104). Everything else is `not-run` with cause
-`entitlement-undecided` and leaves the push to the registry's decision: a
-registry that reports no entitlement for the collective (an older server), or
-a trial state this client does not know. The check is omitted for a collective
-that is not the caller's (membership is the message that matters) and never
-runs for public or default intent.
+whoami call returns (Lab #1544), never from a cached plan. The entry read is
+the one for the extension's own collective. Its `privateExtensions` field is
+the registry's verdict and decides the check (swamp-club#3311): `allowed`
+passes, `trial-ended` and `paywalled` fail, and a value this client does not
+know is `not-run` with cause `entitlement-undecided`. The verdict already
+covers what plan and trial cannot show: a personal namespace is entitled when
+any collective its owner belongs to has a paid plan or an active trial, so its
+entry reads `allowed` while its own trial has ended. The CLI never combines
+entries to work this out. A registry that sends no verdict (an older or
+self-hosted one) is decided from plan and trial: a paid plan or an active
+trial passes, an ended trial or none fails (a trial starts only when its
+collective is created, never at publish, swamp-club#3104), and a Personal
+License or an unknown trial state is undecided.
+
+The messages describe standing the way the registry's web pages do and never
+call the absence of a plan a "Free plan": a paid plan by name, admin standing,
+a free trial with days left, a personal namespace covered by another
+collective, a Personal License. A refusal names what is needed and the billing
+page, and makes no claim about a trial unless the registry said it ended:
+`Collective "@acme"'s 30-day free trial has ended. Private extensions need a
+paid plan; upgrade at <registry>/o/acme/billing.`, or `Private extensions in
+"@acme" need a paid plan; upgrade at <registry>/o/acme/billing.` A refusal the
+registry makes at publish is passed on with the same words, as what the
+registry reported at sign-in. Undecided leaves the push to the registry's
+decision, as does a registry that reports no entitlement for the collective.
+The check is omitted for a collective that is not the caller's (membership is
+the message that matters) and never runs for public or default intent.
 
 ### Dry run
 
