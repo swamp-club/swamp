@@ -17,16 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  NestedRunRef,
-  ParentRunRef,
-} from "../../domain/workflows/nested_run_ref.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { workflowDeclaresInputs } from "../../domain/workflows/workflow.ts";
+import type {
+  RunIndexRun,
+  RunIndexSnapshot,
+} from "../../domain/workflows/run_index_snapshot.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
@@ -84,7 +85,15 @@ export interface WorkflowRunSearchData {
 
 export type WorkflowRunSearchEvent =
   | { kind: "resolving" }
-  | { kind: "completed"; data: WorkflowRunSearchData }
+  | {
+    kind: "completed";
+    data: WorkflowRunSearchData;
+    /**
+     * How many runs matched and are readable, before `offset` and `limit`
+     * cut out the page.
+     */
+    total: number;
+  }
   | { kind: "error"; error: SwampError };
 
 /**
@@ -94,28 +103,13 @@ export interface WorkflowRunSearchDeps {
   findAllWorkflows(): Promise<
     Array<{ id: string; name: string; inputs?: InputsSchema }>
   >;
-  findAllRunsByWorkflowId(id: string): Promise<
-    Array<{
-      id: string;
-      workflowId: string;
-      workflowName: string;
-      status: string;
-      startedAt?: Date;
-      completedAt?: Date;
-      duration?: number;
-      tags: Record<string, string>;
-      inputs: Record<string, unknown>;
-      instanceId?: string;
-      triggerSource?: string;
-      failedStep?: string;
-      failureReason?: string;
-      stepProgress?: { completed: number; total: number };
-      awaitingResume?: boolean;
-      parentRun?: ParentRunRef;
-      waitingOnRun?: NestedRunRef[];
-      waitsOnlyOnNestedRuns?: boolean;
-    }>
-  >;
+  /** The run index snapshot of one workflow (swamp-club#3443). */
+  runIndexOf(workflowId: string): Promise<RunIndexSnapshot>;
+  /**
+   * Whether the caller may read runs recorded under this workflow id and
+   * name. Asked once per distinct pair. Without it every run is readable.
+   */
+  isReadable?(workflowId: string, workflowName: string): Promise<boolean>;
 }
 
 /**
@@ -160,6 +154,8 @@ export interface WorkflowRunSearchInput {
   triggerSources?: string[];
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
+  /** Runs to skip, newest first, before the page starts. */
+  offset?: number;
   limit?: number;
 }
 
@@ -224,13 +220,309 @@ function runStatusMatches(status: string, filter: string): boolean {
     runStatusBucket(actual) === filter;
 }
 
+/** What {@link selectWorkflowRuns} keeps a run by. */
+export interface WorkflowRunFilter {
+  /** Keeps runs started at or after this epoch ms. */
+  sinceMs?: number;
+  /** Keeps runs started before this epoch ms. */
+  untilMs?: number;
+  status?: string;
+  workflow?: string;
+  workflows?: string[];
+  triggerSource?: string;
+  statuses?: string[];
+  triggerSources?: string[];
+  tags?: Record<string, string>;
+  inputs?: Record<string, string>;
+  query?: string;
+}
+
+/** The matching runs of one workflow, newest first. */
+export interface SelectedWorkflowRuns {
+  workflowId: string;
+  snapshot: RunIndexSnapshot;
+  runs: RunIndexRun[];
+}
+
+/** The runs {@link selectWorkflowRuns} kept. */
+export interface WorkflowRunSelection {
+  /** One entry per workflow with a match, in the order the workflows came. */
+  groups: SelectedWorkflowRuns[];
+  /** Every workflow's snapshot, by workflow id. */
+  snapshots: ReadonlyMap<string, RunIndexSnapshot>;
+  total: number;
+}
+
+/** A predicate over one run, from the filters that look at the run alone. */
+function runPredicate(
+  filter: WorkflowRunFilter,
+): (run: RunIndexRun) => boolean {
+  const checks: Array<(run: RunIndexRun) => boolean> = [];
+  const { sinceMs, untilMs } = filter;
+  if (sinceMs !== undefined || untilMs !== undefined) {
+    checks.push((run) =>
+      run.startMs !== undefined &&
+      (sinceMs === undefined || run.startMs >= sinceMs) &&
+      (untilMs === undefined || run.startMs < untilMs)
+    );
+  }
+  if (filter.status) {
+    const status = filter.status.toLowerCase();
+    checks.push((run) => runStatusMatches(run.summary.status, status));
+  }
+  if (filter.workflow) {
+    const name = filter.workflow.toLowerCase();
+    checks.push((run) => run.summary.workflowName.toLowerCase() === name);
+  }
+  if (filter.workflows && filter.workflows.length > 0) {
+    const names = new Set(filter.workflows);
+    checks.push((run) => names.has(run.summary.workflowName));
+  }
+  if (filter.triggerSource) {
+    const source = filter.triggerSource.toLowerCase();
+    checks.push((run) => run.summary.triggerSource?.toLowerCase() === source);
+  }
+  if (filter.statuses && filter.statuses.length > 0) {
+    const wanted = filter.statuses.map((s) => s.toLowerCase());
+    checks.push((run) =>
+      wanted.some((s) => runStatusMatches(run.summary.status, s))
+    );
+  }
+  if (filter.triggerSources && filter.triggerSources.length > 0) {
+    const wanted = new Set(filter.triggerSources.map((s) => s.toLowerCase()));
+    checks.push((run) =>
+      run.summary.triggerSource !== undefined &&
+      wanted.has(run.summary.triggerSource.toLowerCase())
+    );
+  }
+  if (filter.tags) {
+    const entries = Object.entries(filter.tags);
+    checks.push((run) =>
+      entries.every(([k, v]) => run.summary.tags?.[k] === v)
+    );
+  }
+  if (filter.inputs) {
+    const entries = Object.entries(filter.inputs);
+    checks.push((run) =>
+      entries.every(([k, v]) => String(run.summary.inputs?.[k]) === v)
+    );
+  }
+  if (filter.query) {
+    const q = filter.query.toLowerCase();
+    checks.push((run) =>
+      run.summary.workflowName.toLowerCase().includes(q) ||
+      run.summary.id.toLowerCase().includes(q) ||
+      run.summary.status.toLowerCase().includes(q)
+    );
+  }
+  return (run) => checks.every((check) => check(run));
+}
+
+/**
+ * Whether a workflow can hold no match, from what its snapshot says of all
+ * its runs: no recorded name passes a name filter, or no run started inside
+ * the window.
+ */
+function cannotMatch(
+  snapshot: RunIndexSnapshot,
+  filter: WorkflowRunFilter,
+): boolean {
+  if (snapshot.size === 0) return true;
+  const names = [...snapshot.recordedNames];
+  if (filter.workflow) {
+    const name = filter.workflow.toLowerCase();
+    if (!names.some((n) => n.toLowerCase() === name)) return true;
+  }
+  if (filter.workflows && filter.workflows.length > 0) {
+    const wanted = new Set(filter.workflows);
+    if (!names.some((n) => wanted.has(n))) return true;
+  }
+  if (filter.sinceMs !== undefined || filter.untilMs !== undefined) {
+    const newest = snapshot.newestStartMs;
+    if (newest === undefined) return true;
+    if (filter.sinceMs !== undefined && newest < filter.sinceMs) return true;
+  }
+  return false;
+}
+
+/**
+ * The runs worth testing against the filter: a full run id finds its run
+ * directly, unless a recorded name or status could also contain it; any
+ * other filter reads the time window.
+ */
+function candidates(
+  snapshot: RunIndexSnapshot,
+  filter: WorkflowRunFilter,
+): readonly RunIndexRun[] {
+  const q = filter.query?.toLowerCase();
+  // Run ids are UUIDs, so a full one is contained only in its own run's id.
+  if (
+    q && isUuid(q) &&
+    ![...snapshot.recordedNames].some((n) => n.toLowerCase().includes(q)) &&
+    ![...snapshot.distinctStatuses].some((s) => s.toLowerCase().includes(q))
+  ) {
+    const run = snapshot.get(q);
+    return run ? [run] : [];
+  }
+  return snapshot.between(filter.sinceMs, filter.untilMs);
+}
+
+/**
+ * Selects the runs of `workflows` that pass `filter` and that the caller may
+ * read (swamp-club#3443). Each workflow's runs come from its run index
+ * snapshot, narrowed by name and time before any run is looked at, so the
+ * cost follows the runs in the window, not the whole history.
+ */
+export async function selectWorkflowRuns(
+  deps: Pick<WorkflowRunSearchDeps, "runIndexOf" | "isReadable">,
+  workflows: ReadonlyArray<{ id: string }>,
+  filter: WorkflowRunFilter,
+): Promise<WorkflowRunSelection> {
+  const loaded = await collectBounded(
+    workflows,
+    RUN_FANOUT_CONCURRENCY,
+    async (workflow) => [{
+      workflowId: workflow.id,
+      snapshot: await deps.runIndexOf(workflow.id),
+    }],
+  );
+  const snapshots = new Map(loaded.map((l) => [l.workflowId, l.snapshot]));
+
+  const matches = runPredicate(filter);
+  const readable = new Map<string, boolean>();
+  const groups: SelectedWorkflowRuns[] = [];
+  let total = 0;
+  for (const workflow of workflows) {
+    const snapshot = snapshots.get(workflow.id);
+    if (!snapshot || cannotMatch(snapshot, filter)) continue;
+    let runs = candidates(snapshot, filter).filter(matches);
+    if (runs.length === 0) continue;
+
+    if (deps.isReadable) {
+      const pairs = new Map<string, [string, string]>();
+      for (const run of runs) {
+        const pair: [string, string] = [
+          run.summary.workflowId,
+          run.summary.workflowName,
+        ];
+        pairs.set(JSON.stringify(pair), pair);
+      }
+      for (const [key, [id, name]] of pairs) {
+        if (!readable.has(key)) {
+          readable.set(key, await deps.isReadable(id, name));
+        }
+      }
+      runs = runs.filter((run) =>
+        readable.get(
+          JSON.stringify([run.summary.workflowId, run.summary.workflowName]),
+        )
+      );
+      if (runs.length === 0) continue;
+    }
+    groups.push({ workflowId: workflow.id, snapshot, runs });
+    total += runs.length;
+  }
+  return { groups, snapshots, total };
+}
+
+/** The sort key of a run: its start time, or 0 without one. */
+function startKey(run: RunIndexRun): number {
+  return run.startMs ?? 0;
+}
+
+/**
+ * The selected runs from `offset`, at most `limit` of them, newest first
+ * across workflows. Runs that started at the same moment keep the order of
+ * their workflows, then their order within the workflow. A merge of the
+ * per-workflow lists, so it reads only as far as the page reaches.
+ */
+export function pageOfSelection(
+  groups: readonly SelectedWorkflowRuns[],
+  offset: number,
+  limit: number | undefined,
+): Array<{ run: RunIndexRun; group: SelectedWorkflowRuns }> {
+  // Bounds as Array.prototype.slice takes them, truncated toward zero, as
+  // the page was cut before (swamp-club#3443).
+  const start = Math.trunc(offset);
+  const end = limit === undefined ? Infinity : Math.trunc(offset + limit);
+  const page: Array<{ run: RunIndexRun; group: SelectedWorkflowRuns }> = [];
+  if (end <= start) return page;
+  // A binary heap of each workflow's next run: newest first, then the
+  // earlier workflow.
+  const cursor = groups.map(() => 0);
+  const heap: number[] = [];
+  const before = (a: number, b: number): boolean => {
+    const ka = startKey(groups[a].runs[cursor[a]]);
+    const kb = startKey(groups[b].runs[cursor[b]]);
+    return ka !== kb ? ka > kb : a < b;
+  };
+  const up = (i: number) => {
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!before(heap[i], heap[parent])) return;
+      [heap[i], heap[parent]] = [heap[parent], heap[i]];
+      i = parent;
+    }
+  };
+  const down = (i: number) => {
+    while (true) {
+      const l = 2 * i + 1;
+      const r = l + 1;
+      let top = i;
+      if (l < heap.length && before(heap[l], heap[top])) top = l;
+      if (r < heap.length && before(heap[r], heap[top])) top = r;
+      if (top === i) return;
+      [heap[i], heap[top]] = [heap[top], heap[i]];
+      i = top;
+    }
+  };
+  for (let g = 0; g < groups.length; g++) {
+    if (groups[g].runs.length > 0) {
+      heap.push(g);
+      up(heap.length - 1);
+    }
+  }
+  let index = 0;
+  while (heap.length > 0 && index < end) {
+    const g = heap[0];
+    if (index >= start) {
+      page.push({ run: groups[g].runs[cursor[g]], group: groups[g] });
+    }
+    index++;
+    cursor[g]++;
+    if (cursor[g] < groups[g].runs.length) {
+      down(0);
+    } else {
+      const last = heap.pop()!;
+      if (heap.length > 0) {
+        heap[0] = last;
+        down(0);
+      }
+    }
+  }
+  return page;
+}
+
+/** A run's duration, when it has both a start and a completion time. */
+export function runDuration(run: RunIndexRun): number | undefined {
+  return run.startMs && run.completedMs
+    ? run.completedMs - run.startMs
+    : undefined;
+}
+
+/** Resolves an optional run time bound to epoch ms. */
+function boundMs(value: string | undefined, now: number): number | undefined {
+  return value ? parseRunTimeBound(value, now) : undefined;
+}
+
 /**
  * Searches workflow runs across all workflows.
  *
- * Fetches all workflows, then all runs for each workflow.
- * Applies filters (since, until, status, workflow, workflows, trigger
- * source, tags, inputs, query, limit) and sorts
- * by startedAt descending (most recent first).
+ * Selects the matching runs from each workflow's run index snapshot
+ * (filters: since, until, status, workflow, workflows, trigger source, tags,
+ * inputs, query; then readability), and returns the page from `offset`,
+ * at most `limit` runs, by startedAt descending (most recent first).
+ * Search items are built for the page only.
  */
 export async function* workflowRunSearch(
   _ctx: LibSwampContext,
@@ -243,41 +535,49 @@ export async function* workflowRunSearch(
     (async function* () {
       yield { kind: "resolving" };
 
+      const now = Date.now();
+      const filter: WorkflowRunFilter = {
+        sinceMs: boundMs(input.since, now),
+        untilMs: boundMs(input.until, now),
+        status: input.status,
+        workflow: input.workflow,
+        workflows: input.workflows,
+        triggerSource: input.triggerSource,
+        statuses: input.statuses,
+        triggerSources: input.triggerSources,
+        tags: input.tags,
+        inputs: input.inputs,
+        query: input.query,
+      };
+
       const allWorkflows = await deps.findAllWorkflows();
       const workflowsWithInputs = new Set(
         allWorkflows
           .filter((w) => workflowDeclaresInputs(w.inputs))
           .map((w) => w.id),
       );
-
-      // Fetch run summaries for all workflows with bounded concurrency. Each
-      // per-workflow read streams one run file at a time; the bound keeps at
-      // most RUN_FANOUT_CONCURRENCY of those in flight so peak memory does not
-      // scale with the number of workflows. Summaries are lightweight, so
-      // holding them all before filtering is cheap (see WorkflowRunSummary).
-      const allRuns = await collectBounded(
-        allWorkflows,
-        RUN_FANOUT_CONCURRENCY,
-        (workflow) => deps.findAllRunsByWorkflowId(workflow.id),
+      const selection = await selectWorkflowRuns(deps, allWorkflows, filter);
+      const page = pageOfSelection(
+        selection.groups,
+        Math.max(0, input.offset ?? 0),
+        input.limit,
       );
 
-      // Sort by startedAt descending (most recent first)
-      allRuns.sort((a, b) => {
-        const aTime = a.startedAt?.getTime() ?? 0;
-        const bTime = b.startedAt?.getTime() ?? 0;
-        return bTime - aTime;
-      });
-
-      // Every run is already in memory: a nested wait is resolved by joining
-      // on the child's summary, its parentRun the back-link check, with no
-      // further reads (swamp-club#2736).
-      const byId = new Map(allRuns.map((r) => [r.id.toLowerCase(), r]));
+      // A nested wait is resolved by finding the child in its workflow's
+      // snapshot, its parentRun the back-link check, with no further reads
+      // (swamp-club#2736).
+      const snapshotIds = new Map(
+        [...selection.snapshots.keys()].map((id) => [id.toLowerCase(), id]),
+      );
       const FINISHED = new Set(["succeeded", "failed", "cancelled"]);
-      const nestedWaitsOf = (run: (typeof allRuns)[number]) => {
+      const nestedWaitsOf = (run: RunIndexRun["summary"]) => {
         if (!run.waitingOnRun) return undefined;
         let allFinished = true;
         const waits = run.waitingOnRun.map((ref) => {
-          const child = byId.get(ref.runId.toLowerCase());
+          const owner = snapshotIds.get(ref.workflowId.toLowerCase());
+          const child = owner
+            ? selection.snapshots.get(owner)?.get(ref.runId)?.summary
+            : undefined;
           // The index is not trusted: the child must link back to this run
           // and be of the linked workflow.
           const linked = child?.parentRun &&
@@ -300,15 +600,14 @@ export async function* workflowRunSearch(
         };
       };
 
-      // Convert to search items
-      let results: WorkflowRunSearchItem[] = allRuns.map((run) => {
-        const startTime = run.startedAt?.getTime();
-        const endTime = run.completedAt?.getTime();
+      const results: WorkflowRunSearchItem[] = page.map(({ run: entry }) => {
+        const run = entry.summary;
+        // Copied out: the snapshot is shared and frozen.
         const tags = run.tags && Object.keys(run.tags).length > 0
           ? { ...run.tags }
           : undefined;
         const inputs = run.inputs && Object.keys(run.inputs).length > 0
-          ? { ...run.inputs }
+          ? structuredClone(run.inputs)
           : undefined;
         const nested = nestedWaitsOf(run);
 
@@ -317,16 +616,16 @@ export async function* workflowRunSearch(
           workflowId: run.workflowId,
           workflowName: run.workflowName,
           status: run.status,
-          startedAt: run.startedAt?.toISOString(),
-          completedAt: run.completedAt?.toISOString(),
-          duration: startTime && endTime ? endTime - startTime : undefined,
+          startedAt: entry.startedAt,
+          completedAt: entry.completedAt,
+          duration: runDuration(entry),
           tags,
           inputs,
           instanceId: run.instanceId,
           triggerSource: run.triggerSource,
           failedStep: run.failedStep,
           failureReason: run.failureReason,
-          stepProgress: run.stepProgress,
+          stepProgress: run.stepProgress ? { ...run.stepProgress } : undefined,
           awaitingResume: run.awaitingResume || nested?.resumable
             ? true
             : undefined,
@@ -347,99 +646,13 @@ export async function* workflowRunSearch(
         };
       });
 
-      // Apply filters
-      const now = Date.now();
-      if (input.since) {
-        const cutoff = parseRunTimeBound(input.since, now);
-        results = results.filter((r) => {
-          if (!r.startedAt) return false;
-          return new Date(r.startedAt).getTime() >= cutoff;
-        });
-      }
-
-      if (input.until) {
-        const end = parseRunTimeBound(input.until, now);
-        results = results.filter((r) => {
-          if (!r.startedAt) return false;
-          return new Date(r.startedAt).getTime() < end;
-        });
-      }
-
-      if (input.status) {
-        const status = input.status.toLowerCase();
-        results = results.filter((r) => runStatusMatches(r.status, status));
-      }
-
-      if (input.workflow) {
-        const name = input.workflow.toLowerCase();
-        results = results.filter(
-          (r) => r.workflowName.toLowerCase() === name,
-        );
-      }
-
-      if (input.workflows && input.workflows.length > 0) {
-        const names = new Set(input.workflows);
-        results = results.filter((r) => names.has(r.workflowName));
-      }
-
-      if (input.triggerSource) {
-        const source = input.triggerSource.toLowerCase();
-        results = results.filter((r) =>
-          r.triggerSource?.toLowerCase() === source
-        );
-      }
-
-      if (input.statuses && input.statuses.length > 0) {
-        const wanted = input.statuses.map((s) => s.toLowerCase());
-        results = results.filter((r) =>
-          wanted.some((s) => runStatusMatches(r.status, s))
-        );
-      }
-
-      if (input.triggerSources && input.triggerSources.length > 0) {
-        const wanted = new Set(
-          input.triggerSources.map((s) => s.toLowerCase()),
-        );
-        results = results.filter((r) =>
-          r.triggerSource !== undefined &&
-          wanted.has(r.triggerSource.toLowerCase())
-        );
-      }
-
-      if (input.tags) {
-        const tagEntries = Object.entries(input.tags);
-        results = results.filter((r) =>
-          tagEntries.every(([k, v]) => r.tags?.[k] === v)
-        );
-      }
-
-      if (input.inputs) {
-        const inputEntries = Object.entries(input.inputs);
-        results = results.filter((r) =>
-          inputEntries.every(([k, v]) => String(r.inputs?.[k]) === v)
-        );
-      }
-
-      if (input.query) {
-        const q = input.query.toLowerCase();
-        results = results.filter(
-          (r) =>
-            r.workflowName.toLowerCase().includes(q) ||
-            r.runId.toLowerCase().includes(q) ||
-            r.status.toLowerCase().includes(q),
-        );
-      }
-
-      if (input.limit !== undefined) {
-        results = results.slice(0, input.limit);
-      }
-
       yield {
         kind: "completed",
         data: {
           query: input.query ?? "",
           results,
         },
+        total: selection.total,
       };
     })(),
   );

@@ -235,8 +235,7 @@ async function searchRuns(h: Harness): Promise<WorkflowRunSearchItem[]> {
   const data = await completed<{ results: WorkflowRunSearchItem[] }>(
     workflowRunSearch(createLibSwampContext(), {
       findAllWorkflows: () => h.workflowRepo.findAll(),
-      findAllRunsByWorkflowId: (id) =>
-        h.runRepo.findAllSummariesFromIndex(createWorkflowId(id)),
+      runIndexOf: (id) => h.runRepo.runIndexSnapshot(createWorkflowId(id)),
     }, {}),
   );
   return data.results;

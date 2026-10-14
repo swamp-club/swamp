@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertNotStrictEquals,
+  assertStrictEquals,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, isAbsolute, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -904,6 +910,112 @@ Deno.test("findAllSummariesFromIndex: returns summaries from index", async () =>
     assertEquals(summaries.length, 2);
     const statuses = summaries.map((s) => s.status).sort();
     assertEquals(statuses, ["running", "succeeded"]);
+  });
+});
+
+/** Sets the run index file and the records directory back a minute. */
+async function settleRunIndex(dir: string, workflowId: WorkflowId) {
+  const runsDir = join(dir, ".swamp", "workflow-runs", workflowId);
+  const when = new Date(Date.now() - 60_000);
+  await Deno.utime(getIndexPath(runsDir), when, when);
+  await Deno.utime(runsDir, when, when);
+}
+
+Deno.test("runIndexSnapshot: reuses the snapshot while the index and records are unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    // Just written: too recent to trust, so each read builds a new one.
+    const fresh = await repo.runIndexSnapshot(workflow.id);
+    assertNotStrictEquals(await repo.runIndexSnapshot(workflow.id), fresh);
+
+    await settleRunIndex(dir, workflow.id);
+    const settled = await repo.runIndexSnapshot(workflow.id);
+    assertStrictEquals(await repo.runIndexSnapshot(workflow.id), settled);
+    assertEquals(settled.runs.map((r) => r.summary.id), [run.id]);
+  });
+});
+
+Deno.test("runIndexSnapshot: sees a save by this repository after the snapshot was kept", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const first = WorkflowRun.create(workflow);
+    first.start();
+    await repo.save(workflow.id, first);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 1);
+
+    const second = WorkflowRun.create(workflow);
+    second.start();
+    await repo.save(workflow.id, second);
+    const after = await repo.runIndexSnapshot(workflow.id);
+    assertEquals(after.size, 2);
+    assert(after.get(second.id));
+  });
+});
+
+Deno.test("runIndexSnapshot: sees runs another process saves, and an index another process rewrites", async () => {
+  await withTempDir(async (dir) => {
+    const reader = new YamlWorkflowRunRepository(dir);
+    const writer = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await writer.save(workflow.id, run);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals(
+      (await reader.runIndexSnapshot(workflow.id)).get(run.id)?.summary.status,
+      "running",
+    );
+
+    // Same record count: only the index file changes.
+    run.interruptOrphaned("test");
+    await writer.save(workflow.id, run);
+    assertEquals(
+      (await reader.runIndexSnapshot(workflow.id)).get(run.id)?.summary.status,
+      "interrupted",
+    );
+
+    await settleRunIndex(dir, workflow.id);
+    await reader.runIndexSnapshot(workflow.id);
+    const added = WorkflowRun.create(workflow);
+    added.start();
+    await writer.save(workflow.id, added);
+    assertEquals((await reader.runIndexSnapshot(workflow.id)).size, 2);
+  });
+});
+
+Deno.test("runIndexSnapshot: a workflow with no index is read from its records and not kept", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 0);
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 1);
+  });
+});
+
+Deno.test("runIndexSnapshot: deleteAllByWorkflowId leaves no runs behind", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 1);
+
+    await repo.deleteAllByWorkflowId(workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 0);
   });
 });
 

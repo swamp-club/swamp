@@ -29,10 +29,12 @@ import { keyUnder, unlessUnpartitionable } from "./config_staging.ts";
 import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
+import { RunIndexCache, type RunIndexStamp } from "./run_index_cache.ts";
 import {
   countYamlRunFiles,
   deleteRunIndex,
   fingerprintMatches,
+  getIndexPath,
   INDEX_SCHEMA_VERSION,
   isIndexStale,
   listDirEntries,
@@ -69,6 +71,7 @@ import {
   parseWorkflowRunSummary,
   type WorkflowRunSummary,
 } from "../../domain/workflows/workflow_run_summary.ts";
+import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import {
@@ -124,6 +127,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * as the wait hook does (`attachSignalWaits`).
    */
   beforeSave?: (run: WorkflowRun) => Promise<void>;
+
+  /** Run index snapshots kept between reads (swamp-club#3443). */
+  private readonly runIndexCache = new RunIndexCache({
+    stamp: (workflowId) => this.stampRunIndex(workflowId as WorkflowId),
+  });
 
   constructor(
     private readonly repoDir: string,
@@ -734,6 +742,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
     const dir = this.getRunsDir(workflowId);
+    this.runIndexCache.delete(workflowId);
 
     // Count the runs before deleting
     const runs = await this.findAllByWorkflowId(workflowId);
@@ -1182,6 +1191,57 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return this.findAllSummariesByWorkflowId(workflowId);
     }
     return indexToSummaries(index);
+  }
+
+  /**
+   * The workflow's runs as an immutable, newest-first snapshot of its run
+   * index (swamp-club#3443). The snapshot is kept in memory and reused while
+   * a stat of the index file and of the records directory shows neither has
+   * changed, so a repeated read costs two stats, not a directory listing and
+   * a parse of the whole index. A workflow with no usable index gets a
+   * snapshot of its records, which is not kept.
+   *
+   * On the concrete repository only, for the same reason as
+   * {@link findGlobalById}: only the run search and run summary paths use it.
+   */
+  runIndexSnapshot(workflowId: WorkflowId): Promise<RunIndexSnapshot> {
+    return this.runIndexCache.get(workflowId, async () => {
+      const runsDir = this.getRunsDir(workflowId);
+      const indexDir = this.getLocalIndexDir(workflowId);
+      const index = await this.getValidatedIndex(runsDir, indexDir);
+      if (index) {
+        return {
+          snapshot: RunIndexSnapshot.of(indexToSummaries(index)),
+          fromIndex: true,
+        };
+      }
+      return {
+        snapshot: RunIndexSnapshot.of(
+          await this.findAllSummariesByWorkflowId(workflowId),
+        ),
+        fromIndex: false,
+      };
+    });
+  }
+
+  /** What a cached run index snapshot of the workflow is checked against. */
+  private async stampRunIndex(
+    workflowId: WorkflowId,
+  ): Promise<RunIndexStamp | undefined> {
+    const index = await statRecord(
+      getIndexPath(this.getLocalIndexDir(workflowId)),
+    );
+    if (index === undefined) return undefined;
+    let dirMtimeMs: number | null;
+    try {
+      const mtime = (await Deno.stat(this.getRunsDir(workflowId))).mtime;
+      if (!mtime) return undefined;
+      dirMtimeMs = mtime.getTime();
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      dirMtimeMs = null;
+    }
+    return { index, dirMtimeMs };
   }
 
   async findSummariesByStatus(

@@ -222,6 +222,7 @@ import {
   recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
+  resourceReadability,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -1281,14 +1282,24 @@ export async function handleWorkflowRunSearch(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
+    const canonical = canonicalResources(ctx);
+    // Readability is decided per run while selecting, before the page is
+    // cut, so unreadable runs never shorten a page or count in `total`.
     const deps: WorkflowRunSearchDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
-      findAllRunsByWorkflowId: (id) =>
-        ctx.repoContext.workflowRunRepo
-          .findAllSummariesFromIndex(createWorkflowId(id)),
+      runIndexOf: (id) =>
+        ctx.repoContext.workflowRunRepo.runIndexSnapshot(createWorkflowId(id)),
+      isReadable: resourceReadability(
+        (id: string, name: string) => canonical.workflowOwners(id, name),
+        socket,
+        principal,
+        "read",
+        ctx,
+      ),
     };
 
     let result: Record<string, unknown> | undefined;
+    let total = 0;
     await consumeStream(
       workflowRunSearch(libCtx, deps, {
         query: payload?.query,
@@ -1302,11 +1313,14 @@ export async function handleWorkflowRunSearch(
         triggerSources: payload?.triggerSources,
         tags: payload?.tags,
         inputs: payload?.inputs,
+        offset: payload?.offset,
+        limit: payload?.limit ?? WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
       }),
       {
         resolving: () => {},
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
+          total = e.total;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -1329,21 +1343,7 @@ export async function handleWorkflowRunSearch(
         }
       >;
     };
-    // Page after the authorization filter, never inside libswamp: slicing
-    // first would let unreadable runs shorten a page and skew `total`.
-    const canonical = canonicalResources(ctx);
-    const { page, total } = paginate(
-      await filterByResources(
-        data.results ?? [],
-        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
-        socket,
-        principal,
-        "read",
-        ctx,
-      ),
-      payload?.offset,
-      payload?.limit ?? WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
-    );
+    const page = data.results ?? [];
     // Links to other runs name only workflows the principal may read
     // (swamp-club#2736); the derived awaitingResume flag stays.
     const canRead = nestedRunReadDecider(ctx, socket, principal);
@@ -1400,18 +1400,15 @@ export async function handleWorkflowRunSummary(
     const canonical = canonicalResources(ctx);
     const deps: WorkflowRunSummaryDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
-      findAllRunsByWorkflowId: (id) =>
-        ctx.repoContext.workflowRunRepo
-          .findAllSummariesFromIndex(createWorkflowId(id)),
-      keepReadable: (runs) =>
-        filterByResources(
-          runs,
-          (run) => canonical.workflowOwners(run.workflowId, run.workflowName),
-          socket,
-          principal,
-          "read",
-          ctx,
-        ),
+      runIndexOf: (id) =>
+        ctx.repoContext.workflowRunRepo.runIndexSnapshot(createWorkflowId(id)),
+      isReadable: resourceReadability(
+        (id: string, name: string) => canonical.workflowOwners(id, name),
+        socket,
+        principal,
+        "read",
+        ctx,
+      ),
     };
 
     let data: WorkflowRunSummaryData | undefined;

@@ -3016,6 +3016,37 @@ they have gone unwritten for longer than both the cutoff and seven days: a run
 writes its log before it first saves its record (`YamlWorkflowRunRepository`,
 swamp-club#3266).
 
+### Run Index and Run Search
+
+Each workflow keeps a run index, `.runs-index.json`, beside its run records in
+the repo-local `.swamp/workflow-runs/{workflow-uuid}/`. It holds one summary
+entry per run, keyed by run id. A read trusts the index while it lists as many
+runs as there are records, and rebuilds it from the records when the counts
+differ or the schema version changed (`YamlWorkflowRunRepository`).
+
+Run search and run summary read each workflow's index as a
+`RunIndexSnapshot` (`src/domain/workflows/run_index_snapshot.ts`), an immutable,
+newest-first view of its runs. A time window is a binary search over the
+snapshot. The workflow and workflows filters skip a workflow none of whose
+runs recorded a matching name. A full run id as the query is looked up
+directly. Search items are built for the returned page only, so a request costs
+the runs it matches, not the whole history (swamp-club#3443). Runs of
+different workflows that started at the same moment are ordered by the
+workflows' order.
+
+The repository keeps snapshots in memory (`RunIndexCache`) and reuses one while
+a stat of the index file and the mtime of the records directory both match
+what they were when it was built. Creating, removing or renaming a record moves
+the directory's mtime, so another process writing runs, a datastore pull, or
+this process's own saves are all seen on the next read, without any hook. The
+cache holds at most 250,000 runs, dropping the least recently used workflows.
+It does not keep:
+
+- a snapshot whose file times are within two seconds of the time it was read,
+  or in the future;
+- one built from the records because there was no usable index;
+- one read on a platform that reports no mtime.
+
 ### Run Statuses
 
 - `pending`: created but not yet started
