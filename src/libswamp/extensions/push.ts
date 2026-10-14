@@ -1451,7 +1451,8 @@ export async function extensionPushPrepare(
         input.manifest.name,
       );
     } catch (error) {
-      ctx.logger.debug`Could not index the archive's sources: ${
+      ctx.logger
+        .warn`Could not load the archive's sources to check their collective: ${
         error instanceof Error ? error.message : String(error)
       }`;
     }

@@ -129,3 +129,24 @@ Deno.test("fromStoredArchiveIndex: a stored kind or directory this version does 
     undefined,
   );
 });
+
+Deno.test("runtimeContentTypes: leaves out _test.ts files, which the loader never loads (swamp-club#3456)", () => {
+  assertEquals(
+    runtimeContentTypes({
+      sources: [{
+        kindDir: "models",
+        absolutePath: "/x/models/a_test.ts",
+        fileName: "a_test.ts",
+        indexed: {
+          kind: "model",
+          typeNormalized: "@other/fixture",
+          bundlePath: "",
+          fingerprint: "f",
+          fromCache: false,
+        },
+      }],
+      failures: [],
+    }),
+    [],
+  );
+});

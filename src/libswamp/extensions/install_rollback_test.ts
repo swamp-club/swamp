@@ -1035,3 +1035,18 @@ Deno.test("InstallExtensionService.execute: a type collision is still refused wh
     }
   });
 });
+
+Deno.test("installExtension: a _test.ts fixture with a foreign type does not refuse the install, as the loader never loads it (swamp-club#3456)", async () => {
+  await withRepo(async (repo) => {
+    const n = ids();
+    await repo.publish(n.a, V1, {
+      models: {
+        "a.ts": n.own("a"),
+        "a_test.ts": `@other/fixture-${crypto.randomUUID().slice(0, 8)}`,
+      },
+    });
+    const ctx = await repo.ctx(realIndexer(repo));
+    const result = await installExtension({ name: n.a, version: V1 }, ctx);
+    assertEquals(result?.version, V1);
+  });
+});

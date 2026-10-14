@@ -1094,8 +1094,17 @@ function rollbackEnding(outcome: InstallRollbackOutcome, name: string): string {
       "installed.";
 }
 
+const KIND_DIRS_BY_KIND: Record<CollectiveMismatch["kind"], string> = {
+  model: "models",
+  vault: "vaults",
+  datastore: "datastores",
+  report: "reports",
+  webhook: "webhooks",
+  workflow: "workflows",
+};
+
 function kindDirOf(kind: CollectiveMismatch["kind"]): string {
-  return kind === "model" ? "models" : `${kind}s`;
+  return KIND_DIRS_BY_KIND[kind];
 }
 
 /**

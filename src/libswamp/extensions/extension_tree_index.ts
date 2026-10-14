@@ -194,7 +194,8 @@ export function defaultConcurrency(): number {
 /**
  * The types an indexed tree registers, for the collective check. Extension
  * sources (`export const extension`) add methods to another type rather than
- * registering one, so they are left out.
+ * registering one, and the loader never loads `_test.ts` files, so both are
+ * left out.
  */
 export function runtimeContentTypes(
   index: ExtensionTreeIndex,
@@ -202,7 +203,12 @@ export function runtimeContentTypes(
   const out: RuntimeContentType[] = [];
   for (const source of index.sources) {
     const indexed = source.indexed;
-    if (!indexed || indexed.kind === "extension") continue;
+    if (
+      !indexed || indexed.kind === "extension" ||
+      source.fileName.endsWith("_test.ts")
+    ) {
+      continue;
+    }
     out.push({
       kind: indexed.kind,
       typeNormalized: indexed.typeNormalized,

@@ -22,12 +22,6 @@ import type {
   ExtensionTreeIndexer,
 } from "./extension_tree_index.ts";
 
-/** A tree index with no sources: nothing loaded, nothing to check. */
-export const EMPTY_TREE_INDEX: ExtensionTreeIndex = {
-  sources: [],
-  failures: [],
-};
-
 /** An indexer for fixtures whose archives hold no loadable sources. */
 export const emptyTreeIndexer: ExtensionTreeIndexer = () =>
   Promise.resolve({ sources: [], failures: [] });
