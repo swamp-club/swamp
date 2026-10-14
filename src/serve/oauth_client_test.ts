@@ -27,6 +27,7 @@ import {
   resolveUsername,
   sendInstanceHeartbeat,
   startDeviceGrant,
+  UsernameLookupRefusedError,
   UsernameNotFoundError,
 } from "./oauth_client.ts";
 
@@ -640,27 +641,35 @@ Deno.test("resolveUsername: a 5xx is not a UsernameNotFoundError", async () => {
   }
 });
 
-Deno.test("resolveUsername: throws on other HTTP error", async () => {
-  const mock = startMockServer(() =>
-    new Response("Forbidden", { status: 403 })
-  );
-  try {
-    const err = await assertRejects(
-      () =>
-        resolveUsername(
-          `http://localhost:${mock.port}`,
-          "someuser",
-          "bad-token",
-          AbortSignal.timeout(5000),
-        ),
-      Error,
-      "Failed to resolve username 'someuser': 403",
-    );
-    assert(!(err instanceof UsernameNotFoundError));
-  } finally {
-    await mock.shutdown();
-  }
-});
+for (const status of [401, 403]) {
+  Deno.test(`resolveUsername: a ${status} names the oauth:manage scope`, async () => {
+    const mock = startMockServer(() => new Response("Forbidden", { status }));
+    try {
+      const providerUrl = `http://localhost:${mock.port}`;
+      const err = await assertRejects(
+        () =>
+          resolveUsername(
+            providerUrl,
+            "someuser",
+            "bad-token",
+            AbortSignal.timeout(5000),
+          ),
+        UsernameLookupRefusedError,
+        `Failed to resolve username 'someuser': ${status}`,
+      );
+      assert(!(err instanceof UsernameNotFoundError));
+      assertEquals(err.username, "someuser");
+      assertEquals(err.status, status);
+      assertStringIncludes(err.message, `${providerUrl} refused`);
+      assertStringIncludes(
+        err.message,
+        "if it is a collective API token, it needs the oauth:manage scope",
+      );
+    } finally {
+      await mock.shutdown();
+    }
+  });
+}
 
 Deno.test("resolveUsername: sends Bearer auth header", async () => {
   let receivedAuth = "";

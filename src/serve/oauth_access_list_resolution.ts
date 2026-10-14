@@ -27,12 +27,17 @@
  * found maps to the time it was first seen missing (`unresolved:<name>`,
  * `unresolved:allowed:<name>`).
  *
- * A name is only ever skipped on a definitive not-found, and only when it
- * has never resolved. A name that resolved before keeps its cached sub if
- * the provider now reports it not found: dropping it would make
- * `materializeAdmins` revoke the grant on a single bad answer. The sub still
- * identifies the original account, so whoever registers the name afterwards
- * does not inherit it. Any other lookup failure aborts startup.
+ * A resolved name is pinned, as grant-file usernames are: it is never
+ * looked up again, so a list edit cannot re-point it to whoever registers
+ * the name after a rename or deletion, and a credential that cannot look
+ * users up only matters for names being added. A name is skipped on a
+ * definitive not-found. Any other lookup failure aborts startup.
+ *
+ * An entry must be a plain username. Admins, allowed-users and not-found
+ * markers share one cache map, so an entry containing a colon could spell
+ * another entry's key (`allowed:bob` is allowed-user bob's sub) and pick up
+ * its sub. Such an entry is skipped without a lookup and records nothing:
+ * provider usernames never contain a colon.
  *
  * A skipped name stays skipped: restarts and edits to other entries never
  * look it up again. Removing it from the list drops its record, so adding
@@ -42,17 +47,20 @@
  */
 
 import { UserError } from "../domain/errors.ts";
-import { UsernameNotFoundError } from "./oauth_client.ts";
+import {
+  UsernameLookupRefusedError,
+  UsernameNotFoundError,
+} from "./oauth_client.ts";
 
 /** Which access list an entry came from. */
 export type AccessListKind = "admin" | "allowed-user";
 
 /**
  * How startup resolves the lists:
- * - `full`: some name has no record in the cache (it was added). Names with
- *   a resolved record are looked up again; names recorded as not found stay
- *   skipped without a lookup.
- * - `cached`: every name has a record. No lookups.
+ * - `full`: some plain name has no record in the cache (it was added). Only
+ *   those names are looked up; resolved names keep their cached sub and
+ *   names recorded as not found stay skipped.
+ * - `cached`: every plain name has a record. No lookups.
  */
 export type ResolutionMode = "full" | "cached";
 
@@ -65,9 +73,14 @@ export interface UnresolvedEntry {
   /** The entry exactly as configured, e.g. `user:alice`. */
   readonly entry: string;
   readonly username: string;
-  /** When the provider first reported the name as not found. */
-  readonly notFoundSince: string;
-  /** Why the lookup failed; absent when the cache was used. */
+  /**
+   * When the provider first reported the name as not found; absent for an
+   * entry that is not a plain username, which is never looked up.
+   */
+  readonly notFoundSince?: string;
+  /**
+   * Why the entry was skipped; absent when a recorded not-found was used.
+   */
   readonly reason?: string;
 }
 
@@ -79,11 +92,6 @@ export interface ResolvedEntry {
   readonly sub: string;
   /** True when the sub came from the cache rather than a lookup. */
   readonly fromCache: boolean;
-  /**
-   * Set when the lookup reported the name not found and the cached sub was
-   * kept instead; holds the lookup error.
-   */
-  readonly notFoundNow?: string;
 }
 
 export interface AccessListResolution {
@@ -135,6 +143,19 @@ export function unresolvedCacheKey(
 }
 
 /**
+ * Why an entry cannot be a provider username, or `undefined` when it is a
+ * plain username. Provider usernames never contain a colon, and one that
+ * did could spell another entry's cache key.
+ */
+function notPlainUsernameReason(username: string): string | undefined {
+  if (!username.includes(":")) return undefined;
+  if (username.startsWith("group:") || username.startsWith("idp-group:")) {
+    return "groups are not supported in --admins / --allowed-users with --auth-mode oauth; list the user names instead";
+  }
+  return "not a plain username: it contains ':', so it can never match a provider account";
+}
+
+/**
  * Reads a cache entry. The cache comes from `JSON.parse`, so a plain index
  * would find `Object.prototype` members for names like `constructor`.
  */
@@ -181,6 +202,7 @@ export function listUncachedNames(
 ): string[] {
   return configuredEntries(admins, allowedUsers)
     .filter(({ kind, username }) =>
+      notPlainUsernameReason(username) === undefined &&
       !cached(cache, resolvedCacheKey(kind, username)) &&
       !cached(cache, unresolvedCacheKey(kind, username))
     )
@@ -223,19 +245,9 @@ export async function resolveAccessLists(
   const resolved: ResolvedEntry[] = [];
   const unresolved: UnresolvedEntry[] = [];
 
-  const accept = (
-    entry: ConfiguredEntry,
-    sub: string,
-    fromCache: boolean,
-    notFoundNow?: string,
-  ) => {
+  const accept = (entry: ConfiguredEntry, sub: string, fromCache: boolean) => {
     nextCache[resolvedCacheKey(entry.kind, entry.username)] = sub;
-    resolved.push({
-      ...entry,
-      sub,
-      fromCache,
-      ...(notFoundNow !== undefined ? { notFoundNow } : {}),
-    });
+    resolved.push({ ...entry, sub, fromCache });
     usernamesBySub[sub] = entry.username;
     if (entry.kind === "admin") {
       admins.push(`user:${sub}`);
@@ -259,6 +271,13 @@ export async function resolveAccessLists(
   };
 
   for (const entry of configuredEntries(input.admins, input.allowedUsers)) {
+    const notPlain = notPlainUsernameReason(entry.username);
+    if (notPlain !== undefined) {
+      // No cache read, no lookup and no record: the entry may spell
+      // another entry's cache key.
+      unresolved.push({ ...entry, reason: notPlain });
+      continue;
+    }
     const cachedSub = cached(
       cache,
       resolvedCacheKey(entry.kind, entry.username),
@@ -268,12 +287,12 @@ export async function resolveAccessLists(
       unresolvedCacheKey(entry.kind, entry.username),
     ) !== undefined;
 
-    if (mode === "cached" || (knownMissing && !cachedSub)) {
-      if (cachedSub) {
-        accept(entry, cachedSub, true);
-      } else {
-        skip(entry);
-      }
+    if (cachedSub) {
+      accept(entry, cachedSub, true);
+      continue;
+    }
+    if (mode === "cached" || knownMissing) {
+      skip(entry);
       continue;
     }
 
@@ -281,18 +300,18 @@ export async function resolveAccessLists(
       accept(entry, await resolve!(entry.username), false);
     } catch (err) {
       if (err instanceof UsernameNotFoundError) {
-        if (cachedSub) {
-          accept(entry, cachedSub, true, errorMessage(err));
-        } else {
-          skip(entry, errorMessage(err));
-        }
+        skip(entry, errorMessage(err));
         continue;
       }
       const label = entry.kind === "admin" ? "admin" : "allowed-user";
+      // A refusal already says which scope the credential needs.
+      const hint = err instanceof UsernameLookupRefusedError
+        ? ""
+        : ` Check that ${providerUrl} is reachable and that the credential can look up users, then retry.`;
       throw new UserError(
         `Failed to resolve ${label} '${entry.entry}': ${
           errorMessage(err)
-        }. Check that ${providerUrl} is reachable and that the credential can look up users, then retry.`,
+        }.${hint}`,
       );
     }
   }
@@ -415,7 +434,11 @@ export async function checkAccessLists(
     configured.admins,
     configured.allowedUsers,
   ).map(({ kind, entry, username }) => {
-    const sub = resolution.cache[resolvedCacheKey(kind, username)];
+    // An entry that is not a plain username has no record of its own; its
+    // key may be another entry's.
+    const sub = notPlainUsernameReason(username) === undefined
+      ? resolution.cache[resolvedCacheKey(kind, username)]
+      : undefined;
     return sub
       ? { kind, entry, username, status: "resolved" as const, sub }
       : { kind, entry, username, status: "not-found" as const };

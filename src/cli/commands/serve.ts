@@ -3912,15 +3912,7 @@ export const serveCommand = new Command()
       });
 
       for (const resolvedEntry of resolution.resolved) {
-        const { kind, entry, username, sub, fromCache, notFoundNow } =
-          resolvedEntry;
-        if (notFoundNow !== undefined) {
-          const list = kind === "admin"
-            ? "--admins / auth.admins"
-            : "--allowed-users / auth.allowed-users";
-          logger
-            .warn`Keeping ${entry} from ${list} as ${sub}: the provider now reports it not found (${notFoundNow}), but it resolved before. If the account was deleted or renamed, remove the name.`;
-        }
+        const { kind, username, sub, fromCache } = resolvedEntry;
         if (kind === "admin") {
           logger.info(
             fromCache
@@ -3938,7 +3930,8 @@ export const serveCommand = new Command()
         }
       }
       for (const u of resolution.unresolved) {
-        // A fresh 404 carries a reason; a recorded one does not.
+        // A fresh 404 or an entry that is not a plain username carries a
+        // reason; a recorded 404 does not.
         if (u.kind === "admin") {
           if (u.reason !== undefined) {
             logger
