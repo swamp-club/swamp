@@ -36,7 +36,8 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { ensureDirSync } from "@std/fs";
-import { join } from "@std/path";
+import { createHash } from "node:crypto";
+import { dirname, join } from "@std/path";
 import {
   restoreNamespace,
   SOLO_NAMESPACE,
@@ -93,6 +94,7 @@ import {
   litestreamStateDirName,
   replicationDirName,
 } from "./litestream/replication_files.ts";
+import { v3ReplicaSetting } from "./litestream/replica_setting.ts";
 
 /**
  * Thrown when a read-only command stages a change on a v3 datastore
@@ -111,6 +113,39 @@ export class ReadOnlyV3WriteError extends Error {
 
 /** The commit store's file at the root of a filesystem v3 datastore. */
 export const COMMITS_DB_FILE = "commits.db";
+
+/**
+ * The checkout directory that holds its own copies of replicated v3
+ * datastores' `commits.db` (swamp-club#3482), one subdirectory per
+ * datastore.
+ */
+export const V3_LOCAL_COPIES_DIR = "_datastore_v3_copies";
+
+/**
+ * The `commits.db` the checkout at `repoDir` uses for the v3 datastore at
+ * `datastorePath`. Without replication, the datastore's own, shared by
+ * every checkout. While the internal replica setting names a replica
+ * (swamp-club#3482), the checkout's own copy under `.swamp/`, keyed by the
+ * datastore's canonical path: each copy is restored from the replica and
+ * its writer replicates it, as each machine's copy is on a bucket.
+ */
+export function v3CommitsDbPath(
+  datastorePath: string,
+  repoDir: string,
+): string {
+  if (v3ReplicaSetting() === undefined) {
+    return join(datastorePath, COMMITS_DB_FILE);
+  }
+  const canonical = Deno.realPathSync(datastorePath);
+  const key = createHash("sha256").update(canonical).digest("hex")
+    .slice(0, 16);
+  return swampPath(
+    Deno.realPathSync(repoDir),
+    V3_LOCAL_COPIES_DIR,
+    key,
+    COMMITS_DB_FILE,
+  );
+}
 
 /** The cache root of namespace `namespace` in a checkout. */
 export function v3CacheRoot(repoDir: string, namespace: string): string {
@@ -145,6 +180,13 @@ export interface OpenV3DatastoreOptions {
    * checked before each commit is appended.
    */
   readonly assertWriterCurrent?: () => void;
+  /**
+   * Throws unless this checkout's copy of `commits.db` was made current
+   * under the writer lease this process holds (swamp-club#3482): checked
+   * before chunk collection, which deletes chunks no commit in the copy
+   * names.
+   */
+  readonly assertCopyCurrent?: () => void;
 }
 
 /**
@@ -174,6 +216,8 @@ export function datastoreKeyFilter(
 /** One checkout's handle on a v3 datastore. */
 export interface V3Datastore {
   readonly datastorePath: string;
+  /** The `commits.db` this handle opened: {@link v3CommitsDbPath}. */
+  readonly commitsDbPath: string;
   readonly commitStore: SqliteCommitStore;
   readonly storage: FileSystemStorage;
   readonly chunkStore: ChunkStore;
@@ -254,9 +298,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const namespace = options.namespace ?? "";
   const writer = options.writer ?? processCommitWriter();
   const admits = datastoreKeyFilter(options.directories, options.exclude);
-  const commitStore = SqliteCommitStore.open(
-    join(datastorePath, COMMITS_DB_FILE),
-  );
+  const commitsDbPath = v3CommitsDbPath(datastorePath, repoDir);
+  ensureDirSync(dirname(commitsDbPath));
+  const commitStore = SqliteCommitStore.open(commitsDbPath);
   const storage = new FileSystemStorage(datastorePath);
   const chunkStore = new ChunkStore(storage);
   const stateDir = readModelStateDir(repoDir);
@@ -291,6 +335,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   return {
     // The path as configured: the writer lock and callers key on it.
     datastorePath: options.datastorePath,
+    commitsDbPath,
     commitStore,
     storage,
     chunkStore,
@@ -357,6 +402,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       };
     },
     collectChunks(signal) {
+      options.assertCopyCurrent?.();
       return new ChunkCollector({
         commitStore,
         storage,
@@ -448,12 +494,16 @@ export async function isFreshV3Skeleton(
 
 /**
  * The namespaces that hold commits in the v3 datastore at `datastorePath`
- * (swamp-club#3301), sorted, the unnamespaced "" left out. Empty when the
- * datastore has no `commits.db` yet. The database is opened read-only, so
- * this never creates, migrates or locks it and runs beside a writer.
+ * (swamp-club#3301), as the checkout at `repoDir` sees it, sorted, the
+ * unnamespaced "" left out. Empty when there is no `commits.db` yet. The
+ * database is opened read-only, so this never creates, migrates or locks it
+ * and runs beside a writer.
  */
-export function listV3Namespaces(datastorePath: string): string[] {
-  const path = join(datastorePath, COMMITS_DB_FILE);
+export function listV3Namespaces(
+  datastorePath: string,
+  repoDir: string,
+): string[] {
+  const path = v3CommitsDbPath(datastorePath, repoDir);
   try {
     Deno.statSync(path);
   } catch (error) {
@@ -500,7 +550,13 @@ export async function initializeV3Datastore(
       writtenBy,
     });
   }
-  const store = SqliteCommitStore.open(join(datastorePath, COMMITS_DB_FILE));
-  await store.close();
+  // While replicating, each checkout keeps its own copy (swamp-club#3482):
+  // the datastore holds no commits.db.
+  if (v3ReplicaSetting() === undefined) {
+    const store = SqliteCommitStore.open(
+      join(datastorePath, COMMITS_DB_FILE),
+    );
+    await store.close();
+  }
   await Deno.mkdir(join(datastorePath, "_blobs"), { recursive: true });
 }

@@ -27,10 +27,6 @@
  * @module
  */
 
-import { join } from "@std/path";
-import { decideLineage } from "../../../domain/datastore_v3/replication_lineage.ts";
-import { getSwampLogger } from "../../logging/logger.ts";
-import { COMMITS_DB_FILE } from "../v3_datastore.ts";
 import { checkV3WriterLease } from "../v3_writer_lock.ts";
 import { defaultLitestreamBinaryProvider } from "./litestream_binary_provider.ts";
 import { unixLitestreamControl } from "./litestream_control_client.ts";
@@ -42,16 +38,7 @@ import {
   type ReplicationHandle,
   type ReplicatorDeps,
 } from "./litestream_replicator.ts";
-import {
-  ensureSharedDir,
-  readLineage,
-  removeLineage,
-  replicationPathsFor,
-  writeLineage,
-} from "./replication_files.ts";
-import { replicaRootOf, v3ReplicaSetting } from "./replica_setting.ts";
-
-const logger = getSwampLogger(["datastore", "v3", "replication"]);
+import { v3ReplicaSetting } from "./replica_setting.ts";
 
 export type { ReplicationHandle } from "./litestream_replicator.ts";
 
@@ -99,6 +86,18 @@ export function setV3ReplicationForTesting(
   syncDeadlineMs = options.syncDeadlineMs;
 }
 
+/** This process's replicator: one per process, shared by every writer. */
+export function v3Replicator(): LitestreamReplicator {
+  return theReplicator();
+}
+
+/** The hash-checked Litestream binary, or the test seam's. */
+export async function resolveV3LitestreamBinary(): Promise<string> {
+  return testDeps?.resolveBinary !== undefined
+    ? await testDeps.resolveBinary()
+    : (await defaultLitestreamBinaryProvider().resolve()).path;
+}
+
 function theReplicator(): LitestreamReplicator {
   replicator ??= new LitestreamReplicator({
     processes: hostLitestreamProcesses,
@@ -121,55 +120,22 @@ export function v3ReplicationEnabled(): boolean {
 }
 
 /**
- * Records the lineage of the lease this process took at `fence` on the
- * datastore at `datastorePath`, so a command that crashes is continued by
- * its successor. Best effort: a failure removes the record, which costs one
- * lineage restart, and never the lease.
- */
-export async function recordV3Lineage(
-  datastorePath: string,
-  fence: number,
-): Promise<void> {
-  const replica = v3ReplicaSetting();
-  if (replica === undefined) return;
-  let paths;
-  try {
-    paths = await replicationPathsFor(join(datastorePath, COMMITS_DB_FILE));
-    if (await ensureSharedDir(paths) !== "own") return;
-    const decided = decideLineage(
-      await readLineage(paths),
-      replicaRootOf(replica),
-      fence,
-    );
-    if (decided.kind === "conflict") {
-      // Kept as it is: the writer refuses to replicate onto a used path.
-      logger
-        .warn`The writer lease of the v3 datastore at ${datastorePath} went back to fence ${fence}, where this copy's replication began before; its writers cannot replicate until that lineage's history is removed from the replica and ${paths.lineage} is deleted`;
-      return;
-    }
-    await writeLineage(paths, decided.lineage);
-  } catch (error) {
-    logger
-      .warn`Recording the replication lineage of the v3 datastore at ${datastorePath} failed; its next writer starts a new lineage: ${error}`;
-    if (paths !== undefined) await removeLineage(paths).catch(() => {});
-  }
-}
-
-/**
- * Holds the sidecar for this process's writer on the datastore at
- * `datastorePath`, at lease `fence`, or resolves with undefined when
- * replication is off.
+ * Holds the sidecar for this process's writer of the copy `commitsDb` of
+ * the datastore at `datastorePath`, at lease `fence`, or resolves with
+ * undefined when replication is off. The writer's lineage was prepared
+ * (`prepareV3WriterLineage`) once its copy was current.
  *
  * @throws V3ReplicationUnavailableError
  */
 export async function acquireV3Replication(
+  commitsDb: string,
   datastorePath: string,
   fence: number,
 ): Promise<ReplicationHandle | undefined> {
   const replica = v3ReplicaSetting();
   if (replica === undefined) return undefined;
   return await theReplicator().acquire({
-    commitsDb: join(datastorePath, COMMITS_DB_FILE),
+    commitsDb,
     replica,
     fence,
     // A writer that lost its lease reports nothing as replicated.

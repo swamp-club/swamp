@@ -40,6 +40,7 @@ import {
 import {
   datastoreKeyFilter,
   openV3Datastore,
+  v3CommitsDbPath,
   type V3Datastore,
 } from "./v3_datastore.ts";
 import {
@@ -53,12 +54,20 @@ import {
 } from "./v3_writer_lock.ts";
 import {
   acquireV3Replication,
-  recordV3Lineage,
   type ReplicationHandle,
   setV3SyncDeadline,
   v3ReplicationEnabled,
   v3SyncDeadlineMs,
 } from "./litestream/v3_replication.ts";
+import {
+  collectV3Lineages,
+  makeV3CopyCurrent,
+  prepareV3WriterLineage,
+  publishV3Head,
+  recordV3LeaseFence,
+  type V3Copy,
+  type V3CopyRefresh,
+} from "./litestream/v3_copy.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { isProcessGone } from "../runtime/process.ts";
 import {
@@ -94,6 +103,25 @@ const owedReplications = new Set<string>();
 
 /** Whether the lease listener that records replication lineages is set. */
 let lineageListening = false;
+
+/**
+ * The checkouts' copies this process made current (swamp-club#3482), by
+ * handle key: while replicating, a handle opens only on one of them.
+ */
+const currentCopies = new Set<string>();
+
+/** The copies this process restored, so their writers restart a lineage. */
+const restoredCopies = new Set<string>();
+
+/**
+ * The copies this process has used, by datastore, with their handle keys:
+ * kept across teardowns, so a later lease in the process still finds its
+ * copy's lineage.
+ */
+const copiesByDatastore = new Map<
+  string,
+  (V3Copy & { readonly key: string })[]
+>();
 
 /** Handles this process caught up while holding their writer lock. */
 const caughtUpWriters = new WeakSet<V3Datastore>();
@@ -133,15 +161,32 @@ export function v3DatastoreFor(
   config: FilesystemDatastoreConfig,
 ): V3Datastore {
   if (!lineageListening) {
-    // Every fence this process takes, the read-only recovery's included,
-    // continues or restarts the datastore's replication lineage. It does
-    // nothing while replication is off.
+    // A fence this process takes outside a writer's hold (the read-only
+    // recovery, serve's retake) continues the copy's lineage when it may
+    // (swamp-club#3482); a writer prepares its own once its copy is
+    // current. It does nothing while replication is off.
     lineageListening = true;
-    onV3LeaseTaken(recordV3Lineage);
+    onV3LeaseTaken(async (path, fence) => {
+      // Safe before the copy is current: a lineage continues only while
+      // no other writer started one since.
+      for (const copy of copiesByDatastore.get(resolve(path)) ?? []) {
+        await recordV3LeaseFence(copy, fence);
+      }
+    });
   }
   const key = handleKey(repoDir, config);
   let handle = opened.get(key);
   if (handle === undefined) {
+    if (v3ReplicationEnabled() && !currentCopies.has(key)) {
+      throw markErrorPaths(
+        new Error(
+          `Internal error: the copy of the v3 datastore at ${config.path} ` +
+            `for ${repoDir} was opened before it was made current; call ` +
+            `ensureV3CopyCurrent first`,
+        ),
+        [config.path, repoDir],
+      );
+    }
     handle = openV3Datastore({
       repoDir,
       datastorePath: config.path,
@@ -152,10 +197,84 @@ export function v3DatastoreFor(
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
       writerFence: () => v3WriterFence(config.path),
       assertWriterCurrent: () => assertV3WriterCurrent(config.path),
+      assertCopyCurrent: () => {
+        if (
+          v3ReplicationEnabled() &&
+          (!currentCopies.has(key) || !holdsV3WriterLock(config.path))
+        ) {
+          throw markErrorPaths(
+            new Error(
+              `Internal error: chunks of the v3 datastore at ${config.path} ` +
+                `are collected only from a copy made current under the ` +
+                `writer lease`,
+            ),
+            [config.path],
+          );
+        }
+      },
     });
     opened.set(key, handle);
   }
   return handle;
+}
+
+/** The checkout's copy of the datastore `config` names. */
+function copyOf(repoDir: string, config: { readonly path: string }): V3Copy {
+  return {
+    datastorePath: config.path,
+    repoDir,
+    commitsDb: v3CommitsDbPath(config.path, repoDir),
+  };
+}
+
+/**
+ * Makes the checkout's copy of the datastore `config` names current before
+ * this process reads or writes it (swamp-club#3482): restores it from the
+ * published lineage when it is missing, behind or holds another lineage.
+ * Once per process for a reader; a writer's hold and serve's retake make it
+ * current again. Does nothing while replication is off.
+ */
+export async function ensureV3CopyCurrent(
+  repoDir: string,
+  config: FilesystemDatastoreConfig,
+  mode: "read" | "write",
+): Promise<V3CopyRefresh> {
+  const key = handleKey(repoDir, config);
+  if (!v3ReplicationEnabled()) {
+    currentCopies.add(key);
+    return {};
+  }
+  if (mode === "read" && currentCopies.has(key)) return {};
+  // The handle's directory: the copy lives under the checkout's .swamp/.
+  await Deno.mkdir(resolve(repoDir), { recursive: true });
+  const copy = copyOf(repoDir, config);
+  const handle = opened.get(key);
+  const refresh = await makeV3CopyCurrent(copy, {
+    mode,
+    ...(handle !== undefined ? { openStore: handle.commitStore } : {}),
+    lockWaitMs: resolveLockTimeoutMs(),
+  });
+  currentCopies.add(key);
+  const datastore = resolve(config.path);
+  const copies = copiesByDatastore.get(datastore) ?? [];
+  if (!copies.some((known) => known.key === key)) {
+    copiesByDatastore.set(datastore, [...copies, { ...copy, key }]);
+  }
+  if (refresh.restored !== undefined) {
+    restoredCopies.add(key);
+    if (refresh.restored.readModelMoved) {
+      // The checkout applied commits the restore dropped or replaced: it
+      // is rebuilt from the restored commits, and the files no commit owns
+      // are removed, as after an interrupted writer. Only this process
+      // writes the checkout now: a writer holds the lease, and a reader
+      // restores only when no other process writes it.
+      await v3DatastoreFor(repoDir, config).recoverInterruptedWriter(0);
+    } else if (handle !== undefined) {
+      // An open handle's read model catches up with the restored commits.
+      await handle.catchUp();
+    }
+  }
+  return refresh;
 }
 
 /**
@@ -178,13 +297,44 @@ export async function holdV3Writer(
   // Before the handle opens: opening migrates commits.db, which a swamp from
   // before the lease, still writing, could not open again.
   await refuseLiveV3LegacyWriter(config.path);
+  const key = handleKey(repoDir, config);
   const release = await acquireV3WriterLock(config.path, {
     maxWaitMs: resolveLockTimeoutMs(),
     // Records the lease's fence in commits.db, so a writer that loses the
-    // lease later can commit nothing (swamp-club#3359).
-    fenceStore: v3DatastoreFor(repoDir, config).commitStore,
+    // lease later can commit nothing (swamp-club#3359). While replicating,
+    // the copy is opened only once it is current, and the first fence is
+    // raised then (swamp-club#3482); a retake raises it here.
+    fenceStore: {
+      writerFence: () =>
+        !v3ReplicationEnabled() || currentCopies.has(key)
+          ? v3DatastoreFor(repoDir, config).commitStore.writerFence()
+          : undefined,
+      raiseWriterFence: async (fence: number) => {
+        if (!v3ReplicationEnabled() || currentCopies.has(key)) {
+          await v3DatastoreFor(repoDir, config).commitStore.raiseWriterFence(
+            fence,
+          );
+        }
+      },
+    },
     ...(options.retakeLost === true ? { retakeLost: true } : {}),
   });
+  if (v3ReplicationEnabled()) {
+    try {
+      // The lease first, then the restore: every commit the previous writer
+      // acknowledged is in what this one restores (swamp-club#3482).
+      await ensureV3CopyCurrent(repoDir, config, "write");
+      const fence = v3WriterFence(config.path);
+      if (fence !== undefined) {
+        await v3DatastoreFor(repoDir, config).commitStore.raiseWriterFence(
+          fence,
+        );
+      }
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  }
   const sidecar = writerCheckoutPath(config.path);
   const checkout = handleKey(repoDir, config);
   let marking = markedCheckouts.get(checkout);
@@ -212,9 +362,19 @@ export async function holdV3Writer(
     // Once the checkout is recovered and marked: a sidecar for this hold's
     // fence, when replication is on (swamp-club#3416).
     const fence = v3WriterFence(config.path);
+    if (fence !== undefined && v3ReplicationEnabled()) {
+      await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
+        restored: restoredCopies.has(key),
+      });
+      restoredCopies.delete(key);
+    }
     const replication = fence === undefined
       ? undefined
-      : await acquireV3Replication(config.path, fence);
+      : await acquireV3Replication(
+        v3DatastoreFor(repoDir, config).commitsDbPath,
+        config.path,
+        fence,
+      );
     if (replication !== undefined) {
       const datastore = resolve(config.path);
       replications.set(datastore, [
@@ -394,13 +554,23 @@ export async function v3RepositoryFactoryConfig(
         "managedConfig off.",
     );
   }
+  const writer = holdsV3WriterLock(config.path);
+  // A reader's copy is made current first (swamp-club#3482), unless another
+  // process writes this checkout: that writer keeps it current.
+  if (
+    !writer && v3ReplicationEnabled() &&
+    await anotherProcessWritesCheckout(repoDir, config.path)
+  ) {
+    currentCopies.add(handleKey(repoDir, config));
+  } else if (!writer) {
+    await ensureV3CopyCurrent(repoDir, config, "read");
+  }
   const handle = v3DatastoreFor(repoDir, config);
   // In the checkout another process is writing, its files are already the
   // newest: catching up would replay older commits over them. A writing
   // process catches up once: after that its own files are the newest too,
   // and a context it opens mid-command must not replay a commit over a file
   // it has rewritten since.
-  const writer = holdsV3WriterLock(config.path);
   if (!writer) {
     // A read-only command recovers a checkout whose writer ended without
     // tearing down, when it can take the writer lock (swamp-club#3299). A
@@ -450,12 +620,15 @@ export async function closeV3Datastores(): Promise<void> {
   // compaction's included (swamp-club#3416). It comes before the stores
   // close: it makes Litestream open commits.db, so swamp's close is not the
   // last one and the WAL survives for the next sidecar start.
-  const held = [...replications.values()];
+  const heldEntries = [...replications.entries()];
+  const held = heldEntries.map(([, uses]) => uses);
   const owed = [...owedReplications].filter((key) => !replications.has(key));
   replications.clear();
   owedReplications.clear();
   const synced = await Promise.allSettled([
-    ...held.map((uses) => uses[0].sync(v3SyncDeadlineMs())),
+    ...heldEntries.map(([datastore, uses]) =>
+      syncAndPublish(datastore, uses[0], handles, v3SyncDeadlineMs())
+    ),
     ...owed.map((datastore) =>
       Promise.reject(
         markErrorPaths(
@@ -470,6 +643,8 @@ export async function closeV3Datastores(): Promise<void> {
     ),
   ]);
   setV3SyncDeadline(undefined);
+  currentCopies.clear();
+  restoredCopies.clear();
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
   const closed = await Promise.allSettled(
@@ -492,6 +667,50 @@ export async function closeV3Datastores(): Promise<void> {
   }
 }
 
+/**
+ * Syncs the sidecar `use` holds for `datastore` and, between the sync and
+ * the lease check, publishes the head it confirmed (swamp-club#3482): the
+ * last commit before the sync is the high-water mark. Collects the
+ * lineages a first confirmation replaced once the check passed.
+ */
+async function syncAndPublish(
+  datastore: string,
+  use: ReplicationHandle,
+  handles: readonly V3Datastore[],
+  deadlineMs: number,
+): Promise<void> {
+  const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
+  const copy = handle === undefined
+    ? undefined
+    : (copiesByDatastore.get(datastore) ?? []).find((known) =>
+      known.commitsDb === handle.commitsDbPath
+    );
+  const writerFence = handle === undefined
+    ? undefined
+    : v3WriterFence(handle.datastorePath);
+  if (handle === undefined || copy === undefined || writerFence === undefined) {
+    await use.sync(deadlineMs);
+    return;
+  }
+  const mark = handle.commitStore.highWaterMark();
+  let first = false;
+  await use.sync(deadlineMs, {
+    beforeLeaseCheck: async (txid) => {
+      first = await publishV3Head(copy, {
+        lineageFence: use.lineageFence,
+        writerFence,
+        txid,
+        mark,
+      });
+    },
+  });
+  publishedMarks.set(datastore, mark.cursor);
+  if (first) await collectV3Lineages(copy, use.lineageFence);
+}
+
+/** The high-water mark each datastore's head was last published at. */
+const publishedMarks = new Map<string, number>();
+
 /** How often serve checks that its Litestream sidecar still answers. */
 export const SERVE_REPLICATION_PROBE_INTERVAL_MS = 30_000;
 
@@ -511,11 +730,14 @@ export interface V3ReplicationUpkeep {
  * replication is off.
  */
 export function startV3ReplicationUpkeep(
-  datastorePath: string,
+  repoDir: string,
+  config: FilesystemDatastoreConfig,
   options: { readonly probeIntervalMs?: number } = {},
 ): V3ReplicationUpkeep {
   if (!v3ReplicationEnabled()) return { stop: () => Promise.resolve() };
+  const datastorePath = config.path;
   const key = resolve(datastorePath);
+  const copyKey = handleKey(repoDir, config);
   let stopped = false;
   let replacing: Promise<void> | undefined;
   let probing: Promise<void> | undefined;
@@ -532,7 +754,24 @@ export function startV3ReplicationUpkeep(
       owedReplications.add(key);
       const fence = v3WriterFence(datastorePath);
       if (fence === undefined || stopped) return;
-      const next = await acquireV3Replication(datastorePath, fence);
+      // A retake may follow another writer's commits: the copy is made
+      // current and the lineage prepared before the sidecar is held again,
+      // as a writer's hold does (swamp-club#3482). The restore updates
+      // serve's open store in place.
+      const refresh = await ensureV3CopyCurrent(repoDir, config, "write");
+      const handle = v3DatastoreFor(repoDir, config);
+      if (refresh.restored !== undefined) {
+        await handle.commitStore.raiseWriterFence(fence);
+      }
+      await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
+        restored: restoredCopies.has(copyKey),
+      });
+      restoredCopies.delete(copyKey);
+      const next = await acquireV3Replication(
+        handle.commitsDbPath,
+        datastorePath,
+        fence,
+      );
       if (next !== undefined) {
         // Merged: a writer hold taken meanwhile keeps its own entry, which
         // the closing teardown releases.
@@ -554,7 +793,31 @@ export function startV3ReplicationUpkeep(
     if (stopped || probing !== undefined || replacing !== undefined) return;
     probing = (async () => {
       const current = replications.get(key)?.[0];
-      if (current === undefined || !await current.probe()) replace();
+      if (current === undefined || !await current.probe()) {
+        replace();
+        return;
+      }
+      // Serve's commits replicate passively; a head is published whenever
+      // the last commit moved, so a takeover after serve dies keeps every
+      // commit up to the last probe (swamp-club#3482).
+      const handle = opened.get(copyKey);
+      if (
+        handle === undefined ||
+        handle.commitStore.highWaterMark().cursor === publishedMarks.get(key)
+      ) {
+        return;
+      }
+      try {
+        await syncAndPublish(
+          key,
+          current,
+          [handle],
+          SERVE_REPLICATION_PROBE_INTERVAL_MS,
+        );
+      } catch (error) {
+        logger
+          .warn`Publishing the replicated state of the v3 datastore at ${datastorePath} failed; the next probe retries: ${error}`;
+      }
     })().catch((error) => {
       logger.debug`Probing the Litestream sidecar failed: ${error}`;
     }).finally(() => {

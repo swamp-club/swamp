@@ -64,6 +64,7 @@ export interface NamespaceListDeps {
  */
 export async function createNamespaceListDeps(
   config: DatastoreConfig,
+  repoDir: string,
 ): Promise<NamespaceListDeps> {
   const unregistered = (namespace: string) => ({
     namespace,
@@ -94,7 +95,7 @@ export async function createNamespaceListDeps(
     return {
       getCurrentNamespace: () => config.namespace,
       listNamespaces: () => {
-        const namespaces = listV3Namespaces(config.path);
+        const namespaces = listV3Namespaces(config.path, repoDir);
         if (config.namespace && !namespaces.includes(config.namespace)) {
           namespaces.push(config.namespace);
           namespaces.sort();

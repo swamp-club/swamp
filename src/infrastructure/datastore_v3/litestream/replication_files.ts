@@ -29,8 +29,11 @@
  *   shared files: `supervisor.lock` (held by the running supervisor for its
  *   whole life, the liveness signal), `presence.json` (the pidfile, written
  *   only by the lock holder), `replace-<pid>` marks, `use.lock` (shared by
- *   commands while they use the sidecar) and `lineage.json`. The directory
- *   and the presence record are trusted only when this user owns them.
+ *   commands while they use the sidecar) and `lineage.json`; and, since
+ *   swamp-club#3482, `copy.json` (which lineage and TXID the copy holds) and
+ *   `swap.lock` (held shared by every process with the copy open, and
+ *   exclusively by a restore that replaces it). The directory and the
+ *   presence record are trusted only when this user owns them.
  * - In a per-user directory, `/tmp/swamp-<uid>/<hash>/`, created 0700 and
  *   checked before every use, what a process trusts for paths: the
  *   Litestream config and the control socket. Another user who can write a
@@ -45,6 +48,11 @@ import {
   parseReplicationLineage,
   type ReplicationLineage,
 } from "../../../domain/datastore_v3/replication_lineage.ts";
+import {
+  type LocalCopyState,
+  parseLocalCopyState,
+  serializeLineageRecord,
+} from "../../../domain/datastore_v3/published_lineage.ts";
 import { atomicWriteTextFile } from "../../persistence/atomic_write.ts";
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
@@ -67,6 +75,10 @@ export interface ReplicationPaths {
   readonly presence: string;
   readonly useLock: string;
   readonly lineage: string;
+  /** Which lineage, up to which TXID, the copy holds (swamp-club#3482). */
+  readonly copy: string;
+  /** Shared while a process has the copy open; exclusive for a restore. */
+  readonly swapLock: string;
   readonly privateDir: string;
   readonly config: string;
   readonly socket: string;
@@ -92,8 +104,9 @@ export function defaultPrivateRoot(): string {
 }
 
 /**
- * The replication paths of the `commits.db` at `commitsDbPath`, which must
- * exist. `privateRoot` defaults to {@link defaultPrivateRoot}.
+ * The replication paths of the `commits.db` at `commitsDbPath`, whose
+ * directory must exist; the database itself may not yet (a copy about to
+ * be restored). `privateRoot` defaults to {@link defaultPrivateRoot}.
  *
  * @throws UserError when the socket path would pass the AF_UNIX limit
  */
@@ -101,7 +114,7 @@ export async function replicationPathsFor(
   commitsDbPath: string,
   privateRoot: string = defaultPrivateRoot(),
 ): Promise<ReplicationPaths> {
-  const commitsDb = await Deno.realPath(commitsDbPath);
+  const commitsDb = await canonicalDatabasePath(commitsDbPath);
   const sharedDir = join(
     dirname(commitsDb),
     replicationDirName(basename(commitsDb)),
@@ -124,10 +137,22 @@ export async function replicationPathsFor(
     presence: join(sharedDir, "presence.json"),
     useLock: join(sharedDir, "use.lock"),
     lineage: join(sharedDir, "lineage.json"),
+    copy: join(sharedDir, "copy.json"),
+    swapLock: join(sharedDir, "swap.lock"),
     privateDir,
     config: join(privateDir, "litestream.yml"),
     socket,
   };
+}
+
+/** The database's canonical path, through its directory when it is missing. */
+async function canonicalDatabasePath(path: string): Promise<string> {
+  try {
+    return await Deno.realPath(path);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return join(await Deno.realPath(dirname(path)), basename(path));
+  }
 }
 
 async function shortHash(text: string): Promise<string> {
@@ -364,6 +389,27 @@ export async function removeLineage(
   }
 }
 
+/** Reads `copy.json`; an unreadable record means the copy's state is unknown. */
+export async function readCopyState(
+  paths: Pick<ReplicationPaths, "copy">,
+): Promise<LocalCopyState | undefined> {
+  try {
+    return parseLocalCopyState(
+      JSON.parse(await Deno.readTextFile(paths.copy)),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes `copy.json` by temp file and rename. */
+export async function writeCopyState(
+  paths: Pick<ReplicationPaths, "copy">,
+  state: LocalCopyState,
+): Promise<void> {
+  await atomicWriteTextFile(paths.copy, serializeLineageRecord(state));
+}
+
 /**
  * Litestream's config for one database: its control socket and one replica
  * at `replicaPath`. Strings are JSON-quoted, which YAML reads as they are.
@@ -376,14 +422,38 @@ export function renderLitestreamConfig(
   replicaPath: string,
 ): string {
   const q = (value: string) => JSON.stringify(value);
-  const lines = [
+  return [
     "socket:",
     "  enabled: true",
     `  path: ${q(paths.socket)}`,
+    ...databaseConfigLines(paths.commitsDb, replica, replicaPath),
+  ].join("\n") + "\n";
+}
+
+/**
+ * Litestream's config for restoring one database from `replicaPath`
+ * (swamp-club#3482): the replica alone, no control socket.
+ */
+export function renderLitestreamRestoreConfig(
+  commitsDb: string,
+  replica: V3ReplicaSetting,
+  replicaPath: string,
+): string {
+  return databaseConfigLines(commitsDb, replica, replicaPath).join("\n") +
+    "\n";
+}
+
+function databaseConfigLines(
+  commitsDb: string,
+  replica: V3ReplicaSetting,
+  replicaPath: string,
+): string[] {
+  const q = (value: string) => JSON.stringify(value);
+  const lines = [
     "logging:",
     "  level: warn",
     "dbs:",
-    `  - path: ${q(paths.commitsDb)}`,
+    `  - path: ${q(commitsDb)}`,
     "    replica:",
     `      type: ${replica.type}`,
     `      path: ${q(replicaPath)}`,
@@ -398,7 +468,7 @@ export function renderLitestreamConfig(
       lines.push("      force-path-style: true");
     }
   }
-  return lines.join("\n") + "\n";
+  return lines;
 }
 
 /** The path Litestream replicates to, for the lineage at `lineagePath`. */

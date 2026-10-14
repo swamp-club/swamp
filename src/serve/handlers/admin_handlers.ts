@@ -2711,7 +2711,10 @@ export async function handleDatastoreNamespaceList(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createNamespaceListDeps(ctx.datastoreConfig);
+    const deps = await createNamespaceListDeps(
+      ctx.datastoreConfig,
+      ctx.repoDir,
+    );
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

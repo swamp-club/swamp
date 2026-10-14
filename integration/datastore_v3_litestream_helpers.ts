@@ -28,11 +28,12 @@
  * @module
  */
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
   initializeV3Datastore,
+  v3CommitsDbPath,
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
   closeV3Datastores,
@@ -113,15 +114,25 @@ export async function withReplicationEnv(
   const replicaRoot = join(root, "replica");
   const privateRoot = join(root, "priv");
   await initializeV3Datastore(datastorePath, "test");
+  const repoDir = join(root, "repo");
+  await Deno.mkdir(repoDir, { recursive: true });
+  let paths: Promise<ReplicationPaths> | undefined;
   const env: ReplicationEnv = {
     root,
     datastorePath,
-    repoDir: join(root, "repo"),
+    repoDir,
     replicaRoot,
     privateRoot,
     config: { type: "filesystem", path: datastorePath },
+    // The checkout's own copy while replicating (swamp-club#3482),
+    // computed once inside the replica setting, so the cleanup outside it
+    // finds the same sidecar.
     paths: () =>
-      replicationPathsFor(join(datastorePath, "commits.db"), privateRoot),
+      paths ??= (async () => {
+        const commitsDb = v3CommitsDbPath(datastorePath, repoDir);
+        await Deno.mkdir(dirname(commitsDb), { recursive: true });
+        return await replicationPathsFor(commitsDb, privateRoot);
+      })(),
   };
   setV3ReplicationForTesting(
     {
@@ -145,7 +156,10 @@ export async function withReplicationEnv(
   try {
     await withMockedEnv(
       { [V3_REPLICA_ENV]: JSON.stringify({ type: "file", path: replicaRoot }) },
-      () => fn(env),
+      async () => {
+        await env.paths();
+        await fn(env);
+      },
     );
   } finally {
     await closeV3Datastores().catch(() => {});
@@ -205,7 +219,7 @@ export async function writeCommand(
 
 /** Makes `commits` commits through the held writer's engine. */
 export async function commitIn(
-  env: ReplicationEnv,
+  env: Pick<ReplicationEnv, "repoDir" | "config">,
   commits: number,
   bytes = 64,
 ): Promise<void> {
@@ -238,6 +252,22 @@ export function commitCount(dbPath: string): number {
     return (db.prepare("SELECT count(*) AS n FROM commits").get() as {
       n: number;
     }).n;
+  } finally {
+    db.close();
+  }
+}
+
+/** A database's logical size, its WAL's committed pages included. */
+export function logicalBytes(dbPath: string): number {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const pages = (db.prepare("PRAGMA page_count").get() as {
+      page_count: number;
+    }).page_count;
+    const size = (db.prepare("PRAGMA page_size").get() as {
+      page_size: number;
+    }).page_size;
+    return pages * size;
   } finally {
     db.close();
   }

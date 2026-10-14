@@ -701,3 +701,60 @@ Deno.test("datastore v3: only replica_setting.ts reads the internal replica sett
       "internal setting that turns it on (swamp-club#3416).",
   );
 });
+
+/**
+ * Production files that name `commits.db` (swamp-club#3482): only
+ * `v3CommitsDbPath` decides which one a checkout opens, the datastore's or,
+ * while replicating, the checkout's own copy.
+ */
+const PINNED_COMMITS_DB_NAMERS: readonly string[] = [
+  "src/infrastructure/datastore_v3/v3_datastore.ts",
+];
+
+Deno.test("datastore v3: only v3_datastore.ts names commits.db", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const source = await Deno.readTextFile(filePath);
+    if (source.includes("COMMITS_DB_FILE") || source.includes('"commits.db"')) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_COMMITS_DB_NAMERS,
+    "Production files naming commits.db",
+    "Open the commit store through v3CommitsDbPath (or a V3Datastore's\n" +
+      "commitsDbPath): while replicating, each checkout has its own copy.",
+  );
+});
+
+/**
+ * Production callers of `v3DatastoreFor` (swamp-club#3482). While
+ * replicating it opens only a copy this process made current, so each
+ * caller must run after a repository context, a writer hold or serve's
+ * start has done that.
+ */
+const PINNED_V3_DATASTORE_FOR_CALLERS: readonly string[] = [
+  "src/cli/commands/datastore_gc.ts",
+  "src/cli/commands/datastore_status.ts",
+  "src/cli/commands/serve.ts",
+  "src/infrastructure/datastore_v3/v3_config_adoption.ts",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/serve/handlers/admin_handlers.ts",
+];
+
+Deno.test("datastore v3: v3DatastoreFor's callers are pinned", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if ((await Deno.readTextFile(filePath)).includes("v3DatastoreFor(")) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_V3_DATASTORE_FOR_CALLERS,
+    "Production callers of v3DatastoreFor",
+    "Make the checkout's copy current first (a repository context, a writer\n" +
+      "hold, or ensureV3CopyCurrent), then pin the caller here.",
+  );
+});

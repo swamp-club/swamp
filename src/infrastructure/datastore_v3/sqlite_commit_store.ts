@@ -45,7 +45,11 @@
  * @module
  */
 
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import {
+  DatabaseSync,
+  type SQLInputValue,
+  type StatementSync,
+} from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
@@ -75,6 +79,7 @@ import type {
   CompactionRetention,
 } from "../../domain/datastore_v3/compaction_policy.ts";
 import type { FileOwnership } from "../../domain/datastore_v3/materialisation.ts";
+import type { HighWaterMark } from "../../domain/datastore_v3/published_lineage.ts";
 import {
   type DataMetadata,
   DataMetadataSchema,
@@ -320,6 +325,33 @@ export interface SqliteCommitStoreOptions {
    * {@link DEFAULT_SNAPSHOT_INTERVAL}.
    */
   readonly snapshotInterval?: number;
+}
+
+/** How a store stands against a published {@link HighWaterMark}. */
+export type MarkCheck = "match" | "mismatch" | "compacted-past";
+
+/**
+ * {@link SqliteCommitStore.truncateAfter} refused a high-water mark, and
+ * changed nothing (swamp-club#3482):
+ *
+ * - `compacted-past`: commits above the mark were folded into the compacted
+ *   base, or a partition's history below its snapshot was, so the store
+ *   cannot be taken back to the mark;
+ * - `mismatch`: the store holds a different commit at the mark, or none at
+ *   or past it (the copy misses acknowledged commits).
+ */
+export class CommitStoreTruncateRefusedError extends Error {
+  readonly reason: "compacted-past" | "mismatch";
+
+  constructor(reason: "compacted-past" | "mismatch", mark: HighWaterMark) {
+    super(
+      reason === "compacted-past"
+        ? `commits.db cannot be truncated to cursor ${mark.cursor}: commits after it were compacted`
+        : `commits.db cannot be truncated to cursor ${mark.cursor}: it does not hold the commit the high-water mark names`,
+    );
+    this.name = "CommitStoreTruncateRefusedError";
+    this.reason = reason;
+  }
 }
 
 interface CommitRow {
@@ -689,9 +721,14 @@ export class SqliteCommitStore implements CommitStore {
     key: PartitionKey,
     upTo = Number.MAX_SAFE_INTEGER,
   ): Promise<Partition> {
-    const snapshot = this.#selectSnapshot.get(namespace, key.toString()) as
+    const stored = this.#selectSnapshot.get(namespace, key.toString()) as
       | { seq: number; body: string }
       | undefined;
+    // A snapshot past `upTo` holds state the rebuild must not reach: only a
+    // truncation (truncateAfter) asks for that, and replays from seq 1.
+    const snapshot = stored !== undefined && stored.seq <= upTo
+      ? stored
+      : undefined;
     let partition: Partition;
     if (snapshot === undefined) {
       partition = Partition.empty(key);
@@ -1069,6 +1106,249 @@ export class SqliteCommitStore implements CommitStore {
     }));
   }
 
+  /**
+   * The store's last commit position (swamp-club#3482): the highest cursor
+   * still accounted for, from the stored commits, else the compaction point,
+   * else 0; with the commit at it when that commit is still stored. Read
+   * from the rows, never from `sqlite_sequence`, which a truncation leaves
+   * ahead of them.
+   */
+  highWaterMark(): HighWaterMark {
+    this.#assertOpen();
+    return this.#readTransaction(() => {
+      const row = this.#db.prepare(
+        "SELECT cursor, namespace, partition, seq, txn_id FROM commits ORDER BY cursor DESC LIMIT 1",
+      ).get() as Omit<CommitRow, "body"> | undefined;
+      if (row === undefined) return { cursor: this.#point() };
+      return {
+        cursor: row.cursor,
+        commit: {
+          namespace: row.namespace,
+          partition: row.partition,
+          seq: row.seq,
+          txnId: row.txn_id,
+        },
+      };
+    });
+  }
+
+  /**
+   * How the store stands against `mark` (swamp-club#3482):
+   *
+   * - `compacted-past` when the compaction point is past the mark, or a
+   *   partition with commits past the mark was compacted and its only
+   *   snapshot is past the mark too: its state at the mark is gone;
+   * - `mismatch` when the store holds another commit than `mark.commit` at
+   *   the mark's cursor (a compacted one is matched by its txnId), or holds
+   *   no commit at or past a cursor above the compaction point: it misses
+   *   commits the writer acknowledged;
+   * - `match` otherwise: {@link truncateAfter} can take the store to it.
+   */
+  checkMark(mark: HighWaterMark): MarkCheck {
+    this.#assertOpen();
+    requireMark(mark);
+    return this.#readTransaction(() => this.#checkMark(mark));
+  }
+
+  /** {@link checkMark}, inside the caller's transaction. */
+  #checkMark(mark: HighWaterMark): MarkCheck {
+    const point = this.#point();
+    if (point > mark.cursor) return "compacted-past";
+    const commit = mark.commit;
+    if (commit !== undefined) {
+      const row = this.#db.prepare(
+        "SELECT namespace, partition, seq, txn_id FROM commits WHERE cursor = ?",
+      ).get(mark.cursor) as Omit<CommitRow, "cursor" | "body"> | undefined;
+      const found = row !== undefined
+        ? row.namespace === commit.namespace &&
+          row.partition === commit.partition && row.seq === commit.seq &&
+          row.txn_id === commit.txnId
+        // The mark's commit may be the last one compaction folded.
+        : mark.cursor <= point &&
+          (this.#db.prepare(
+              "SELECT seq FROM compacted_txns WHERE namespace = ? AND partition = ? AND txn_id = ?",
+            ).get(commit.namespace, commit.partition, commit.txnId) as
+              | { seq: number }
+              | undefined)?.seq === commit.seq;
+      if (!found) return "mismatch";
+    }
+    if (mark.cursor > point) {
+      const reaches = this.#db.prepare(
+        "SELECT 1 AS found FROM commits WHERE cursor >= ? LIMIT 1",
+      ).get(mark.cursor) !== undefined;
+      if (!reaches) return "mismatch";
+    }
+    // A partition is rebuilt from its snapshot, or from seq 1. One whose
+    // early commits were compacted and whose snapshot is past the mark could
+    // not be rebuilt at the mark: its state there was never kept.
+    const unrebuildable = this.#db.prepare(
+      "SELECT 1 AS found FROM (" +
+        "SELECT namespace, partition, MIN(seq) AS first FROM commits WHERE cursor > ? GROUP BY namespace, partition" +
+        ") AS t JOIN partition_snapshots AS s USING (namespace, partition) " +
+        "JOIN compacted_partitions AS c USING (namespace, partition) " +
+        "WHERE s.seq >= t.first LIMIT 1",
+    ).get(mark.cursor) !== undefined;
+    return unrebuildable ? "compacted-past" : "match";
+  }
+
+  /**
+   * Takes the store back to `mark` (swamp-club#3482): removes every commit
+   * past its cursor, as if they were never appended. Their chunk references
+   * are dropped (a chunk left unnamed is released, as compaction releases
+   * one), each partition they touched gets the head its remaining commits
+   * give (or none, when it has none and was never compacted), and a
+   * snapshot past that head is replaced by the one an append would have
+   * left: at the last multiple of the snapshot interval at or below it, or
+   * none. The writer fence is left alone. Cursors are
+   * never reused: later appends land past the removed ones.
+   *
+   * Queued behind appends in flight, and applied in one write transaction.
+   * The removed commits are read, and the touched partitions rebuilt at
+   * their new heads, before it starts.
+   *
+   * @throws CommitStoreTruncateRefusedError unless {@link checkMark} is
+   *   `match`; nothing is changed
+   */
+  truncateAfter(mark: HighWaterMark): Promise<{ removed: number }> {
+    if (this.#closed) return Promise.reject(closedError());
+    try {
+      requireMark(mark);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const run = this.#queue.then(() => this.#truncate(mark));
+    this.#queue = run.catch(() => {});
+    return run;
+  }
+
+  async #truncate(mark: HighWaterMark): Promise<{ removed: number }> {
+    const rows = this.#readTransaction(() => {
+      const verdict = this.#checkMark(mark);
+      if (verdict !== "match") {
+        throw new CommitStoreTruncateRefusedError(verdict, mark);
+      }
+      return this.#db.prepare(
+        "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits WHERE cursor > ? ORDER BY cursor",
+      ).all(mark.cursor) as unknown as CommitRow[];
+    });
+    const commits: Commit[] = [];
+    for (const row of rows) commits.push(await parseRow(row));
+
+    // Each touched partition keeps the commits before its first removed one
+    // (a partition's seqs grow with its cursors).
+    const touched = new Map<string, Commit>();
+    for (const commit of commits) {
+      const key = cacheKeyOf(commit.namespace, commit.partition.toString());
+      if (!touched.has(key)) touched.set(key, commit);
+    }
+    const heads: {
+      cacheKey: string;
+      namespace: string;
+      partition: string;
+      partitionState: Partition;
+      /** The snapshot replacing one past the new head, if any. */
+      snapshot?: { seq: number; body: string };
+    }[] = [];
+    for (const [cacheKey, first] of touched) {
+      const keep = first.seq - 1;
+      const rebuilt = await this.#rebuild(
+        first.namespace,
+        first.partition,
+        keep,
+      );
+      if (rebuilt.seq !== keep) {
+        throw new Error(
+          `Partition ${first.partition} changed in commits.db during truncation: another process is writing the store`,
+        );
+      }
+      // The partition's one snapshot row is past the new head: put back the
+      // snapshot the appends up to it wrote last. A compacted partition's
+      // snapshot is never past it (checkMark refuses that).
+      const stored = this.#selectSnapshot.get(
+        first.namespace,
+        first.partition.toString(),
+      ) as { seq: number } | undefined;
+      const at = keep - keep % this.#snapshotInterval;
+      let snapshot: { seq: number; body: string } | undefined;
+      if (stored !== undefined && stored.seq > keep && at > 0) {
+        const state = at === keep ? rebuilt : await this.#rebuild(
+          first.namespace,
+          first.partition,
+          at,
+        );
+        snapshot = { seq: at, body: JSON.stringify(state.snapshot()) };
+      }
+      heads.push({
+        cacheKey,
+        namespace: first.namespace,
+        partition: first.partition.toString(),
+        partitionState: rebuilt,
+        snapshot,
+      });
+    }
+
+    const now = Date.now();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const verdict = this.#checkMark(mark);
+      if (verdict !== "match") {
+        throw new CommitStoreTruncateRefusedError(verdict, mark);
+      }
+      const tail = this.#db.prepare(
+        "SELECT COUNT(*) AS n, MAX(cursor) AS last FROM commits WHERE cursor > ?",
+      ).get(mark.cursor) as { n: number; last: number | null };
+      if (
+        tail.n !== rows.length ||
+        (tail.last ?? undefined) !== rows[rows.length - 1]?.cursor
+      ) {
+        throw new Error(
+          "The commits past the high-water mark changed during truncation: another process is writing the store",
+        );
+      }
+      for (const commit of commits) {
+        this.#base.releaseRefs(commit.namespace, commit.chunkRefs(), now);
+      }
+      this.#db.prepare("DELETE FROM commits WHERE cursor > ?").run(mark.cursor);
+      for (const { namespace, partition, partitionState, snapshot } of heads) {
+        if (
+          partitionState.seq === 0 &&
+          this.#compactedSeq(namespace, partition) === 0
+        ) {
+          this.#db.prepare(
+            "DELETE FROM partition_heads WHERE namespace = ? AND partition = ?",
+          ).run(namespace, partition);
+        } else {
+          this.#upsertHead.run(
+            namespace,
+            partition,
+            partitionState.seq,
+            partitionState.highestFence ?? null,
+          );
+        }
+        this.#db.prepare(
+          "DELETE FROM partition_snapshots WHERE namespace = ? AND partition = ? AND seq > ?",
+        ).run(namespace, partition, partitionState.seq);
+        if (snapshot !== undefined) {
+          this.#upsertSnapshot.run(
+            namespace,
+            partition,
+            snapshot.seq,
+            snapshot.body,
+          );
+        }
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      throw error;
+    } finally {
+      // Cached state of a touched partition is past its new head, or, after
+      // a failure, not trusted.
+      for (const { cacheKey } of heads) this.#cache.delete(cacheKey);
+    }
+    return { removed: rows.length };
+  }
+
   /** The compaction point; 0 before any compaction. */
   #point(): number {
     return (this.#selectPoint.get() as { point: number }).point;
@@ -1091,6 +1371,80 @@ export class SqliteCommitStore implements CommitStore {
     } catch (error) {
       rollbackQuietly(this.#db);
       throw error;
+    }
+  }
+
+  /**
+   * Installs the content of the restored `commits.db` at `path` into this
+   * store's database, in place (swamp-club#3482). The caller has checked and
+   * truncated the restored file; this makes the store's file hold exactly
+   * its content, in one write transaction, so every connection that has the
+   * file open keeps working and sees the change at once.
+   *
+   * The restored file is first opened as {@link open} opens one, so it is
+   * migrated to this schema; a newer schema is refused and nothing changes.
+   * Every table is copied row by row from a connection to the restored
+   * file (ATTACH DATABASE needs full permissions for the path, which the
+   * compiled binary does not have), `sqlite_sequence` last so cursors are
+   * never reused, and `writer_fence` like any other (the caller raises it
+   * after).
+   * Queued behind appends in flight. Rebuilt partitions are dropped.
+   */
+  replaceContentFrom(path: string): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    const run = this.#queue.then(() => this.#replaceContent(path));
+    this.#queue = run.catch(() => {});
+    return run;
+  }
+
+  #replaceContent(path: string): void {
+    // Opened as open() opens a store: migrated, or refused when newer.
+    const restored = openCommitsDatabase(path);
+    try {
+      // Read from a connection of its own: ATTACH DATABASE is disabled
+      // without full permissions for the path, which the compiled binary
+      // does not have.
+      restored.exec("BEGIN");
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        const tables = (this.#db.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' " +
+            "AND (name NOT LIKE 'sqlite\\_%' ESCAPE '\\' OR name = 'sqlite_sequence') " +
+            "ORDER BY name = 'sqlite_sequence', name",
+        ).all() as { name: string }[]).map((row) => row.name);
+        const present = new Set(
+          (restored.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table'",
+          ).all() as { name: string }[]).map((row) => row.name),
+        );
+        for (const table of tables) {
+          const name = quoteIdentifier(table);
+          this.#db.exec(`DELETE FROM ${name}`);
+          if (!present.has(table)) continue;
+          const columns = (this.#db.prepare(`PRAGMA table_info(${name})`)
+            .all() as { name: string }[]).map((column) => column.name);
+          const list = columns.map(quoteIdentifier).join(", ");
+          const insert = this.#db.prepare(
+            `INSERT INTO ${name} (${list}) VALUES (${
+              columns.map(() => "?").join(", ")
+            })`,
+          );
+          const select = restored.prepare(`SELECT ${list} FROM ${name}`);
+          select.setReadBigInts(true);
+          for (const row of select.iterate()) {
+            const values = row as Record<string, SQLInputValue>;
+            insert.run(...columns.map((column) => values[column]));
+          }
+        }
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        throw error;
+      }
+    } finally {
+      this.#cache.clear();
+      rollbackQuietly(restored);
+      restored.close();
     }
   }
 
@@ -1239,6 +1593,29 @@ function corrupt(row: CommitRow, detail: string): CommitStoreCorruptError {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** An SQL identifier, double-quoted. */
+function quoteIdentifier(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+/** Refuses a high-water mark that names no cursor, or names one badly. */
+function requireMark(mark: HighWaterMark): void {
+  if (!Number.isSafeInteger(mark.cursor) || mark.cursor < 0) {
+    throw new Error(
+      `A high-water mark's cursor must be a non-negative integer: ${mark.cursor}`,
+    );
+  }
+  const commit = mark.commit;
+  if (
+    commit !== undefined &&
+    (!Number.isSafeInteger(commit.seq) || commit.seq < 1)
+  ) {
+    throw new Error(
+      `A high-water mark's commit seq must be a positive integer: ${commit.seq}`,
+    );
+  }
 }
 
 function requirePositive(value: number, label: string): void {
@@ -1729,6 +2106,19 @@ class SqliteCompactedBase implements CompactedBaseWriter {
       | undefined;
     if (row?.blob == null) return [];
     return distinctChunks(BlobRef.fromJSON(JSON.parse(row.blob)));
+  }
+
+  /**
+   * Drops a truncated commit's references, outside any compaction batch: a
+   * chunk no longer named is released at `now` (epoch milliseconds).
+   */
+  releaseRefs(
+    namespace: string,
+    chunkRefs: readonly string[],
+    now: number,
+  ): void {
+    this.#now = now;
+    for (const sha256 of chunkRefs) this.#release(namespace, sha256);
   }
 
   /** Drops one reference; at zero the chunk is released. */

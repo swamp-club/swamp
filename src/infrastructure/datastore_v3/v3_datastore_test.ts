@@ -206,20 +206,23 @@ Deno.test("listV3Namespaces: names each namespace with commits, never the unname
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
-    assertEquals(listV3Namespaces(datastorePath), []);
+    assertEquals(listV3Namespaces(datastorePath, datastorePath), []);
 
     await commitIn(dir, datastorePath, "");
-    assertEquals(listV3Namespaces(datastorePath), []);
+    assertEquals(listV3Namespaces(datastorePath, datastorePath), []);
 
     await commitIn(dir, datastorePath, "team");
     await commitIn(dir, datastorePath, "infra");
-    assertEquals(listV3Namespaces(datastorePath), ["infra", "team"]);
+    assertEquals(listV3Namespaces(datastorePath, datastorePath), [
+      "infra",
+      "team",
+    ]);
   });
 });
 
 Deno.test("listV3Namespaces: a datastore with no commits.db lists nothing and gains none", async () => {
   await withTempDir((dir) => {
-    assertEquals(listV3Namespaces(dir), []);
+    assertEquals(listV3Namespaces(dir, dir), []);
     assertEquals(
       [...Deno.readDirSync(dir)].map((entry) => entry.name),
       [],
@@ -242,11 +245,14 @@ Deno.test("listV3Namespaces: reads a checkpointed commits.db without writing to 
     );
     const before = await Deno.readFile(dbPath);
 
-    assertEquals(listV3Namespaces(datastorePath), ["team"]);
+    assertEquals(listV3Namespaces(datastorePath, datastorePath), ["team"]);
 
     assertEquals(await Deno.readFile(dbPath), before);
     // A writer opens it afterwards as before.
     await commitIn(dir, datastorePath, "infra");
-    assertEquals(listV3Namespaces(datastorePath), ["infra", "team"]);
+    assertEquals(listV3Namespaces(datastorePath, datastorePath), [
+      "infra",
+      "team",
+    ]);
   });
 });

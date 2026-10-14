@@ -42,6 +42,7 @@ import {
   bytesUnder,
   commitCount,
   commitIn,
+  logicalBytes,
   presenceOf,
   restoredCommitCount,
   SIDECAR_TESTS_IGNORED,
@@ -53,6 +54,7 @@ import { replicaPathFor } from "../src/domain/datastore_v3/replication_lineage.t
 import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import {
   closeV3Datastores,
+  ensureV3CopyCurrent,
   holdV3Writer,
   startV3ReplicationUpkeep,
   v3DatastoreFor,
@@ -87,7 +89,7 @@ Deno.test({
         presence !== undefined,
         "the sidecar stays up for the next command",
       );
-      const local = commitCount(join(env.datastorePath, "commits.db"));
+      const local = commitCount((await env.paths()).commitsDb);
       assertEquals(local, 3);
       assertEquals(
         await restoredCommitCount(
@@ -332,8 +334,9 @@ Deno.test({
       await writeCommand(env, 40);
       const first = (await presenceOf(env))!;
       const path = replicaPathFor(env.replicaRoot, first.lineageFence);
-      const dbBytes =
-        (await Deno.stat(join(env.datastorePath, "commits.db"))).size;
+      // The database's logical size: the copy's main file may not be
+      // checkpointed yet.
+      const dbBytes = logicalBytes((await env.paths()).commitsDb);
       // The sidecar is restarted on the same lineage: a killed sidecar.
       hostLitestreamProcesses.signalGroup(first.supervisorPid, "SIGKILL");
       await waitFor(
@@ -443,8 +446,9 @@ Deno.test({
         "the idle exit",
         { timeoutMs: 15_000 },
       );
-      const dbBytes =
-        (await Deno.stat(join(env.datastorePath, "commits.db"))).size;
+      // The database's logical size: the copy's main file may not be
+      // checkpointed yet.
+      const dbBytes = logicalBytes((await env.paths()).commitsDb);
       const before = await bytesUnder(path);
       await writeCommand(env, 1);
       const uploaded = await bytesUnder(path) - before;
@@ -467,7 +471,7 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
       const first = (await presenceOf(env))!;
-      const upkeep = startV3ReplicationUpkeep(env.datastorePath, {
+      const upkeep = startV3ReplicationUpkeep(env.repoDir, env.config, {
         probeIntervalMs: 200,
       });
       try {
@@ -505,6 +509,7 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       // The process's first acquire decides the hold: a short TTL, retaken
       // once lost, as serve's is.
+      await ensureV3CopyCurrent(env.repoDir, env.config, "write");
       const fences = v3DatastoreFor(env.repoDir, env.config).commitStore;
       const own = await acquireV3WriterLock(env.datastorePath, {
         ttlMs: 900,
@@ -513,7 +518,7 @@ Deno.test({
       });
       await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
       const first = (await presenceOf(env))!;
-      const upkeep = startV3ReplicationUpkeep(env.datastorePath, {
+      const upkeep = startV3ReplicationUpkeep(env.repoDir, env.config, {
         probeIntervalMs: 60_000,
       });
       try {
@@ -556,7 +561,7 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
       const first = (await presenceOf(env))!;
-      const upkeep = startV3ReplicationUpkeep(env.datastorePath, {
+      const upkeep = startV3ReplicationUpkeep(env.repoDir, env.config, {
         probeIntervalMs: 200,
       });
       // From now on no sidecar can be started: the binary cannot be had.
@@ -648,6 +653,26 @@ Deno.test("v3 replication: with the setting unset a write command starts nothing
       assertEquals(
         [...Deno.readDirSync(datastorePath)].some((e) =>
           e.name.includes("replication")
+        ),
+        false,
+      );
+      // Nothing of Phase 4 D2 either (swamp-club#3482): the shared
+      // commits.db, no lineage records, no checkout copy.
+      assertEquals(
+        [...Deno.readDirSync(datastorePath)].some((e) =>
+          e.name === "commits.db"
+        ),
+        true,
+      );
+      assertEquals(
+        [...Deno.readDirSync(join(datastorePath, "_control"))].some((e) =>
+          e.name === "lineage"
+        ),
+        false,
+      );
+      assertEquals(
+        [...Deno.readDirSync(join(repoDir, ".swamp"))].some((e) =>
+          e.name === "_datastore_v3_copies"
         ),
         false,
       );

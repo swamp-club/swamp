@@ -90,7 +90,7 @@ export const datastoreNamespacesCommand = withRemoteOptions(
   const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await createNamespaceListDeps(datastoreConfig);
+  const deps = await createNamespaceListDeps(datastoreConfig, repoDir);
 
   const renderer = createNamespaceListRenderer(
     cliCtx.outputMode,
