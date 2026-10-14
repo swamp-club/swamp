@@ -1301,6 +1301,7 @@ export async function handleWorkflowRunSearch(
 
     let result: Record<string, unknown> | undefined;
     let total = 0;
+    let searchWindow: { since?: string; oldestStartedAt?: string } = {};
     await consumeStream(
       workflowRunSearch(libCtx, deps, {
         query: payload?.query,
@@ -1322,6 +1323,12 @@ export async function handleWorkflowRunSearch(
         completed: (e) => {
           result = e.data as unknown as Record<string, unknown>;
           total = e.total;
+          searchWindow = {
+            ...(e.since ? { since: e.since } : {}),
+            ...(e.oldestStartedAt
+              ? { oldestStartedAt: e.oldestStartedAt }
+              : {}),
+          };
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -1363,7 +1370,7 @@ export async function handleWorkflowRunSearch(
     send(socket, {
       type: "workflow.run.search",
       id: requestId,
-      payload: { data, total },
+      payload: { data, total, ...searchWindow },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);

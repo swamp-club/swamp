@@ -20,6 +20,7 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   describeTimeRange,
+  isRelativeBound,
   parseTimeRange,
   requestTimeBounds,
   resolveTimeRange,
@@ -76,6 +77,21 @@ Deno.test("requestTimeBounds: a preset's request does not move with the clock", 
     resolveTimeRange(range, minute(after)),
   );
   assertEquals(requestTimeBounds(range), { since: "7d" });
+});
+
+Deno.test("isRelativeBound: every preset's request moves, a custom range and all time do not", () => {
+  for (const { preset } of TIME_PRESETS) {
+    const { since } = requestTimeBounds({ kind: "preset", preset });
+    assertEquals(isRelativeBound(since), preset !== "all");
+  }
+  const custom = requestTimeBounds({
+    kind: "custom",
+    from: "2026-10-01T00:00:00.000Z",
+    to: "2026-10-02T00:00:00.000Z",
+  });
+  assertEquals(isRelativeBound(custom.since), false);
+  assertEquals(isRelativeBound(undefined), false);
+  assertEquals(isRelativeBound(""), false);
 });
 
 Deno.test("parseTimeRange: accepts valid, rejects malformed", () => {

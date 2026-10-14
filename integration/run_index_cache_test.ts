@@ -83,10 +83,21 @@ function workflowNamed(name: string): Workflow {
   });
 }
 
-/** One process's view of the repository. */
+/**
+ * One process's view of the repository. Its run index cache judges file
+ * times by a clock a minute ahead: `settle` sets mtimes back, but
+ * `Deno.utime` moves ctimes to now, and a recent ctime is not trusted
+ * (swamp-club#3467).
+ */
 function processOn(dir: string) {
   const workflowRepo = new YamlWorkflowRepository(dir);
-  const runRepo = new YamlWorkflowRunRepository(dir);
+  const runRepo = new YamlWorkflowRunRepository(
+    dir,
+    undefined,
+    undefined,
+    undefined,
+    () => Date.now() + 60_000,
+  );
   const deps: WorkflowRunSearchDeps = {
     findAllWorkflows: () => workflowRepo.findAllListings(),
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
@@ -179,6 +190,54 @@ Deno.test("run index cache: the reader follows runs another process saves, updat
     assertEquals(after.data.results[0].runId, second.id);
     assertEquals((await reader.summary()).totals.runs, 3);
   });
+});
+
+Deno.test({
+  name:
+    "run index cache: a record edited in place is seen while the index cannot be repaired",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withRepoDir(async (dir) => {
+      const writer = processOn(dir);
+      const reader = processOn(dir);
+      const deploy = workflowNamed("deploy");
+      await writer.workflowRepo.save(deploy);
+      const edited = await startRun(writer.runRepo, deploy);
+      const other = await startRun(writer.runRepo, deploy);
+      const runsDir = join(dir, ".swamp", "workflow-runs", deploy.id);
+      // A record the index does not list, added where the reader cannot
+      // write its repaired index (swamp-club#3467).
+      const extra = crypto.randomUUID();
+      const otherText = await Deno.readTextFile(
+        join(runsDir, `workflow-run-${other.id}.yaml`),
+      );
+      await Deno.writeTextFile(
+        join(runsDir, `workflow-run-${extra}.yaml`),
+        otherText.replaceAll(other.id, extra),
+      );
+      await Deno.chmod(runsDir, 0o555);
+      try {
+        assertEquals(
+          (await reader.search({ workflow: "deploy", limit: 20 })).total,
+          3,
+        );
+
+        const path = join(runsDir, `workflow-run-${edited.id}.yaml`);
+        const text = await Deno.readTextFile(path);
+        await Deno.writeTextFile(
+          path,
+          text.replace("status: running", "status: failed"),
+        );
+        const found = await reader.search({
+          workflow: "deploy",
+          query: edited.id,
+        });
+        assertEquals(found.data.results[0].status, "failed");
+      } finally {
+        await Deno.chmod(runsDir, 0o755);
+      }
+    });
+  },
 });
 
 Deno.test("run index cache: a full run id finds its run, and paging reports the total", async () => {

@@ -65,6 +65,7 @@ import {
   UNSET_ENV,
   withRowRepos,
 } from "./usecase_sync_fixtures.ts";
+import { linkSharedSwampDenoCache } from "./test_helpers.ts";
 import { errorFrame, sendRequest } from "./serve_request_harness.ts";
 
 await initializeLogging({});
@@ -190,6 +191,7 @@ async function withRegistry(
   ]);
   const home = await Deno.makeTempDir({ prefix: "swamp_3192_home_" });
   try {
+    await linkSharedSwampDenoCache(home);
     await withMockedEnv(
       {
         ...UNSET_ENV,

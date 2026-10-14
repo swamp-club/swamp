@@ -153,6 +153,8 @@ interface SentFrame {
   payload?: {
     data: { results?: Array<Record<string, unknown>> };
     total?: number;
+    since?: string;
+    oldestStartedAt?: string;
   };
   error?: { code: string };
 }
@@ -320,6 +322,31 @@ Deno.test("handleWorkflowRunSearch: pages newest-first runs and reports total be
   assertEquals(names(frames[0], "workflowName"), ["wf-2", "wf-3"]);
   assertEquals(frames[0].payload?.total, 5);
   assertEquals("total" in (frames[0].payload?.data ?? {}), false);
+  // No since bound: no window to age out of.
+  assertEquals("since" in (frames[0].payload ?? {}), false);
+  assertEquals("oldestStartedAt" in (frames[0].payload ?? {}), false);
+});
+
+Deno.test("handleWorkflowRunSearch: with since, sends it and the oldest match's start beside total", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSearch(
+    socket,
+    makeSearchCtx(),
+    "req-window",
+    new AbortController(),
+    null,
+    { since: "2026-01-07T00:00:00Z", limit: 1 },
+  );
+
+  // wf-1..wf-3 match (wf-4 is before since); the page holds wf-0 only.
+  assertEquals(names(frames[0], "workflowName"), ["wf-0"]);
+  assertEquals(frames[0].payload?.total, 4);
+  assertEquals(frames[0].payload?.since, "2026-01-07T00:00:00.000Z");
+  assertEquals(
+    frames[0].payload?.oldestStartedAt,
+    "2026-01-07T00:00:00.000Z",
+  );
+  assertEquals("oldestStartedAt" in (frames[0].payload?.data ?? {}), false);
 });
 
 Deno.test("handleWorkflowRunSearch: pages after authorization", async () => {
@@ -416,6 +443,7 @@ interface SummaryFrame {
       totals: Record<string, number>;
       workflows: Array<{ workflowName: string; runs: number; recent: [] }>;
       timeline?: Array<{ start: string; runs: number }>;
+      oldestStartedAt?: string;
     };
   };
   error?: { code: string; details?: { reason?: string } };
@@ -493,6 +521,7 @@ Deno.test("handleWorkflowRunSummary: since, until and workflows narrow the count
   // wf-0 starts on the exclusive until bound; wf-4 is before since.
   assertEquals(data.workflows.map((w) => w.workflowName), ["wf-1"]);
   assertEquals(data.totals.runs, 1);
+  assertEquals(data.oldestStartedAt, "2026-01-09T00:00:00.000Z");
   assertEquals(data.timeline, undefined);
 });
 

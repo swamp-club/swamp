@@ -149,6 +149,14 @@ export const WINDOWS_PATH_PATTERN = /[A-Z]:\\/i;
 
 export const SWAMP_INTERNAL_PATH_PATTERN = /\/.swamp\//;
 
+const withheldErrorLogger = getSwampLogger(["serve", "error"]);
+
+/**
+ * Returns the text of an error that is safe to send to a client. A message
+ * that names a path is withheld and replaced with a generic one; the original
+ * is logged server-side so the operator can still diagnose the failure
+ * (swamp-club#3465).
+ */
 export function sanitizeErrorForClient(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   if (
@@ -156,6 +164,14 @@ export function sanitizeErrorForClient(error: unknown): string {
     WINDOWS_PATH_PATTERN.test(raw) ||
     SWAMP_INTERNAL_PATH_PATTERN.test(raw)
   ) {
+    withheldErrorLogger.warn(
+      "Error withheld from client ({type}): {message}",
+      {
+        type: exceptionTypeForClient(error) ??
+          (error instanceof Error ? "Error" : typeof error),
+        message: raw,
+      },
+    );
     return "An internal error occurred";
   }
   if (raw.length > MAX_CLIENT_ERROR_LENGTH) {
