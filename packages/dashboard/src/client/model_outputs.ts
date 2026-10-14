@@ -29,9 +29,10 @@ import { modelOutputPayloads } from "../lib/model_outputs.ts";
 /**
  * `model.output.search` with `payload` over the dashboard time range,
  * fetched again when serve starts or finishes a run or the tab comes back
- * into view. An older serve refuses a duration, so a refused preset search
- * is retried with the ISO bounds, which move with the clock (rounded to the
- * minute).
+ * into view. An older serve refuses a duration as `validation_failed`, so a
+ * preset search refused that way is retried with the ISO bounds, which move
+ * with the clock (rounded to the minute). Any other error stays on the
+ * duration request, so a retry or a refetch asks for the duration again.
  */
 export function useModelOutputSearch(
   payload: Record<string, unknown>,
@@ -40,7 +41,8 @@ export function useModelOutputSearch(
   const minute = Math.floor(Date.now() / 60_000) * 60_000;
   const { current, legacy } = modelOutputPayloads(range, payload, minute);
   const now = useRequest("model.output.search", current);
-  const useLegacy = legacy !== null && now.error !== null;
+  const useLegacy = legacy !== null &&
+    now.errorInfo?.reason === "validation_failed";
   const older = useRequest("model.output.search", legacy ?? undefined, {
     enabled: useLegacy,
   });
