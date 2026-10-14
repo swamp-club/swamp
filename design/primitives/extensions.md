@@ -2429,7 +2429,11 @@ handled on its own: a failure is reported for that entry and the pass moves on
 to the next. A failed re-pull (a download error or a checksum mismatch) leaves
 the entry's legacy files and lockfile entry as they were, so the next
 `swamp extension install` or `repo upgrade` retries it. The sweep treats
-`Deno.errors.NotFound` as already removed.
+`Deno.errors.NotFound` as already removed. Any other sweep error comes after the
+re-pull has committed: the entry is reported failed, but its lockfile entry
+already lists the new paths, so later passes see it as up to date and do not
+retry the sweep. Legacy files the sweep had not reached stay on disk until
+removed by hand.
 
 Skill directory entries are always treated as current-layout, wherever they
 are. Each is tracked as one dir path in `entry.files[]`, e.g.
