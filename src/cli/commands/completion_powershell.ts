@@ -187,11 +187,15 @@ function renderNode(node: TreeNode): string {
  * path, skipping options and their values, then completes the word under the
  * cursor. Dynamic values come from the repository (model and workflow names),
  * so they only ever become CompletionResult text, never code, and a value
- * with whitespace or a PowerShell metacharacter is inserted single-quoted.
+ * with whitespace or a PowerShell metacharacter (curly quotes included) is
+ * inserted single-quoted, escaped by PowerShell's own CodeGeneration helper.
+ * Commands and flags match case-sensitively, as Cliffy parses them.
  * Returning nothing lets PowerShell fall back to path completion.
  */
 const COMPLETER =
-  `  $special = (' ;,(){}[]|&<>@#$' + [char]34 + [char]39 + [char]96 + [char]9 + [char]10 + [char]13).ToCharArray()
+  `  # PowerShell also reads the curly quotes U+2018-U+201E as quote characters.
+  $special = (' ;,(){}[]|&<>@#$' + [char]34 + [char]39 + [char]96 + [char]9 + [char]10 + [char]13 +
+    [char]0x2018 + [char]0x2019 + [char]0x201A + [char]0x201B + [char]0x201C + [char]0x201D + [char]0x201E).ToCharArray()
 
   $completer = {
     param($wordToComplete, $commandAst, $cursorPosition)
@@ -220,7 +224,7 @@ const COMPLETER =
       if (-not $endOfOptions -and $word.StartsWith('-')) {
         if ($word.Contains('=')) { continue }
         foreach ($option in $tree[$path].Options) {
-          if ($option.Flags -contains $word) {
+          if ($option.Flags -ccontains $word) {
             if ($option.TakesValue) { $pendingOption = $option }
             break
           }
@@ -230,7 +234,7 @@ const COMPLETER =
       if ($positional -eq 0) {
         $child = $null
         foreach ($command in $tree[$path].Commands) {
-          if ($command.Name -eq $word -or $command.Aliases -contains $word) {
+          if ($command.Name -ceq $word -or $command.Aliases -ccontains $word) {
             $child = $command
             break
           }
@@ -250,7 +254,7 @@ const COMPLETER =
       param($text, $type, $description)
       $completion = $text
       if ($type -eq 'ParameterValue' -and $text.IndexOfAny($special) -ge 0) {
-        $completion = "'" + $text.Replace("'", "''") + "'"
+        $completion = "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($text) + "'"
       }
       $toolTip = $description
       if (-not $toolTip) { $toolTip = $text }

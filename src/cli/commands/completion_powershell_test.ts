@@ -146,14 +146,24 @@ Deno.test("generatePowerShellCompletions: dynamic values come from completions c
   );
   assertStringIncludes(
     script,
-    `$completion = "'" + $text.Replace("'", "''") + "'"`,
+    `$completion = "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($text) + "'"`,
   );
+  // PowerShell reads the curly quotes as quote characters too.
+  for (const code of ["2018", "2019", "201A", "201B", "201C", "201D", "201E"]) {
+    assertStringIncludes(script, `[char]0x${code}`);
+  }
   assertEquals(script.includes("Invoke-Expression $"), false);
 });
 
 Deno.test("generatePowerShellCompletions: skips inline option values and stops reading options after --", () => {
   const script = generatePowerShellCompletions("tool", sampleTree());
   assertStringIncludes(script, "if ($word.Contains('=')) { continue }");
+  // Flags and commands match case-sensitively, as Cliffy parses them.
+  assertStringIncludes(script, "$option.Flags -ccontains $word");
+  assertStringIncludes(
+    script,
+    "$command.Name -ceq $word -or $command.Aliases -ccontains $word",
+  );
   assertStringIncludes(
     script,
     "if (-not $endOfOptions -and $word -eq '--') {",
