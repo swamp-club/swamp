@@ -121,7 +121,7 @@ export function renderDataGcPreview(
         0,
       );
       logger
-        .info`version gc: ${preview.versionGcItems.length} models with ${totalVersions} excess versions`;
+        .info`version gc: ${preview.versionGcItems.length} behaviors with ${totalVersions} excess versions`;
     }
   }
 }

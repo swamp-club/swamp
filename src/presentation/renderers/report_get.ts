@@ -52,7 +52,7 @@ class LogReportGetRenderer implements Renderer<ReportGetEvent> {
         const separator = "\u2500".repeat(cols);
         const source = r.workflowName
           ? `Workflow: ${r.workflowName}`
-          : `Model: ${r.modelName} (${r.modelType})`;
+          : `Behavior: ${r.modelName} (${r.modelType})`;
         const varySuffixLabel = r.varySuffix
           ? `  |  Variant: ${r.varySuffix}`
           : "";
@@ -94,7 +94,7 @@ class MarkdownReportGetRenderer implements Renderer<ReportGetEvent> {
         const r = e.data;
         const source = r.workflowName
           ? `Workflow: ${r.workflowName}`
-          : `Model: ${r.modelName} (${r.modelType})`;
+          : `Behavior: ${r.modelName} (${r.modelType})`;
         const varySuffixLabel = r.varySuffix
           ? `  |  Variant: ${r.varySuffix}`
           : "";

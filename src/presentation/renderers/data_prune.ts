@@ -35,11 +35,11 @@ class LogDataPruneRenderer implements Renderer<DataPruneEvent> {
       completed: (e) => {
         if (e.data.dryRun) {
           logger
-            .info`Prune dry run: would reclaim ${e.data.modelsReclaimed} orphaned model(s), ${e.data.dataEntriesReclaimed} data entries, ${e.data.versionsDeleted} versions (${e.data.bytesReclaimed} bytes)`;
+            .info`Prune dry run: would reclaim ${e.data.modelsReclaimed} orphaned behavior(s), ${e.data.dataEntriesReclaimed} data entries, ${e.data.versionsDeleted} versions (${e.data.bytesReclaimed} bytes)`;
           return;
         }
         logger
-          .info`Prune complete: reclaimed ${e.data.modelsReclaimed} orphaned model(s), ${e.data.dataEntriesReclaimed} data entries, ${e.data.versionsDeleted} versions (${e.data.bytesReclaimed} bytes)`;
+          .info`Prune complete: reclaimed ${e.data.modelsReclaimed} orphaned behavior(s), ${e.data.dataEntriesReclaimed} data entries, ${e.data.versionsDeleted} versions (${e.data.bytesReclaimed} bytes)`;
         if (
           e.data.walPagesTotal > 0 &&
           e.data.walPagesCheckpointed < e.data.walPagesTotal
@@ -122,7 +122,7 @@ export function renderDataPrunePreview(
   } else {
     const logger = getSwampLogger(["data", "prune"]);
     logger
-      .info`Prune preview: ${preview.items.length} orphaned model(s) with no live definition`;
+      .info`Prune preview: ${preview.items.length} orphaned behavior(s) with no live definition`;
     for (const item of preview.items) {
       const name = item.modelName ? `${item.modelName} ` : "";
       logger

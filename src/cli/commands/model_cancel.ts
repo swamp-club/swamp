@@ -592,7 +592,7 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
               // literal text, not an interpolated (quoted) value.
               if (syntax.surface === "model") {
                 cliCtx.logger
-                  .info`Cancelled ${cancelled.length} running model method run(s)`;
+                  .info`Cancelled ${cancelled.length} running behavior method run(s)`;
               } else {
                 cliCtx.logger
                   .info`Cancelled ${cancelled.length} running method run(s)`;

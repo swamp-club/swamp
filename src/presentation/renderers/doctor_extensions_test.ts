@@ -386,7 +386,7 @@ Deno.test("doctor_extensions log renderer: lists member collisions with their wi
     out,
     "not registered: /repo/.swamp/pulled-extensions/@x/y/models/p.ts",
   );
-  assertStringIncludes(out, "wins: the base model");
+  assertStringIncludes(out, "wins: the base behavior");
   // Collision warnings are summarised above, not repeated; other warnings
   // keep their category tag.
   assertStringIncludes(out, "1 warning(s)");

@@ -129,7 +129,7 @@ export async function* workflowCreate(
             Step.create({
               name: "example",
               description: "Example step (edit or replace)",
-              task: StepTask.model("example-model", "run"),
+              task: StepTask.model("example-behavior", "run"),
             }),
           ],
         });

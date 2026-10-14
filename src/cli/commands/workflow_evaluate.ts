@@ -237,7 +237,7 @@ export const workflowEvaluateCommand = withRemoteOptions(
       globalLock = true;
       const logger = getSwampLogger(["workflow", "evaluate"]);
       logger
-        .info`Workflow contains dynamic model references — using global lock`;
+        .info`Workflow contains dynamic behavior references — using global lock`;
       const globalResult = await requireInitializedRepo({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,

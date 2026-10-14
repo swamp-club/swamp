@@ -497,7 +497,7 @@ Deno.test("renderWorkerQueue: log mode renders the table with columns", () => {
   );
   assertStringIncludes(output, "REQUIREMENT");
   assertStringIncludes(output, "STEP");
-  assertStringIncludes(output, "MODEL");
+  assertStringIncludes(output, "BEHAVIOR");
   assertStringIncludes(output, "QUEUED AT");
   assertStringIncludes(output, "AGE");
   assertStringIncludes(output, "tier=smoke, platform=linux");

@@ -102,7 +102,7 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
           logger.warn(warning.replaceAll("{", "{{").replaceAll("}", "}}"));
         }
         writeOutput(`Data: ${data.name} (v${data.version})`);
-        writeOutput(`Model: ${data.modelName} (${data.modelType})`);
+        writeOutput(`Behavior: ${data.modelName} (${data.modelType})`);
         writeOutput(
           `Content: ${data.contentType}, ${formatSize(data.size)}`,
         );

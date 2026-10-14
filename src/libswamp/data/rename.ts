@@ -167,7 +167,7 @@ export async function* dataRename(
           copiedVersion: result.copiedVersion,
           newVersion: result.newVersion,
           warning:
-            `Any workflows or models that produce data under "${result.oldName}" ` +
+            `Any workflows or behaviors that produce data under "${result.oldName}" ` +
             `will overwrite the forward reference. Update them to use "${result.newName}" instead.`,
         };
 

@@ -63,7 +63,7 @@ Deno.test("extension_source_list renderer: shows kinds line for valid source", a
   });
   const joined = lines.join("\n");
   assertStringIncludes(joined, "/a");
-  assertStringIncludes(joined, "kinds: models, workflows");
+  assertStringIncludes(joined, "kinds: behaviors, workflows");
 });
 
 Deno.test("extension_source_list renderer: omits kinds line when resolvedKinds is empty/absent", async () => {

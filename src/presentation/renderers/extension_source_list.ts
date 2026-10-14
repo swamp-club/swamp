@@ -23,7 +23,16 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  BEHAVIOR_EXTENSION_KIND,
+  MODEL_EXTENSION_KIND,
+} from "../../domain/terminology/behavior_aliases.ts";
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
+
+/** Shows the models kind under its behavior name; other kinds print as-is. */
+function kindLabel(kind: string): string {
+  return kind === MODEL_EXTENSION_KIND ? BEHAVIOR_EXTENSION_KIND : kind;
+}
 
 class LogSourceListRenderer implements Renderer<SourceListEvent> {
   handlers(): EventHandlers<SourceListEvent> {
@@ -73,7 +82,11 @@ class LogSourceListRenderer implements Renderer<SourceListEvent> {
           } else {
             if (source.resolvedKinds && source.resolvedKinds.length > 0) {
               writeOutput(
-                dim(`    kinds: ${source.resolvedKinds.join(", ")}`),
+                dim(
+                  `    kinds: ${
+                    source.resolvedKinds.map(kindLabel).join(", ")
+                  }`,
+                ),
               );
             }
             if (source.expandedPaths.length > 1) {

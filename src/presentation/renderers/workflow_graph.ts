@@ -25,7 +25,7 @@ const ASCII_OPTIONS = { paddingX: 2, paddingY: 1, boxBorderPadding: 0 };
 function taskLabel(task: { type: string; [key: string]: unknown }): string {
   switch (task.type) {
     case "model_method":
-      return "model";
+      return "behavior";
     case "workflow":
       return "workflow";
     case "manual_approval":

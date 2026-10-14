@@ -52,7 +52,7 @@ function renderMethodExecutions(
 ): void {
   const models = summary.methodExecutions;
   if (models.length === 0) {
-    writeOutput(dim("Direct Model Method Executions: none"));
+    writeOutput(dim("Direct Behavior Method Executions: none"));
     writeOutput("");
     return;
   }
@@ -62,7 +62,7 @@ function renderMethodExecutions(
   const failedAll = models.reduce((s, m) => s + m.failed, 0);
 
   let header =
-    `Direct Model Method Executions (${totalAll} total: ${succeededAll} succeeded`;
+    `Direct Behavior Method Executions (${totalAll} total: ${succeededAll} succeeded`;
   if (failedAll > 0) {
     header += `, ${failedAll} failed`;
   }
@@ -72,7 +72,9 @@ function renderMethodExecutions(
   const cols = getTerminalColumns();
 
   for (const model of models) {
-    writeOutput(`  Model: ${bold(model.modelName)} ${dim(`(${model.type})`)}`);
+    writeOutput(
+      `  Behavior: ${bold(model.modelName)} ${dim(`(${model.type})`)}`,
+    );
 
     const maxMethod = Math.min(
       Math.max(...model.methods.map((m) => m.method.length)),
@@ -223,7 +225,7 @@ function renderDataSummary(
 
   writeOutput(
     bold("Data") +
-      ` (${totalItems} items, ${totalVersions} versions, ${uniqueModels} models)`,
+      ` (${totalItems} items, ${totalVersions} versions, ${uniqueModels} behaviors)`,
   );
 
   if (verbose && byModelType.length > 0) {

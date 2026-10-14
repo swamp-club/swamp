@@ -315,7 +315,7 @@ export const extensionPushCommand = new Command()
   )
   .option(
     "--extensions-dir <dir:string>",
-    "Extensions root: the directory that contains extensions/ (models, workflows and skills resolve from it; env: SWAMP_EXTENSIONS_DIR)",
+    "Extensions root: the directory that contains extensions/ (behaviors, workflows and skills resolve from it; env: SWAMP_EXTENSIONS_DIR)",
   )
   .option(
     "-y, --yes",

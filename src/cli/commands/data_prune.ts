@@ -57,9 +57,9 @@ export const dataPruneCommand = withRemoteOptions(
   new Command()
     .name("prune")
     .description(
-      "Reclaim orphaned data whose owning model definition no longer exists.\n" +
-        "Unlike `data gc` (which enforces each model's declared lifetime and\n" +
-        "version-cap), prune removes data left behind when a model definition is\n" +
+      "Reclaim orphaned data whose owning behavior definition no longer exists.\n" +
+        "Unlike `data gc` (which enforces each behavior's declared lifetime and\n" +
+        "version-cap), prune removes data left behind when a behavior definition is\n" +
         "deleted or migrated away. Deletion is irreversible; use --dry-run first.",
     )
     .example(

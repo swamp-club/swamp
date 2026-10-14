@@ -885,7 +885,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           context.vaultService.getUserVaultNames().length > 0;
         if (!hasVault) {
           throw new UserError(
-            `Model "${currentDefinition.name}" has sensitive resource output ` +
+            `Behavior "${currentDefinition.name}" has sensitive resource output ` +
               `fields but no vault is configured. Create a vault before ` +
               `running this method: swamp vault create <type> <name>`,
           );

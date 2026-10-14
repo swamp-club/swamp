@@ -176,6 +176,14 @@ Deno.test("LogDataGetRenderer - binary content prints a notice, not the content"
   assertEquals(output.includes(binaryData.content), false);
 });
 
+Deno.test("LogDataGetRenderer - names the behavior that owns the data", async () => {
+  const output = await captureRender("log", {
+    kind: "completed",
+    data: testData,
+  });
+  assertStringIncludes(output, "Behavior: my-model (command/shell)");
+});
+
 Deno.test("LogDataGetRenderer - utf-8 text content is printed as is", async () => {
   const output = await captureRender("log", {
     kind: "completed",
