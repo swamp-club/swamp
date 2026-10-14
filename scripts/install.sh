@@ -109,11 +109,6 @@ main() {
   INSTALL_DEST="$dest"
   INSTALL_BIN="$bin"
 
-  # Only a first install goes straight into `swamp start`; an upgrade
-  # leaves the user where they were.
-  local first_install
-  if [ -e "$dest/$bin" ]; then first_install=""; else first_install="1"; fi
-
   section "Installing '$bin'"
   install_bin "$tmpdir/$bin" "$dest/$bin" "$bin"
 
@@ -128,112 +123,24 @@ main() {
   info "  Extension Registry:   https://swamp-club.com/extension-registry-terms"
   echo
 
-  # On a first, interactive install on the user's own desktop, go straight
-  # into `swamp start`: it signs the user in, sets up a workspace and launches
-  # their agent. Skip in CI, when SWAMP_NONINTERACTIVE is set, as root, over
-  # SSH, on Linux without a graphical session, and on upgrades.
-  local will_start=""
-  if [ -n "$first_install" ] && [ -z "${CI:-}" ] \
-    && [ -z "${SWAMP_NONINTERACTIVE:-}" ] && [ -e /dev/tty ] && [ -t 1 ] \
-    && [ "$(id -u)" -ne 0 ] \
-    && [ -z "${SSH_CONNECTION:-}" ] && [ -z "${SSH_TTY:-}" ] \
-    && { [ "$os_type" != "linux" ] \
-      || [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
-    will_start=1
-  fi
-
-  # Prompt to sign in to SWAMP CLUB when running interactively. Every swamp
-  # command needs an account, so a run that does not sign in lists it first
-  # in the next steps. `swamp start` signs the user in itself, so a run that
-  # goes into it skips this prompt.
-  # Skip in CI environments or when explicitly requested via SWAMP_NONINTERACTIVE
-  _signed_in=""
-  if [ -z "$will_start" ] && [ -z "${CI:-}" ] \
-    && [ -z "${SWAMP_NONINTERACTIVE:-}" ] && [ -e /dev/tty ] && [ -t 1 ]; then
-    echo
-    section "Sign in to SWAMP CLUB (swamp-club.com)"
-    info ""
-    info "Swamp needs a swamp-club.com account to run. Signing in also creates"
-    info "your account if you don't have one yet."
-    info ""
-    printf "  Sign in now? [Y/n] "
-    read -r _answer </dev/tty || _answer=""
-    case "$_answer" in
-      [nN]*)
-        info ""
-        info "You'll need to sign in before using swamp: swamp auth login"
-        ;;
-      *)
-        echo
-        if "$dest/$bin" auth login </dev/tty; then
-          _signed_in=1
-        else
-          warn ""
-          warn "Sign-in didn't finish. Swamp needs it before any other command."
-          warn "Run this to try again:"
-          warn ""
-          warn "    swamp auth login"
-          warn ""
-        fi
-        ;;
-    esac
-    echo
-  fi
-
+  # `swamp start` signs the user in to swamp-club.com, so it is the one step
+  # a new user needs; sign-in is not prompted for or listed separately.
   info "Next steps:"
   info ""
-  _step=1
-  if [ -z "$_signed_in" ] && [ -z "$will_start" ]; then
-    info "  $_step. Sign in to swamp-club.com (required, skip if already signed in):"
-    info "       swamp auth login"
-    info "     In CI or for daemons, set SWAMP_API_KEY and SWAMP_SIGNIN_TOKEN instead:"
-    info "       https://swamp-club.com/manual/reference/swamp-account-requirement"
-    info ""
-    _step=$((_step + 1))
+  info "  1. Get started (signs you in to swamp-club.com and opens your browser):"
+  info "       swamp start"
+  if [ "$(id -u)" -eq 0 ]; then
+    info "     Run it as your own user, not root."
   fi
-  # A run that goes into `swamp start` next doesn't list it as a step.
-  if [ -z "$will_start" ]; then
-    info "  $_step. Get started (opens your browser):"
-    info "       swamp start"
-    info ""
-    _step=$((_step + 1))
-  fi
-  info "  $_step. Set up shell completions (optional):"
+  info "     In CI or for daemons, set SWAMP_API_KEY and SWAMP_SIGNIN_TOKEN instead:"
+  info "       https://swamp-club.com/manual/reference/swamp-account-requirement"
+  info ""
+  info "  2. Set up shell completions (optional):"
   info "       swamp completions --help"
   info ""
-  _step=$((_step + 1))
-  info "  $_step. Join the community:"
+  info "  3. Join the community:"
   info "       https://discord.gg/swamp-club"
   info ""
-
-  if [ -n "$will_start" ]; then
-    section "Starting swamp"
-    info ""
-    # Ctrl-C is how `swamp start` is stopped, so it must not reach the
-    # installer's failure trap. A non-empty no-op trap (not `trap '' INT`,
-    # which the child would inherit as ignored) keeps the installer running
-    # while the child gets the default handler; the original traps come back
-    # afterwards.
-    local start_status
-    trap ':' INT
-    start_status=0
-    "$dest/$bin" start </dev/tty || start_status=$?
-    setup_traps trap_exit
-    case "$start_status" in
-      0 | 130) ;;
-      *)
-        warn ""
-        warn "swamp start didn't finish. Run it again when you're ready:"
-        warn ""
-        warn "    swamp start"
-        warn ""
-        ;;
-    esac
-    echo
-  elif [ "$(id -u)" -eq 0 ]; then
-    info "Run \`swamp start\` as your own user to get started."
-    info ""
-  fi
 
   info "Learn more: https://github.com/swamp-club/swamp"
 }
