@@ -24,6 +24,7 @@
 import { dirname, fromFileUrl, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { getSwampDataDir } from "../src/infrastructure/persistence/paths.ts";
 import { withGateCredentialEnv } from "./auth_gate_fixture.ts";
 
 /** Absolute path to the project root (parent of integration/). */
@@ -75,6 +76,42 @@ export function isolatedHomeEnv(homeDir: string): Record<string, string> {
     USERPROFILE: homeDir,
     DENO_DIR: DENO_CACHE_DIR,
   };
+}
+
+/**
+ * The Deno cache swamp's extension bundler uses in this process, captured at
+ * module load — before any test has had a chance to repoint SWAMP_HOME.
+ */
+export const SHARED_SWAMP_DENO_CACHE = join(getSwampDataDir(), "deno-cache");
+
+/**
+ * Points `swampHome`'s Deno cache at {@link SHARED_SWAMP_DENO_CACHE}.
+ *
+ * `EmbeddedDenoRuntime.getDenoEnv` sets the bundler's DENO_DIR to
+ * `<SWAMP_HOME>/deno-cache`, so a test that mocks SWAMP_HOME to a fresh
+ * directory hands `deno bundle` an empty cache, and `deno bundle` then
+ * downloads esbuild from npm on every run. `withMockedFetch` cannot stub that:
+ * the download happens in the child process. Linking the shared cache keeps
+ * the bundler off the network (swamp-club#3461).
+ *
+ * Call it after creating `swampHome` and before any bundling. Removing
+ * `swampHome` recursively removes the link, not the shared cache. On Windows,
+ * where creating a symlink needs a privilege, a failed link leaves the
+ * bundler on a fresh cache, as before.
+ */
+export async function linkSharedSwampDenoCache(
+  swampHome: string,
+): Promise<void> {
+  await ensureDir(SHARED_SWAMP_DENO_CACHE);
+  try {
+    await Deno.symlink(
+      SHARED_SWAMP_DENO_CACHE,
+      join(swampHome, "deno-cache"),
+      { type: "dir" },
+    );
+  } catch (error) {
+    if (Deno.build.os !== "windows") throw error;
+  }
 }
 
 /** CLI launch args that bypass `deno task` config resolution. */
