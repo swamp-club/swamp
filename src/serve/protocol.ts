@@ -1384,6 +1384,10 @@ export interface WorkflowRunSearchResponse {
   data: Record<string, unknown>;
   /** Authorized matches before `offset`/`limit` were applied. */
   total?: number;
+  /** The resolved `since` bound as ISO, when one was given. */
+  since?: string;
+  /** With `since`: the start of the oldest of the `total` matches. */
+  oldestStartedAt?: string;
 }
 
 /** One run in a workflow's `recent` list. */
@@ -1444,6 +1448,8 @@ export interface WorkflowRunSummaryData {
   };
   /** One entry per workflow with a counted run, ordered by name. */
   workflows: WorkflowRunSummaryWorkflow[];
+  /** Start of the oldest counted run; absent when none has a start. */
+  oldestStartedAt?: string;
   /** Hours with runs, ascending; only when asked for. */
   timeline?: WorkflowRunSummaryBucket[];
 }

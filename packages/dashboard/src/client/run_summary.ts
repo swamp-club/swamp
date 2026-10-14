@@ -23,8 +23,8 @@
 
 import { useRequest } from "./useRequest.ts";
 import { extractObject } from "./extract.ts";
-import { useRequestTimeBounds } from "./time_range.ts";
-import { useRefetchOnRunActivity } from "./run_activity.ts";
+import { isRelativeBound, useRequestTimeBounds } from "./time_range.ts";
+import { ageOutDelayMs, useRefetchOnRunActivity } from "./run_activity.ts";
 
 export interface RecentRun {
   runId: string;
@@ -67,6 +67,8 @@ export interface RunSummaryData {
   until?: string;
   totals: Omit<RunCounts, "runs"> & { runs: number; workflows: number };
   workflows: WorkflowRunSummary[];
+  /** Start of the oldest counted run; older serves leave it out. */
+  oldestStartedAt?: string;
   timeline?: TimelineBucket[];
 }
 
@@ -87,8 +89,8 @@ export interface RunSummaryQuery {
 /**
  * Fetches the run summary for the dashboard's current time range (or the
  * query's own bounds), and fetches it again when serve starts or finishes
- * a run or the tab comes back into view. `enabled: false` holds the
- * request.
+ * a run, the tab comes back into view, or (on a preset range) the oldest
+ * counted run leaves the window. `enabled: false` holds the request.
  */
 export function useRunSummary(
   query: RunSummaryQuery = {},
@@ -97,15 +99,24 @@ export function useRunSummary(
   const bounds = useRequestTimeBounds();
   const { allTime, since, until, ...rest } = query;
   const payload: Record<string, unknown> = { ...rest };
+  const sentSince = allTime ? undefined : since ?? bounds.since;
   if (!allTime) {
-    const s = since ?? bounds.since;
     const u = until ?? bounds.until;
-    if (s) payload.since = s;
+    if (sentSince) payload.since = sentSince;
     if (u) payload.until = u;
   }
   const result = useRequest("workflow.run.summary", payload, options);
-  useRefetchOnRunActivity(result.refetch, options.enabled ?? true);
-  return { ...result, summary: extractObject<RunSummaryData>(result.data) };
+  const summary = extractObject<RunSummaryData>(result.data);
+  // Only a preset's window moves; a custom or calendar window never
+  // loses a run it counted.
+  const delayMs = isRelativeBound(sentSince)
+    ? ageOutDelayMs(summary?.since, summary?.oldestStartedAt)
+    : null;
+  useRefetchOnRunActivity(result.refetch, options.enabled ?? true, {
+    answer: result.data,
+    delayMs,
+  });
+  return { ...result, summary };
 }
 
 /** Index summaries by workflow name. */

@@ -92,6 +92,14 @@ export type WorkflowRunSearchEvent =
      * cut out the page.
      */
     total: number;
+    /** The resolved `since` bound as ISO, when one was given. */
+    since?: string;
+    /**
+     * With `since`: the start time of the oldest of the `total` matches,
+     * absent when nothing matched. On the same clock as `since`, so the gap
+     * between them is how long until that run leaves a moving window.
+     */
+    oldestStartedAt?: string;
   }
   | { kind: "error"; error: SwampError };
 
@@ -642,6 +650,18 @@ export async function* workflowRunSearch(
         };
       });
 
+      // A since bound keeps only dated runs, and each group is newest
+      // first, so a group's last run is its oldest.
+      let oldestMs: number | undefined;
+      if (filter.sinceMs !== undefined) {
+        for (const group of selection.groups) {
+          const ms = group.runs[group.runs.length - 1]?.startMs;
+          if (ms !== undefined && (oldestMs === undefined || ms < oldestMs)) {
+            oldestMs = ms;
+          }
+        }
+      }
+
       yield {
         kind: "completed",
         data: {
@@ -649,6 +669,12 @@ export async function* workflowRunSearch(
           results,
         },
         total: selection.total,
+        ...(filter.sinceMs !== undefined
+          ? { since: new Date(filter.sinceMs).toISOString() }
+          : {}),
+        ...(oldestMs !== undefined
+          ? { oldestStartedAt: new Date(oldestMs).toISOString() }
+          : {}),
       };
     })(),
   );

@@ -115,6 +115,17 @@ Deno.test("summarizeWorkflowRuns: counts per workflow and in total", () => {
   );
   assertEquals(summary.timeline, undefined);
   assertEquals("since" in summary, false);
+  // The undated run is not the oldest: it has no start to age out by.
+  assertEquals(summary.oldestStartedAt, new Date(T0).toISOString());
+});
+
+Deno.test("summarizeWorkflowRuns: oldestStartedAt is absent without a dated run", () => {
+  assertEquals("oldestStartedAt" in summarizeWorkflowRuns([]), false);
+  assertEquals(
+    "oldestStartedAt" in
+      summarizeWorkflowRuns([run("undated", "alpha", "pending")]),
+    false,
+  );
 });
 
 Deno.test("summarizeWorkflowRuns: recent is newest first, capped, and undated runs last", () => {
@@ -289,6 +300,8 @@ Deno.test("workflowRunSummary: since and until bound the window and are echoed a
   assertEquals(data.until, "2026-10-12T12:00:00.000Z");
   // a1 is before since; a2 starts exactly at until, which is exclusive.
   assertEquals(data.totals.runs, 1);
+  // The oldest run counted, not a1 outside the window.
+  assertEquals(data.oldestStartedAt, new Date(T0 + 60 * MIN).toISOString());
   assertEquals(data.workflows.map((w) => w.workflowName), ["beta"]);
 });
 
