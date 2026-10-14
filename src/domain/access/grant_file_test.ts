@@ -17,12 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { ensureDir } from "@std/fs";
 import {
   collectErrors,
   parseGrantFile,
+  parseGrantFileSubject,
   readGrantFiles,
   resolveExternalGrantsDir,
   resolveExternalGrantsFile,
@@ -31,6 +32,7 @@ import {
   readConditionTypeLiterals,
   validateGrantCondition,
 } from "../../infrastructure/cel/grant_condition_environment.ts";
+import { parseSubject } from "./subject.ts";
 
 Deno.test("parseGrantFile: parses valid grant file", () => {
   const content = `
@@ -1179,4 +1181,87 @@ grants:
     condition: 'modelType == "Acme.Tools.Probe"'
 `;
   assertEquals(parseGrantFile("c.yaml", content).warnings, []);
+});
+
+Deno.test("parseGrantFile: username: subjects parse as unresolved usernames", () => {
+  const result = parseGrantFile(
+    "team.yaml",
+    `
+grants:
+  - subjects: [username:alice, user:sub-bob]
+    effect: allow
+    actions: [read, run]
+    resource: workflow:*
+`,
+  );
+  assertEquals(result.errors, []);
+  assertEquals(result.entries.map((e) => e.subject), [
+    { kind: "username", name: "alice" },
+    { kind: "user", name: "sub-bob" },
+  ]);
+});
+
+Deno.test("parseGrantFile: user: keeps naming the principal id, never a username", () => {
+  const result = parseGrantFile(
+    "team.yaml",
+    `
+grants:
+  - subject: user:alice
+    effect: allow
+    actions: [read]
+    resource: workflow:*
+`,
+  );
+  assertEquals(result.entries[0].subject, { kind: "user", name: "alice" });
+});
+
+Deno.test("parseGrantFileSubject: rejects malformed usernames", () => {
+  for (
+    const [value, message] of [
+      ["username:", "username cannot be empty"],
+      ["username:al ice", "cannot contain whitespace"],
+      ["username:a:b", 'cannot contain whitespace or ":"'],
+      [`username:${"a".repeat(256)}`, "longer than 255"],
+    ]
+  ) {
+    assertThrows(() => parseGrantFileSubject(value), Error, message);
+  }
+});
+
+Deno.test("parseGrantFile: a malformed username rejects the entry", () => {
+  const result = parseGrantFile(
+    "team.yaml",
+    `
+grants:
+  - subject: "username:al ice"
+    effect: allow
+    actions: [read]
+    resource: workflow:*
+`,
+  );
+  assertEquals(result.entries, []);
+  assertStringIncludes(result.errors[0].message, "cannot contain whitespace");
+});
+
+Deno.test("parseGrantFile: the same username twice in subjects is a duplicate", () => {
+  const result = parseGrantFile(
+    "team.yaml",
+    `
+grants:
+  - subjects: [username:alice, username:alice]
+    effect: allow
+    actions: [read]
+    resource: workflow:*
+`,
+  );
+  assertEquals(result.entries, []);
+  assertStringIncludes(result.errors[0].message, "Duplicate subject");
+});
+
+Deno.test("parseSubject: username: is not a subject kind outside grant files", () => {
+  assertThrows(
+    () => parseSubject("username:alice"),
+    Error,
+    'Invalid subject kind "username"',
+  );
 });

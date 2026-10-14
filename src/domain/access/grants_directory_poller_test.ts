@@ -31,6 +31,11 @@ import { GrantsDirectoryPoller } from "./grants_directory_poller.ts";
 import type { FileGrantStore } from "./grant_file_reconciler.ts";
 import type { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
 import type { Grant } from "../models/access/grant_model.ts";
+import type {
+  GrantUsernameResolver,
+  UsernameLookup,
+  UsernameResolutionRequest,
+} from "./grant_username_resolution.ts";
 
 const VALID_GRANT_YAML =
   `grants:\n  - subject: "user:adam"\n    effect: allow\n    actions: [run]\n    resource: "workflow:*"`;
@@ -845,5 +850,179 @@ Deno.test("GrantsDirectoryPoller: each poll cycle is the root of its own trace",
         findSpan(spans, "swamp.cli"),
       );
     });
+  });
+});
+
+function recordingFileGrantStore(
+  existing: { grant: Grant; modelId: string; instanceName: string }[] = [],
+) {
+  const written: Grant[] = [];
+  const store: FileGrantStore = {
+    queryFileGrants: () =>
+      Promise.resolve(new Map(existing.map((e) => [e.modelId, e]))),
+    ensureDefinition: () => Promise.resolve(crypto.randomUUID()),
+    writeGrant: (_modelId, _instanceName, grant) => {
+      written.push(grant);
+      return Promise.resolve();
+    },
+  };
+  return { store, written };
+}
+
+function tableResolver(table: Record<string, string>) {
+  const requests: UsernameResolutionRequest[] = [];
+  const resolver: GrantUsernameResolver = {
+    resolve(request) {
+      requests.push(request);
+      return Promise.resolve(
+        new Map<string, UsernameLookup>(
+          request.names.map((name) => [
+            name,
+            Object.hasOwn(table, name)
+              ? { status: "resolved", sub: table[name] }
+              : { status: "unresolved", message: "not found" },
+          ]),
+        ),
+      );
+    },
+  };
+  return { resolver, requests };
+}
+
+const USERNAME_GRANT_YAML =
+  `grants:\n  - subject: "username:alice"\n    effect: deny\n    actions: [run]\n    resource: "workflow:*"`;
+
+Deno.test("GrantsDirectoryPoller: a username subject is stored as user:<sub> (swamp-club#3123)", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const { store, written } = recordingFileGrantStore();
+    const mock = createMockLoader();
+    const { resolver } = tableResolver({ alice: "sub-alice" });
+    const resolvedNames: Record<string, string>[] = [];
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 20,
+      usernameResolver: resolver,
+      onUsernamesResolved: (names) => resolvedNames.push({ ...names }),
+    });
+    await poller.start();
+    try {
+      await Deno.writeTextFile(
+        join(grantsDir, "team.yaml"),
+        USERNAME_GRANT_YAML,
+      );
+      await waitFor(() => written.length > 0, "the username grant is written");
+    } finally {
+      await poller.stop();
+    }
+    assertEquals(written[0].subject, { kind: "user", name: "sub-alice" });
+    assertEquals(written[0].effect, "deny");
+    assertEquals(resolvedNames.at(-1), { "sub-alice": "alice" });
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: an unresolved username holds its file back with stored grants unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    // team.yaml already has a stored deny; the edited file names a username
+    // that does not resolve, so that deny must stay active.
+    const storedDeny: Grant = {
+      id: "g-1",
+      subject: { kind: "user", name: "sub-old" },
+      effect: "deny",
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "*" },
+      state: "active",
+      source: "file:team.yaml",
+      createdBy: { kind: "user", id: "system" },
+      createdAt: new Date().toISOString(),
+    };
+    const { store, written } = recordingFileGrantStore([
+      { grant: storedDeny, modelId: "m-1", instanceName: "grant-file-1" },
+    ]);
+    const mock = createMockLoader();
+    const { resolver, requests } = tableResolver({});
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 20,
+      usernameResolver: resolver,
+    });
+    await poller.start();
+    try {
+      await Deno.writeTextFile(
+        join(grantsDir, "team.yaml"),
+        `grants:\n  - subject: "username:mallory"\n    effect: deny\n    actions: [run]\n    resource: "workflow:*"`,
+      );
+      await waitFor(() => mock.loadCalls > 0, "the reload reconciles");
+    } finally {
+      await poller.stop();
+    }
+    assertEquals(written, [], "the held-back file's deny was not revoked");
+    // The held-back file still names its username, so its pin is kept.
+    assertEquals(requests.at(-1), { names: ["mallory"], complete: true });
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: a file held back for a parse error makes the resolve incomplete", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const { store } = recordingFileGrantStore();
+    const mock = createMockLoader();
+    const { resolver, requests } = tableResolver({ alice: "sub-alice" });
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 20,
+      usernameResolver: resolver,
+    });
+    await poller.start();
+    try {
+      await Deno.writeTextFile(join(grantsDir, "broken.yaml"), "grants: [");
+      await Deno.writeTextFile(
+        join(grantsDir, "team.yaml"),
+        USERNAME_GRANT_YAML,
+      );
+      await waitFor(
+        () => requests.length > 0 && mock.loadCalls > 0,
+        "the reload resolves and reconciles",
+      );
+    } finally {
+      await poller.stop();
+    }
+    assertEquals(requests.at(-1)?.complete, false);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: without a resolver a username file is held back", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const { store, written } = recordingFileGrantStore();
+    const mock = createMockLoader();
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      fileGrantStore: store,
+      policySnapshotLoader: mock.loader,
+      pollIntervalMs: 20,
+    });
+    await poller.start();
+    try {
+      await Deno.writeTextFile(
+        join(grantsDir, "team.yaml"),
+        USERNAME_GRANT_YAML,
+      );
+      await waitFor(() => mock.loadCalls > 0, "the reload reconciles");
+    } finally {
+      await poller.stop();
+    }
+    assertEquals(written, []);
   });
 });

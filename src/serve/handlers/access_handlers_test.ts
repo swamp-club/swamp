@@ -67,6 +67,11 @@ import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/d
 import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { createFileGrantStore } from "../../domain/access/grant_file_reconciler.ts";
+import type {
+  GrantUsernameResolver,
+  UsernameLookup,
+  UsernameResolutionRequest,
+} from "../../domain/access/grant_username_resolution.ts";
 
 interface CapturedExplainCall {
   principal: AccessPrincipal;
@@ -1278,4 +1283,107 @@ Deno.test("handleAccessCheck: another subject's run-time vault decision without 
   }, RESUMER);
   const selfReport = JSON.parse(self.sent[0]).payload.runVaultAccess;
   assertEquals(selfReport.reason.includes("not included"), false);
+});
+
+// --- access.reload: grant-file usernames (swamp-club#3123) ---
+
+function reloadUsernameResolver(table: Record<string, string>) {
+  const requests: UsernameResolutionRequest[] = [];
+  const resolver: GrantUsernameResolver = {
+    resolve(request) {
+      requests.push(request);
+      return Promise.resolve(
+        new Map<string, UsernameLookup>(
+          request.names.map((name) => [
+            name,
+            Object.hasOwn(table, name)
+              ? { status: "resolved", sub: table[name] }
+              : { status: "unresolved", message: "not found on the provider" },
+          ]),
+        ),
+      );
+    },
+  };
+  return { resolver, requests };
+}
+
+async function withUsernameGrantRepo(
+  subject: string,
+  fn: (ctx: ConnectionContext, repoDir: string) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await ensureDir(join(repoDir, "grants"));
+    await Deno.writeTextFile(
+      join(repoDir, "grants", "team.yaml"),
+      `grants:
+  - subject: "${subject}"
+    effect: deny
+    actions: [run]
+    resource: "workflow:*"
+`,
+    );
+    const ctx: ConnectionContext = {
+      ...createReloadCtx(undefined),
+      repoDir,
+      repoContext: createRepositoryContext({ repoDir }),
+      resolvedUserNames: {},
+    };
+    await fn(ctx, repoDir);
+  });
+}
+
+Deno.test("handleAccessReload: resolves a username subject and records its display name", async () => {
+  await withUsernameGrantRepo("username:alice", async (ctx) => {
+    const { resolver, requests } = reloadUsernameResolver({ alice: "sub-a" });
+    ctx.grantUsernameResolver = resolver;
+    const socket = createMockSocket();
+    await handleAccessReload(socket, ctx, "req-1", null);
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.payload.success, true);
+    assertEquals(requests, [{ names: ["alice"], complete: true }]);
+    assertEquals(ctx.resolvedUserNames, { "sub-a": "alice" });
+    const stored = await createFileGrantStore(
+      ctx.repoContext.definitionRepo,
+      ctx.repoContext.definitionRepo,
+      ctx.repoContext.unifiedDataRepo,
+    ).queryFileGrants();
+    assertEquals(
+      [...stored.values()].map((g) => g.grant.subject),
+      [{ kind: "user", name: "sub-a" }],
+    );
+  });
+});
+
+Deno.test("handleAccessReload: an unresolved username fails the reload and writes nothing", async () => {
+  await withUsernameGrantRepo("username:mallory", async (ctx) => {
+    ctx.grantUsernameResolver = reloadUsernameResolver({}).resolver;
+    const socket = createMockSocket();
+    await handleAccessReload(socket, ctx, "req-1", null);
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.payload.success, false);
+    assertStringIncludes(
+      response.payload.errors.join("\n"),
+      'team.yaml: Subject "username:mallory": not found on the provider',
+    );
+    const stored = await createFileGrantStore(
+      ctx.repoContext.definitionRepo,
+      ctx.repoContext.definitionRepo,
+      ctx.repoContext.unifiedDataRepo,
+    ).queryFileGrants();
+    assertEquals(stored.size, 0);
+  });
+});
+
+Deno.test("handleAccessReload: without a resolver a username subject is rejected", async () => {
+  await withUsernameGrantRepo("username:alice", async (ctx) => {
+    const socket = createMockSocket();
+    await handleAccessReload(socket, ctx, "req-1", null);
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.payload.success, false);
+    assertStringIncludes(
+      response.payload.errors.join("\n"),
+      "username subjects are not resolved here",
+    );
+  });
 });

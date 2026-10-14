@@ -105,6 +105,7 @@ const DENIED_SECRET_KEY_PREFIXES: readonly string[] = [
   "oauth-access-token-",
   "oauth-bootstrap-access-token",
   "oauth-resolved-admins",
+  "oauth-resolved-grant-usernames",
 ];
 
 const MAX_CAPABILITY_PREDICATE_LENGTH = 4096;

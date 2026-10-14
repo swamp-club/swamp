@@ -185,6 +185,15 @@ grants:
     resources: [workflow:*, behavior:*]
 ```
 
+`user:<id>` is the principal id (the OAuth `sub`). In OAuth mode, name a user by
+username with `username:<name>` (grant files only): serve resolves it once to
+the `sub`, pins it, and stores a `user:<sub>` grant, so a renamed or
+re-registered name never re-points the grant. A name that does not resolve
+rejects the whole file; a name first seen missing stays rejected until removed
+from every file. Other auth modes reject `username:`. A running serve looks up
+new names only with a collective API key (`SWAMP_API_KEY`); otherwise restart
+serve. See `design/enablers/access-control.md` "Usernames in grant files".
+
 Apply with `swamp access reload --server wss://...`. Reload validates all files
 first — rejects the entire reload if any file is invalid. The reconciler only
 touches `source: file:*` grants; CLI-created grants are independent. Both

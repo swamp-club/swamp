@@ -26,9 +26,16 @@ import {
 } from "../../infrastructure/cel/grant_condition_environment.ts";
 import {
   checkServeGrantFiles,
+  checkServeGrantFileUsernames,
   readServeGrantFiles,
   repoGrantFileName,
+  serveGrantFileUsernames,
 } from "./grant_file_loader.ts";
+import {
+  type GrantUsernameResolver,
+  unresolvableUsernames,
+  type UsernameResolutionRequest,
+} from "./grant_username_resolution.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -228,4 +235,100 @@ Deno.test({
       }
     });
   },
+});
+
+const USERNAMES = (names: string[]) => `
+grants:
+  - subjects: [${names.join(", ")}]
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+`;
+
+Deno.test("serveGrantFileUsernames: lists the usernames of every source once", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, "grants"));
+    await ensureDir(join(dir, "extra"));
+    await Deno.writeTextFile(
+      join(dir, "grants", "a.yaml"),
+      USERNAMES(["username:alice", "user:sub-x"]),
+    );
+    await Deno.writeTextFile(
+      join(dir, "file.yaml"),
+      USERNAMES(["username:bob", "username:alice"]),
+    );
+    await Deno.writeTextFile(
+      join(dir, "extra", "c.yaml"),
+      USERNAMES(["username:carol"]),
+    );
+    const files = await readServeGrantFiles(dir, {
+      ...OPTIONS,
+      grantsFile: "file.yaml",
+      grantsDir: "extra",
+    });
+    assertEquals(serveGrantFileUsernames(files).sort(), [
+      "alice",
+      "bob",
+      "carol",
+    ]);
+  });
+});
+
+Deno.test("checkServeGrantFileUsernames: reports each unresolved name as invalid, located by file", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, "grants"));
+    await ensureDir(join(dir, "extra"));
+    await Deno.writeTextFile(
+      join(dir, "grants", "a.yaml"),
+      USERNAMES(["username:alice"]),
+    );
+    await Deno.writeTextFile(
+      join(dir, "extra", "c.yaml"),
+      USERNAMES(["username:carol"]),
+    );
+    const files = await readServeGrantFiles(dir, {
+      ...OPTIONS,
+      grantsDir: "extra",
+    });
+    const issues = await checkServeGrantFileUsernames(
+      files,
+      unresolvableUsernames("needs --auth-mode oauth"),
+    );
+    assertEquals(
+      issues.map((i) => [i.reason, i.file]),
+      [
+        ["invalid", repoGrantFileName("a.yaml")],
+        ["invalid", join(resolve(dir), "extra", "c.yaml")],
+      ],
+    );
+    assertStringIncludes(issues[0].message, '"username:alice"');
+    assertStringIncludes(issues[0].message, "needs --auth-mode oauth");
+  });
+});
+
+Deno.test("checkServeGrantFileUsernames: never asks a resolver to forget, and skips files without usernames", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, "grants"));
+    await Deno.writeTextFile(join(dir, "grants", "a.yaml"), VALID);
+    const requests: UsernameResolutionRequest[] = [];
+    const resolver: GrantUsernameResolver = {
+      resolve(request) {
+        requests.push(request);
+        return Promise.resolve(new Map());
+      },
+    };
+    const files = await readServeGrantFiles(dir, OPTIONS);
+    assertEquals(await checkServeGrantFileUsernames(files, resolver), []);
+    assertEquals(requests, []);
+
+    await Deno.writeTextFile(
+      join(dir, "grants", "b.yaml"),
+      USERNAMES(["username:alice"]),
+    );
+    await checkServeGrantFileUsernames(
+      await readServeGrantFiles(dir, OPTIONS),
+      resolver,
+    );
+    assertEquals(requests, [{ names: ["alice"], complete: false }]);
+  });
 });

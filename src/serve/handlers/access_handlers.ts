@@ -47,6 +47,11 @@ import {
 } from "../../domain/access/grant_file_loader.ts";
 import { GRANTS_FILE_SOURCE_NAME } from "../../domain/access/grant_source.ts";
 import {
+  type ParsedGrantSource,
+  resolveGrantFileUsernames,
+  unresolvableUsernames,
+} from "../../domain/access/grant_username_resolution.ts";
+import {
   createFileGrantStore,
   type FileGrantStore,
   GRANT_DATA_NAME,
@@ -697,12 +702,9 @@ export async function handleAccessReload(
       return;
     }
 
-    const validEntries = new Map<
-      string,
-      import("../../domain/access/grant_file.ts").GrantFileEntry[]
-    >();
+    const parsed = new Map<string, ParsedGrantSource>();
     for (const [filename, result] of fileResults) {
-      validEntries.set(filename, result.entries);
+      parsed.set(filename, { filename, entries: result.entries });
     }
 
     if (ctx.grantsFile) {
@@ -722,7 +724,10 @@ export async function handleAccessReload(
             allErrors.push({ ...e, filename: "external-grants-file" });
           }
         } else {
-          validEntries.set(GRANTS_FILE_SOURCE_NAME, load.file.result.entries);
+          parsed.set(GRANTS_FILE_SOURCE_NAME, {
+            filename: "external-grants-file",
+            entries: load.file.result.entries,
+          });
         }
       }
 
@@ -765,7 +770,10 @@ export async function handleAccessReload(
             if (file.result.errors.length > 0) {
               for (const e of file.result.errors) allErrors.push(e);
             } else {
-              validEntries.set(file.sourceName, file.result.entries);
+              parsed.set(file.sourceName, {
+                filename: file.path,
+                entries: file.result.entries,
+              });
             }
           }
         }
@@ -784,6 +792,39 @@ export async function handleAccessReload(
         });
         return;
       }
+    }
+
+    // Every source loaded, or the reload stopped above, so this resolve may
+    // forget the pins of names no file names any more (swamp-club#3123).
+    const resolution = await resolveGrantFileUsernames(
+      parsed,
+      ctx.grantUsernameResolver ??
+        unresolvableUsernames("username subjects are not resolved here"),
+      { complete: true },
+    );
+    const validEntries = new Map<
+      string,
+      import("../../domain/access/grant_file.ts").GrantFileEntry[]
+    >();
+    for (const [source, resolved] of resolution.sources) {
+      for (const error of resolved.errors) allErrors.push(error);
+      validEntries.set(source, resolved.entries);
+    }
+    if (allErrors.length > 0) {
+      send(socket, {
+        type: "access.reload",
+        id: requestId,
+        payload: {
+          success: false,
+          grantCount: 0,
+          groupCount: 0,
+          errors: formatGrantFileErrors(allErrors),
+        },
+      });
+      return;
+    }
+    if (ctx.resolvedUserNames) {
+      Object.assign(ctx.resolvedUserNames, resolution.usernamesBySub);
     }
 
     const autoDefRepo = new YamlDefinitionRepository(

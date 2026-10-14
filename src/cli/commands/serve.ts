@@ -407,9 +407,19 @@ import {
 } from "../../domain/access/grant_file.ts";
 import {
   checkServeGrantFiles,
+  checkServeGrantFileUsernames,
   readServeGrantFiles,
   repoGrantFileName,
+  serveGrantFileUsernames,
 } from "../../domain/access/grant_file_loader.ts";
+import {
+  type GrantUsernameResolver,
+  type ParsedGrantSource,
+  resolveGrantFileUsernames,
+  unresolvableUsernames,
+  type UsernameLookup,
+  usernameSubjectsNeedOAuthMessage,
+} from "../../domain/access/grant_username_resolution.ts";
 import {
   readConditionTypeLiterals,
   validateGrantCondition,
@@ -2209,24 +2219,33 @@ const checkConfigCommand = new Command()
     // The grant files serve would read, judged as serve startup judges them
     // (swamp-club#3130). Stored grants live in the datastore, which this
     // command never contacts; serve reports their spellings at startup.
-    const grantCheck = checkServeGrantFiles(
-      await readServeGrantFiles(repoDir, {
-        grantsFile: merged.grantsFile,
-        grantsDir: merged.grantsDir,
-        validateCondition: validateGrantCondition,
-        readTypeLiterals: readConditionTypeLiterals,
-      }),
-    );
-    const grantsLoad = grantCheck.errors.length === 0;
+    const checkedGrantFiles = await readServeGrantFiles(repoDir, {
+      grantsFile: merged.grantsFile,
+      grantsDir: merged.grantsDir,
+      validateCondition: validateGrantCondition,
+      readTypeLiterals: readConditionTypeLiterals,
+    });
+    const grantCheck = checkServeGrantFiles(checkedGrantFiles);
+    const checkedMode = merged.authMode ?? "none";
+    // username: subjects are judged as startup judges them: rejected outside
+    // OAuth mode, looked up below in it (swamp-club#3123).
+    const grantErrors = [...grantCheck.errors];
+    if (checkedMode !== "oauth") {
+      const issues = await checkServeGrantFileUsernames(
+        checkedGrantFiles,
+        unresolvableUsernames(usernameSubjectsNeedOAuthMessage(checkedMode)),
+      );
+      for (const issue of issues) grantErrors.push(issue);
+    }
+    let grantsLoad = grantErrors.length === 0;
     const grantReport = {
       grantFilesChecked: grantCheck.filesChecked,
-      grantErrors: grantCheck.errors,
+      grantErrors,
       grantWarnings: grantCheck.warnings,
     };
     const unnamedType = restrictionFindings.find((finding) =>
       finding.reason === "no-type"
     );
-    const checkedMode = merged.authMode ?? "none";
     if (
       unnamedType !== undefined &&
       (checkedMode === "none" || checkedMode === "token" ||
@@ -2306,6 +2325,37 @@ const checkConfigCommand = new Command()
     const { checkAccessLists } = await import(
       "../../serve/oauth_access_list_resolution.ts"
     );
+    // Looked up afresh, as the admin lists are: this command cannot read the
+    // pins serve keeps, so a name serve recorded as missing may resolve here.
+    const usernameIssues = await checkServeGrantFileUsernames(
+      checkedGrantFiles,
+      {
+        resolve: async ({ names }) => {
+          const answers = new Map<string, UsernameLookup>();
+          for (const name of names) {
+            try {
+              const sub = await resolveUsername(
+                providerUrl,
+                name,
+                token,
+                AbortSignal.timeout(10_000),
+              );
+              answers.set(name, { status: "resolved", sub });
+            } catch (err) {
+              answers.set(name, {
+                status: "unresolved",
+                message: `${
+                  err instanceof Error ? err.message : String(err)
+                } (looked up with ${providerUrl}/api/auth/resolve-user)`,
+              });
+            }
+          }
+          return answers;
+        },
+      },
+    );
+    for (const issue of usernameIssues) grantErrors.push(issue);
+    grantsLoad = grantErrors.length === 0;
     const check = await checkAccessLists(
       authConfig,
       (username) =>
@@ -3530,8 +3580,26 @@ export const serveCommand = new Command()
         128,
       );
 
+    // Read before the OAuth block so a username a grant file names for the
+    // first time gets a lookup token as a new admin name does
+    // (swamp-club#3123). No literal reader: the policy snapshot loader
+    // reports each grant's type spellings once it is reconciled, so reading
+    // them here as well would warn twice (swamp-club#3130).
+    const grantFiles = await readServeGrantFiles(resolvedRepoDir, {
+      grantsFile: merged.grantsFile,
+      grantsDir: merged.grantsDir,
+      validateCondition: validateGrantCondition,
+    });
+    const grantFileUsernames = serveGrantFileUsernames(grantFiles);
+
     let oauthClientSecret = "";
     const resolvedUserNames: Record<string, string> = {};
+    // Outside OAuth mode a user principal is the username itself (token
+    // auth) or there is none, so a username: subject cannot be resolved.
+    let endStartupGrantLookups = (): void => {};
+    let grantUsernameResolver: GrantUsernameResolver = unresolvableUsernames(
+      usernameSubjectsNeedOAuthMessage(authConfig.mode),
+    );
     if (authConfig.mode === "oauth") {
       const oauthVaultService = await VaultService.fromRepository(
         resolvedRepoDir,
@@ -3700,12 +3768,37 @@ export const serveCommand = new Command()
 
       let accessToken = credentials.accessToken;
 
-      if (resolutionMode === "full" && !accessToken) {
-        const missingNames = listUncachedNames(
-          authConfig.admins,
-          authConfig.allowedUsers,
-          cachedMap,
-        ).join(", ");
+      const { createOAuthGrantUsernameResolver, vaultGrantUsernamePinStore } =
+        await import("../../serve/oauth_grant_username_pins.ts");
+      const grantPinStore = vaultGrantUsernamePinStore({
+        list: () => oauthVaultService.list(TOKEN_SECRETS_VAULT_NAME),
+        get: (k) =>
+          oauthVaultService.get(
+            TOKEN_SECRETS_VAULT_NAME,
+            k,
+            "serve:grant-usernames",
+          ),
+        put: (k, val) =>
+          oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
+      });
+      const storedGrantPins = await grantPinStore.read();
+      const newGrantNames = grantFileUsernames.filter((name) =>
+        !Object.hasOwn(storedGrantPins.pinned, name) &&
+        !Object.hasOwn(storedGrantPins.missing, name)
+      );
+
+      if (
+        (resolutionMode === "full" || newGrantNames.length > 0) &&
+        !accessToken
+      ) {
+        const missingNames = [
+          ...listUncachedNames(
+            authConfig.admins,
+            authConfig.allowedUsers,
+            cachedMap,
+          ),
+          ...newGrantNames.map((name) => `username:${name}`),
+        ].join(", ");
 
         if (clubApiKey) {
           logger.info(
@@ -3717,6 +3810,9 @@ export const serveCommand = new Command()
           logger.info(
             "OAuth user config changed — device grant required to resolve: {admins}",
             { admins: missingNames },
+          );
+          logger.info(
+            "A serve run by a process manager cannot complete a device grant; set SWAMP_API_KEY or --club-api-key-file so it can look usernames up",
           );
 
           const { startDeviceGrant, pollForToken, DeviceGrantPollError } =
@@ -3888,6 +3984,43 @@ export const serveCommand = new Command()
         ...resolution.allowedUsers,
       );
       Object.assign(resolvedUserNames, resolution.usernamesBySub);
+
+      // Startup looks new grant-file usernames up with the token it has.
+      // Once serve is running only the collective key can, since a reload
+      // cannot complete a device grant.
+      let grantLookupToken = accessToken ?? clubApiKey;
+      grantUsernameResolver = createOAuthGrantUsernameResolver({
+        store: grantPinStore,
+        providerUrl: authConfig.oauthProvider,
+        lookup: () => {
+          const token = grantLookupToken;
+          if (!token) return null;
+          return (username, signal) =>
+            resolveUsername(
+              authConfig.oauthProvider,
+              username,
+              token,
+              AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+            );
+        },
+        noLookupMessage:
+          "not looked up: a running serve looks new usernames up only with a collective API key (SWAMP_API_KEY or --club-api-key-file). Restart serve to look it up. Until then this file keeps its stored grants; it is tried again when it changes or serve restarts",
+        onRecorded: (event) => {
+          if (event.kind === "pinned") {
+            logger
+              .info`Pinned grant file username ${event.username} to user:${event.sub}`;
+          } else if (event.kind === "missing") {
+            logger
+              .error`Grant file username ${event.username} not found on ${authConfig.oauthProvider}; recorded as missing`;
+          } else {
+            logger
+              .info`Forgot grant file username ${event.username}: no grant file names it`;
+          }
+        },
+      });
+      endStartupGrantLookups = () => {
+        grantLookupToken = clubApiKey;
+      };
     }
 
     const autoDefRepo = new YamlDefinitionRepository(
@@ -3911,14 +4044,6 @@ export const serveCommand = new Command()
     });
 
     const grantsDir = join(resolvedRepoDir, "grants");
-    // No literal reader: the policy snapshot loader reports each grant's
-    // type spellings once it is reconciled, so reading them here as well
-    // would warn twice (swamp-club#3130).
-    const grantFiles = await readServeGrantFiles(resolvedRepoDir, {
-      grantsFile: merged.grantsFile,
-      grantsDir: merged.grantsDir,
-      validateCondition: validateGrantCondition,
-    });
     if (grantFiles.repoUnreadable) throw grantFiles.repoUnreadable.cause;
     const grantFileErrors = collectErrors(grantFiles.repo);
 
@@ -3936,12 +4061,12 @@ export const serveCommand = new Command()
       );
     }
 
-    const validEntries = new Map<
-      string,
-      import("../../domain/access/grant_file.ts").GrantFileEntry[]
-    >();
+    const parsedGrantSources = new Map<string, ParsedGrantSource>();
     for (const [filename, result] of grantFiles.repo) {
-      validEntries.set(filename, result.entries);
+      parsedGrantSources.set(filename, {
+        filename: repoGrantFileName(filename),
+        entries: result.entries,
+      });
     }
 
     const externalGrantsFilePath = grantFiles.grantsFile?.path;
@@ -3970,7 +4095,10 @@ export const serveCommand = new Command()
             }`,
           );
         }
-        validEntries.set(GRANTS_FILE_SOURCE_NAME, externalResult.entries);
+        parsedGrantSources.set(GRANTS_FILE_SOURCE_NAME, {
+          filename: load.file.path,
+          entries: externalResult.entries,
+        });
         logger
           .info`Loaded ${externalResult.entries.length} grant(s) from external file ${load.file.path}`;
       } else {
@@ -4024,7 +4152,10 @@ export const serveCommand = new Command()
             }`,
           );
         }
-        validEntries.set(file.sourceName, parsed.entries);
+        parsedGrantSources.set(file.sourceName, {
+          filename: file.path,
+          entries: parsed.entries,
+        });
         totalLoaded += parsed.entries.length;
       }
 
@@ -4036,6 +4167,33 @@ export const serveCommand = new Command()
           .info`External grants directory ${grantsDirLoad.path} contains no grants`;
       }
     }
+
+    // Every source loaded, or startup refused above. The resolver records
+    // what it looked up before answering, so a name first seen missing stays
+    // recorded although startup refuses here (swamp-club#3123).
+    const grantUsernameResolution = await resolveGrantFileUsernames(
+      parsedGrantSources,
+      grantUsernameResolver,
+      { complete: true },
+    );
+    endStartupGrantLookups();
+    const grantUsernameErrors: GrantFileError[] = [];
+    const validEntries = new Map<
+      string,
+      import("../../domain/access/grant_file.ts").GrantFileEntry[]
+    >();
+    for (const [source, resolved] of grantUsernameResolution.sources) {
+      for (const error of resolved.errors) grantUsernameErrors.push(error);
+      validEntries.set(source, resolved.entries);
+    }
+    if (grantUsernameErrors.length > 0) {
+      throw new UserError(
+        `Grant file username resolution failed — refusing to start:\n${
+          formatGrantFileErrorLines(grantUsernameErrors)
+        }`,
+      );
+    }
+    Object.assign(resolvedUserNames, grantUsernameResolution.usernamesBySub);
 
     // One unit under the exclusive sync gate: ConfigPoller is already
     // pulling, and a pull landing between these writes and their push can
@@ -4122,6 +4280,9 @@ export const serveCommand = new Command()
         externalGrantsFile: externalGrantsFilePath,
         externalGrantsDir: externalGrantsDirPath,
         validateCondition: validateGrantCondition,
+        usernameResolver: grantUsernameResolver,
+        onUsernamesResolved: (usernamesBySub) =>
+          Object.assign(resolvedUserNames, usernamesBySub),
         fileGrantStore: grantWrites.fileGrantStore,
         policySnapshotLoader,
         commitReconcile: commitGrantWrites,
@@ -4456,6 +4617,7 @@ export const serveCommand = new Command()
         ...(Object.keys(resolvedUserNames).length > 0
           ? { resolvedUserNames }
           : {}),
+        grantUsernameResolver,
         serveOptions: merged,
         vaultsDir,
         managedDefinitionsDir: repoMarker?.datastore?.managedConfig
