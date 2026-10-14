@@ -25,7 +25,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useRequest } from "./useRequest.ts";
 import { extractArray, extractTotal } from "./extract.ts";
-import { useTimeBounds, useTimeRange } from "./time_range.ts";
+import {
+  useRequestTimeBounds,
+  useTimeBounds,
+  useTimeRange,
+} from "./time_range.ts";
 import { useKeepPrevious } from "./useKeepPrevious.ts";
 import { useRunSummary } from "./run_summary.ts";
 import {
@@ -65,10 +69,10 @@ export function useTriggerRunSummaries(
     { triggerSource, workflows: sent, recentLimit },
     { enabled },
   );
-  // A preset's window moves every minute, re-keying the request: hold the
-  // last answer meanwhile so the pills and Last-run columns don't flash
-  // back to loading. A different range is a different question, so it
-  // still shows a skeleton then.
+  // A changed set of workflows re-keys the request: hold the last answer
+  // meanwhile so the pills and Last-run columns don't flash back to
+  // loading. A different range is a different question, so it still
+  // shows a skeleton then.
   const { range } = useTimeRange();
   const heldSummary = useKeepPrevious(
     summary.summary,
@@ -166,18 +170,22 @@ export function useTriggerRuns(
 }
 
 /**
- * A run search over the time range. Serve takes ISO `since`/`until`; an
- * older serve wants `since` as a duration and has no `until`, so a refused
- * search is retried that way and the upper bound applied here.
+ * A run search over the time range. Serve takes a preset as a duration and
+ * a custom range as ISO `since`/`until`; an older serve wants `since` as a
+ * duration and has no `until`, so a refused search is retried that way and
+ * the upper bound (`bounds`, the ISO window) applied here.
  */
 function useTriggerSearch(
   payload: Record<string, unknown>,
   bounds: { since?: string; until?: string },
   enabled: boolean,
 ) {
+  // Stable while the range is, so the request is not re-sent as the clock
+  // moves (swamp-club#3444).
+  const requestBounds = useRequestTimeBounds();
   const current = useRequest(
     "workflow.run.search",
-    { ...payload, ...bounds },
+    { ...payload, ...requestBounds },
     { enabled },
   );
   const legacy = enabled && current.error !== null;

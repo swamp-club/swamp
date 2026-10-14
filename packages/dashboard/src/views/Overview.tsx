@@ -40,8 +40,7 @@ import { WorkersPill } from "../components/WorkersPill.tsx";
 import { type FleetWorker, workerSummary } from "../lib/host_map_model.ts";
 import { useCoalescedRefetch } from "../client/useFleetData.ts";
 import { useRunSummary } from "../client/run_summary.ts";
-import { useKeepPrevious } from "../client/useKeepPrevious.ts";
-import { useTimeBounds, useTimeRange } from "../client/time_range.ts";
+import { useTimeBounds } from "../client/time_range.ts";
 import { chartAxis, type ChartBar, chartBars } from "./overview_chart.ts";
 import {
   formatCount,
@@ -104,15 +103,7 @@ export function Overview(
   // time range, so they are exact rather than "the newest 500 runs".
   const bounds = useTimeBounds();
   const summaryReq = useRunSummary({ timeline: true, recentLimit: 0 });
-  // A preset's window moves every minute, re-keying the request: hold the
-  // last answer meanwhile so the stats and chart don't flash skeletons. A
-  // different range is a different question, so it shows a skeleton.
-  const { range } = useTimeRange();
-  const summary = useKeepPrevious(
-    summaryReq.summary,
-    false,
-    JSON.stringify(range),
-  );
+  const summary = summaryReq.summary;
   const totals = summary?.totals;
   const summaryState = loadState(
     { data: summary, loading: summaryReq.loading, error: summaryReq.error },

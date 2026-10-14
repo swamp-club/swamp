@@ -198,20 +198,34 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   const refetchHistory = historyReq.refetch;
   const refetchRow = rowReq.refetch;
   const refetchLogs = logsReq.refetch;
-  const refetchRun = useCallback(() => {
+  const refetchLive = useCallback(() => {
     refetchHistory();
-    refetchRow();
     refetchLogs();
-  }, [refetchHistory, refetchRow, refetchLogs]);
+  }, [refetchHistory, refetchLogs]);
+  const refetchRun = useCallback(() => {
+    refetchLive();
+    refetchRow();
+  }, [refetchLive, refetchRow]);
   const rows = useMemo(
     () => (row ? [row] : run ? [{ runId: run.id, status: run.status }] : []),
     [row, run],
   );
   useActiveRunsRefetch(health?.activeRuns, rows, refetchRun);
 
-  // Serve has no per-run event stream: re-read a run in progress.
+  // Serve has no per-run event stream: re-read a run in progress. Only the
+  // run and its logs change while it runs; the search row (trigger,
+  // awaiting resume) is re-read when the run's status changes, when serve
+  // starts or stops driving a run, and after a resume (swamp-club#3444).
   const live = run !== null && LIVE_STATUSES.has(run.status);
-  usePolling(refetchRun, live ? LIVE_POLL_MS : null);
+  usePolling(refetchLive, live ? LIVE_POLL_MS : null);
+  const seenStatus = useRef(run?.status);
+  useEffect(() => {
+    if (seenStatus.current === run?.status) return;
+    const first = seenStatus.current === undefined;
+    seenStatus.current = run?.status;
+    // The first answer is the row's own first fetch.
+    if (!first) refetchRow();
+  }, [run?.status, refetchRow]);
   const now = useNow(live ? 1000 : null);
 
   const graph = useMemo(
