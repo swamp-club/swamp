@@ -164,6 +164,24 @@ Deno.test("summarizeWorkflowRuns: the timeline accounts for every dated run, in 
   );
 });
 
+Deno.test("summarizeWorkflowRuns: oldestStartedAt is the earliest start of a counted run", () => {
+  fc.assert(
+    fc.property(arbRuns("sometimes"), (runs) => {
+      const summary = summarizeWorkflowRuns(runs);
+      const starts = runs.flatMap((r) => r.startedAt ? [r.startedAt] : []);
+      if (starts.length === 0) {
+        assertEquals("oldestStartedAt" in summary, false);
+        return;
+      }
+      const oldest = summary.oldestStartedAt;
+      assert(oldest !== undefined && starts.includes(oldest));
+      for (const start of starts) {
+        assert(Date.parse(oldest) <= Date.parse(start));
+      }
+    }),
+  );
+});
+
 Deno.test("summarizeWorkflowRuns: the result does not depend on input order", () => {
   fc.assert(
     fc.property(

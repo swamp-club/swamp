@@ -364,6 +364,8 @@ export interface WorkflowRunSummaryData {
   };
   /** One entry per workflow with a counted run, ordered by name. */
   workflows: WorkflowRunSummaryWorkflow[];
+  /** Start of the oldest counted run; absent when none has a start. */
+  oldestStartedAt?: string;
   /** Hours with runs, ascending; only when asked for. */
   timeline?: WorkflowRunSummaryBucket[];
 }

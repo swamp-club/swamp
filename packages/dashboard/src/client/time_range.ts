@@ -81,6 +81,15 @@ export function requestTimeBounds(
   return { since: range.preset };
 }
 
+/**
+ * Whether a request's `since` is a duration back from serve's now (`1h`,
+ * `7d`), so the window it names moves with the clock. An ISO time, or no
+ * bound, stays put.
+ */
+export function isRelativeBound(since: string | undefined): boolean {
+  return since !== undefined && /^\d+(mo|y|h|m|d|w)$/.test(since);
+}
+
 /** Short label for the picker button: "Last 7 days", "Oct 3 – Oct 9". */
 export function describeTimeRange(range: TimeRange, locale?: string): string {
   if (range.kind === "preset") {

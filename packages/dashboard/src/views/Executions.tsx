@@ -19,7 +19,12 @@
 
 import { type MouseEvent, useCallback, useMemo, useState } from "react";
 import { useRequest } from "../client/useRequest";
-import { extractArray, extractTotal } from "../client/extract";
+import {
+  extractArray,
+  extractSearchWindow,
+  extractTotal,
+} from "../client/extract";
+import { ageOutDelayMs, useRefetchOnAgeOut } from "../client/run_activity";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { useWorkflowCatalog } from "../client/useWorkflowCatalog";
 import { useKeepPrevious } from "../client/useKeepPrevious";
@@ -30,6 +35,7 @@ import {
 } from "../client/run_summary";
 import {
   describeTimeRange,
+  isRelativeBound,
   type TimeRange,
   useTimeRange,
 } from "../client/time_range";
@@ -179,6 +185,15 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     }),
     { enabled },
   );
+  // On a preset range, read the page again once the oldest match leaves
+  // the window, as the totals below do (swamp-club#3450).
+  const answered = extractSearchWindow(search.data);
+  useRefetchOnAgeOut(search.refetch, {
+    answer: search.data,
+    delayMs: isRelativeBound(searchWindow.since)
+      ? ageOutDelayMs(answered.since, answered.oldestStartedAt)
+      : null,
+  }, enabled);
   // A new page or filter keeps the rows on screen (dimmed) until the
   // reply lands, instead of flashing an empty table.
   const shown = useKeepPrevious(search.data, !enabled);

@@ -19,6 +19,9 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  ageOutDelayMs,
+  ageOutTimerStep,
+  MAX_TIMER_MS,
   nextRefetch,
   RUN_ACTIVITY_REFETCH_MS,
   runActivityChanged,
@@ -107,4 +110,52 @@ Deno.test("nextRefetch: switching tabs quickly still costs one refetch per windo
     }
   }
   assertEquals(refetches, 60_000 / WINDOW);
+});
+
+const iso = (ms: number) => new Date(ms).toISOString();
+const MIN = 60_000;
+
+Deno.test("ageOutDelayMs: the oldest run leaves the window after its start minus since", () => {
+  // Last hour: since is T0 - 1h; a run 61 minutes old has aged out, one 20
+  // minutes into the window leaves it in 20 minutes.
+  assertEquals(ageOutDelayMs(iso(T0), iso(T0 + 20 * MIN)), 20 * MIN);
+});
+
+Deno.test("ageOutDelayMs: a run on the boundary is due now", () => {
+  assertEquals(ageOutDelayMs(iso(T0), iso(T0)), 0);
+  // Not expected from serve, which counts only runs at or after since.
+  assertEquals(ageOutDelayMs(iso(T0), iso(T0 - MIN)), 0);
+});
+
+Deno.test("ageOutDelayMs: nothing to wait for without both times", () => {
+  assertEquals(ageOutDelayMs(undefined, iso(T0)), null);
+  assertEquals(ageOutDelayMs(iso(T0), undefined), null);
+  assertEquals(ageOutDelayMs("7d", iso(T0)), null);
+  assertEquals(ageOutDelayMs(iso(T0), "not a time"), null);
+});
+
+Deno.test("ageOutTimerStep: fires at or after the deadline", () => {
+  assertEquals(ageOutTimerStep(T0, T0), { kind: "fire" });
+  assertEquals(ageOutTimerStep(T0, T0 + 1), { kind: "fire" });
+  assertEquals(ageOutTimerStep(T0, T0 - 5_000), {
+    kind: "wait",
+    waitMs: 5_000,
+  });
+});
+
+Deno.test("ageOutTimerStep: a 30- or 90-day wait goes in steps a timer can hold", () => {
+  for (const days of [30, 90]) {
+    const deadline = T0 + days * 86_400_000;
+    let now = T0;
+    let steps = 0;
+    for (;;) {
+      const step = ageOutTimerStep(deadline, now);
+      if (step.kind === "fire") break;
+      assertEquals(step.waitMs <= MAX_TIMER_MS, true);
+      now += step.waitMs;
+      steps++;
+    }
+    assertEquals(now, deadline);
+    assertEquals(steps, Math.ceil((days * 86_400_000) / MAX_TIMER_MS));
+  }
 });
