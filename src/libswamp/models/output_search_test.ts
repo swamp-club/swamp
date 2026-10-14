@@ -250,6 +250,63 @@ Deno.test("modelOutputSearch: filters by since (inclusive) and until (exclusive)
   );
 });
 
+Deno.test("modelOutputSearch: reads a duration since and until as that long before now", async () => {
+  const hour = 3_600_000;
+  const now = Date.now();
+  const output = (id: string, agoMs: number) => ({
+    output: {
+      id,
+      definitionId: "def-1",
+      methodName: "sync",
+      status: "succeeded",
+      startedAt: new Date(now - agoMs),
+    },
+    type: { normalized: "aws/ec2-instance" },
+  });
+  const deps = makeDeps({
+    findAllOutputsGlobal: () =>
+      Promise.resolve([
+        output("two-hours", 2 * hour),
+        output("six-days", 6 * 24 * hour),
+        output("eight-days", 8 * 24 * hour),
+      ]),
+  });
+  const run = async (input: { since?: string; until?: string }) =>
+    completedOf(
+      await collect(modelOutputSearch(createLibSwampContext(), deps, input)),
+    ).results.map((r) => r.id);
+
+  assertEquals(await run({ since: "7d" }), ["two-hours", "six-days"]);
+  assertEquals(await run({ since: "1d" }), ["two-hours"]);
+  assertEquals(await run({ until: "1h" }), [
+    "two-hours",
+    "six-days",
+    "eight-days",
+  ]);
+  assertEquals(await run({ since: "1w", until: "1d" }), ["six-days"]);
+});
+
+Deno.test("modelOutputSearch: gives the since-bounded scan the cutoff a duration resolves to", async () => {
+  const cutoffs: number[] = [];
+  const deps = makeDeps({
+    findAllOutputsGlobalSince: (cutoff) => {
+      cutoffs.push(cutoff.getTime());
+      return Promise.resolve([]);
+    },
+  });
+  const before = Date.now();
+  await collect(
+    modelOutputSearch(createLibSwampContext(), deps, { since: "7d" }),
+  );
+  const after = Date.now();
+  const week = 7 * 86_400_000;
+  assertEquals(cutoffs.length, 1);
+  assertEquals(
+    cutoffs[0] >= before - week && cutoffs[0] <= after - week,
+    true,
+  );
+});
+
 Deno.test("modelOutputSearch: uses the since-bounded scan when the repository offers one", async () => {
   const cutoffs: string[] = [];
   const deps = makeDeps({
@@ -280,7 +337,14 @@ Deno.test("modelOutputSearch: keeps at most limit results, most recent first", a
 
 Deno.test("modelOutputSearch: rejects an unparseable since and a negative limit", async () => {
   for (
-    const input of [{ since: "yesterday" }, { until: "nope" }, { limit: -1 }]
+    const input of [
+      { since: "yesterday" },
+      { until: "nope" },
+      { since: "7x" },
+      // A duration too long to resolve to a date.
+      { since: "99999999999999999999d" },
+      { limit: -1 },
+    ]
   ) {
     const events = await collect<ModelOutputSearchEvent>(
       modelOutputSearch(createLibSwampContext(), makeDeps(), input),
