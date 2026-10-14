@@ -2899,35 +2899,37 @@ Deno.test("getValidatedIndex: a count mismatch drops the entries of records that
   });
 });
 
-Deno.test("getValidatedIndex: a reader that counted before a save's entry landed reads no record", async () => {
+Deno.test("getValidatedIndex: a reader that counted before a save's entry landed reads no record and writes no index", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
     const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const indexPath = getIndexPath(indexDir);
     const [first, second] = await saveRunningRuns(repo, workflow, 2);
     const secondEntry = (await readRunIndex(indexDir))!.entries[second.id];
     await dropIndexEntries(indexDir, [second.id]);
-    // Any read of this record fails: the reader must not read it.
-    await Deno.writeTextFile(repo.getPath(workflow.id, second.id), "{ [");
 
     // Hold the queue as a save does between its record and its entry.
+    const past = new Date("2020-01-01T00:00:00Z");
+    let landed!: string;
     let release!: () => void;
     const held = withIndexQueue(indexDir, async () => {
       await new Promise<void>((resolve) => release = resolve);
       const result = await readRunIndex(indexDir);
-      await Deno.writeTextFile(
-        getIndexPath(indexDir),
-        JSON.stringify({
-          version: INDEX_SCHEMA_VERSION,
-          entries: { ...result!.entries, [second.id]: secondEntry },
-        }),
-      );
+      landed = JSON.stringify({
+        version: INDEX_SCHEMA_VERSION,
+        entries: { ...result!.entries, [second.id]: secondEntry },
+      });
+      await Deno.writeTextFile(indexPath, landed);
+      await Deno.utime(indexPath, past, past);
     });
 
     const original = Deno.readTextFile;
     let indexReads = 0;
+    let recordReads = 0;
     Deno.readTextFile = ((...args: Parameters<typeof original>) => {
-      if (String(args[0]) === getIndexPath(indexDir)) indexReads++;
+      if (String(args[0]) === indexPath) indexReads++;
+      if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) recordReads++;
       return original(...args);
     }) as typeof original;
     try {
@@ -2943,9 +2945,85 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
         summaries.map((s) => s.id).sort(),
         [first.id, second.id].sort(),
       );
+      // Every record still matches the stat its entry was built from.
+      assertEquals(recordReads, 0);
     } finally {
       Deno.readTextFile = original;
     }
+    // Nothing differed, so the reader left the save's index as it was.
+    assertEquals((await Deno.stat(indexPath)).mtime?.getTime(), past.getTime());
+    assertEquals(await Deno.readTextFile(indexPath), landed);
+  });
+});
+
+Deno.test("getValidatedIndex: a reader that counted before a save's entry landed corrects an entry another process overwrote (swamp-club#3452)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const indexPath = getIndexPath(indexDir);
+    const [finished] = await saveRunningRuns(repo, workflow, 1);
+    const runningEntry = (await readRunIndex(indexDir))!.entries[finished.id];
+
+    // A save in another process, made from the index as it was before this
+    // run moved on, overwrites the run's entry with the one it had: the
+    // record and entry counts still agree.
+    finished.interruptOrphaned("test");
+    await repo.save(workflow.id, finished);
+    const result = await readRunIndex(indexDir);
+    await Deno.writeTextFile(
+      indexPath,
+      JSON.stringify({
+        version: INDEX_SCHEMA_VERSION,
+        entries: { ...result!.entries, [finished.id]: runningEntry },
+      }),
+    );
+
+    // A new run's record is written, and its entry is still to come.
+    const [added] = await saveRunningRuns(repo, workflow, 1);
+    const addedEntry = (await readRunIndex(indexDir))!.entries[added.id];
+    await dropIndexEntries(indexDir, [added.id]);
+
+    // Hold the queue as that save does between its record and its entry.
+    let release!: () => void;
+    const held = withIndexQueue(indexDir, async () => {
+      await new Promise<void>((resolve) => release = resolve);
+      const current = await readRunIndex(indexDir);
+      await Deno.writeTextFile(
+        indexPath,
+        JSON.stringify({
+          version: INDEX_SCHEMA_VERSION,
+          entries: { ...current!.entries, [added.id]: addedEntry },
+        }),
+      );
+    });
+
+    const original = Deno.readTextFile;
+    let indexReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (String(args[0]) === indexPath) indexReads++;
+      return original(...args);
+    }) as typeof original;
+    try {
+      const reading = repo.findAllSummariesFromIndex(workflow.id);
+      await waitFor(
+        () => Promise.resolve(indexReads > 0),
+        "the reader to count against the stale index",
+      );
+      release();
+      await held;
+      const summaries = await reading;
+      assertEquals(
+        summaries.find((s) => s.id === finished.id)?.status,
+        "interrupted",
+      );
+      assert(summaries.some((s) => s.id === added.id));
+    } finally {
+      Deno.readTextFile = original;
+    }
+    const entries = (await readRunIndex(indexDir))!.entries;
+    assertEquals(entries[finished.id].status, "interrupted");
+    assertEquals(entries[added.id], addedEntry);
   });
 });
 
