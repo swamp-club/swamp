@@ -548,12 +548,14 @@ export class ExtensionApiClient {
   async getExtension(
     name: string,
     apiKey?: string,
+    signal?: AbortSignal,
   ): Promise<ExtensionInfo | null> {
     const encodedName = encodeURIComponent(name);
     const headers = apiKey ? this.authHeaders(apiKey) : {};
     const res = await this.fetch(`/api/v1/extensions/${encodedName}`, {
       method: "GET",
       headers,
+      ...(signal ? { signal } : {}),
     });
 
     if (res.status === 404) {

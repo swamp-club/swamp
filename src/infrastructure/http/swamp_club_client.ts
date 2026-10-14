@@ -169,6 +169,20 @@ export interface WhoamiCollectiveEntitlementResponse {
   trial?: WhoamiTrial | null;
 }
 
+/**
+ * One collective's source hosting, joined to {@link WhoamiOrganization} on
+ * `slug`. Its own field for the same reason as
+ * {@link WhoamiCollectiveEntitlementResponse}: it only feeds the local quality
+ * rubric, never publish authorization.
+ */
+export interface WhoamiCollectiveSourceHostingResponse {
+  slug: string;
+  /** The registry attests the collective's private extensions' source. */
+  privateSourceHosting: boolean;
+  /** A first publish in this namespace is private whatever the manifest says. */
+  privateNamespace: boolean;
+}
+
 /** Response from the /api/whoami endpoint. */
 export interface WhoamiResponse {
   authenticated: boolean;
@@ -181,6 +195,8 @@ export interface WhoamiResponse {
   organizations?: WhoamiOrganization[];
   /** Per-collective entitlement. Absent from servers that predate it. */
   collectiveEntitlements?: WhoamiCollectiveEntitlementResponse[];
+  /** Per-collective source hosting. Absent from servers that predate it. */
+  collectiveSourceHosting?: WhoamiCollectiveSourceHostingResponse[];
   collectiveToken?: boolean;
   collectiveId?: string;
   collectiveSlug?: string;

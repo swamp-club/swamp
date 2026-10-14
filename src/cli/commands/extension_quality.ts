@@ -125,7 +125,7 @@ export const extensionQualityCommand = new Command()
         defaultPackageCacheRoot(repoDir),
         VERSION,
       );
-      const deps = createExtensionQualityDeps(prepareDeps, cache);
+      const deps = createExtensionQualityDeps(prepareDeps, cache, identity);
       const renderer = createExtensionQualityRenderer(cliCtx.outputMode);
 
       await consumeStream(
