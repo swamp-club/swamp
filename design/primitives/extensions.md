@@ -2412,28 +2412,32 @@ Three generations are recognised:
 gen-1 and gen-2 migrate the same way, and nothing is renamed in place. After
 refreshing the repo, `repo upgrade` runs the `swamp extension install` pass
 (`extensionInstall` in `src/libswamp/extensions/install.ts`).
-`needsInstallOrMigration` marks every lockfile entry with a gen-1 or gen-2 path
-for migration. The install re-pulls that extension into its per-extension
-subtree, verified against the lockfile's stored checksum, and rewrites the
-entry's `files` to the new paths. When it commits, it prunes the old paths that
-no other entry claims. `sweepLegacyPaths` then removes every gen-1 or gen-2 path
-of the entry that is still on disk. The sweep does not check other entries'
-claims, so a gen-2 file shared by two colliding extensions goes too. The
-extension that still lists it is handled later in the pass, finds the file
-missing, and is re-pulled.
+`needsInstallOrMigration` marks an entry for migration when all its tracked
+files exist and at least one is at a gen-1 or gen-2 path. The install re-pulls
+that extension into its per-extension subtree, verified against the lockfile's
+stored checksum, and rewrites the entry's `files` to the new paths. When it
+commits, it prunes the old paths that no other entry claims. `sweepLegacyPaths`
+then removes every gen-1 or gen-2 path of the entry that is still on disk. An
+entry with a missing file is re-pulled as a plain install instead: the
+commit-time prune still removes its unclaimed old paths, but the sweep does not
+run for it. The sweep does not check other entries' claims, so a gen-2 file
+shared by two colliding extensions goes too. The extension that still lists it
+is handled later in the pass, finds the file missing, and is re-pulled.
 
 The lockfile tolerates mixed generations, since each entry stands alone. The CLI
 guard warns with a one-line reminder instead of failing, so migrated extensions
-stay usable during a partial upgrade. The migration is resumable. Each entry is
-handled on its own: a failure is reported for that entry and the pass moves on
-to the next. A failed re-pull (a download error or a checksum mismatch) leaves
-the entry's legacy files and lockfile entry as they were, so the next
-`swamp extension install` or `repo upgrade` retries it. The sweep treats
-`Deno.errors.NotFound` as already removed. Any other sweep error comes after the
-re-pull has committed: the entry is reported failed, but its lockfile entry
-already lists the new paths, so later passes see it as up to date and do not
-retry the sweep. Legacy files the sweep had not reached stay on disk until
-removed by hand.
+stay usable during a partial upgrade. The migration is resumable. A failed
+re-pull or sweep is reported for that entry and the pass moves on to the next.
+Errors before the re-pull starts are not isolated this way. An unreadable
+tracked file, or an entry name or path that escapes the repo, for example,
+aborts the whole pass, and `repo upgrade` reports it as an error. A failed
+re-pull (a download error or a checksum mismatch) leaves the entry's legacy
+files and lockfile entry as they were, so the next `swamp extension install` or
+`repo upgrade` retries it. The sweep treats `Deno.errors.NotFound` as already
+removed. Any other sweep error comes after the re-pull has committed: the entry
+is reported failed, but its lockfile entry already lists the new paths, so later
+passes see it as up to date and do not retry the sweep. Legacy files the sweep
+had not reached stay on disk until removed by hand.
 
 Skill directory entries are always treated as current-layout, wherever they
 are. Each is tracked as one dir path in `entry.files[]`, e.g.
