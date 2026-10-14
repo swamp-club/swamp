@@ -47,7 +47,9 @@ existing swamp repo where it already is. A workspace keeps every task you give
 it, each with its own brief in `tasks/`, listed newest first with when it was
 created. Coming back to a workspace lets you open any task, relaunch its agent,
 open another agent, or start a new task. `swamp start status` lists your
-workspaces and the agents on your PATH.
+workspaces and the agents on your PATH. `swamp workspace` manages them from the
+terminal: `create`, `import`, `list`, `get` and `remove`. Removing a workspace
+takes it off the list and keeps its folder.
 
 To use swamp inside an existing project instead, initialize it as a repository
 and start your agent there:

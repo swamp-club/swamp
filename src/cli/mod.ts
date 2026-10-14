@@ -80,6 +80,7 @@ import { workerCommand } from "./commands/worker.ts";
 import { questCommand } from "./commands/quest.ts";
 import { startCommand } from "./commands/start.ts";
 import { dashboardCommand } from "./commands/dashboard.ts";
+import { workspaceCommand } from "./commands/workspace.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
@@ -393,6 +394,8 @@ const NON_REPO_COMMANDS = new Set([
   "quest",
   // Manages its own home workspace by path; never runs a model.
   "start",
+  // Manages the workspace registry; never runs inside one.
+  "workspace",
 ]);
 
 /**
@@ -2108,7 +2111,8 @@ export function registerCommands(cli: AnyCommand): void {
     .command("worker", workerCommand)
     .command("quest", questCommand)
     .command("start", startCommand)
-    .command("dashboard", dashboardCommand);
+    .command("dashboard", dashboardCommand)
+    .command("workspace", workspaceCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));

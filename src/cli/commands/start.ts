@@ -36,18 +36,17 @@ import { loadIdentity } from "../load_identity.ts";
 import { blockMessage, createAuthGateDeps, runAuthGate } from "../auth_gate.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
-import { parseWorkspaceName } from "../../domain/start/workspace_name.ts";
+import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { apiKeySourceName } from "../../infrastructure/persistence/api_key_source.ts";
 import { processOwnsConfigDir } from "../../infrastructure/persistence/config_dir_ownership.ts";
 import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import {
-  readStartServerRecords,
   removeStartServerRecord,
   writeStartServerRecord,
 } from "../../infrastructure/persistence/start_server_record.ts";
-import { probeStartServer } from "../../infrastructure/process/start_instance_probe.ts";
+import { isStartServing } from "../../infrastructure/process/start_instance_probe.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import {
@@ -100,29 +99,6 @@ async function checkSignedIn(live: boolean): Promise<SignedInState> {
 }
 
 /**
- * True when another `swamp start` may have the workspace open. Records are
- * probed in parallel; one whose probe is inconclusive counts as running.
- * With `prune`, records of servers known to be gone are removed on the way.
- */
-async function isRunning(
-  workspacePath: string,
-  prune: boolean,
-): Promise<boolean> {
-  const others = (await readStartServerRecords(workspacePath)).filter((r) =>
-    r.pid !== Deno.pid
-  );
-  const results = await Promise.all(others.map(async (record) => {
-    const liveness = await probeStartServer(record);
-    if (liveness === "dead") {
-      if (prune) await removeStartServerRecord(workspacePath, record.pid);
-      return false;
-    }
-    return true;
-  }));
-  return results.some((running) => running);
-}
-
-/**
  * The start dependencies. `prune` lets the running check delete stale
  * server records; the read-only inspection passes false so it writes nothing.
  */
@@ -132,7 +108,7 @@ async function buildDeps(prune: boolean) {
     checkSignedIn,
     serverUrl: Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL,
     identity: await loadIdentity(),
-    isRunning: (workspacePath) => isRunning(workspacePath, prune),
+    isRunning: (workspacePath) => isStartServing(workspacePath, prune),
   });
 }
 

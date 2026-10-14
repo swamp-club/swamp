@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { isProcessAlive } from "./process_kill.ts";
-import type { StartServerRecord } from "../persistence/start_server_record.ts";
+import {
+  readStartServerRecords,
+  removeStartServerRecord,
+  type StartServerRecord,
+} from "../persistence/start_server_record.ts";
 
 /** How long the ping to a recorded server may take. */
 export const START_PROBE_TIMEOUT_MS = 2_000;
@@ -97,4 +101,27 @@ export async function probeStartServer(
     // The status is all the probe needs.
   }
   return response.status === 204 ? "live" : "dead";
+}
+
+/**
+ * True when another `swamp start` may have the workspace open. Records are
+ * probed in parallel; one whose probe is inconclusive counts as running.
+ * With `prune`, records of servers known to be gone are removed on the way.
+ */
+export async function isStartServing(
+  workspacePath: string,
+  prune: boolean,
+): Promise<boolean> {
+  const others = (await readStartServerRecords(workspacePath)).filter((r) =>
+    r.pid !== Deno.pid
+  );
+  const results = await Promise.all(others.map(async (record) => {
+    const liveness = await probeStartServer(record);
+    if (liveness === "dead") {
+      if (prune) await removeStartServerRecord(workspacePath, record.pid);
+      return false;
+    }
+    return true;
+  }));
+  return results.some((running) => running);
 }

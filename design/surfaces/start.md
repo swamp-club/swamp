@@ -13,7 +13,8 @@ and prepares the ground for the **Serve** dashboard.
 ## Glossary
 
 - **Workspace**: a swamp repo `swamp start` manages, registered in
-  `<config dir>/workspaces.json`. A new one is created, with no tools enrolled,
+  `<config dir>/workspaces.json` (see [workspace.md](./workspace.md), which
+  also covers the `swamp workspace` commands). A new one is created, with no tools enrolled,
   at `<data dir>/workspaces/<name>` (`getSwampDataDir()`, so it moves with
   `SWAMP_HOME`); an imported one is an existing repo that stays where it is. A
   user can have many; each new one gets a suggested `adjective-creature` name
