@@ -999,6 +999,10 @@ Deno.test("runIndexSnapshot: does not keep a snapshot while the index ctime is r
     // Sets the mtimes back, as a rewrite in place that restores them
     // would, and moves the index's ctime to now.
     await settleRunIndex(dir, workflow.id);
+    // A platform that reports no ctime (Windows) has nothing to tell the
+    // rewrite by, and keeps the snapshot.
+    const indexPath = getIndexPath(runsDirOf(dir, workflow.id));
+    if ((await Deno.stat(indexPath)).ctime === null) return;
 
     const first = await repo.runIndexSnapshot(workflow.id);
     assertNotStrictEquals(await repo.runIndexSnapshot(workflow.id), first);
