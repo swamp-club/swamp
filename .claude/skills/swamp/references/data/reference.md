@@ -71,7 +71,8 @@ swamp data query 'model("my-model") && name == "execution-log"' --json
 
 `model("my-model")` takes a behavior name or definition id and resolves it as
 `data get` does, so it finds the data after a behavior rename. An unknown
-behavior is an error, as in `data get`.
+behavior is an error, as in `data get`. `behavior("my-model")` and
+`behaviorName` are the same as `model("my-model")` and `modelName`.
 
 **Output shape:** `--json` returns
 `{"results": [...], "total": N, "limited":

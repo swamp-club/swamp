@@ -1968,9 +1968,9 @@ Deno.test("serve id-deny conformance: latestRun by a copy's name is refused when
 // data.query's model("<model>") resolves a model by name or id, so it is
 // authorized as a model-scoped data.get of that model is (swamp-club#2960).
 
-function modelQuery(model: string) {
+function modelQuery(model: string, fn = "model") {
   return request("data.query", {
-    predicate: `model(${JSON.stringify(model)})`,
+    predicate: `${fn}(${JSON.stringify(model)})`,
   });
 }
 
@@ -2003,6 +2003,49 @@ Deno.test("serve id-deny conformance: model() by a denied or missing model fails
     }
 
     const admin = await sendRequest(f.admin, modelQuery("prod-db"));
+    assertEquals(errorFrame(admin), undefined, JSON.stringify(admin));
+    assertStringIncludes(JSON.stringify(admin), f.prodModel.id);
+  });
+});
+
+// behavior("<behavior>") is the behavior spelling of model() (swamp-club#3410):
+// it is collected with model() and resolved by the same authorizing
+// resolver, so it can never read what model() may not.
+Deno.test("serve id-deny conformance: behavior() is authorized exactly as model() is", async () => {
+  await withFixtures(async (f) => {
+    const allowed = await sendRequest(f.ctx, modelQuery("dev-db", "behavior"));
+    assertEquals(errorFrame(allowed), undefined, JSON.stringify(allowed));
+    assertStringIncludes(JSON.stringify(allowed), f.devModel.id);
+
+    for (
+      const [predicate, reference, label] of [
+        ['behavior("prod-db")', "prod-db", "denied by name"],
+        [`behavior("${f.prodModel.id}")`, f.prodModel.id, "denied by id"],
+        ['behavior("no-such-db")', "no-such-db", "missing"],
+        ['model("dev-db") || behavior("prod-db")', "prod-db", "mixed"],
+        ['behavior("dev-db") || model("prod-db")', "prod-db", "mixed model"],
+      ]
+    ) {
+      const frames = await sendRequest(
+        f.ctx,
+        request("data.query", { predicate }),
+      );
+      const error = errorFrame(frames);
+      assertEquals(error?.error?.code, "data_query_failed", label);
+      assertEquals(
+        error?.error?.message,
+        `Model not found: ${reference}`,
+        label,
+      );
+      if (reference !== f.prodModel.id) {
+        assert(!JSON.stringify(frames).includes(f.prodModel.id), label);
+      }
+    }
+
+    const admin = await sendRequest(
+      f.admin,
+      modelQuery("prod-db", "behavior"),
+    );
     assertEquals(errorFrame(admin), undefined, JSON.stringify(admin));
     assertStringIncludes(JSON.stringify(admin), f.prodModel.id);
   });

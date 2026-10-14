@@ -35,7 +35,7 @@ Deno.test("dataListCommand has correct description", async () => {
   const { dataListCommand } = await import("./data_list.ts");
   assertEquals(
     dataListCommand.getDescription(),
-    "List all data for a model or workflow, grouped by type",
+    "List all data for a behavior or workflow, grouped by type",
   );
 });
 
@@ -66,9 +66,9 @@ Deno.test("dataListCommand accepts optional model argument", async () => {
   assertEquals(args.length > 0, true);
 });
 
-Deno.test("dataListCommand has --model option", async () => {
+Deno.test("dataListCommand has --behavior option with its --model alias", async () => {
   const { dataListCommand } = await import("./data_list.ts");
   const options = dataListCommand.getOptions();
-  const modelOpt = options.find((o) => o.name === "model");
-  assertEquals(modelOpt !== undefined, true);
+  const modelOpt = options.find((o) => o.name === "behavior");
+  assertEquals(modelOpt?.flags, ["--behavior", "--model"]);
 });

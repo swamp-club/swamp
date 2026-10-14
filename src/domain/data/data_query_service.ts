@@ -37,6 +37,7 @@ import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
   buildSpecNameFallback,
+  calledModelFunctions,
   collectLatestRunWorkflows,
   collectModelReferences,
   collectRootIdentifiers,
@@ -47,6 +48,7 @@ import {
   HISTORY_OPT_IN_FIELDS,
   LATEST_RUN_FUNCTION,
   MODEL_FUNCTION,
+  MODEL_FUNCTIONS,
   referencesAttributes,
   referencesContent,
   selectReadsContent,
@@ -63,12 +65,28 @@ import { garbageCollectionToColumn } from "./data_metadata.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
-function modelUnavailable(): UserError {
+/**
+ * The refusal for a model-matching call where no resolver is wired, naming
+ * the function as typed: `model()`, or `behavior()` for a query that calls
+ * only the behavior spelling (swamp-club#3410).
+ */
+function modelUnavailable(ast: ASTNode): UserError {
+  const fn = modelFunctionAsTyped(ast);
+  const noun = fn === MODEL_FUNCTION ? "model" : "behavior";
   return new UserError(
-    `${MODEL_FUNCTION}() is only available in swamp data query; ` +
-      `here, match the model with modelId and modelType, e.g. ` +
+    `${fn}() is only available in swamp data query; ` +
+      `here, match the ${noun} with modelId and modelType, e.g. ` +
       `modelId == "<definition id>"`,
   );
+}
+
+/**
+ * The model-matching function a message names: `model` unless the AST calls
+ * only `behavior`.
+ */
+function modelFunctionAsTyped(ast: ASTNode): string {
+  const called = calledModelFunctions(ast);
+  return called.length === 1 ? called[0] : MODEL_FUNCTION;
 }
 
 /** Rename hops data query follows, as an unversioned repository read does. */
@@ -961,7 +979,7 @@ export class DataQueryService {
     const references = collectModelReferences(ast);
     if (references.length === 0) return NO_MODELS;
     const resolver = options?.modelResolver;
-    if (!resolver) throw modelUnavailable();
+    if (!resolver) throw modelUnavailable(ast);
     const models = new Map<string, ResolvedModelReference>();
     for (const reference of references) {
       models.set(reference, await resolver(reference));
@@ -1171,14 +1189,11 @@ export class DataQueryService {
     let currentRow: CatalogRow | null = null;
     const modelReferences = collectModelReferences(userAst);
     if (options?.select) {
-      if (
-        collectModelReferencesLenient(
-          this.queryEnv.parse(options.select).ast as ASTNode,
-        )
-      ) {
+      const selectAst = this.queryEnv.parse(options.select).ast as ASTNode;
+      if (collectModelReferencesLenient(selectAst)) {
         throw new UserError(
-          `${MODEL_FUNCTION}() can only be used in the query predicate, ` +
-            `not in --select`,
+          `${modelFunctionAsTyped(selectAst)}() can only be used in the ` +
+            `query predicate, not in --select`,
         );
       }
     }
@@ -1186,17 +1201,20 @@ export class DataQueryService {
       // Every call must have been resolved: an unregistered call would fail
       // on each row, and per-row failures are skipped, not reported.
       if (modelReferences.some((reference) => !models.has(reference))) {
-        throw modelUnavailable();
+        throw modelUnavailable(userAst);
       }
-      env = (env === this.queryEnv ? env.clone() : env).registerFunction(
-        `${MODEL_FUNCTION}(string): bool`,
-        (reference: string) => {
-          const target = models.get(reference);
-          return !!currentRow && !!target &&
-            currentRow.type_normalized === target.modelType &&
-            currentRow.model_id === target.modelId;
-        },
-      );
+      const matchesModel = (reference: string) => {
+        const target = models.get(reference);
+        return !!currentRow && !!target &&
+          currentRow.type_normalized === target.modelType &&
+          currentRow.model_id === target.modelId;
+      };
+      // model() and its behavior spelling behavior() (swamp-club#3410) are
+      // one function under two names.
+      env = env === this.queryEnv ? env.clone() : env;
+      for (const fn of MODEL_FUNCTIONS) {
+        env = env.registerFunction(`${fn}(string): bool`, matchesModel);
+      }
       userParsed = env.parse(predicate);
     }
 
@@ -1389,6 +1407,9 @@ export class DataQueryService {
         record as unknown as Record<string, unknown>,
       ) as Record<string, unknown>;
       ctx["ns"] = record.namespace;
+      // The behavior spelling of modelName (swamp-club#3410); not a field of
+      // DataRecord, so output never carries it.
+      ctx["behaviorName"] = record.modelName;
       if (
         nameLiteral !== null &&
         renameTargets.get(
@@ -1521,6 +1542,7 @@ export class DataQueryService {
             r as unknown as Record<string, unknown>,
           ) as Record<string, unknown>;
           selectCtx["ns"] = r.namespace;
+          selectCtx["behaviorName"] = r.modelName;
           const projected = contents?.get(r);
           if (projected) {
             selectCtx["content"] = projected.content;

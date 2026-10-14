@@ -36,7 +36,7 @@ Deno.test("dataSearchCommand has correct description", async () => {
   const { dataSearchCommand } = await import("./data_search.ts");
   assertEquals(
     dataSearchCommand.getDescription(),
-    "Search for data across all models",
+    "Search for data across all behaviors",
   );
 });
 

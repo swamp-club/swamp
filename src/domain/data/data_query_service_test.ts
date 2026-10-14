@@ -5308,3 +5308,110 @@ Deno.test("getLatestRecord: a failed download still returns the record", async (
     Deno.removeSync(dir, { recursive: true });
   }
 });
+
+// ── behavior() and behaviorName (swamp-club#3410) ──────────────────────────
+
+Deno.test("DataQueryService behavior(): matches exactly what model() matches", async () => {
+  const { catalog, query } = setupModelTest();
+  for (
+    const [modelForm, behaviorForm] of [
+      ['model("ingest")', 'behavior("ingest")'],
+      [`model("${NEW_ID}")`, `behavior("${NEW_ID}")`],
+      [
+        'model("ingest") && name == "my-data"',
+        'behavior("ingest") && name == "my-data"',
+      ],
+      ['!model("ingest")', '!behavior("ingest")'],
+    ]
+  ) {
+    const expected = await query(modelForm) as DataRecord[];
+    const actual = await query(behaviorForm) as DataRecord[];
+    assertEquals(actual, expected, behaviorForm);
+  }
+  catalog.close();
+});
+
+Deno.test("DataQueryService behavior(): shares model()'s resolver, once per distinct reference", async () => {
+  const { catalog, query, lookups } = setupModelTest();
+  await query('model("ingest") && behavior("ingest")');
+  assertEquals(lookups, ["ingest"]);
+  await assertRejects(
+    () => query('behavior("missing")'),
+    UserError,
+    "Model not found: missing",
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService behaviorName: filters and projects as modelName, and never appears in a record", async () => {
+  const { catalog, query } = setupModelTest();
+  catalog.upsert(
+    makeRow({ model_id: OLD_ID, id: "o", data_name: "o", model_name: "other" }),
+  );
+  const byModel = await query('modelName == "ingest"') as DataRecord[];
+  const byBehavior = await query('behaviorName == "ingest"') as DataRecord[];
+  assertEquals(byBehavior, byModel);
+  assertEquals(byBehavior.length, 2);
+  for (const record of byBehavior) {
+    assertEquals(Object.keys(record).includes("behaviorName"), false);
+    assertEquals(JSON.stringify(record).includes("behaviorName"), false);
+  }
+  assertEquals(
+    await query('name == "my-data"', { select: "behaviorName" }),
+    await query('name == "my-data"', { select: "modelName" }),
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService behavior(): refusals name the function as typed", async () => {
+  const { catalog, service, query } = setupModelTest();
+  await assertRejects(
+    () => service.query('behavior("ingest")'),
+    UserError,
+    "behavior() is only available in swamp data query",
+  );
+  assertThrows(
+    () => service.querySync('behavior("ingest")'),
+    UserError,
+    "behavior() is only available in swamp data query",
+  );
+  // The model() wording is unchanged.
+  await assertRejects(
+    () => service.query('model("ingest")'),
+    UserError,
+    "model() is only available in swamp data query; here, match the model",
+  );
+  for (const select of ['behavior("ingest")', "behavior(name)"]) {
+    await assertRejects(
+      () => query('name == "my-data"', { select }),
+      UserError,
+      "behavior() can only be used in the query predicate, not in --select",
+    );
+  }
+  await assertRejects(
+    () => query('name == "my-data"', { select: 'model("ingest")' }),
+    UserError,
+    "model() can only be used in the query predicate, not in --select",
+  );
+  await assertRejects(
+    () => query("behavior(name)"),
+    UserError,
+    'behavior() takes one behavior name or definition id as a string literal, e.g. behavior("my-behavior")',
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService behavior(): pushes down to SQL as model() and behaviorName as modelName", async () => {
+  const { catalog, query } = setupModelTest();
+  const filters = recordedFilters(catalog);
+  await query('model("ingest")');
+  await query('behavior("ingest")');
+  await query('modelName == "ingest"');
+  await query('behaviorName == "ingest"');
+  assertEquals(filters.length, 4);
+  assertEquals(filters[1], filters[0]);
+  assertStringIncludes(filters[0], "model_id = ?");
+  assertEquals(filters[3], filters[2]);
+  assertStringIncludes(filters[2], "model_name = ?");
+  catalog.close();
+});

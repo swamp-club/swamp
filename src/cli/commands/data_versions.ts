@@ -51,16 +51,16 @@ export const dataVersionsCommand = withRemoteOptions(
     .example("List all versions", "swamp data versions my-server system-info")
     .example(
       "List using flags",
-      "swamp data versions --model my-server --name system-info",
+      "swamp data versions --behavior my-server --name system-info",
     )
-    .arguments("[model_id_or_name:model_name] [data_name:string]")
+    .arguments("[behavior_id_or_name:behavior_name] [data_name:string]")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option(
-      "--model <model:string>",
-      "Model name or ID (alternative to positional argument)",
+      "--behavior, --model <behavior:string>",
+      "Behavior name or ID (alternative to positional argument)",
     )
     .option(
       "--name <name:string>",
@@ -73,7 +73,7 @@ export const dataVersionsCommand = withRemoteOptions(
     positionalModel?: string,
     positionalName?: string,
   ) {
-    const modelIdOrName = (options.model as string | undefined) ??
+    const modelIdOrName = (options.behavior as string | undefined) ??
       positionalModel;
     const dataName = (options.name as string | undefined) ?? positionalName;
 

@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
+  assertModelsDirEnvConsistent,
   commandNeedsLoaderSetup,
   type DeferredWarning,
   defersExtensionCatalog,
@@ -49,40 +50,53 @@ import {
   assertPathEquals,
   withMockedEnv,
 } from "../infrastructure/persistence/path_test_helpers.ts";
+import { UserError } from "../domain/errors.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
   // Ensure env var is not set
-  withMockedEnv({ SWAMP_MODELS_DIR: undefined }, () => {
-    const result = resolveModelsDir(null);
-    assertEquals(result, "extensions/models");
-  });
+  withMockedEnv(
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
+    () => {
+      const result = resolveModelsDir(null);
+      assertEquals(result, "extensions/models");
+    },
+  );
 });
 
 Deno.test("resolveModelsDir returns default when marker has no modelsDir", () => {
-  withMockedEnv({ SWAMP_MODELS_DIR: undefined }, () => {
-    const marker = {
-      swampVersion: "0.1.0",
-      initializedAt: "2024-01-01T00:00:00Z",
-    };
-    const result = resolveModelsDir(marker);
-    assertEquals(result, "extensions/models");
-  });
+  withMockedEnv(
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
+    () => {
+      const marker = {
+        swampVersion: "0.1.0",
+        initializedAt: "2024-01-01T00:00:00Z",
+      };
+      const result = resolveModelsDir(marker);
+      assertEquals(result, "extensions/models");
+    },
+  );
 });
 
 Deno.test("resolveModelsDir uses marker.modelsDir when set", () => {
-  withMockedEnv({ SWAMP_MODELS_DIR: undefined }, () => {
-    const marker = {
-      swampVersion: "0.1.0",
-      initializedAt: "2024-01-01T00:00:00Z",
-      modelsDir: "custom/models/path",
-    };
-    const result = resolveModelsDir(marker);
-    assertEquals(result, "custom/models/path");
-  });
+  withMockedEnv(
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
+    () => {
+      const marker = {
+        swampVersion: "0.1.0",
+        initializedAt: "2024-01-01T00:00:00Z",
+        modelsDir: "custom/models/path",
+      };
+      const result = resolveModelsDir(marker);
+      assertEquals(result, "custom/models/path");
+    },
+  );
 });
 
 Deno.test("resolveModelsDir env var takes priority over marker.modelsDir", () => {
-  withMockedEnv({ SWAMP_MODELS_DIR: "/env/var/path" }, () => {
+  withMockedEnv({
+    SWAMP_MODELS_DIR: "/env/var/path",
+    SWAMP_BEHAVIORS_DIR: undefined,
+  }, () => {
     const marker = {
       swampVersion: "0.1.0",
       initializedAt: "2024-01-01T00:00:00Z",
@@ -94,7 +108,10 @@ Deno.test("resolveModelsDir env var takes priority over marker.modelsDir", () =>
 });
 
 Deno.test("resolveModelsDir env var takes priority over default", () => {
-  withMockedEnv({ SWAMP_MODELS_DIR: "env/models" }, () => {
+  withMockedEnv({
+    SWAMP_MODELS_DIR: "env/models",
+    SWAMP_BEHAVIORS_DIR: undefined,
+  }, () => {
     const result = resolveModelsDir(null);
     assertEquals(result, "env/models");
   });
@@ -878,4 +895,34 @@ Deno.test("isTelemetryOptOutInvocation: only config set telemetry.collection dis
     ]),
     false,
   );
+});
+
+Deno.test("assertModelsDirEnvConsistent: refuses SWAMP_MODELS_DIR and SWAMP_BEHAVIORS_DIR naming different directories", () => {
+  withMockedEnv(
+    { SWAMP_MODELS_DIR: "env/models", SWAMP_BEHAVIORS_DIR: "env/behaviors" },
+    () => {
+      const error = assertThrows(
+        () => assertModelsDirEnvConsistent(),
+        UserError,
+      );
+      assertEquals(
+        error.message.includes("SWAMP_MODELS_DIR") &&
+          error.message.includes("SWAMP_BEHAVIORS_DIR"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("assertModelsDirEnvConsistent: accepts one variable, equal values, or empty ones", () => {
+  const cases: Array<Record<string, string | undefined>> = [
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
+    { SWAMP_MODELS_DIR: "env/models", SWAMP_BEHAVIORS_DIR: undefined },
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: "env/behaviors" },
+    { SWAMP_MODELS_DIR: "same", SWAMP_BEHAVIORS_DIR: "same" },
+    { SWAMP_MODELS_DIR: "", SWAMP_BEHAVIORS_DIR: "env/behaviors" },
+  ];
+  for (const env of cases) {
+    withMockedEnv(env, () => assertModelsDirEnvConsistent());
+  }
 });

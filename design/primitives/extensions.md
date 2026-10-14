@@ -514,11 +514,14 @@ An extension can name its behaviors with the behavior spelling
 (swamp-club#3338). Each name below is an exact synonym of its model form,
 which keeps working unchanged:
 
-| Behavior spelling        | Model form            |
-| ------------------------ | --------------------- |
-| `export const behavior`  | `export const model`  |
-| `extensions/behaviors/`  | `extensions/models/`  |
-| manifest `behaviors:`    | manifest `models:`    |
+| Behavior spelling                 | Model form              |
+| --------------------------------- | ----------------------- |
+| `export const behavior`           | `export const model`    |
+| `extensions/behaviors/`           | `extensions/models/`    |
+| manifest `behaviors:`             | manifest `models:`      |
+| `SWAMP_BEHAVIORS_DIR`             | `SWAMP_MODELS_DIR`      |
+| `source add --only behaviors`     | `--only models`         |
+| `search --content-type behaviors` | `--content-type models` |
 
 - **Export.** The behavior kind adapter reads `behavior` as an alias of its
   `model` export key (`primaryExport` in
@@ -526,9 +529,24 @@ which keeps working unchanged:
   definitions is refused, because which one it means cannot be told. An
   unrelated `behavior` binding that does not read as a definition is ignored,
   so modules written before the alias load as they did.
+- **Environment variable.** `SWAMP_BEHAVIORS_DIR` names the models directory
+  exactly as `SWAMP_MODELS_DIR` does (swamp-club#3410). The order is
+  `SWAMP_MODELS_DIR`, then `SWAMP_BEHAVIORS_DIR`, then `.swamp.yaml`
+  `modelsDir`, then the default; an empty value counts as unset.
+  `resolveModelsDir` is the one reader. Both set to different non-empty
+  values is refused once at CLI startup with an error naming both; equal
+  values are accepted. `resolveModelsDir` itself never refuses, because some
+  callers swallow its errors.
+- **Kind and content type.** `swamp extension source add --only behaviors`
+  is stored in `.swamp-sources.yaml` as `models`, and
+  `swamp extension search --content-type behaviors` asks the registry for
+  `models` (swamp-club#3410). A list that names both collapses to one
+  `models`; a list without the behavior spelling is kept as typed.
+  `behaviours` is not a synonym and is refused naming the value.
 - **Directory.** `extensions/behaviors/` loads beside `extensions/models/`
-  only while the models directory is the default. Once `SWAMP_MODELS_DIR` or
-  `.swamp.yaml` `modelsDir` moves it, there is no behaviors directory, so a
+  only while the models directory is the default. Once `SWAMP_MODELS_DIR`,
+  `SWAMP_BEHAVIORS_DIR` or `.swamp.yaml` `modelsDir` moves it, there is no
+  behaviors directory, so a
   repo that chose where its behaviors live never gains a second one
   (`resolveBehaviorsDir` in
   `src/infrastructure/persistence/resolve_models_dir.ts`). Source repos added
@@ -648,7 +666,8 @@ labels:
 
 - **`typedDir` (default)**: typed entries resolve relative to their configured
   directory from the repo marker (`modelsDir`, `vaultsDir`, etc., or environment
-  overrides like `SWAMP_MODELS_DIR`). `behaviors` entries resolve from the
+  overrides like `SWAMP_MODELS_DIR` or its behavior spelling
+  `SWAMP_BEHAVIORS_DIR`). `behaviors` entries resolve from the
   behaviors directory (see "Behavior Spelling"). `additionalFiles` resolves
   relative to the manifest's own directory. This is the original rule, kept by
   every manifest without `paths.base`.

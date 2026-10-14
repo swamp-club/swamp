@@ -45,11 +45,11 @@ Deno.test("AutocompleteProvider: root context returns matching fields", () => {
 Deno.test("AutocompleteProvider: root context with empty prefix returns all fields", () => {
   const provider = makeProvider();
   const items = provider.complete({ kind: "root", prefix: "" });
-  // Should include all QUERY_FIELDS, plus the model() function
+  // Should include all QUERY_FIELDS, plus model() and behavior()
   assertEquals(items.length > 10, true);
   assertEquals(
     items.filter((i) => i.kind !== "field").map((i) => i.label),
-    ["model("],
+    ["model(", "behavior("],
   );
 });
 
@@ -291,4 +291,26 @@ Deno.test("AutocompleteProvider: root context includes detail with field types",
   const items = provider.complete({ kind: "root", prefix: "size" });
   assertEquals(items.length, 1);
   assertEquals(items[0].detail, "int");
+});
+
+Deno.test("AutocompleteProvider: root context offers behaviorName and behavior( in predicates only", () => {
+  const provider = makeProvider();
+  const predicate = provider.complete({ kind: "root", prefix: "beh" });
+  assertEquals(predicate.map((i) => [i.label, i.kind, i.detail]), [
+    ["behaviorName", "field", "string"],
+    ["behavior(", "builtin", "behavior name or definition id"],
+  ]);
+  const select = provider.complete({ kind: "root", prefix: "beh" }, "select");
+  assertEquals(select.map((i) => i.label), ["behaviorName"]);
+});
+
+Deno.test("AutocompleteProvider: value context for behaviorName reads the model_name column", () => {
+  const provider = makeProvider({ model_name: ["scanner", "server"] });
+  const items = provider.complete({
+    kind: "value",
+    field: "behaviorName",
+    operator: "==",
+    prefix: "sc",
+  });
+  assertEquals(items.map((i) => i.label), ['"scanner"']);
 });

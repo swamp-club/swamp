@@ -124,13 +124,13 @@ const accessGrantCreateCommand = new Command()
   .option("--deny <actions:string>", "Actions to deny (comma-separated)")
   .option(
     "--on <resource:string>",
-    "Resource selector (e.g. workflow:@acme/*, model:@acme/deploy)",
+    "Resource selector (e.g. workflow:@acme/*, behavior:@acme/deploy)",
     { required: true },
   )
   .option("--when <condition:string>", "Optional CEL condition")
   .option(
     "--methods <methods:string>",
-    "Restrict to specific model methods (comma-separated, e.g. read,list)",
+    "Restrict to specific methods (comma-separated, e.g. read,list)",
   )
   .option(
     "--server <url:string>",

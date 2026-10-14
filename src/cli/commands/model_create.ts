@@ -22,6 +22,7 @@ import {
   type CommandSyntax,
   recordDefiningModule,
   subcommandSyntax,
+  typeNameType,
   withPreferredExample,
 } from "./command_syntax.ts";
 import { groupCommandAction } from "../group_action.ts";
@@ -114,7 +115,7 @@ export function createModelCreateCommand(syntax: CommandSyntax) {
         "With global args",
         `${syntax.invocation} aws-ec2 my-server --global-arg region=us-east-1`,
       )
-      .arguments("<type:model_type> <name:string>")
+      .arguments(`<type:${typeNameType(syntax.surface)}> <name:string>`)
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",

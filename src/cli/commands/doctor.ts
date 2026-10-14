@@ -56,7 +56,7 @@ export const doctorCommand = new Command()
     "swamp doctor secrets",
   )
   .example(
-    "Check models with sensitive outputs have a vault configured",
+    "Check behaviors with sensitive outputs have a vault configured",
     "swamp doctor vaults",
   )
   .example(

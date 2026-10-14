@@ -23,6 +23,7 @@ import { UserError } from "../errors.ts";
 import {
   type ASTNode,
   buildSpecNameFallback,
+  calledModelFunctions,
   collectLatestRunWorkflows,
   collectModelReferences,
   extractModelCall,
@@ -30,6 +31,7 @@ import {
   extractStringEquality,
   extractWorkflowRunIdLatestRun,
   MAX_MODEL_REFERENCES,
+  QUERY_FIELDS,
   selectReadsContent,
   validateFieldReferences,
 } from "./query_predicate.ts";
@@ -413,4 +415,124 @@ Deno.test("buildSpecNameFallback: keeps a model() scope, in both predicates", ()
     namePredicate: 'model("scanner") && name == "classification"',
     droppedConjuncts: false,
   });
+});
+
+// ── behavior() and behaviorName (swamp-club#3410) ──────────────────────────
+
+Deno.test("QUERY_FIELDS: behaviorName is a field, behaviorId and behaviorType are not", () => {
+  assertEquals(QUERY_FIELDS.has("behaviorName"), true);
+  assertEquals(QUERY_FIELDS.has("behaviorId"), false);
+  assertEquals(QUERY_FIELDS.has("behaviorType"), false);
+  validateFieldReferences(["behaviorName"]);
+  assertThrows(
+    () => validateFieldReferences(["behaviourName"]),
+    UserError,
+    '"behaviourName"',
+  );
+});
+
+Deno.test("collectModelReferences: behavior() and model() fill one set", () => {
+  assertEquals(
+    collectModelReferences(
+      ast('behavior("a") && (model("a") || behavior("b"))'),
+    ),
+    ["a", "b"],
+  );
+  // behaviour() is not a synonym: it is not collected.
+  assertEquals(collectModelReferences(ast('behaviour("a")')), []);
+});
+
+Deno.test("collectModelReferences: malformed behavior() calls name behavior", () => {
+  assertThrows(
+    () => collectModelReferences(ast("behavior(name)")),
+    UserError,
+    'behavior() takes one behavior name or definition id as a string literal, e.g. behavior("my-behavior")',
+  );
+  assertThrows(
+    () => collectModelReferences(ast('"x".behavior()')),
+    UserError,
+    'behavior() takes the behavior as its argument: write behavior("<behavior>")',
+  );
+});
+
+Deno.test("collectModelReferences: the reference cap counts both spellings and names what was typed", () => {
+  const refs = (fn: (i: number) => string) =>
+    Array.from({ length: MAX_MODEL_REFERENCES + 1 }, (_, i) => fn(i)).join(
+      " || ",
+    );
+  assertThrows(
+    () => collectModelReferences(ast(refs((i) => `behavior("m${i}")`))),
+    UserError,
+    `at most ${MAX_MODEL_REFERENCES} behaviors with behavior(); this one names ${
+      MAX_MODEL_REFERENCES + 1
+    }.`,
+  );
+  assertThrows(
+    () => collectModelReferences(ast(refs((i) => `model("m${i}")`))),
+    UserError,
+    `at most ${MAX_MODEL_REFERENCES} models with model(); this one names ${
+      MAX_MODEL_REFERENCES + 1
+    }.`,
+  );
+  assertThrows(
+    () =>
+      collectModelReferences(
+        ast(refs((i) => i % 2 ? `model("m${i}")` : `behavior("m${i}")`)),
+      ),
+    UserError,
+    "with model() and behavior()",
+  );
+});
+
+Deno.test("calledModelFunctions: lists the spellings called, malformed calls included", () => {
+  assertEquals(calledModelFunctions(ast('name == "x"')), []);
+  assertEquals(calledModelFunctions(ast("behavior(name)")), ["behavior"]);
+  assertEquals(
+    calledModelFunctions(ast('behavior("a") || model("b")')),
+    ["model", "behavior"],
+  );
+});
+
+Deno.test("extractModelCall: a top-level behavior() conjunct pushes down", () => {
+  assertEquals(extractModelCall(ast('behavior("a") && name == "x"')), "a");
+  assertEquals(extractModelCall(ast('behavior("a") || name == "x"')), null);
+});
+
+Deno.test("extractModelNameEquality: behaviorName pushes down, first conjunct of either spelling wins", () => {
+  assertEquals(extractModelNameEquality(ast('behaviorName == "a"')), "a");
+  assertEquals(
+    extractModelNameEquality(ast('behaviorName == "a" && modelName == "b"')),
+    "a",
+  );
+  assertEquals(
+    extractModelNameEquality(ast('modelName == "a" && behaviorName == "b"')),
+    "a",
+  );
+  assertEquals(
+    extractModelNameEquality(ast('behaviorName == "a" || name == "b"')),
+    null,
+  );
+});
+
+Deno.test("buildSpecNameFallback: keeps behaviorName and behavior() scopes as typed", () => {
+  assertEquals(
+    specNamePredicateOf(ast('behaviorName == "m" && name == "x"')),
+    'behaviorName == "m" && specName == "x"',
+  );
+  assertEquals(
+    specNamePredicateOf(ast('behavior("m") && name == "x"')),
+    'behavior("m") && specName == "x"',
+  );
+  assertEquals(
+    specNamePredicateOf(ast('model("m") && name == "x"')),
+    'model("m") && specName == "x"',
+  );
+});
+
+Deno.test("validateFieldReferences: the unknown-field message lists behavior()", () => {
+  assertThrows(
+    () => validateFieldReferences(["bogus"]),
+    UserError,
+    'model("<model name or definition id>"), behavior("<behavior name or definition id>")',
+  );
 });

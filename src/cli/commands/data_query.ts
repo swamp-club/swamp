@@ -132,12 +132,12 @@ export const dataQueryCommand = withRemoteOptions(
       "swamp data query",
     )
     .example(
-      "Filter by the model name stored with the data",
-      "swamp data query 'modelName == \"scanner\"'",
+      "Filter by the behavior name stored with the data (modelName also works)",
+      "swamp data query 'behaviorName == \"scanner\"'",
     )
     .example(
-      "Read one item, resolving the model as data get does",
-      'swamp data query \'model("scanner") && name == "result"\' --select content',
+      "Read one item, resolving the behavior as data get does (model() also works)",
+      'swamp data query \'behavior("scanner") && name == "result"\' --select content',
     )
     .example(
       "Filter with size threshold",
@@ -149,7 +149,7 @@ export const dataQueryCommand = withRemoteOptions(
     )
     .example(
       "Get exactly one record as an object",
-      'swamp data query \'modelName == "scanner" && name == "state"\' --single --json',
+      'swamp data query \'behaviorName == "scanner" && name == "state"\' --single --json',
     )
     .example(
       "Read from a workflow's latest run",

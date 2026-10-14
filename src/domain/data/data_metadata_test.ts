@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import fc from "fast-check";
 import {
+  canonicalOwnerType,
   DataLifecycleSchema,
   GarbageCollectionSchema,
   type Lifetime,
@@ -298,4 +300,31 @@ Deno.test("OutputLifetimeSchema: rejects zero-duration strings", () => {
   assertEquals(OutputLifetimeSchema.safeParse("0d").success, false);
   assertEquals(OutputLifetimeSchema.safeParse("0h").success, false);
   assertEquals(OutputLifetimeSchema.safeParse("00w").success, false);
+});
+
+Deno.test("canonicalOwnerType: maps only the exact behavior spelling", () => {
+  assertEquals(canonicalOwnerType("behavior-method"), "model-method");
+  for (
+    const ownerType of [
+      "model-method",
+      "workflow-step",
+      "manual",
+      "behaviour-method",
+      "behavior",
+      "Behavior-method",
+      "behavior-method ",
+      "",
+    ]
+  ) {
+    assertEquals(canonicalOwnerType(ownerType), ownerType, ownerType);
+  }
+});
+
+Deno.test("canonicalOwnerType: returns every other value byte-identical", () => {
+  fc.assert(
+    fc.property(
+      fc.string().filter((s) => s !== "behavior-method"),
+      (ownerType) => canonicalOwnerType(ownerType) === ownerType,
+    ),
+  );
 });

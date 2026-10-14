@@ -78,7 +78,7 @@ export const accessCanICommand = new Command()
   )
   .option(
     "--method <method:string>",
-    "Model method name to check (e.g. read, create) — used with method-scoped grants",
+    "Method name to check (e.g. read, create) — used with method-scoped grants",
   )
   .action(async function (options: AnyOptions) {
     const server = resolveServeUrl(options.server as string | undefined);

@@ -495,15 +495,15 @@ Reads a stored report's content. Reports are saved automatically after method
 execution.
 
 ```bash
-swamp report get cost-summary --model my-model
-swamp report get cost-summary --model my-model --markdown
-swamp report get cost-summary --model my-model --json
+swamp report get cost-summary --behavior my-model
+swamp report get cost-summary --behavior my-model --markdown
+swamp report get cost-summary --behavior my-model --json
 swamp report get cost-summary --workflow deploy-pipeline
 ```
 
 | Flag                      | Description                                                     |
 | ------------------------- | --------------------------------------------------------------- |
-| `--model <name>`          | Scope to a specific behavior                                    |
+| `--behavior <name>`       | Scope to a specific behavior; `--model` is its alias            |
 | `--workflow <name>`       | Scope to a specific workflow                                    |
 | `--version <version>`     | Get specific version number (default: latest)                   |
 | `--variant <variant>`     | Select a specific forEach variant                               |
@@ -511,6 +511,16 @@ swamp report get cost-summary --workflow deploy-pipeline
 | `--json`                  | Output in JSON format                                           |
 | `--max-width <width>`     | Cap total output width in columns                               |
 | `--max-col-width <width>` | Cap individual table column width in characters                 |
+
+### `swamp report search`
+
+Lists stored report results. `--behavior <name>` (alias `--model`) and
+`--workflow <name>` filter by owner, `--type <name>` by report type,
+`--label <label>` by label, and `--scope <scope>` by the scope a report
+declares: `method`, `model` or `workflow`. `--scope behavior` is the behavior
+spelling of `model` (swamp-club#3410): the CLI sends and filters on `model`,
+locally and over `--server`, and every other value as typed. `behaviour` is
+not a synonym. A report definition's `scope` stays `"model"`.
 
 ### Report Flags on `model method run`
 

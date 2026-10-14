@@ -81,6 +81,23 @@ export function outputArgument(surface: CommandSurface): string {
   return `output_id_or_${surface}_name`;
 }
 
+/**
+ * The completion type of an argument that names a definition on `surface`:
+ * `model_name` or `behavior_name` (swamp-club#3410). Both are registered
+ * with the same completion (src/cli/completion_types.ts).
+ */
+export function definitionNameType(surface: CommandSurface): string {
+  return `${surface}_name`;
+}
+
+/**
+ * The completion type of an argument that names a behavior type on
+ * `surface`: `model_type` or `behavior_type` (swamp-club#3410).
+ */
+export function typeNameType(surface: CommandSurface): string {
+  return `${surface}_type`;
+}
+
 /** The `--help` example title for a legacy command's preferred spelling. */
 export const PREFERRED_SPELLING_EXAMPLE = "Preferred spelling";
 

@@ -53,7 +53,7 @@ type AnyOptions = any;
 export const doctorSecretsCommand = withRemoteOptions(
   new Command()
     .description(
-      "Scan model definitions for cleartext sensitive global arguments and " +
+      "Scan behavior definitions for cleartext sensitive global arguments and " +
         "report how to migrate each to a vault.",
     )
     .example("Scan this repo's definitions", "swamp doctor secrets")

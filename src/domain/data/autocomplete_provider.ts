@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { MODEL_FUNCTION, QUERY_FIELDS } from "./query_predicate.ts";
+import {
+  BEHAVIOR_FUNCTION,
+  MODEL_FUNCTION,
+  QUERY_FIELDS,
+} from "./query_predicate.ts";
 import { OwnerTypes } from "./data_metadata.ts";
 import type { CursorContext } from "./cel_cursor_context.ts";
 
@@ -79,6 +83,7 @@ const FIELD_TO_COLUMN: Record<string, { column: string; numeric: boolean }> = {
   version: { column: "version", numeric: true },
   createdAt: { column: "created_at", numeric: false },
   modelName: { column: "model_name", numeric: false },
+  behaviorName: { column: "model_name", numeric: false },
   modelType: { column: "type_normalized", numeric: false },
   specName: { column: "spec_name", numeric: false },
   dataType: { column: "data_type", numeric: false },
@@ -103,6 +108,7 @@ const FIELD_TYPES: Record<string, string> = {
   attributes: "map",
   tags: "map",
   modelName: "string",
+  behaviorName: "string",
   modelType: "string",
   specName: "string",
   dataType: "string",
@@ -188,6 +194,15 @@ export class AutocompleteProvider {
         text: `${MODEL_FUNCTION}(`,
         label: `${MODEL_FUNCTION}(`,
         detail: "model name or definition id",
+        kind: "builtin",
+      });
+    }
+    // behavior() is the behavior spelling of model() (swamp-club#3410).
+    if (mode === "predicate" && BEHAVIOR_FUNCTION.startsWith(prefix)) {
+      items.push({
+        text: `${BEHAVIOR_FUNCTION}(`,
+        label: `${BEHAVIOR_FUNCTION}(`,
+        detail: "behavior name or definition id",
         kind: "builtin",
       });
     }

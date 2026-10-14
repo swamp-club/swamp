@@ -648,8 +648,8 @@ export class SyncTimeoutError extends UserError {
       `scale, update to the latest extension — the fingerprint fast path ` +
       `short-circuits zero-diff syncs.\n` +
       `  • If a prior process crashed without releasing the lock, run ` +
-      `'swamp datastore lock release --force' (add --model <type>/<id> ` +
-      `for a specific model lock).`;
+      `'swamp datastore lock release --force' (add --behavior <type>/<id> ` +
+      `for a specific behavior lock).`;
     super(msg);
     this.name = "SyncTimeoutError";
     this.label = label;

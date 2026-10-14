@@ -47,7 +47,10 @@ async function withRepo(
       join(dir, ".swamp.yaml"),
       stringifyYaml({ swampVersion: "0.1.0", ...marker }),
     );
-    await withMockedEnv({ SWAMP_MODELS_DIR: undefined }, () => fn(dir));
+    await withMockedEnv({
+      SWAMP_MODELS_DIR: undefined,
+      SWAMP_BEHAVIORS_DIR: undefined,
+    }, () => fn(dir));
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

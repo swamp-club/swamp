@@ -53,8 +53,8 @@ export const reportGetCommand = withRemoteOptions(
     .description("Show a stored report's content")
     .example("Get a report", "swamp report get cost-summary")
     .example(
-      "Scoped to a model",
-      "swamp report get cost-summary --model my-server",
+      "Scoped to a behavior",
+      "swamp report get cost-summary --behavior my-server",
     )
     .example(
       "Scoped to a workflow",
@@ -62,7 +62,7 @@ export const reportGetCommand = withRemoteOptions(
     )
     .example(
       "Output as markdown",
-      "swamp report get cost-summary --model my-server --markdown > report.md",
+      "swamp report get cost-summary --behavior my-server --markdown > report.md",
     )
     .example(
       "Cap total table width",
@@ -81,7 +81,10 @@ export const reportGetCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("--model <name:string>", "Scope to a specific model")
+    .option(
+      "--behavior, --model <name:string>",
+      "Scope to a specific behavior",
+    )
     .option("--workflow <name:string>", "Scope to a specific workflow")
     .option(
       "--version <version:number>",
@@ -119,7 +122,7 @@ export const reportGetCommand = withRemoteOptions(
         type: "report.get",
         payload: {
           reportName,
-          model: options.model as string | undefined,
+          model: options.behavior as string | undefined,
           workflow: options.workflow as string | undefined,
           version: options.version as number | undefined,
           variant: options.variant as string | undefined,
@@ -176,7 +179,7 @@ export const reportGetCommand = withRemoteOptions(
   await consumeStream(
     reportGet(libCtx, deps, {
       reportName,
-      model: options.model as string | undefined,
+      model: options.behavior as string | undefined,
       workflow: options.workflow as string | undefined,
       version: options.version as number | undefined,
       variant: options.variant as string | undefined,

@@ -93,11 +93,7 @@ import {
   hasExplicitRepoDir,
   isStdinTty,
 } from "./context.ts";
-import {
-  ModelNameType,
-  ModelTypeType,
-  WorkflowNameType,
-} from "./completion_types.ts";
+import { registerCompletionTypes } from "./completion_types.ts";
 import { isTransientError } from "../infrastructure/persistence/io_errors.ts";
 import { setMarkerServerAddress } from "./remote_run.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
@@ -271,6 +267,7 @@ import {
   resolveModelsDir,
 } from "./resolve_models_dir.ts";
 export { resolveModelsDir };
+import { modelsDirEnvConflict } from "../infrastructure/persistence/resolve_models_dir.ts";
 import {
   ensureManagedConfigBase,
   resolveManagedConfigPaths,
@@ -2195,21 +2192,20 @@ function endInvocation(): void {
  * Cliffy's parse can never disagree about an option's arity.
  */
 export function createRootCommand(colorEnabled: boolean): AnyCommand {
-  return new Command()
-    .name("swamp")
-    .version(VERSION)
-    // Cliffy's help generator force-enables colour while it renders
-    // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
-    // the version option it ignores the policy applyColorPolicy set — `NO_COLOR` only
-    // won because @std/fmt refuses to re-enable when Deno.noColor is set.
-    // Handing it the decision is the one way help honours `--no-color` and a
-    // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
-    // parent.
-    .help({ colors: colorEnabled })
-    .description("AI Native Automation CLI")
-    .globalType("model_name", new ModelNameType())
-    .globalType("model_type", new ModelTypeType())
-    .globalType("workflow_name", new WorkflowNameType())
+  return registerCompletionTypes(
+    new Command()
+      .name("swamp")
+      .version(VERSION)
+      // Cliffy's help generator force-enables colour while it renders
+      // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
+      // the version option it ignores the policy applyColorPolicy set — `NO_COLOR` only
+      // won because @std/fmt refuses to re-enable when Deno.noColor is set.
+      // Handing it the decision is the one way help honours `--no-color` and a
+      // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
+      // parent.
+      .help({ colors: colorEnabled })
+      .description("AI Native Automation CLI"),
+  )
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .globalOption(
       "--log",
@@ -2275,6 +2271,16 @@ async function runGateRefresh(
   } catch {
     // Best effort — a failed refresh is retried on the next run.
   }
+}
+
+/**
+ * Refuses `SWAMP_MODELS_DIR` and `SWAMP_BEHAVIORS_DIR` set to different
+ * non-empty values (swamp-club#3410): the two spellings name one setting, so
+ * swamp will not guess which one was meant.
+ */
+export function assertModelsDirEnvConsistent(): void {
+  const conflict = modelsDirEnvConflict();
+  if (conflict !== undefined) throw new UserError(conflict);
 }
 
 export async function runCli(args: string[]): Promise<void> {
@@ -2385,6 +2391,11 @@ async function runInvocation(
   // must be as fast as possible. Skip all non-essential startup and teardown
   // to avoid infrastructure errors causing non-zero exit.
   const hookMode = isHookCommand(commandInfo);
+
+  // SWAMP_MODELS_DIR and its behavior spelling SWAMP_BEHAVIORS_DIR naming
+  // different directories is refused once, here (swamp-club#3410). Hook
+  // mode must not fail, so it runs on the SWAMP_MODELS_DIR value.
+  if (!hookMode) assertModelsDirEnvConsistent();
 
   const bootstrapSpan = getTracer().startSpan("swamp.cli.bootstrap");
 

@@ -120,7 +120,7 @@ export const extensionPromoteCommand = new Command()
   )
   .example(
     "Promote the version a manifest names",
-    "swamp extension promote extensions/models/my-ext/manifest.yaml --channel stable",
+    "swamp extension promote extensions/behaviors/my-behavior/manifest.yaml --channel stable",
   )
   .arguments("<extension-or-manifest:string> [version:string]")
   .option(

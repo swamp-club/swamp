@@ -25,7 +25,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { Command } from "@cliffy/command";
-import { ModelNameType } from "../completion_types.ts";
+import { registerCompletionTypes } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
 import { PREFERRED_SPELLING_EXAMPLE } from "./command_syntax.ts";
@@ -90,7 +90,12 @@ function argumentSignature(cmd: AnyCommand, asBehavior = false): string[] {
     arg: { name: string; type: string; optional?: boolean },
   ) => {
     const name = asBehavior ? arg.name.replace("model", "behavior") : arg.name;
-    return `${name}:${arg.type}:${arg.optional ? "optional" : "required"}`;
+    // The behavior tree completes through behavior_name and behavior_type
+    // (swamp-club#3410), the same completions as model_name and model_type.
+    const type = asBehavior
+      ? arg.type.replace(/^model_(name|type)$/, "behavior_$1")
+      : arg.type;
+    return `${name}:${type}:${arg.optional ? "optional" : "required"}`;
   });
 }
 
@@ -166,8 +171,9 @@ Deno.test("behavior commands: declare the same arguments, options and aliases as
       argumentSignature(legacy, true),
       behaviorPath,
     );
-    for (const { name } of preferred.getArguments()) {
+    for (const { name, type } of preferred.getArguments()) {
       assertEquals(name.includes("model"), false, `${behaviorPath}: ${name}`);
+      assertEquals(type.includes("model"), false, `${behaviorPath}: ${type}`);
     }
     assertEquals(optionFlags(preferred), optionFlags(legacy), behaviorPath);
     assertEquals(preferred.getAliases(), legacy.getAliases(), behaviorPath);
@@ -366,8 +372,7 @@ Deno.test("behaviorCommand: the CLI schema lists the full subtree", () => {
 
 /** A root mirroring runCli's wiring: both groups, the model_name type, --json. */
 function root(): AnyCommand {
-  return new Command()
-    .globalType("model_name", new ModelNameType())
+  return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")
     .command("behavior", behaviorCommand)
     .command("model", new Command().command("method", modelMethodCommand));

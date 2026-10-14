@@ -10,6 +10,7 @@
 | `isLatest`          | bool             | `true` for the newest version of each item                                          |
 | `createdAt`         | string           | ISO-8601 timestamp                                                                  |
 | `modelName`         | string           | Owning behavior's name when the data was written (not updated by a behavior rename) |
+| `behaviorName`      | string           | Same value as `modelName` (its behavior spelling)                                   |
 | `modelId`           | string           | Owning behavior id (definition id; workflow id for workflow-scope data)             |
 | `modelType`         | string           | Owning behavior type (normalized)                                                   |
 | `specName`          | string           | Output spec name (e.g. `classification`)                                            |
@@ -68,14 +69,15 @@ swamp data query 'modelName == "<model>" && name == "<name>"' \
   | jq -r '.results[0].content' | base64 -d > out.bin
 ```
 
-## `model()` — match by behavior, as `data get` resolves it
+## `behavior()` / `model()` — match by behavior, as `data get` resolves it
 
-`model("<name or definition id>")` is true for data stored under that behavior's
-current definition. It resolves the argument the way `data get <model>` does
-(name first, then exact definition id), so it still matches after a behavior
-rename, for data with no `modelName` tag, and never matches data left by a
-deleted behavior whose name was reused. `modelName == "<m>"` compares the tag
-written with the data, so it can differ in each of those cases.
+`behavior("<name or definition id>")`, or its legacy spelling `model(...)`, is
+true for data stored under that behavior's current definition. It resolves the
+argument the way `data get <model>` does (name first, then exact definition id),
+so it still matches after a behavior rename, for data with no `modelName` tag,
+and never matches data left by a deleted behavior whose name was reused.
+`modelName == "<m>"` compares the tag written with the data, so it can differ in
+each of those cases.
 
 - The argument must be a non-empty string literal; up to 32 distinct behaviors
   per predicate.

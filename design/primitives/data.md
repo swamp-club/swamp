@@ -222,8 +222,11 @@ removes every version.
   (`content_encoding.ts` `encodeContent`). Also `swamp data list` (grouped by
   type), `swamp data versions` and `swamp data search`
   (`src/cli/commands/data_*.ts`). `search` takes free text plus `--type`,
-  `--lifetime`, `--owner-type`, `--workflow`, `--model`, `--content-type`,
+  `--lifetime`, `--owner-type`, `--workflow`, `--behavior`, `--content-type`,
   `--since`, `--output`, `--run`, `--tag KEY=VALUE`, `--streaming`, `--limit`.
+  `--behavior` on `get`, `list`, `versions`, `delete`, `rename` and `search`
+  has `--model` as its alias, and `--owner-type behavior-method` means
+  `model-method`, the owner type data records keep storing (swamp-club#3410).
   Only `search` and `query` read the catalog. `get`, `list` and `versions` use
   the filesystem repository (`src/libswamp/data/{get,list,versions}.ts`). Every
   `swamp data` subcommand accepts `--server` to run against a serve instance.

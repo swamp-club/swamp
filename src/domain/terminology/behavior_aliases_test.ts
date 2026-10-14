@@ -22,10 +22,16 @@ import {
   BEHAVIOR_AUDIT_ACTION_PREFIX,
   BEHAVIOR_AUDIT_RESOURCE_PREFIX,
   BEHAVIOR_EXPORT_NAME,
+  BEHAVIOR_EXTENSION_KIND,
   BEHAVIOR_MANIFEST_KEY,
+  BEHAVIOR_OWNER_TYPE,
+  BEHAVIOR_QUERY_FUNCTION,
+  BEHAVIOR_QUERY_NAME_FIELD,
+  BEHAVIOR_REPORT_SCOPE,
   BEHAVIOR_SELECTOR_KIND,
   BEHAVIOR_STEP_TASK_FIELDS,
   BEHAVIOR_STEP_TASK_TYPE,
+  BEHAVIORS_DIR_ENV_VAR,
   BEHAVIORS_DIR_NAME,
   canonicalResourceKind,
   DEFAULT_BEHAVIORS_DIR,
@@ -33,9 +39,15 @@ import {
   MODEL_AUDIT_ACTION_PREFIX,
   MODEL_AUDIT_RESOURCE_PREFIX,
   MODEL_EXPORT_NAME,
+  MODEL_EXTENSION_KIND,
   MODEL_MANIFEST_KEY,
+  MODEL_OWNER_TYPE,
+  MODEL_QUERY_FUNCTION,
+  MODEL_QUERY_NAME_FIELD,
+  MODEL_REPORT_SCOPE,
   MODEL_SELECTOR_KIND,
   MODEL_STEP_TASK_TYPE,
+  MODELS_DIR_ENV_VAR,
   MODELS_DIR_NAME,
   replacePrefix,
 } from "./behavior_aliases.ts";
@@ -100,4 +112,19 @@ Deno.test("behavior aliases: the extension export, directory and manifest key pa
   assertEquals(DEFAULT_MODELS_DIR, "extensions/models");
   assertEquals(BEHAVIOR_MANIFEST_KEY, "behaviors");
   assertEquals(MODEL_MANIFEST_KEY, "models");
+});
+
+Deno.test("behavior aliases: the report scope, owner type, extension kind, query names and env var pair with their model forms", () => {
+  assertEquals(BEHAVIOR_REPORT_SCOPE, "behavior");
+  assertEquals(MODEL_REPORT_SCOPE, "model");
+  assertEquals(BEHAVIOR_OWNER_TYPE, "behavior-method");
+  assertEquals(MODEL_OWNER_TYPE, "model-method");
+  assertEquals(BEHAVIOR_EXTENSION_KIND, "behaviors");
+  assertEquals(MODEL_EXTENSION_KIND, "models");
+  assertEquals(BEHAVIOR_QUERY_FUNCTION, "behavior");
+  assertEquals(MODEL_QUERY_FUNCTION, "model");
+  assertEquals(BEHAVIOR_QUERY_NAME_FIELD, "behaviorName");
+  assertEquals(MODEL_QUERY_NAME_FIELD, "modelName");
+  assertEquals(BEHAVIORS_DIR_ENV_VAR, "SWAMP_BEHAVIORS_DIR");
+  assertEquals(MODELS_DIR_ENV_VAR, "SWAMP_MODELS_DIR");
 });

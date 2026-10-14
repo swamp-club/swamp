@@ -61,7 +61,7 @@ export const dataDeleteCommand = withRemoteOptions(
   new Command()
     .name("delete")
     .description(
-      "Delete data artifacts: one by name, many by prefix, or all for a model",
+      "Delete data artifacts: one by name, many by prefix, or all for a behavior",
     )
     .example(
       "Delete an artifact (prompts for confirmation)",
@@ -69,7 +69,7 @@ export const dataDeleteCommand = withRemoteOptions(
     )
     .example(
       "Delete using flags",
-      "swamp data delete --model my-server --name hetzner-state",
+      "swamp data delete --behavior my-server --name hetzner-state",
     )
     .example(
       "Delete a specific version",
@@ -84,21 +84,21 @@ export const dataDeleteCommand = withRemoteOptions(
       "swamp data delete my-server --prefix run- --dry-run",
     )
     .example(
-      "Delete all data for a model",
+      "Delete all data for a behavior",
       "swamp data delete my-server --all",
     )
     .example(
       "Skip the confirmation prompt",
       "swamp data delete my-server hetzner-state --force",
     )
-    .arguments("[model_id_or_name:string] [data_name:string]")
+    .arguments("[behavior_id_or_name:string] [data_name:string]")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option(
-      "--model <model:string>",
-      "Model name or ID (alternative to positional argument)",
+      "--behavior, --model <behavior:string>",
+      "Behavior name or ID (alternative to positional argument)",
     )
     .option(
       "--name <name:string>",
@@ -109,7 +109,7 @@ export const dataDeleteCommand = withRemoteOptions(
       "--prefix <prefix:string>",
       "Delete all data names starting with this prefix",
     )
-    .option("--all", "Delete all data for the model")
+    .option("--all", "Delete all data for the behavior")
     .option("--dry-run", "Show what would be deleted without deleting")
     .option("-y, --yes", "Skip confirmation prompt")
     .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
@@ -119,7 +119,7 @@ export const dataDeleteCommand = withRemoteOptions(
     positionalModel?: string,
     positionalName?: string,
   ) {
-    const modelIdOrName = (options.model as string | undefined) ??
+    const modelIdOrName = (options.behavior as string | undefined) ??
       positionalModel;
     const dataName = (options.name as string | undefined) ?? positionalName;
     const prefix = options.prefix as string | undefined;

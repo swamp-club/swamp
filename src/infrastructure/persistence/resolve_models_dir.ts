@@ -20,17 +20,22 @@
 import { resolve } from "@std/path";
 import type { RepoMarkerData } from "./repo_marker_repository.ts";
 import {
+  BEHAVIORS_DIR_ENV_VAR,
   DEFAULT_BEHAVIORS_DIR,
   DEFAULT_MODELS_DIR,
+  MODELS_DIR_ENV_VAR,
 } from "../../domain/terminology/behavior_aliases.ts";
 
 /**
  * Resolves the models directory path.
- * Priority: SWAMP_MODELS_DIR env var > .swamp.yaml config > default "extensions/models"
+ * Priority: SWAMP_MODELS_DIR env var > SWAMP_BEHAVIORS_DIR env var (its
+ * behavior spelling, swamp-club#3410) > .swamp.yaml config > default
+ * "extensions/models". An empty variable counts as unset.
  */
 export function resolveModelsDir(marker: RepoMarkerData | null): string {
   // Environment variable takes highest priority
-  const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
+  const envModelsDir = Deno.env.get(MODELS_DIR_ENV_VAR) ||
+    Deno.env.get(BEHAVIORS_DIR_ENV_VAR);
   if (envModelsDir) {
     return envModelsDir;
   }
@@ -48,7 +53,8 @@ export function resolveModelsDir(marker: RepoMarkerData | null): string {
  * Resolves the behaviors directory, the behavior-spelled sibling of the
  * models directory (swamp-club#3338): `extensions/behaviors` while the
  * models directory is the default `extensions/models`, and undefined once
- * `SWAMP_MODELS_DIR` or `.swamp.yaml` moves the models directory, so a
+ * `SWAMP_MODELS_DIR`, `SWAMP_BEHAVIORS_DIR` or `.swamp.yaml` moves the
+ * models directory, so a
  * repo that configured where its models live never gains a second,
  * unconfigured directory.
  */
@@ -78,4 +84,23 @@ export async function existingBehaviorsDir(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The startup refusal for a models directory named two ways
+ * (swamp-club#3410): `SWAMP_MODELS_DIR` and `SWAMP_BEHAVIORS_DIR` both set,
+ * to different non-empty values. Undefined when at most one is set or both
+ * name the same directory. resolveModelsDir never refuses — it prefers
+ * `SWAMP_MODELS_DIR` — because some callers swallow its errors; the CLI
+ * checks this once at startup instead.
+ */
+export function modelsDirEnvConflict(): string | undefined {
+  const modelsDir = Deno.env.get(MODELS_DIR_ENV_VAR);
+  const behaviorsDir = Deno.env.get(BEHAVIORS_DIR_ENV_VAR);
+  if (!modelsDir || !behaviorsDir || modelsDir === behaviorsDir) {
+    return undefined;
+  }
+  return `${MODELS_DIR_ENV_VAR} (${modelsDir}) and ${BEHAVIORS_DIR_ENV_VAR} ` +
+    `(${behaviorsDir}) name different directories. They are two spellings ` +
+    `of the same setting; set one of them.`;
 }
