@@ -40,7 +40,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { join, resolve } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { markErrorPaths, UserError } from "../../../domain/errors.ts";
 import {
   collectableLineages,
@@ -64,7 +64,7 @@ import { SqliteCommitStore } from "../sqlite_commit_store.ts";
 import { READ_MODEL_STATE_FILE } from "../sqlite_read_model.ts";
 import { LineageRegistry } from "./lineage_registry.ts";
 import {
-  installByRename,
+  installByLink,
   restoreV3Copy,
   type V3RestoreResult,
 } from "./litestream_restorer.ts";
@@ -114,7 +114,7 @@ export function lineageRegistryFor(datastorePath: string): LineageRegistry {
 
 /** The paths beside the copy, created and trusted only when this user's. */
 async function copyPaths(copy: V3Copy): Promise<ReplicationPaths> {
-  await Deno.mkdir(resolve(copy.commitsDb, ".."), { recursive: true });
+  await Deno.mkdir(dirname(copy.commitsDb), { recursive: true });
   const paths = await replicationPathsFor(copy.commitsDb);
   if (await ensureSharedDir(paths) !== "own") {
     throw markErrorPaths(
@@ -185,7 +185,7 @@ export async function makeV3CopyCurrent(
   );
   if (first.kind === "none" || first.kind === "current") return {};
 
-  const lock = await Deno.open(join(paths.sharedDir, "restore.lock"), {
+  const lock = await Deno.open(paths.restoreLock, {
     read: true,
     write: true,
     create: true,
@@ -216,18 +216,22 @@ export async function makeV3CopyCurrent(
     const before = cursor > 0 ? txnAt(paths.commitsDb, cursor) : undefined;
     const target = paths.commitsDb;
     const openStore = options.openStore;
+    const intoExisting = async (temp: string) => {
+      const store = SqliteCommitStore.open(target);
+      try {
+        await store.replaceContentFrom(temp);
+      } finally {
+        await store.close();
+      }
+    };
+    // A missing copy is linked into place, never over a file: a reader that
+    // stopped waiting for the restore may have created an empty one, which
+    // is then updated in place instead.
     const install = openStore !== undefined
       ? (temp: string) => openStore.replaceContentFrom(temp)
-      : await exists(target)
-      ? async (temp: string) => {
-        const store = SqliteCommitStore.open(target);
-        try {
-          await store.replaceContentFrom(temp);
-        } finally {
-          await store.close();
-        }
-      }
-      : installByRename(target);
+      : async (temp: string) => {
+        if (!await installByLink(temp, target)) await intoExisting(temp);
+      };
     const restored = await restoreV3Copy({
       binary: await resolveV3LitestreamBinary(),
       replica,
@@ -241,7 +245,10 @@ export async function makeV3CopyCurrent(
     // the restore moved it (swamp-club#3482): one from another lineage, or
     // one that dropped commits never acknowledged. Then the checkout is
     // rebuilt, and the files of dropped commits removed.
-    const readModelMoved = cursor > 0 && txnAt(target, cursor) !== before;
+    // A cursor whose commit the copy no longer stores (compacted locally,
+    // or never there) cannot be matched, so it counts as moved.
+    const readModelMoved = cursor > 0 &&
+      (before === undefined || txnAt(target, cursor) !== before);
     await writeCopyState(paths, {
       replicaRoot: root,
       lineageFence: decision.lineage.fence,
@@ -515,6 +522,10 @@ export async function collectV3Lineages(
     for (
       const fence of collectableLineages(lineages, abandoned, root, current)
     ) {
+      // A read fetches only the starts the current state needs: a lineage
+      // another replica root started is left alone, records included.
+      const started = await registry.started(fence);
+      if (started !== undefined && started.replicaRoot !== root) continue;
       if (await removeReplicaPath(replica, fence)) {
         await registry.remove(fence);
         collected.push(fence);

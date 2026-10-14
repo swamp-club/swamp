@@ -134,6 +134,14 @@ export class LineageRegistry {
     return fences.map((fence) => ({ fence, ...(found.get(fence) ?? {}) }));
   }
 
+  /** The start of the lineage at `fence`, or undefined when it has none. */
+  async started(fence: number): Promise<LineageStarted | undefined> {
+    const record = parseLineageStarted(
+      await this.#get(keyOf(fence, "started")),
+    );
+    return record?.fence === fence ? record : undefined;
+  }
+
   /** Claims the lineage at `record.fence`; false when it was claimed before. */
   async start(record: LineageStarted): Promise<boolean> {
     return await this.store.putIfAbsent(

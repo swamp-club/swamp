@@ -181,10 +181,8 @@ export async function restoreV3Copy(
     ).catch(() => {});
     return { exactTxid, truncated };
   } catch (error) {
-    if (error instanceof V3RestoreError || error instanceof UserError) {
-      throw error;
-    }
-    if (signal.aborted) {
+    if (error instanceof UserError) throw error;
+    if (timeout.aborted) {
       throw new V3RestoreError(
         `it did not finish within ${Math.round(request.deadlineMs / 1000)}s`,
         { cause: error },
@@ -195,6 +193,25 @@ export async function restoreV3Copy(
     await removeDatabase(temp).catch(() => {});
     await Deno.remove(config).catch(() => {});
   }
+}
+
+/**
+ * Installs a restored temp file as `target` when no file is there: a hard
+ * link, which never replaces one. Resolves false, changing nothing, when
+ * `target` exists.
+ */
+export async function installByLink(
+  temp: string,
+  target: string,
+): Promise<boolean> {
+  try {
+    await Deno.link(temp, target);
+  } catch (error) {
+    if (error instanceof Deno.errors.AlreadyExists) return false;
+    throw error;
+  }
+  await syncFile(dirname(target));
+  return true;
 }
 
 /**

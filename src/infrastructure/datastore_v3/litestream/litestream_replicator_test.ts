@@ -761,3 +761,219 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "LitestreamReplicator sync: publishes between the confirmed sync and the lease check, and returns the TXID",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      const seen: { txid: string; leaseChecks: number }[] = [];
+      const txid = await handle.sync(5_000, {
+        beforeLeaseCheck: (published) => {
+          seen.push({ txid: published, leaseChecks: world.leaseChecks });
+          return Promise.resolve();
+        },
+      });
+      assertEquals(txid, "0000000000000002");
+      assertEquals(seen, [{ txid: "0000000000000002", leaseChecks: 0 }]);
+      assertEquals(world.leaseChecks, 1);
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator sync: a failed publish fails the sync before the lease check",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      const error = await assertRejects(
+        () =>
+          handle.sync(5_000, {
+            beforeLeaseCheck: () => Promise.reject(new Error("store down")),
+          }),
+        V3ReplicationError,
+      );
+      assertStringIncludes(error.message, "store down");
+      assertEquals(world.leaseChecks, 0);
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator sync: an answer without a readable replicated TXID condemns the sidecar",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      world.syncAnswer = () =>
+        Promise.resolve({ status: "synced", txid: 2, replicated_txid: "zz" });
+      let published = false;
+      await assertRejects(
+        () =>
+          handle.sync(5_000, {
+            beforeLeaseCheck: () => {
+              published = true;
+              return Promise.resolve();
+            },
+          }),
+        V3ReplicationError,
+      );
+      assertEquals(published, false);
+      assert(
+        await isMarkedForReplacement(
+          world.paths,
+          world.live[0].supervisorPid,
+        ),
+      );
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.quiesce: stops the copy's sidecar and keeps another from starting until released",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      await handle.release();
+      const supervisor = world.live[0].supervisorPid;
+      const release = await replicator.quiesce(db);
+      assertEquals(world.live.length, 0);
+      assert(world.killed.includes(-supervisor), "its group was killed");
+      // A command meanwhile waits for use.lock, then gives up.
+      await assertRejects(
+        () => replicator.acquire(world.request(db, 2)),
+        V3ReplicationUnavailableError,
+      );
+      release();
+      const next = await replicator.acquire(world.request(db, 2));
+      assertEquals(world.live.length, 1);
+      await next.release();
+    });
+  },
+});
+
+Deno.test({
+  name: "LitestreamReplicator.quiesce: with no sidecar, kills nothing",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const release = await replicator.quiesce(db);
+      release();
+      assertEquals(world.killed, []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.quiesce: refuses while this process holds the sidecar",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      await assertRejects(
+        () => replicator.quiesce(db),
+        V3ReplicationUnavailableError,
+        "still holds",
+      );
+      assertEquals(world.killed, []);
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.quiesce: refuses a sidecar it cannot verify, never killing it",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      await handle.release();
+      // The recorded pid now runs something else.
+      const supervisor = world.live[0].supervisorPid;
+      const litestream = world.live[0].litestreamPid;
+      const real = world.commandLines.get(supervisor)!;
+      world.commandLines.set(supervisor, "vim notes.txt");
+      await assertRejects(
+        () => replicator.quiesce(db),
+        V3ReplicationUnavailableError,
+        "cannot verify",
+      );
+      assertEquals(world.killed, []);
+      // The refusal gave use.lock back: once verifiable, it quiesces.
+      world.commandLines.set(supervisor, real);
+      (await replicator.quiesce(db))();
+      assertEquals(world.killed, [-supervisor, litestream]);
+    });
+  },
+});
+
+Deno.test({
+  name: "LitestreamReplicator.quiesce: gives up when the sidecar does not stop",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps({
+        processes: {
+          ...world.processes,
+          // The kill is ignored: the supervisor keeps its lock.
+          signalGroup: (pgid) => {
+            world.killed.push(-pgid);
+          },
+        },
+      }));
+      const handle = await replicator.acquire(world.request(db, 1));
+      await handle.release();
+      await assertRejects(
+        () => replicator.quiesce(db),
+        V3ReplicationUnavailableError,
+        "did not stop",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.quiesce: kills a Litestream a dead supervisor left, once verified",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const orphan = 61_000;
+      world.commandLines.set(
+        orphan,
+        `litestream replicate -config ${world.paths.config} -no-expand-env`,
+      );
+      await writePresence(world.paths, {
+        supervisorPid: 60_999,
+        litestreamPid: orphan,
+        uid: Deno.uid(),
+        hostname: Deno.hostname(),
+        lineageFence: 1,
+        replicaPath: "/replica/_litestream/000000000001",
+      });
+      const replicator = new LitestreamReplicator(world.deps());
+      const release = await replicator.quiesce(db);
+      release();
+      assertEquals(world.killed, [orphan]);
+    });
+  },
+});

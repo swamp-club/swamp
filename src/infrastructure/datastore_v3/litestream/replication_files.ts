@@ -31,8 +31,7 @@
  *   only by the lock holder), `replace-<pid>` marks, `use.lock` (shared by
  *   commands while they use the sidecar) and `lineage.json`; and, since
  *   swamp-club#3482, `copy.json` (which lineage and TXID the copy holds) and
- *   `swap.lock` (held shared by every process with the copy open, and
- *   exclusively by a restore that replaces it). The directory and the
+ *   `restore.lock` (taken by a restore of the copy). The directory and the
  *   presence record are trusted only when this user owns them.
  * - In a per-user directory, `/tmp/swamp-<uid>/<hash>/`, created 0700 and
  *   checked before every use, what a process trusts for paths: the
@@ -77,8 +76,8 @@ export interface ReplicationPaths {
   readonly lineage: string;
   /** Which lineage, up to which TXID, the copy holds (swamp-club#3482). */
   readonly copy: string;
-  /** Shared while a process has the copy open; exclusive for a restore. */
-  readonly swapLock: string;
+  /** Serializes restores of the copy (swamp-club#3482). */
+  readonly restoreLock: string;
   readonly privateDir: string;
   readonly config: string;
   readonly socket: string;
@@ -138,7 +137,7 @@ export async function replicationPathsFor(
     useLock: join(sharedDir, "use.lock"),
     lineage: join(sharedDir, "lineage.json"),
     copy: join(sharedDir, "copy.json"),
-    swapLock: join(sharedDir, "swap.lock"),
+    restoreLock: join(sharedDir, "restore.lock"),
     privateDir,
     config: join(privateDir, "litestream.yml"),
     socket,

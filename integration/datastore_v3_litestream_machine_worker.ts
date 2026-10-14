@@ -92,6 +92,8 @@ declare const self: Worker;
 
 let init: Extract<MachineRequest, { kind: "init" }> | undefined;
 let upkeep: V3ReplicationUpkeep | undefined;
+/** The short lease a `lease` request took, released when the machine closes. */
+let leaseRelease: (() => Promise<void>) | undefined;
 const launched = new Set<number>();
 
 function config(): FilesystemDatastoreConfig {
@@ -173,7 +175,7 @@ async function handle(request: MachineRequest): Promise<unknown> {
     }
     case "lease":
       return await inEnv(async () => {
-        await acquireV3WriterLock(init!.datastorePath, {
+        leaseRelease = await acquireV3WriterLock(init!.datastorePath, {
           ttlMs: request.ttlMs,
           ...(request.retake === true ? { retakeLost: true } : {}),
         });
@@ -188,7 +190,14 @@ async function handle(request: MachineRequest): Promise<unknown> {
         if (request.close) await closeV3Datastores();
       });
     case "close":
-      return await inEnv(() => closeV3Datastores());
+      return await inEnv(async () => {
+        try {
+          await closeV3Datastores();
+        } finally {
+          await leaseRelease?.();
+          leaseRelease = undefined;
+        }
+      });
     case "read":
       return await inEnv(async () => {
         // A read-only command's context: the copy made current, then the

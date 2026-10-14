@@ -49,6 +49,7 @@ import {
   holdsV3WriterLock,
   onV3LeaseTaken,
   refuseLiveV3LegacyWriter,
+  tryAcquireV3WriterLock,
   v3WriterFence,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
@@ -265,10 +266,28 @@ export async function ensureV3CopyCurrent(
     if (refresh.restored.readModelMoved) {
       // The checkout applied commits the restore dropped or replaced: it
       // is rebuilt from the restored commits, and the files no commit owns
-      // are removed, as after an interrupted writer. Only this process
-      // writes the checkout now: a writer holds the lease, and a reader
-      // restores only when no other process writes it.
-      await v3DatastoreFor(repoDir, config).recoverInterruptedWriter(0);
+      // are removed, as after an interrupted writer, under the writer lease
+      // so no writer materialises files meanwhile. A reader that cannot
+      // take it replays the commits instead, leaving the dropped commits'
+      // files until a rebuild.
+      const rebuilt = v3DatastoreFor(repoDir, config);
+      const release = mode === "write"
+        ? undefined
+        : await tryAcquireV3WriterLock(config.path, {
+          fenceStore: rebuilt.commitStore,
+        });
+      if (mode === "write" || release !== undefined) {
+        try {
+          await rebuilt.recoverInterruptedWriter(0);
+        } finally {
+          await release?.();
+        }
+      } else {
+        // The read model replays every commit from the start; only files
+        // of dropped commits may stay until then.
+        rebuilt.catalogStore.invalidate();
+        await rebuilt.catchUp();
+      }
     } else if (handle !== undefined) {
       // An open handle's read model catches up with the restored commits.
       await handle.catchUp();
@@ -679,6 +698,29 @@ async function syncAndPublish(
   handles: readonly V3Datastore[],
   deadlineMs: number,
 ): Promise<void> {
+  // One at a time per datastore: serve's probe and a drain can both sync,
+  // and a head taken earlier must never be published over a later one.
+  const previous = publishing.get(datastore) ?? Promise.resolve();
+  const run = previous.catch(() => {}).then(() =>
+    syncAndPublishNow(datastore, use, handles, deadlineMs)
+  );
+  publishing.set(datastore, run);
+  try {
+    await run;
+  } finally {
+    if (publishing.get(datastore) === run) publishing.delete(datastore);
+  }
+}
+
+/** The sync-and-publish in flight, by datastore. */
+const publishing = new Map<string, Promise<void>>();
+
+async function syncAndPublishNow(
+  datastore: string,
+  use: ReplicationHandle,
+  handles: readonly V3Datastore[],
+  deadlineMs: number,
+): Promise<void> {
   const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
   const copy = handle === undefined
     ? undefined
@@ -704,11 +746,20 @@ async function syncAndPublish(
       });
     },
   });
-  publishedMarks.set(datastore, mark.cursor);
+  publishedMarks.set(
+    datastore,
+    Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
+  );
   if (first) await collectV3Lineages(copy, use.lineageFence);
 }
 
-/** The high-water mark each datastore's head was last published at. */
+/**
+ * The highest high-water mark each datastore's head was published at by
+ * this process, which serve's probe compares against. It is not reset when
+ * serve's lineage restarts: a restarted lineage's first head is published by
+ * the retake's own first sync or the next commit, and until then the
+ * previous lineage stays the current state, which holds the same commits.
+ */
 const publishedMarks = new Map<string, number>();
 
 /** How often serve checks that its Litestream sidecar still answers. */

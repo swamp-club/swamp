@@ -875,7 +875,8 @@ file beside the copy, with `-txid` set to the head:
    (`SqliteCommitStore.truncateAfter`): what a zombie writer uploaded after
    its last acknowledgement never lands. Removed commits release their chunk
    references as compaction does, and later commits get higher cursors.
-4. The temp file is installed. A missing copy is renamed into place. An
+4. The temp file is installed. A missing copy is hard-linked into place, never over a file a reader
+   created meanwhile, which is then updated in place instead. An
    existing one is updated **in place** (`replaceContentFrom`): every table
    copied from the restored file in one write transaction, through the
    store's queue, so open connections, serve's included, keep working and see
@@ -902,7 +903,10 @@ restore: that writer keeps the copy current.
 changed (a foreign lineage, or dropped commits that were never
 acknowledged), the checkout is rebuilt as after an interrupted writer: the
 catalog is emptied, every commit replayed, and files no commit owns removed.
-Otherwise the read model catches up incrementally.
+It runs under the writer lease, so no writer materialises files meanwhile: a
+reader that cannot take the lease only replays, and the dropped commits'
+files stay until a rebuild. A cursor whose commit the copy no longer stores
+counts as moved. Otherwise the read model catches up incrementally.
 
 **Takeover.** `holdV3Writer` takes the lease, then makes the copy current,
 then raises `writer_fence` in it, then decides the lineage:
@@ -931,7 +935,9 @@ continue the copy's lineage only under the same rule, and never claim one,
 so a hold on a stale copy can never continue a lineage another writer
 superseded. The next writer restarts.
 
-**Serve** publishes a head whenever its last commit moved, on its 30-second
+**Serve** publishes a head whenever its last commit moved (one sync and
+publish at a time per datastore, so an earlier head is never published over
+a later one), on its 30-second
 replication probe as well as at its drains and shutdown, since its commits
 replicate passively. A takeover after serve dies keeps every commit up to its
 last probe; that interval is serve's loss window in solo mode. A retake after
