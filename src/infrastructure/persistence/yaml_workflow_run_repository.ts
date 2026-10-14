@@ -1268,10 +1268,53 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     const result = await readRunIndex(indexDir);
     if (!result || isIndexStale(result, yamlCount)) {
-      return await this.rebuildIndex(runsDir, indexDir);
+      return await this.repairIndex(runsDir, indexDir);
     }
 
     return result.entries;
+  }
+
+  /**
+   * Brings an index that disagrees with its records' count back in line,
+   * queued with the index updates of the same workflow. The check is made
+   * again in the queue first: a save writes its record before its index
+   * entry, so a reader that counted in between usually finds the entry
+   * landed. Otherwise every record is stat'ed against the fingerprint its
+   * entry was built from, and only the records the index does not list, or
+   * that changed since their entry was written, are read; the entries of
+   * records that are gone are dropped. A new run costs a stat per record,
+   * not a read of every record (swamp-club#3443, swamp-club#3407), and a
+   * record another writer replaced is still corrected, as the rebuild this
+   * replaces corrected it. An index of another schema version, or none, is
+   * rebuilt whole.
+   */
+  private repairIndex(
+    runsDir: string,
+    indexDir: string,
+  ): Promise<WorkflowRunIndex | null> {
+    return withIndexQueue(indexDir, async () => {
+      const files = await listDirEntries(runsDir);
+      const count = countYamlRunFiles(files);
+      if (count === 0) return null;
+      const result = await readRunIndex(indexDir);
+      if (!result || result.version !== INDEX_SCHEMA_VERSION) {
+        return await this.rebuildIndexUnqueued(runsDir, indexDir);
+      }
+      if (!isIndexStale(result, count)) return result.entries;
+
+      const entries = result.entries;
+      const suspects = await this.findSuspectRecords(runsDir, entries);
+      if (await this.reconcileSuspects(runsDir, entries, suspects)) {
+        try {
+          await ensureDir(indexDir);
+          await writeRunIndex(indexDir, entries);
+        } catch (error) {
+          logger
+            .warn`Failed to write repaired index, will retry next read: ${error}`;
+        }
+      }
+      return entries;
+    });
   }
 
   /**
@@ -1331,44 +1374,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         return;
       }
       const entries = result.entries;
-      // Ids that a record names in its body under another file name, which
-      // a rebuild indexes by the body id: their entries are not gone.
-      const bodyIds = new Set<string>();
-      let changed = false;
-      for (const runId of suspects) {
-        const path = join(runsDir, `workflow-run-${runId}.yaml`);
-        const current = await statRecord(path);
-        if (current === null) {
-          if (runId in entries && !bodyIds.has(runId)) {
-            delete entries[runId];
-            changed = true;
-          }
-          continue;
-        }
-        if (current && fingerprintMatches(entries[runId]?.record, current)) {
-          continue;
-        }
-        const read = await readIndexedRecord(path);
-        if (read === null) {
-          if (runId in entries) {
-            delete entries[runId];
-            changed = true;
-          }
-          continue;
-        }
-        // A record whose body names another run is indexed as a rebuild
-        // would, by the id in its body; it has no entry under its file name,
-        // so it is read on every verify, and written only when it changed.
-        const id = read.summary.id;
-        if (id !== runId) bodyIds.add(id);
-        const next = indexEntryOf(read.summary, read.record);
-        // An entry that cannot be fingerprinted is read every time; it is
-        // written only when it says something new.
-        if (JSON.stringify(entries[id]) === JSON.stringify(next)) continue;
-        entries[id] = next;
-        changed = true;
+      if (!(await this.reconcileSuspects(runsDir, entries, suspects))) {
+        return;
       }
-      if (!changed) return;
       try {
         await writeRunIndex(indexDir, entries);
       } catch (error) {
@@ -1376,6 +1384,58 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           .warn`Failed to write verified index, will retry next read: ${error}`;
       }
     });
+  }
+
+  /**
+   * Brings the entries of `suspects` in line with their records, in place:
+   * a record whose stat now matches its entry is left alone, a record that
+   * is gone or empty loses its entry, and any other is read and indexed by
+   * the id in its body. Whether any entry changed. Run inside the index
+   * queue, so an entry a save writes meanwhile is not overwritten.
+   */
+  private async reconcileSuspects(
+    runsDir: string,
+    entries: WorkflowRunIndex,
+    suspects: Set<string>,
+  ): Promise<boolean> {
+    // Ids that a record names in its body under another file name, which
+    // a rebuild indexes by the body id: their entries are not gone.
+    const bodyIds = new Set<string>();
+    let changed = false;
+    for (const runId of suspects) {
+      const path = join(runsDir, `workflow-run-${runId}.yaml`);
+      const current = await statRecord(path);
+      if (current === null) {
+        if (runId in entries && !bodyIds.has(runId)) {
+          delete entries[runId];
+          changed = true;
+        }
+        continue;
+      }
+      if (current && fingerprintMatches(entries[runId]?.record, current)) {
+        continue;
+      }
+      const read = await readIndexedRecord(path);
+      if (read === null) {
+        if (runId in entries) {
+          delete entries[runId];
+          changed = true;
+        }
+        continue;
+      }
+      // A record whose body names another run is indexed as a rebuild
+      // would, by the id in its body; it has no entry under its file name,
+      // so it is read on every verify, and written only when it changed.
+      const id = read.summary.id;
+      if (id !== runId) bodyIds.add(id);
+      const next = indexEntryOf(read.summary, read.record);
+      // An entry that cannot be fingerprinted is read every time; it is
+      // written only when it says something new.
+      if (JSON.stringify(entries[id]) === JSON.stringify(next)) continue;
+      entries[id] = next;
+      changed = true;
+    }
+    return changed;
   }
 
   /**
