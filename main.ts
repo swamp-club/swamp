@@ -41,8 +41,17 @@ import {
   isDispatchRunnerInvocation,
   redirectConsoleToStderr,
 } from "./src/cli/dispatch_runner_stdio.ts";
+import {
+  isSupervisorInvocation,
+  runSupervisorMain,
+} from "./src/infrastructure/datastore_v3/litestream/replication_supervisor_entry.ts";
 
 if (import.meta.main) {
+  // A v3 writer's Litestream supervisor (swamp-club#3416) runs none of the
+  // CLI: no environment, tracing, auth gate or telemetry.
+  if (isSupervisorInvocation(Deno.args)) {
+    Deno.exit(await runSupervisorMain(Deno.args));
+  }
   Deno.env.set("SWAMP_BUILD_VERSION", VERSION);
   // The dispatch runner's stdout is an RPC frame stream; nothing, including
   // a console span exporter, may print there.

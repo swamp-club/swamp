@@ -46,10 +46,19 @@ import {
   acquireV3WriterLock,
   assertV3WriterCurrent,
   holdsV3WriterLock,
+  onV3LeaseTaken,
   refuseLiveV3LegacyWriter,
   v3WriterFence,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
+import {
+  acquireV3Replication,
+  recordV3Lineage,
+  type ReplicationHandle,
+  setV3SyncDeadline,
+  v3ReplicationEnabled,
+  v3SyncDeadlineMs,
+} from "./litestream/v3_replication.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { isProcessGone } from "../runtime/process.ts";
 import {
@@ -67,6 +76,16 @@ import { getSwampLogger } from "../logging/logger.ts";
 const logger = getSwampLogger(["datastore", "v3"]);
 
 const opened = new Map<string, V3Datastore>();
+
+/**
+ * The Litestream sidecars this process's writers hold (swamp-club#3416),
+ * by datastore: synced once each at teardown, then released. Empty unless
+ * replication is on.
+ */
+const replications = new Map<string, ReplicationHandle[]>();
+
+/** Whether the lease listener that records replication lineages is set. */
+let lineageListening = false;
 
 /** Handles this process caught up while holding their writer lock. */
 const caughtUpWriters = new WeakSet<V3Datastore>();
@@ -105,6 +124,13 @@ export function v3DatastoreFor(
   repoDir: string,
   config: FilesystemDatastoreConfig,
 ): V3Datastore {
+  if (!lineageListening) {
+    // Every fence this process takes, the read-only recovery's included,
+    // continues or restarts the datastore's replication lineage. It does
+    // nothing while replication is off.
+    lineageListening = true;
+    onV3LeaseTaken(recordV3Lineage);
+  }
   const key = handleKey(repoDir, config);
   let handle = opened.get(key);
   if (handle === undefined) {
@@ -175,6 +201,19 @@ export async function holdV3Writer(
       }),
     );
     await marking;
+    // Once the checkout is recovered and marked: a sidecar for this hold's
+    // fence, when replication is on (swamp-club#3416).
+    const fence = v3WriterFence(config.path);
+    const replication = fence === undefined
+      ? undefined
+      : await acquireV3Replication(config.path, fence);
+    if (replication !== undefined) {
+      const datastore = resolve(config.path);
+      replications.set(datastore, [
+        ...(replications.get(datastore) ?? []),
+        replication,
+      ]);
+    }
   } catch (error) {
     if (marks) {
       if (await marking.then(() => true, () => false)) {
@@ -399,21 +438,109 @@ export async function closeV3Datastores(): Promise<void> {
   for (const handle of handles) {
     if (holdsV3WriterLock(handle.datastorePath)) await compactQuietly(handle);
   }
+  // One sync per datastore confirms every commit this process made,
+  // compaction's included (swamp-club#3416). It comes before the stores
+  // close: it makes Litestream open commits.db, so swamp's close is not the
+  // last one and the WAL survives for the next sidecar start.
+  const held = [...replications.values()];
+  replications.clear();
+  const synced = await Promise.allSettled(
+    held.map((uses) => uses[0].sync(v3SyncDeadlineMs())),
+  );
+  setV3SyncDeadline(undefined);
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
   const closed = await Promise.allSettled(
     handles.map((handle) => handle.close()),
   );
+  // The sidecars go after the stores, the lease after the sidecars.
+  const unheld = await Promise.allSettled(
+    held.flat().map((use) => use.release()),
+  );
   const released = await Promise.allSettled(
     pending.map((release) => release()),
   );
   keepMarkers = false;
-  const failed = [...closed, ...released].find((result) =>
-    result.status === "rejected"
-  );
+  // A replication failure comes first: it is what the command reports.
+  const failed = [...synced, ...closed, ...unheld, ...released].find((
+    result,
+  ) => result.status === "rejected");
   if (failed !== undefined && failed.status === "rejected") {
     throw failed.reason;
   }
+}
+
+/** How often serve checks that its Litestream sidecar still answers. */
+export const SERVE_REPLICATION_PROBE_INTERVAL_MS = 30_000;
+
+/** Serve's upkeep of its Litestream sidecar; see {@link startV3ReplicationUpkeep}. */
+export interface V3ReplicationUpkeep {
+  /** Stops the triggers and waits for a replacement in flight. */
+  stop(): Promise<void>;
+}
+
+/**
+ * Keeps serve's Litestream sidecar for the datastore at `datastorePath`
+ * (swamp-club#3416) while serve holds its writer lease. Two triggers replace
+ * it: serve retaking the lease at a new fence, which may start a new
+ * lineage, and a probe that finds the sidecar no longer answering. Both go
+ * through one replacement at a time, which {@link V3ReplicationUpkeep.stop}
+ * awaits; none starts once stopping has begun. Does nothing while
+ * replication is off.
+ */
+export function startV3ReplicationUpkeep(
+  datastorePath: string,
+  options: { readonly probeIntervalMs?: number } = {},
+): V3ReplicationUpkeep {
+  if (!v3ReplicationEnabled()) return { stop: () => Promise.resolve() };
+  const key = resolve(datastorePath);
+  let stopped = false;
+  let replacing: Promise<void> | undefined;
+  let probing: Promise<void> | undefined;
+  const replace = (): void => {
+    if (stopped || replacing !== undefined) return;
+    replacing = (async () => {
+      const uses = replications.get(key) ?? [];
+      replications.delete(key);
+      // This process's own shared hold goes first: a replacement waits for
+      // the use lock exclusively.
+      await Promise.allSettled(uses.map((use) => use.release()));
+      const fence = v3WriterFence(datastorePath);
+      if (fence === undefined || stopped) return;
+      const next = await acquireV3Replication(datastorePath, fence);
+      if (next !== undefined) replications.set(key, [next]);
+    })().catch((error) => {
+      logger
+        .warn`Replacing the Litestream sidecar of the v3 datastore at ${datastorePath} failed; the next probe retries: ${error}`;
+    }).finally(() => {
+      replacing = undefined;
+    });
+  };
+  // Runs inside the lease's renewal: it only starts the replacement.
+  const unsubscribe = onV3LeaseTaken((path) => {
+    if (resolve(path) === key) replace();
+  });
+  const timer = setInterval(() => {
+    if (stopped || probing !== undefined || replacing !== undefined) return;
+    probing = (async () => {
+      const current = replications.get(key)?.[0];
+      if (current === undefined || !await current.probe()) replace();
+    })().catch((error) => {
+      logger.debug`Probing the Litestream sidecar failed: ${error}`;
+    }).finally(() => {
+      probing = undefined;
+    });
+  }, options.probeIntervalMs ?? SERVE_REPLICATION_PROBE_INTERVAL_MS);
+  Deno.unrefTimer(timer);
+  return {
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      unsubscribe();
+      await probing;
+      await replacing;
+    },
+  };
 }
 
 /** How long a writer's closing compaction may run. */
@@ -465,6 +592,24 @@ export async function collectChunksQuietly(handle: V3Datastore): Promise<void> {
 }
 
 /**
+ * Makes the read model's unsynced files durable and clears its list
+ * (swamp-club#3416), logging rather than throwing a failure: the next tick
+ * retries, and the reboot check still covers the files.
+ */
+export async function syncUnsyncedQuietly(handle: V3Datastore): Promise<void> {
+  try {
+    const synced = await handle.readModel.syncUnsyncedFiles();
+    if (synced > 0) {
+      logger
+        .debug`Synced ${synced} files the read model of the v3 datastore at ${handle.datastorePath} wrote unsynced`;
+    }
+  } catch (error) {
+    logger
+      .warn`Syncing the read model's unsynced files of the v3 datastore at ${handle.datastorePath} failed; the next tick retries: ${error}`;
+  }
+}
+
+/**
  * Maintains a v3 datastore on a timer while serve holds its writer lock
  * (swamp-club#3279): history compaction, then chunk garbage collection, so
  * the chunks compaction frees are reclaimed while serve runs. A CLI
@@ -484,6 +629,11 @@ export class V3MaintenanceTimer {
     if (this.#timer !== undefined) return;
     this.#timer = setInterval(() => this.tick(), this.intervalMs);
     Deno.unrefTimer(this.#timer);
+    // Files an earlier serve left unsynced are made durable at once, not an
+    // interval later.
+    this.#running ??= syncUnsyncedQuietly(this.handle).finally(() => {
+      this.#running = undefined;
+    });
   }
 
   /** One timer tick: starts a maintenance run unless one is still running. */
@@ -492,6 +642,7 @@ export class V3MaintenanceTimer {
     this.#running = (async () => {
       await compactQuietly(this.handle);
       await collectChunksQuietly(this.handle);
+      await syncUnsyncedQuietly(this.handle);
     })().finally(() => {
       this.#running = undefined;
     });

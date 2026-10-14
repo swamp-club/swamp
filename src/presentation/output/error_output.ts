@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 import { ValidationError } from "@cliffy/command";
 import { bold, dim, red, yellow } from "@std/fmt/colors";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -124,6 +125,9 @@ export function exitCodeForError(error: unknown): number {
   // failing) is a temporary failure too; a missing or revoked credential is
   // not.
   if (error instanceof AuthGateBlockedError && error.temporary) return 75;
+  // Commits a sync could not confirm are saved, and the next write
+  // replicates them (swamp-club#3416): a temporary failure.
+  if (code === V3_REPLICATION_UNCONFIRMED_CODE) return 75;
   return 1;
 }
 

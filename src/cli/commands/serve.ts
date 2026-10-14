@@ -499,9 +499,11 @@ import {
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import {
   keepV3WriterMarkers,
+  startV3ReplicationUpkeep,
   v3DatastoreFor,
   V3MaintenanceTimer,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import { setV3SyncDeadline } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
 
 const DISPATCH_ENV_ALLOW_HELP =
   "Comma-separated environment variable names; only these ship to workers with each " +
@@ -2881,6 +2883,12 @@ export const serveCommand = new Command()
       ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, datastoreConfig))
       : undefined;
     v3Maintenance?.start();
+    // Its Litestream sidecar, kept while serve holds the lease; nothing
+    // while replication is off (swamp-club#3416).
+    const v3Replication = v3Maintenance !== undefined &&
+        !isCustomDatastoreConfig(datastoreConfig)
+      ? startV3ReplicationUpkeep(datastoreConfig.path)
+      : undefined;
 
     let configPoller: ConfigPoller | null = null;
     let accessDataPoller: AccessDataPoller | null = null;
@@ -6669,6 +6677,7 @@ export const serveCommand = new Command()
       } else {
         logger.info`Shutting down, aborting in-flight runs immediately...`;
       }
+      const drainStarted = Date.now();
       const remaining = await runShutdownDrain({
         webhookService,
         scheduledExecution,
@@ -6739,6 +6748,12 @@ export const serveCommand = new Command()
       }
       await policySnapshotLoader.dispose();
       await v3Maintenance?.stop();
+      // No sidecar replacement runs past here, and the closing sync gets
+      // what the drain left, floored (swamp-club#3416).
+      await v3Replication?.stop();
+      setV3SyncDeadline(
+        shutdownDrainTimeoutMs - (Date.now() - drainStarted),
+      );
       // Final telemetry flush, after runs have drained so their entries are
       // included. Must happen BEFORE ac.abort(), which releases
       // `await server.finished` and with it the CLI's own teardown flush.

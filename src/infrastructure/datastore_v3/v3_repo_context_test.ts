@@ -69,9 +69,16 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 function fakeHandle() {
   let calls = 0;
   let sweeps = 0;
+  let syncs = 0;
   let release: () => void = () => {};
   const handle = {
     datastorePath: "/fake",
+    readModel: {
+      syncUnsyncedFiles: () => {
+        syncs++;
+        return Promise.resolve(0);
+      },
+    },
     compactIfDue: () => {
       calls++;
       return new Promise<undefined>((resolve) => {
@@ -87,6 +94,7 @@ function fakeHandle() {
     handle,
     calls: () => calls,
     sweeps: () => sweeps,
+    syncs: () => syncs,
     finish: () => release(),
   };
 }
@@ -106,6 +114,7 @@ Deno.test("V3MaintenanceTimer: runs never overlap, and stop waits for the one in
   await stopping;
   assert(stopped);
   assertEquals(fake.sweeps(), 1, "a run sweeps chunks after compacting");
+  assertEquals(fake.syncs(), 1, "and makes the unsynced files durable");
   timer.tick();
   assertEquals(fake.calls(), 2, "the next tick runs again");
   fake.finish();
@@ -119,6 +128,15 @@ Deno.test("V3MaintenanceTimer: start is idempotent and its timer compacts", asyn
   timer.start();
   await waitFor(() => fake.calls() === 1, "the timer's first compaction");
   fake.finish();
+  await timer.stop();
+});
+
+Deno.test("V3MaintenanceTimer: start makes earlier unsynced files durable at once", async () => {
+  const fake = fakeHandle();
+  const timer = new V3MaintenanceTimer(fake.handle, 60_000);
+  timer.start();
+  await waitFor(() => fake.syncs() === 1, "the start's sync");
+  assertEquals(fake.calls(), 0, "it does not compact before the interval");
   await timer.stop();
 });
 

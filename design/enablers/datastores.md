@@ -4207,7 +4207,12 @@ every command a new path and a full snapshot, so D keys the path by lineage
 instead: the fence at which the checkout's replication began. A successor from
 the same checkout, after a release or a crash, continues the path; a takeover
 by another checkout starts a new one, and D garbage-collects the paths a
-takeover leaves behind (Phase 4A in `datastore-litestream.md`).
+takeover leaves behind (Phase 4A in `datastore-litestream.md`). D1
+(swamp-club#3416) built the sidecar, dormant: a listener on the lease
+(`onV3LeaseTaken`) records each fence's lineage, and a writer's teardown
+compacts, forces one sync, checks `replicated_txid` and the lease, then closes
+the stores before it releases the sidecar and the lease. See "Phase 4D1" in
+`datastore-litestream.md`.
 
 **Buckets.** The lease runs over any store with `putIfAbsent`
 (`v3WriterLease`), and its tests run against the in-memory remote's control

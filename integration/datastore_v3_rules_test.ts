@@ -85,13 +85,15 @@
  *    names is pinned. A writer that needs one of them synced must first give
  *    it a v3 home ("v3 stream directories" in
  *    `design/enablers/datastores.md`).
- * 11. **The Litestream binary provider is dormant** (swamp-club#3358). The
- *    pinned release (`litestream_pin.ts`) and the provider that downloads,
- *    verifies and caches it live in
- *    `src/infrastructure/datastore_v3/litestream/`. No production file but
- *    the provider imports either, and only the provider reads
- *    `SWAMP_LITESTREAM_PATH`, so nothing fetches or runs Litestream until
- *    the sidecar (Phase 4D) wires it in and adds its edges here.
+ * 11. **The Litestream sidecar is dormant** (swamp-club#3358,
+ *    swamp-club#3416). The pinned release (`litestream_pin.ts`) and the
+ *    provider that downloads, verifies and caches it live in
+ *    `src/infrastructure/datastore_v3/litestream/`, with the sidecar that
+ *    runs it. Only the provider, the sidecar's wiring and the supervisor's
+ *    entry import the provider; only the provider reads
+ *    `SWAMP_LITESTREAM_PATH`; and only `replica_setting.ts` reads the
+ *    internal replica setting that turns the sidecar on, which no user sets
+ *    until Phase 4E replaces it with the datastore's own bucket.
  *
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
@@ -197,6 +199,13 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // v3, where a removed version can be written again.
   "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
   "src/libswamp/models/output_data.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
+  // swamp-club#3416, the Litestream sidecar: serve sets its closing sync's
+  // budget, the CLI's teardown reports commits a sync did not confirm, and
+  // the error renderer gives them the temporary-failure exit code.
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/litestream/v3_replication.ts",
+  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/litestream_replication.ts",
+  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/litestream_replication.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -626,6 +635,11 @@ const LITESTREAM_MODULES = [
 const PINNED_LITESTREAM_IMPORTERS: readonly string[] = [
   // The provider reads the pin it verifies against.
   "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts -> src/infrastructure/datastore_v3/litestream/litestream_pin.ts",
+  // swamp-club#3416: a writer resolves the binary before it starts a
+  // sidecar, and the supervisor again right before it runs Litestream, so
+  // the hash is checked before every start.
+  "src/infrastructure/datastore_v3/litestream/replication_supervisor_entry.ts -> src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts",
+  "src/infrastructure/datastore_v3/litestream/v3_replication.ts -> src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts",
 ];
 
 Deno.test("datastore v3: no production code imports the Litestream binary provider", async () => {
@@ -640,8 +654,8 @@ Deno.test("datastore v3: no production code imports the Litestream binary provid
     edges,
     PINNED_LITESTREAM_IMPORTERS,
     "Production imports of the dormant Litestream binary provider",
-    "Downloading and running Litestream is dormant until the sidecar\n" +
-      "(Phase 4D) wires it in. Add the sidecar's edge here when it does.",
+    "Downloading and running Litestream happens only through the sidecar\n" +
+      "(swamp-club#3416), which is dormant until Phase 4E turns it on.",
   );
 });
 
@@ -664,5 +678,26 @@ Deno.test("datastore v3: only the Litestream provider reads SWAMP_LITESTREAM_PAT
     "Production mentions of SWAMP_LITESTREAM_PATH",
     "The override must reach Litestream only through the provider, which\n" +
       "hashes it against the pin. Pass a path to the provider instead.",
+  );
+});
+
+/** Production files that mention the internal replica setting's variable. */
+const PINNED_V3_REPLICA_READERS: readonly string[] = [
+  `${LITESTREAM_DIR}/replica_setting.ts`,
+];
+
+Deno.test("datastore v3: only replica_setting.ts reads the internal replica setting", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if ((await Deno.readTextFile(filePath)).includes("SWAMP_V3_REPLICA")) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_V3_REPLICA_READERS,
+    "Production readers of SWAMP_V3_REPLICA",
+    "The Litestream sidecar is dormant: only replica_setting.ts may read the\n" +
+      "internal setting that turns it on (swamp-club#3416).",
   );
 });

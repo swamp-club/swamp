@@ -34,6 +34,7 @@ import {
   assertV3WriterCurrent,
   checkV3WriterLease,
   holdsV3WriterLock,
+  onV3LeaseTaken,
   tryAcquireV3WriterLock,
   V3_LEGACY_WRITER_LOCK_KEY,
   V3_WRITER_LEASE_DIR,
@@ -458,5 +459,46 @@ Deno.test("v3WriterLockHandle: the lease's records live under _control/writer", 
       "fence-000000000001",
       "released-000000000001",
     ]);
+  });
+});
+
+Deno.test("onV3LeaseTaken: hears every fence, the read-only recovery's included", async () => {
+  await withTempDir(async (dir) => {
+    const heard: number[] = [];
+    const stop = onV3LeaseTaken((path, fence) => {
+      if (path === dir) heard.push(fence);
+    });
+    try {
+      const fences = memoryFenceStore();
+      await (await acquireV3WriterLock(dir, { fenceStore: fences }))();
+      const recovery = await tryAcquireV3WriterLock(dir, {
+        fenceStore: fences,
+      });
+      assert(recovery !== undefined);
+      await recovery();
+      assertEquals(heard, [1, 2]);
+    } finally {
+      stop();
+    }
+  });
+});
+
+Deno.test("onV3LeaseTaken: a listener that throws leaves a normal hold", async () => {
+  await withTempDir(async (dir) => {
+    const stop = onV3LeaseTaken((path) => {
+      if (path === dir) throw new Error("lineage write failed");
+    });
+    try {
+      const release = await acquireV3WriterLock(dir, {
+        fenceStore: memoryFenceStore(),
+      });
+      assert(holdsV3WriterLock(dir));
+      assertEquals(v3WriterFence(dir), 1);
+      await release();
+      assertEquals(holdsV3WriterLock(dir), false);
+      assertEquals(await v3WriterLockHandle(dir).inspect(), null, "released");
+    } finally {
+      stop();
+    }
   });
 });

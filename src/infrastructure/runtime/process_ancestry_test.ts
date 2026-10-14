@@ -19,11 +19,13 @@
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import {
+  commandLineOf,
   executablePathOf,
   findAncestor,
   isSameExecutable,
   parentPidOf,
   parseProcBootTime,
+  parseProcCmdline,
   parseProcStatParentPid,
   parseProcStatStartTicks,
   startTimeOf,
@@ -169,5 +171,27 @@ Deno.test({
     assert(own !== undefined);
     assertEquals(result.startedAt, startTimeOf(Deno.ppid));
     assert(result.startedAt <= own);
+  },
+});
+
+Deno.test("parseProcCmdline: splits on NUL and drops the trailing one", () => {
+  assertEquals(parseProcCmdline("swamp\0--x\0a b\0"), ["swamp", "--x", "a b"]);
+  assertEquals(parseProcCmdline("one"), ["one"]);
+});
+
+Deno.test({
+  name: "commandLineOf: reads this process's own arguments on Linux",
+  ignore: Deno.build.os !== "linux",
+  fn() {
+    const args = commandLineOf(Deno.pid);
+    assert(args !== undefined && args.length > 0);
+  },
+});
+
+Deno.test({
+  name: "commandLineOf: is undefined off Linux",
+  ignore: Deno.build.os === "linux",
+  fn() {
+    assertEquals(commandLineOf(Deno.pid), undefined);
   },
 });

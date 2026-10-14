@@ -91,7 +91,7 @@ import {
   PathTraversalError,
   resolveRealPath,
 } from "../persistence/safe_path.ts";
-import { DurableWriteBatch } from "./atomic_stream_write.ts";
+import { DurableWriteBatch, syncDirectory } from "./atomic_stream_write.ts";
 import { currentBootIdentity } from "./boot_identity.ts";
 import {
   type AppliedRecord,
@@ -432,6 +432,58 @@ export class SqliteReadModel implements ReadModel {
     });
     this.#queue = run.catch(() => {});
     return run;
+  }
+
+  /**
+   * Makes the files written unsynced durable and forgets them
+   * (swamp-club#3416): serve calls it from its maintenance timer, so a
+   * long-running serve's first open after a reboot does not hash most of its
+   * cache. Each listed file is synced, then each of their directories,
+   * deepest first; a file that is gone has its directory synced. Resolves
+   * with how many files were listed.
+   */
+  syncUnsyncedFiles(): Promise<number> {
+    return this.#exclusive(async () => {
+      const files = this.#state.unsyncedFiles();
+      if (files.length === 0) return 0;
+      const dirs = new Set<string>();
+      for (const file of files) {
+        const path = join(
+          this.#cacheRoot(file.namespace),
+          ...file.record_key.split("/"),
+        );
+        dirs.add(dirname(path));
+        let handle: Deno.FsFile;
+        try {
+          // Writable: Windows flushes only a handle opened for writing.
+          handle = await Deno.open(path, { read: true, write: true });
+        } catch (error) {
+          if (
+            error instanceof Deno.errors.NotFound ||
+            error instanceof Deno.errors.NotADirectory ||
+            error instanceof Deno.errors.IsADirectory
+          ) {
+            continue;
+          }
+          throw error;
+        }
+        try {
+          await handle.sync();
+        } finally {
+          handle.close();
+        }
+      }
+      // A path is longer than any of its ancestors: deepest first.
+      for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+        try {
+          await syncDirectory(dir);
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      }
+      this.#state.clearUnsynced();
+      return files.length;
+    });
   }
 
   /**

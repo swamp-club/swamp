@@ -541,6 +541,28 @@ Deno.test("read model: files a reboot lost after their page committed are repair
   });
 });
 
+Deno.test("read model: syncUnsyncedFiles makes the listed files durable and clears the list (swamp-club#3416)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const model = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:1"),
+    });
+    try {
+      assertEquals((await model.catchUp(signal())).cursor, 5);
+      const listed = unsyncedCount(env);
+      assert(listed > 0, "the catch-up listed no unsynced files");
+      assertEquals(await model.syncUnsyncedFiles(), listed);
+      assertEquals(unsyncedCount(env), 0);
+      // Nothing left to sync; the files are untouched.
+      assertEquals(await model.syncUnsyncedFiles(), 0);
+    } finally {
+      await model.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
 Deno.test("read model: a commit whose unsynced keys cannot be recorded is not recorded as applied (swamp-club#3337)", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {

@@ -89,6 +89,10 @@ import { reconcileRefusedRuns } from "./refused_run_records.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { SqliteReadModel } from "./sqlite_read_model.ts";
 import { V3Catalog } from "./v3_catalog.ts";
+import {
+  litestreamStateDirName,
+  replicationDirName,
+} from "./litestream/replication_files.ts";
 
 /**
  * Thrown when a read-only command stages a change on a v3 datastore
@@ -400,6 +404,10 @@ export async function isFreshV3Skeleton(
     `${COMMITS_DB_FILE}-wal`,
     `${COMMITS_DB_FILE}-shm`,
     "_blobs",
+    // A writer's Litestream sidecar state (swamp-club#3416), present only
+    // when replication is on.
+    replicationDirName(COMMITS_DB_FILE),
+    litestreamStateDirName(COMMITS_DB_FILE),
   ]);
   let hasMarker = false;
   for await (const entry of Deno.readDir(datastorePath)) {
