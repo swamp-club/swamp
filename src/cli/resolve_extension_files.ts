@@ -1464,6 +1464,27 @@ async function realPathOr(path: string): Promise<string> {
   }
 }
 
+/**
+ * The real path of `path`, resolving its nearest existing ancestor when the
+ * file itself does not exist: a missing module under a repository reached
+ * through a symlinked parent (macOS `/tmp`) still resolves inside it, and
+ * one behind a symlinked directory still resolves outside.
+ */
+async function realPathThroughAncestors(path: string): Promise<string> {
+  const rest: string[] = [];
+  let current = resolve(path);
+  while (true) {
+    try {
+      return join(await Deno.realPath(current), ...rest);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return resolve(path);
+      rest.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
 /** The paths in `paths` that are symlinks; one that cannot be read is not. */
 async function symlinksAmong(paths: Iterable<string>): Promise<Set<string>> {
   const symlinks = new Set<string>();
@@ -1545,7 +1566,7 @@ async function resolveSourceModules(options: {
     ...graph.missing.map((m) => ({ path: m.path, importer: m.importer })),
   ];
   for (const m of checked) {
-    const real = await realPathOr(m.path);
+    const real = await realPathThroughAncestors(m.path);
     if (!realRoots.some((root) => isSameOrUnder(real, root) && real !== root)) {
       if (options.lenient) {
         outside.add(m.path);

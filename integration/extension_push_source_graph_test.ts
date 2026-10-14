@@ -743,3 +743,50 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "extension push: a missing import in a repository reached through a symlinked parent is still a compilation error, not a containment refusal (swamp-club#3420)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (repo) => {
+      await withOutside(async (aliases) => {
+        // The repository as a user reaches it through a symlinked parent,
+        // as macOS reaches /private/tmp through /tmp.
+        const alias = join(aliases, "repo");
+        await Deno.symlink(repo, alias, { type: "dir" });
+        await write(
+          join(alias, "extensions", "models", "m.ts"),
+          'import "./typo.ts";\nexport const m = 1;\n',
+        );
+        const manifestPath = join(alias, "manifest.yaml");
+        await write(
+          manifestPath,
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/aliased",
+            version: "2026.10.13.1",
+            models: ["m.ts"],
+          }),
+        );
+        const { repoContext } = await requireInitializedRepoReadOnly({
+          repoDir: repo,
+          outputMode: "log",
+        });
+
+        const resolved = await resolveExtensionFiles({
+          repoDir: alias,
+          manifestPath,
+          repoContext,
+          logger,
+          moduleGraphReader: graphReader,
+        });
+
+        assertEquals(
+          resolved.missingModules.map((m) => m.path),
+          [join(alias, "extensions", "models", "typo.ts")],
+        );
+      });
+    });
+  },
+});
