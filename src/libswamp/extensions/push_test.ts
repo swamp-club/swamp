@@ -1303,7 +1303,7 @@ Deno.test("extensionPushPrepare: a private push to a personal namespace the regi
   assertEquals(check?.status, "passed");
   assertEquals(
     check?.message,
-    '"@testuser" is your personal namespace, covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
+    'Collective "@testuser" is covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
   );
   assertEquals(result.collectiveEntitlement, COVERED);
 });

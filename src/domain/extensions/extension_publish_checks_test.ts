@@ -401,7 +401,7 @@ Deno.test("evaluatePrivateEntitlement: a personal namespace the registry allows 
       name: "private-entitlement",
       status: "passed",
       message:
-        '"@alice" is your personal namespace, covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
+        'Collective "@alice" is covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
     });
   }
 });
@@ -427,7 +427,14 @@ Deno.test("evaluatePrivateEntitlement: trial-ended fails with the trial's length
     },
   );
   // No length reported, or no trial at all: no length invented.
-  for (const trial of [{ ...EXPIRED, totalDays: undefined }, null]) {
+  for (
+    const trial of [
+      { ...EXPIRED, totalDays: undefined },
+      { ...EXPIRED, totalDays: "30" as unknown as number },
+      { ...EXPIRED, totalDays: 0 },
+      null,
+    ]
+  ) {
     assertEquals(
       check(acme({ trial, privateExtensions: "trial-ended" })).message,
       `Collective "@acme"'s free trial has ended. ` +
@@ -678,7 +685,7 @@ Deno.test("explainPrivatePublishRefusal: what was allowed at sign-in is reported
       trial: EXPIRED,
       privateExtensions: "allowed",
     }),
-    `${REFUSAL}. At sign-in the registry reported that "@acme" is your personal namespace, covered by a paid plan or active trial on another collective you belong to, which allows private extensions.`,
+    `${REFUSAL}. At sign-in the registry reported that collective "@acme" is covered by a paid plan or active trial on another collective you belong to, which allows private extensions.`,
   );
 });
 

@@ -424,7 +424,7 @@ function allowedSentence(
   }
   // The registry allows it although the collective's own standing does not:
   // a personal namespace covered by a collective its owner belongs to.
-  return `"@${collective}" is your personal namespace, covered by a paid plan or active trial on another collective you belong to, ${allows}`;
+  return `Collective "@${collective}" is covered by a paid plan or active trial on another collective you belong to, ${allows}`;
 }
 
 /** Why a collective is refused, naming what it needs and where to get it. */
@@ -437,7 +437,9 @@ function refusedSentence(
   const upgrade = `upgrade at ${collectiveBillingUrl(serverUrl, collective)}.`;
   if (verdict === "trial-ended") {
     const totalDays = entitlement.trial?.totalDays;
-    const length = totalDays ? `${totalDays}-day ` : "";
+    const length = typeof totalDays === "number" && totalDays > 0
+      ? `${totalDays}-day `
+      : "";
     return `Collective "@${collective}"'s ${length}free trial has ended. ${PAID_PLAN_REQUIRED}; ${upgrade}`;
   }
   if (entitlement.plan === "personal") {

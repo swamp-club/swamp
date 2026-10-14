@@ -319,7 +319,7 @@ Deno.test("extension push entitlement: a personal namespace the registry covers 
         name: "private-entitlement",
         status: "passed",
         message:
-          '"@seth" is your personal namespace, covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
+          'Collective "@seth" is covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
       });
       assertEquals(
         (prepared.collectiveEntitlement as { privateExtensions?: string })
