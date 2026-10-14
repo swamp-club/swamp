@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { relative } from "@std/path";
+import { relative, SEPARATOR } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { normalizeBehaviorTask } from "../workflows/step_task.ts";
 import type {
@@ -47,6 +47,16 @@ async function readSourceText(path: string): Promise<string> {
     throw new Error("symlinked source");
   }
   return await Deno.readTextFile(path);
+}
+
+/**
+ * The `fileName` the registry receives for `filePath`: relative to `dir`,
+ * with forward slashes on every OS, so a push from Windows sends what a push
+ * from macOS or Linux sends.
+ */
+export function contentFileName(dir: string, filePath: string): string {
+  const rel = relative(dir, filePath);
+  return SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
 }
 
 /**
@@ -193,7 +203,7 @@ function extractModelFromSource(
   const files = extractFiles(content);
 
   return {
-    fileName: relative(modelsDir, filePath),
+    fileName: contentFileName(modelsDir, filePath),
     type,
     version,
     globalArguments,
@@ -229,7 +239,7 @@ function extractExtensionFromSource(
   const resources = extractResources(body);
 
   return {
-    fileName: relative(modelsDir, filePath),
+    fileName: contentFileName(modelsDir, filePath),
     extendsType: typeMatch[1],
     methods,
     resources,
@@ -526,7 +536,7 @@ export function extractVaultFromSource(
   }
 
   return {
-    fileName: relative(vaultsDir, filePath),
+    fileName: contentFileName(vaultsDir, filePath),
     type: typeMatch[1],
     name: topLevel.get("name") ?? "",
     description: topLevel.get("description") ?? "",
@@ -1280,7 +1290,7 @@ export function extractDatastoreFromSource(
   }
 
   return {
-    fileName: relative(datastoresDir, filePath),
+    fileName: contentFileName(datastoresDir, filePath),
     type: typeMatch[1],
     name: topLevel.get("name") ?? "",
     description: topLevel.get("description") ?? "",
@@ -1331,7 +1341,7 @@ function extractReportFromSource(
   }
 
   return {
-    fileName: relative(reportsDir, filePath),
+    fileName: contentFileName(reportsDir, filePath),
     name: nameMatch[1],
     description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
     scope: scopeMatch ? scopeMatch[1] : "",
@@ -1370,7 +1380,7 @@ function extractWebhookFromSource(
   );
 
   return {
-    fileName: relative(webhooksDir, filePath),
+    fileName: contentFileName(webhooksDir, filePath),
     type: typeMatch[1],
     name: nameMatch ? nameMatch[1] : "",
     description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
