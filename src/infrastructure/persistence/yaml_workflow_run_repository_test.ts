@@ -963,6 +963,52 @@ async function copyRecord(
   );
 }
 
+Deno.test("countRunRecords: counts the workflow's run records and nothing else in their directory", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    assertEquals(await repo.countRunRecords(workflow.id), 0);
+
+    for (let i = 0; i < 3; i++) {
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      await repo.save(workflow.id, run);
+    }
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.writeTextFile(join(runsDir, "workflow-run-stray.log"), "");
+    await Deno.writeTextFile(join(runsDir, "notes.yaml"), "");
+
+    assertEquals(await repo.countRunRecords(workflow.id), 3);
+  });
+});
+
+Deno.test("countRunRecords: stops listing once its signal aborts", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const aborted = new AbortController();
+    aborted.abort(new Error("stopped"));
+    // No runs directory yet: an aborted count still rejects.
+    await assertRejects(
+      () => repo.countRunRecords(workflow.id, aborted.signal),
+      Error,
+      "stopped",
+    );
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    const abort = new AbortController();
+    abort.abort(new Error("stopped"));
+    await assertRejects(
+      () => repo.countRunRecords(workflow.id, abort.signal),
+      Error,
+      "stopped",
+    );
+  });
+});
+
 Deno.test("runIndexSnapshot: reuses the snapshot while the index and records are unchanged", async () => {
   await withTempDir(async (dir) => {
     let offset = 0;

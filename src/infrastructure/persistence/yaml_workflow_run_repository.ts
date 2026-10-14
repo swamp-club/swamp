@@ -37,6 +37,7 @@ import {
   getIndexPath,
   INDEX_SCHEMA_VERSION,
   isIndexStale,
+  isYamlRunFile,
   listDirEntries,
   type ReadIndexResult,
   readRunIndex,
@@ -1251,6 +1252,31 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         fromIndex: false,
       };
     }, signal);
+  }
+
+  /**
+   * How many run records the workflow has: a listing of its records
+   * directory, with no record or index read. 0 when it has none. Serve's
+   * warm-up uses it to skip a workflow whose snapshot is too large to keep
+   * (swamp-club#3468). With `signal`, the listing stops once it aborts,
+   * and the count rejects with the signal's reason.
+   */
+  async countRunRecords(
+    workflowId: WorkflowId,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    signal?.throwIfAborted();
+    let count = 0;
+    try {
+      for await (const entry of Deno.readDir(this.getRunsDir(workflowId))) {
+        signal?.throwIfAborted();
+        if (isYamlRunFile(entry)) count++;
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return 0;
+      throw error;
+    }
+    return count;
   }
 
   /** What a cached run index snapshot of the workflow is checked against. */
