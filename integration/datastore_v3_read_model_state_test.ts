@@ -275,3 +275,24 @@ Deno.test("ReadModelState: reads the index only while it is complete", async () 
     assertEquals(state.chunksInUseIfComplete(""), undefined);
   });
 });
+
+Deno.test("ReadModelState: forgetUnsynced forgets only the keys given, and the boot once none are left (swamp-club#3416)", async () => {
+  await withState((state) => {
+    state.recordApplied(applied({
+      unsynced: {
+        keys: new Set(["data/a", "data/b", "data/c"]),
+        boot: "boot-1",
+      },
+    }));
+    assertEquals(state.unsyncedKeys(2).map((k) => k.record_key), [
+      "data/a",
+      "data/b",
+    ]);
+    state.forgetUnsynced(state.unsyncedKeys(2));
+    assertEquals(state.unsyncedKeys(10).map((k) => k.record_key), ["data/c"]);
+    assertEquals(state.unsyncedBoot(), "boot-1", "kept while files are listed");
+    state.forgetUnsynced(state.unsyncedKeys(10));
+    assertEquals(state.unsyncedKeys(10), []);
+    assertEquals(state.unsyncedBoot(), undefined);
+  });
+});

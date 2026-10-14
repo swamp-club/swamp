@@ -426,7 +426,45 @@ async function takeLease(
     await hold.release().catch(() => {});
     throw error;
   }
+  // Outside the release-on-error scope: a listener never costs the lease.
+  await notifyLeaseTaken(datastorePath, hold.fence);
   return hold;
+}
+
+/** Called whenever this process takes a v3 datastore's writer lease. */
+export type V3LeaseTakenListener = (
+  datastorePath: string,
+  fence: number,
+) => Promise<void> | void;
+
+const leaseTakenListeners = new Set<V3LeaseTakenListener>();
+
+/**
+ * Calls `listener` each time this process takes a writer lease: the first
+ * acquire, serve's retake of a lost lease, and a read-only command's
+ * recovery hold (swamp-club#3416, where a Litestream lineage is recorded at
+ * every fence). Listeners run after the fence is raised; one that throws is
+ * logged and the lease is kept. Returns the unsubscribe.
+ */
+export function onV3LeaseTaken(listener: V3LeaseTakenListener): () => void {
+  leaseTakenListeners.add(listener);
+  return () => {
+    leaseTakenListeners.delete(listener);
+  };
+}
+
+async function notifyLeaseTaken(
+  datastorePath: string,
+  fence: number,
+): Promise<void> {
+  for (const listener of [...leaseTakenListeners]) {
+    try {
+      await listener(datastorePath, fence);
+    } catch (error) {
+      logger
+        .warn`A listener for the writer lease of the v3 datastore at ${datastorePath} failed: ${error}`;
+    }
+  }
 }
 
 function startRenewal(

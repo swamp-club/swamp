@@ -26,6 +26,7 @@ import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.
 import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_user_error.ts";
 import type { OutputMode } from "./output.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
+import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 
 const logger = getSwampLogger(["error"]);
 
@@ -113,6 +114,9 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
  *   raised through a lock it wrapped.
  * - `75` for an auth gate block a later run can clear (swamp-club refusing,
  *   unreachable or failing), so CI can retry it.
+ * - `75` for `datastore_v3_replication_unconfirmed`: the command's commits
+ *   are saved but a sync did not confirm them in the replica, and the next
+ *   write replicates them.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -124,6 +128,9 @@ export function exitCodeForError(error: unknown): number {
   // failing) is a temporary failure too; a missing or revoked credential is
   // not.
   if (error instanceof AuthGateBlockedError && error.temporary) return 75;
+  // Commits a sync could not confirm are saved, and the next write
+  // replicates them (swamp-club#3416): a temporary failure.
+  if (code === V3_REPLICATION_UNCONFIRMED_CODE) return 75;
   return 1;
 }
 

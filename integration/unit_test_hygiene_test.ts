@@ -178,6 +178,9 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/domain/vaults/local_encryption_vault_provider_test.ts",
   // Spawns a deno subprocess to verify summary output of a real run.
   "src/domain/workflows/workflow_run_summary_test.ts",
+  // Socket adapter test: a Unix-socket server standing in for Litestream's
+  // control socket is the boundary under test (swamp-club#3416).
+  "src/infrastructure/datastore_v3/litestream/litestream_control_client_test.ts",
   // HTTP adapter test: real localhost server is the boundary under test.
   "src/infrastructure/http/extension_api_client_test.ts",
   // HTTP adapter test: real localhost server is the boundary under test.

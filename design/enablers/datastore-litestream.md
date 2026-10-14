@@ -609,6 +609,11 @@ at 1 GB. p50.
 
 ### What changes for Phase 4D and 4E
 
+> **Built, dormant (swamp-club#3416, Phase 4D1):** every 4D item below except
+> restore and takeover (D2). See
+> [Phase 4D1: the idle sidecar](#phase-4d1-the-idle-sidecar-swamp-club3416).
+
+
 - **4D: an idle sidecar for solo mode,** behind a pidfile and a short socket
   path, with a five-minute idle timeout. A probe with a deadline. Stale-sidecar
   takeover by verified pid. Read-only commands still never start one.
@@ -686,6 +691,117 @@ Before Phase 4E ships, on a test account and never on production data:
 - what ADC adds to a cold GCS sync, which the model leaves out;
 - GCS uploads over 16 MB;
 - the reversal figures above.
+
+### Phase 4D1: the idle sidecar (swamp-club#3416)
+
+Built and dormant. Nothing replicates unless the internal, undocumented
+`SWAMP_V3_REPLICA` variable names a file or S3 replica, which only tests set;
+Phase 4E replaces it with the datastore's own bucket. On a filesystem-v3
+datastore with it unset, a write command starts nothing and creates nothing.
+
+**What runs.** A write command's `holdV3Writer` acquires the sidecar once the
+checkout's recovery has run. The sidecar is a supervisor, a detached swamp
+process that `main.ts` enters before any of the CLI runs, with Litestream as its
+child in the supervisor's process group. Litestream starts with
+`-no-expand-env`, after `LitestreamBinaryProvider.resolve()` checks the hash.
+
+**Where its state lives.**
+
+- Beside `commits.db`, in `.commits.db-replication/`, only non-secret shared
+  files: `supervisor.lock`, `presence.json` (the pidfile: pids, uid, hostname,
+  lineage fence), `replace-<pid>` marks, `use.lock` and `lineage.json`. The
+  directory and the pidfile are trusted only when this user owns them.
+- In `/tmp/swamp-<uid>/<hash>/`, created 0700 and checked before every use:
+  the Litestream config and the control socket. A socket another user owns is
+  refused before it is connected to.
+- Every path derives from the canonical (`realPath`) `commits.db`.
+
+**Liveness is a lock, not a pid.** The supervisor holds `supervisor.lock` for
+its whole life, so the kernel drops it when the supervisor dies. A command:
+
+1. takes `use.lock` shared, so the sidecar cannot idle out while the command
+   looks at it;
+2. tries `supervisor.lock`. Free means no sidecar runs. The command keeps the
+   probe lock while it reads the pidfile and kills a Litestream a dead
+   supervisor left behind, then launches a supervisor. The supervisor retries
+   the lock for a second, so the probe never makes it give up;
+3. otherwise verifies the recorded supervisor's arguments (the supervisor
+   marker and this database's path, read from `/proc/<pid>/cmdline` on Linux
+   and `ps` on macOS) and probes `GET /info` with a deadline. It reuses a
+   sidecar that answers on its lineage, and replaces one that is frozen, on
+   another lineage, or marked after a definite sync failure. A replacement
+   upgrades the command's own `use.lock` to exclusive, so it never kills a
+   sidecar another command or serve uses, kills the verified supervisor's
+   process group, and waits for `supervisor.lock` to come free. Anything it
+   cannot verify, including another user's or host's sidecar, is waited for and
+   then refused, never killed.
+
+**The idle exit** comes after five minutes with no use: `use.lock`'s mtime is
+the last use, and the supervisor stops Litestream only while it holds
+`use.lock` exclusively. It waits 10 s for Litestream to stop before killing it,
+and commands wait 20 s for the lock, so a command that arrives during a slow
+stop gets the lock once the sidecar has gone.
+
+**Confirming a command's commits.** `closeV3Datastores` compacts, makes one
+`POST /sync` with `wait` per datastore, checks `replicated_txid >= txid`, then
+runs `checkV3WriterLease`. Only then does it close the stores, release the
+sidecar, and release the lease. A failed or timed-out sync fails the command
+with `datastore_v3_replication_unconfirmed` and exit code 75: the commits are
+kept in `commits.db`, and the next write replicates them. A definite failure (an
+error answer, or a socket that refuses) marks the sidecar for replacement, while
+a timeout leaves it running so a large first snapshot can finish. The default
+deadline is 60 s.
+
+> **Decision:** in D1 the sync runs at teardown, after the command has printed
+> its result, so `--json` stdout can hold a success document while stderr holds
+> the error and the exit code is 75. Phase 4E moves the confirmation before the
+> command's output, once users can turn replication on. The rethrow also ends
+> the CLI's teardown before its auth-gate refresh and telemetry; 4E finishes the
+> teardown and then rethrows. The supervisor also inherits the launching
+> command's whole environment for its lifetime; 4E narrows it to what
+> Litestream needs (its credentials, `PATH`, `HOME`).
+
+**Lineage.** A listener on the writer lease (`onV3LeaseTaken`) records every
+fence this process takes in `lineage.json`, including serve's retake and a
+read-only command's recovery hold, so a crashed command and a recovering read
+still continue the lineage. A failed write removes the record (one restart),
+and it never costs the lease. Abandoned lineages are kept in
+`previousLineages` for a later garbage collection.
+
+**Serve** keeps its sidecar for as long as it holds the lease. A retake at a new
+fence, or a 30 s probe that finds the sidecar not answering, replaces it through
+one tracked replacement at a time, which shutdown waits for. The closing sync
+gets what the drain left, and at least 10 s, so `--shutdown-drain-timeout 0`
+still syncs. Commits between drains replicate passively within Litestream's
+1–2 s lag. The maintenance timer also syncs the read model's unsynced files and
+clears their list (swamp-club#3337), on start and every hour. This is the one
+change that is live on filesystem-v3 serve today, and it changes no file
+content. A systemd-managed serve needs `KillMode=mixed` or `process`: under the
+default `control-group` the detached supervisor and Litestream are signalled
+with serve and race its closing sync.
+
+**Measured** on macOS arm64 with the compiled binary and a file replica:
+
+- **Starting a sidecar:** 1.5–1.9 s warm and 3.2 s cold before `/info`
+  answers. Commands that reuse the sidecar do not pay it. A frozen sidecar
+  looks like one still starting, so a command waits the whole start wait
+  (15 s) before it replaces one.
+- **A probe per reuse:** a command holding the sidecar already asks `/info`
+  before it shares the hold again, so a sidecar that died is never handed
+  out.
+- **Supervisor memory:** about 370 MB resident (Litestream about 35 MB). It
+  imports `main.ts`, and through it the CLI's whole module graph, which
+  `serve_run_entry_scope_rules_test` requires. Accepted while the sidecar is
+  dormant; slimming the supervisor's entry is a 4E question.
+- **The first restart after an idle exit,** with the teardown order above,
+  uploaded 2.9 KB for an 80 KB `commits.db`, not a snapshot, and every commit
+  restored. A sidecar killed and restarted within a lineage uploaded less than
+  half the database.
+
+**Tests.** The integration tests (`datastore_v3_litestream_replication_test.ts`)
+run a real Litestream from `SWAMP_LITESTREAM_PATH`, which `verify-build` fetches
+and hash-checks. They are ignored when it is unset, and on Windows. The S3 case
+runs only with `SWAMP_TEST_LITESTREAM_S3_ENDPOINT`.
 
 ## Upgrades
 

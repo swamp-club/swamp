@@ -541,6 +541,84 @@ Deno.test("read model: files a reboot lost after their page committed are repair
   });
 });
 
+Deno.test("read model: syncUnsyncedFiles makes the listed files durable and clears the list (swamp-club#3416)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const model = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:1"),
+    });
+    try {
+      assertEquals((await model.catchUp(signal())).cursor, 5);
+      const listed = unsyncedCount(env);
+      assert(listed > 0, "the catch-up listed no unsynced files");
+      assertEquals(await model.syncUnsyncedFiles(), listed);
+      assertEquals(unsyncedCount(env), 0);
+      // Nothing left to sync; the files are untouched.
+      assertEquals(await model.syncUnsyncedFiles(), 0);
+    } finally {
+      await model.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test({
+  name:
+    "read model: syncUnsyncedFiles syncs a read-only file too, so one cannot stall the list (swamp-club#3416)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withV3Env(async (env) => {
+      await appendScenario(env);
+      const model = env.openReadModel({
+        bootIdentity: () => Promise.resolve("boot-id:1"),
+      });
+      try {
+        await model.catchUp(signal());
+        const listed = unsyncedCount(env);
+        assert(listed > 0, "the catch-up listed no unsynced files");
+        const file = join(
+          swampPath(env.repoDir),
+          ...dataKey("b", 1).toString().split("/"),
+        );
+        await Deno.chmod(file, 0o444);
+        assertEquals(await model.syncUnsyncedFiles(), listed);
+        assertEquals(unsyncedCount(env), 0);
+      } finally {
+        await model.close();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "read model: a file syncUnsyncedFiles cannot sync stays listed for the reboot check (swamp-club#3416)",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  async fn() {
+    await withV3Env(async (env) => {
+      await appendScenario(env);
+      const model = env.openReadModel({
+        bootIdentity: () => Promise.resolve("boot-id:1"),
+      });
+      const file = join(
+        swampPath(env.repoDir),
+        ...dataKey("b", 1).toString().split("/"),
+      );
+      try {
+        await model.catchUp(signal());
+        const listed = unsyncedCount(env);
+        await Deno.chmod(file, 0o000);
+        assertEquals(await model.syncUnsyncedFiles(), listed - 1);
+        assertEquals(unsyncedCount(env), 1, "the unreadable file stays listed");
+      } finally {
+        await Deno.chmod(file, 0o644);
+        await model.close();
+      }
+    });
+  },
+});
+
 Deno.test("read model: a commit whose unsynced keys cannot be recorded is not recorded as applied (swamp-club#3337)", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {

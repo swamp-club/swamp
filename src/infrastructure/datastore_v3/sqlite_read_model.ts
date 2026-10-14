@@ -91,7 +91,7 @@ import {
   PathTraversalError,
   resolveRealPath,
 } from "../persistence/safe_path.ts";
-import { DurableWriteBatch } from "./atomic_stream_write.ts";
+import { DurableWriteBatch, syncDirectory } from "./atomic_stream_write.ts";
 import { currentBootIdentity } from "./boot_identity.ts";
 import {
   type AppliedRecord,
@@ -107,6 +107,12 @@ import {
   refusedKeyReason,
 } from "./record_path_guard.ts";
 import { type ReadModelCatalog, V3Catalog } from "./v3_catalog.ts";
+
+/** How many unsynced files one locked section of syncUnsyncedFiles syncs. */
+export const UNSYNCED_SYNC_BATCH = 500;
+
+/** How many batches one syncUnsyncedFiles call runs at most. */
+const MAX_UNSYNCED_SYNC_BATCHES = 1_000;
 
 const logger = getLogger(["swamp", "datastore", "read-model"]);
 
@@ -432,6 +438,92 @@ export class SqliteReadModel implements ReadModel {
     });
     this.#queue = run.catch(() => {});
     return run;
+  }
+
+  /**
+   * Makes the files written unsynced durable and forgets them
+   * (swamp-club#3416): serve calls it from its maintenance timer, so a
+   * long-running serve's first open after a reboot does not hash most of its
+   * cache. It works in batches of {@link UNSYNCED_SYNC_BATCH}, each in its
+   * own section of the read model's lock, so a long list never holds every
+   * other command back for long. In a batch each file is synced, then each
+   * of their directories, deepest first; a file that is gone has its
+   * directory synced. Resolves with how many files it synced.
+   */
+  async syncUnsyncedFiles(): Promise<number> {
+    let synced = 0;
+    // Bounded: entries that keep arriving wait for the next tick.
+    for (let batch = 0; batch < MAX_UNSYNCED_SYNC_BATCHES; batch++) {
+      const { listed, forgotten } = await this.#exclusive(() =>
+        this.#syncUnsyncedBatch()
+      );
+      synced += forgotten;
+      // A short batch was the last; one that forgot nothing holds only
+      // files that could not be synced, which stay listed for the reboot
+      // check.
+      if (listed < UNSYNCED_SYNC_BATCH || forgotten === 0) break;
+    }
+    return synced;
+  }
+
+  /**
+   * Syncs one batch of unsynced files and forgets the ones now known to be
+   * on disk, or gone; runs inside {@link #exclusive}. A file that cannot be
+   * synced stays listed, so the reboot check still covers it.
+   */
+  async #syncUnsyncedBatch(): Promise<{ listed: number; forgotten: number }> {
+    const keys = this.#state.unsyncedKeys(UNSYNCED_SYNC_BATCH);
+    const dirs = new Set<string>();
+    const done: typeof keys = [];
+    for (const key of keys) {
+      const path = join(
+        this.#cacheRoot(key.namespace),
+        ...key.record_key.split("/"),
+      );
+      dirs.add(dirname(path));
+      let handle: Deno.FsFile;
+      try {
+        // Writable: Windows flushes only a handle opened for writing.
+        handle = await Deno.open(path, { read: true, write: true });
+      } catch (error) {
+        if (
+          error instanceof Deno.errors.NotFound ||
+          error instanceof Deno.errors.NotADirectory ||
+          error instanceof Deno.errors.IsADirectory
+        ) {
+          // Gone: its directory's sync below makes that durable.
+          done.push(key);
+          continue;
+        }
+        if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+        // A read-only file: POSIX syncs a read handle. Windows flushes only
+        // a writable one, so there, and for a file that cannot be read
+        // either, it stays listed for the reboot check.
+        if (Deno.build.os === "windows") continue;
+        try {
+          handle = await Deno.open(path, { read: true });
+        } catch (reopen) {
+          if (reopen instanceof Deno.errors.PermissionDenied) continue;
+          throw reopen;
+        }
+      }
+      try {
+        await handle.sync();
+      } finally {
+        handle.close();
+      }
+      done.push(key);
+    }
+    // A path is longer than any of its ancestors: deepest first.
+    for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+      try {
+        await syncDirectory(dir);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    this.#state.forgetUnsynced(done);
+    return { listed: keys.length, forgotten: done.length };
   }
 
   /**

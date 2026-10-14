@@ -28,6 +28,10 @@ import {
   tlsErrorHint,
 } from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  V3ReplicationError,
+  V3ReplicationUnavailableError,
+} from "../../domain/datastore_v3/litestream_replication.ts";
 import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
 import {
   LockTimeoutError,
@@ -626,6 +630,19 @@ Deno.test("exitCodeForError: returns 75 for an extension LOCK_TIMEOUT error", ()
     code: "LOCK_TIMEOUT",
   });
   assertEquals(exitCodeForError(err), 75);
+});
+
+Deno.test("exitCodeForError: returns 75 for commits a sync did not confirm, 1 for a refused sidecar", () => {
+  const unconfirmed = new V3ReplicationError("the sync timed out");
+  assertEquals(exitCodeForError(unconfirmed), 75);
+  assertEquals(
+    buildErrorJson(unconfirmed).code,
+    "datastore_v3_replication_unconfirmed",
+  );
+  assertEquals(
+    exitCodeForError(new V3ReplicationUnavailableError("busy")),
+    1,
+  );
 });
 
 Deno.test("buildErrorJson: reports an extension LOCK_TIMEOUT code as lock_timeout", () => {

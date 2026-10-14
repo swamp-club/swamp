@@ -207,7 +207,11 @@ export function releasedKey(fence: number): string {
   return `${WRITER_LEASE_PREFIX}released-${padFence(fence)}`;
 }
 
-function padFence(fence: number): string {
+/**
+ * `fence` padded to the width its keys use, so names built from fences sort
+ * by fence: the lease's keys and the replica path of a Litestream lineage.
+ */
+export function padFence(fence: number): string {
   requireFence(fence);
   return String(fence).padStart(FENCE_DIGITS, "0");
 }

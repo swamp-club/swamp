@@ -131,6 +131,28 @@ export function startTimeOf(pid: number): number | undefined {
 }
 
 /**
+ * The arguments `pid` was started with, its executable first, or undefined
+ * when they cannot be read. Linux only, from /proc/<pid>/cmdline; other
+ * platforms return undefined.
+ */
+export function commandLineOf(pid: number): string[] | undefined {
+  if (Deno.build.os !== "linux") return undefined;
+  return withLibc((lib) => {
+    const text = readProcFile(lib, `/proc/${pid}/cmdline`, PROC_FILE_MAXSIZE);
+    return text === undefined || text === ""
+      ? undefined
+      : parseProcCmdline(text);
+  });
+}
+
+/** The arguments in the NUL-separated text of /proc/<pid>/cmdline. */
+export function parseProcCmdline(text: string): string[] {
+  const args = text.split("\0");
+  if (args.at(-1) === "") args.pop();
+  return args;
+}
+
+/**
  * The fields of /proc/<pid>/stat that follow the command name, starting with
  * field 3 (state). The name sits in parentheses and may itself contain spaces
  * and parentheses, so the fields are read after its last `)`.

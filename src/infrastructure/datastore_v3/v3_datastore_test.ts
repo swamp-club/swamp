@@ -122,6 +122,19 @@ Deno.test("openV3Datastore: chunk GC and compaction run on an empty datastore", 
   });
 });
 
+Deno.test("isFreshV3Skeleton: a writer's replication state does not make it a datastore with data", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await Deno.mkdir(dir);
+    await initializeV3Datastore(dir, "test");
+    await Deno.mkdir(join(dir, ".commits.db-replication"));
+    await Deno.mkdir(join(dir, ".commits.db-litestream"));
+    assert(await isFreshV3Skeleton(dir));
+    await Deno.mkdir(join(dir, "other"));
+    assertEquals(await isFreshV3Skeleton(dir), false);
+  });
+});
+
 Deno.test("initializeV3Datastore: completes a fresh skeleton, and refuses a datastore that has commits", async () => {
   await withTempDir(async (root) => {
     const dir = join(root, "datastore");
