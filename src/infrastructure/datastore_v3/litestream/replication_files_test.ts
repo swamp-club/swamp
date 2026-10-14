@@ -248,3 +248,19 @@ Deno.test("renderLitestreamConfig: an s3 replica with an endpoint uses path-styl
   assertStringIncludes(config, "force-path-style: true");
   assertEquals(/secret|access/i.test(config), false);
 });
+
+Deno.test({
+  name: "ensureSharedDir: a directory other users can write is not trusted",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const paths = await replicationPathsFor(
+        await database(dir),
+        join(dir, "priv"),
+      );
+      assertEquals(await ensureSharedDir(paths), "own");
+      await Deno.chmod(paths.sharedDir, 0o777);
+      assertEquals(await ensureSharedDir(paths), "foreign");
+    });
+  },
+});

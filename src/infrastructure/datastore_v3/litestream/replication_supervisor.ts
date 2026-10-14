@@ -91,8 +91,12 @@ export type SupervisorExit =
   | "litestream-exited"
   | "stop-requested";
 
-/** How long a new supervisor retries the lock a command's probe may hold. */
-const LOCK_RETRY_MS = 1_000;
+/**
+ * How long a new supervisor retries the lock a command's probe may hold:
+ * the launching command probes it briefly on every poll while it waits for
+ * the supervisor, so a slow start must outlast many probes.
+ */
+const LOCK_RETRY_MS = 5_000;
 const LOCK_RETRY_STEP_MS = 50;
 
 /** The arguments that start a supervisor for `options`. */

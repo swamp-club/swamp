@@ -113,6 +113,7 @@ export const UNSYNCED_SYNC_BATCH = 500;
 
 /** How many batches one syncUnsyncedFiles call runs at most. */
 const MAX_UNSYNCED_SYNC_BATCHES = 1_000;
+
 const logger = getLogger(["swamp", "datastore", "read-model"]);
 
 /** Commits read per page by default. */
@@ -453,17 +454,27 @@ export class SqliteReadModel implements ReadModel {
     let synced = 0;
     // Bounded: entries that keep arriving wait for the next tick.
     for (let batch = 0; batch < MAX_UNSYNCED_SYNC_BATCHES; batch++) {
-      const done = await this.#exclusive(() => this.#syncUnsyncedBatch());
-      synced += done;
-      if (done < UNSYNCED_SYNC_BATCH) break;
+      const { listed, forgotten } = await this.#exclusive(() =>
+        this.#syncUnsyncedBatch()
+      );
+      synced += forgotten;
+      // A short batch was the last; one that forgot nothing holds only
+      // files that could not be synced, which stay listed for the reboot
+      // check.
+      if (listed < UNSYNCED_SYNC_BATCH || forgotten === 0) break;
     }
     return synced;
   }
 
-  /** Syncs and forgets one batch of unsynced files; runs inside {@link #exclusive}. */
-  async #syncUnsyncedBatch(): Promise<number> {
+  /**
+   * Syncs one batch of unsynced files and forgets the ones now known to be
+   * on disk, or gone; runs inside {@link #exclusive}. A file that cannot be
+   * synced stays listed, so the reboot check still covers it.
+   */
+  async #syncUnsyncedBatch(): Promise<{ listed: number; forgotten: number }> {
     const keys = this.#state.unsyncedKeys(UNSYNCED_SYNC_BATCH);
     const dirs = new Set<string>();
+    const done: typeof keys = [];
     for (const key of keys) {
       const path = join(
         this.#cacheRoot(key.namespace),
@@ -480,13 +491,14 @@ export class SqliteReadModel implements ReadModel {
           error instanceof Deno.errors.NotADirectory ||
           error instanceof Deno.errors.IsADirectory
         ) {
+          // Gone: its directory's sync below makes that durable.
+          done.push(key);
           continue;
         }
         if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
-        // A read-only file must not stall the list for good. Windows
-        // flushes only a writable handle, so there it is left to the
-        // reboot check's earlier coverage; POSIX syncs a read handle, and
-        // a file that cannot be read either is skipped the same way.
+        // A read-only file: POSIX syncs a read handle. Windows flushes only
+        // a writable one, so there, and for a file that cannot be read
+        // either, it stays listed for the reboot check.
         if (Deno.build.os === "windows") continue;
         try {
           handle = await Deno.open(path, { read: true });
@@ -500,6 +512,7 @@ export class SqliteReadModel implements ReadModel {
       } finally {
         handle.close();
       }
+      done.push(key);
     }
     // A path is longer than any of its ancestors: deepest first.
     for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
@@ -509,8 +522,8 @@ export class SqliteReadModel implements ReadModel {
         if (!(error instanceof Deno.errors.NotFound)) throw error;
       }
     }
-    this.#state.forgetUnsynced(keys);
-    return keys.length;
+    this.#state.forgetUnsynced(done);
+    return { listed: keys.length, forgotten: done.length };
   }
 
   /**

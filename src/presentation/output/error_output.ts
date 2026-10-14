@@ -114,6 +114,9 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
  *   raised through a lock it wrapped.
  * - `75` for an auth gate block a later run can clear (swamp-club refusing,
  *   unreachable or failing), so CI can retry it.
+ * - `75` for `datastore_v3_replication_unconfirmed`: the command's commits
+ *   are saved but a sync did not confirm them in the replica, and the next
+ *   write replicates them.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {

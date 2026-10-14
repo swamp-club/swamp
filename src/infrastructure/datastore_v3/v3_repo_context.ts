@@ -534,7 +534,9 @@ export function startV3ReplicationUpkeep(
       if (fence === undefined || stopped) return;
       const next = await acquireV3Replication(datastorePath, fence);
       if (next !== undefined) {
-        replications.set(key, [next]);
+        // Merged: a writer hold taken meanwhile keeps its own entry, which
+        // the closing teardown releases.
+        replications.set(key, [...(replications.get(key) ?? []), next]);
         owedReplications.delete(key);
       }
     })().catch((error) => {

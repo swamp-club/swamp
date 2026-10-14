@@ -783,7 +783,12 @@ with serve and race its closing sync.
 **Measured** on macOS arm64 with the compiled binary and a file replica:
 
 - **Starting a sidecar:** 1.5–1.9 s warm and 3.2 s cold before `/info`
-  answers. Commands that reuse the sidecar do not pay it.
+  answers. Commands that reuse the sidecar do not pay it. A frozen sidecar
+  looks like one still starting, so a command waits the whole start wait
+  (15 s) before it replaces one.
+- **A probe per reuse:** a command holding the sidecar already asks `/info`
+  before it shares the hold again, so a sidecar that died is never handed
+  out.
 - **Supervisor memory:** about 370 MB resident (Litestream about 35 MB). It
   imports `main.ts`, and through it the CLI's whole module graph, which
   `serve_run_entry_scope_rules_test` requires. Accepted while the sidecar is

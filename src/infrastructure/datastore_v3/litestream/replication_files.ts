@@ -175,8 +175,8 @@ export async function ensurePrivateDir(paths: ReplicationPaths): Promise<void> {
 
 /**
  * Creates the shared directory beside `commits.db` when it is missing, and
- * says whether this user owns it. Files in a directory another user owns
- * are never trusted.
+ * says whether this user owns it and no one else can write it. Files in
+ * any other directory are never trusted.
  */
 export async function ensureSharedDir(
   paths: ReplicationPaths,
@@ -186,7 +186,12 @@ export async function ensureSharedDir(
   } catch (error) {
     if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
   }
-  return ownedDirectory(await Deno.lstat(paths.sharedDir)) ? "own" : "foreign";
+  // Another user could plant marks or a lineage record in a directory open
+  // to others: it is not trusted, like one they own.
+  const info = await Deno.lstat(paths.sharedDir);
+  return ownedDirectory(info) && ((info.mode ?? 0) & 0o022) === 0
+    ? "own"
+    : "foreign";
 }
 
 /** What `presence.json` records about the running sidecar. */

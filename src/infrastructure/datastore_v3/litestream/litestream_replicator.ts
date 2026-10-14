@@ -188,9 +188,9 @@ export function hostSupervisorCommand(): SupervisorCommand {
  * canonical `commits.db`, shared by every caller while any holds it.
  */
 export class LitestreamReplicator {
-  readonly #held = new Map<string, { handle: SharedHandle; refs: number }>();
+  readonly #held = new Map<string, HeldEntry>();
   /** Acquires in flight, which concurrent callers for the database join. */
-  readonly #acquiring = new Map<string, Promise<SharedHandle>>();
+  readonly #acquiring = new Map<string, Promise<HeldEntry>>();
 
   constructor(private readonly deps: ReplicatorDeps) {}
 
@@ -205,32 +205,39 @@ export class LitestreamReplicator {
       this.deps.privateRoot ?? defaultPrivateRoot(),
     );
     const key = paths.commitsDb;
-    let held = this.#held.get(key);
-    if (held === undefined) {
+    let entry = this.#held.get(key);
+    // A held sidecar that stopped answering is not handed out again: the
+    // entry is retired (its callers release it as they finish) and the
+    // sidecar is found or made afresh.
+    if (entry !== undefined && !await entry.handle.probe()) {
+      if (this.#held.get(key) === entry) this.#held.delete(key);
+      entry = undefined;
+    }
+    if (entry === undefined) {
       let acquiring = this.#acquiring.get(key);
       if (acquiring === undefined) {
         acquiring = this.#acquireNew(paths, request).then((handle) => {
-          this.#held.set(key, { handle, refs: 0 });
-          return handle;
+          const made: HeldEntry = { handle, refs: 0 };
+          this.#held.set(key, made);
+          return made;
         }).finally(() => {
           this.#acquiring.delete(key);
         });
         this.#acquiring.set(key, acquiring);
       }
-      await acquiring;
-      held = this.#held.get(key)!;
+      entry = await acquiring;
     }
+    const held = entry;
     held.refs++;
-    return held.handle.view(() => this.#releaseShared(key));
+    return held.handle.view(() => this.#releaseShared(key, held));
   }
 
-  async #releaseShared(key: string): Promise<void> {
-    const held = this.#held.get(key);
-    if (held === undefined) return;
-    held.refs--;
-    if (held.refs > 0) return;
-    this.#held.delete(key);
-    await held.handle.release();
+  /** Drops one caller's hold on `entry`, releasing it with the last one. */
+  async #releaseShared(key: string, entry: HeldEntry): Promise<void> {
+    entry.refs--;
+    if (entry.refs > 0) return;
+    if (this.#held.get(key) === entry) this.#held.delete(key);
+    await entry.handle.release();
   }
 
   async #acquireNew(
@@ -608,6 +615,12 @@ export class LitestreamReplicator {
       probe.close();
     }
   }
+}
+
+/** A held sidecar and how many callers in the process hold it. */
+interface HeldEntry {
+  readonly handle: SharedHandle;
+  refs: number;
 }
 
 /** One acquired sidecar, shared by every caller in the process. */

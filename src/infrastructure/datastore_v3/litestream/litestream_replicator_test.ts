@@ -732,3 +732,32 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "LitestreamReplicator.acquire: a held sidecar that died is not handed out again",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const first = await replicator.acquire(world.request(db, 1));
+      const dead = world.sidecars[0];
+      world.processes.signalGroup(dead.supervisorPid, "SIGKILL");
+      const second = await replicator.acquire(world.request(db, 1));
+      assertEquals(world.live.length, 1);
+      assertEquals(world.sidecars.length, 2, "a new sidecar, not the dead one");
+      // Each caller releases the hold it was given; none leaks.
+      await first.release();
+      await second.release();
+      const probe = await Deno.open(world.paths.useLock, {
+        read: true,
+        write: true,
+      });
+      try {
+        assertEquals(await probe.tryLock(true), true);
+      } finally {
+        probe.close();
+      }
+    });
+  },
+});
