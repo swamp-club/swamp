@@ -29,7 +29,10 @@ import {
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
 import { ReconcileFromDiskService } from "./reconcile_from_disk_service.ts";
-import { computeSourceFingerprint } from "../../domain/extensions/bundle_freshness.ts";
+import {
+  computeSourceFingerprint,
+  type SourceModuleLookup,
+} from "../../domain/extensions/bundle_freshness.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -37,6 +40,11 @@ import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 
 import "../../domain/models/models.ts";
+
+/** A lookup with no recorded modules: fingerprints walk relative imports. */
+const noRecordedModules: SourceModuleLookup = {
+  findSourceModules: () => undefined,
+};
 
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
@@ -2428,7 +2436,11 @@ async function stageIndexedPulledModel(
     description: "",
     extends_type: "",
     source_mtime: "",
-    source_fingerprint: await computeSourceFingerprint(sourcePath, modelsDir),
+    source_fingerprint: await computeSourceFingerprint(
+      sourcePath,
+      modelsDir,
+      noRecordedModules,
+    ),
     state: "Indexed",
     extension_name: args.extName,
     extension_version: "1.0.0",

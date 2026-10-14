@@ -27,6 +27,7 @@ import type {
   MissingLocalModule,
   ModuleGraphProject,
   ModuleGraphReader,
+  ModuleGraphReaderFactory,
   SourceModuleGraph,
   SpecifierSpan,
 } from "../../domain/extensions/extension_source_graph.ts";
@@ -253,3 +254,9 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     return graph;
   }
 }
+
+/** Builds a {@link DenoInfoModuleGraphReader} for the extension loader. */
+export const createDenoInfoModuleGraphReader: ModuleGraphReaderFactory = (
+  denoPath,
+  env,
+) => new DenoInfoModuleGraphReader(denoPath, env);

@@ -89,6 +89,7 @@ import {
   type PulledTypeSnapshot,
   unregisterPulledType,
 } from "./pulled_type_snapshot.ts";
+import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
 const logger = getSwampLogger(["serve", "reload"]);
 
@@ -355,6 +356,8 @@ async function sweepRemovedPulledExtensions(args: {
             repoDir,
             undefined,
             repository,
+            undefined,
+            createDenoInfoModuleGraphReader,
           ),
       });
       if (unregistered.size > 0) {
@@ -463,6 +466,8 @@ async function attachPulledAddOns(args: {
         repoRoot: args.repoDir,
         mountedSourceDirs: await mountedSourceDirsForReload(args.repoDir),
       }),
+      undefined,
+      createDenoInfoModuleGraphReader,
     );
     try {
       await loader.attachPendingExtensionsForType(type);
@@ -616,6 +621,7 @@ export async function reloadPulledExtensions(
           const currentFp = await computeSourceFingerprint(
             row.source_path,
             baseDir,
+            catalog,
           );
           if (currentFp === row.source_fingerprint) continue;
           if (!denoRuntime) {

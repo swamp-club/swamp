@@ -84,6 +84,7 @@ import {
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
 import { BEHAVIORS_DIR_NAME } from "../../domain/terminology/behavior_aliases.ts";
+import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
 const logger = getLogger(["swamp", "extensions", "reconcile"]);
 
@@ -787,6 +788,7 @@ export class ReconcileFromDiskService {
           const fp = await computeSourceFingerprint(
             absolutePath,
             baseDir,
+            this.repository.getCatalogStore(),
             cache,
           );
           if (fp === existingSource.fingerprint) continue;
@@ -811,6 +813,7 @@ export class ReconcileFromDiskService {
         const fp = await computeSourceFingerprint(
           absolutePath,
           baseDir,
+          this.repository.getCatalogStore(),
           cache,
         );
         const bundle = makeBundleLocation(out.bundlePath, fp);
@@ -852,6 +855,7 @@ export class ReconcileFromDiskService {
           failFp = await computeSourceFingerprint(
             absolutePath,
             baseDir,
+            this.repository.getCatalogStore(),
             cache,
           );
         } catch {
@@ -972,6 +976,7 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "vaults":
         return new ExtensionLoader(
@@ -981,6 +986,7 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "datastores":
         return new ExtensionLoader(
@@ -990,6 +996,7 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "reports":
         return new ExtensionLoader(
@@ -999,6 +1006,7 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "webhooks":
         return new ExtensionLoader(
@@ -1008,6 +1016,7 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
     }
   }

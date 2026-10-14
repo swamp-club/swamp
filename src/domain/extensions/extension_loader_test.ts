@@ -45,6 +45,10 @@ import { ValidationError } from "./validation_error.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
+import type {
+  ModuleGraphReaderFactory,
+  SourceModuleGraph,
+} from "./extension_source_graph.ts";
 import {
   clearAttachedExtensions,
   modelKindAdapter,
@@ -142,6 +146,10 @@ class StubCatalog implements FreshnessCatalog {
     return [];
   }
   removeByRawSourcePath(): void {}
+  findSourceModules(): undefined {
+    return undefined;
+  }
+  deleteSourceModules(): void {}
 }
 
 const discoverExcludingTestFiles = async (dir: string): Promise<string[]> => {
@@ -1492,4 +1500,165 @@ Deno.test("buildIndex: a changed pulled source typed command/shell leaves the bu
     catalog.close();
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
+});
+
+// -- Recorded source modules (swamp-club#3385) ---------------------------
+
+/**
+ * Bundles `rec.ts`, which imports `../lib/msg.ts` and side-effect imports
+ * `./side.ts`, once through `load({ indexOnly: true })` with `deno bundle`
+ * mocked, and returns the modules the catalog recorded for it.
+ */
+async function recordedAfterOneBundle(args: {
+  pulled?: boolean;
+  bundleFails?: boolean;
+  cachedBundle?: boolean;
+  reader?: (paths: { entry: string; lib: string; side: string }) =>
+    | SourceModuleGraph
+    | Error;
+  seed?: (paths: { entry: string; lib: string }) => string[];
+}): Promise<{
+  recorded: readonly string[] | undefined;
+  readerCalls: number;
+  paths: { entry: string; lib: string; side: string; missing: string };
+}> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_3385_record_" });
+  const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+  try {
+    const extDir = args.pulled
+      ? join(dir, ".swamp", "pulled-extensions", "@test", "ext")
+      : join(dir, "extensions");
+    const modelsDir = join(extDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    await Deno.mkdir(join(extDir, "lib"), { recursive: true });
+    const paths = {
+      entry: join(modelsDir, "rec.ts"),
+      lib: join(extDir, "lib", "msg.ts"),
+      side: join(modelsDir, "side.ts"),
+      missing: join(extDir, "lib", "gone.ts"),
+    };
+    await Deno.writeTextFile(
+      paths.entry,
+      'import { MSG } from "../lib/msg.ts";\nimport "./side.ts";\n' +
+        'export const model = { type: "@test/rec", name: MSG };\n',
+    );
+    await Deno.writeTextFile(paths.lib, 'export const MSG = "v1";\n');
+    await Deno.writeTextFile(paths.side, "globalThis.x = 1;\n");
+    if (args.cachedBundle || args.pulled) {
+      const bundleDir = join(
+        dir,
+        ".swamp",
+        "bundles",
+        bundleNamespace(modelsDir, dir),
+      );
+      await Deno.mkdir(bundleDir, { recursive: true });
+      await Deno.writeTextFile(join(bundleDir, "rec.js"), "export {};\n");
+    }
+    const seeded = args.seed?.(paths);
+    if (seeded) catalog.recordSourceModules(paths.entry, seeded);
+
+    let readerCalls = 0;
+    const reader: ModuleGraphReaderFactory = () => ({
+      read: () => {
+        readerCalls++;
+        const graph = args.reader?.(paths) ??
+          new Error("no module graph in this test");
+        return graph instanceof Error
+          ? Promise.reject(graph)
+          : Promise.resolve(graph);
+      },
+    });
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      makeStubAdapter(new Set<string>()),
+      dir,
+      undefined,
+      new ExtensionRepository({
+        catalog,
+        lockfileRepository: new LockfileRepository(join(dir, "lockfile.json")),
+        repoRoot: dir,
+      }),
+      undefined,
+      reader,
+    );
+    await withMockedCommand((_command, commandArgs) => {
+      if (args.bundleFails) {
+        return { stdout: "", stderr: "simulated bundle failure", code: 1 };
+      }
+      const out = commandArgs[commandArgs.indexOf("-o") + 1];
+      Deno.writeTextFileSync(out, "export {};\n");
+      return { stdout: "", stderr: "", code: 0 };
+    }, () => loader.load(modelsDir, { indexOnly: true }));
+    return {
+      recorded: catalog.findSourceModules(paths.entry),
+      readerCalls,
+      paths,
+    };
+  } finally {
+    catalog.close();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("bundleWithCache: a fresh bundle records its module graph, missing modules included (swamp-club#3385)", async () => {
+  const { recorded, readerCalls, paths } = await recordedAfterOneBundle({
+    reader: (p) => ({
+      modules: [
+        { path: p.entry, kind: "code" },
+        { path: p.lib, kind: "code" },
+        { path: p.side, kind: "code" },
+      ],
+      edges: [],
+      missing: [{ path: join(p.lib, "..", "gone.ts"), reason: "not found" }],
+    }),
+  });
+  assertEquals(readerCalls, 1);
+  assertEquals(recorded, [paths.entry, paths.lib, paths.side, paths.missing]);
+});
+
+Deno.test("bundleWithCache: an unreadable module graph records the relative imports in the kind directory (swamp-club#3385)", async () => {
+  const { recorded, readerCalls, paths } = await recordedAfterOneBundle({});
+  assertEquals(readerCalls, 1);
+  assertEquals(recorded, [paths.entry]);
+});
+
+Deno.test("bundleWithCache: a failed rebundle records the relative imports, so the warm scan does not retry it on every command (swamp-club#3385)", async () => {
+  const { recorded, readerCalls, paths } = await recordedAfterOneBundle({
+    bundleFails: true,
+    cachedBundle: true,
+  });
+  assertEquals(readerCalls, 0);
+  assertEquals(recorded, [paths.entry]);
+});
+
+Deno.test("bundleWithCache: a failed rebundle keeps the module graph recorded earlier (swamp-club#3385)", async () => {
+  const { recorded } = await recordedAfterOneBundle({
+    bundleFails: true,
+    cachedBundle: true,
+    seed: (p) => [p.entry, p.lib],
+  });
+  assertEquals(recorded?.length, 2);
+});
+
+Deno.test("bundleWithCache: a fresh bundle replaces the relative imports recorded after a failure (swamp-club#3385)", async () => {
+  const { recorded, paths } = await recordedAfterOneBundle({
+    seed: (p) => [p.entry],
+    reader: (p) => ({
+      modules: [
+        { path: p.entry, kind: "code" },
+        { path: p.lib, kind: "code" },
+      ],
+      edges: [],
+      missing: [],
+    }),
+  });
+  assertEquals(recorded, [paths.entry, paths.lib]);
+});
+
+Deno.test("bundleWithCache: a trusted pulled bundle records nothing (swamp-club#3385)", async () => {
+  const { recorded, readerCalls } = await recordedAfterOneBundle({
+    pulled: true,
+  });
+  assertEquals(readerCalls, 0);
+  assertEquals(recorded, undefined);
 });

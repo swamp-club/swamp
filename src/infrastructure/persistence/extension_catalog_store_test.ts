@@ -3322,3 +3322,77 @@ Deno.test("ExtensionCatalogStore: isKnownNoExport matches only the recorded kind
     store.close();
   }
 });
+
+// -- Recorded source modules (swamp-club#3385) ---------------------------
+
+Deno.test("ExtensionCatalogStore: recorded source modules round-trip, survive reopening, and can be deleted", () => {
+  const dbPath = makeTempDbPath();
+  const root = dirname(dirname(dbPath));
+  const entry = join(root, "extensions", "models", "echo.ts");
+  const lib = join(root, "extensions", "lib", "msg.ts");
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(store.findSourceModules(entry), undefined);
+    store.recordSourceModules(entry, [entry, lib]);
+    assertEquals(store.findSourceModules(entry), [entry, lib]);
+    store.recordSourceModules(entry, [entry]);
+    assertEquals(store.findSourceModules(entry), [entry]);
+  } finally {
+    store.close();
+  }
+  const reopened = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(reopened.findSourceModules(entry), [entry]);
+    reopened.deleteSourceModules(entry);
+    assertEquals(reopened.findSourceModules(entry), undefined);
+  } finally {
+    reopened.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: recorded source modules are keyed by the canonical path", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    const entry = join(dirname(dirname(dbPath)), "Models", "Echo.ts");
+    store.recordSourceModules(entry, [entry]);
+    assertEquals(
+      store.findSourceModules(canonicalizePath(entry)),
+      [entry],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: a malformed recorded module list reads as none", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+  const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
+  try {
+    store.recordSourceModules(entry, [entry]);
+  } finally {
+    store.close();
+  }
+  for (
+    const value of [
+      "not json",
+      '{"a": 1}',
+      "[1, 2]",
+      JSON.stringify(Array.from({ length: 10_001 }, () => entry)),
+    ]
+  ) {
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.prepare("UPDATE source_modules SET modules = ?").run(value);
+    } finally {
+      db.close();
+    }
+    const reopened = new ExtensionCatalogStore(dbPath);
+    try {
+      assertEquals(reopened.findSourceModules(entry), undefined, value);
+    } finally {
+      reopened.close();
+    }
+  }
+});
