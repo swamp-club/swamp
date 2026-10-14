@@ -3146,6 +3146,18 @@ sysctl on macOS, read once per process. Where neither is available
 page's barrier instead and lists nothing; a list left by an earlier boot is
 then not trusted, and every commit is applied again, synced.
 
+The released binary is compiled with granular `--allow-*` flags, and Deno
+refuses any read under `/proc` without `--allow-all`, however narrow the read
+grant. Until swamp-club#3418 the Linux binary therefore named no boot and
+synced every file, about 5,000 fsyncs for a 1,000-item first clone, while
+tests and source runs under `-A` read the id fine. When Deno refuses the read,
+the id is now read by running `/bin/cat` (or `/usr/bin/cat`), as macOS runs
+`sysctl`, with a 2 s timeout; only a UUID is accepted, and any failure names
+no boot, so the catch-up syncs as before. The boot is read once per process.
+`integration/datastore_v3_boot_identity_grant_test.ts` reads it on Linux
+under the grant `scripts/compile.ts` names, so a change to that grant is
+tested too.
+
 The cost moves to the first open after a reboot: it hashes every file
 written since the list was last cleared, holding the read model's lock. The
 list is bounded by the checkout's keys, but a long-running `serve` can
