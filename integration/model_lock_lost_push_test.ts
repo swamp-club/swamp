@@ -200,6 +200,14 @@ async function lockAndSave(repoDir: string, modelId: string, body: string) {
     pushUnlocked: async () => {
       await ctx.syncService!.pushChanged();
     },
+    /** A pull, then a push, as a bare `swamp datastore sync` runs. */
+    syncUnlocked: async () => {
+      await ctx.syncService!.pullChanged();
+      await ctx.syncService!.pushChanged();
+    },
+    /** The versions of data "x" in this clone's cache. */
+    localVersions: () =>
+      ctx.repoContext.unifiedDataRepo.listVersions(modelType, modelId, "x"),
     close: async () => {
       await flushDatastoreSync();
       ctx.repoContext.catalogStore.close();
@@ -249,7 +257,12 @@ interface Clones {
 async function withClones(
   twoPhaseSync: boolean,
   fn: (clones: Clones) => Promise<void>,
-  options: { blindA?: boolean; bSameProcess?: boolean } = {},
+  options: {
+    blindA?: boolean;
+    bSameProcess?: boolean;
+    /** Clone A's sync service has no `fetchContent`. */
+    noFetchA?: boolean;
+  } = {},
 ): Promise<void> {
   const remote = createInMemoryRemote({
     capabilities: twoPhaseSync ? { twoPhaseSync: true } : {},
@@ -257,6 +270,7 @@ async function withClones(
   const locks = new LockTable();
   const typeA = registerTestDatastoreType(remote, {
     createLock: locks.lockFor(PROCESS_A.pid, options.blindA),
+    ...(options.noFetchA ? { connect: { fetchContent: false } } : {}),
   });
   const typeB = registerTestDatastoreType(remote, {
     createLock: locks.lockFor(
@@ -388,5 +402,95 @@ for (const twoPhaseSync of [true, false]) {
       }
       assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"a"}']);
     }, { blindA: true });
+  });
+}
+
+/** The remote's latest marker of data "x" under the model. */
+function remoteLatest(remote: InMemoryRemote, modelId: string): string[] {
+  const decoder = new TextDecoder();
+  return [...remote.files()]
+    .filter(([key]) => key.includes(modelId) && key.endsWith("/x/latest"))
+    .map(([, bytes]) => decoder.decode(bytes).trim());
+}
+
+// A refusal used to rely on its refresh pull to replace the refused versions
+// in the cache. When the pull could not run, they stayed dirty and a later
+// push uploaded them (swamp-club#3485). The refusal now discards them, and
+// puts back the datastore's copy of each file, so a later push neither
+// uploads the refused write nor deletes another holder's same version.
+for (const twoPhaseSync of [true, false]) {
+  for (const later of ["push", "pull then push"] as const) {
+    const sync = (
+      a: { pushUnlocked(): Promise<void>; syncUnlocked(): Promise<void> },
+    ) => later === "push" ? a.pushUnlocked() : a.syncUnlocked();
+
+    Deno.test(`acquireModelLocks: a refusal while the datastore is unreachable discards the run's version, and a later ${later} sends none of it (twoPhaseSync=${twoPhaseSync})`, async () => {
+      await withClones(twoPhaseSync, async (c) => {
+        const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+        try {
+          // An unreachable bucket that GcsLock.inspect() reads as no lock.
+          c.locks.breakglass(c.modelId);
+          c.remote.offline(true);
+          const error = await assertRejects(
+            () => a.flush(),
+            ModelLockLostError,
+          );
+          assertEquals(error.code, "model_lock_lost");
+          assertEquals(await a.localVersions(), []);
+          c.remote.offline(false);
+          await sync(a);
+        } finally {
+          await a.close();
+        }
+        assertEquals(remoteBodies(c.remote, c.modelId), []);
+        // B's next run finds no version of A's to build on.
+        const bVersion = await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
+        assertEquals(bVersion, 1);
+        assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
+      });
+    });
+
+    Deno.test(`acquireModelLocks: a refusal after a breakglass whose refresh pull fails keeps the other run's version through a later ${later} (twoPhaseSync=${twoPhaseSync})`, async () => {
+      await withClones(twoPhaseSync, async (c) => {
+        const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+        try {
+          c.locks.breakglass(c.modelId);
+          const bVersion = await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
+          assertEquals(bVersion, a.version, "both clones allocate one version");
+          c.remote.failNext("pull");
+          await assertRejects(() => a.flush(), ModelLockLostError);
+          await sync(a);
+        } finally {
+          await a.close();
+        }
+        assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
+        assertEquals(remoteLatest(c.remote, c.modelId), [String(a.version)]);
+
+        const next = await saveAndPush(c.repoA, c.modelId, '{"by":"a2"}');
+        assertEquals(next, a.version + 1);
+        assertEquals(
+          remoteBodies(c.remote, c.modelId).sort(),
+          ['{"by":"a2"}', '{"by":"b"}'],
+        );
+      });
+    });
+  }
+
+  Deno.test(`acquireModelLocks: without fetchContent, a refusal after a breakglass whose refresh pull fails still keeps the other run's version through a later pull then push (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      try {
+        c.locks.breakglass(c.modelId);
+        await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
+        c.remote.failNext("pull");
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        assertEquals(await a.localVersions(), []);
+        await a.syncUnlocked();
+      } finally {
+        await a.close();
+      }
+      assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
+      assertEquals(remoteLatest(c.remote, c.modelId), ["1"]);
+    }, { noFetchA: true });
   });
 }
