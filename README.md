@@ -20,24 +20,13 @@ curl -fsSL https://swamp-club.com/install.sh | sh
 
 ### Quick Start
 
-Swamp needs a swamp-club.com account to run. Sign in first — `swamp auth login`
-creates your account if you don't have one yet:
-
-```bash
-swamp auth login
-```
-
-For CI and daemons, see the
-[Swamp Account Requirement](https://swamp-club.com/manual/reference/swamp-account-requirement).
-
-Then initialize a repository:
-
 ```bash
 swamp start
 ```
 
-`swamp start` opens your browser. Sign in to Swamp Club if you haven't, pick a
-workspace, describe what you want automated, and choose an AI agent found on
+`swamp start` opens your browser. Sign in to Swamp Club (this creates your
+swamp-club.com account if you don't have one yet — swamp needs one to run), pick
+a workspace, describe what you want automated, and choose an AI agent found on
 your machine. Swamp opens the agent in a new terminal window, already working on
 your task. Press Ctrl-C in the terminal to stop `swamp start`.
 
@@ -51,15 +40,19 @@ workspaces and the agents on your PATH. `swamp workspace` manages them from the
 terminal: `create`, `import`, `list`, `get` and `remove`. Removing a workspace
 takes it off the list and keeps its folder.
 
-To use swamp inside an existing project instead, initialize it as a repository
-and start your agent there:
+To use swamp inside an existing project instead, sign in, initialize the project
+as a repository and start your agent there:
 
 ```bash
+swamp auth login                   # skip if swamp start already signed you in
 swamp repo init                    # Claude Code (default)
 swamp repo init --tool cursor      # Cursor
 swamp repo init --tool opencode    # OpenCode
 swamp repo init --tool codex       # Codex
 ```
+
+For CI and daemons, see the
+[Swamp Account Requirement](https://swamp-club.com/manual/reference/swamp-account-requirement).
 
 Start your AI agent in the repo and tell it what you want to do. Just ask:
 
