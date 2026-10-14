@@ -301,6 +301,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `attributes` | map | Parsed JSON content (lazy-loaded; `{}` unless `contentType` is `application/json`) |
 | `tags` | map | All tags as key-value pairs |
 | `modelName` | string | Owning behavior name as of the write (from the `modelName` tag; a behavior rename does not update it) |
+| `behaviorName` | string | The behavior spelling of `modelName`: the same value (swamp-club#3410). Records and JSON output carry only `modelName` |
 | `modelId` | string | Owning behavior id (stable across renames) |
 | `modelType` | string | Owning behavior type |
 | `specName` | string | Output spec name |
@@ -523,6 +524,15 @@ behavior argument does: definition name first, then exact definition id
 - Over `swamp serve`, `model` needs `read` on the data of the behavior it
   resolves to, as a behavior-scoped `data.get` does. A refusal is audited and
   fails exactly as an unknown behavior does, naming only the argument.
+- `behavior("<behavior>")` is the behavior spelling of `model("<model>")`
+  (swamp-club#3410). It is collected by the same `collectModelReferences`,
+  resolved by the same resolver (so serve authorizes it identically),
+  registered as the same function under its own name, pushed down the same
+  way and refused in `--select` the same way. Errors name the function as it
+  was typed. `behaviour()` is not a synonym. The equivalent query `data get`
+  prints keeps the `model(...)` form. A server older than swamp-club#3410
+  refuses a predicate using `behavior()` or `behaviorName` as an unknown
+  field.
 
 ## Predicate Syntax
 
@@ -552,11 +562,12 @@ pluralises to `Unknown fields` and lists the available names alphabetically:
 
 ```
 Error: Unknown field "model" in query predicate.
-Available: attributes, content, contentType, createdAt, dataType,
-  garbageCollection, id, isLatest, jobName, lifetime, modelId, modelName,
-  modelType, name, ns, ownerRef, ownerType, size, source, specName, stepName,
-  streaming, tags, version, workflowName, workflowRunId
-Functions: latestRun("<workflow>"), model("<model name or definition id>")
+Available: attributes, behaviorName, content, contentType, createdAt,
+  dataType, garbageCollection, id, isLatest, jobName, lifetime, modelId,
+  modelName, modelType, name, ns, ownerRef, ownerType, size, source, specName,
+  stepName, streaming, tags, version, workflowName, workflowRunId
+Functions: latestRun("<workflow>"), model("<model name or definition id>"),
+  behavior("<behavior name or definition id>")
 ```
 
 ## Catalog
@@ -781,8 +792,8 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | --------------------------- | ---------------------- | -------------------------------------------------------- |
 | implicit `isLatest == true` | `WHERE is_latest = 1`  | When the predicate doesn't reference `version` or `isLatest` |
 | implicit, with `latestPerStep` | `WHERE is_step_latest = 1` | `findBySpec`/`findByTag` only; no CEL `isLatest` term |
-| `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only                             |
-| `model("<literal>")` | `WHERE type_normalized = ? AND model_id = ?` | Top-level AND conjuncts only, with the resolved definition |
+| `modelName == "<literal>"`  | `WHERE model_name = ?` | Top-level AND conjuncts only; `behaviorName` pushes down the same way |
+| `model("<literal>")` | `WHERE type_normalized = ? AND model_id = ?` | Top-level AND conjuncts only, with the resolved definition; `behavior("<literal>")` pushes down the same way |
 | `specName == "<literal>"`   | `WHERE spec_name = ?`  | Top-level AND conjuncts only                             |
 | `modelType == "<literal>"` | `WHERE type_normalized = ?` | Top-level AND conjuncts only; `modelType` is the column value |
 | `modelId == "<literal>"` | `WHERE model_id = ?` | Top-level AND conjuncts only |

@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import fc from "fast-check";
 import {
+  canonicalExtensionKind,
   detectKindFromSource,
   EXTENSION_EXPORT_NAMES,
   isGlobPattern,
@@ -182,5 +184,34 @@ Deno.test("detectKindFromSource: skips re-exports (parity with loaders)", () => 
   assertEquals(
     detectKindFromSource(`export { model } from "./other.ts";`),
     undefined,
+  );
+});
+
+Deno.test("canonicalExtensionKind: maps only the exact behavior spelling", () => {
+  assertEquals(canonicalExtensionKind("behaviors"), "models");
+  for (
+    const kind of [
+      "models",
+      "vaults",
+      "datastores",
+      "reports",
+      "webhooks",
+      "workflows",
+      "behaviours",
+      "behavior",
+      "Behaviors",
+      "",
+    ]
+  ) {
+    assertEquals(canonicalExtensionKind(kind), kind, kind);
+  }
+});
+
+Deno.test("canonicalExtensionKind: returns every other value byte-identical", () => {
+  fc.assert(
+    fc.property(
+      fc.string().filter((s) => s !== "behaviors"),
+      (kind) => canonicalExtensionKind(kind) === kind,
+    ),
   );
 });

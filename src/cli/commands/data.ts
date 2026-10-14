@@ -31,7 +31,7 @@ import { dataQueryCommand } from "./data_query.ts";
 
 export const dataCommand = new Command()
   .name("data")
-  .description("Manage model data")
+  .description("Manage behavior data")
   .action(groupCommandAction)
   .command("get", dataGetCommand)
   .command("list", dataListCommand)

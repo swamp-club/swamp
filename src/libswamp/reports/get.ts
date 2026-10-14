@@ -197,7 +197,7 @@ export async function* reportGet(
           yield {
             kind: "error",
             error: validationFailed(
-              `Report "${input.reportName}" exists in multiple locations: ${locationList}. Use --model or --workflow to disambiguate.`,
+              `Report "${input.reportName}" exists in multiple locations: ${locationList}. Use --behavior or --workflow to disambiguate.`,
             ),
           };
           return;

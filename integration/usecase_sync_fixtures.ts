@@ -44,11 +44,7 @@ import {
   cacheRelativeMarkPath,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
-import {
-  ModelNameType,
-  ModelTypeType,
-  WorkflowNameType,
-} from "../src/cli/completion_types.ts";
+import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { accessCommand } from "../src/cli/commands/access.ts";
 import { dataCommand } from "../src/cli/commands/data.ts";
 import { datastoreCommand } from "../src/cli/commands/datastore.ts";
@@ -403,11 +399,8 @@ let cliRoot: CliRoot | undefined;
 // `src/cli/mod.ts` registers; without the types, `model create` and the
 // edit commands fail to parse.
 function root(): CliRoot {
-  cliRoot ??= new Command()
+  cliRoot ??= registerCompletionTypes(new Command())
     .name("swamp")
-    .globalType("model_name", new ModelNameType())
-    .globalType("model_type", new ModelTypeType())
-    .globalType("workflow_name", new WorkflowNameType())
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .noExit()
     .throwErrors()
@@ -1049,6 +1042,7 @@ export const UNSET_ENV: Record<string, undefined> = {
   SWAMP_DATASTORE: undefined,
   SWAMP_DATASTORES_DIR: undefined,
   SWAMP_MODELS_DIR: undefined,
+  SWAMP_BEHAVIORS_DIR: undefined,
   SWAMP_WORKFLOWS_DIR: undefined,
   SWAMP_VAULTS_DIR: undefined,
   SWAMP_EXTENSIONS_DIR: undefined,

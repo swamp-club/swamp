@@ -65,7 +65,7 @@ swamp behavior list                            # list all behaviors in the repo
 swamp data list <name>                         # list data versions for a behavior
 swamp data query '<CEL predicate>'             # query data with CEL expressions
 # read one item's latest content (`swamp data get` is deprecated)
-swamp data query 'model("<model>") && name == "<data>"' --select content
+swamp data query 'behavior("<name>") && name == "<data>"' --select content
 
 # Workflows
 swamp workflow create <name>                   # create a new workflow

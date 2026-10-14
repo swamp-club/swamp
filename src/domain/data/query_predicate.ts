@@ -19,6 +19,12 @@
 
 import { UserError } from "../errors.ts";
 import { celString } from "./data_query_command.ts";
+import {
+  BEHAVIOR_QUERY_FUNCTION,
+  BEHAVIOR_QUERY_NAME_FIELD,
+  MODEL_QUERY_FUNCTION,
+  MODEL_QUERY_NAME_FIELD,
+} from "../terminology/behavior_aliases.ts";
 
 /** Known root-level fields available in query predicates. */
 export const QUERY_FIELDS = new Set([
@@ -30,6 +36,8 @@ export const QUERY_FIELDS = new Set([
   "attributes",
   "tags",
   "modelName",
+  // The behavior spelling of modelName (swamp-club#3410): the same value.
+  "behaviorName",
   "modelId",
   "modelType",
   "specName",
@@ -282,7 +290,34 @@ function latestRunEquality(field: ASTNode, call: ASTNode): string | null {
  * The query function that matches rows by model, resolving a model name or
  * definition id as `swamp data get <model>` does (swamp-club#2960).
  */
-export const MODEL_FUNCTION = "model";
+export const MODEL_FUNCTION = MODEL_QUERY_FUNCTION;
+
+/**
+ * The behavior spelling of {@link MODEL_FUNCTION} (swamp-club#3410):
+ * `behavior("x")` resolves and matches exactly as `model("x")` does, and is
+ * collected, authorized and pushed down by the same code.
+ */
+export const BEHAVIOR_FUNCTION = BEHAVIOR_QUERY_FUNCTION;
+
+/** The model-matching query functions: `model` and its behavior spelling. */
+export const MODEL_FUNCTIONS: ReadonlySet<string> = new Set([
+  MODEL_FUNCTION,
+  BEHAVIOR_FUNCTION,
+]);
+
+/** The noun a model-matching function's messages use: model or behavior. */
+function modelFunctionNoun(fn: string): string {
+  return fn === BEHAVIOR_FUNCTION ? "behavior" : "model";
+}
+
+/**
+ * The fields that read a row's model name: `modelName` and its behavior
+ * spelling `behaviorName` (swamp-club#3410).
+ */
+export const MODEL_NAME_FIELDS: ReadonlySet<string> = new Set([
+  MODEL_QUERY_NAME_FIELD,
+  BEHAVIOR_QUERY_NAME_FIELD,
+]);
 
 /**
  * Most distinct models one query may name with `model()`. Each is a
@@ -291,60 +326,105 @@ export const MODEL_FUNCTION = "model";
 export const MAX_MODEL_REFERENCES = 32;
 
 /**
- * Collects the distinct arguments of every `model(...)` call in the AST.
- * Each call must take exactly one non-empty string literal, so the model can
- * be resolved once per query rather than per row; anything else, or more
- * than {@link MAX_MODEL_REFERENCES} distinct models, is a UserError.
+ * Collects the distinct arguments of every `model(...)` and `behavior(...)`
+ * call in the AST — one set, so serve authorizes either spelling with the
+ * same resolver. Each call must take exactly one non-empty string literal,
+ * so the model can be resolved once per query rather than per row; anything
+ * else, or more than {@link MAX_MODEL_REFERENCES} distinct models, is a
+ * UserError naming the function as it was typed.
  */
 export function collectModelReferences(node: ASTNode): string[] {
   const references = new Set<string>();
+  const functions = new Set<string>();
   const visit = (n: ASTNode) => {
     if (!n || typeof n !== "object" || !("op" in n)) return;
-    if (n.op === "rcall" && (n.args as [string])[0] === MODEL_FUNCTION) {
+    const fn = n.op === "call" || n.op === "rcall"
+      ? (n.args as [string])[0]
+      : undefined;
+    if (n.op === "rcall" && fn !== undefined && MODEL_FUNCTIONS.has(fn)) {
+      const noun = modelFunctionNoun(fn);
       throw new UserError(
-        `${MODEL_FUNCTION}() takes the model as its argument: ` +
-          `write ${MODEL_FUNCTION}("<model>")`,
+        `${fn}() takes the ${noun} as its argument: ` +
+          `write ${fn}("<${noun}>")`,
       );
     }
-    if (n.op === "call" && (n.args as [string])[0] === MODEL_FUNCTION) {
+    if (n.op === "call" && fn !== undefined && MODEL_FUNCTIONS.has(fn)) {
       const callArgs = (n.args as [string, ASTNode[]])[1];
       const [arg] = callArgs;
       if (
         callArgs.length !== 1 || arg.op !== "value" ||
         typeof arg.args !== "string" || arg.args === ""
       ) {
+        const noun = modelFunctionNoun(fn);
         throw new UserError(
-          `${MODEL_FUNCTION}() takes one model name or definition id as a ` +
-            `string literal, e.g. ${MODEL_FUNCTION}("my-model")`,
+          `${fn}() takes one ${noun} name or definition id as a ` +
+            `string literal, e.g. ${fn}("my-${noun}")`,
         );
       }
       references.add(arg.args);
+      functions.add(fn);
       return;
     }
     for (const child of childNodes(n)) visit(child);
   };
   visit(node);
   if (references.size > MAX_MODEL_REFERENCES) {
+    const called = [...MODEL_FUNCTIONS].filter((fn) => functions.has(fn));
+    const nouns = called.length === 1 && called[0] === BEHAVIOR_FUNCTION
+      ? "behaviors"
+      : "models";
     throw new UserError(
-      `A query may name at most ${MAX_MODEL_REFERENCES} models with ` +
-        `${MODEL_FUNCTION}(); this one names ${references.size}.`,
+      `A query may name at most ${MAX_MODEL_REFERENCES} ${nouns} with ` +
+        `${called.map((fn) => `${fn}()`).join(" and ")}; ` +
+        `this one names ${references.size}.`,
     );
   }
   return [...references];
 }
 
 /**
- * Extracts the argument of a top-level `model("<model>")` conjunct, for SQL
- * pushdown once the model is resolved. Walks through AND conjuncts but does
- * not descend into OR branches. Returns null if there is none.
+ * The model-matching functions (`model`, `behavior`) the AST calls, in any
+ * form, malformed calls included, in {@link MODEL_FUNCTIONS} order. Used to
+ * name the function as it was typed when it cannot be used.
+ */
+export function calledModelFunctions(node: ASTNode): string[] {
+  const called = new Set<string>();
+  const visit = (n: ASTNode) => {
+    if (!n || typeof n !== "object" || !("op" in n)) return;
+    if (n.op === "call" || n.op === "rcall") {
+      const fn = (n.args as [string])[0];
+      if (MODEL_FUNCTIONS.has(fn)) called.add(fn);
+    }
+    for (const child of childNodes(n)) visit(child);
+  };
+  visit(node);
+  return [...MODEL_FUNCTIONS].filter((fn) => called.has(fn));
+}
+
+/** A top-level model-matching call: the function as typed and its argument. */
+function modelCallOf(
+  conjunct: ASTNode,
+): { fn: string; reference: string } | null {
+  if (conjunct.op !== "call") return null;
+  const [name, callArgs] = conjunct.args as [string, ASTNode[]];
+  if (!MODEL_FUNCTIONS.has(name) || callArgs.length !== 1) return null;
+  const [arg] = callArgs;
+  if (arg.op === "value" && typeof arg.args === "string") {
+    return { fn: name, reference: arg.args };
+  }
+  return null;
+}
+
+/**
+ * Extracts the argument of a top-level `model("<model>")` or
+ * `behavior("<behavior>")` conjunct, for SQL pushdown once the model is
+ * resolved. Walks through AND conjuncts but does not descend into OR
+ * branches. Returns null if there is none.
  */
 export function extractModelCall(ast: ASTNode): string | null {
   for (const conjunct of topLevelConjuncts(ast)) {
-    if (conjunct.op !== "call") continue;
-    const [name, callArgs] = conjunct.args as [string, ASTNode[]];
-    if (name !== MODEL_FUNCTION || callArgs.length !== 1) continue;
-    const [arg] = callArgs;
-    if (arg.op === "value" && typeof arg.args === "string") return arg.args;
+    const call = modelCallOf(conjunct);
+    if (call !== null) return call.reference;
   }
   return null;
 }
@@ -411,20 +491,34 @@ export function extractStringEquality(
   ast: ASTNode,
   field: string,
 ): string | null {
+  return extractAnyStringEquality(ast, new Set([field]));
+}
+
+/**
+ * The first top-level `field == "literal"` equality, in conjunct order,
+ * whose field is any of `fields`.
+ */
+function extractAnyStringEquality(
+  ast: ASTNode,
+  fields: ReadonlySet<string>,
+): string | null {
   for (const conjunct of topLevelConjuncts(ast)) {
     const eq = equalityOperands(conjunct);
-    if (eq?.field === field && typeof eq.value === "string") return eq.value;
+    if (eq && fields.has(eq.field) && typeof eq.value === "string") {
+      return eq.value;
+    }
   }
   return null;
 }
 
 /**
- * Extracts a string literal from a top-level `modelName == "literal"`
- * equality in the AST. Returns null if no pushdown-eligible modelName
- * equality is found.
+ * Extracts a string literal from a top-level `modelName == "literal"` or
+ * `behaviorName == "literal"` equality in the AST — whichever comes first,
+ * so respelling one as the other pushes down the same literal. Returns null
+ * if no pushdown-eligible equality is found.
  */
 export function extractModelNameEquality(ast: ASTNode): string | null {
-  return extractStringEquality(ast, "modelName");
+  return extractAnyStringEquality(ast, MODEL_NAME_FIELDS);
 }
 
 /**
@@ -435,6 +529,7 @@ export function extractModelNameEquality(ast: ASTNode): string | null {
 const FALLBACK_STRING_FIELDS = new Set([
   "id",
   "modelName",
+  "behaviorName",
   "modelId",
   "modelType",
   "dataType",
@@ -502,9 +597,12 @@ export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
       clause = `version == ${eq.value}`;
     } else {
       // A model("<literal>") scope is kept like a modelName equality, so the
-      // hint for the documented model() form stays on that model.
-      const model = extractModelCall(conjunct);
-      if (model !== null) clause = `${MODEL_FUNCTION}(${celString(model)})`;
+      // hint for the documented model() form stays on that model; a
+      // behavior("<literal>") scope is kept as typed.
+      const call = modelCallOf(conjunct);
+      if (call !== null) {
+        clause = `${call.fn}(${celString(call.reference)})`;
+      }
     }
     if (clause === null) {
       droppedConjuncts = true;
@@ -537,7 +635,8 @@ export function validateFieldReferences(identifiers: string[]): void {
         unique.map((f) => `"${f}"`).join(", ")
       } in query predicate.\nAvailable: ${available}\n` +
         `Functions: ${LATEST_RUN_FUNCTION}("<workflow>"), ` +
-        `${MODEL_FUNCTION}("<model name or definition id>")`,
+        `${MODEL_FUNCTION}("<model name or definition id>"), ` +
+        `${BEHAVIOR_FUNCTION}("<behavior name or definition id>")`,
     );
   }
 }

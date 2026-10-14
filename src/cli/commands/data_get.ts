@@ -51,7 +51,7 @@ export const dataGetCommand = withRemoteOptions(
   new Command()
     .name("get")
     .description(
-      "(Deprecated) Get data by model and name, or by workflow. Use 'swamp data query' instead; each read prints the equivalent query.",
+      "(Deprecated) Get data by behavior and name, or by workflow. Use 'swamp data query' instead; each read prints the equivalent query.",
     )
     .example(
       "Preferred: read the same data with data query",
@@ -60,7 +60,7 @@ export const dataGetCommand = withRemoteOptions(
     .example("Get latest data", "swamp data get my-server system-info")
     .example(
       "Get using flags",
-      "swamp data get --model my-server --name system-info",
+      "swamp data get --behavior my-server --name system-info",
     )
     .example(
       "Get a specific version",
@@ -78,14 +78,14 @@ export const dataGetCommand = withRemoteOptions(
       "From a remote server",
       "swamp data get my-server system-info --server wss://demo.swamp-club.ai",
     )
-    .arguments("[model_id_or_name:model_name] [data_name:string]")
+    .arguments("[behavior_id_or_name:behavior_name] [data_name:string]")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option(
-      "--model <model:string>",
-      "Model name or ID (alternative to positional argument)",
+      "--behavior, --model <behavior:string>",
+      "Behavior name or ID (alternative to positional argument)",
     )
     .option(
       "--name <name:string>",
@@ -114,7 +114,7 @@ export const dataGetCommand = withRemoteOptions(
     positionalModel?: string,
     positionalName?: string,
   ) {
-    const modelIdOrName = (options.model as string | undefined) ??
+    const modelIdOrName = (options.behavior as string | undefined) ??
       positionalModel;
     const dataName = (options.name as string | undefined) ?? positionalName;
 

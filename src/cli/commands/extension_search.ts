@@ -49,6 +49,7 @@ import { warnLegacyExtensionLayout } from "../../libswamp/extensions/layout.ts";
 import { withManagedLockfileTransaction } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
+import { canonicalExtensionKinds } from "../../domain/repo/swamp_sources.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
@@ -84,7 +85,7 @@ export const extensionSearchCommand = withRemoteOptions(
     .option("--label <label:string>", "Filter by label", { collect: true })
     .option(
       "--content-type <contentType:string>",
-      "Filter by content type (models, workflows, vaults, datastores, reports)",
+      "Filter by content type (behaviors or models, workflows, vaults, datastores, reports)",
       { collect: true },
     )
     .option(
@@ -114,7 +115,7 @@ export const extensionSearchCommand = withRemoteOptions(
     )
     .example(
       "Filter by content type",
-      "swamp extension search --content-type models",
+      "swamp extension search --content-type behaviors",
     )
     .example(
       "Sort by newest",
@@ -133,6 +134,14 @@ export const extensionSearchCommand = withRemoteOptions(
     );
   }
 
+  // The behavior spelling (swamp-club#3410) in the registry's model form,
+  // duplicates removed, so both the registry and a serve see `models`.
+  if (options.contentType !== undefined) {
+    options.contentType = canonicalExtensionKinds(
+      options.contentType as string[],
+    );
+  }
+
   // Validate content type values
   const validContentTypes = [
     "models",
@@ -146,7 +155,7 @@ export const extensionSearchCommand = withRemoteOptions(
       throw new UserError(
         `Invalid content type: "${ct}". Must be one of: ${
           validContentTypes.join(", ")
-        }`,
+        } (behaviors is accepted for models)`,
       );
     }
   }

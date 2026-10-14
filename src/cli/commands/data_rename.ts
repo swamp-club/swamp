@@ -56,16 +56,18 @@ export const dataRenameCommand = withRemoteOptions(
     )
     .example(
       "Rename using flags",
-      "swamp data rename --model my-server --name old-name --new-name new-name",
+      "swamp data rename --behavior my-server --name old-name --new-name new-name",
     )
-    .arguments("[model_id_or_name:string] [old_name:string] [new_name:string]")
+    .arguments(
+      "[behavior_id_or_name:string] [old_name:string] [new_name:string]",
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option(
-      "--model <model:string>",
-      "Model name or ID (alternative to positional argument)",
+      "--behavior, --model <behavior:string>",
+      "Behavior name or ID (alternative to positional argument)",
     )
     .option(
       "--name <name:string>",
@@ -83,7 +85,7 @@ export const dataRenameCommand = withRemoteOptions(
     positionalOldName?: string,
     positionalNewName?: string,
   ) {
-    const modelIdOrName = (options.model as string | undefined) ??
+    const modelIdOrName = (options.behavior as string | undefined) ??
       positionalModel;
     const oldName = (options.name as string | undefined) ?? positionalOldName;
     const newName = (options.newName as string | undefined) ??

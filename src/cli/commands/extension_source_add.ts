@@ -26,7 +26,10 @@ import {
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createSourceAddDeps, sourceAdd } from "../../libswamp/sources/add.ts";
-import { EXTENSION_KINDS } from "../../domain/repo/swamp_sources.ts";
+import {
+  canonicalExtensionKinds,
+  EXTENSION_KINDS,
+} from "../../domain/repo/swamp_sources.ts";
 import { createSourceModifyRenderer } from "../../presentation/renderers/extension_source_modify.ts";
 import type { ExtensionKind } from "../../domain/repo/swamp_sources.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -74,7 +77,7 @@ export const extensionSourceAddCommand = new Command()
   )
   .option(
     "--only <types:string>",
-    "Only load these extension types (comma-separated: models,vaults,datastores,reports,webhooks,workflows)",
+    "Only load these extension types (comma-separated: behaviors or models,vaults,datastores,reports,webhooks,workflows)",
   )
   .action(async function (options: AnyOptions, path: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -110,8 +113,9 @@ export const extensionSourceAddCommand = new Command()
 
     let only: ExtensionKind[] | undefined;
     if (options.only) {
-      const kinds = (options.only as string).split(",").map((s: string) =>
-        s.trim()
+      // The behavior spelling (swamp-club#3410) is persisted as `models`.
+      const kinds = canonicalExtensionKinds(
+        (options.only as string).split(",").map((s: string) => s.trim()),
       );
       const validKinds = EXTENSION_KINDS as readonly string[];
       for (const kind of kinds) {
@@ -119,7 +123,7 @@ export const extensionSourceAddCommand = new Command()
           throw new UserError(
             `Unknown extension kind '${kind}'. Expected one of: ${
               EXTENSION_KINDS.join(", ")
-            }`,
+            } (behaviors is accepted for models)`,
           );
         }
       }

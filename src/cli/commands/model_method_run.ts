@@ -78,6 +78,7 @@ import {
 } from "./model_method_describe.ts";
 import {
   type CommandSyntax,
+  definitionNameType,
   PREFERRED_SPELLING_EXAMPLE,
   recordDefiningModule,
   runTargetArgument,
@@ -245,7 +246,9 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
 The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment variable (milliseconds) to wait longer.`,
     )
     .arguments(
-      `<${target}:model_name> <method_name:string> [definition_name:string]`,
+      `<${target}:${
+        definitionNameType(syntax.surface)
+      }> <method_name:string> [definition_name:string]`,
     )
     .option(
       "--repo-dir <dir:string>",

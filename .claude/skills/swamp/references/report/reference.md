@@ -10,7 +10,7 @@
    behavior-type defaults. Use `reports.skip:` to exclude reports you don't
    need.
 4. **Run and verify** — execute a method, then use
-   `swamp report get <report-name> --model <model>` to confirm the report
+   `swamp report get <report-name> --behavior <model>` to confirm the report
    produces valid markdown and JSON output without errors.
 5. **Check stored output** — run `swamp data query 'tags.type == "report"'` to
    verify the report artifact was persisted correctly.
@@ -75,20 +75,20 @@ Browse stored report results across all behaviors and workflows. Pass an
 optional `[query]` argument for a case-insensitive substring match; the flags
 below are exact matches.
 
-| Flag                | Description                                            |
-| ------------------- | ------------------------------------------------------ |
-| `[query]`           | Substring match on report name, data name, or variant  |
-| `--model <name>`    | Filter to a specific behavior                          |
-| `--workflow <name>` | Filter to a specific workflow                          |
-| `--scope <scope>`   | Filter by report scope (`method`, `model`, `workflow`) |
-| `--type <name>`     | Filter by exact report type name (e.g. `@myorg/cost`)  |
-| `--label <label>`   | Filter by report label (repeatable)                    |
+| Flag                | Description                                                          |
+| ------------------- | -------------------------------------------------------------------- |
+| `[query]`           | Substring match on report name, data name, or variant                |
+| `--behavior <name>` | Filter to a specific behavior (alias `--model`)                      |
+| `--workflow <name>` | Filter to a specific workflow                                        |
+| `--scope <scope>`   | Filter by report scope (`method`, `behavior` or `model`, `workflow`) |
+| `--type <name>`     | Filter by exact report type name (e.g. `@myorg/cost`)                |
+| `--label <label>`   | Filter by report label (repeatable)                                  |
 
 ### report get
 
 | Flag                      | Description                                            |
 | ------------------------- | ------------------------------------------------------ |
-| `--model <name>`          | Scope to a specific behavior                           |
+| `--behavior <name>`       | Scope to a specific behavior (alias `--model`)         |
 | `--workflow <name>`       | Scope to a specific workflow                           |
 | `--version <version>`     | Get specific version (default: latest)                 |
 | `--variant <variant>`     | Select a specific forEach variant                      |

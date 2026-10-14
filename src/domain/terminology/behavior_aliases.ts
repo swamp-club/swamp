@@ -103,3 +103,43 @@ export const DEFAULT_BEHAVIORS_DIR = "extensions/behaviors";
  */
 export const BEHAVIOR_MANIFEST_KEY = "behaviors";
 export const MODEL_MANIFEST_KEY = "models";
+
+/**
+ * The report scope, behavior spelling, and its model form (swamp-club#3410).
+ * `report search --scope behavior` filters on the stored `model` scope.
+ */
+export const BEHAVIOR_REPORT_SCOPE = "behavior";
+export const MODEL_REPORT_SCOPE = "model";
+
+/**
+ * The data owner type, behavior spelling, and its model form
+ * (swamp-club#3410). Data records always store `model-method`.
+ */
+export const BEHAVIOR_OWNER_TYPE = "behavior-method";
+export const MODEL_OWNER_TYPE = "model-method";
+
+/**
+ * The extension kind and registry content type, behavior spelling, and its
+ * model form (swamp-club#3410). `.swamp-sources.yaml` `only:` and the
+ * registry keep `models`.
+ */
+export const BEHAVIOR_EXTENSION_KIND = "behaviors";
+export const MODEL_EXTENSION_KIND = "models";
+
+/**
+ * The data query function and field, behavior spelling, and their model
+ * forms (swamp-club#3410). `behavior("x")` and `behaviorName` evaluate
+ * exactly as `model("x")` and `modelName` do.
+ */
+export const BEHAVIOR_QUERY_FUNCTION = "behavior";
+export const MODEL_QUERY_FUNCTION = "model";
+export const BEHAVIOR_QUERY_NAME_FIELD = "behaviorName";
+export const MODEL_QUERY_NAME_FIELD = "modelName";
+
+/**
+ * The environment variable naming the models directory, behavior spelling,
+ * and its model form (swamp-club#3410). When both are set the model form
+ * wins, and different non-empty values are refused at startup.
+ */
+export const BEHAVIORS_DIR_ENV_VAR = "SWAMP_BEHAVIORS_DIR";
+export const MODELS_DIR_ENV_VAR = "SWAMP_MODELS_DIR";

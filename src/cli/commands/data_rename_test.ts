@@ -59,11 +59,11 @@ Deno.test("dataRenameCommand accepts three arguments", async () => {
   assertEquals(args.length, 3);
 });
 
-Deno.test("dataRenameCommand has --model option", async () => {
+Deno.test("dataRenameCommand has --behavior option with its --model alias", async () => {
   const { dataRenameCommand } = await import("./data_rename.ts");
   const options = dataRenameCommand.getOptions();
-  const modelOpt = options.find((o) => o.name === "model");
-  assertEquals(modelOpt !== undefined, true);
+  const modelOpt = options.find((o) => o.name === "behavior");
+  assertEquals(modelOpt?.flags, ["--behavior", "--model"]);
 });
 
 Deno.test("dataRenameCommand has --name option", async () => {

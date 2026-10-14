@@ -278,15 +278,17 @@ execute: async (args, _context) => { ... }
 
 Models directory priority:
 
-| Priority | Method               | Example                          |
-| -------- | -------------------- | -------------------------------- |
-| 1        | Environment variable | `SWAMP_MODELS_DIR=./custom/path` |
-| 2        | `.swamp.yaml` config | `modelsDir: "lib/models"`        |
-| 3        | Default              | `extensions/models`              |
+| Priority | Method               | Example                             |
+| -------- | -------------------- | ----------------------------------- |
+| 1        | Environment variable | `SWAMP_MODELS_DIR=./custom/path`    |
+| 2        | Environment variable | `SWAMP_BEHAVIORS_DIR=./custom/path` |
+| 3        | `.swamp.yaml` config | `modelsDir: "lib/models"`           |
+| 4        | Default              | `extensions/models`                 |
 
-While the default applies, swamp also loads `extensions/behaviors/`, the
-behavior spelling of `extensions/models/`. Setting `SWAMP_MODELS_DIR` or
-`modelsDir` to any other directory turns that off.
+`SWAMP_BEHAVIORS_DIR` is the behavior spelling of `SWAMP_MODELS_DIR`; setting
+both to different directories is an error. While the default applies, swamp also
+loads `extensions/behaviors/`, the behavior spelling of `extensions/models/`.
+Setting either variable or `modelsDir` to any other directory turns that off.
 
 **The table above is the historical default and still applies to every existing
 manifest.** A manifest with no `paths` field — or with the explicit

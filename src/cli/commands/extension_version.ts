@@ -45,7 +45,7 @@ export const extensionVersionCommand = new Command()
   )
   .example(
     "From manifest",
-    "swamp extension version --manifest extensions/models/my-model/manifest.json",
+    "swamp extension version --manifest extensions/behaviors/my-behavior/manifest.json",
   )
   .arguments("[name:string]")
   .option(

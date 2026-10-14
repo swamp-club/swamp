@@ -18,11 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ReportContext } from "./report_context.ts";
+import {
+  BEHAVIOR_REPORT_SCOPE,
+  MODEL_REPORT_SCOPE,
+} from "../terminology/behavior_aliases.ts";
 
 /**
  * The scope at which a report operates.
  */
 export type ReportScope = "method" | "model" | "workflow";
+
+/**
+ * A report scope in its stored spelling: `behavior` becomes `model`
+ * (swamp-club#3410), and every other value is returned unchanged.
+ */
+export function canonicalReportScope(scope: string): string {
+  return scope === BEHAVIOR_REPORT_SCOPE ? MODEL_REPORT_SCOPE : scope;
+}
 
 /**
  * The result produced by a report execution.

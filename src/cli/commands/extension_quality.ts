@@ -62,11 +62,11 @@ export const extensionQualityCommand = new Command()
   )
   .example(
     "Score extension",
-    "swamp extension quality extensions/models/my-model/manifest.yaml",
+    "swamp extension quality extensions/behaviors/my-behavior/manifest.yaml",
   )
   .example(
     "Machine-readable output",
-    "swamp extension quality extensions/models/my-model/manifest.yaml --json",
+    "swamp extension quality extensions/behaviors/my-behavior/manifest.yaml --json",
   )
   .arguments("<manifest-path:string>")
   .option(

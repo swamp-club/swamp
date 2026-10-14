@@ -97,7 +97,7 @@ function responseToActiveRuns(response: RunHistoryResponse): ActiveRun[] {
 const runHistoryCommand = withRemoteOptions(
   new Command()
     .name("history")
-    .description("List active and recent runs (model methods and workflows)")
+    .description("List active and recent runs (methods and workflows)")
     .example("List recent runs (last 24h)", "swamp run history")
     .example("List only active runs", "swamp run history --active")
     .example("List all tracked runs", "swamp run history --all")
@@ -413,7 +413,7 @@ const runDoctorCommand = withRemoteOptions(
 
 export const runCommand = new Command()
   .name("run")
-  .description("Track and diagnose in-flight model method and workflow runs")
+  .description("Track and diagnose in-flight method and workflow runs")
   .action(groupCommandAction)
   .command("history", runHistoryCommand)
   .command("doctor", runDoctorCommand)

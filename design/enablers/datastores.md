@@ -5268,10 +5268,13 @@ what a killed drain left behind.
 Two CLI commands inspect and force-release stuck locks:
 
 ```bash
-swamp datastore lock status                          # Show who holds the lock
-swamp datastore lock release --force                 # Delete the global lock directly
-swamp datastore lock release --force --model type/id # Release one behavior lock
+swamp datastore lock status            # Show who holds the lock
+swamp datastore lock release --force   # Delete the global lock directly
+swamp datastore lock release --force --behavior type/id
+                                       # Release one behavior lock
 ```
+
+`--model` is the alias of `--behavior` (swamp-club#3410).
 
 `--force` is required. Release bypasses `acquire()`/`release()` and deletes the
 lock directly, for when a crashed process left a lock that has not expired.

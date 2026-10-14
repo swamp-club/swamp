@@ -17,8 +17,21 @@ output, exit codes and audit action):
 
 Stored names keep `model`: the `models/` directory, JSON keys and error codes
 (`modelName`, `model_not_found`), the workflow step fields swamp writes
-(`model_method`, `modelIdOrName`; a `type: behavior` step is read as this form),
-and the CEL `model.<name>` / `model("<name>")` references.
+(`model_method`, `modelIdOrName`; a `type: behavior` step is read as this form)
+and the deprecated CEL `model.<name>` form.
+
+Other places accept the behavior spelling as an exact synonym (`behaviour` is
+not one):
+
+| Behavior spelling                                                            | Same as                        |
+| ---------------------------------------------------------------------------- | ------------------------------ |
+| `--behavior <name>` on `data`, `report get/search`, `datastore lock release` | `--model <name>`               |
+| `data query` `behavior("<name>")`, `behaviorName`                            | `model("<name>")`, `modelName` |
+| `report search --scope behavior`                                             | `--scope model`                |
+| `data search --owner-type behavior-method`                                   | `--owner-type model-method`    |
+| `extension search --content-type behaviors`                                  | `--content-type models`        |
+| `extension source add --only behaviors`                                      | `--only models`                |
+| `SWAMP_BEHAVIORS_DIR`                                                        | `SWAMP_MODELS_DIR`             |
 
 ## Repository Structure
 

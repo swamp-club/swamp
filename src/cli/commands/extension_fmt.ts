@@ -54,11 +54,11 @@ export const extensionFmtCommand = new Command()
   .description("Format and lint extension TypeScript files")
   .example(
     "Format extension files",
-    "swamp extension fmt extensions/models/my-model/manifest.json",
+    "swamp extension fmt extensions/behaviors/my-behavior/manifest.json",
   )
   .example(
     "Check formatting",
-    "swamp extension fmt extensions/models/my-model/manifest.json --check",
+    "swamp extension fmt extensions/behaviors/my-behavior/manifest.json --check",
   )
   .arguments("<manifest-path:string>")
   .option(

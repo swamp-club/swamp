@@ -332,7 +332,7 @@ Deno.test({
       );
       await Deno.symlink(target, behaviorsDir, { type: "dir" });
       const found = await withMockedEnv(
-        { SWAMP_MODELS_DIR: undefined },
+        { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
         () => existingBehaviorsDir(repoDir, null),
       );
       assertEquals(found, behaviorsDir);

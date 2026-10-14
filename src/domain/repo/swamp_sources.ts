@@ -20,6 +20,10 @@
 import { z } from "zod";
 import { parse as parseYaml } from "@std/yaml";
 import { UserError } from "../errors.ts";
+import {
+  BEHAVIOR_EXTENSION_KIND,
+  MODEL_EXTENSION_KIND,
+} from "../terminology/behavior_aliases.ts";
 
 /**
  * The kinds of extensions that a source can provide.
@@ -40,6 +44,26 @@ export const EXTENSION_KINDS: readonly ExtensionKind[] = [
   "webhooks",
   "workflows",
 ] as const;
+
+/**
+ * An extension kind or registry content type in its stored spelling:
+ * `behaviors` becomes `models` (swamp-club#3410), and every other value is
+ * returned unchanged.
+ */
+export function canonicalExtensionKind(kind: string): string {
+  return kind === BEHAVIOR_EXTENSION_KIND ? MODEL_EXTENSION_KIND : kind;
+}
+
+/**
+ * A list of extension kinds or content types in their stored spelling. A
+ * list with no behavior spelling comes back unchanged, element for element;
+ * otherwise each `behaviors` becomes `models` and repeats are dropped, so
+ * `behaviors,models` names `models` once.
+ */
+export function canonicalExtensionKinds(kinds: readonly string[]): string[] {
+  if (!kinds.includes(BEHAVIOR_EXTENSION_KIND)) return [...kinds];
+  return [...new Set(kinds.map(canonicalExtensionKind))];
+}
 
 /**
  * A single source entry from `.swamp-sources.yaml`.

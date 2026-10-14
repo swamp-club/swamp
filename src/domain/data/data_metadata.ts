@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import {
+  BEHAVIOR_OWNER_TYPE,
+  MODEL_OWNER_TYPE,
+} from "../terminology/behavior_aliases.ts";
 
 /**
  * Lifetime determines how long data should be retained.
@@ -167,6 +171,15 @@ export type DataLifecycle = z.infer<typeof DataLifecycleSchema>;
  */
 export const OwnerTypes = ["model-method", "workflow-step", "manual"] as const;
 export type OwnerType = typeof OwnerTypes[number];
+
+/**
+ * An owner type in its stored spelling: `behavior-method` becomes
+ * `model-method` (swamp-club#3410), and every other value is returned
+ * unchanged.
+ */
+export function canonicalOwnerType(ownerType: string): string {
+  return ownerType === BEHAVIOR_OWNER_TYPE ? MODEL_OWNER_TYPE : ownerType;
+}
 
 /**
  * Owner definition tracks who created/owns the data.

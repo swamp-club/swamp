@@ -49,6 +49,7 @@ import type { DataSearchResponse } from "../../serve/protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { encodeContent } from "../../domain/data/content_encoding.ts";
+import { canonicalOwnerType } from "../../domain/data/data_metadata.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
@@ -175,10 +176,13 @@ async function displayDataDetail(
 export const dataSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
-    .description("Search for data across all models")
+    .description("Search for data across all behaviors")
     .example("Interactive search", "swamp data search")
     .example("Search with query", "swamp data search cpu-metrics")
-    .example("Search within a model", "swamp data search --model my-server")
+    .example(
+      "Search within a behavior",
+      "swamp data search --behavior my-server",
+    )
     .arguments("[query:string]")
     .option(
       "--repo-dir <dir:string>",
@@ -194,13 +198,16 @@ export const dataSearchCommand = withRemoteOptions(
     )
     .option(
       "--owner-type <type:string>",
-      "Filter by owner type (model-method, workflow-step, manual)",
+      "Filter by owner type (behavior-method or model-method, workflow-step, manual)",
     )
     .option(
       "--workflow <name:string>",
       "Filter to data tagged with this workflow name",
     )
-    .option("--model <name:string>", "Filter to data owned by this model name")
+    .option(
+      "--behavior, --model <name:string>",
+      "Filter to data owned by this behavior name",
+    )
     .option(
       "--content-type <mime:string>",
       "Filter by MIME content type (e.g., application/json)",
@@ -211,7 +218,7 @@ export const dataSearchCommand = withRemoteOptions(
     )
     .option(
       "--output <output_id:string>",
-      "Data from a specific model output (by output ID)",
+      "Data from a specific behavior output (by output ID)",
     )
     .option(
       "--run <run_id:string>",
@@ -227,6 +234,12 @@ export const dataSearchCommand = withRemoteOptions(
 ).action(async function (options: AnyOptions, query?: string) {
   const ctx = createContext(options as GlobalOptions, ["data", "search"]);
   const effectiveMode = interactiveOutputMode(ctx);
+  // The behavior spellings (swamp-club#3410) in the stored model form, so the
+  // local search and a serve filter on the same value.
+  const model = options.behavior as string | undefined;
+  const ownerType = options.ownerType === undefined
+    ? undefined
+    : canonicalOwnerType(options.ownerType as string);
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -245,9 +258,9 @@ export const dataSearchCommand = withRemoteOptions(
           query,
           type: options.type as string | undefined,
           lifetime: options.lifetime as string | undefined,
-          ownerType: options.ownerType as string | undefined,
+          ownerType,
           workflow: options.workflow as string | undefined,
-          model: options.model as string | undefined,
+          model,
           contentType: options.contentType as string | undefined,
           since: options.since as string | undefined,
           output: options.output as string | undefined,
@@ -307,9 +320,9 @@ export const dataSearchCommand = withRemoteOptions(
       query,
       type: options.type as string | undefined,
       lifetime: options.lifetime as string | undefined,
-      ownerType: options.ownerType as string | undefined,
+      ownerType,
       workflow: options.workflow as string | undefined,
-      model: options.model as string | undefined,
+      model,
       contentType: options.contentType as string | undefined,
       since: options.since as string | undefined,
       output: options.output as string | undefined,

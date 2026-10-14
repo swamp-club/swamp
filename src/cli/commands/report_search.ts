@@ -27,6 +27,7 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { canonicalReportScope } from "../../domain/reports/report.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
@@ -152,6 +153,12 @@ export async function reportSearchAction(
     "report",
     "search",
   ]);
+  // The behavior spellings (swamp-club#3410) in the stored model form, so the
+  // local search and a serve filter on the same value.
+  const model = options.behavior as string | undefined;
+  const scope = options.scope === undefined
+    ? undefined
+    : canonicalReportScope(options.scope as string);
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -165,9 +172,9 @@ export async function reportSearchAction(
         type: "report.search",
         payload: {
           query,
-          model: options.model as string | undefined,
+          model,
           workflow: options.workflow as string | undefined,
-          scope: options.scope as string | undefined,
+          scope,
           type: options.type as string | undefined,
           labels: options.label as string[] | undefined,
         },
@@ -206,9 +213,9 @@ export async function reportSearchAction(
   await consumeStream(
     reportSearch(libCtx, await buildSearchDeps(repoContext), {
       query,
-      model: options.model as string | undefined,
+      model,
       workflow: options.workflow as string | undefined,
-      scope: options.scope as string | undefined,
+      scope,
       type: options.type as string | undefined,
       labels: options.label as string[] | undefined,
     }),
@@ -228,7 +235,9 @@ export async function reportSearchAction(
 export const reportSearchCommand = withRemoteOptions(
   new Command()
     .name("search")
-    .description("Search stored report results across all models and workflows")
+    .description(
+      "Search stored report results across all behaviors and workflows",
+    )
     .example("Browse all reports", "swamp report search")
     .example("Search by keyword", "swamp report search cost")
     .arguments("[query:string]")
@@ -236,11 +245,14 @@ export const reportSearchCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("--model <name:string>", "Filter to a specific model")
+    .option(
+      "--behavior, --model <name:string>",
+      "Filter to a specific behavior",
+    )
     .option("--workflow <name:string>", "Filter to a specific workflow")
     .option(
       "--scope <scope:string>",
-      "Filter by report scope (method, model, workflow)",
+      "Filter by report scope (method, behavior or model, workflow)",
     )
     .option(
       "--type <name:string>",

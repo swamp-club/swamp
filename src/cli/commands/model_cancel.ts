@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
   definitionArgument,
+  definitionNameType,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -490,7 +491,11 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
       .example("Cancel all running", `${syntax.invocation} --all`),
     syntax,
   )
-    .arguments(`[${definitionArgument(syntax.surface)}:model_name]`)
+    .arguments(
+      `[${definitionArgument(syntax.surface)}:${
+        definitionNameType(syntax.surface)
+      }]`,
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",

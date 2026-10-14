@@ -200,10 +200,10 @@ against during push. Two modes:
 
 Under `typedDir`, `behaviors:` entries (and `include`, beside them) resolve from
 `extensions/behaviors/` while the models directory is the default
-`extensions/models/`. Once `SWAMP_MODELS_DIR` or `.swamp.yaml` `modelsDir` moves
-the models directory there is no behaviors directory, and `behaviors:` entries
-resolve from the configured models directory. `models:` entries always resolve
-from the models directory.
+`extensions/models/`. Once `SWAMP_MODELS_DIR` (or `SWAMP_BEHAVIORS_DIR`) or
+`.swamp.yaml` `modelsDir` moves the models directory there is no behaviors
+directory, and `behaviors:` entries resolve from the configured models
+directory. `models:` entries always resolve from the models directory.
 
 Existing manifests without an explicit `paths.base` keep their semantics
 unchanged — every published extension on the registry today is on the `typedDir`

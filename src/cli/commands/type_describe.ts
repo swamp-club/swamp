@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
   recordDefiningModule,
+  typeNameType,
   withPreferredExample,
 } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -86,7 +87,7 @@ export function createTypeDescribeCommand(syntax: CommandSyntax) {
         "--compact",
         "Output a compact digest (method names, descriptions, argument types, output spec names)",
       )
-      .arguments("<type:model_type>"),
+      .arguments(`<type:${typeNameType(syntax.surface)}>`),
     syntax,
   )).action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string

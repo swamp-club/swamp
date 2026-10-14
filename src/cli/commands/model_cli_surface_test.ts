@@ -28,11 +28,7 @@ import { Command } from "@cliffy/command";
 import { generateShellCompletions } from "@cliffy/command/completions";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { fromFileUrl } from "@std/path";
-import {
-  ModelNameType,
-  ModelTypeType,
-  WorkflowNameType,
-} from "../completion_types.ts";
+import { registerCompletionTypes } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
 import {
@@ -162,13 +158,10 @@ interface ModelCliSurface {
  * appears in subcommand help.
  */
 function surfaceRoot(model: AnyCommand): AnyCommand {
-  return new Command()
+  return registerCompletionTypes(new Command())
     .name("swamp")
     .help({ colors: false })
     .description("AI Native Automation CLI")
-    .globalType("model_name", new ModelNameType())
-    .globalType("model_type", new ModelTypeType())
-    .globalType("workflow_name", new WorkflowNameType())
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .globalOption(
       "--log",

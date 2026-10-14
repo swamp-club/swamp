@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
-import { ModelNameType } from "../completion_types.ts";
+import { registerCompletionTypes } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -103,8 +103,7 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     const { modelMethodRunCommand } = await import("./model_method_run.ts");
-    const root = new Command()
-      .globalType("model_name", new ModelNameType())
+    const root = registerCompletionTypes(new Command())
       .globalOption("--json", "JSON output")
       .command("run", modelMethodRunCommand);
     try {

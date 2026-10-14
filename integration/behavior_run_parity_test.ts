@@ -36,7 +36,7 @@ import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { behaviorCommand } from "../src/cli/commands/behavior.ts";
 import { modelMethodCommand } from "../src/cli/commands/model_method_run.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
-import { ModelNameType } from "../src/cli/completion_types.ts";
+import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
@@ -78,9 +78,8 @@ interface RunResult {
 
 /** The root as runCli wires it: both groups, the model_name type, --json. */
 function root(): AnyCommand {
-  return new Command()
+  return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")
-    .globalType("model_name", new ModelNameType())
     .command("behavior", behaviorCommand)
     .command("model", new Command().command("method", modelMethodCommand));
 }

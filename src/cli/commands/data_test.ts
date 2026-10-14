@@ -33,7 +33,7 @@ Deno.test("dataCommand module loads", async () => {
 
 Deno.test("dataCommand has correct description", async () => {
   const { dataCommand } = await import("./data.ts");
-  assertEquals(dataCommand.getDescription(), "Manage model data");
+  assertEquals(dataCommand.getDescription(), "Manage behavior data");
 });
 
 Deno.test("dataCommand has all subcommands registered", async () => {

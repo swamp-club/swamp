@@ -49,7 +49,7 @@ type AnyOptions = any;
 export const doctorVaultsCommand = withRemoteOptions(
   new Command()
     .description(
-      "Scan model definitions for sensitive resource outputs and verify " +
+      "Scan behavior definitions for sensitive resource outputs and verify " +
         "a vault is configured to store them.",
     )
     .example("Scan this repo's definitions", "swamp doctor vaults")

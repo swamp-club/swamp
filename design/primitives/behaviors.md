@@ -62,9 +62,20 @@ Argument names in help follow the spelling too: `behavior_id_or_name`,
 `swamp model`. They are positional, so a script passes the same values.
 Shell completion offers the `behaviour` alias in zsh only: the bash and fish
 scripts Cliffy generates leave command aliases out, though typing
-`swamp behaviour` works in every shell.
+`swamp behaviour` works in every shell. Arguments under `swamp behavior`
+complete through the `behavior_name` and `behavior_type` completion types,
+and the `swamp model` tree keeps `model_name` and `model_type`
+(swamp-club#3410). All four stay registered with the same completions, so an
+installed completion script keeps working whichever names it calls.
 Telemetry records each `swamp behavior` command in its `swamp model` form and
 keeps the typed word in `commandSpelling` (see `design/operations.md`).
+
+Outside the two trees, every `--model` flag is spelled `--behavior` with
+`--model` as its alias: `data get`, `list`, `versions`, `delete`, `rename` and
+`search`, `report get` and `search`, and `datastore lock release`
+(swamp-club#3410). Both spellings fill one option, and the value sent to serve
+or stored is the same. The positional that names a behavior on those `data`
+commands is `behavior_id_or_name`; a script passes the same values.
 
 These names stay `model`, because existing repos, workflows, extensions and
 scripts depend on them:
@@ -83,6 +94,11 @@ scripts depend on them:
 - Code names, such as the `ModelType` and `ModelRegistry` classes,
   `src/domain/models/`, libswamp names and log categories like
   `["model", "get"]`.
+- `swamp serve --restricted-model-types`, which has no behavior spelling: a
+  new flag name for a security setting would be one more thing to audit.
+- The equivalent query `data get` prints, such as
+  `model("my-server") && name == "state"`, so the line it prints runs on any
+  swamp release that has `data query`.
 
 Some of these names also accept a behavior spelling where people write them
 (swamp-club#3334, swamp-club#3338):
@@ -96,6 +112,19 @@ Some of these names also accept a behavior spelling where people write them
   [../enablers/serve-audit.md](../enablers/serve-audit.md).
 - The extension export `export const behavior`, the `extensions/behaviors/`
   directory and the manifest `behaviors:` key. See "Behavior Spelling" in
+  [extensions.md](./extensions.md).
+- `extension source add --only behaviors` and
+  `extension search --content-type behaviors`, which mean `models`
+  (swamp-club#3410). `.swamp-sources.yaml` and the registry keep `models`.
+- `report search --scope behavior`, which means the `model` scope. See
+  [../enablers/reports.md](../enablers/reports.md).
+- `data search --owner-type behavior-method`, which means `model-method`. See
+  [data.md](./data.md).
+- `behaviorName` and `behavior("<name or id>")` in `data query`, which
+  evaluate as `modelName` and `model(...)`. See
+  [../enablers/data-query.md](../enablers/data-query.md).
+- The `SWAMP_BEHAVIORS_DIR` environment variable, which names the models
+  directory as `SWAMP_MODELS_DIR` does. See "Behavior Spelling" in
   [extensions.md](./extensions.md).
 
 Each is an exact synonym. Swamp translates it to the model form where the value

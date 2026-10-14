@@ -298,15 +298,15 @@ export const extensionPushCommand = new Command()
   .description("Push an extension to the swamp registry")
   .example(
     "Publish extension",
-    "swamp extension push extensions/models/my-model/manifest.json",
+    "swamp extension push extensions/behaviors/my-behavior/manifest.json",
   )
   .example(
     "Dry run",
-    "swamp extension push extensions/models/my-model/manifest.json --dry-run",
+    "swamp extension push extensions/behaviors/my-behavior/manifest.json --dry-run",
   )
   .example(
     "With release notes",
-    `swamp extension push extensions/models/my-model/manifest.json --release-notes "Added validate method"`,
+    `swamp extension push extensions/behaviors/my-behavior/manifest.json --release-notes "Added validate method"`,
   )
   .arguments("<manifest-path:string>")
   .option(

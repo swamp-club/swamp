@@ -29,7 +29,7 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { modelGetCommand } from "../src/cli/commands/model_get.ts";
-import { ModelNameType } from "../src/cli/completion_types.ts";
+import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
 import { SWAMP_SUBDIRS } from "../src/infrastructure/persistence/paths.ts";
@@ -100,9 +100,8 @@ async function modelGetJson(
   const originalLog = console.log;
   console.log = (...args: unknown[]) => printed.push(args.join(" "));
   try {
-    await new Command()
+    await registerCompletionTypes(new Command())
       .globalOption("--json", "JSON output")
-      .globalType("model_name", new ModelNameType())
       .command("get", modelGetCommand)
       .parse(["get", modelIdOrName, "--repo-dir", repoDir, "--json"]);
   } finally {

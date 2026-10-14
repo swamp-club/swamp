@@ -33,7 +33,7 @@ const LOCKFILE = "upstream_extensions.json";
 Deno.test("resolveExtensionLockfilePaths: includes the default non-managed lockfile", () => {
   const repoDir = uniqueRepo();
   const paths = withMockedEnv(
-    { SWAMP_MODELS_DIR: undefined },
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
     () => resolveExtensionLockfilePaths(repoDir, null),
   );
   assert(paths.includes(join(repoDir, "extensions", "models", LOCKFILE)));
@@ -44,7 +44,7 @@ Deno.test("resolveExtensionLockfilePaths: follows the marker's models dir", () =
   const repoDir = uniqueRepo();
   const marker = { modelsDir: "custom/models" } as RepoMarkerData;
   const paths = withMockedEnv(
-    { SWAMP_MODELS_DIR: undefined },
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
     () => resolveExtensionLockfilePaths(repoDir, marker),
   );
   assert(paths.includes(join(repoDir, "custom", "models", LOCKFILE)));
@@ -55,7 +55,7 @@ Deno.test("resolveExtensionLockfilePaths: follows SWAMP_MODELS_DIR", () => {
   const repoDir = uniqueRepo();
   const envDir = resolve("/tmp/swamp-env-models");
   const paths = withMockedEnv(
-    { SWAMP_MODELS_DIR: envDir },
+    { SWAMP_MODELS_DIR: envDir, SWAMP_BEHAVIORS_DIR: undefined },
     () => resolveExtensionLockfilePaths(repoDir, null),
   );
   assert(paths.includes(join(envDir, LOCKFILE)));
@@ -66,7 +66,7 @@ Deno.test("resolveExtensionLockfilePaths: includes a registered managed-config b
   const base = resolve("/tmp/swamp-cache/tier");
   registerManagedConfig(repoDir, true, base);
   const paths = withMockedEnv(
-    { SWAMP_MODELS_DIR: undefined },
+    { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
     () => resolveExtensionLockfilePaths(repoDir, null),
   );
   assert(paths.includes(join(base, LOCKFILE)));

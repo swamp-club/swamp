@@ -46,11 +46,11 @@ Deno.test("dataVersionsCommand is registered as subcommand of dataCommand", asyn
   assertEquals(versionsCmd !== undefined, true);
 });
 
-Deno.test("dataVersionsCommand has --model option", async () => {
+Deno.test("dataVersionsCommand has --behavior option with its --model alias", async () => {
   const { dataVersionsCommand } = await import("./data_versions.ts");
   const options = dataVersionsCommand.getOptions();
-  const modelOpt = options.find((o) => o.name === "model");
-  assertEquals(modelOpt !== undefined, true);
+  const modelOpt = options.find((o) => o.name === "behavior");
+  assertEquals(modelOpt?.flags, ["--behavior", "--model"]);
 });
 
 Deno.test("dataVersionsCommand has --name option", async () => {

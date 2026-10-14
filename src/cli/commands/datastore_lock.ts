@@ -130,8 +130,8 @@ const datastoreLockReleaseCommand = new Command()
     "swamp datastore lock release --force",
   )
   .example(
-    "Release a model lock",
-    "swamp datastore lock release --force --model aws-ec2/my-server",
+    "Release a behavior lock",
+    "swamp datastore lock release --force --behavior aws-ec2/my-server",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -139,8 +139,8 @@ const datastoreLockReleaseCommand = new Command()
   )
   .option("--force", "Required to confirm force release", { required: true })
   .option(
-    "--model <model:string>",
-    "Release a specific model's lock (type/id format, e.g. aws-ec2/my-server)",
+    "--behavior, --model <behavior:string>",
+    "Release a specific behavior's lock (type/id format, e.g. aws-ec2/my-server)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -160,7 +160,7 @@ const datastoreLockReleaseCommand = new Command()
       resolveRepoDir(options.repoDir),
     );
 
-    const modelSpec = options.model as string | undefined;
+    const modelSpec = options.behavior as string | undefined;
 
     let lock;
     if (modelSpec) {

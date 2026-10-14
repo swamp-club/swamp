@@ -34,7 +34,7 @@ Deno.test("dataDeleteCommand has correct description", async () => {
   const { dataDeleteCommand } = await import("./data_delete.ts");
   assertEquals(
     dataDeleteCommand.getDescription(),
-    "Delete data artifacts: one by name, many by prefix, or all for a model",
+    "Delete data artifacts: one by name, many by prefix, or all for a behavior",
   );
 });
 
@@ -72,11 +72,11 @@ Deno.test("dataDeleteCommand accepts two arguments", async () => {
   assertEquals(args.length, 2);
 });
 
-Deno.test("dataDeleteCommand has --model option", async () => {
+Deno.test("dataDeleteCommand has --behavior option with its --model alias", async () => {
   const { dataDeleteCommand } = await import("./data_delete.ts");
   const options = dataDeleteCommand.getOptions();
-  const modelOpt = options.find((o) => o.name === "model");
-  assertEquals(modelOpt !== undefined, true);
+  const modelOpt = options.find((o) => o.name === "behavior");
+  assertEquals(modelOpt?.flags, ["--behavior", "--model"]);
 });
 
 Deno.test("dataDeleteCommand has --name option", async () => {

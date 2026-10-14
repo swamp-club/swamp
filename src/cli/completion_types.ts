@@ -135,3 +135,43 @@ export class ModelTypeType extends Type<string> {
     return modelRegistry.publicTypes().map((t) => t.normalized);
   }
 }
+
+/**
+ * The completion type names and the type each one parses with. The behavior
+ * spellings (swamp-club#3410) sit beside the model ones: commands in the
+ * `swamp behavior` tree name `behavior_name` and `behavior_type`, the
+ * `swamp model` tree keeps `model_name` and `model_type`, and installed
+ * completion scripts call whichever name they were generated with, so every
+ * name stays registered.
+ */
+const COMPLETION_TYPES: ReadonlyArray<readonly [string, () => Type<string>]> = [
+  ["model_name", () => new ModelNameType()],
+  ["model_type", () => new ModelTypeType()],
+  ["workflow_name", () => new WorkflowNameType()],
+  ["behavior_name", () => new ModelNameType()],
+  ["behavior_type", () => new ModelTypeType()],
+];
+
+/** The completion type names {@link registerCompletionTypes} registers. */
+export const COMPLETION_TYPE_NAMES: readonly string[] = COMPLETION_TYPES.map((
+  [name],
+) => name);
+
+/** A command that global types can be registered on. */
+interface GlobalTypeRegistrar {
+  globalType(name: string, handler: Type<string>): unknown;
+}
+
+/**
+ * Registers every completion type on `command` as a global type and returns
+ * it. The CLI root and every test root that mounts real commands use this,
+ * so a command naming any completion type parses under each of them.
+ */
+export function registerCompletionTypes<T extends GlobalTypeRegistrar>(
+  command: T,
+): T {
+  for (const [name, create] of COMPLETION_TYPES) {
+    command.globalType(name, create());
+  }
+  return command;
+}
