@@ -397,7 +397,12 @@ Deno.test({
       const replicator = new LitestreamReplicator(world.deps());
       const handle = await replicator.acquire(world.request(db, 1));
       world.leaseCurrent = false;
-      await assertRejects(() => handle.sync(5_000), Error, "fenced");
+      // A lost lease fails the command like any unconfirmed sync.
+      await assertRejects(
+        () => handle.sync(5_000),
+        V3ReplicationError,
+        "lost its writer lease",
+      );
       assertEquals(world.leaseChecks, 1);
       await handle.release();
     });
@@ -554,6 +559,114 @@ Deno.test({
         (await Deno.stat(world.paths.useLock)).mtime?.getTime(),
         before,
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.acquire: concurrent acquires in one process share one sidecar and one hold",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const [a, b] = await Promise.all([
+        replicator.acquire(world.request(db, 1)),
+        replicator.acquire(world.request(db, 1)),
+      ]);
+      assertEquals(world.sidecars.length, 1);
+      await a.release();
+      const probe = await Deno.open(world.paths.useLock, {
+        read: true,
+        write: true,
+      });
+      try {
+        assertEquals(await probe.tryLock(true), false, "b still holds it");
+      } finally {
+        probe.close();
+      }
+      await b.release();
+      const after = await Deno.open(world.paths.useLock, {
+        read: true,
+        write: true,
+      });
+      try {
+        assertEquals(await after.tryLock(true), true, "no hold leaked");
+      } finally {
+        after.close();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a replacement kills nothing when the record changed while it waited",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const setupReplicator = new LitestreamReplicator(world.deps());
+      await (await setupReplicator.acquire(world.request(db, 1))).release();
+      const first = world.sidecars[0];
+      first.frozen = true;
+      // Another command holds the sidecar, so this one's replacement waits
+      // for the use lock.
+      const other = await Deno.open(world.paths.useLock, {
+        read: true,
+        write: true,
+      });
+      await other.lock(false);
+      const started = world.time;
+      let swapped = false;
+      const base = world.deps();
+      const replicator = new LitestreamReplicator({
+        ...base,
+        async sleep(ms) {
+          await base.sleep(ms);
+          // Past the start wait, the replacement is waiting for the lock:
+          // the other command replaces the sidecar and lets go.
+          if (!swapped && world.time - started > 350) {
+            swapped = true;
+            world.processes.signalGroup(first.supervisorPid, "SIGKILL");
+            world.processes.launch({
+              command: "swamp",
+              args: [
+                "__swamp_v3_replication_supervisor",
+                "--db",
+                world.paths.commitsDb,
+                "--private-root",
+                "/p",
+                "--lineage",
+                "1",
+                "--replica-path",
+                "/replica/_litestream/000000000001",
+                "--idle-ms",
+                "1",
+                "--stop-wait-ms",
+                "1",
+                "--tick-ms",
+                "1",
+              ],
+              cwd: "/",
+            });
+            await Promise.all(world.starting);
+            world.killed.length = 0;
+            other.close();
+          }
+        },
+      });
+      try {
+        await (await replicator.acquire(world.request(db, 2))).release();
+      } finally {
+        if (!swapped) other.close();
+      }
+      assert(swapped);
+      assertEquals(
+        world.killed.filter((pid) => pid < 0),
+        [],
+        "the newer supervisor was not killed",
+      );
+      assertEquals(world.live.length, 1);
     });
   },
 });

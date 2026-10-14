@@ -188,6 +188,8 @@ export function hostSupervisorCommand(): SupervisorCommand {
  */
 export class LitestreamReplicator {
   readonly #held = new Map<string, { handle: SharedHandle; refs: number }>();
+  /** Acquires in flight, which concurrent callers for the database join. */
+  readonly #acquiring = new Map<string, Promise<SharedHandle>>();
 
   constructor(private readonly deps: ReplicatorDeps) {}
 
@@ -201,14 +203,24 @@ export class LitestreamReplicator {
       request.commitsDb,
       this.deps.privateRoot ?? defaultPrivateRoot(),
     );
-    const held = this.#held.get(paths.commitsDb);
-    if (held !== undefined) {
-      held.refs++;
-      return held.handle.view(() => this.#releaseShared(paths.commitsDb));
+    const key = paths.commitsDb;
+    let held = this.#held.get(key);
+    if (held === undefined) {
+      let acquiring = this.#acquiring.get(key);
+      if (acquiring === undefined) {
+        acquiring = this.#acquireNew(paths, request).then((handle) => {
+          this.#held.set(key, { handle, refs: 0 });
+          return handle;
+        }).finally(() => {
+          this.#acquiring.delete(key);
+        });
+        this.#acquiring.set(key, acquiring);
+      }
+      await acquiring;
+      held = this.#held.get(key)!;
     }
-    const handle = await this.#acquireNew(paths, request);
-    this.#held.set(paths.commitsDb, { handle, refs: 1 });
-    return handle.view(() => this.#releaseShared(paths.commitsDb));
+    held.refs++;
+    return held.handle.view(() => this.#releaseShared(key));
   }
 
   async #releaseShared(key: string): Promise<void> {
@@ -522,6 +534,21 @@ export class LitestreamReplicator {
     );
     try {
       const processes = this.deps.processes;
+      // Converting a flock is not atomic: while this command waited, its
+      // shared hold lapsed and another command may have replaced the
+      // sidecar. Kill only the supervisor the record still names, verified
+      // again; otherwise the caller looks afresh.
+      const now = await readPresence(paths);
+      if (
+        now.kind !== "found" ||
+        now.record.supervisorPid !== action.supervisorPid ||
+        !isSupervisorFor(
+          await processes.commandLine(action.supervisorPid),
+          paths.commitsDb,
+        )
+      ) {
+        return;
+      }
       // Verified as this database's supervisor, which leads its own group,
       // its Litestream included.
       processes.signalGroup(action.supervisorPid, "SIGKILL");
@@ -616,7 +643,16 @@ class SharedHandle {
     }
     // The lease could have been taken over while the sync ran: a fenced
     // writer reports nothing as replicated.
-    await this.assertLeaseCurrent();
+    try {
+      await this.assertLeaseCurrent();
+    } catch (error) {
+      throw new V3ReplicationError(
+        `this process lost its writer lease while the sync ran: ${
+          messageOf(error)
+        }`,
+        { cause: error },
+      );
+    }
   }
 
   async probe(): Promise<boolean> {

@@ -23,7 +23,13 @@
  * the sidecar is a real detached supervisor with Litestream as its child.
  */
 
-import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
+import { V3ReplicationError } from "../src/domain/datastore_v3/litestream_replication.ts";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
@@ -530,6 +536,46 @@ Deno.test({
         await upkeep.stop();
         await own();
       }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replication: serve's close fails when its sidecar could not be replaced",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
+      const first = (await presenceOf(env))!;
+      const upkeep = startV3ReplicationUpkeep(env.datastorePath, {
+        probeIntervalMs: 200,
+      });
+      // From now on no sidecar can be started: the binary cannot be had.
+      let attempts = 0;
+      setV3ReplicationForTesting({
+        privateRoot: env.privateRoot,
+        timings: TEST_TIMINGS,
+        resolveBinary: () => {
+          attempts++;
+          return Promise.reject(new Error("offline"));
+        },
+      });
+      try {
+        await commitIn(env, 1);
+        hostLitestreamProcesses.signalGroup(first.supervisorPid, "SIGKILL");
+        await waitFor(
+          () => attempts > 0,
+          "the probe's replacement to try a start",
+        );
+      } finally {
+        await upkeep.stop();
+      }
+      await assertRejects(
+        () => closeV3Datastores(),
+        V3ReplicationError,
+        "could not be replaced",
+      );
     });
   },
 });

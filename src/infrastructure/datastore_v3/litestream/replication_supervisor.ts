@@ -210,12 +210,19 @@ async function superviseHeld(
     replicaPath: options.replicaPath,
   };
   await writePresence(paths, presence);
-  await clearReplacementMarks(paths);
-  await touchUseLock(paths, deps.now());
-  // A socket a killed sidecar left behind would make Litestream fail to bind.
-  await Deno.remove(paths.socket).catch(() => {});
-  const binary = await deps.resolveBinary();
-  const child = deps.startLitestream(binary, paths.config);
+  let child: LitestreamChild;
+  try {
+    await clearReplacementMarks(paths);
+    await touchUseLock(paths, deps.now());
+    // A socket a killed sidecar left behind would make Litestream fail to
+    // bind.
+    await Deno.remove(paths.socket).catch(() => {});
+    child = deps.startLitestream(await deps.resolveBinary(), paths.config);
+  } catch (error) {
+    // No record of a supervisor that never ran Litestream.
+    await cleanUp(paths);
+    throw error;
+  }
   let exited = false;
   child.exited.then(() => {
     exited = true;

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
   type LitestreamChild,
@@ -298,6 +298,29 @@ Deno.test({
         "stop-requested",
       );
       assertEquals(h.child.signals, ["SIGTERM"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a binary that cannot be had leaves no record behind",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options, paths } = await setup(dir);
+      const h = harness();
+      await assertRejects(
+        () =>
+          runReplicationSupervisor(options, {
+            ...h.deps,
+            resolveBinary: () => Promise.reject(new Error("offline")),
+          }),
+        Error,
+        "offline",
+      );
+      assertEquals(await readPresence(paths), { kind: "missing" });
+      assertEquals(h.started, false);
     });
   },
 });

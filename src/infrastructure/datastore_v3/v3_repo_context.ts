@@ -70,6 +70,7 @@ import {
   writeWriterMarker,
 } from "./interrupted_writer_recovery.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
@@ -83,6 +84,13 @@ const opened = new Map<string, V3Datastore>();
  * replication is on.
  */
 const replications = new Map<string, ReplicationHandle[]>();
+
+/**
+ * Datastores whose sidecar serve released and could not get back: their
+ * commits since then are unconfirmed, so the closing sync must not pass
+ * silently.
+ */
+const owedReplications = new Set<string>();
 
 /** Whether the lease listener that records replication lineages is set. */
 let lineageListening = false;
@@ -443,10 +451,24 @@ export async function closeV3Datastores(): Promise<void> {
   // close: it makes Litestream open commits.db, so swamp's close is not the
   // last one and the WAL survives for the next sidecar start.
   const held = [...replications.values()];
+  const owed = [...owedReplications].filter((key) => !replications.has(key));
   replications.clear();
-  const synced = await Promise.allSettled(
-    held.map((uses) => uses[0].sync(v3SyncDeadlineMs())),
-  );
+  owedReplications.clear();
+  const synced = await Promise.allSettled([
+    ...held.map((uses) => uses[0].sync(v3SyncDeadlineMs())),
+    ...owed.map((datastore) =>
+      Promise.reject(
+        markErrorPaths(
+          new V3ReplicationError(
+            `the Litestream sidecar of the v3 datastore at ${datastore} ` +
+              `could not be replaced, so serve's recent commits were never ` +
+              `confirmed`,
+          ),
+          [datastore],
+        ),
+      )
+    ),
+  ]);
   setV3SyncDeadline(undefined);
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
@@ -507,8 +529,14 @@ export function startV3ReplicationUpkeep(
       await Promise.allSettled(uses.map((use) => use.release()));
       const fence = v3WriterFence(datastorePath);
       if (fence === undefined || stopped) return;
+      // Owed until a sidecar is held again: a shutdown before then must not
+      // report serve's commits as replicated.
+      owedReplications.add(key);
       const next = await acquireV3Replication(datastorePath, fence);
-      if (next !== undefined) replications.set(key, [next]);
+      if (next !== undefined) {
+        replications.set(key, [next]);
+        owedReplications.delete(key);
+      }
     })().catch((error) => {
       logger
         .warn`Replacing the Litestream sidecar of the v3 datastore at ${datastorePath} failed; the next probe retries: ${error}`;

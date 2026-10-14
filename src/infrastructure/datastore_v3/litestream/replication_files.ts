@@ -135,7 +135,7 @@ async function shortHash(text: string): Promise<string> {
     "SHA-256",
     new TextEncoder().encode(text),
   );
-  return [...new Uint8Array(digest).slice(0, 4)]
+  return [...new Uint8Array(digest).slice(0, 8)]
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 

@@ -6749,7 +6749,8 @@ export const serveCommand = new Command()
       await policySnapshotLoader.dispose();
       await v3Maintenance?.stop();
       // No sidecar replacement runs past here, and the closing sync gets
-      // what the drain left, floored (swamp-club#3416).
+      // what the drain left (swamp-club#3416). What is left may be negative:
+      // setV3SyncDeadline floors it at 10 s.
       await v3Replication?.stop();
       setV3SyncDeadline(
         shutdownDrainTimeoutMs - (Date.now() - drainStarted),

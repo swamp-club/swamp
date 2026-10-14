@@ -255,16 +255,15 @@ async function readAll(conn: Deno.UnixConn): Promise<Uint8Array> {
  * chunked.
  */
 export function parseResponse(bytes: Uint8Array): ControlResponse {
-  const text = new TextDecoder().decode(bytes);
-  const split = text.indexOf("\r\n\r\n");
+  const split = indexOfBytes(bytes, CRLF_CRLF);
   if (split < 0) {
     throw new LitestreamControlError(
       "the control response has no headers",
       false,
     );
   }
-  const head = text.slice(0, split);
-  let body = text.slice(split + 4);
+  const head = new TextDecoder().decode(bytes.subarray(0, split));
+  let body = bytes.subarray(split + CRLF_CRLF.length);
   const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(head)?.[1]);
   if (!Number.isInteger(status)) {
     throw new LitestreamControlError(
@@ -272,11 +271,13 @@ export function parseResponse(bytes: Uint8Array): ControlResponse {
       false,
     );
   }
+  // Chunk sizes count bytes, so the body is dechunked before it is decoded.
   if (/^transfer-encoding:\s*chunked/im.test(head)) body = dechunk(body);
+  const text = new TextDecoder().decode(body);
   let parsed: unknown = {};
-  if (body.trim() !== "") {
+  if (text.trim() !== "") {
     try {
-      parsed = JSON.parse(body);
+      parsed = JSON.parse(text);
     } catch (error) {
       throw new LitestreamControlError(
         "the control response is not JSON",
@@ -293,16 +294,42 @@ export function parseResponse(bytes: Uint8Array): ControlResponse {
   };
 }
 
-function dechunk(body: string): string {
-  let out = "";
+const CRLF = new Uint8Array([13, 10]);
+const CRLF_CRLF = new Uint8Array([13, 10, 13, 10]);
+
+function indexOfBytes(
+  haystack: Uint8Array,
+  needle: Uint8Array,
+  from = 0,
+): number {
+  outer: for (let i = from; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function dechunk(body: Uint8Array): Uint8Array {
+  const parts: Uint8Array[] = [];
   let at = 0;
   while (at < body.length) {
-    const lineEnd = body.indexOf("\r\n", at);
+    const lineEnd = indexOfBytes(body, CRLF, at);
     if (lineEnd < 0) break;
-    const size = parseInt(body.slice(at, lineEnd), 16);
+    const size = parseInt(
+      new TextDecoder().decode(body.subarray(at, lineEnd)),
+      16,
+    );
     if (!Number.isFinite(size) || size === 0) break;
-    out += body.slice(lineEnd + 2, lineEnd + 2 + size);
+    parts.push(body.subarray(lineEnd + 2, lineEnd + 2 + size));
     at = lineEnd + 2 + size + 2;
+  }
+  const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
   }
   return out;
 }

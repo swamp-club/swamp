@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 import { ValidationError } from "@cliffy/command";
 import { bold, dim, red, yellow } from "@std/fmt/colors";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -27,6 +26,7 @@ import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.
 import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_user_error.ts";
 import type { OutputMode } from "./output.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
+import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 
 const logger = getSwampLogger(["error"]);
 

@@ -563,6 +563,34 @@ Deno.test("read model: syncUnsyncedFiles makes the listed files durable and clea
   });
 });
 
+Deno.test({
+  name:
+    "read model: syncUnsyncedFiles syncs a read-only file too, so one cannot stall the list (swamp-club#3416)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withV3Env(async (env) => {
+      await appendScenario(env);
+      const model = env.openReadModel({
+        bootIdentity: () => Promise.resolve("boot-id:1"),
+      });
+      try {
+        await model.catchUp(signal());
+        const listed = unsyncedCount(env);
+        assert(listed > 0, "the catch-up listed no unsynced files");
+        const file = join(
+          swampPath(env.repoDir),
+          ...dataKey("b", 1).toString().split("/"),
+        );
+        await Deno.chmod(file, 0o444);
+        assertEquals(await model.syncUnsyncedFiles(), listed);
+        assertEquals(unsyncedCount(env), 0);
+      } finally {
+        await model.close();
+      }
+    });
+  },
+});
+
 Deno.test("read model: a commit whose unsynced keys cannot be recorded is not recorded as applied (swamp-club#3337)", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {

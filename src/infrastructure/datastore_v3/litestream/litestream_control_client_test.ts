@@ -215,3 +215,22 @@ Deno.test("parseResponse: rejects a response without headers or JSON", () => {
     assertEquals(error instanceof LitestreamControlError, true);
   }
 });
+
+Deno.test("parseResponse: dechunks by bytes, so non-ASCII text survives", () => {
+  const body = new TextEncoder().encode(
+    '{"error":"database not found: /tmp/caf\u00e9.db"}',
+  );
+  const head = new TextEncoder().encode(
+    `HTTP/1.1 404 X\r\nTransfer-Encoding: chunked\r\n\r\n${
+      body.length.toString(16)
+    }\r\n`,
+  );
+  const tail = new TextEncoder().encode("\r\n0\r\n\r\n");
+  const raw = new Uint8Array(head.length + body.length + tail.length);
+  raw.set(head);
+  raw.set(body, head.length);
+  raw.set(tail, head.length + body.length);
+  assertEquals(parseResponse(raw).body, {
+    error: "database not found: /tmp/caf\u00e9.db",
+  });
+});
