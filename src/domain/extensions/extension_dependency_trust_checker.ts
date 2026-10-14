@@ -17,6 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  format,
+  maxSatisfying,
+  type SemVer,
+  tryParse,
+  tryParseRange,
+} from "@std/semver";
 import type { DependencySpecifier } from "./extension_dependency_extractor.ts";
 
 /**
@@ -93,6 +100,13 @@ interface NpmPackageFacts {
   maintainerCount: number;
   weeklyDownloads: number | null;
   lastPublish: string | null;
+}
+
+/** The npm lookup's facts plus what resolving the audited version needs. */
+interface NpmPackument extends NpmPackageFacts {
+  /** Every version the packument lists. */
+  publishedVersions: string[];
+  distTags: Record<string, string>;
 }
 
 /** A lookup's outcome: its data, or why the service could not answer. */
@@ -293,7 +307,7 @@ async function fetchNpmFacts(
   name: string,
   fetcher: Fetcher,
   signal?: AbortSignal,
-): Promise<Lookup<NpmPackageFacts>> {
+): Promise<Lookup<NpmPackument>> {
   // The download count is a soft signal: its failure leaves it null and
   // never makes the package metadata lookup, or the audit, fail.
   const [pkgSettled, downloadsSettled] = await Promise.allSettled([
@@ -333,12 +347,18 @@ async function fetchNpmFacts(
     }
     const pkgBody = await pkgResp.json() as Record<string, unknown>;
 
-    const distTags = pkgBody["dist-tags"] as Record<string, string> | undefined;
-    const latestVersion = distTags?.latest ??
+    const distTags: Record<string, string> = {};
+    const rawTags = pkgBody["dist-tags"];
+    if (rawTags && typeof rawTags === "object") {
+      for (const [tag, value] of Object.entries(rawTags)) {
+        if (typeof value === "string") distTags[tag] = value;
+      }
+    }
+    const latestVersion = distTags.latest ??
       String(pkgBody.version ?? "unknown");
-    const versions = pkgBody.versions as
-      | Record<string, Record<string, unknown>>
-      | undefined;
+    const versions = pkgBody.versions && typeof pkgBody.versions === "object"
+      ? pkgBody.versions as Record<string, Record<string, unknown>>
+      : undefined;
     const latestManifest = versions?.[latestVersion];
 
     const rawLicense = latestManifest?.license ?? pkgBody.license;
@@ -360,6 +380,8 @@ async function fetchNpmFacts(
       kind: "found",
       value: {
         version: latestVersion,
+        publishedVersions: versions ? Object.keys(versions) : [],
+        distTags,
         license,
         deprecated,
         maintainerCount,
@@ -370,6 +392,31 @@ async function fetchNpmFacts(
   } catch (error) {
     return { kind: "unavailable", reason: describeFailure(error, signal) };
   }
+}
+
+/**
+ * The exact version OSV is asked about, resolved the way the registry's
+ * scorecard does: an exact version as-is, a dist-tag through `distTags`, a
+ * range to the highest published version that satisfies it, and no version
+ * to `latest`. Null when nothing resolves; a versionless OSV query would
+ * return every advisory the package ever had.
+ */
+export function resolveAuditVersion(
+  specVersion: string | null,
+  publishedVersions: readonly string[],
+  distTags: Readonly<Record<string, string>>,
+): string | null {
+  if (specVersion === null) return distTags.latest ?? null;
+  if (tryParse(specVersion)) return specVersion;
+  if (Object.hasOwn(distTags, specVersion)) return distTags[specVersion];
+
+  const range = tryParseRange(specVersion);
+  if (!range) return null;
+  const published = publishedVersions
+    .map((v) => tryParse(v))
+    .filter((v): v is SemVer => v !== undefined);
+  const best = maxSatisfying(published, range);
+  return best ? format(best) : null;
 }
 
 /**
@@ -487,10 +534,14 @@ export async function checkDependencyTrust(
     const results = await Promise.allSettled(
       batch.map(async (spec) => {
         const npm = await fetchNpmFacts(spec.name, fetcher, signal);
-        const version = spec.version ??
-          (npm.kind === "found" ? npm.value.version : null);
-        // Without npm metadata the specifier's own version still lets OSV
-        // answer; an unpinned specifier has nothing to query it with.
+        // Without npm metadata only an exact specifier still lets OSV answer.
+        const version = npm.kind === "found"
+          ? resolveAuditVersion(
+            spec.version,
+            npm.value.publishedVersions,
+            npm.value.distTags,
+          )
+          : resolveAuditVersion(spec.version, [], {});
         const osv = version === null
           ? null
           : await queryOsvVulns(spec.name, version, fetcher, signal);
@@ -500,7 +551,13 @@ export async function checkDependencyTrust(
           failures.push(`npm registry lookup failed (${npm.reason})`);
         }
         if (osv === null) {
-          failures.push("OSV not queried (no pinned version)");
+          failures.push(
+            npm.kind === "found"
+              ? `OSV not queried (no published version matches ${
+                spec.version ?? "latest"
+              })`
+              : "OSV not queried (no resolvable version)",
+          );
         } else if (osv.kind === "unavailable") {
           failures.push(`OSV lookup failed (${osv.reason})`);
         }
@@ -515,7 +572,7 @@ export async function checkDependencyTrust(
         const facts = npm.kind === "found" ? npm.value : null;
         const summary: DependencyAuditSummary = {
           name: spec.name,
-          version: version ?? "unknown",
+          version: version ?? spec.version ?? "latest",
           registry: "npm",
           license: facts?.license ?? null,
           weeklyDownloads: facts?.weeklyDownloads ?? null,

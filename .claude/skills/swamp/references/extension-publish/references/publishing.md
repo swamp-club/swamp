@@ -573,9 +573,12 @@ too. A real drift finding has no `cause`. None of these block the push.
 ### Unaudited dependencies
 
 The dependency trust audit queries OSV.dev and the npm registry for each `npm:`
-import. When either lookup fails, the dependency is **not audited**, never
-passed: its `warnings.dependencyTrust` entry carries `cause: "not-audited"` and
-a message naming the failed lookup and the HTTP status or network error, and in
+import, asking OSV about the exact version the specifier resolves to (a range
+resolves to its highest published match). When either lookup fails, or no
+published version matches the specifier, the dependency is **not audited**,
+never passed: its `warnings.dependencyTrust` entry carries
+`cause: "not-audited"` and a message naming the failed lookup (with the HTTP
+status or network error) or the unmatched specifier, and in
 `swamp extension quality` it is marked `?` and loses the `dependency-trust`
 factor. Unaudited dependencies are gated like safety and review warnings: an
 interactive push prompts, `--yes` waives them, and the summaries list them under
