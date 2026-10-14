@@ -240,6 +240,12 @@ export interface ExtensionPushPrepareInput {
    * report them.
    */
   missingModules?: MissingLocalModule[];
+  /**
+   * Entry points whose module graph reaches a symlink. The bundler would
+   * follow it and quote the target in its errors, so they are never
+   * bundled (swamp-club#3420).
+   */
+  entryPointsReachingSymlinks?: string[];
   dryRun: boolean;
   /**
    * What to do with the registry-side checks (authentication, collective
@@ -1175,14 +1181,22 @@ export async function extensionPushPrepare(
     );
   }
 
+  // 6c. A file a check rejected (only `collect` mode gets this far with
+  // one) is left out of every later gate as well as the archive: fmt, lint
+  // and review read a symlink's target and would quote it (swamp-club#3420).
+  const gated = rejectedFiles.size > 0
+    ? withoutFiles(input, rejectedFiles)
+    : input;
+  const notRejected = (file: string) => !rejectedFiles.has(file);
+
   // 7. Dependency trust audit
   let dependencyTrustResult: DependencyTrustResult;
   const sourceFiles = [
-    ...input.allModelFiles,
-    ...input.allVaultFiles,
-    ...input.allDatastoreFiles,
-    ...input.allReportFiles,
-    ...input.allWebhookFiles,
+    ...gated.allModelFiles,
+    ...gated.allVaultFiles,
+    ...gated.allDatastoreFiles,
+    ...gated.allReportFiles,
+    ...gated.allWebhookFiles,
   ];
   const specifiers = await deps.extractDependencySpecifiers(sourceFiles);
   if (specifiers.length > 0) {
@@ -1250,7 +1264,7 @@ export async function extensionPushPrepare(
   // written only after quality checks passed)
   if (!usingCachedArchive) {
     const qualityResult = await deps.checkExtensionQuality(
-      qualityFiles,
+      qualityFiles.filter(notRejected),
       denoPath,
       input.denoConfigPath,
       deps.getDenoEnv(),
@@ -1270,7 +1284,7 @@ export async function extensionPushPrepare(
   // chain terminates at its declared version. Always runs (not gated on
   // cache hit) since it's a fast file read.
   const upgradeChainIssues = await checkUpgradeChainConsistency(
-    input.allModelFiles,
+    gated.allModelFiles,
   );
   if (upgradeChainIssues.length > 0) {
     failGate(
@@ -1286,10 +1300,10 @@ export async function extensionPushPrepare(
   // with `swamp extension quality`, after the mechanical gates (safety,
   // deps, fmt) so those fire first.
   const findings = await runQualityFindings(ctx, deps, {
-    input,
+    input: gated,
     sidecar,
     safetyWarnings: safetyResult.warnings,
-    files: allFiles,
+    files: allFiles.filter(notRejected),
   });
   const reviewRulesResult = findings.reviewRulesResult;
   if (reviewRulesResult.errors.length > 0) {
@@ -1339,7 +1353,7 @@ export async function extensionPushPrepare(
     archiveBytes = input.cachedArchive!;
   } else {
     const built = await bundleAndArchive(
-      rejectedFiles.size > 0 ? withoutFiles(input, rejectedFiles) : input,
+      withoutEntryPoints(gated, input.entryPointsReachingSymlinks ?? []),
       deps,
       denoPath || await deps.ensureDenoPath(),
       ctx,
@@ -1461,6 +1475,26 @@ export async function extensionPushPrepare(
  * `binaryFilePaths` are parallel arrays, so each pair is filtered in
  * lockstep. Used only in `collect` mode.
  */
+/**
+ * The input without `entryPoints` among its entry points, so they are not
+ * bundled; their sources are still packaged.
+ */
+function withoutEntryPoints(
+  input: ExtensionPushPrepareInput,
+  entryPoints: readonly string[],
+): ExtensionPushPrepareInput {
+  if (entryPoints.length === 0) return input;
+  const keep = (f: string) => !entryPoints.includes(f);
+  return {
+    ...input,
+    modelEntryPoints: input.modelEntryPoints.filter(keep),
+    vaultEntryPoints: input.vaultEntryPoints.filter(keep),
+    datastoreEntryPoints: input.datastoreEntryPoints.filter(keep),
+    reportEntryPoints: input.reportEntryPoints.filter(keep),
+    webhookEntryPoints: input.webhookEntryPoints.filter(keep),
+  };
+}
+
 function withoutFiles(
   input: ExtensionPushPrepareInput,
   rejected: ReadonlySet<string>,
@@ -2291,15 +2325,25 @@ export async function readQualitySidecar(
   manifestDir: string,
 ): Promise<{ path: string; value: QualitySidecar } | undefined> {
   const path = qualitySidecarPath(manifestDir);
-  let raw: string;
+  let raw: string | undefined;
   try {
-    raw = await Deno.readTextFile(path);
+    // A symlinked sidecar is never read: its parse errors would quote the
+    // target (swamp-club#3420).
+    if (!(await Deno.lstat(path)).isSymlink) {
+      raw = await Deno.readTextFile(path);
+    }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return undefined;
     throw validationFailed(
       `Could not read ${QUALITY_SIDECAR_FILENAME}: ${
         error instanceof Error ? error.message : String(error)
       }`,
+    );
+  }
+  if (raw === undefined) {
+    throw validationFailed(
+      `${QUALITY_SIDECAR_FILENAME} beside the manifest is a symlink. Replace ` +
+        `it with a regular file; symlinks are not allowed in extensions.`,
     );
   }
   const parsed = parseQualitySidecar(raw);

@@ -545,6 +545,7 @@ export const extensionPushCommand = new Command()
           dataFilesByKind: resolved.dataFilesByKind,
           sourcePlan: resolved.sourcePlan,
           missingModules: resolved.missingModules,
+          entryPointsReachingSymlinks: resolved.entryPointsReachingSymlinks,
           dryRun: options.dryRun ?? false,
           registryChecks,
           channel: options.channel,
@@ -698,6 +699,8 @@ export const extensionPushCommand = new Command()
                   dataFilesByKind: resolved.dataFilesByKind,
                   sourcePlan: resolved.sourcePlan,
                   missingModules: resolved.missingModules,
+                  entryPointsReachingSymlinks:
+                    resolved.entryPointsReachingSymlinks,
                   dryRun: options.dryRun ?? false,
                   registryChecks,
                   channel: options.channel,

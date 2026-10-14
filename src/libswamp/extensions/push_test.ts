@@ -1928,6 +1928,35 @@ Deno.test("extensionPushPrepare: an invalid quality.yaml blocks before any gate,
   }
 });
 
+Deno.test("extensionPushPrepare: a symlinked quality.yaml is refused unread, quoting none of its target (swamp-club#3420)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const target = join(tmp, "target.yaml");
+    await Deno.writeTextFile(target, "SECRET-3420: [deno-command]\n");
+    const dir = join(tmp, "ext");
+    await Deno.mkdir(dir);
+    await Deno.symlink(target, join(dir, "quality.yaml"), { type: "file" });
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        makePrepareInput({ manifestDir: dir }),
+      )
+    ) as SwampError;
+    assertEquals(error.code, "validation_failed");
+    assertStringIncludes(
+      error.message,
+      "quality.yaml beside the manifest is a symlink",
+    );
+    assertEquals(
+      `${error.message}${JSON.stringify(error.details)}`.includes("SECRET"),
+      false,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});
+
 // ── Declared acceptances ──────────────────────────────────────────────
 
 const SECRET_FINDING = (file: string, line: number) => ({
@@ -2692,6 +2721,79 @@ Deno.test("extensionPushPrepare: collect mode never follows a symlink a safety e
   } finally {
     await Deno.remove(outside, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("extensionPushPrepare: a symlinked model the safety gate refuses is never formatted, linted, audited or bundled (swamp-club#3420)", async () => {
+  const symlinkError = (file: string) => ({
+    errors: [{
+      ruleId: "symlink",
+      file,
+      message: "Symlinks are not allowed in extensions.",
+    }],
+    warnings: [],
+  });
+  const recording = (file: string) => {
+    const seen: string[][] = [];
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: () => Promise.resolve(symlinkError(file)),
+      extractDependencySpecifiers: (files) => {
+        seen.push([...files]);
+        return Promise.resolve([]);
+      },
+      checkExtensionQuality: (files) => {
+        seen.push([...files]);
+        return Promise.resolve({ passed: true, issues: [] });
+      },
+      bundleEntryPoint: (entryPoint) => {
+        seen.push([entryPoint]);
+        return Promise.resolve("/* bundled */");
+      },
+    });
+    return { deps, seen };
+  };
+
+  // A push (enforce) stops at the safety gate.
+  const enforced = recording("evil.ts");
+  await assertRejects(() =>
+    extensionPushPrepare(ctx, enforced.deps, makePrepareInput())
+  );
+  assertEquals(enforced.seen, []);
+
+  // `extension quality` (collect) runs the later gates without it.
+  await withCollectFixture({}, async (dir, input) => {
+    const link = join(dir, "models", "evil.ts");
+    const withLink: ExtensionPushPrepareInput = {
+      ...input,
+      allModelFiles: [...input.allModelFiles, link],
+      modelEntryPoints: [...input.modelEntryPoints, link],
+    };
+    const collected = recording(link);
+
+    const result = await extensionPushPrepare(ctx, collected.deps, withLink);
+
+    assertEquals(result.gateFailures.map((f) => f.gate), ["safety"]);
+    assertEquals(collected.seen.length > 0, true);
+    assertEquals(collected.seen.some((files) => files.includes(link)), false);
+  });
+});
+
+Deno.test("extensionPushPrepare: an entry point whose graph reaches a symlink is never bundled (swamp-club#3420)", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const bundled: string[] = [];
+    const deps = makePrepareDeps({
+      bundleEntryPoint: (entryPoint) => {
+        bundled.push(entryPoint);
+        return Promise.resolve("/* bundled */");
+      },
+    });
+
+    await extensionPushPrepare(ctx, deps, {
+      ...input,
+      entryPointsReachingSymlinks: [input.modelEntryPoints[0]],
+    });
+
+    assertEquals(bundled, []);
+  });
 });
 
 Deno.test("extensionPushPrepare: collect mode with no failed gate reports none", async () => {

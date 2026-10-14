@@ -115,3 +115,72 @@ export function mergeSourceGraphs(
     missing: [...missing.values()],
   };
 }
+
+/** One entry point's graph with its symlinked modules removed. */
+export interface SymlinkFreeGraph {
+  graph: SourceModuleGraph;
+  /**
+   * The symlinks the root reaches without passing through another one, so
+   * the safety gate can refuse each by the symlink rule. A symlink the graph
+   * could not load is listed as code (its kind is unknown).
+   */
+  symlinked: LocalModule[];
+}
+
+/**
+ * Removes every symlink from one entry point's graph, together with each
+ * module, edge and missing module the root reaches only through one, so
+ * nothing read from a symlink's target — its imports, or the error text the
+ * graph recorded for it, which quotes its source — is used or shown
+ * (swamp-club#3420). A module no edge leads to is kept, as before.
+ */
+export function withoutSymlinkedModules(
+  graph: SourceModuleGraph,
+  root: string,
+  symlinks: ReadonlySet<string>,
+): SymlinkFreeGraph {
+  const kindOf = new Map<string, LocalModuleKind>(
+    graph.modules.map((m) => [m.path, m.kind]),
+  );
+  if (symlinks.has(root)) {
+    return {
+      graph: { modules: [], edges: [], missing: [] },
+      symlinked: [{ path: root, kind: kindOf.get(root) ?? "code" }],
+    };
+  }
+  const reach = (through: (path: string) => boolean): Set<string> => {
+    const reached = new Set([root]);
+    const queue = [root];
+    while (queue.length > 0) {
+      const importer = queue.shift()!;
+      for (const e of graph.edges) {
+        if (e.importer !== importer || reached.has(e.target)) continue;
+        reached.add(e.target);
+        if (through(e.target)) queue.push(e.target);
+      }
+    }
+    return reached;
+  };
+  // What the root reaches through any module, and what it reaches without
+  // passing through a symlink: the difference hangs off a symlink.
+  const all = reach(() => true);
+  const clean = reach((path) => !symlinks.has(path));
+  const keep = (path: string) =>
+    !symlinks.has(path) && (clean.has(path) || !all.has(path));
+  const symlinked = [...clean].filter((path) => symlinks.has(path)).sort()
+    .map((path) => ({ path, kind: kindOf.get(path) ?? "code" as const }));
+  return {
+    graph: {
+      modules: graph.modules.filter((m) => keep(m.path)),
+      edges: graph.edges.filter((e) => keep(e.importer) && keep(e.target)),
+      // With a symlink in the graph, a missing module is kept only when the
+      // root reaches it cleanly: its error text could come from a target.
+      missing: graph.missing.filter((m) =>
+        symlinks.size > 0
+          ? clean.has(m.path) && !symlinks.has(m.path)
+          : keep(m.path)
+      ),
+    },
+    symlinked,
+  };
+}
