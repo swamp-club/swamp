@@ -27,7 +27,11 @@ import {
 import { join } from "@std/path";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { FileLock, nextBackoffSleep } from "./file_lock.ts";
+import {
+  FileLock,
+  isLockCreateContention,
+  nextBackoffSleep,
+} from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import {
   lockSkipping,
@@ -1035,4 +1039,83 @@ Deno.test("FileLock.release: waits for a re-key under way, so it cannot land on 
     assertEquals((await next.inspect())?.nonce, next.heldNonce);
     await next.release();
   });
+});
+
+Deno.test("isLockCreateContention: AlreadyExists is contention on every OS", async () => {
+  for (const isWindows of [false, true]) {
+    assertEquals(
+      await isLockCreateContention(
+        new Deno.errors.AlreadyExists("exists"),
+        "/no/such/lock",
+        isWindows,
+      ),
+      true,
+    );
+  }
+});
+
+Deno.test("isLockCreateContention: Windows Access Denied on an existing lock file is contention", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".datastore.lock");
+    await Deno.writeTextFile(lockPath, "{}");
+    const denied = new Deno.errors.PermissionDenied("Access is denied.");
+    assertEquals(await isLockCreateContention(denied, lockPath, true), true);
+    // Elsewhere Access Denied is a real permission error.
+    assertEquals(await isLockCreateContention(denied, lockPath, false), false);
+  });
+});
+
+Deno.test("isLockCreateContention: Windows Access Denied with no lock file is a real permission error", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(
+      await isLockCreateContention(
+        new Deno.errors.PermissionDenied("Access is denied."),
+        join(dir, ".datastore.lock"),
+        true,
+      ),
+      false,
+    );
+  });
+});
+
+Deno.test({
+  name:
+    "isLockCreateContention: Windows Access Denied when the lock file cannot be stat'ed either is contention",
+  // A directory without search permission denies the stat; Windows has no
+  // mode bits to set this up, and root ignores them.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const locked = join(dir, "locked");
+      await Deno.mkdir(locked);
+      const lockPath = join(locked, ".datastore.lock");
+      await Deno.writeTextFile(lockPath, "{}");
+      await Deno.chmod(locked, 0o600);
+      try {
+        assertEquals(
+          await isLockCreateContention(
+            new Deno.errors.PermissionDenied("Access is denied."),
+            lockPath,
+            true,
+          ),
+          true,
+        );
+      } finally {
+        await Deno.chmod(locked, 0o700);
+      }
+    });
+  },
+});
+
+Deno.test("isLockCreateContention: any other create error is not contention", async () => {
+  for (const isWindows of [false, true]) {
+    assertEquals(
+      await isLockCreateContention(
+        new Deno.errors.NotFound("no dir"),
+        "/no/such/lock",
+        isWindows,
+      ),
+      false,
+    );
+  }
 });

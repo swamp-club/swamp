@@ -146,6 +146,31 @@ export async function readLockFileState(
 }
 
 /**
+ * Whether a failed exclusive create of `lockPath` means another holder has
+ * the lock. On Windows, creating a file another process is deleting or
+ * replacing fails with Access Denied rather than AlreadyExists; that counts
+ * as contention while the lock file still exists (or cannot be stat'ed for
+ * the same reason), and a genuine permission error, with no lock file
+ * present, does not. `isWindows` is a parameter so tests cover both branches.
+ */
+export async function isLockCreateContention(
+  error: unknown,
+  lockPath: string,
+  isWindows: boolean,
+): Promise<boolean> {
+  if (error instanceof Deno.errors.AlreadyExists) return true;
+  if (!isWindows || !(error instanceof Deno.errors.PermissionDenied)) {
+    return false;
+  }
+  try {
+    await Deno.stat(lockPath);
+    return true;
+  } catch (statError) {
+    return statError instanceof Deno.errors.PermissionDenied;
+  }
+}
+
+/**
  * File-based distributed lock using advisory lockfiles.
  *
  * Acquire uses `Deno.open({ createNew: true })` for atomic creation.
@@ -459,7 +484,15 @@ export class FileLock implements DistributedLock {
       await file.write(new TextEncoder().encode(content));
       file.close();
     } catch (error) {
-      if (error instanceof Deno.errors.AlreadyExists) return false;
+      if (
+        await isLockCreateContention(
+          error,
+          this.lockPath,
+          Deno.build.os === "windows",
+        )
+      ) {
+        return false;
+      }
       throw error;
     }
     this.nonce = nonce;

@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { join, relative, toFileUrl } from "@std/path";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { UserError } from "../../domain/errors.ts";
 import {
   DenoInfoModuleGraphReader,
@@ -202,6 +203,47 @@ Deno.test("DenoInfoModuleGraphReader: a failing deno info is a UserError naming 
       if (Deno.build.os !== "windows") throw error;
     });
   }
+});
+
+Deno.test("DenoInfoModuleGraphReader: passes the entry point to deno info as a file URL", async () => {
+  const entry = path("models", "m.ts");
+  const { result: graph, calls } = await withMockedCommand(
+    () => ({
+      stdout: JSON.stringify({
+        modules: [{
+          kind: "esm",
+          mediaType: "TypeScript",
+          specifier: url("models", "m.ts"),
+        }],
+      }),
+      code: 0,
+    }),
+    () => new DenoInfoModuleGraphReader("deno").read(entry, {}),
+  );
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].args.at(-1), toFileUrl(entry).href);
+  assertEquals(graph.modules, [{ path: entry, kind: "code" }]);
+});
+
+Deno.test("DenoInfoModuleGraphReader: a graph with no local module is a UserError naming the entry point", async () => {
+  const entry = path("models", "m.ts");
+  // What deno info printed on Windows for a C:\ path it read as a URL with
+  // the scheme c: — one external, non-file root and exit 0.
+  await withMockedCommand(
+    () => ({
+      stdout: JSON.stringify({
+        roots: ["c:\\ext\\models\\m.ts"],
+        modules: [{ kind: "external", specifier: "c:\\ext\\models\\m.ts" }],
+      }),
+      code: 0,
+    }),
+    () =>
+      assertRejects(
+        () => new DenoInfoModuleGraphReader("deno").read(entry, {}),
+        UserError,
+        `deno info listed no local module for ${entry}`,
+      ),
+  );
 });
 
 Deno.test("DenoInfoModuleGraphReader: a @ts-types edge carries the pragma's specifier, not the import's", async () => {

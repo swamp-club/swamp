@@ -38,6 +38,7 @@ import type { MethodContext } from "../src/domain/models/model.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
+import { canonicalizePath } from "../src/infrastructure/persistence/canonicalize_path.ts";
 import { bundleNamespace } from "../src/infrastructure/persistence/paths.ts";
 import { existingBehaviorsDir } from "../src/infrastructure/persistence/resolve_models_dir.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -195,8 +196,16 @@ Deno.test("loader: one type in extensions/models/ and extensions/behaviors/ is a
     ) {
       const error = await assertRejects(run, DuplicateTypeUserError);
       assertEquals(error.typeNormalized, type);
-      assertStringIncludes(error.message, join(modelsDir, "a.ts"));
-      assertStringIncludes(error.message, join(behaviorsDir, "b.ts"));
+      // The error names the canonical paths (lowercase, forward slashes on
+      // Windows).
+      assertStringIncludes(
+        error.message,
+        canonicalizePath(join(modelsDir, "a.ts")),
+      );
+      assertStringIncludes(
+        error.message,
+        canonicalizePath(join(behaviorsDir, "b.ts")),
+      );
       assertStringIncludes(error.message, "defined in both");
     }
     assertEquals(modelRegistry.has(type), false);

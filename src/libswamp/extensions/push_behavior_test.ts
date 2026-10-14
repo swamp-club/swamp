@@ -129,7 +129,7 @@ Deno.test("push: behaviors-dir sources, includes and a models-dir file resolved 
     assert(entries.every((e) => !e.includes("..")));
     assertEquals(
       prepared.contentMetadata?.models.map((m) => [m.fileName, m.type]),
-      [["aws/ec2.ts", "@acme/ec2"]],
+      [[join("aws", "ec2.ts"), "@acme/ec2"]],
     );
     const spelled = prepared.reviewRulesResult.warnings.filter((w) =>
       w.ruleId === "behavior-spelling"
