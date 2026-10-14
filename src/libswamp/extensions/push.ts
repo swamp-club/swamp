@@ -583,7 +583,10 @@ import { extractDependencySpecifiers } from "../../domain/extensions/extension_d
 import { checkDependencyTrust } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
-import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
+import {
+  contentFileName,
+  extractContentMetadata,
+} from "../../domain/extensions/extension_content_extractor.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
 import { declaresExport } from "../../domain/extensions/export_declaration.ts";
 import {
@@ -2380,7 +2383,7 @@ function buildResolvedData(
   const resolvedModels = input.modelEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedModelsByFile.get(
-      relative(modelsArchiveBase(input, f), f),
+      contentFileName(modelsArchiveBase(input, f), f),
     );
     return {
       type: extracted?.type ?? relPath,
@@ -2392,7 +2395,7 @@ function buildResolvedData(
   const resolvedVaults = input.vaultEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedVaultsByFile.get(
-      relative(input.vaultsDir, f),
+      contentFileName(input.vaultsDir, f),
     );
     return {
       type: extracted?.type ?? relPath,
@@ -2406,7 +2409,7 @@ function buildResolvedData(
   const resolvedDatastores = input.datastoreEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedDatastoresByFile.get(
-      relative(input.datastoresDir, f),
+      contentFileName(input.datastoresDir, f),
     );
     return {
       type: extracted?.type ?? relPath,
@@ -2420,7 +2423,7 @@ function buildResolvedData(
   const resolvedReports = input.reportEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedReportsByFile.get(
-      relative(input.reportsDir, f),
+      contentFileName(input.reportsDir, f),
     );
     return {
       name: extracted?.name ?? relPath,
@@ -2434,7 +2437,7 @@ function buildResolvedData(
   const resolvedWebhooks = input.webhookEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedWebhooksByFile.get(
-      relative(input.webhooksDir, f),
+      contentFileName(input.webhooksDir, f),
     );
     return {
       type: extracted?.type ?? relPath,
