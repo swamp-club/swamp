@@ -64,6 +64,8 @@ import {
   launchedLabel,
   launchOpened,
   type LaunchStep,
+  locationCheckKey,
+  type LocationCheckReply,
   middleEllipsis,
   newWorkspaceNameProblem,
   orderExamples,
@@ -89,6 +91,7 @@ import {
   updatedLabel,
   workspaceAgentTags,
   workspaceChooseError,
+  workspaceLocationHint,
 } from "./helpers.ts";
 import type {
   ExamplePrompt,
@@ -792,9 +795,6 @@ const IMPORT_FOLDER_HINT = "Choose a folder that's already a swamp folder.";
 /** Longest folder path shown on a workspace card before it's shortened. */
 const CARD_PATH_MAX = 60;
 
-const WORKSPACE_LOCATION_HINT =
-  "Workspaces live in `~/.swamp/workspaces` on this machine. No Git needed.";
-
 /** Error codes from an import that are about the name, not the folder. */
 const IMPORT_NAME_ERRORS = new Set(["name_taken", "invalid_name"]);
 
@@ -805,6 +805,18 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
   // What the person typed; empty means "use the suggested name".
   const [name, setName] = useState("");
   const [suggested, setSuggested] = useState("");
+  // The folder typed or chosen for a new workspace; empty means the
+  // default the server reports.
+  const [location, setLocation] = useState("");
+  const [defaultLocation, setDefaultLocation] = useState("");
+  // The server's check of where the new workspace would be created, for
+  // the name and folder it was asked about.
+  const [locationCheck, setLocationCheck] = useState<
+    { key: string; reply: LocationCheckReply } | null
+  >(null);
+  const [locationPickError, setLocationPickError] = useState<string | null>(
+    null,
+  );
   // The first-run layout. Set by the first load, and re-checked later only
   // while nothing is typed (or when the tab regains focus), so the page
   // never changes layout under someone typing.
@@ -883,7 +895,8 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     setError: setImportError,
   } = useAction(onStatus, describeImportError);
   const busy = choosing || importing;
-  const typed = name !== "" || importPath !== "" || importName !== "";
+  const typed = name !== "" || location !== "" || importPath !== "" ||
+    importName !== "";
   const typedRef = useRef(typed);
   useEffect(() => {
     typedRef.current = typed;
@@ -902,10 +915,15 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
         suggestedName: typeof reply?.suggestedName === "string"
           ? reply.suggestedName
           : "",
+        defaultLocation: typeof reply?.defaultLocation === "string"
+          ? reply.defaultLocation
+          : "",
       };
     };
     const apply = (
-      { workspaces, suggestedName }: Awaited<ReturnType<typeof load>>,
+      { workspaces, suggestedName, defaultLocation }: Awaited<
+        ReturnType<typeof load>
+      >,
       relayout: boolean,
     ) => {
       // An unchanged list keeps its array, so a refresh that finds nothing
@@ -919,6 +937,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       setSuggested((prev) =>
         keepSuggestion(prev, suggestedName, workspaces.map((w) => w.name))
       );
+      setDefaultLocation(defaultLocation);
       setListError(null);
       if (relayout) setFirstRun(workspaces.length === 0);
       // Keep the choice while it is still listed; else pick up where you
@@ -961,9 +980,12 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     };
   }, [client]);
 
-  const choose = (chosen: string) =>
+  const choose = (chosen: string, parent = "") =>
     void run(() =>
-      client.request<StartStatus>("start.workspace.choose", { name: chosen })
+      client.request<StartStatus>(
+        "start.workspace.choose",
+        parent ? { name: chosen, parent } : { name: chosen },
+      )
     );
 
   const existing = list ?? [];
@@ -985,6 +1007,68 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     newWorkspaceNameProblem(finalName, existing) === null;
   const importingSelected = selected === IMPORT_WORKSPACE;
   const creating = firstRun ? !importingSelected : selected === NEW_WORKSPACE;
+  // Ask the server where the new workspace would go each time the name or
+  // folder settles: it works the path out, so the preview is always the
+  // folder a create would make.
+  const typedLocation = location.trim();
+  const checkKey = locationCheckKey(finalName, typedLocation);
+  const checkable = creating && list !== null &&
+    isValidWorkspaceName(finalName);
+  useEffect(() => {
+    if (!checkable) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      client.request<LocationCheckReply>(
+        "start.workspace.location.check",
+        typedLocation
+          ? { name: finalName, parent: typedLocation }
+          : { name: finalName },
+      )
+        .then((reply) => {
+          if (active) {
+            setLocationCheck({
+              key: locationCheckKey(finalName, typedLocation),
+              reply,
+            });
+          }
+        })
+        .catch((err) => {
+          // Shown under Location; the create itself checks again.
+          if (active) {
+            setLocationCheck({
+              key: locationCheckKey(finalName, typedLocation),
+              reply: {
+                ok: false,
+                field: "location",
+                code: "check_failed",
+                message: errorMessage(
+                  err,
+                  "Couldn't check this folder. Try again.",
+                ),
+              },
+            });
+          }
+        });
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [client, checkable, finalName, typedLocation]);
+  const currentCheck = checkable && locationCheck?.key === checkKey
+    ? locationCheck.reply
+    : null;
+  const locationProblem =
+    currentCheck && !currentCheck.ok && currentCheck.field === "location"
+      ? currentCheck.message
+      : null;
+  const serverNameProblem = problem === null && currentCheck &&
+      !currentCheck.ok && currentCheck.field === "name"
+    ? currentCheck.message
+    : null;
+  // While a new check runs, the last folder stays shown, dimmed.
+  const previewPath = currentCheck?.path ??
+    (checkable ? locationCheck?.reply.path : undefined);
   const importCheck = importProblem(
     importPath,
     importName,
@@ -1000,7 +1084,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     (importingSelected
       ? importCheck === null && folderOk
       : creating
-      ? nameOk
+      ? nameOk && locationProblem === null && serverNameProblem === null
       : existing.some((w) => w.name === selected));
   const now = new Date();
 
@@ -1016,7 +1100,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
           chosenName ? { path, name: chosenName } : { path },
         )
       );
-    } else if (creating) choose(finalName);
+    } else if (creating) choose(finalName, typedLocation);
     else if (selected !== null) choose(selected);
   };
 
@@ -1050,13 +1134,95 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
             : undefined}
         />
       </div>
-      {problem && (
+      {(problem ?? serverNameProblem) && (
         <div id="start-workspace-name-problem" className="start-field-error">
-          {problem}
+          {problem ?? serverNameProblem}
         </div>
+      )}
+      <label className="start-field-label" htmlFor="start-workspace-location">
+        Location
+      </label>
+      <p className="start-hint">
+        The folder to create it in
+        {defaultLocation
+          ? (
+            <>
+              , or leave it empty to use <code>{defaultLocation}</code>
+            </>
+          )
+          : ""}.
+      </p>
+      <div className="start-name-row">
+        <input
+          id="start-workspace-location"
+          className="start-input start-input-mono"
+          value={location}
+          placeholder={defaultLocation}
+          onChange={(e) => setLocation(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={locationProblem !== null}
+          aria-describedby={locationProblem
+            ? "start-workspace-path start-workspace-location-problem"
+            : "start-workspace-path"}
+        />
+        {status.canPickFolder && (
+          <button
+            type="button"
+            className="start-secondary"
+            onClick={() => void browseLocation()}
+            disabled={picking || busy}
+          >
+            {picking ? "Choosing…" : "Browse…"}
+          </button>
+        )}
+      </div>
+      {locationPickError && (
+        <div className="start-field-error" role="alert">
+          {withCode(locationPickError)}
+        </div>
+      )}
+      {locationProblem && (
+        <div
+          id="start-workspace-location-problem"
+          className="start-field-error"
+          role="alert"
+        >
+          {locationProblem}
+        </div>
+      )}
+      {previewPath && (
+        <p
+          id="start-workspace-path"
+          className={`start-hint start-workspace-path${
+            currentCheck ? "" : " start-workspace-path-pending"
+          }`}
+          aria-live="polite"
+        >
+          {currentCheck && !currentCheck.ok ? "Would create" : "Creates"}{" "}
+          <code>{previewPath}</code>
+        </p>
       )}
     </div>
   );
+
+  const browseLocation = async () => {
+    setPicking(true);
+    setLocationPickError(null);
+    try {
+      const { path } = await client.request<{ path: string | null }>(
+        "start.folder.pick",
+        { purpose: "location" },
+      );
+      if (path) setLocation(path);
+    } catch (err) {
+      setLocationPickError(
+        errorMessage(err, "Couldn't open the folder chooser."),
+      );
+    } finally {
+      setPicking(false);
+    }
+  };
 
   const browse = async () => {
     setPicking(true);
@@ -1064,6 +1230,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     try {
       const { path } = await client.request<{ path: string | null }>(
         "start.folder.pick",
+        { purpose: "import" },
       );
       if (path) {
         setImportPath(path);
@@ -1353,7 +1520,9 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
             </button>
           </div>
           {firstRun && !importingSelected && (
-            <p className="start-hint">{withCode(WORKSPACE_LOCATION_HINT)}</p>
+            <p className="start-hint">
+              {withCode(workspaceLocationHint(defaultLocation))}
+            </p>
           )}
         </form>
       )}

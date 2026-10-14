@@ -49,8 +49,14 @@ import {
   parseWorkspaceName,
   suggestWorkspaceName,
 } from "../../domain/workspace/workspace_name.ts";
-import type { WorkspaceRegistryRepository } from "../../domain/workspace/workspace_registry.ts";
+import type {
+  WorkspaceEntry,
+  WorkspaceRegistryRepository,
+} from "../../domain/workspace/workspace_registry.ts";
 import {
+  checkNewWorkspaceFolder,
+  createNewWorkspace,
+  defaultWorkspaceParent,
   defaultWorkspacePath,
   ensureRegistered,
   ensureWorkspace,
@@ -58,10 +64,11 @@ import {
   importWorkspace,
   isImportedWorkspace,
   loadWorkspaceRegistry,
+  newWorkspaceLocation,
   realPathOrSelf,
-  resolveWorkspacePath,
   workspacesRoot,
 } from "../workspace/workspace_store.ts";
+import { WorkspacePreferencesFileRepository } from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -275,6 +282,11 @@ export interface StartDeps {
   /** The user's home folder, for `~` in an imported path; unset when unknown. */
   readonly homeDir?: string;
   /**
+   * The folder new workspaces go in when none is chosen
+   * (`swamp config set workspaces.dir`); unset means under the data dir.
+   */
+  readonly configuredParent?: () => Promise<string | undefined>;
+  /**
    * A task's brief file as it is now, or null when there is none. Defaults
    * to reading the file.
    */
@@ -316,13 +328,31 @@ export function startWorkspacePath(dataDir: string, name: string): string {
   return defaultWorkspacePath(dataDir, name);
 }
 
-/** The folder of a workspace: where it is registered, else the default. */
+/**
+ * The folder a workspace opens in: where it is registered, else where a
+ * new one would be created (see {@link StartWorkspaceLocationInput}).
+ *
+ * @throws {UserError} code `invalid_name`, `registry_unreadable`, or a
+ *   `parent_*` code for a chosen folder that can't be used
+ */
 export async function resolveStartWorkspacePath(
   deps: StartDeps,
   name: string,
+  location: StartWorkspaceLocationInput = {},
 ): Promise<string> {
-  // Only a lookup: opening the workspace registers it, after sign-in.
-  return await resolveWorkspacePath(deps, name);
+  let parsed: string;
+  let registered: string | undefined;
+  try {
+    parsed = parseWorkspaceName(name);
+    // Only a lookup: opening the workspace registers it, after sign-in.
+    registered = (await loadWorkspaceRegistry(deps, { readOnly: true }))
+      .get(parsed)?.path;
+  } catch (error) {
+    throw asInvalidName(error);
+  }
+  if (registered !== undefined) return registered;
+  return (await newWorkspaceLocation(deps, { name: parsed, ...location }))
+    .path;
 }
 
 // ---------------------------------------------------------------------------
@@ -823,23 +853,65 @@ async function migrateLegacyTasks(
   }
 }
 
+/** Where to create a workspace that isn't registered yet. */
+export interface StartWorkspaceLocationInput {
+  /**
+   * The folder to create it in; unset means the configured folder, else
+   * under the data dir.
+   */
+  readonly parent?: string;
+  /** The folder a relative `parent` is resolved against; unset refuses one. */
+  readonly relativeTo?: string;
+}
+
 /**
  * Creates or reuses a workspace by name and shows its newest task.
+ * A registered name opens where it is registered; a new one is created in
+ * the chosen folder (see {@link StartWorkspaceLocationInput}).
  * The caller holds the workspace's claim (its creation lock and server
  * record); several `swamp start` processes may serve one workspace.
  */
 export function startOpenWorkspace(
   _ctx: LibSwampContext,
   deps: StartDeps,
-  input: { workspaceName: string },
+  input: { workspaceName: string } & StartWorkspaceLocationInput,
 ): AsyncIterable<StartPrepareEvent> {
-  return openWorkspace(deps, input.workspaceName);
+  return openWorkspace(deps, input.workspaceName, undefined, input);
+}
+
+/** True when the workspace at `path` is an existing repo imported there. */
+async function isImportedFolder(
+  deps: StartDeps,
+  path: string,
+): Promise<boolean> {
+  // Matched by real path: the launch may spell the folder differently
+  // (/tmp vs /private/tmp) from how it was registered.
+  const real = await realPathOrSelf(path);
+  let entry: WorkspaceEntry | undefined;
+  for (
+    const e of (await loadWorkspaceRegistry(deps, { readOnly: true })).list()
+  ) {
+    if (e.path === path || await realPathOrSelf(e.path) === real) {
+      entry = e;
+      break;
+    }
+  }
+  return isImportedWorkspace(deps.dataDir, entry ?? { path });
+}
+
+/** The error for a name that isn't valid, keeping the registry's own. */
+function asInvalidName(error: unknown): unknown {
+  if (error instanceof UserError && error.code !== "registry_unreadable") {
+    return new UserError(error.message, "invalid_name");
+  }
+  return error;
 }
 
 async function* openWorkspace(
   deps: StartDeps,
   workspaceName: string,
   checked?: SignedInState,
+  location: StartWorkspaceLocationInput = {},
 ): AsyncIterable<StartPrepareEvent> {
   try {
     const signedIn = checked ?? await deps.checkSignedIn(true);
@@ -853,20 +925,35 @@ async function* openWorkspace(
       );
     }
     let name: string;
-    let workspacePath: string;
+    let registered: string | undefined;
     try {
       name = parseWorkspaceName(workspaceName);
-      workspacePath = await resolveStartWorkspacePath(deps, name);
+      // Only a lookup: opening the workspace registers it, after sign-in.
+      registered = (await loadWorkspaceRegistry(deps, { readOnly: true }))
+        .get(name)?.path;
     } catch (error) {
-      if (
-        error instanceof UserError && error.code !== "registry_unreadable"
-      ) {
-        throw new UserError(error.message, "invalid_name");
-      }
-      throw error;
+      throw asInvalidName(error);
     }
-    const created = await ensureWorkspace(deps, name, workspacePath);
-    await ensureRegistered(deps, name, workspacePath);
+    const wanted = registered === undefined
+      ? await newWorkspaceLocation(deps, { name, ...location })
+      : null;
+    let workspacePath: string;
+    let created: boolean;
+    if (registered !== undefined) {
+      await refuseOtherFolder(deps, name, registered, location);
+      workspacePath = registered;
+      created = await ensureWorkspace(deps, name, workspacePath);
+      // A name adopted from the data dir is only listed until now.
+      await ensureRegistered(deps, name, workspacePath);
+    } else if (wanted!.inDataDir) {
+      workspacePath = wanted!.path;
+      created = await ensureWorkspace(deps, name, workspacePath);
+      await ensureRegistered(deps, name, workspacePath);
+    } else {
+      workspacePath = wanted!.path;
+      await createNewWorkspace(deps, wanted!);
+      created = true;
+    }
     await migrateLegacyTasks(deps, workspacePath);
     yield { kind: "workspace_ready", path: workspacePath, created };
     // The newest task is shown first; a workspace with none starts on a new
@@ -882,6 +969,37 @@ async function* openWorkspace(
   } catch (error) {
     yield errorEvent(error);
   }
+}
+
+/**
+ * Refuses to open a registered workspace when a folder was chosen for it
+ * and it is registered somewhere else: the name is taken.
+ */
+async function refuseOtherFolder(
+  deps: StartDeps,
+  name: string,
+  registered: string,
+  location: StartWorkspaceLocationInput,
+): Promise<void> {
+  if (!location.parent?.trim()) return;
+  try {
+    const wanted = await newWorkspaceLocation(deps, { name, ...location });
+    if (
+      await realPathOrSelf(wanted.path) === await realPathOrSelf(registered)
+    ) {
+      return;
+    }
+  } catch (error) {
+    // A folder that can't be used still names a different place.
+    if (!(error instanceof UserError)) throw error;
+  }
+  throw markErrorPaths(
+    new UserError(
+      `A workspace named "${name}" already exists at ${registered}. Choose another name.`,
+      "name_taken",
+    ),
+    [registered],
+  );
 }
 
 /**
@@ -930,35 +1048,50 @@ async function mtimeOf(path: string): Promise<Date | null> {
   }
 }
 
-/** The workspaces under the data dir, newest first, plus a fresh name. */
+/**
+ * The registered workspaces, newest first, plus a fresh name and the
+ * folder a new workspace goes in when none is chosen.
+ */
 export async function startListWorkspaces(
   _ctx: LibSwampContext,
   deps: StartDeps,
   options: { readOnly?: boolean } = {},
-): Promise<{ workspaces: StartWorkspaceSummary[]; suggestedName: string }> {
-  const root = workspacesRoot(deps.dataDir);
+): Promise<{
+  workspaces: StartWorkspaceSummary[];
+  suggestedName: string;
+  defaultLocation: string;
+}> {
+  const defaultLocation = await defaultWorkspaceParent(deps);
   const registry = await loadWorkspaceRegistry(deps, options);
-  // Folder names under the data dir count as taken too, so a suggestion
-  // never collides with a folder that isn't registered.
+  // Folder names under the data dir and the default folder count as taken
+  // too, so a suggestion never collides with a folder that isn't
+  // registered.
   const taken = new Set(registry.list().map((e) => e.name));
-  try {
-    for await (const entry of Deno.readDir(root)) {
-      if (entry.isDirectory) taken.add(entry.name);
+  const root = workspacesRoot(deps.dataDir);
+  for (const dir of new Set([root, defaultLocation])) {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (entry.isDirectory) taken.add(entry.name);
+      }
+    } catch (error) {
+      // The configured folder only feeds the suggestion: one that has
+      // become unreadable or a file never hides the workspace list (a
+      // create there reports the problem).
+      if (dir !== root) continue;
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
   const summaries = await Promise.all(
-    registry.list().map(({ name, path }) =>
+    registry.list().map((entry) =>
       // One workspace that can't be read (a damaged `.swamp.yaml` or
       // session file) is left out rather than hiding all the others.
-      summarize(name, path).catch(() => null)
+      summarize(entry).catch(() => null)
     ),
   );
   async function summarize(
-    name: string,
-    path: string,
+    entry: WorkspaceEntry,
   ): Promise<StartWorkspaceSummary | null> {
+    const { name, path } = entry;
     // A registered folder that is gone or no longer a repo is left out.
     if (!await deps.repo.isRepo(path)) return null;
     const tasks = await listTasks(deps, path);
@@ -981,7 +1114,7 @@ export async function startListWorkspaces(
       createdAt: (await deps.repo.createdAt?.(path)) ?? null,
       updatedAt: updated,
       running: await deps.isRunning(path),
-      imported: isImportedWorkspace(deps.dataDir, path),
+      imported: isImportedWorkspace(deps.dataDir, entry),
     };
     return summary;
   }
@@ -994,16 +1127,75 @@ export async function startListWorkspaces(
   return {
     workspaces,
     suggestedName: suggestWorkspaceName(taken, deps.random),
+    defaultLocation,
   };
+}
+
+/** What the create form shows for a new workspace before it is created. */
+export type StartLocationCheck =
+  | {
+    readonly ok: true;
+    /** The workspace folder that would be created. */
+    readonly path: string;
+  }
+  | {
+    readonly ok: false;
+    /** The field the problem is about. */
+    readonly field: "name" | "location";
+    readonly code: string;
+    readonly message: string;
+    /** The workspace folder, when the location could be worked out. */
+    readonly path?: string;
+  };
+
+const NAME_PROBLEMS = new Set(["invalid_name", "name_taken"]);
+
+/**
+ * Checks where a new workspace would be created without creating it: the
+ * same rules a create runs. Reads only.
+ */
+export async function startCheckWorkspaceLocation(
+  _ctx: LibSwampContext,
+  deps: StartDeps,
+  input: { name: string; parent?: string },
+): Promise<StartLocationCheck> {
+  await requireSignedIn(deps, "before you create a workspace");
+  let path: string | undefined;
+  try {
+    const location = await newWorkspaceLocation(deps, input);
+    path = location.path;
+    await checkNewWorkspaceFolder(
+      deps,
+      await loadWorkspaceRegistry(deps, { readOnly: true }),
+      location,
+      // Opening reuses a repo left under the data dir; the check agrees.
+      { reuseRepo: location.inDataDir },
+    );
+    return { ok: true, path };
+  } catch (error) {
+    if (!(error instanceof UserError) || error.code === undefined) throw error;
+    if (error.code === "registry_unreadable") throw error;
+    return {
+      ok: false,
+      field: NAME_PROBLEMS.has(error.code) ? "name" : "location",
+      code: error.code,
+      message: error.message,
+      ...(path !== undefined ? { path } : {}),
+    };
+  }
 }
 
 /** What the folder chooser asks. */
 export const PICK_FOLDER_PROMPT = "Choose the swamp repo to import";
 
+/** What the folder chooser asks when picking where to create a workspace. */
+export const PICK_LOCATION_PROMPT = "Choose where to create the workspace";
+
 /**
- * Shows this machine's folder chooser for an import and answers with the
- * chosen folder, or null when the user cancelled. Nothing is imported: the
- * page fills its folder field and the user still confirms.
+ * Shows this machine's folder chooser, for an import or for where to create
+ * a workspace, and answers with the chosen folder, or null when the user
+ * cancelled. Nothing is imported or created: the page fills its folder
+ * field and the user still confirms.
  *
  * @throws {UserError} code `not_signed_in`, or `picker_unavailable` when no
  *   chooser can be shown here (over SSH, without a display)
@@ -1011,15 +1203,26 @@ export const PICK_FOLDER_PROMPT = "Choose the swamp repo to import";
 export async function startPickFolder(
   _ctx: LibSwampContext,
   deps: StartDeps,
+  input: { purpose?: "import" | "location" } = {},
 ): Promise<{ path: string | null }> {
-  await requireSignedIn(deps, "before importing a workspace");
+  const forLocation = input.purpose === "location";
+  await requireSignedIn(
+    deps,
+    forLocation
+      ? "before you create a workspace"
+      : "before importing a workspace",
+  );
   if (!await canPickFolder(deps)) {
     throw new UserError(
       "This machine can't show a folder chooser here. Type the folder's path instead.",
       "picker_unavailable",
     );
   }
-  return { path: await deps.folderPicker!.pick(PICK_FOLDER_PROMPT) };
+  return {
+    path: await deps.folderPicker!.pick(
+      forLocation ? PICK_LOCATION_PROMPT : PICK_FOLDER_PROMPT,
+    ),
+  };
 }
 
 /** What the import form shows for a folder before it is imported. */
@@ -1336,7 +1539,7 @@ export async function* startLaunch(
         task: session.task!,
         workspacePath: input.workspacePath,
         harnessDisplayName: harness.displayName,
-        imported: isImportedWorkspace(deps.dataDir, input.workspacePath),
+        imported: await isImportedFolder(deps, input.workspacePath),
       }),
     );
     yield {
@@ -1723,6 +1926,8 @@ export function createStartDeps(options: {
     random: () => Math.random(),
     isRunning: options.isRunning,
     registry: new WorkspaceRegistryFileRepository(),
+    configuredParent: async () =>
+      (await new WorkspacePreferencesFileRepository().read()).dir,
     ...(home ? { homeDir: home } : {}),
   };
 }

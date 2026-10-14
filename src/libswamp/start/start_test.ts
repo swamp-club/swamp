@@ -47,6 +47,7 @@ import {
   startAddTools,
   startBack,
   startCheckFolder,
+  startCheckWorkspaceLocation,
   startChooseHarness,
   type StartDeps,
   startImportWorkspace,
@@ -1170,6 +1171,7 @@ Deno.test("startListWorkspaces: with no workspaces folder returns none and a sug
     assertEquals(await startListWorkspaces(ctx, f.deps), {
       workspaces: [],
       suggestedName: "amber-alligator",
+      defaultLocation: join(f.deps.dataDir, "workspaces"),
     });
   });
 });
@@ -2147,4 +2149,338 @@ Deno.test("startOpenAgent: an agent launched for any task in the workspace resum
     assertEquals(f.opened.at(-1)?.spec.args, ["--continue"]);
     assertEquals(done.data.taskId, second);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Creating a workspace in a chosen folder
+// ---------------------------------------------------------------------------
+
+Deno.test("startOpenWorkspace: creates a new name in the chosen folder, registered as created", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const parent = join(dir, "dev");
+    await Deno.mkdir(parent);
+    const events = await collect(
+      startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
+    );
+    const path = join(parent, "infra");
+    assertEquals(lastOf(events).kind, "completed");
+    assertEquals(events[0], { kind: "workspace_ready", path, created: true });
+    assertEquals(f.inits, [path]);
+    const entry = (await f.deps.registry.load())?.get("infra");
+    assertEquals(entry?.path, path);
+    assertEquals(entry?.origin, "created");
+    const [listed] = (await startListWorkspaces(ctx, f.deps)).workspaces;
+    assertEquals(listed.imported, false);
+  });
+});
+
+Deno.test("startOpenWorkspace: never recreates a workspace created in a chosen folder once it is gone", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const parent = join(dir, "dev");
+    await Deno.mkdir(parent);
+    await collect(
+      startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
+    );
+    const path = join(parent, "infra");
+    f.repos.delete(path);
+    await Deno.remove(path, { recursive: true });
+
+    for (const location of [{}, { parent }]) {
+      const events = await collect(
+        startOpenWorkspace(ctx, f.deps, {
+          workspaceName: "infra",
+          ...location,
+        }),
+      );
+      assertEquals(errorCode(events), "workspace_missing");
+    }
+    assertEquals(f.inits, [path]);
+    await assertRejects(() => Deno.stat(path));
+  });
+});
+
+Deno.test("startOpenWorkspace: a registered name with a different chosen folder is taken; the same folder opens it", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const parent = join(dir, "dev");
+    const other = join(dir, "other");
+    await Deno.mkdir(parent);
+    await Deno.mkdir(other);
+    await collect(
+      startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
+    );
+    const taken = await collect(
+      startOpenWorkspace(ctx, f.deps, {
+        workspaceName: "infra",
+        parent: other,
+      }),
+    );
+    assertEquals(errorCode(taken), "name_taken");
+    const missing = await collect(
+      startOpenWorkspace(ctx, f.deps, {
+        workspaceName: "infra",
+        parent: join(dir, "nope"),
+      }),
+    );
+    assertEquals(errorCode(missing), "name_taken");
+    const same = await collect(
+      startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
+    );
+    assertEquals(same[0], {
+      kind: "workspace_ready",
+      path: join(parent, "infra"),
+      created: false,
+    });
+  });
+});
+
+Deno.test("startOpenWorkspace: a relative folder needs relativeTo", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    await Deno.mkdir(join(dir, "dev"));
+    const refused = await collect(
+      startOpenWorkspace(ctx, f.deps, {
+        workspaceName: "infra",
+        parent: "dev",
+      }),
+    );
+    assertEquals(errorCode(refused), "parent_not_absolute");
+    const opened = await collect(
+      startOpenWorkspace(ctx, f.deps, {
+        workspaceName: "infra",
+        parent: "dev",
+        relativeTo: dir,
+      }),
+    );
+    assertEquals(opened[0], {
+      kind: "workspace_ready",
+      path: join(dir, "dev", "infra"),
+      created: true,
+    });
+  });
+});
+
+Deno.test("startOpenWorkspace: a new name goes in the configured folder; with none, under the data dir as before", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const before = await collect(
+      startOpenWorkspace(ctx, f.deps, { workspaceName: "first" }),
+    );
+    assertEquals(before[0], {
+      kind: "workspace_ready",
+      path: startWorkspacePath(dir, "first"),
+      created: true,
+    });
+    const projects = join(dir, "projects");
+    await Deno.mkdir(projects);
+    const deps = {
+      ...f.deps,
+      configuredParent: () => Promise.resolve(projects),
+    };
+    const after = await collect(
+      startOpenWorkspace(ctx, deps, { workspaceName: "second" }),
+    );
+    assertEquals(after[0], {
+      kind: "workspace_ready",
+      path: join(projects, "second"),
+      created: true,
+    });
+    assertEquals(
+      (await startListWorkspaces(ctx, deps)).defaultLocation,
+      projects,
+    );
+  });
+});
+
+Deno.test("startListWorkspaces: the suggestion avoids folders already in the configured folder", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const projects = join(dir, "projects");
+    await Deno.mkdir(join(projects, "amber-alligator"), { recursive: true });
+    const deps = {
+      ...f.deps,
+      configuredParent: () => Promise.resolve(projects),
+    };
+    const { suggestedName } = await startListWorkspaces(ctx, deps);
+    assert(suggestedName !== "amber-alligator");
+  });
+});
+
+Deno.test("startCheckWorkspaceLocation: answers the folder a create would make, or the problem and its field", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const parent = join(dir, "dev");
+    await Deno.mkdir(join(parent, "busy"), { recursive: true });
+    await Deno.writeTextFile(join(parent, "busy", "notes.txt"), "x");
+
+    assertEquals(
+      await startCheckWorkspaceLocation(ctx, f.deps, { name: "infra" }),
+      { ok: true, path: startWorkspacePath(dir, "infra") },
+    );
+    assertEquals(
+      await startCheckWorkspaceLocation(ctx, f.deps, {
+        name: "infra",
+        parent,
+      }),
+      { ok: true, path: join(parent, "infra") },
+    );
+    const busy = await startCheckWorkspaceLocation(ctx, f.deps, {
+      name: "busy",
+      parent,
+    });
+    assert(!busy.ok);
+    assertEquals(busy.field, "location");
+    assertEquals(busy.code, "not_a_workspace");
+    assertEquals(busy.path, join(parent, "busy"));
+    const missing = await startCheckWorkspaceLocation(ctx, f.deps, {
+      name: "infra",
+      parent: join(dir, "nope"),
+    });
+    assert(!missing.ok);
+    assertEquals([missing.field, missing.code], [
+      "location",
+      "parent_not_found",
+    ]);
+    const relative = await startCheckWorkspaceLocation(ctx, f.deps, {
+      name: "infra",
+      parent: "dev",
+    });
+    assert(!relative.ok);
+    assertEquals(relative.code, "parent_not_absolute");
+
+    await collect(startOpenWorkspace(ctx, f.deps, { workspaceName: "infra" }));
+    const taken = await startCheckWorkspaceLocation(ctx, f.deps, {
+      name: "infra",
+      parent,
+    });
+    assert(!taken.ok);
+    assertEquals([taken.field, taken.code], ["name", "name_taken"]);
+    // Reads only: nothing was created by the checks.
+    assertEquals(f.inits, [startWorkspacePath(dir, "infra")]);
+  });
+});
+
+Deno.test("startCheckWorkspaceLocation: needs sign-in", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.signedIn = { kind: "not_signed_in" };
+    const error = await assertRejects(
+      () => startCheckWorkspaceLocation(ctx, f.deps, { name: "infra" }),
+      UserError,
+    );
+    assertEquals((error as UserError).code, "not_signed_in");
+  });
+});
+
+Deno.test("startLaunch: the brief calls a workspace created in a chosen folder created, not the user's project", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const parent = join(dir, "dev");
+    await Deno.mkdir(parent);
+    await collect(
+      startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
+    );
+    const ws = join(parent, "infra");
+    const taskId = await newTask(f, ws, "list pods");
+    await status(
+      startChooseHarness(ctx, f.deps, {
+        workspacePath: ws,
+        taskId,
+        harness: "claude",
+      }),
+    );
+    await collect(startLaunch(ctx, f.deps, { workspacePath: ws, taskId }));
+    assertStringIncludes(f.briefs[0].content, "it holds only Swamp's files.");
+  });
+});
+
+Deno.test("startCheckWorkspaceLocation: agrees with opening about a repo left under the data dir", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    // A registry already exists, as after `swamp workspace remove prod`, so
+    // the folder isn't adopted on first read.
+    await f.deps.registry.update(() => {});
+    const leftBehind = startWorkspacePath(dir, "prod");
+    await Deno.mkdir(leftBehind, { recursive: true });
+    f.repos.add(leftBehind);
+    // Opening reuses it (the known gap in design/surfaces/workspace.md)...
+    assertEquals(
+      await startCheckWorkspaceLocation(ctx, f.deps, { name: "prod" }),
+      { ok: true, path: leftBehind },
+    );
+    // ...while a chosen folder holding an unregistered repo is refused.
+    const parent = join(dir, "dev");
+    await Deno.mkdir(join(parent, "prod"), { recursive: true });
+    f.repos.add(join(parent, "prod"));
+    const chosen = await startCheckWorkspaceLocation(ctx, f.deps, {
+      name: "prod",
+      parent,
+    });
+    assert(!chosen.ok);
+    assertEquals(chosen.code, "folder_exists");
+  });
+});
+
+Deno.test("startListWorkspaces: a configured folder that became a file or unreadable never hides the list", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    await collect(startOpenWorkspace(ctx, f.deps, { workspaceName: "infra" }));
+    const file = join(dir, "not-a-folder");
+    await Deno.writeTextFile(file, "x");
+    const deps = { ...f.deps, configuredParent: () => Promise.resolve(file) };
+    const listed = await startListWorkspaces(ctx, deps);
+    assertEquals(listed.workspaces.map((w) => w.name), ["infra"]);
+    assertEquals(listed.defaultLocation, file);
+    if (Deno.build.os !== "windows") {
+      const locked = join(dir, "locked");
+      await Deno.mkdir(locked);
+      await Deno.chmod(locked, 0o000);
+      try {
+        const lockedDeps = {
+          ...f.deps,
+          configuredParent: () => Promise.resolve(locked),
+        };
+        assertEquals(
+          (await startListWorkspaces(ctx, lockedDeps)).workspaces.length,
+          1,
+        );
+      } finally {
+        await Deno.chmod(locked, 0o755);
+      }
+    }
+  });
+});
+
+Deno.test({
+  name:
+    "startLaunch: the brief finds a created workspace by its real path when the launch spells it differently",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const f = makeFakes(dir);
+      const parent = join(dir, "dev");
+      await Deno.mkdir(parent);
+      await collect(
+        startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
+      );
+      const real = join(parent, "infra");
+      // The same folder reached through a symlink.
+      const link = join(dir, "link");
+      await Deno.symlink(real, link, { type: "dir" });
+      f.repos.add(link);
+      f.tools.set(link, []);
+      const taskId = await newTask(f, link, "list pods");
+      await status(
+        startChooseHarness(ctx, f.deps, {
+          workspacePath: link,
+          taskId,
+          harness: "claude",
+        }),
+      );
+      await collect(startLaunch(ctx, f.deps, { workspacePath: link, taskId }));
+      assertStringIncludes(f.briefs[0].content, "it holds only Swamp's files.");
+    });
+  },
 });

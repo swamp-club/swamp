@@ -24,6 +24,7 @@ import {
   startAddTools,
   startBack,
   startCheckFolder,
+  startCheckWorkspaceLocation,
   startChooseHarness,
   type StartDeps,
   startImportWorkspace,
@@ -42,7 +43,9 @@ import {
   type StartStatus,
   startStatus,
   type StartStatusEvent,
+  type StartWorkspaceLocationInput,
 } from "../../libswamp/start/start.ts";
+import { MAX_WORKSPACE_PARENT_LENGTH } from "../../libswamp/workspace/workspace_store.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { findHarness } from "../../domain/start/harness.ts";
 import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
@@ -117,8 +120,14 @@ export interface StartServerHandle {
   readonly port: number;
   /** Resolves when an end condition is met. */
   readonly ended: Promise<StartServerEnd>;
-  /** Opens (creating if needed) the named workspace, as the page would. */
-  openWorkspace(name: string): Promise<StartStatus>;
+  /**
+   * Opens (creating if needed) the named workspace, as the page would. A
+   * new one is created in `location.parent` when given.
+   */
+  openWorkspace(
+    name: string,
+    location?: StartWorkspaceLocationInput,
+  ): Promise<StartStatus>;
   /** The workspace being served, or null before one is chosen. */
   workspacePath(): string | null;
   shutdown(): Promise<void>;
@@ -149,7 +158,19 @@ const RequestSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("start.new_task"), id: z.string() }),
   z.object({ type: z.literal("start.copied"), id: z.string() }),
-  z.object({ type: z.literal("start.folder.pick"), id: z.string() }),
+  z.object({
+    type: z.literal("start.folder.pick"),
+    id: z.string(),
+    payload: z.object({ purpose: z.enum(["import", "location"]) }).optional(),
+  }),
+  z.object({
+    type: z.literal("start.workspace.location.check"),
+    id: z.string(),
+    payload: z.object({
+      name: z.string().max(64),
+      parent: z.string().max(MAX_WORKSPACE_PARENT_LENGTH).optional(),
+    }),
+  }),
   z.object({
     type: z.literal("start.folder.check"),
     id: z.string(),
@@ -159,7 +180,12 @@ const RequestSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("start.workspace.choose"),
     id: z.string(),
-    payload: z.object({ name: z.string() }),
+    payload: z.object({
+      name: z.string(),
+      // Where to create it when it is new. Only absolute or `~` paths: the
+      // page's folder is never resolved against this process's own.
+      parent: z.string().max(MAX_WORKSPACE_PARENT_LENGTH).optional(),
+    }),
   }),
   z.object({ type: z.literal("start.workspace.leave"), id: z.string() }),
   z.object({
@@ -454,15 +480,28 @@ export function startStartServer(
     });
 
   let picking: Promise<{ path: string | null }> | null = null;
-  const pickFolder = (): Promise<{ path: string | null }> => {
+  let pickingPurpose: "import" | "location" | null = null;
+  const pickFolder = (
+    purpose: "import" | "location",
+  ): Promise<{ path: string | null }> => {
     if (stopping) {
       return Promise.reject(
         new StartServerError("stopping", "swamp start is stopping."),
       );
     }
+    // A second pick shares an open dialog only when it asks the same thing.
+    if (picking !== null && pickingPurpose !== purpose) {
+      return Promise.reject(
+        new StartServerError(
+          "picker_busy",
+          "A folder chooser is already open. Finish with it first.",
+        ),
+      );
+    }
+    pickingPurpose = purpose;
     picking ??= (async () => {
       try {
-        return await startPickFolder(ctx, deps);
+        return await startPickFolder(ctx, deps, { purpose });
       } catch (error) {
         if (error instanceof UserError) {
           throw new StartServerError(
@@ -474,6 +513,7 @@ export function startStartServer(
         throw error;
       } finally {
         picking = null;
+        pickingPurpose = null;
       }
     })();
     return picking;
@@ -541,15 +581,20 @@ export function startStartServer(
   };
 
   /** Opens a workspace; runs inside the queue. */
-  const openWorkspaceNow = async (name: string): Promise<StartStatus> => {
+  const openWorkspaceNow = async (
+    name: string,
+    location: StartWorkspaceLocationInput = {},
+  ): Promise<StartStatus> => {
     let path: string;
     try {
-      path = await resolveStartWorkspacePath(deps, name);
+      path = await resolveStartWorkspacePath(deps, name, location);
     } catch (error) {
       if (error instanceof UserError) {
-        throw new StartServerError("invalid_name", error.message, {
-          cause: error,
-        });
+        throw new StartServerError(
+          error.code?.startsWith("parent_") ? error.code : "invalid_name",
+          error.message,
+          { cause: error },
+        );
       }
       throw error;
     }
@@ -561,7 +606,10 @@ export function startStartServer(
     try {
       status = await claims.claim(name, path, async () => {
         for await (
-          const event of startOpenWorkspace(ctx, deps, { workspaceName: name })
+          const event of startOpenWorkspace(ctx, deps, {
+            workspaceName: name,
+            ...location,
+          })
         ) {
           if (event.kind === "workspace_ready") created = event.created;
           if (event.kind === "error") {
@@ -591,8 +639,10 @@ export function startStartServer(
     return present(status);
   };
 
-  const openWorkspace = (name: string): Promise<StartStatus> =>
-    enqueue(() => openWorkspaceNow(name));
+  const openWorkspace = (
+    name: string,
+    location?: StartWorkspaceLocationInput,
+  ): Promise<StartStatus> => enqueue(() => openWorkspaceNow(name, location));
 
   const leaveWorkspace = (): Promise<StartStatus> =>
     signedIn(async () => {
@@ -708,7 +758,14 @@ export function startStartServer(
         );
       case "start.workspace.choose":
         return respond(
-          await signedIn(() => openWorkspaceNow(request.payload.name)),
+          await signedIn(() =>
+            openWorkspaceNow(
+              request.payload.name,
+              request.payload.parent !== undefined
+                ? { parent: request.payload.parent }
+                : {},
+            )
+          ),
         );
       case "start.workspace.import":
         return respond(
@@ -907,12 +964,26 @@ export function startStartServer(
             startCheckFolder(ctx, deps, { path: request.payload.path })
           ),
         );
+      case "start.workspace.location.check":
+        // Reads only, so it isn't queued behind workspace changes.
+        return respond(
+          await signedIn(() =>
+            startCheckWorkspaceLocation(ctx, deps, {
+              name: request.payload.name,
+              ...(request.payload.parent !== undefined
+                ? { parent: request.payload.parent }
+                : {}),
+            })
+          ),
+        );
       case "start.folder.pick":
         // Not queued: the dialog waits on the user for as long as they
         // like, and it reads and changes nothing on the server, so it must
         // not hold up other requests. A second request while one is open
         // shares it rather than opening a second dialog.
-        return respond(await pickFolder());
+        return respond(
+          await pickFolder(request.payload?.purpose ?? "import"),
+        );
       case "start.launch": {
         const status = await deduped("launch", async (path) => {
           const taskId = requireTask();

@@ -53,14 +53,29 @@ function setup(options: AnyOptions, path: string[]) {
 const workspaceCreateCommand = new Command()
   .name("create")
   .description(
-    "Create a workspace: a new swamp repo under the swamp data dir, with no agent set up",
+    "Create a workspace: a new swamp repo with no agent set up\n" +
+      "It goes in <name> under --path, else under the folder set with\n" +
+      "`swamp config set workspaces.dir`, else under the swamp data dir",
   )
   .arguments("<name:string>")
   .example("Create a workspace", "swamp workspace create prod")
+  .example(
+    "Create it in ~/dev/prod",
+    "swamp workspace create prod --path ~/dev",
+  )
+  .option(
+    "--path <dir:string>",
+    "Create the workspace in <dir>/<name>; <dir> must already exist",
+  )
   .action(async function (options: AnyOptions, name: string) {
     const { cliCtx, ctx, deps } = setup(options, ["workspace", "create"]);
     await consumeStream(
-      workspaceCreate(ctx, deps, { name }),
+      workspaceCreate(ctx, deps, {
+        name,
+        ...(options.path !== undefined
+          ? { parent: options.path, relativeTo: Deno.cwd() }
+          : {}),
+      }),
       createWorkspaceCreateHandlers(cliCtx.outputMode),
     );
   });

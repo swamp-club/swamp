@@ -153,7 +153,7 @@ export interface WorkspaceSummary {
   updatedAt: string | null;
   /** True when another `swamp start` has this workspace open. */
   running: boolean;
-  /** True when the workspace's folder is outside `~/.swamp/workspaces`. */
+  /** True when the workspace is an existing repo imported where it was. */
   imported: boolean;
 }
 
@@ -161,6 +161,8 @@ export interface WorkspaceSummary {
 export interface WorkspaceList {
   workspaces: WorkspaceSummary[];
   suggestedName: string;
+  /** The folder a new workspace goes in when none is chosen. */
+  defaultLocation?: string;
 }
 
 /** One agent harness swamp supports, found on this machine or not. */

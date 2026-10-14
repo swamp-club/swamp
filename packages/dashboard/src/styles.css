@@ -4744,3 +4744,25 @@ a.cron-badge:hover {
   font-size: 13px;
   color: var(--accent);
 }
+
+/* swamp start: a new workspace's location and the folder it creates */
+.start-new-workspace .start-field-label[for="start-workspace-location"] {
+  display: block;
+  margin-top: 16px;
+}
+
+.start-new-workspace .start-hint code,
+.start-new-workspace .start-workspace-path {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.start-new-workspace .start-workspace-path {
+  overflow: visible;
+  text-overflow: clip;
+  margin-top: 8px;
+}
+
+.start-workspace-path-pending {
+  opacity: 0.6;
+}

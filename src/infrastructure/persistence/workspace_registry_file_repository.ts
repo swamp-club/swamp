@@ -39,6 +39,9 @@ const RegistryFileSchema = z.object({
     path: z.string().min(1),
     createdAt: z.string(),
     trustedAt: z.string().optional(),
+    // Added without a schema bump, so older Swamp versions still read the
+    // file. A value this version doesn't know is dropped, not fatal.
+    origin: z.enum(["created", "imported"]).optional().catch(undefined),
   })),
   // A preference: a value that can't be used is dropped, never a reason to
   // call the whole workspace list unreadable.

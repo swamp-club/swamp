@@ -144,3 +144,46 @@ Deno.test("WorkspaceRegistryFileRepository: persists the last agent, and drops o
     assertEquals(loaded?.list().map((e) => e.name), ["a"]);
   });
 });
+
+Deno.test("WorkspaceRegistryFileRepository: persists origin, loads files without it, and drops an unknown one", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new WorkspaceRegistryFileRepository(dir);
+    await repo.update((r) => {
+      r.register({
+        name: "made",
+        path: "/w/made",
+        createdAt: "2026-10-14T00:00:00.000Z",
+        origin: "created",
+      });
+      r.register({
+        name: "mine",
+        path: "/w/mine",
+        createdAt: "2026-10-14T00:00:00.000Z",
+        origin: "imported",
+      });
+    });
+    const loaded = await repo.load();
+    assertEquals(loaded?.get("made")?.origin, "created");
+    assertEquals(loaded?.get("mine")?.origin, "imported");
+
+    await Deno.writeTextFile(
+      join(dir, "workspaces.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        workspaces: [
+          { name: "old", path: "/w/old", createdAt: "2026-10-01T00:00:00Z" },
+          {
+            name: "odd",
+            path: "/w/odd",
+            createdAt: "2026-10-01T00:00:00Z",
+            origin: "cloned",
+          },
+        ],
+      }),
+    );
+    const legacy = await repo.load();
+    assertEquals(legacy?.get("old")?.origin, undefined);
+    assertEquals(legacy?.get("odd")?.origin, undefined);
+    assertEquals(legacy?.get("odd")?.path, "/w/odd");
+  });
+});

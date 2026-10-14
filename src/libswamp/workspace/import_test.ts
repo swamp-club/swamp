@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { workspaceCreate } from "./create.ts";
 import { workspaceImport } from "./import.ts";
+import { workspaceGet } from "./get.ts";
 import {
   completed,
   ctx,
@@ -75,6 +76,29 @@ Deno.test("workspaceImport: refuses a taken name, a folder that isn't a repo, an
         workspaceImport(ctx, f.deps, { path: join(f.dir, "gone") }),
       ),
       "not_found",
+    );
+  });
+});
+
+Deno.test("workspaceImport: records an imported repo as imported, and a data dir folder as created", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const path = join(f.dir, "infra");
+    await f.makeRepo(path);
+    await completed(workspaceImport(ctx, f.deps, { path }));
+    assertEquals(
+      (await f.deps.registry.load())?.get("infra")?.origin,
+      "imported",
+    );
+    assertEquals(
+      (await completed(workspaceGet(ctx, f.deps, { name: "infra" }))).imported,
+      true,
+    );
+    const leftBehind = join(f.dataDir, "workspaces", "prod");
+    await f.makeRepo(leftBehind);
+    await completed(workspaceImport(ctx, f.deps, { path: leftBehind }));
+    assertEquals(
+      (await f.deps.registry.load())?.get("prod")?.origin,
+      "created",
     );
   });
 });

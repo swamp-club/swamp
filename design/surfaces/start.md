@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-03 @ dff522a4
+last-verified: 2026-10-14 @ 3999f85e
 ---
 
 # swamp start
@@ -15,10 +15,13 @@ and prepares the ground for the **Serve** dashboard.
 - **Workspace**: a swamp repo `swamp start` manages, registered in
   `<config dir>/workspaces.json` (see [workspace.md](./workspace.md), which
   also covers the `swamp workspace` commands). A new one is created, with no tools enrolled,
-  at `<data dir>/workspaces/<name>` (`getSwampDataDir()`, so it moves with
+  at `<location>/<name>`: the folder chosen on the page or with `--path`, else
+  the one set with `swamp config set workspaces.dir`, else
+  `<data dir>/workspaces` (`getSwampDataDir()`, so it moves with
   `SWAMP_HOME`); an imported one is an existing repo that stays where it is. A
   user can have many; each new one gets a suggested `adjective-creature` name
-  (`misty-heron`) they can change before it is created.
+  (`misty-heron`) they can change before it is created, and the page shows the
+  folder it will be created in as either field changes.
 - **Task**: one automation task of a workspace and its pass through the flow
   (`StartSession` in code): the text, the agent chosen for it, its launches.
   A workspace holds any number; none is "current". Each is a record at
@@ -82,12 +85,27 @@ task, appears only right after a launch in the same run.
 Workspaces are registered centrally in `<config dir>/workspaces.json`
 (`WorkspaceRegistry`, `src/domain/workspace/`), beside `auth.json`. The
 registry, not the filesystem, says which workspaces exist and where each
-folder is. New workspaces are created under `<data dir>/workspaces/<name>` and
-registered; an existing swamp repo anywhere on disk can be imported, which
-registers it where it is without moving anything. The first read adopts folders already
-under `<data dir>/workspaces/`; `swamp start --json` and `swamp start status`
-adopt in memory only, writing nothing. Workspace locks always live in
-`<data dir>/workspaces/<name>.lock`, never beside an imported repo.
+folder is. New workspaces are created in their location (see the glossary) and
+registered as created; an existing swamp repo anywhere on disk can be
+imported, which registers it where it is without moving anything.
+
+The create form has a Name and a Location field. Both show their default as a
+placeholder and an empty field uses it; Location has a Browse button when this
+machine can show a folder chooser (`start.folder.pick` with purpose
+`location`). As either field changes, the page asks
+`start.workspace.location.check` (reads only) and shows "Creates <folder>"
+under the fields, or the problem under the field it is about. The server
+works the folder out, so the page never joins paths itself, and
+`start.workspace.choose` runs the same checks again on the folder it creates.
+The page only sends absolute or `~` folders; the server refuses a relative
+one (`parent_not_absolute`) rather than resolving it against its own working
+folder. `swamp start --workspace <name> --path <dir>` does the same from the
+command line, where a relative `<dir>` is taken from the current folder.
+
+The first read adopts folders already under `<data dir>/workspaces/`;
+`swamp start --json` and `swamp start status` adopt in memory only, writing
+nothing. Workspace locks always live in `<data dir>/workspaces/<name>.lock`,
+never beside an imported repo or a workspace created in a chosen folder.
 
 A workspace keeps every task it has had, each with its own record and brief,
 so two agents can work on two tasks in one workspace without one brief

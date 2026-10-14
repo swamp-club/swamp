@@ -39,6 +39,7 @@ import {
   launchChoices,
   launchedLabel,
   launchOpened,
+  locationCheckKey,
   middleEllipsis,
   nameFromFolder,
   newWorkspaceNameProblem,
@@ -65,6 +66,7 @@ import {
   updatedLabel,
   workspaceAgentTags,
   workspaceChooseError,
+  workspaceLocationHint,
 } from "./helpers.ts";
 import type {
   ExamplePrompt,
@@ -819,4 +821,31 @@ Deno.test("initialAgentPick: keeps the pick, else the task's agent, else the las
   // An agent that can't launch here any more is passed over.
   assertEquals(initialAgentPick(ids, "cursor", "amp", "pi"), "claude");
   assertEquals(initialAgentPick([], null, undefined, "codex"), null);
+});
+
+Deno.test("workspaceLocationHint: names the default folder the server reports", () => {
+  assertEquals(
+    workspaceLocationHint("/Users/alice/dev"),
+    "New workspaces go in `/Users/alice/dev` unless you choose another folder. No Git needed.",
+  );
+  assertEquals(
+    workspaceLocationHint(""),
+    "Workspaces live in `~/.swamp/workspaces` on this machine. No Git needed.",
+  );
+});
+
+Deno.test("locationCheckKey: changes with the name or the folder, not surrounding spaces", () => {
+  assertEquals(
+    locationCheckKey("misty-heron", " ~/dev "),
+    locationCheckKey("misty-heron", "~/dev"),
+  );
+  assertEquals(
+    locationCheckKey("misty-heron", "") === locationCheckKey("other", ""),
+    false,
+  );
+  assertEquals(
+    locationCheckKey("misty-heron", "") ===
+      locationCheckKey("misty-heron", "~/dev"),
+    false,
+  );
 });
