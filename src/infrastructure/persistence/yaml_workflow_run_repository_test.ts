@@ -923,9 +923,56 @@ async function settleRunIndex(dir: string, workflowId: WorkflowId) {
   await Deno.utime(runsDir, when, when);
 }
 
+/**
+ * A run index cache clock a minute ahead, for a repository whose snapshots
+ * a test expects to be kept: `Deno.utime` sets a file's mtime back but
+ * moves its ctime to now, and a recent ctime is not trusted
+ * (swamp-club#3467).
+ */
+const aheadClock = () => Date.now() + 60_000;
+
+/** A repository whose run index cache judges file times by `aheadClock`. */
+function keepingRepo(dir: string): YamlWorkflowRunRepository {
+  return new YamlWorkflowRunRepository(
+    dir,
+    undefined,
+    undefined,
+    undefined,
+    aheadClock,
+  );
+}
+
+function runsDirOf(dir: string, workflowId: WorkflowId): string {
+  return join(dir, ".swamp", "workflow-runs", workflowId);
+}
+
+/** Copies a run's record to a new run id, as another writer would add it. */
+async function copyRecord(
+  dir: string,
+  workflowId: WorkflowId,
+  from: string,
+  to: string,
+): Promise<void> {
+  const runsDir = runsDirOf(dir, workflowId);
+  const text = await Deno.readTextFile(
+    join(runsDir, `workflow-run-${from}.yaml`),
+  );
+  await Deno.writeTextFile(
+    join(runsDir, `workflow-run-${to}.yaml`),
+    text.replaceAll(from, to),
+  );
+}
+
 Deno.test("runIndexSnapshot: reuses the snapshot while the index and records are unchanged", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRunRepository(dir);
+    let offset = 0;
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      () => Date.now() + offset,
+    );
     const workflow = createTestWorkflow();
     const run = WorkflowRun.create(workflow);
     run.start();
@@ -935,16 +982,129 @@ Deno.test("runIndexSnapshot: reuses the snapshot while the index and records are
     const fresh = await repo.runIndexSnapshot(workflow.id);
     assertNotStrictEquals(await repo.runIndexSnapshot(workflow.id), fresh);
 
-    await settleRunIndex(dir, workflow.id);
+    offset = 60_000;
     const settled = await repo.runIndexSnapshot(workflow.id);
     assertStrictEquals(await repo.runIndexSnapshot(workflow.id), settled);
     assertEquals(settled.runs.map((r) => r.summary.id), [run.id]);
   });
 });
 
-Deno.test("runIndexSnapshot: sees a save by this repository after the snapshot was kept", async () => {
+Deno.test("runIndexSnapshot: does not keep a snapshot while the index ctime is recent, though its mtime is old", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    // Sets the mtimes back, as a rewrite in place that restores them
+    // would, and moves the index's ctime to now.
+    await settleRunIndex(dir, workflow.id);
+
+    const first = await repo.runIndexSnapshot(workflow.id);
+    assertNotStrictEquals(await repo.runIndexSnapshot(workflow.id), first);
+  });
+});
+
+Deno.test({
+  name:
+    "runIndexSnapshot: a repair that cannot write the index is not kept, so a later edit of a record is seen",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repo = keepingRepo(dir);
+      const workflow = createTestWorkflow();
+      const edited = WorkflowRun.create(workflow);
+      edited.start();
+      await repo.save(workflow.id, edited);
+      const other = WorkflowRun.create(workflow);
+      other.start();
+      await repo.save(workflow.id, other);
+      // A record the index does not list, in a directory the repair
+      // cannot write its index to.
+      await copyRecord(dir, workflow.id, other.id, crypto.randomUUID());
+      const runsDir = runsDirOf(dir, workflow.id);
+      await Deno.chmod(runsDir, 0o555);
+      try {
+        assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 3);
+
+        const path = join(runsDir, `workflow-run-${edited.id}.yaml`);
+        const text = await Deno.readTextFile(path);
+        await Deno.writeTextFile(
+          path,
+          text.replace("status: running", "status: failed"),
+        );
+        assertEquals(
+          (await repo.runIndexSnapshot(workflow.id)).get(edited.id)?.summary
+            .status,
+          "failed",
+        );
+      } finally {
+        await Deno.chmod(runsDir, 0o755);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runIndexSnapshot: a rebuild that cannot write the index is not kept, so a later edit of a record is seen",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repo = keepingRepo(dir);
+      const workflow = createTestWorkflow();
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      await repo.save(workflow.id, run);
+      const runsDir = runsDirOf(dir, workflow.id);
+      await Deno.remove(getIndexPath(runsDir));
+      await Deno.chmod(runsDir, 0o555);
+      try {
+        const first = await repo.runIndexSnapshot(workflow.id);
+        assertNotStrictEquals(await repo.runIndexSnapshot(workflow.id), first);
+
+        const path = join(runsDir, `workflow-run-${run.id}.yaml`);
+        const text = await Deno.readTextFile(path);
+        await Deno.writeTextFile(
+          path,
+          text.replace("status: running", "status: failed"),
+        );
+        assertEquals(
+          (await repo.runIndexSnapshot(workflow.id)).get(run.id)?.summary
+            .status,
+          "failed",
+        );
+      } finally {
+        await Deno.chmod(runsDir, 0o755);
+      }
+    });
+  },
+});
+
+Deno.test("runIndexSnapshot: an empty record is not kept out of the snapshot once it is written in place", async () => {
+  await withTempDir(async (dir) => {
+    const repo = keepingRepo(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    // A writer that creates the file before it fills it in.
+    const late = crypto.randomUUID();
+    const path = join(
+      runsDirOf(dir, workflow.id),
+      `workflow-run-${late}.yaml`,
+    );
+    await Deno.writeTextFile(path, "");
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 1);
+
+    await copyRecord(dir, workflow.id, run.id, late);
+    assert((await repo.runIndexSnapshot(workflow.id)).get(late));
+  });
+});
+
+Deno.test("runIndexSnapshot: sees a save by this repository after the snapshot was kept", async () => {
+  await withTempDir(async (dir) => {
+    const repo = keepingRepo(dir);
     const workflow = createTestWorkflow();
     const first = WorkflowRun.create(workflow);
     first.start();
@@ -963,7 +1123,7 @@ Deno.test("runIndexSnapshot: sees a save by this repository after the snapshot w
 
 Deno.test("runIndexSnapshot: sees runs another process saves, and an index another process rewrites", async () => {
   await withTempDir(async (dir) => {
-    const reader = new YamlWorkflowRunRepository(dir);
+    const reader = keepingRepo(dir);
     const writer = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
     const run = WorkflowRun.create(workflow);
@@ -1008,7 +1168,7 @@ Deno.test("runIndexSnapshot: a workflow with no index is read from its records a
 
 Deno.test("runIndexSnapshot: deleteAllByWorkflowId leaves no runs behind", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRunRepository(dir);
+    const repo = keepingRepo(dir);
     const workflow = createTestWorkflow();
     const run = WorkflowRun.create(workflow);
     run.start();

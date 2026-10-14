@@ -128,6 +128,26 @@ Deno.test("RunIndexCache: does not keep a snapshot whose stat is too recent or i
   }
 });
 
+Deno.test("RunIndexCache: does not keep a snapshot whose index ctime is too recent, though its mtime is old", async () => {
+  // An in-place rewrite that sets the mtime back moves only the ctime,
+  // which Deno reports in whole seconds (swamp-club#3467).
+  const stamp: RunIndexStamp = {
+    index: { mtimeMs: OLD, size: 10, ctimeMs: NOW - 500, ino: 1 },
+    dirMtimeMs: OLD,
+  };
+  const racy = harness();
+  racy.stamps.set("wf", stamp);
+  await racy.cache.get("wf", racy.load(snapshotOf(1)));
+  await racy.cache.get("wf", racy.load(snapshotOf(1)));
+  assertEquals(racy.loads, 2);
+
+  const settled = harness({ now: NOW + 2_000 });
+  settled.stamps.set("wf", stamp);
+  await settled.cache.get("wf", settled.load(snapshotOf(1)));
+  await settled.cache.get("wf", settled.load(snapshotOf(1)));
+  assertEquals(settled.loads, 1);
+});
+
 Deno.test("RunIndexCache: keeps nothing without an mtime, or for a snapshot not built from the index", async () => {
   const noMtime = harness();
   noMtime.stamps.set("wf", undefined);

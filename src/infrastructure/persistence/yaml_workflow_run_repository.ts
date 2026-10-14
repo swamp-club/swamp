@@ -111,6 +111,17 @@ async function recordMayExist(path: string): Promise<boolean> {
 }
 
 /**
+ * A workflow's run index entries, and whether the index file on disk holds
+ * exactly these entries with one per run record. A run index snapshot is
+ * kept between reads only when it is, so entries repaired in memory that
+ * could not be written back are never cached (swamp-club#3467).
+ */
+interface ValidatedIndex {
+  entries: WorkflowRunIndex;
+  inStep: boolean;
+}
+
+/**
  * YAML-based implementation of WorkflowRunRepository.
  *
  * Stores workflow runs as YAML files in the directory structure:
@@ -129,17 +140,27 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   beforeSave?: (run: WorkflowRun) => Promise<void>;
 
   /** Run index snapshots kept between reads (swamp-club#3443). */
-  private readonly runIndexCache = new RunIndexCache({
-    stamp: (workflowId) => this.stampRunIndex(workflowId as WorkflowId),
-  });
+  private readonly runIndexCache: RunIndexCache;
 
+  /**
+   * `runIndexClock` is the clock the run index cache judges how recent a
+   * file time is by. A test seam: production passes nothing and gets
+   * `Date.now`. `Deno.utime` can set a file's mtime back but moves its
+   * ctime to now, so a test that settles files with it runs this clock
+   * ahead instead.
+   */
   constructor(
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
     baseDir?: string,
     private readonly markDirty?: MarkDirtyHook,
+    runIndexClock?: () => number,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
+    this.runIndexCache = new RunIndexCache({
+      stamp: (workflowId) => this.stampRunIndex(workflowId as WorkflowId),
+      now: runIndexClock,
+    });
   }
 
   async findById(
@@ -1216,11 +1237,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return this.runIndexCache.get(workflowId, async () => {
       const runsDir = this.getRunsDir(workflowId);
       const indexDir = this.getLocalIndexDir(workflowId);
-      const index = await this.getValidatedIndex(runsDir, indexDir, signal);
+      const index = await this.validateIndex(runsDir, indexDir, signal);
       if (index) {
         return {
-          snapshot: RunIndexSnapshot.of(indexToSummaries(index)),
-          fromIndex: true,
+          snapshot: RunIndexSnapshot.of(indexToSummaries(index.entries)),
+          fromIndex: index.inStep,
         };
       }
       return {
@@ -1271,6 +1292,19 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     indexDir: string,
     signal?: AbortSignal,
   ): Promise<WorkflowRunIndex | null> {
+    return (await this.validateIndex(runsDir, indexDir, signal))?.entries ??
+      null;
+  }
+
+  /**
+   * The workflow's index entries, repaired first when they disagree with
+   * the records' count, and whether the index file now holds them.
+   */
+  private async validateIndex(
+    runsDir: string,
+    indexDir: string,
+    signal?: AbortSignal,
+  ): Promise<ValidatedIndex | null> {
     const entries = await listDirEntries(runsDir);
     const yamlCount = countYamlRunFiles(entries);
     if (yamlCount === 0) return null;
@@ -1280,7 +1314,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return await this.repairIndex(runsDir, indexDir, signal);
     }
 
-    return result.entries;
+    return { entries: result.entries, inStep: true };
   }
 
   /**
@@ -1295,13 +1329,15 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * not a read of every record (swamp-club#3443, swamp-club#3407), and a
    * record another writer replaced is still corrected, as the rebuild this
    * replaces corrected it. An index of another schema version, or none, is
-   * rebuilt whole.
+   * rebuilt whole. The entries are in step only when the index file holds
+   * them and lists one per record: a repair that could not be written, or
+   * a record that cannot be indexed (an empty one), leaves them out of step.
    */
   private repairIndex(
     runsDir: string,
     indexDir: string,
     signal?: AbortSignal,
-  ): Promise<WorkflowRunIndex | null> {
+  ): Promise<ValidatedIndex | null> {
     return withIndexQueue(indexDir, async () => {
       signal?.throwIfAborted();
       const files = await listDirEntries(runsDir);
@@ -1311,7 +1347,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       if (!result || result.version !== INDEX_SCHEMA_VERSION) {
         return await this.rebuildIndexUnqueued(runsDir, indexDir, signal);
       }
-      if (!isIndexStale(result, count)) return result.entries;
+      if (!isIndexStale(result, count)) {
+        return { entries: result.entries, inStep: true };
+      }
 
       const entries = result.entries;
       const suspects = await this.findSuspectRecords(
@@ -1319,16 +1357,21 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         entries,
         signal,
       );
+      let written = true;
       if (await this.reconcileSuspects(runsDir, entries, suspects, signal)) {
         try {
           await ensureDir(indexDir);
           await writeRunIndex(indexDir, entries);
         } catch (error) {
+          written = false;
           logger
             .warn`Failed to write repaired index, will retry next read: ${error}`;
         }
       }
-      return entries;
+      return {
+        entries,
+        inStep: written && Object.keys(entries).length === count,
+      };
     });
   }
 
@@ -1503,7 +1546,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private rebuildIndex(
     runsDir: string,
     indexDir: string,
-  ): Promise<WorkflowRunIndex | null> {
+  ): Promise<ValidatedIndex | null> {
     return withIndexQueue(
       indexDir,
       () => this.rebuildIndexUnqueued(runsDir, indexDir),
@@ -1514,8 +1557,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     runsDir: string,
     indexDir: string,
     signal?: AbortSignal,
-  ): Promise<WorkflowRunIndex | null> {
+  ): Promise<ValidatedIndex | null> {
     const index: WorkflowRunIndex = {};
+    let count = 0;
     try {
       for (const entry of await readDirSorted(runsDir)) {
         // Before each record: an aborted rebuild writes no index.
@@ -1526,6 +1570,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         ) {
           continue;
         }
+        count++;
         const read = await readIndexedRecord(join(runsDir, entry.name));
         if (!read) continue;
         index[read.summary.id] = indexEntryOf(read.summary, read.record);
@@ -1535,15 +1580,20 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       throw error;
     }
 
+    let written = true;
     try {
       await ensureDir(indexDir);
       await writeRunIndex(indexDir, index);
     } catch (error) {
+      written = false;
       logger
         .warn`Failed to write rebuilt index, will retry next read: ${error}`;
     }
 
-    return index;
+    return {
+      entries: index,
+      inStep: written && Object.keys(index).length === count,
+    };
   }
 
   /**
