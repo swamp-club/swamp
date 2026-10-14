@@ -81,6 +81,8 @@ export function authGateTiming(
   tree: AnyCommand,
   args: readonly string[],
 ): AuthGateTiming {
+  // The raw resolution, not the recorded form: `swamp behavior …` must be
+  // walked in the behavior tree it was typed in (swamp-club#3411).
   const resolved = resolveTelemetryInvocation(tree, [...args], []);
   const path = resolved.commandPath ?? [];
   // `args` holds the command words after the subcommand plus positionals, so

@@ -103,6 +103,8 @@ Deno.test("bridge records success entry on method_executing → step_completed",
   assertEquals(call.invocation.subcommand, "method");
   assertEquals(call.invocation.args, ["run", "shell-step", "run"]);
   assertEquals(call.invocation.commandPath, ["model", "method", "run"]);
+  // Synthetic: no root word was typed, so no commandSpelling (swamp-club#3411).
+  assertEquals("commandSpelling" in call.invocation, false);
   assertEquals(call.error, null);
   assertEquals(call.parentInvocationId, "parent-x");
   assertEquals(call.workflowContext.workflowName, "deploy");

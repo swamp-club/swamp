@@ -85,6 +85,48 @@ Deno.test("TelemetryEntry: commandPath round-trips and stays absent on legacy en
   assertEquals("commandPath" in legacy.invocation, false);
 });
 
+Deno.test("TelemetryEntry: commandSpelling round-trips last, stays absent when unset, and drops unknown values", () => {
+  const invocation = {
+    command: "model",
+    subcommand: "method",
+    args: ["run", "m", "x"],
+    optionKeys: [],
+    globalOptions: [],
+    commandPath: ["model", "method", "run"],
+  };
+  const common = {
+    result: { status: "success" as const, exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+
+  const data = TelemetryEntry.create({
+    ...common,
+    invocation: { ...invocation, commandSpelling: "behaviour" },
+  }).toData();
+  assertEquals(data.invocation.commandSpelling, "behaviour");
+  assertEquals(Object.keys(data.invocation).at(-1), "commandSpelling");
+  const decoded = TelemetryEntry.fromData(data);
+  assertEquals(decoded.invocation.commandSpelling, "behaviour");
+  assertEquals(decoded.toData(), data);
+
+  const unset = TelemetryEntry.create({ ...common, invocation }).toData();
+  assertEquals("commandSpelling" in unset.invocation, false);
+
+  const unknown = TelemetryEntry.fromData({
+    ...data,
+    invocation: {
+      ...data.invocation,
+      commandSpelling: "behaviors",
+    } as unknown as TelemetryEntryData["invocation"],
+  });
+  assertEquals("commandSpelling" in unknown.invocation, false);
+  assertEquals("commandSpelling" in unknown.toData().invocation, false);
+});
+
 Deno.test("TelemetryEntry.create with explicit ID uses provided ID", () => {
   const entry = TelemetryEntry.create({
     id: "test-id-123",

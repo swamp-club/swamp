@@ -17,9 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { CommandInvocationData } from "../domain/telemetry/mod.ts";
+import {
+  type CommandInvocationData,
+  isCommandSpelling,
+} from "../domain/telemetry/mod.ts";
 import { resolve } from "@std/path";
 import type { AnyCommand } from "./cli_schema.ts";
+import {
+  behaviorTwinPath,
+  isBehaviorGroupWord,
+  isMethodLevelWord,
+  MODEL_GROUP_WORD,
+  MODEL_METHOD_WORD,
+} from "./behavior_twin.ts";
 import { GLOBAL_OPTIONS } from "./telemetry_integration.ts";
 
 /** Placeholder recorded in place of a redacted positional. */
@@ -155,6 +165,11 @@ export function isSentArgument(
  * `command`, `subcommand` and `args` keep the shape swamp-club already
  * consumes: `args` is the command words after the subcommand followed by the
  * positionals, so `model method run m x` is still `args: ["run", "m", "x"]`.
+ *
+ * The result describes the command as typed: a `swamp behavior …` invocation
+ * resolves under the behavior group. The auth gate relies on that path
+ * (auth_gate_exemptions.ts). What telemetry records is this result passed
+ * through {@link toRecordedInvocation}.
  */
 export function resolveTelemetryInvocation(
   root: AnyCommand,
@@ -275,6 +290,52 @@ export function resolveTelemetryInvocation(
     result.subcommand = typedPath[1];
   }
   return result;
+}
+
+/**
+ * The invocation telemetry records for a resolved one (swamp-club#3411).
+ *
+ * `swamp behavior …` and `swamp behaviour …` are recorded exactly as the
+ * equivalent `swamp model …` invocation is, so one command counts the same
+ * however it was typed: `command` becomes `model`, `commandPath` becomes the
+ * model path, and for `run`, `describe` and `history` `subcommand` becomes
+ * `method` with the typed word moved to the front of `args` —
+ * `behavior run m x` records as `model method run m x` does. The typed root
+ * word is kept in `commandSpelling`. A `swamp model …` invocation gets
+ * `commandSpelling: "model"` and is otherwise unchanged; every other group
+ * is returned unchanged, without the field.
+ *
+ * Applied only where invocations are recorded, never to what the auth gate
+ * reads.
+ */
+export function toRecordedInvocation(
+  resolved: CommandInvocationData,
+): CommandInvocationData {
+  const path = resolved.commandPath ?? [];
+  if (path[0] === MODEL_GROUP_WORD) {
+    return { ...resolved, commandSpelling: MODEL_GROUP_WORD };
+  }
+  if (!isBehaviorGroupWord(path[0])) return resolved;
+
+  const recorded: CommandInvocationData = {
+    command: MODEL_GROUP_WORD,
+    args: [...resolved.args],
+    optionKeys: resolved.optionKeys,
+    globalOptions: resolved.globalOptions,
+    commandPath: behaviorTwinPath(path),
+  };
+  if (resolved.subcommand !== undefined) {
+    if (isMethodLevelWord(path[1])) {
+      recorded.subcommand = MODEL_METHOD_WORD;
+      recorded.args = [resolved.subcommand, ...resolved.args];
+    } else {
+      recorded.subcommand = resolved.subcommand;
+    }
+  }
+  recorded.commandSpelling = isCommandSpelling(resolved.command)
+    ? resolved.command
+    : "behavior";
+  return recorded;
 }
 
 /**

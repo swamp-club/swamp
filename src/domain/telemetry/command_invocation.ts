@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { type CommandSpelling, isCommandSpelling } from "./command_spelling.ts";
+
 /**
  * Represents a CLI command execution.
  * Values are redacted for privacy - only option keys are logged, not values.
@@ -38,6 +40,13 @@ export interface CommandInvocation {
    * command's name. Absent on entries recorded before it existed.
    */
   readonly commandPath?: string[];
+  /**
+   * The root word typed for a `swamp model` invocation or one of its
+   * `swamp behavior` / `swamp behaviour` spellings. The other fields record
+   * all three in the `swamp model` form. Absent for every other group and on
+   * entries recorded before it existed.
+   */
+  readonly commandSpelling?: CommandSpelling;
 }
 
 /**
@@ -50,15 +59,18 @@ export interface CommandInvocationData {
   optionKeys: string[];
   globalOptions: string[];
   commandPath?: string[];
+  commandSpelling?: CommandSpelling;
 }
 
 /**
- * Creates a CommandInvocation value object.
+ * Creates a CommandInvocation value object. A `commandSpelling` that is not
+ * one of the known spellings is dropped: persisted entries are on disk and
+ * may be hand-edited or written by a newer version.
  */
 export function createCommandInvocation(
   props: CommandInvocationData,
 ): CommandInvocation {
-  return {
+  const invocation: CommandInvocation = {
     command: props.command,
     subcommand: props.subcommand,
     args: props.args,
@@ -66,6 +78,9 @@ export function createCommandInvocation(
     globalOptions: props.globalOptions,
     commandPath: props.commandPath,
   };
+  return isCommandSpelling(props.commandSpelling)
+    ? { ...invocation, commandSpelling: props.commandSpelling }
+    : invocation;
 }
 
 /**
@@ -85,6 +100,9 @@ export function commandInvocationToData(
   }
   if (invocation.commandPath) {
     data.commandPath = [...invocation.commandPath];
+  }
+  if (invocation.commandSpelling) {
+    data.commandSpelling = invocation.commandSpelling;
   }
   return data;
 }

@@ -173,6 +173,7 @@ Deno.test("createRunTelemetry: the parent entry sends the workflow name", async 
 
     assertEquals(repo.saved[0].invocation.args, ["nightly"]);
     assertEquals(repo.saved[0].invocation.commandPath, ["workflow", "run"]);
+    assertEquals("commandSpelling" in repo.saved[0].toData().invocation, false);
   });
 });
 
@@ -240,6 +241,8 @@ Deno.test("createCommandTelemetry: records a success entry with initiatedBy", as
     assertEquals(entry.invocation.subcommand, "method run");
     assertEquals(entry.invocation.args, ["enricher", "enrich"]);
     assertEquals(entry.invocation.commandPath, ["model", "method", "run"]);
+    // Synthetic: no root word was typed, so no commandSpelling (swamp-club#3411).
+    assertEquals("commandSpelling" in entry.toData().invocation, false);
     assertEquals(entry.result.status, "success");
     assertEquals(entry.initiatedBy, "user:abc-123");
     assertEquals(entry.triggerSource, "api");

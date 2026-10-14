@@ -36,6 +36,17 @@ something a primitive depends on, move it to `enablers/` and give it an
   no command line, so they depend on these marks. The path patterns remain the
   fallback for text the marks do not cover, such as errors from the runtime or
   third-party libraries.
+  `swamp behavior …` and `swamp behaviour …` are recorded in their
+  `swamp model …` form (swamp-club#3411): `command`, `subcommand`, `args` and
+  `commandPath` are exactly what the `swamp model` spelling records, so
+  `behavior run m x` records as `model method run m x`. One command then
+  counts the same however it was typed, and analytics keep the names they
+  already group by. `commandSpelling` keeps the typed root word, one of
+  `model`, `behavior` or `behaviour`. It is a fixed set of command words, so
+  it carries no user data. Invocations of other groups, and the entries swamp
+  records on its own (workflow steps, serve runs), have no `commandSpelling`.
+  The mapping is applied only when the invocation is recorded
+  (`toRecordedInvocation`); the auth gate reads the resolution as typed.
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`.

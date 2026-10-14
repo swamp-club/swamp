@@ -47,6 +47,12 @@ export {
 } from "./workflow_context.ts";
 
 export {
+  COMMAND_SPELLINGS,
+  type CommandSpelling,
+  isCommandSpelling,
+} from "./command_spelling.ts";
+
+export {
   isWorkflowTriggerSource,
   WORKFLOW_TRIGGER_SOURCES,
   type WorkflowTriggerSource,
