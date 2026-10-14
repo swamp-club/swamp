@@ -829,9 +829,13 @@ control plane, beside the lease, at `_control/lineage/<fence>/`:
 - `started.json`, created once (`putIfAbsent`) by the writer that begins the
   lineage, before its sidecar uploads: the fence, holder, replica root and
   time;
-- `head.json`, rewritten by the lineage's writer after each sync Litestream
-  confirmed: the TXID and swamp's **high-water mark**, the commit store's
-  last cursor and the commit at it;
+- `head-<writer fence>.json`, rewritten by that writer after each sync
+  Litestream confirmed: the TXID and swamp's **high-water mark**, the commit
+  store's last cursor and the commit at it. Each writer has its own key and a
+  read takes the highest writer's, so a head never goes backwards: two
+  processes in one checkout share and continue one lineage, and the first,
+  fenced and publishing late, must not overwrite the head of the second,
+  which already acknowledged more. `copy.json` likewise only moves forward;
 - `confirmed.json`, created once, after the lineage's first head.
 
 **The current state** is the highest lineage under the current replica root

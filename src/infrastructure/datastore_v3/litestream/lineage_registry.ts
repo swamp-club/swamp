@@ -23,7 +23,8 @@
  *
  * - `lineage/<fence>/started.json`, created once;
  * - `lineage/<fence>/confirmed.json`, created once;
- * - `lineage/<fence>/head.json`, rewritten by the lineage's writer.
+ * - `lineage/<fence>/head-<writer fence>.json`, rewritten by that writer;
+ *   a read takes the highest writer's, so a head never goes backwards.
  *
  * Creates use `putIfAbsent`, so of two writers only one can claim a
  * lineage or confirm it. A read lists `lineage/` once and fetches only the
@@ -49,42 +50,75 @@ import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 /** The control-plane prefix every lineage record is under. */
 export const LINEAGE_PREFIX = "lineage/";
 
-type RecordName = "started" | "confirmed" | "head";
+type RecordName = "started" | "confirmed";
 
-const KEY_PATTERN = /^lineage\/(\d{12})\/(started|confirmed|head)\.json$/;
+const KEY_PATTERN =
+  /^lineage\/(\d{12})\/(started|confirmed|head-(\d{12}))\.json$/;
 
 function keyOf(fence: number, name: RecordName): string {
   return `${LINEAGE_PREFIX}${padFence(fence)}/${name}.json`;
+}
+
+/**
+ * Where the writer at `writerFence` publishes lineage `fence`'s head. Each
+ * writer has its own key, so a fenced writer's late head never overwrites
+ * the head of the writer that continued the lineage after it: a read takes
+ * the highest writer's.
+ */
+function headKeyOf(fence: number, writerFence: number): string {
+  return `${LINEAGE_PREFIX}${padFence(fence)}/head-${
+    padFence(writerFence)
+  }.json`;
+}
+
+/** What one lineage's listed keys hold. */
+interface Listed {
+  started: boolean;
+  confirmed: boolean;
+  /** The writer fences that published a head, highest first. */
+  heads: number[];
 }
 
 /** Reads and writes a datastore's published lineages. */
 export class LineageRegistry {
   constructor(private readonly store: WritableDatastoreControlPlaneStore) {}
 
+  async #list(): Promise<Map<number, Listed>> {
+    const listed = new Map<number, Listed>();
+    for (const key of await this.store.list(LINEAGE_PREFIX)) {
+      const match = KEY_PATTERN.exec(key);
+      if (match === null) continue;
+      const fence = Number(match[1]);
+      const writer = match[3] === undefined ? undefined : Number(match[3]);
+      try {
+        padFence(fence);
+        if (writer !== undefined) padFence(writer);
+      } catch {
+        continue;
+      }
+      const entry = listed.get(fence) ??
+        { started: false, confirmed: false, heads: [] };
+      if (writer !== undefined) entry.heads.push(writer);
+      else if (match[2] === "started") entry.started = true;
+      else entry.confirmed = true;
+      listed.set(fence, entry);
+    }
+    for (const entry of listed.values()) entry.heads.sort((a, b) => b - a);
+    return listed;
+  }
+
   /**
    * The lineages the rules need, newest first: every fence with a record,
    * with the start, confirmation and head fetched for the current lineage
-   * under `replicaRoot`, and the start of the newest one started.
+   * under `replicaRoot`, and the start of the newest one started. A
+   * lineage's head is its highest writer's that parses.
    */
   async read(
     replicaRoot: string,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<PublishedLineage[]> {
-    const names = new Map<number, Set<RecordName>>();
-    for (const key of await this.store.list(LINEAGE_PREFIX)) {
-      const match = KEY_PATTERN.exec(key);
-      if (match === null) continue;
-      const fence = Number(match[1]);
-      try {
-        padFence(fence);
-      } catch {
-        continue;
-      }
-      const set = names.get(fence) ?? new Set<RecordName>();
-      set.add(match[2] as RecordName);
-      names.set(fence, set);
-    }
-    const fences = [...names.keys()].sort((a, b) => b - a);
+    const listed = await this.#list();
+    const fences = [...listed.keys()].sort((a, b) => b - a);
     const found = new Map<number, {
       started?: LineageStarted;
       confirmed?: LineageConfirmed;
@@ -93,7 +127,7 @@ export class LineageRegistry {
     const started = async (fence: number) => {
       const entry = found.get(fence) ?? {};
       found.set(fence, entry);
-      if (entry.started === undefined && names.get(fence)!.has("started")) {
+      if (entry.started === undefined && listed.get(fence)!.started) {
         const record = parseLineageStarted(
           await this.#get(keyOf(fence, "started"), options.signal),
         );
@@ -105,18 +139,14 @@ export class LineageRegistry {
     };
     // The newest start under this root.
     for (const fence of fences) {
-      if (!names.get(fence)!.has("started")) continue;
+      if (!listed.get(fence)!.started) continue;
       const entry = await started(fence);
       if (entry.started?.replicaRoot === replicaRoot) break;
     }
     // The current lineage: the newest started and confirmed under this root.
     for (const fence of fences) {
-      const has = names.get(fence)!;
-      if (
-        !has.has("started") || !has.has("confirmed") || !has.has("head")
-      ) {
-        continue;
-      }
+      const has = listed.get(fence)!;
+      if (!has.started || !has.confirmed || has.heads.length === 0) continue;
       const entry = await started(fence);
       if (entry.started?.replicaRoot !== replicaRoot) continue;
       const confirmed = parseLineageConfirmed(
@@ -124,11 +154,16 @@ export class LineageRegistry {
       );
       if (confirmed === undefined || confirmed.fence !== fence) continue;
       entry.confirmed = confirmed;
-      const head = parseLineageHead(
-        await this.#get(keyOf(fence, "head"), options.signal),
-      );
-      if (head === undefined || head.fence !== fence) continue;
-      entry.head = head;
+      for (const writer of has.heads) {
+        const head = parseLineageHead(
+          await this.#get(headKeyOf(fence, writer), options.signal),
+        );
+        if (head?.fence === fence && head.writerFence === writer) {
+          entry.head = head;
+          break;
+        }
+      }
+      if (entry.head === undefined) continue;
       break;
     }
     return fences.map((fence) => ({ fence, ...(found.get(fence) ?? {}) }));
@@ -169,10 +204,13 @@ export class LineageRegistry {
     );
   }
 
-  /** Publishes a lineage's head; only the lineage's writer calls it. */
+  /**
+   * Publishes a lineage's head under its writer's fence: each writer only
+   * ever overwrites its own, one sync at a time.
+   */
   async publishHead(record: LineageHead): Promise<void> {
     await this.store.put(
-      keyOf(record.fence, "head"),
+      headKeyOf(record.fence, record.writerFence),
       encode(serializeLineageRecord(record)),
     );
   }
@@ -182,7 +220,10 @@ export class LineageRegistry {
    * never left confirmed without a start.
    */
   async remove(fence: number): Promise<void> {
-    for (const name of ["head", "confirmed", "started"] as const) {
+    for (const writer of (await this.#list()).get(fence)?.heads ?? []) {
+      await this.store.delete(headKeyOf(fence, writer));
+    }
+    for (const name of ["confirmed", "started"] as const) {
       await this.store.delete(keyOf(fence, name));
     }
   }

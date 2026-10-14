@@ -37,7 +37,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { ensureDirSync } from "@std/fs";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "@std/path";
+import { basename, dirname, join, resolve } from "@std/path";
 import {
   restoreNamespace,
   SOLO_NAMESPACE,
@@ -146,13 +146,19 @@ export function v3CommitsDbPath(
   );
 }
 
-/** `path` with symlinks resolved, or as given when it does not exist yet. */
+/**
+ * `path` with symlinks resolved, through its nearest existing parent when it
+ * does not exist yet, so the key is the same before and after it is created
+ * (`/tmp/x` and `/private/tmp/x` on macOS).
+ */
 function canonicalPath(path: string): string {
   try {
     return Deno.realPathSync(path);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return resolve(path);
-    throw error;
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    const parent = dirname(resolve(path));
+    if (parent === resolve(path)) return resolve(path);
+    return join(canonicalPath(parent), basename(path));
   }
 }
 

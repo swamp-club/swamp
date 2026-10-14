@@ -141,3 +141,19 @@ Deno.test("LineageRegistry: a removed lineage leaves no records", async () => {
     assertEquals(await registry.read(ROOT), []);
   });
 });
+
+Deno.test("LineageRegistry: a fenced writer's late head never moves a continued lineage's head back", async () => {
+  await withRegistry(async (registry) => {
+    await registry.start(started(5));
+    await registry.confirm({ fence: 5, txid: "1", confirmedAt: AT });
+    // Writer 7 continued lineage 5 and published its head; writer 6, which
+    // lost the lease before, publishes late.
+    await registry.publishHead({ ...head(5, "20"), writerFence: 7 });
+    await registry.publishHead({ ...head(5, "18"), writerFence: 6 });
+    const current = currentLineage(await registry.read(ROOT), ROOT);
+    assertEquals(current?.head?.writerFence, 7);
+    assertEquals(current?.head?.txid, "0000000000000020");
+    await registry.remove(5);
+    assertEquals(await registry.read(ROOT), []);
+  });
+});

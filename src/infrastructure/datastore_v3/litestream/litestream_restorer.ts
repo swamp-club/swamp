@@ -156,18 +156,16 @@ export async function restoreV3Copy(
       );
       if (latest.kind !== "ok") {
         throw new V3RestoreError(
-          `litestream restore of lineage ${
+          `litestream could not restore lineage ${
             padFence(request.head.fence)
-          } failed: ${
-            latest.kind === "failed" ? latest.message : "no backup files"
-          }`,
+          }: ${latest.kind === "failed" ? latest.message : "no backup files"}`,
         );
       }
     } else if (exact.kind === "failed") {
       throw new V3RestoreError(
-        `litestream restore of lineage ${
+        `litestream could not restore lineage ${
           padFence(request.head.fence)
-        } failed: ${exact.message}`,
+        }: ${exact.message}`,
       );
     }
     checkDatabase(temp);
@@ -204,6 +202,8 @@ export async function installByLink(
   temp: string,
   target: string,
 ): Promise<boolean> {
+  // Only the main file is linked: closing the commit store after truncation
+  // checkpointed its WAL, so the temp file holds the whole database.
   try {
     await Deno.link(temp, target);
   } catch (error) {

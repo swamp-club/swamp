@@ -44,6 +44,7 @@ import { dirname, join, resolve } from "@std/path";
 import { markErrorPaths, UserError } from "../../../domain/errors.ts";
 import {
   collectableLineages,
+  compareTxid,
   currentLineage,
   decideLocalCopy,
   type HighWaterMark,
@@ -398,6 +399,10 @@ export async function prepareV3WriterLineage(
         await writeLineage(paths, decided.lineage);
         return;
       }
+      if (decided.kind === "conflict") {
+        logger
+          .debug`The writer lease of the v3 datastore at ${copy.datastorePath} went back to fence ${fence}, where this copy's lineage began before; a new lineage starts`;
+      }
     }
     const lineage = previous?.lineageFence === fence &&
         previous.replicaRoot === root
@@ -492,11 +497,20 @@ export async function publishV3Head(
       txid: head.txid,
       confirmedAt: at,
     });
-    await writeCopyState(paths, {
-      replicaRoot: root,
-      lineageFence: head.lineageFence,
-      txid: head.txid,
-    });
+    // Never backwards: a fenced process in this checkout that publishes late
+    // must not make the copy look behind its own continued lineage.
+    const held = await readCopyState(paths);
+    if (
+      held === undefined || held.replicaRoot !== root ||
+      held.lineageFence !== head.lineageFence ||
+      compareTxid(held.txid, head.txid) < 0
+    ) {
+      await writeCopyState(paths, {
+        replicaRoot: root,
+        lineageFence: head.lineageFence,
+        txid: head.txid,
+      });
+    }
     return first;
   } catch (error) {
     throw new V3ReplicationError(

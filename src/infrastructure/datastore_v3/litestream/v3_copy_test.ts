@@ -21,10 +21,12 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { V3ReplicationError } from "../../../domain/datastore_v3/litestream_replication.ts";
 import { replicaPathFor } from "../../../domain/datastore_v3/replication_lineage.ts";
+import { currentLineage } from "../../../domain/datastore_v3/published_lineage.ts";
 import { withMockedEnv } from "../../persistence/path_test_helpers.ts";
 import { V3_REPLICA_ENV } from "./replica_setting.ts";
 import {
   ensureSharedDir,
+  readCopyState,
   readLineage,
   replicationPathsFor,
   writeLineage,
@@ -33,6 +35,7 @@ import {
   collectV3Lineages,
   lineageRegistryFor,
   prepareV3WriterLineage,
+  publishV3Head,
   recordV3LeaseFence,
   type V3Copy,
 } from "./v3_copy.ts";
@@ -302,6 +305,35 @@ Deno.test({
       assertEquals(
         await lineageRegistryFor(env.copy.datastorePath).started(1),
         "unreadable",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "publishV3Head: a fenced process's late head moves neither the lineage's head nor the copy back",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await prepareV3WriterLineage(env.copy, 5, { restored: false });
+      const at = (writerFence: number, txid: string) =>
+        publishV3Head(env.copy, {
+          lineageFence: 5,
+          writerFence,
+          txid,
+          mark: { cursor: Number.parseInt(txid, 16) },
+        });
+      assertEquals(await at(7, "0000000000000020"), true);
+      assertEquals(await at(6, "0000000000000018"), false);
+      const current = currentLineage(
+        await lineageRegistryFor(env.copy.datastorePath).read(env.root),
+        env.root,
+      );
+      assertEquals(current?.head?.writerFence, 7);
+      assertEquals(
+        (await readCopyState(await pathsOf(env)))?.txid,
+        "0000000000000020",
       );
     });
   },
