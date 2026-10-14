@@ -3023,16 +3023,21 @@ Each workflow keeps a run index, `.runs-index.json`, in the repo-local
 records. It holds one summary entry per run, keyed by run id. A save updates
 the index of the repository it is made in, so records another repository
 writes to a shared datastore reach this index only through the checks below. A read trusts the index while it lists as many
-runs as there are records. When the counts differ, it checks again in the
-index queue, since a save writes its record before its entry. If they still
-differ, it stats every record against the fingerprint its entry was built
-from. It reads only the records the index does not list or whose file changed
-since their entry was written, and drops the entries of records that are gone.
-A new run therefore costs a stat per record and one record read, not a read of
-every record (swamp-club#3407). A record another writer replaced is still
-corrected, as a rebuild would have corrected it. A replacement that leaves the
-count unchanged waits for `swamp run doctor` (`verifyIndexes`), or for a read
-of that run. An index of another schema version is rebuilt from every record
+runs as there are records. When the counts differ, it stats every record, in
+the index queue, against the fingerprint its entry was built from. It reads
+only the records the index does not list or whose file changed since their
+entry was written, and drops the entries of records that are gone. A new run
+therefore costs a stat per record and one record read, not a read of every
+record (swamp-club#3407). A record another writer replaced is still corrected,
+as a rebuild would have corrected it. The stats are made even when the counts
+agree again by the time the queue is reached, as they usually do since a save
+writes its record before its entry: index updates are queued only within one
+process, so a save in another process can overwrite an entry with the status
+and fingerprint of an earlier write of its record, leaving the count unchanged,
+and the next read that sees a mismatch corrects it (swamp-club#3452; the race
+itself is swamp-club#3455). A replacement that leaves the count unchanged
+otherwise waits for `swamp run doctor` (`verifyIndexes`), or for a read of
+that run. An index of another schema version is rebuilt from every record
 (`YamlWorkflowRunRepository`).
 
 Run search and run summary read each workflow's index as a
