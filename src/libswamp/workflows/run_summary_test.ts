@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { assertErrors, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { runStatusBucket } from "./run_search.ts";
+import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
 import {
   clampRecentLimit,
   summarizeWorkflowRuns,
@@ -206,12 +207,11 @@ Deno.test("summarizeWorkflowRuns: no runs give zero totals and empty lists", () 
 // ── workflowRunSummary generator ────────────────────────────────────────
 
 function makeDeps(
-  keepReadable: WorkflowRunSummaryDeps["keepReadable"] = (runs) =>
-    Promise.resolve(runs),
+  isReadable?: WorkflowRunSummaryDeps["isReadable"],
 ): WorkflowRunSummaryDeps {
   const workflows = [
-    { id: "wf-a", name: "alpha" },
-    { id: "wf-b", name: "beta" },
+    { id: "wf-a", name: "alpha", declaresInputs: false },
+    { id: "wf-b", name: "beta", declaresInputs: false },
   ];
   const runs = [
     {
@@ -244,15 +244,17 @@ function makeDeps(
   ];
   return {
     findAllWorkflows: () => Promise.resolve(workflows),
-    findAllRunsByWorkflowId: (id) =>
+    runIndexOf: (id) =>
       Promise.resolve(
-        runs.filter((r) => r.workflowId === id).map((r) => ({
-          ...r,
-          tags: {},
-          inputs: {},
-        })),
+        RunIndexSnapshot.of(
+          runs.filter((r) => r.workflowId === id).map((r) => ({
+            ...r,
+            tags: {},
+            inputs: {},
+          })),
+        ),
       ),
-    keepReadable,
+    ...(isReadable ? { isReadable } : {}),
   };
 }
 
@@ -303,10 +305,8 @@ Deno.test("workflowRunSummary: workflows and triggerSource narrow the runs count
   );
 });
 
-Deno.test("workflowRunSummary: counts only the runs keepReadable keeps", async () => {
-  const deps = makeDeps((runs) =>
-    Promise.resolve(runs.filter((r) => r.workflowName !== "beta"))
-  );
+Deno.test("workflowRunSummary: counts only the runs isReadable allows", async () => {
+  const deps = makeDeps((_id, name) => Promise.resolve(name !== "beta"));
   const data = await summaryOf(deps, { timeline: true });
   assertEquals(data.totals.runs, 2);
   assertEquals(data.totals.workflows, 1);

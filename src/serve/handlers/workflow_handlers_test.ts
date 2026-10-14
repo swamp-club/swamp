@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 import { dirname } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -221,9 +222,9 @@ function makeSearchCtx(
           Promise.resolve(workflows.find((w) => w.name === name) ?? null),
       },
       workflowRunRepo: {
-        findAllSummariesFromIndex: (workflowId: string) => {
+        runIndexSnapshot: (workflowId: string) => {
           const i = workflows.findIndex((w) => w.id === workflowId);
-          return Promise.resolve(
+          return Promise.resolve(RunIndexSnapshot.of(
             Array.from({ length: runsPerWorkflow }, (_, r) => ({
               id: crypto.randomUUID(),
               workflowId,
@@ -233,7 +234,7 @@ function makeSearchCtx(
               tags: {},
               inputs: {},
             })),
-          );
+          ));
         },
       },
     },

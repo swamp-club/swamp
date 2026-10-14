@@ -1532,13 +1532,39 @@ export async function filterByResources<T>(
   ctx: ConnectionContext,
 ): Promise<T[]> {
   if (ctx.authConfig.mode === "none") return items;
-  const allows = resourceDecider(socket, principal, action, ctx);
+  const allowed = resourceReadability(
+    resourcesOf,
+    socket,
+    principal,
+    action,
+    ctx,
+  );
   const kept: T[] = [];
   for (const item of items) {
-    const resources = await resourcesOf(item);
-    if (resources.length > 0 && resources.every(allows)) kept.push(item);
+    if (await allowed(item)) kept.push(item);
   }
   return kept;
+}
+
+/**
+ * {@link filterByResources}'s rule for one item at a time: whether the
+ * principal may `action` every resource `resourcesOf` returns, and there
+ * is at least one. Lets a caller decide before it builds the items it would
+ * otherwise filter. Always true when authorization is off; not audited.
+ */
+export function resourceReadability<A extends unknown[]>(
+  resourcesOf: (...args: A) => Promise<AccessResource[]>,
+  socket: WebSocket,
+  principal: Principal | null,
+  action: Action,
+  ctx: ConnectionContext,
+): (...args: A) => Promise<boolean> {
+  if (ctx.authConfig.mode === "none") return () => Promise.resolve(true);
+  const allows = resourceDecider(socket, principal, action, ctx);
+  return async (...args) => {
+    const resources = await resourcesOf(...args);
+    return resources.length > 0 && resources.every(allows);
+  };
 }
 
 /**

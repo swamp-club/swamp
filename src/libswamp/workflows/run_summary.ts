@@ -24,9 +24,10 @@ import { UserError } from "../../domain/errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   parseRunTimeBound,
+  runDuration,
   type RunStatusBucket,
   runStatusBucket,
-  workflowRunSearch,
+  selectWorkflowRuns,
   type WorkflowRunSearchDeps,
   type WorkflowRunSearchItem,
 } from "./run_search.ts";
@@ -284,19 +285,11 @@ export type WorkflowRunSummaryEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Dependencies for the workflow run summary generator: the run search's
- * loaders, plus the filter that keeps the runs the caller may read.
+ * Dependencies for the workflow run summary generator: the run search's.
+ * Runs `isReadable` refuses never reach the counts, so an unreadable
+ * workflow cannot show in totals or the timeline.
  */
-export interface WorkflowRunSummaryDeps extends WorkflowRunSearchDeps {
-  /**
-   * Keeps the runs the caller may read. Runs it drops never reach the
-   * counts, so an unreadable workflow cannot show in totals or the
-   * timeline. A caller with no authorization passes the runs through.
-   */
-  keepReadable(
-    runs: WorkflowRunSearchItem[],
-  ): Promise<WorkflowRunSearchItem[]>;
-}
+export type WorkflowRunSummaryDeps = WorkflowRunSearchDeps;
 
 /**
  * Input for the workflow run summary generator. Every field is optional.
@@ -320,11 +313,12 @@ export interface WorkflowRunSummaryInput {
 
 /**
  * Summarises workflow runs: counts per workflow and in total, each
- * workflow's newest runs, and optionally an hourly timeline. Loads runs
- * through the run search, keeps the readable ones, then counts them.
+ * workflow's newest runs, and optionally an hourly timeline. Selects the
+ * readable runs in the window from each workflow's run index snapshot, then
+ * counts them.
  */
 export async function* workflowRunSummary(
-  ctx: LibSwampContext,
+  _ctx: LibSwampContext,
   deps: WorkflowRunSummaryDeps,
   input: WorkflowRunSummaryInput,
 ): AsyncGenerator<WorkflowRunSummaryEvent> {
@@ -335,15 +329,11 @@ export async function* workflowRunSummary(
       yield { kind: "resolving" };
 
       const now = Date.now();
-      let since: string | undefined;
-      let until: string | undefined;
+      let sinceMs: number | undefined;
+      let untilMs: number | undefined;
       try {
-        if (input.since) {
-          since = new Date(parseRunTimeBound(input.since, now)).toISOString();
-        }
-        if (input.until) {
-          until = new Date(parseRunTimeBound(input.until, now)).toISOString();
-        }
+        if (input.since) sinceMs = parseRunTimeBound(input.since, now);
+        if (input.until) untilMs = parseRunTimeBound(input.until, now);
       } catch (error) {
         if (error instanceof UserError) {
           yield { kind: "error", error: validationFailed(error.message) };
@@ -352,24 +342,41 @@ export async function* workflowRunSummary(
         throw error;
       }
 
-      let runs: WorkflowRunSearchItem[] = [];
-      for await (
-        const event of workflowRunSearch(ctx, deps, {
-          since,
-          until,
+      const since = sinceMs === undefined
+        ? undefined
+        : new Date(sinceMs).toISOString();
+      const until = untilMs === undefined
+        ? undefined
+        : new Date(untilMs).toISOString();
+
+      const selection = await selectWorkflowRuns(
+        deps,
+        await deps.findAllWorkflows(),
+        {
+          sinceMs,
+          untilMs,
           workflows: input.workflows,
           triggerSource: input.triggerSource,
           triggerSources: input.triggerSources,
-        })
-      ) {
-        if (event.kind === "error") {
-          yield event;
-          return;
+        },
+      );
+      const readable: WorkflowRunSummaryRun[] = [];
+      for (const group of selection.groups) {
+        for (const run of group.runs) {
+          const duration = runDuration(run);
+          readable.push({
+            runId: run.summary.id,
+            workflowId: run.summary.workflowId,
+            workflowName: run.summary.workflowName,
+            status: run.summary.status,
+            ...(run.startedAt ? { startedAt: run.startedAt } : {}),
+            ...(duration !== undefined ? { duration } : {}),
+            ...(run.summary.triggerSource
+              ? { triggerSource: run.summary.triggerSource }
+              : {}),
+          });
         }
-        if (event.kind === "completed") runs = event.data.results;
       }
-
-      const readable = await deps.keepReadable(runs);
       yield {
         kind: "completed",
         data: summarizeWorkflowRuns(readable, {

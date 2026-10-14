@@ -27,6 +27,8 @@ import {
   type WorkflowRunSearchDeps,
   type WorkflowRunSearchEvent,
 } from "./run_search.ts";
+import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
+import type { WorkflowRunSummary } from "../../domain/workflows/workflow_run_summary.ts";
 
 const now = Date.now();
 
@@ -52,52 +54,62 @@ function makeRun(overrides: {
   };
 }
 
+/**
+ * Deps over fixed runs. `findAllRunsByWorkflowId` gives a workflow's runs,
+ * which `runIndexOf` serves as that workflow's snapshot.
+ */
 function makeDeps(
-  overrides: Partial<WorkflowRunSearchDeps> = {},
+  overrides: Partial<WorkflowRunSearchDeps> & {
+    findAllRunsByWorkflowId?: (id: string) => Promise<WorkflowRunSummary[]>;
+  } = {},
 ): WorkflowRunSearchDeps {
+  const { findAllRunsByWorkflowId = defaultRuns, ...rest } = overrides;
   return {
     findAllWorkflows: () =>
       Promise.resolve([
-        { id: "wf-1", name: "deploy" },
-        { id: "wf-2", name: "test" },
+        { id: "wf-1", name: "deploy", declaresInputs: false },
+        { id: "wf-2", name: "test", declaresInputs: false },
       ]),
-    findAllRunsByWorkflowId: (id: string) => {
-      if (id === "wf-1") {
-        return Promise.resolve([
-          makeRun({
-            id: "run-1",
-            workflowId: "wf-1",
-            workflowName: "deploy",
-            status: "succeeded",
-            startedAt: new Date(now - 1000),
-            completedAt: new Date(now),
-          }),
-          makeRun({
-            id: "run-2",
-            workflowId: "wf-1",
-            workflowName: "deploy",
-            status: "failed",
-            startedAt: new Date(now - 5000),
-            completedAt: new Date(now - 4000),
-          }),
-        ]);
-      }
-      if (id === "wf-2") {
-        return Promise.resolve([
-          makeRun({
-            id: "run-3",
-            workflowId: "wf-2",
-            workflowName: "test",
-            status: "succeeded",
-            startedAt: new Date(now - 3000),
-            completedAt: new Date(now - 2000),
-          }),
-        ]);
-      }
-      return Promise.resolve([]);
-    },
-    ...overrides,
+    runIndexOf: async (id: string) =>
+      RunIndexSnapshot.of(await findAllRunsByWorkflowId(id)),
+    ...rest,
   };
+}
+
+function defaultRuns(id: string): Promise<WorkflowRunSummary[]> {
+  if (id === "wf-1") {
+    return Promise.resolve([
+      makeRun({
+        id: "run-1",
+        workflowId: "wf-1",
+        workflowName: "deploy",
+        status: "succeeded",
+        startedAt: new Date(now - 1000),
+        completedAt: new Date(now),
+      }),
+      makeRun({
+        id: "run-2",
+        workflowId: "wf-1",
+        workflowName: "deploy",
+        status: "failed",
+        startedAt: new Date(now - 5000),
+        completedAt: new Date(now - 4000),
+      }),
+    ]);
+  }
+  if (id === "wf-2") {
+    return Promise.resolve([
+      makeRun({
+        id: "run-3",
+        workflowId: "wf-2",
+        workflowName: "test",
+        status: "succeeded",
+        startedAt: new Date(now - 3000),
+        completedAt: new Date(now - 2000),
+      }),
+    ]);
+  }
+  return Promise.resolve([]);
 }
 
 Deno.test("workflowRunSearch: returns all runs sorted by startedAt desc", async () => {
@@ -147,7 +159,8 @@ Deno.test("workflowRunSearch: a bucket status filter matches the whole bucket", 
       })
     );
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () => Promise.resolve(runs),
   });
   const ids = async (status: string) => {
@@ -170,7 +183,8 @@ Deno.test("workflowRunSearch: a bucket status filter matches the whole bucket", 
 
 Deno.test("workflowRunSearch: filters by since", async () => {
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
         makeRun({
@@ -217,7 +231,8 @@ Deno.test("workflowRunSearch: applies limit", async () => {
 
 Deno.test("workflowRunSearch: includes inputs in results", async () => {
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
         makeRun({
@@ -255,7 +270,8 @@ Deno.test("workflowRunSearch: includes inputs in results", async () => {
 
 Deno.test("workflowRunSearch: filters by inputs", async () => {
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
         makeRun({
@@ -302,15 +318,8 @@ Deno.test("workflowRunSearch: surfaces awaitingResume and workflowHasInputs", as
   const deps = makeDeps({
     findAllWorkflows: () =>
       Promise.resolve([
-        {
-          id: "wf-1",
-          name: "deploy",
-          inputs: {
-            type: "object",
-            properties: { authKey: { type: "string" } },
-          },
-        },
-        { id: "wf-2", name: "test" },
+        { id: "wf-1", name: "deploy", declaresInputs: true },
+        { id: "wf-2", name: "test", declaresInputs: false },
       ]),
     findAllRunsByWorkflowId: (id: string) =>
       Promise.resolve(
@@ -554,4 +563,20 @@ Deno.test("parseRunTimeBound: reads durations back from now and ISO times, and r
   for (const bad of ["soon", "", "12345", "yesterday", "2026-13-45"]) {
     assertThrows(() => parseRunTimeBound(bad, at), UserError);
   }
+});
+
+Deno.test("workflowRunSearch: a fractional offset and limit cut the page as slice does", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {
+      offset: 1.5,
+      limit: 2,
+    }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  // Newest first: run-1, run-3, run-2; slice(1.5, 3.5) is slice(1, 3).
+  assertEquals(completed.data.results.map((r) => r.runId), ["run-3", "run-2"]);
+  assertEquals(completed.total, 3);
 });

@@ -20,13 +20,18 @@
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
+import {
+  listWorkflows,
+  type WorkflowListing,
+} from "../../domain/workflows/workflow_listing.ts";
 
 /**
  * Composite WorkflowRepository that merges a primary (mutable) repository
  * with an optional extension (read-only) repository.
  *
  * - `findByName`/`findById`: Checks primary first, falls back to extension.
- * - `findAll`: Merges both, deduplicating by name (primary wins).
+ * - `findAll`/`findAllListings`: Merges both, deduplicating by name
+ *   (primary wins).
  * - `save`/`delete`/`nextId`/`getPath`: Delegates to primary.
  */
 export class CompositeWorkflowRepository implements WorkflowRepository {
@@ -71,6 +76,17 @@ export class CompositeWorkflowRepository implements WorkflowRepository {
     );
 
     return [...primaryWorkflows, ...uniqueExtension];
+  }
+
+  /** The listings of `findAll`, deduplicated by name the same way. */
+  async findAllListings(): Promise<WorkflowListing[]> {
+    const primary = await listWorkflows(this.primary);
+    if (!this.extension) return primary;
+    const primaryNames = new Set(primary.map((w) => w.name));
+    const extension = (await listWorkflows(this.extension)).filter(
+      (w) => !primaryNames.has(w.name),
+    );
+    return [...primary, ...extension];
   }
 
   /**

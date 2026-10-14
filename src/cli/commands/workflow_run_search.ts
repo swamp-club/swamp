@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
@@ -121,6 +122,7 @@ export async function workflowRunSearchAction(
         yield {
           kind: "completed" as const,
           data: response.data as unknown as WorkflowRunSearchData,
+          total: response.total ?? 0,
         };
       })(),
       renderer.handlers(),
@@ -147,12 +149,12 @@ export async function workflowRunSearchAction(
     : undefined;
 
   const deps: WorkflowRunSearchDeps = {
-    findAllWorkflows: () => workflowRepo.findAll(),
-    // Use the lightweight summary projection, not the full-aggregate read:
-    // search only displays summary fields, and hydrating every run (with its
-    // inline step outputs) OOMs on workflows with a large run history (#1173).
-    findAllRunsByWorkflowId: (id) =>
-      runRepo.findAllSummariesFromIndex(createWorkflowId(id)),
+    findAllWorkflows: () => listWorkflows(workflowRepo),
+    // Search reads each workflow's run index snapshot, never the run
+    // records: hydrating every run (with its inline step outputs) OOMs on
+    // workflows with a large run history (#1173), and the snapshot narrows
+    // by time before any run is looked at (swamp-club#3443).
+    runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
   };
 
   const fetchPreview = effectiveMode === "log"

@@ -17,13 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertNotStrictEquals,
+  assertRejects,
+  assertStrictEquals,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, isAbsolute, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import {
   getIndexPath,
+  INDEX_SCHEMA_VERSION,
   readRunIndex,
   withIndexQueue,
 } from "./workflow_run_index.ts";
@@ -904,6 +912,112 @@ Deno.test("findAllSummariesFromIndex: returns summaries from index", async () =>
     assertEquals(summaries.length, 2);
     const statuses = summaries.map((s) => s.status).sort();
     assertEquals(statuses, ["running", "succeeded"]);
+  });
+});
+
+/** Sets the run index file and the records directory back a minute. */
+async function settleRunIndex(dir: string, workflowId: WorkflowId) {
+  const runsDir = join(dir, ".swamp", "workflow-runs", workflowId);
+  const when = new Date(Date.now() - 60_000);
+  await Deno.utime(getIndexPath(runsDir), when, when);
+  await Deno.utime(runsDir, when, when);
+}
+
+Deno.test("runIndexSnapshot: reuses the snapshot while the index and records are unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    // Just written: too recent to trust, so each read builds a new one.
+    const fresh = await repo.runIndexSnapshot(workflow.id);
+    assertNotStrictEquals(await repo.runIndexSnapshot(workflow.id), fresh);
+
+    await settleRunIndex(dir, workflow.id);
+    const settled = await repo.runIndexSnapshot(workflow.id);
+    assertStrictEquals(await repo.runIndexSnapshot(workflow.id), settled);
+    assertEquals(settled.runs.map((r) => r.summary.id), [run.id]);
+  });
+});
+
+Deno.test("runIndexSnapshot: sees a save by this repository after the snapshot was kept", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const first = WorkflowRun.create(workflow);
+    first.start();
+    await repo.save(workflow.id, first);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 1);
+
+    const second = WorkflowRun.create(workflow);
+    second.start();
+    await repo.save(workflow.id, second);
+    const after = await repo.runIndexSnapshot(workflow.id);
+    assertEquals(after.size, 2);
+    assert(after.get(second.id));
+  });
+});
+
+Deno.test("runIndexSnapshot: sees runs another process saves, and an index another process rewrites", async () => {
+  await withTempDir(async (dir) => {
+    const reader = new YamlWorkflowRunRepository(dir);
+    const writer = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await writer.save(workflow.id, run);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals(
+      (await reader.runIndexSnapshot(workflow.id)).get(run.id)?.summary.status,
+      "running",
+    );
+
+    // Same record count: only the index file changes.
+    run.interruptOrphaned("test");
+    await writer.save(workflow.id, run);
+    assertEquals(
+      (await reader.runIndexSnapshot(workflow.id)).get(run.id)?.summary.status,
+      "interrupted",
+    );
+
+    await settleRunIndex(dir, workflow.id);
+    await reader.runIndexSnapshot(workflow.id);
+    const added = WorkflowRun.create(workflow);
+    added.start();
+    await writer.save(workflow.id, added);
+    assertEquals((await reader.runIndexSnapshot(workflow.id)).size, 2);
+  });
+});
+
+Deno.test("runIndexSnapshot: a workflow with no index is read from its records and not kept", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 0);
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 1);
+  });
+});
+
+Deno.test("runIndexSnapshot: deleteAllByWorkflowId leaves no runs behind", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    await settleRunIndex(dir, workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 1);
+
+    await repo.deleteAllByWorkflowId(workflow.id);
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 0);
   });
 });
 
@@ -2677,5 +2791,218 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: removes the repo-loc
     assertEquals(await pathExists(localRunsDir(repoDir, workflowA.id)), false);
     assertEquals(await pathExists(join(storeDir, workflowA.id)), false);
     assertEquals(await pathExists(logB), true);
+  });
+});
+
+// --- Incremental index repair (swamp-club#3443, swamp-club#3407) ---
+
+/** Rewrites a workflow's run index without the entries of `runIds`. */
+async function dropIndexEntries(indexDir: string, runIds: string[]) {
+  const result = await readRunIndex(indexDir);
+  const entries = { ...result!.entries };
+  for (const id of runIds) delete entries[id];
+  await Deno.writeTextFile(
+    getIndexPath(indexDir),
+    JSON.stringify({ version: INDEX_SCHEMA_VERSION, entries }),
+  );
+}
+
+/** Counts reads of run record files while `fn` runs. */
+async function countingRecordReads<T>(
+  fn: () => Promise<T>,
+): Promise<[T, number]> {
+  const original = Deno.readTextFile;
+  let count = 0;
+  Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+    if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) count++;
+    return original(...args);
+  }) as typeof original;
+  try {
+    return [await fn(), count];
+  } finally {
+    Deno.readTextFile = original;
+  }
+}
+
+Deno.test("getValidatedIndex: a count mismatch reads only the records the index does not list", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const runs = await saveRunningRuns(repo, workflow, 3);
+    const unlisted = runs[1];
+    await dropIndexEntries(indexDir, [unlisted.id]);
+
+    const [summaries, reads] = await countingRecordReads(() =>
+      repo.findAllSummariesFromIndex(workflow.id)
+    );
+    assertEquals(
+      summaries.map((s) => s.id).sort(),
+      runs.map((r) => r.id).sort(),
+    );
+    // The other records still match the stat their entries were built from.
+    assertEquals(reads, 1);
+    assertEquals(
+      Object.keys((await readRunIndex(indexDir))!.entries).sort(),
+      runs.map((r) => r.id).sort(),
+    );
+  });
+});
+
+Deno.test("getValidatedIndex: a count mismatch also corrects an entry whose record another writer replaced", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [replaced] = await saveRunningRuns(repo, workflow, 1);
+    const runningEntry = (await readRunIndex(indexDir))!.entries[replaced.id];
+
+    // The record moves on, but the index keeps the entry it had, as when
+    // another repository's save replaces a record in a shared datastore.
+    replaced.interruptOrphaned("test");
+    await repo.save(workflow.id, replaced);
+    const result = await readRunIndex(indexDir);
+    await Deno.writeTextFile(
+      getIndexPath(indexDir),
+      JSON.stringify({
+        version: INDEX_SCHEMA_VERSION,
+        entries: { ...result!.entries, [replaced.id]: runningEntry },
+      }),
+    );
+    assertEquals(
+      (await repo.findAllSummariesFromIndex(workflow.id))[0].status,
+      "running",
+    );
+
+    // A new run arrives the same way, so the count is off by one.
+    const [added] = await saveRunningRuns(repo, workflow, 1);
+    await dropIndexEntries(indexDir, [added.id]);
+
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+    assertEquals(
+      summaries.find((s) => s.id === replaced.id)?.status,
+      "interrupted",
+    );
+    assert(summaries.some((s) => s.id === added.id));
+  });
+});
+
+Deno.test("getValidatedIndex: a count mismatch drops the entries of records that are gone", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [kept, gone] = await saveRunningRuns(repo, workflow, 2);
+    await Deno.remove(repo.getPath(workflow.id, gone.id));
+
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+    assertEquals(summaries.map((s) => s.id), [kept.id]);
+  });
+});
+
+Deno.test("getValidatedIndex: a reader that counted before a save's entry landed reads no record", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [first, second] = await saveRunningRuns(repo, workflow, 2);
+    const secondEntry = (await readRunIndex(indexDir))!.entries[second.id];
+    await dropIndexEntries(indexDir, [second.id]);
+    // Any read of this record fails: the reader must not read it.
+    await Deno.writeTextFile(repo.getPath(workflow.id, second.id), "{ [");
+
+    // Hold the queue as a save does between its record and its entry.
+    let release!: () => void;
+    const held = withIndexQueue(indexDir, async () => {
+      await new Promise<void>((resolve) => release = resolve);
+      const result = await readRunIndex(indexDir);
+      await Deno.writeTextFile(
+        getIndexPath(indexDir),
+        JSON.stringify({
+          version: INDEX_SCHEMA_VERSION,
+          entries: { ...result!.entries, [second.id]: secondEntry },
+        }),
+      );
+    });
+
+    const original = Deno.readTextFile;
+    let indexReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (String(args[0]) === getIndexPath(indexDir)) indexReads++;
+      return original(...args);
+    }) as typeof original;
+    try {
+      const reading = repo.findAllSummariesFromIndex(workflow.id);
+      await waitFor(
+        () => Promise.resolve(indexReads > 0),
+        "the reader to count against the stale index",
+      );
+      release();
+      await held;
+      const summaries = await reading;
+      assertEquals(
+        summaries.map((s) => s.id).sort(),
+        [first.id, second.id].sort(),
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+  });
+});
+
+Deno.test("runIndexSnapshot: an aborted signal stops a rebuild before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await saveRunningRuns(repo, workflow, 3);
+    // An index of another schema version: the next read rebuilds it whole.
+    const stale = JSON.stringify({ version: 0, entries: {} });
+    await Deno.writeTextFile(getIndexPath(indexDir), stale);
+
+    // Aborted while the rebuild reads its first record.
+    const abort = new AbortController();
+    const original = Deno.readTextFile;
+    let recordReads = 0;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) {
+        recordReads++;
+        abort.abort(new DOMException("shutting down", "AbortError"));
+      }
+      return original(...args);
+    }) as typeof original;
+    try {
+      await assertRejects(
+        () => repo.runIndexSnapshot(workflow.id, abort.signal),
+        DOMException,
+        "shutting down",
+      );
+    } finally {
+      Deno.readTextFile = original;
+    }
+    // It stopped before the next record, and wrote nothing.
+    assertEquals(recordReads, 1);
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), stale);
+
+    // Without the signal the same read rebuilds it.
+    assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 3);
+  });
+});
+
+Deno.test("runIndexSnapshot: an aborted signal stops a repair before it writes the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [, unlisted] = await saveRunningRuns(repo, workflow, 2);
+    await dropIndexEntries(indexDir, [unlisted.id]);
+    const before = await Deno.readTextFile(getIndexPath(indexDir));
+
+    const abort = new AbortController();
+    abort.abort(new DOMException("shutting down", "AbortError"));
+    await assertRejects(
+      () => repo.runIndexSnapshot(workflow.id, abort.signal),
+      DOMException,
+    );
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), before);
   });
 });

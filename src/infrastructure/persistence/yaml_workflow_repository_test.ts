@@ -897,3 +897,162 @@ Deno.test("YamlWorkflowRepository.findAllById: finds an ID written with an escap
     );
   });
 });
+
+// --- findAllListings tests (swamp-club#3443) ---
+
+/** Sets every workflow file back a minute, so its listing is kept. */
+async function settleWorkflowFiles(dir: string): Promise<void> {
+  const when = new Date(Date.now() - 60_000);
+  for await (const entry of Deno.readDir(join(dir, "workflows"))) {
+    await Deno.utime(join(dir, "workflows", entry.name), when, when);
+  }
+}
+
+Deno.test("YamlWorkflowRepository.findAllListings: lists what findAll returns, in its order, skipping broken files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const withInputs = Workflow.fromData({
+      ...createTestWorkflow("with-inputs").toData(),
+      inputs: { type: "object", properties: { env: { type: "string" } } },
+    });
+    await repo.save(createTestWorkflow("plain"));
+    await repo.save(withInputs);
+    await writeLegacyWorkflowFile(dir, createTestWorkflow("legacy"));
+    await writeSchemaBrokenWorkflow(
+      dir,
+      "workflow-broken.yaml",
+      createTestWorkflow("broken"),
+    );
+
+    const all = await repo.findAll();
+    const listings = await repo.findAllListings();
+    assertEquals(
+      listings.map((l) => [l.id, l.name]),
+      all.map((w) => [w.id, w.name]),
+    );
+    assertEquals(
+      listings.map((l) => l.name).sort(),
+      ["legacy", "plain", "with-inputs"],
+    );
+    assertEquals(
+      listings.find((l) => l.name === "with-inputs")?.declaresInputs,
+      true,
+    );
+    assertEquals(
+      listings.find((l) => l.name === "plain")?.declaresInputs,
+      false,
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findAllListings: reads again only the files that changed", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    for (let i = 0; i < 4; i++) await repo.save(createTestWorkflow(`wf-${i}`));
+    await settleWorkflowFiles(dir);
+
+    const [first, firstBuilds] = await countingBuilds(() =>
+      repo.findAllListings()
+    );
+    assertEquals(first.length, 4);
+    assertEquals(firstBuilds, 4);
+    const [, keptBuilds] = await countingBuilds(() => repo.findAllListings());
+    assertEquals(keptBuilds, 0);
+
+    // An edit outside the repository: renamed in place.
+    const path = join(dir, "workflows", "workflow-wf-2.yaml");
+    const data = (await repo.findByName("wf-2"))!.toData();
+    data.name = "renamed";
+    await Deno.writeTextFile(
+      path,
+      stringifyYaml(JSON.parse(JSON.stringify(data))),
+    );
+    const [edited, editedBuilds] = await countingBuilds(() =>
+      repo.findAllListings()
+    );
+    assertEquals(editedBuilds, 1);
+    assertEquals(edited.map((l) => l.name).sort(), [
+      "renamed",
+      "wf-0",
+      "wf-1",
+      "wf-3",
+    ]);
+
+    await Deno.remove(join(dir, "workflows", "workflow-wf-0.yaml"));
+    assertEquals(
+      (await repo.findAllListings()).map((l) => l.name).sort(),
+      ["renamed", "wf-1", "wf-3"],
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findAllListings: a broken file is skipped with a warning on every listing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    await repo.save(createTestWorkflow("ok"));
+    await writeSchemaBrokenWorkflow(
+      dir,
+      "workflow-broken.yaml",
+      createTestWorkflow("broken"),
+    );
+    await settleWorkflowFiles(dir);
+
+    await repo.findAllListings();
+    const [listings, builds] = await countingBuilds(() =>
+      repo.findAllListings()
+    );
+    assertEquals(listings.map((l) => l.name), ["ok"]);
+    // The broken file is never kept, so it is tried again.
+    assertEquals(builds, 1);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findByName: with listings kept, a name no workflow declares builds nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    for (let i = 0; i < 5; i++) {
+      await writeLegacyWorkflowFile(dir, createTestWorkflow(`noise-${i}`));
+    }
+    await settleWorkflowFiles(dir);
+
+    assertEquals(await repo.findByName("deleted-workflow"), null);
+    const [missing, builds] = await countingBuilds(() =>
+      repo.findByName("deleted-workflow")
+    );
+    assertEquals(missing, null);
+    assertEquals(builds, 0);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findByName and findById: with listings kept, only the workflow's own file is read", async () => {
+  await withTempDir(async (dir) => {
+    const writer = new YamlWorkflowRepository(dir);
+    const target = createTestWorkflow("legacy-target");
+    await writeLegacyWorkflowFile(dir, target);
+    for (let i = 0; i < 5; i++) {
+      await writeLegacyWorkflowFile(dir, createTestWorkflow(`noise-${i}`));
+    }
+    await settleWorkflowFiles(dir);
+    // A legacy file is not at its name-derived path.
+    assertEquals((await writer.findByName("legacy-target"))?.id, target.id);
+
+    const reader = new YamlWorkflowRepository(dir);
+    await reader.findAllListings();
+    const [byName, nameBuilds] = await countingBuilds(() =>
+      reader.findByName("legacy-target")
+    );
+    assertEquals(byName?.id, target.id);
+    assertEquals(nameBuilds, 1);
+
+    const nameBased = createTestWorkflow("name-based");
+    await writer.save(nameBased);
+    await settleWorkflowFiles(dir);
+    const fresh = new YamlWorkflowRepository(dir);
+    await fresh.findAllListings();
+    const [byId, idBuilds] = await countingBuilds(() =>
+      fresh.findById(nameBased.id)
+    );
+    assertEquals(byId?.name, "name-based");
+    assertEquals(idBuilds, 1);
+  });
+});

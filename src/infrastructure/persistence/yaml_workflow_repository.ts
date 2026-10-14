@@ -49,6 +49,15 @@ import {
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
 import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
+import {
+  type WorkflowListing,
+  workflowListingOf,
+} from "../../domain/workflows/workflow_listing.ts";
+import {
+  fingerprintMatches,
+  type RecordFingerprint,
+  statRecord,
+} from "./workflow_run_index.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -59,6 +68,19 @@ import {
 } from "../../domain/events/types.ts";
 
 const logger = getLogger(["workflow-repo"]);
+
+/**
+ * How recent a workflow file's mtime may be before its listing is not kept:
+ * an edit landing within one tick of a coarse file clock could otherwise
+ * leave its stat unchanged.
+ */
+const LISTING_RACY_WINDOW_MS = 2_000;
+
+/** A workflow file's listing, and the stat of the file it was read from. */
+interface CachedListing {
+  fingerprint: RecordFingerprint;
+  listing: WorkflowListing;
+}
 
 /**
  * Reports whether a file in the workflows directory is one the repository
@@ -105,9 +127,17 @@ export class YamlWorkflowRepository implements WorkflowRepository {
    * invalidation bookkeeping.
    *
    * If a cache-reset hook is ever added to this class, it must clear this
-   * alongside `idToActualPath`.
+   * alongside `idToActualPath` and `listingsByPath`.
    */
   private readonly nameToActualPath = new Map<string, string>();
+  /**
+   * Each workflow file's listing, by path, kept with the stat of the file it
+   * was read from (swamp-club#3443). A listing is reused only while a fresh
+   * stat still matches, so an edit, rename, addition or deletion by anyone
+   * is seen on the next listing. Never holds a parsed Workflow: the
+   * aggregate is mutable, and `findAll` builds a new one each time.
+   */
+  private readonly listingsByPath = new Map<string, CachedListing>();
 
   constructor(
     private readonly repoDir: string,
@@ -155,7 +185,13 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       }
     }
 
-    // Slow path: scan all workflow files
+    // Slow path: the listings say which file declares the id, so only that
+    // file is read. A file that changed since it was listed falls back to
+    // reading them all.
+    const listed = (await this.scanListings()).find((l) => l.listing.id === id);
+    if (!listed) return null;
+    const read = await this.readWorkflowIf(listed.path, (w) => w.id === id);
+    if (read) return read;
     const workflows = await this.findAll();
     return workflows.find((w) => w.id === id) ?? null;
   }
@@ -194,7 +230,18 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       this.nameToActualPath.delete(name);
     }
 
-    // Slow path: scan all workflow files
+    // Slow path: the listings say which file declares the name, so only
+    // that file is read, and a name no file declares reads none. A file that
+    // changed since it was listed falls back to reading them all.
+    const listed = (await this.scanListings()).find((l) =>
+      l.listing.name === name
+    );
+    if (!listed) return null;
+    const read = await this.readWorkflowIfNamed(listed.path, name);
+    if (read) {
+      this.nameToActualPath.set(name, listed.path);
+      return read;
+    }
     const workflows = await this.findAll();
     const found = workflows.find((w) => w.name === name);
     if (!found) return null;
@@ -218,9 +265,20 @@ export class YamlWorkflowRepository implements WorkflowRepository {
    * symlink; without this check, a file replaced by a symlink after discovery
    * would be read through the hint when the scan would have ignored it.
    */
-  private async readWorkflowIfNamed(
+  private readWorkflowIfNamed(
     path: string,
     name: string,
+  ): Promise<Workflow | null> {
+    return this.readWorkflowIf(path, (workflow) => workflow.name === name);
+  }
+
+  /**
+   * {@link readWorkflowIfNamed} for any test of the workflow the file holds.
+   * Records the file as the workflow's path when it passes.
+   */
+  private async readWorkflowIf(
+    path: string,
+    wanted: (workflow: Workflow) => boolean,
   ): Promise<Workflow | null> {
     try {
       if (!(await Deno.lstat(path)).isFile) return null;
@@ -228,7 +286,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       const data = parseYaml(content) as WorkflowData | null;
       if (!data) return null;
       const workflow = Workflow.fromData(data);
-      return workflow.name === name ? workflow : null;
+      if (!wanted(workflow)) return null;
+      this.idToActualPath.set(workflow.id as WorkflowId, path);
+      return workflow;
     } catch {
       return null;
     }
@@ -236,6 +296,88 @@ export class YamlWorkflowRepository implements WorkflowRepository {
 
   findAll(): Promise<Workflow[]> {
     return this.readAll();
+  }
+
+  /**
+   * The listing of every workflow {@link findAll} returns, in the same
+   * order, read only from files that changed since they were last listed.
+   */
+  async findAllListings(): Promise<WorkflowListing[]> {
+    return (await this.scanListings()).map((l) => l.listing);
+  }
+
+  /**
+   * Lists every workflow file as `readAll` reads them: the same files, in
+   * the same order, skipping the same broken ones with the same warning. A
+   * file whose stat matches the one its kept listing was read at is not
+   * read again.
+   */
+  private async scanListings(): Promise<
+    Array<{ path: string; listing: WorkflowListing }>
+  > {
+    const dir = this.getWorkflowsDir();
+    const listed: Array<{ path: string; listing: WorkflowListing }> = [];
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await readDirSorted(dir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        this.listingsByPath.clear();
+        return [];
+      }
+      throw error;
+    }
+
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.isFile || !isPrimaryWorkflowFileName(entry.name)) continue;
+      const path = join(dir, entry.name);
+      seen.add(path);
+      // Stat before reading: a change after the stat makes the next stat
+      // differ, so the listing read here is never kept past it.
+      let fingerprint: RecordFingerprint | undefined | null;
+      try {
+        fingerprint = await statRecord(path);
+      } catch (error) {
+        this.skipUnreadable(path, error);
+        continue;
+      }
+      if (fingerprint === null) continue;
+      const cached = this.listingsByPath.get(path);
+      if (
+        cached && fingerprint &&
+        fingerprintMatches(cached.fingerprint, fingerprint)
+      ) {
+        this.idToActualPath.set(cached.listing.id as WorkflowId, path);
+        listed.push({ path, listing: cached.listing });
+        continue;
+      }
+      this.listingsByPath.delete(path);
+
+      let workflow: Workflow | null;
+      try {
+        const content = await Deno.readTextFile(path);
+        const data = parseYaml(content) as WorkflowData | null;
+        workflow = data ? Workflow.fromData(data) : null;
+      } catch (error) {
+        this.skipUnreadable(path, error);
+        continue;
+      }
+      if (!workflow) continue;
+      this.idToActualPath.set(workflow.id as WorkflowId, path);
+      const listing = workflowListingOf(workflow);
+      listed.push({ path, listing });
+      if (
+        fingerprint &&
+        fingerprint.mtimeMs <= Date.now() - LISTING_RACY_WINDOW_MS
+      ) {
+        this.listingsByPath.set(path, { fingerprint, listing });
+      }
+    }
+    for (const path of [...this.listingsByPath.keys()]) {
+      if (!seen.has(path)) this.listingsByPath.delete(path);
+    }
+    return listed;
   }
 
   /**
@@ -275,28 +417,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
             this.idToActualPath.set(workflow.id as WorkflowId, path);
             workflows.push(workflow);
           } catch (error) {
-            if (isIoError(error)) {
-              throw markErrorPaths(
-                new UserError(
-                  `Failed to read workflow file ${path}: ${
-                    error instanceof Error ? error.message : error
-                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
-                ),
-                [path, ...errorPaths(error)],
-              );
-            }
-            const errorMsg = error instanceof Error
-              ? error.message
-              : String(error);
-            const workflowName = this.tryExtractName(path);
-
-            if (errorMsg.includes('type "shell" is no longer supported')) {
-              logger
-                .warn`Skipping workflow ${workflowName}: uses deprecated 'shell' task. Delete or update to 'type: model_method' with 'command/shell'. File: ${path}`;
-            } else {
-              logger
-                .warn`Skipping broken workflow ${workflowName}: ${errorMsg}. Run 'swamp doctor workflows --json' to see all errors. File: ${path}`;
-            }
+            this.skipUnreadable(path, error);
           }
         }
       }
@@ -308,6 +429,33 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     }
 
     return workflows;
+  }
+
+  /**
+   * What a read of the workflow file at `path` that threw does: an I/O
+   * failure fails the read, anything else skips the file with a warning.
+   */
+  private skipUnreadable(path: string, error: unknown): void {
+    if (isIoError(error)) {
+      throw markErrorPaths(
+        new UserError(
+          `Failed to read workflow file ${path}: ${
+            error instanceof Error ? error.message : error
+          }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+        ),
+        [path, ...errorPaths(error)],
+      );
+    }
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const workflowName = this.tryExtractName(path);
+
+    if (errorMsg.includes('type "shell" is no longer supported')) {
+      logger
+        .warn`Skipping workflow ${workflowName}: uses deprecated 'shell' task. Delete or update to 'type: model_method' with 'command/shell'. File: ${path}`;
+    } else {
+      logger
+        .warn`Skipping broken workflow ${workflowName}: ${errorMsg}. Run 'swamp doctor workflows --json' to see all errors. File: ${path}`;
+    }
   }
 
   async save(workflow: Workflow): Promise<void> {

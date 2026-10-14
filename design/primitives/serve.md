@@ -246,8 +246,19 @@ counts with each workflow's newest runs (`recentLimit`, default 20, clamped to
 0..100) and, with `timeline`, hourly UTC buckets. It takes the same `since`,
 `until`, `workflows`, `triggerSource` and `triggerSources` filters. The counts
 are taken after the per-workflow read filter
-(`src/libswamp/workflows/run_summary.ts` gets it as `keepReadable`), so an
-unreadable workflow never reaches totals or the timeline. `failed` includes interrupted runs and `running` pending ones; a
+(`src/libswamp/workflows/run_search.ts` gets it as `isReadable`, asked once per
+recorded workflow id and name), so an unreadable workflow never reaches totals
+or the timeline.
+
+Both list workflows through their kept listings and read each workflow's run
+index snapshot, which serve keeps in memory and checks with two stats on each
+read. The filters, the read filter, `offset`
+and `limit` are applied while selecting from the snapshots, and search items
+are built for the page only, so a request costs the runs it matches rather than
+the whole run history. Once serve is listening, it reads every workflow's
+snapshot in the background, so the dashboard's first requests find the cache
+warm (swamp-club#3443; see
+[workflows](workflows.md#run-index-and-run-search)). `failed` includes interrupted runs and `running` pending ones; a
 status in no bucket counts in `runs` only.
 
 ## Identity and access

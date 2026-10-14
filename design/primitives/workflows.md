@@ -3016,6 +3016,73 @@ they have gone unwritten for longer than both the cutoff and seven days: a run
 writes its log before it first saves its record (`YamlWorkflowRunRepository`,
 swamp-club#3266).
 
+### Run Index and Run Search
+
+Each workflow keeps a run index, `.runs-index.json`, in the repo-local
+`.swamp/workflow-runs/{workflow-uuid}/`, wherever the datastore keeps its run
+records. It holds one summary entry per run, keyed by run id. A save updates
+the index of the repository it is made in, so records another repository
+writes to a shared datastore reach this index only through the checks below. A read trusts the index while it lists as many
+runs as there are records. When the counts differ, it checks again in the
+index queue, since a save writes its record before its entry. If they still
+differ, it stats every record against the fingerprint its entry was built
+from. It reads only the records the index does not list or whose file changed
+since their entry was written, and drops the entries of records that are gone.
+A new run therefore costs a stat per record and one record read, not a read of
+every record (swamp-club#3407). A record another writer replaced is still
+corrected, as a rebuild would have corrected it. A replacement that leaves the
+count unchanged waits for `swamp run doctor` (`verifyIndexes`), or for a read
+of that run. An index of another schema version is rebuilt from every record
+(`YamlWorkflowRunRepository`).
+
+Run search and run summary read each workflow's index as a
+`RunIndexSnapshot` (`src/domain/workflows/run_index_snapshot.ts`), an immutable,
+newest-first view of its runs. A time window is a binary search over the
+snapshot. The workflow and workflows filters skip a workflow none of whose
+runs recorded a matching name. A full run id as the query is looked up
+directly. Search items are built for the returned page only, so a request costs
+the runs it matches, not the whole history (swamp-club#3443). Runs of
+different workflows that started at the same moment are ordered by the
+workflows' order.
+
+The repository keeps snapshots in memory (`RunIndexCache`) and reuses one while
+a stat of the index file and the mtime of the records directory both match
+what they were when it was built. Creating, removing or renaming a record moves
+the directory's mtime, so another process writing runs, a datastore pull, or
+this process's own saves are all seen on the next read, without any hook. The
+cache holds at most 250,000 runs, dropping the least recently used workflows.
+It does not keep:
+
+- a snapshot whose file times are within two seconds of the time it was read,
+  or in the future;
+- one built from the records because there was no usable index;
+- one read on a platform that reports no mtime.
+
+A read that misses while a load of the same workflow from the same stamp is in
+flight waits for that load instead of starting another, so many readers after
+one write build the snapshot once. A load that started from an older stamp is
+not shared, since it may predate the write. Neither is one whose stamp is too
+recent to trust. A read that waited on a load whose own reader was aborted
+loads for itself. `swamp serve` and the local
+dashboard child fill the cache in the background once they are listening
+(`RunIndexWarmup`, `src/serve/run_index_warmup.ts`). They read one workflow at
+a time, so requests that arrive meanwhile interleave with the warm-up or wait
+on the load it already has in flight. Shutdown aborts the warm-up before it
+drains runs, and waits for it after the drain. The warm-up passes its abort
+signal into each read, so a rebuild or repair in flight stops between records
+without writing the index.
+
+Run search and run summary list workflows through
+`WorkflowRepository.findAllListings` (`WorkflowListing`: id, name, whether it
+declares inputs) rather than `findAll`. `YamlWorkflowRepository` keeps each
+file's listing with the stat it was read at, and reads a file again only when
+its stat changed, so a listing costs a directory read and a stat per file. A
+broken file is never kept and is skipped with its warning each time.
+`findByName` and `findById` use the listings when their fast paths miss: they
+read only the file that declares the name or id. A name no file declares,
+such as a renamed or deleted workflow's, reads none. The aggregate itself is
+never cached, because a `Workflow` is mutable.
+
 ### Run Statuses
 
 - `pending`: created but not yet started

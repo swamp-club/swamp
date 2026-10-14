@@ -260,3 +260,28 @@ Deno.test("CompositeWorkflowRepository.findAllById: the workflows findAll return
     [],
   );
 });
+
+Deno.test("CompositeWorkflowRepository findAllListings lists findAll, deduplicated by name with primary winning", async () => {
+  const shared = createTestWorkflow("shared");
+  const primary = new InMemoryWorkflowRepository([
+    createTestWorkflow("primary-only"),
+    shared,
+  ]);
+  const extension = new InMemoryWorkflowRepository([
+    createTestWorkflow("shared"),
+    createTestWorkflow("extension-only"),
+  ]);
+  const composite = new CompositeWorkflowRepository(primary, extension);
+
+  const listings = await composite.findAllListings();
+  assertEquals(
+    listings.map((l) => [l.id, l.name]),
+    (await composite.findAll()).map((w) => [w.id, w.name]),
+  );
+  assertEquals(listings.find((l) => l.name === "shared")?.id, shared.id);
+  assertEquals(
+    (await new CompositeWorkflowRepository(primary, null).findAllListings())
+      .map((l) => l.name),
+    ["primary-only", "shared"],
+  );
+});

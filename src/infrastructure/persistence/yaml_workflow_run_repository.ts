@@ -29,10 +29,12 @@ import { keyUnder, unlessUnpartitionable } from "./config_staging.ts";
 import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
+import { RunIndexCache, type RunIndexStamp } from "./run_index_cache.ts";
 import {
   countYamlRunFiles,
   deleteRunIndex,
   fingerprintMatches,
+  getIndexPath,
   INDEX_SCHEMA_VERSION,
   isIndexStale,
   listDirEntries,
@@ -69,6 +71,7 @@ import {
   parseWorkflowRunSummary,
   type WorkflowRunSummary,
 } from "../../domain/workflows/workflow_run_summary.ts";
+import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import {
@@ -124,6 +127,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * as the wait hook does (`attachSignalWaits`).
    */
   beforeSave?: (run: WorkflowRun) => Promise<void>;
+
+  /** Run index snapshots kept between reads (swamp-club#3443). */
+  private readonly runIndexCache = new RunIndexCache({
+    stamp: (workflowId) => this.stampRunIndex(workflowId as WorkflowId),
+  });
 
   constructor(
     private readonly repoDir: string,
@@ -734,6 +742,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
     const dir = this.getRunsDir(workflowId);
+    this.runIndexCache.delete(workflowId);
 
     // Count the runs before deleting
     const runs = await this.findAllByWorkflowId(workflowId);
@@ -1184,6 +1193,65 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return indexToSummaries(index);
   }
 
+  /**
+   * The workflow's runs as an immutable, newest-first snapshot of its run
+   * index (swamp-club#3443). The snapshot is kept in memory and reused while
+   * a stat of the index file and of the records directory shows neither has
+   * changed, so a repeated read costs two stats, not a directory listing and
+   * a parse of the whole index. A workflow with no usable index gets a
+   * snapshot of its records, which is not kept.
+   *
+   * With `signal`, a read that has to rebuild or repair the index stops
+   * between records once it aborts, writes no index, and rejects with the
+   * signal's reason: serve's warm-up passes its own, so shutdown is not
+   * held up by it.
+   *
+   * On the concrete repository only, for the same reason as
+   * {@link findGlobalById}: only the run search and run summary paths use it.
+   */
+  runIndexSnapshot(
+    workflowId: WorkflowId,
+    signal?: AbortSignal,
+  ): Promise<RunIndexSnapshot> {
+    return this.runIndexCache.get(workflowId, async () => {
+      const runsDir = this.getRunsDir(workflowId);
+      const indexDir = this.getLocalIndexDir(workflowId);
+      const index = await this.getValidatedIndex(runsDir, indexDir, signal);
+      if (index) {
+        return {
+          snapshot: RunIndexSnapshot.of(indexToSummaries(index)),
+          fromIndex: true,
+        };
+      }
+      return {
+        snapshot: RunIndexSnapshot.of(
+          await this.findAllSummariesByWorkflowId(workflowId),
+        ),
+        fromIndex: false,
+      };
+    }, signal);
+  }
+
+  /** What a cached run index snapshot of the workflow is checked against. */
+  private async stampRunIndex(
+    workflowId: WorkflowId,
+  ): Promise<RunIndexStamp | undefined> {
+    const index = await statRecord(
+      getIndexPath(this.getLocalIndexDir(workflowId)),
+    );
+    if (index === undefined) return undefined;
+    let dirMtimeMs: number | null;
+    try {
+      const mtime = (await Deno.stat(this.getRunsDir(workflowId))).mtime;
+      if (!mtime) return undefined;
+      dirMtimeMs = mtime.getTime();
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      dirMtimeMs = null;
+    }
+    return { index, dirMtimeMs };
+  }
+
   async findSummariesByStatus(
     workflowId: WorkflowId,
     status: string,
@@ -1201,6 +1269,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async getValidatedIndex(
     runsDir: string,
     indexDir: string,
+    signal?: AbortSignal,
   ): Promise<WorkflowRunIndex | null> {
     const entries = await listDirEntries(runsDir);
     const yamlCount = countYamlRunFiles(entries);
@@ -1208,10 +1277,59 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     const result = await readRunIndex(indexDir);
     if (!result || isIndexStale(result, yamlCount)) {
-      return await this.rebuildIndex(runsDir, indexDir);
+      return await this.repairIndex(runsDir, indexDir, signal);
     }
 
     return result.entries;
+  }
+
+  /**
+   * Brings an index that disagrees with its records' count back in line,
+   * queued with the index updates of the same workflow. The check is made
+   * again in the queue first: a save writes its record before its index
+   * entry, so a reader that counted in between usually finds the entry
+   * landed. Otherwise every record is stat'ed against the fingerprint its
+   * entry was built from, and only the records the index does not list, or
+   * that changed since their entry was written, are read; the entries of
+   * records that are gone are dropped. A new run costs a stat per record,
+   * not a read of every record (swamp-club#3443, swamp-club#3407), and a
+   * record another writer replaced is still corrected, as the rebuild this
+   * replaces corrected it. An index of another schema version, or none, is
+   * rebuilt whole.
+   */
+  private repairIndex(
+    runsDir: string,
+    indexDir: string,
+    signal?: AbortSignal,
+  ): Promise<WorkflowRunIndex | null> {
+    return withIndexQueue(indexDir, async () => {
+      signal?.throwIfAborted();
+      const files = await listDirEntries(runsDir);
+      const count = countYamlRunFiles(files);
+      if (count === 0) return null;
+      const result = await readRunIndex(indexDir);
+      if (!result || result.version !== INDEX_SCHEMA_VERSION) {
+        return await this.rebuildIndexUnqueued(runsDir, indexDir, signal);
+      }
+      if (!isIndexStale(result, count)) return result.entries;
+
+      const entries = result.entries;
+      const suspects = await this.findSuspectRecords(
+        runsDir,
+        entries,
+        signal,
+      );
+      if (await this.reconcileSuspects(runsDir, entries, suspects, signal)) {
+        try {
+          await ensureDir(indexDir);
+          await writeRunIndex(indexDir, entries);
+        } catch (error) {
+          logger
+            .warn`Failed to write repaired index, will retry next read: ${error}`;
+        }
+      }
+      return entries;
+    });
   }
 
   /**
@@ -1271,44 +1389,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         return;
       }
       const entries = result.entries;
-      // Ids that a record names in its body under another file name, which
-      // a rebuild indexes by the body id: their entries are not gone.
-      const bodyIds = new Set<string>();
-      let changed = false;
-      for (const runId of suspects) {
-        const path = join(runsDir, `workflow-run-${runId}.yaml`);
-        const current = await statRecord(path);
-        if (current === null) {
-          if (runId in entries && !bodyIds.has(runId)) {
-            delete entries[runId];
-            changed = true;
-          }
-          continue;
-        }
-        if (current && fingerprintMatches(entries[runId]?.record, current)) {
-          continue;
-        }
-        const read = await readIndexedRecord(path);
-        if (read === null) {
-          if (runId in entries) {
-            delete entries[runId];
-            changed = true;
-          }
-          continue;
-        }
-        // A record whose body names another run is indexed as a rebuild
-        // would, by the id in its body; it has no entry under its file name,
-        // so it is read on every verify, and written only when it changed.
-        const id = read.summary.id;
-        if (id !== runId) bodyIds.add(id);
-        const next = indexEntryOf(read.summary, read.record);
-        // An entry that cannot be fingerprinted is read every time; it is
-        // written only when it says something new.
-        if (JSON.stringify(entries[id]) === JSON.stringify(next)) continue;
-        entries[id] = next;
-        changed = true;
+      if (!(await this.reconcileSuspects(runsDir, entries, suspects))) {
+        return;
       }
-      if (!changed) return;
       try {
         await writeRunIndex(indexDir, entries);
       } catch (error) {
@@ -1319,6 +1402,60 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
+   * Brings the entries of `suspects` in line with their records, in place:
+   * a record whose stat now matches its entry is left alone, a record that
+   * is gone or empty loses its entry, and any other is read and indexed by
+   * the id in its body. Whether any entry changed. Run inside the index
+   * queue, so an entry a save writes meanwhile is not overwritten.
+   */
+  private async reconcileSuspects(
+    runsDir: string,
+    entries: WorkflowRunIndex,
+    suspects: Set<string>,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    // Ids that a record names in its body under another file name, which
+    // a rebuild indexes by the body id: their entries are not gone.
+    const bodyIds = new Set<string>();
+    let changed = false;
+    for (const runId of suspects) {
+      signal?.throwIfAborted();
+      const path = join(runsDir, `workflow-run-${runId}.yaml`);
+      const current = await statRecord(path);
+      if (current === null) {
+        if (runId in entries && !bodyIds.has(runId)) {
+          delete entries[runId];
+          changed = true;
+        }
+        continue;
+      }
+      if (current && fingerprintMatches(entries[runId]?.record, current)) {
+        continue;
+      }
+      const read = await readIndexedRecord(path);
+      if (read === null) {
+        if (runId in entries) {
+          delete entries[runId];
+          changed = true;
+        }
+        continue;
+      }
+      // A record whose body names another run is indexed as a rebuild
+      // would, by the id in its body; it has no entry under its file name,
+      // so it is read on every verify, and written only when it changed.
+      const id = read.summary.id;
+      if (id !== runId) bodyIds.add(id);
+      const next = indexEntryOf(read.summary, read.record);
+      // An entry that cannot be fingerprinted is read every time; it is
+      // written only when it says something new.
+      if (JSON.stringify(entries[id]) === JSON.stringify(next)) continue;
+      entries[id] = next;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
    * The run ids whose index entry may not match their record: a record with
    * no entry, no fingerprint or another fingerprint, and an entry whose
    * record is gone. Stats every record; reads none.
@@ -1326,11 +1463,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async findSuspectRecords(
     runsDir: string,
     entries: WorkflowRunIndex,
+    signal?: AbortSignal,
   ): Promise<Set<string>> {
     const suspects = new Set<string>();
     const onDisk = new Set<string>();
     try {
       for await (const entry of Deno.readDir(runsDir)) {
+        signal?.throwIfAborted();
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
@@ -1374,10 +1513,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async rebuildIndexUnqueued(
     runsDir: string,
     indexDir: string,
+    signal?: AbortSignal,
   ): Promise<WorkflowRunIndex | null> {
     const index: WorkflowRunIndex = {};
     try {
       for (const entry of await readDirSorted(runsDir)) {
+        // Before each record: an aborted rebuild writes no index.
+        signal?.throwIfAborted();
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
