@@ -54,6 +54,14 @@ param(
     [switch]$Help
 )
 
+# The documented install is `irm https://swamp-club.com/install.ps1 | iex`,
+# which runs this text inside the caller's own PowerShell session. Everything
+# below runs in a child scope so the error preference, functions and variables
+# it sets stay out of that session, and failures throw instead of calling
+# `exit`, which would close the caller's window. The parameters above are read
+# from that child scope.
+& {
+
 $ErrorActionPreference = "Stop"
 
 # Script configuration
@@ -348,13 +356,28 @@ function Add-ToPath {
 }
 
 function Show-Help {
-    Get-Help $PSCommandPath -Detailed
+    # $PSCommandPath is empty when the script is not run from a file.
+    if ($PSCommandPath) {
+        Get-Help $PSCommandPath -Detailed
+        return
+    }
+
+    Write-Host "Installs the swamp CLI binary for Windows."
+    Write-Host ""
+    Write-Host "Parameters:"
+    Write-Host "  -Destination <dir>   Installation directory. Default: C:\Program Files\swamp (admin) or %LOCALAPPDATA%\swamp (user)"
+    Write-Host "  -Version <version>   Release version to install. Default: stable"
+    Write-Host "  -AddToPath <bool>    Add the installation directory to the PATH. Default: `$true"
+    Write-Host "  -Help                Show this help message."
+    Write-Host ""
+    Write-Host "To pass parameters to the downloaded script:"
+    Write-Host "  & ([scriptblock]::Create((irm https://swamp-club.com/install.ps1))) -Version stable"
 }
 
 function Main {
     if ($Help) {
         Show-Help
-        exit 0
+        return
     }
 
     Write-Header "Installing '$BinName' for Windows"
@@ -365,7 +388,7 @@ function Main {
 
     if ($cpuType -ne "x86_64") {
         Write-Err "Unsupported architecture: $cpuType. Only x86_64 is supported."
-        exit 1
+        throw "swamp installation failed"
     }
 
     $platform = "$osType-$cpuType"
@@ -472,7 +495,7 @@ function Main {
         Write-Info ""
         Write-Warn "If you need help, please join us on our Discord!"
         Write-Warn "    https://discord.gg/swamp-club"
-        exit 1
+        throw "swamp installation failed"
     } finally {
         if (Test-Path $tempDir) {
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -515,3 +538,5 @@ function Main {
 
 # Run main function
 Main
+
+}
