@@ -21,6 +21,7 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { UntarStream } from "@std/tar/untar-stream";
 import {
   ArchiveSizeLimitError,
   createTarGz,
@@ -399,6 +400,76 @@ Deno.test("extractTarGz: applies file mode bits on POSIX", async () => {
       assertEquals(stat.isFile, true);
     }
   });
+});
+
+/** Reads each entry's header mode from a `.tar.gz`, keyed by archive path. */
+async function headerModes(archive: string): Promise<Map<string, number>> {
+  const modes = new Map<string, number>();
+  const bytes = await Deno.readFile(archive);
+  const entries = new Blob([bytes]).stream()
+    .pipeThrough(new DecompressionStream("gzip"))
+    .pipeThrough(new UntarStream());
+  for await (const entry of entries) {
+    modes.set(entry.path, entry.header.mode & 0o7777);
+    if (entry.readable) await entry.readable.cancel();
+  }
+  return modes;
+}
+
+Deno.test("createTarGz: packs folders 0o755 and files 0o644 on Windows", async () => {
+  await withTempDir(async (root) => {
+    const top = join(root, "src", "extension");
+    await ensureDir(join(top, "bundles"));
+    await Deno.writeTextFile(join(top, "manifest.yaml"), "name: x\n");
+    await Deno.writeTextFile(join(top, "bundles", "a.js"), "export {};\n");
+
+    // Deno on Windows reports 0o666 for every file and folder.
+    const lstat = Deno.lstat;
+    Deno.lstat = async (path) => ({ ...(await lstat(path)), mode: 0o666 });
+    const archive = join(root, "out.tar.gz");
+    try {
+      await createTarGz(top, archive, "windows");
+    } finally {
+      Deno.lstat = lstat;
+    }
+
+    assertEquals(
+      Object.fromEntries(await headerModes(archive)),
+      {
+        "extension/": 0o755,
+        "extension/bundles/": 0o755,
+        "extension/bundles/a.js": 0o644,
+        "extension/manifest.yaml": 0o644,
+      },
+    );
+  });
+});
+
+Deno.test({
+  name: "createTarGz: records the real folder and file modes on POSIX",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (root) => {
+      const top = join(root, "src", "extension");
+      await ensureDir(join(top, "private"));
+      await Deno.chmod(join(top, "private"), 0o700);
+      await Deno.writeTextFile(join(top, "run.sh"), "#!/bin/sh\n");
+      await Deno.chmod(join(top, "run.sh"), 0o755);
+      await Deno.chmod(top, 0o750);
+
+      const archive = join(root, "out.tar.gz");
+      await createTarGz(top, archive, "linux");
+
+      assertEquals(
+        Object.fromEntries(await headerModes(archive)),
+        {
+          "extension/": 0o750,
+          "extension/private/": 0o700,
+          "extension/run.sh": 0o755,
+        },
+      );
+    });
+  },
 });
 
 /** Builds a small `.tar.gz` (one zero-filled file) and its decompressed length. */
