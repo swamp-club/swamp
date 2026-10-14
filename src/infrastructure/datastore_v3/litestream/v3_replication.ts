@@ -144,7 +144,7 @@ export async function recordV3Lineage(
     if (decided.kind === "conflict") {
       // Kept as it is: the writer refuses to replicate onto a used path.
       logger
-        .warn`The writer lease of the v3 datastore at ${datastorePath} went back to fence ${fence}, where this copy's replication began before; its writers cannot replicate until that is resolved`;
+        .warn`The writer lease of the v3 datastore at ${datastorePath} went back to fence ${fence}, where this copy's replication began before; its writers cannot replicate until that lineage's history is removed from the replica and ${paths.lineage} is deleted`;
       return;
     }
     await writeLineage(paths, decided.lineage);

@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
   V3ReplicationError,
@@ -42,6 +47,7 @@ import {
   isMarkedForReplacement,
   type ReplicationPaths,
   replicationPathsFor,
+  writeLineage,
   writePresence,
 } from "./replication_files.ts";
 import { parseSupervisorArgs } from "./replication_supervisor.ts";
@@ -697,6 +703,32 @@ Deno.test({
       }
       await (await replicator.acquire(world.request(db, 1))).release();
       assertEquals(world.live.length, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a fence that went back to a used lineage path is refused, with what to do",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      // This copy replicated a lineage at 1, then restarted at 4; the
+      // lease's records were recreated and hand out 1 again.
+      await writeLineage(world.paths, {
+        replicaRoot: "file:/replica",
+        lineageFence: 4,
+        lastFence: 6,
+        previousLineages: [{ replicaRoot: "file:/replica", fence: 1 }],
+      });
+      const replicator = new LitestreamReplicator(world.deps());
+      const error = await assertRejects(
+        () => replicator.acquire(world.request(db, 1)),
+        V3ReplicationUnavailableError,
+        "used before",
+      );
+      assertStringIncludes(error.message, world.paths.lineage);
+      assertEquals(world.sidecars.length, 0);
     });
   },
 });

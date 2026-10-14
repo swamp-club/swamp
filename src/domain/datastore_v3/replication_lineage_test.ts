@@ -33,7 +33,16 @@ function lineage(
   previousLineages: number[] = [],
   replicaRoot = ROOT,
 ): ReplicationLineage {
-  return { replicaRoot, lineageFence, lastFence, previousLineages };
+  return {
+    replicaRoot,
+    lineageFence,
+    lastFence,
+    // Abandoned lineages here were all under ROOT.
+    previousLineages: previousLineages.map((fence) => ({
+      replicaRoot: ROOT,
+      fence,
+    })),
+  };
 }
 
 Deno.test("decideLineage: no record starts a new lineage at the fence", () => {
@@ -102,7 +111,14 @@ Deno.test("parseReplicationLineage: reads back a record and rejects anything els
   assertEquals(parseReplicationLineage(null), undefined);
   assertEquals(parseReplicationLineage({ ...record, lastFence: 0 }), undefined);
   assertEquals(
-    parseReplicationLineage({ ...record, previousLineages: ["1"] }),
+    parseReplicationLineage({ ...record, previousLineages: [1] }),
+    undefined,
+  );
+  assertEquals(
+    parseReplicationLineage({
+      ...record,
+      previousLineages: [{ replicaRoot: "/r", fence: 0 }],
+    }),
     undefined,
   );
   assertEquals(
@@ -129,4 +145,16 @@ Deno.test("decideLineage: a restart onto a path this copy used before is a confl
   assertEquals(decideLineage(previous, ROOT, 7).kind, "conflict");
   // Another root has no such history.
   assertEquals(decideLineage(previous, "/other", 3).kind, "restart");
+});
+
+Deno.test("decideLineage: a fence used under another root is no conflict", () => {
+  // Root /a's lineage at 3 was abandoned for /b; /b's lineage began at 5.
+  const previous: ReplicationLineage = {
+    replicaRoot: "/b",
+    lineageFence: 5,
+    lastFence: 5,
+    previousLineages: [{ replicaRoot: "/a", fence: 3 }],
+  };
+  assertEquals(decideLineage(previous, "/b", 3).kind, "restart");
+  assertEquals(decideLineage(previous, "/a", 3).kind, "conflict");
 });

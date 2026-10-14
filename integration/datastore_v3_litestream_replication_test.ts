@@ -21,6 +21,12 @@
  * The v3 writer's Litestream sidecar against a real Litestream and a file
  * replica (swamp-club#3416, Phase 4 D1). Write commands run in-process;
  * the sidecar is a real detached supervisor with Litestream as its child.
+ *
+ * These tests spawn processes, which integration tests otherwise avoid:
+ * the supervisor (from its entry file, never the swamp CLI) and Litestream
+ * are the components under test, and what is checked (idle exits, frozen
+ * and orphaned sidecars, process groups) exists only between real
+ * processes. Every one they start is killed afterwards.
  */
 
 import {

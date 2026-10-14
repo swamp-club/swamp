@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
+  LITESTREAM_TIMEOUT_SLACK_S,
   LitestreamControlError,
   parseResponse,
   unixLitestreamControl,
@@ -104,7 +105,13 @@ Deno.test({
       assertEquals(answer.replicated_txid, 3);
     });
     const body = JSON.parse(seen.slice(seen.indexOf("\r\n\r\n") + 4));
-    assertEquals(body, { path: "/db/commits.db", wait: true, timeout: 4 });
+    // Litestream's wait outlasts the client's 5 s deadline, so a slow upload
+    // ends as a client timeout, never as Litestream's own error answer.
+    assertEquals(body, {
+      path: "/db/commits.db",
+      wait: true,
+      timeout: 5 + LITESTREAM_TIMEOUT_SLACK_S,
+    });
     assertEquals(seen.startsWith("POST /sync HTTP/1.1"), true);
   },
 });

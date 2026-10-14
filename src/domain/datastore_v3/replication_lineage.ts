@@ -51,10 +51,17 @@ export interface ReplicationLineage {
   /** The last fence this copy took. */
   readonly lastFence: number;
   /**
-   * The fences of lineages this copy abandoned, oldest first. Their paths
-   * keep their last state until a later garbage collection removes them.
+   * The lineages this copy abandoned, oldest first, each under its own
+   * root. Their paths keep their last state until a later garbage
+   * collection removes them.
    */
-  readonly previousLineages: readonly number[];
+  readonly previousLineages: readonly AbandonedLineage[];
+}
+
+/** A lineage a copy restarted away from: its replica path's root and fence. */
+export interface AbandonedLineage {
+  readonly replicaRoot: string;
+  readonly fence: number;
 }
 
 /** How a lease taken at a fence relates to the copy's lineage. */
@@ -118,11 +125,12 @@ export function decideLineage(
       return { kind: "continue", lineage: { ...previous, lastFence: fence } };
     }
   }
-  if (
-    previous.replicaRoot === replicaRoot &&
-    (fence === previous.lineageFence ||
-      previous.previousLineages.includes(fence))
-  ) {
+  const used = (root: string, at: number) =>
+    (previous.replicaRoot === root && previous.lineageFence === at) ||
+    previous.previousLineages.some((old) =>
+      old.replicaRoot === root && old.fence === at
+    );
+  if (used(replicaRoot, fence)) {
     return { kind: "conflict", lineage: previous };
   }
   return {
@@ -131,7 +139,10 @@ export function decideLineage(
       replicaRoot,
       lineageFence: fence,
       lastFence: fence,
-      previousLineages: [...previous.previousLineages, previous.lineageFence],
+      previousLineages: [...previous.previousLineages, {
+        replicaRoot: previous.replicaRoot,
+        fence: previous.lineageFence,
+      }],
     },
   };
 }
@@ -154,11 +165,11 @@ export function parseReplicationLineage(
 ): ReplicationLineage | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
-  const fences = record.previousLineages;
+  const abandoned = record.previousLineages;
   if (
     typeof record.replicaRoot !== "string" ||
     !isFence(record.lineageFence) || !isFence(record.lastFence) ||
-    !Array.isArray(fences) || !fences.every(isFence)
+    !Array.isArray(abandoned) || !abandoned.every(isAbandonedLineage)
   ) {
     return undefined;
   }
@@ -166,8 +177,14 @@ export function parseReplicationLineage(
     replicaRoot: record.replicaRoot,
     lineageFence: record.lineageFence,
     lastFence: record.lastFence,
-    previousLineages: fences,
+    previousLineages: abandoned,
   };
+}
+
+function isAbandonedLineage(value: unknown): value is AbandonedLineage {
+  if (typeof value !== "object" || value === null) return false;
+  const old = value as Record<string, unknown>;
+  return typeof old.replicaRoot === "string" && isFence(old.fence);
 }
 
 function isFence(value: unknown): value is number {

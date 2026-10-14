@@ -76,17 +76,28 @@ Deno.test("decideLineage: lastFence never decreases and previousLineages only gr
   );
 });
 
-Deno.test("decideLineage: a gap or a root change restarts at the new fence", () => {
+Deno.test("decideLineage: a gap or a root change restarts at the new fence, never on a used path", () => {
   fc.assert(
     fc.property(arbStart, arbSteps, (start, steps) => {
       let record = decideLineage(undefined, "/a", start).lineage;
       let fence = start;
+      // Every replica path a lineage began on: root and fence.
+      const used = new Set([`/a:${start}`]);
       for (const { gap, root } of steps) {
         fence += gap;
         const decision = decideLineage(record, root, fence);
         const continues = root === record.replicaRoot && gap <= 1;
-        assertEquals(decision.kind, continues ? "continue" : "restart");
-        if (!continues) assertEquals(decision.lineage.lineageFence, fence);
+        const expected = continues
+          ? "continue"
+          : used.has(`${root}:${fence}`)
+          ? "conflict"
+          : "restart";
+        assertEquals(decision.kind, expected);
+        if (expected === "restart") {
+          assertEquals(decision.lineage.lineageFence, fence);
+          used.add(`${root}:${fence}`);
+        }
+        if (expected === "conflict") assertEquals(decision.lineage, record);
         record = decision.lineage;
       }
     }),

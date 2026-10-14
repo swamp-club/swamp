@@ -757,7 +757,9 @@ deadline is 60 s.
 > the error and the exit code is 75. Phase 4E moves the confirmation before the
 > command's output, once users can turn replication on. The rethrow also ends
 > the CLI's teardown before its auth-gate refresh and telemetry; 4E finishes the
-> teardown and then rethrows.
+> teardown and then rethrows. The supervisor also inherits the launching
+> command's whole environment for its lifetime; 4E narrows it to what
+> Litestream needs (its credentials, `PATH`, `HOME`).
 
 **Lineage.** A listener on the writer lease (`onV3LeaseTaken`) records every
 fence this process takes in `lineage.json`, including serve's retake and a

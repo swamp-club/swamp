@@ -36,6 +36,7 @@
  */
 
 import { dirname, fromFileUrl, join } from "@std/path";
+import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import {
   decideLineage,
   replicaPathFor,
@@ -295,10 +296,15 @@ export class LitestreamReplicator {
     }
     const decided = decideLineage(recorded, root, request.fence);
     if (decided.kind === "conflict") {
-      throw new V3ReplicationUnavailableError(
-        `the writer lease's fence ${request.fence} would restart replication ` +
-          `on a replica path this copy used before; the lease's records ` +
-          `were recreated`,
+      throw markErrorPaths(
+        new V3ReplicationUnavailableError(
+          `the writer lease's fence ${request.fence} would restart ` +
+            `replication on a replica path this copy used before (the ` +
+            `lease's records were recreated). Remove that path's ` +
+            `_litestream/${padFence(request.fence)} history from the ` +
+            `replica, then delete ${paths.lineage} to start a new lineage`,
+        ),
+        [paths.lineage],
       );
     }
     await writeLineage(paths, decided.lineage);
@@ -579,8 +585,14 @@ export class LitestreamReplicator {
       }
       await Deno.remove(paths.socket).catch(() => {});
     } finally {
-      // Back to shared on the same descriptor.
-      await use.lock(false);
+      // Back to shared on the same descriptor, polled like every other
+      // wait here: the conversion is not atomic, so another command may
+      // take the lock exclusively in between.
+      await this.#waitForLock(
+        use,
+        false,
+        "another command took the sidecar while this one replaced it",
+      );
     }
   }
 

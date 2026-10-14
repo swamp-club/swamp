@@ -72,6 +72,9 @@ export interface LitestreamControl {
   ): Promise<LitestreamSyncResponse>;
 }
 
+/** How much longer Litestream's own sync wait runs than the client's deadline. */
+export const LITESTREAM_TIMEOUT_SLACK_S = 30;
+
 /** The control client over Deno's Unix sockets. */
 export const unixLitestreamControl: LitestreamControl = {
   async info(socketPath, deadlineMs) {
@@ -93,12 +96,14 @@ export const unixLitestreamControl: LitestreamControl = {
   async sync(socketPath, dbPath, deadlineMs) {
     const response = await controlRequest(socketPath, "POST", "/sync", {
       deadlineMs,
-      // Litestream's own wait ends a little before ours, so its answer, and
-      // not a dropped connection, reports a slow upload.
+      // Litestream's own wait outlasts ours, so a slow upload ends at this
+      // client's deadline, a timeout that leaves the sidecar uploading.
+      // Litestream's own timeout answer would read as a definite failure
+      // and get the sidecar replaced mid-upload.
       body: {
         path: dbPath,
         wait: true,
-        timeout: Math.max(1, Math.floor(deadlineMs / 1000) - 1),
+        timeout: Math.ceil(deadlineMs / 1000) + LITESTREAM_TIMEOUT_SLACK_S,
       },
     });
     if (response.status !== 200) {

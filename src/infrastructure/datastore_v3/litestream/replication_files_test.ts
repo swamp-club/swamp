@@ -206,7 +206,7 @@ Deno.test({
         replicaRoot: "file:/r",
         lineageFence: 2,
         lastFence: 4,
-        previousLineages: [1],
+        previousLineages: [{ replicaRoot: "file:/r", fence: 1 }],
       };
       await writeLineage(paths, lineage);
       assertEquals(await readLineage(paths), lineage);
