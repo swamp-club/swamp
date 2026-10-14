@@ -110,9 +110,9 @@ Deno.test("renderMethodExecutions: error line aligns dynamically with short meth
     );
     assertEquals(methodIndent, 4, "method name should be at 4-space indent");
     assertEquals(
-      plain.some((l) => l.startsWith("Direct Behavior Method Executions (")),
+      plain.some((l) => l.startsWith("Direct Method Executions (")),
       true,
-      "header should name behaviors",
+      "header should use the glossary's method term",
     );
     assertEquals(
       plain.some((l) => l.includes("Behavior: test-model (@test/type)")),

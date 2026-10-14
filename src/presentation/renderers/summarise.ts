@@ -52,7 +52,7 @@ function renderMethodExecutions(
 ): void {
   const models = summary.methodExecutions;
   if (models.length === 0) {
-    writeOutput(dim("Direct Behavior Method Executions: none"));
+    writeOutput(dim("Direct Method Executions: none"));
     writeOutput("");
     return;
   }
@@ -62,7 +62,7 @@ function renderMethodExecutions(
   const failedAll = models.reduce((s, m) => s + m.failed, 0);
 
   let header =
-    `Direct Behavior Method Executions (${totalAll} total: ${succeededAll} succeeded`;
+    `Direct Method Executions (${totalAll} total: ${succeededAll} succeeded`;
   if (failedAll > 0) {
     header += `, ${failedAll} failed`;
   }
