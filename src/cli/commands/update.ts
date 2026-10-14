@@ -631,7 +631,10 @@ export const updateCommand = new Command()
         signal: abort.signal,
       });
       const deps = createUpdateCheckDeps(VERSION, Deno.execPath());
-      const renderer = createUpdateCheckRenderer(ctx.outputMode, { spinner });
+      const renderer = createUpdateCheckRenderer(ctx.outputMode, {
+        spinner,
+        quiet: ctx.verbosity === "quiet",
+      });
       const shutdown = registerShutdownHandler({
         handler: () => abort.abort(),
         forceExitOnRepeat: true,

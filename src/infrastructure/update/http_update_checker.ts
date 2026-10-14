@@ -55,7 +55,11 @@ export interface HttpUpdateCheckerOptions {
   maxAttempts?: number;
   /** Waits between attempts; replaced in tests. */
   sleep?: Sleep;
-  /** Where update temp directories go; defaults to the OS temp dir. */
+  /**
+   * Where update temp directories go; defaults to the OS temp dir. Tests set
+   * it: an install also sweeps abandoned update directories from it, and a
+   * test must not touch the real temp dir.
+   */
   tempRoot?: string;
   /** Replaced in tests; see {@link downloadToFile}. */
   downloadStallTimeoutMs?: number;

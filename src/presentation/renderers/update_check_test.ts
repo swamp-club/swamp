@@ -291,3 +291,31 @@ Deno.test("renderUpdateCancelled: a cancelled check says only the check was canc
 
   assertEquals(JSON.parse(err).error, "Update check cancelled.");
 });
+
+Deno.test("createUpdateCheckRenderer: -q writes no progress or retry lines to stderr", () => {
+  const r = logRenderer({ stderrIsTerminal: false, quiet: true });
+
+  for (let s = 0; s <= 25; s++) {
+    r.at(s * 1000);
+    r.send(progress(s * MB));
+  }
+  r.send({
+    kind: "download_retrying",
+    data: {
+      attempt: 1,
+      maxAttempts: 5,
+      reason: "HTTP 503",
+      resumeFromBytes: 0,
+    },
+  });
+
+  assertEquals(r.stderr, []);
+});
+
+Deno.test("createUpdateCheckRenderer: -q leaves the spinner's live progress on a terminal", () => {
+  const r = logRenderer({ quiet: true });
+
+  r.send(progress(0));
+
+  assertEquals(r.spinnerMessages, ["Downloading update 0 B / 100.0 MB (0%)"]);
+});

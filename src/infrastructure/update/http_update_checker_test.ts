@@ -181,7 +181,7 @@ Deno.test({
         const url = `http://localhost:${port}/swamp.tar.gz`;
         const binaryPath = join(tempDir, "swamp");
 
-        const checker = new HttpUpdateChecker();
+        const checker = new HttpUpdateChecker({ tempRoot: tempDir });
         await checker.downloadAndInstall(url, binaryPath, checksum);
 
         // Binary must exist at the target path
@@ -237,7 +237,7 @@ Deno.test({
         const port = server.addr.port;
         const url = `http://localhost:${port}/swamp.tar.gz`;
 
-        const checker = new HttpUpdateChecker();
+        const checker = new HttpUpdateChecker({ tempRoot: tempDir });
         await checker.downloadAndInstall(url, binaryPath, checksum);
 
         const newStat = await Deno.stat(binaryPath);
@@ -283,7 +283,7 @@ Deno.test({
         const port = server.addr.port;
         const url = `http://localhost:${port}/swamp.tar.gz`;
 
-        const checker = new HttpUpdateChecker();
+        const checker = new HttpUpdateChecker({ tempRoot: tempDir });
         await checker.downloadAndInstall(url, binaryPath, checksum);
 
         // Stale temp file should be cleaned up
@@ -333,7 +333,7 @@ Deno.test({
         const port = server.addr.port;
         const url = `http://localhost:${port}/swamp.tar.gz`;
 
-        const checker = new HttpUpdateChecker();
+        const checker = new HttpUpdateChecker({ tempRoot: tempDir });
         await checker.downloadAndInstall(url, binaryPath, checksum);
 
         const info = await Deno.stat(inFlightPath);
@@ -376,7 +376,7 @@ Deno.test({
         const url = `http://localhost:${port}/swamp.tar.gz`;
         const binaryPath = join(tempDir, "swamp");
 
-        const checker = new HttpUpdateChecker();
+        const checker = new HttpUpdateChecker({ tempRoot: tempDir });
         await checker.downloadAndInstall(url, binaryPath, checksum);
 
         // Probe the installed binary with `xattr -l`. If the install

@@ -46,6 +46,11 @@ export interface UpdateCheckRendererOptions {
   stderrIsTerminal?: boolean;
   /** Writes one line to stderr; used when there is no terminal. */
   writeStderr?: (line: string) => void;
+  /**
+   * `-q`: no progress or retry lines on stderr. The spinner, which only
+   * draws on a terminal and leaves nothing behind, is unaffected.
+   */
+  quiet?: boolean;
   now?: () => number;
   /** The terminal's width; replaced in tests. */
   columns?: () => number;
@@ -134,6 +139,7 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
   cancelled = false;
   private readonly spinner: { update(message: string): void } | null;
   private readonly stderrIsTerminal: boolean;
+  private readonly quiet: boolean;
   private readonly writeStderr: (line: string) => void;
   private readonly now: () => number;
   private readonly columns: () => number;
@@ -144,6 +150,7 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
     this.spinner = options.spinner ?? null;
     this.stderrIsTerminal = options.stderrIsTerminal ??
       Deno.stderr.isTerminal();
+    this.quiet = options.quiet ?? false;
     this.writeStderr = options.writeStderr ??
       // deno-lint-ignore no-console
       ((line) => console.error(line));
@@ -155,7 +162,8 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
   /**
    * On a terminal the spinner shows `message` live. Elsewhere (agents, CI,
    * pipes) a line goes to stderr at most every few seconds, or at once when
-   * `force` is set, so a long download is visibly alive.
+   * `force` is set, so a long download is visibly alive — unless `-q` asked
+   * for no commentary on stderr (see postCommandNoticesAllowed).
    */
   private show(message: string, force: boolean): void {
     if (this.stderrIsTerminal) {
@@ -163,6 +171,7 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
       this.spinner?.update(fitTo(message, this.columns() - 2));
       return;
     }
+    if (this.quiet) return;
     const at = this.now();
     if (!force && at - this.lastLineAt < PROGRESS_LINE_INTERVAL_MS) return;
     this.lastLineAt = at;
