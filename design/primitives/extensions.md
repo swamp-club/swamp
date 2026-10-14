@@ -1901,14 +1901,14 @@ Optional fields (`src/infrastructure/persistence/upstream_extensions.ts`):
 - `serverUrl`: a non-default registry.
 - `channel`: present only for non-stable installs.
 
-Every entry records the archive's SHA-256 at install time (`checksum`). Each
-lockfile-restore flow (`swamp extension install`, phase-two migration re-pull)
-checks the fresh download byte for byte against it. On mismatch the restore
-fails loudly with an error that offers a choice: accept the current registry
-content (`swamp extension pull <name>`) or pin an older version. So the lockfile
-is an integrity manifest as well as a version record, and restores cannot
-silently accept changed registry bytes. Entries from before checksum tracking
-(pre-commit `f4dfc083`) skip the check.
+Every entry records the archive's SHA-256 at install time (`checksum`). The
+lockfile-restore pass (`swamp extension install`, which `swamp repo upgrade`
+also runs to migrate legacy layouts) checks the fresh download byte for byte
+against it. On mismatch the restore fails loudly with an error that offers a
+choice: accept the current registry content (`swamp extension pull <name>`) or
+pin an older version. So the lockfile is an integrity manifest as well as a
+version record, and restores cannot silently accept changed registry bytes.
+Entries from before checksum tracking (pre-commit `f4dfc083`) skip the check.
 
 `swamp extension pull <name>` is how the user opts in to whatever the registry
 now serves. Integrity checks apply only to lockfile-restore flows.
@@ -2401,27 +2401,35 @@ stays.
 Repos with extensions under older layouts migrate with `swamp repo upgrade`.
 Three generations are recognised:
 
-- **gen-1 (pre-`.swamp/`):** files under `extensions/<type>/...`. Handled like
-  gen-2: `swamp extension install` re-pulls into the per-extension subtree and
-  `sweepLegacyPaths` removes the tracked legacy paths
-  (`src/libswamp/extensions/install.ts`). Nothing is renamed in place.
+- **gen-1 (pre-`.swamp/`):** files under `extensions/<type>/...`.
 - **gen-2 (flat under `.swamp/`):** files under
   `.swamp/pulled-extensions/<type>/<file>`. Filenames collide across extensions
   here, so earlier installs may have overwritten each other and renaming cannot
-  recover the real content. `repo upgrade` instead deletes each gen-2 entry's
-  tracked files and leaves the lockfile unchanged. The next
-  `swamp extension install` re-pulls each affected extension into its new
-  subtree, verified against the lockfile's stored checksum.
+  recover the real content.
 - **current (per-extension):** files under
   `.swamp/pulled-extensions/<ext-name>/<type>/...`. No migration needed.
 
+gen-1 and gen-2 migrate the same way, and nothing is renamed in place. After
+refreshing the repo, `repo upgrade` runs the `swamp extension install` pass
+(`extensionInstall` in `src/libswamp/extensions/install.ts`).
+`needsInstallOrMigration` marks every lockfile entry with a gen-1 or gen-2 path
+for migration. The install re-pulls that extension into its per-extension
+subtree, verified against the lockfile's stored checksum, and rewrites the
+entry's `files` to the new paths. When it commits, it prunes the old paths that
+no other entry claims. `sweepLegacyPaths` then removes every gen-1 or gen-2 path
+of the entry that is still on disk. The sweep does not check other entries'
+claims, so a gen-2 file shared by two colliding extensions goes too. The
+extension that still lists it is handled later in the pass, finds the file
+missing, and is re-pulled.
+
 The lockfile tolerates mixed generations, since each entry stands alone. The CLI
 guard warns with a one-line reminder instead of failing, so migrated extensions
-stay usable during a partial upgrade. The migration is resumable:
-`Deno.errors.NotFound` during the delete counts as success, as expected on a
-retry after an interrupted run. Any other IO error stops the upgrade before
-further changes and leaves the lockfile intact, so a retry starts from a
-consistent state.
+stay usable during a partial upgrade. The migration is resumable. Each entry is
+handled on its own: a failure is reported for that entry and the pass moves on
+to the next. A failed re-pull (a download error or a checksum mismatch) leaves
+the entry's legacy files and lockfile entry as they were, so the next
+`swamp extension install` or `repo upgrade` retries it. The sweep treats
+`Deno.errors.NotFound` as already removed.
 
 Skill directory entries are always treated as current-layout, wherever they
 are. Each is tracked as one dir path in `entry.files[]`, e.g.

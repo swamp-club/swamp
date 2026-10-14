@@ -41,9 +41,9 @@ export interface LegacyFileEntry {
 
 /**
  * Known pulled-type dir names under `.swamp/pulled-extensions/`. Used
- * both by `classifyExtensionFile` (to detect gen-2 flat paths) and by
- * the phase-two migration in `RepoService` (to decide which tracked
- * files to delete). Keep this list in one place so the two never drift.
+ * by `classifyExtensionFile` to detect the gen-1 and gen-2 shapes; its
+ * result decides which entries `needsInstallOrMigration` re-pulls and
+ * which tracked paths `sweepLegacyPaths` removes (both in install.ts).
  */
 export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
   "models",
