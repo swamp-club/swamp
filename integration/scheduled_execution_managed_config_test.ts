@@ -53,6 +53,36 @@ async function writeFile(path: string, content: string): Promise<void> {
   await Deno.writeTextFile(path, content);
 }
 
+/**
+ * Writes `content` to `path`, then rewrites it every `rewriteMs` until
+ * `condition` holds. Deno.watchFs returns before the OS watch is live (on
+ * macOS the FSEvents stream starts asynchronously, later under load), so a
+ * single write made right after the service starts can land before the
+ * watcher sees anything; a later rewrite is then the change it reports.
+ */
+async function writeUntil(
+  path: string,
+  content: string,
+  condition: () => boolean,
+  description: string,
+  rewriteMs = 250,
+): Promise<void> {
+  await writeFile(path, content);
+  let lastWrite = Date.now();
+  await waitFor(
+    async () => {
+      if (condition()) return true;
+      if (Date.now() - lastWrite >= rewriteMs) {
+        await writeFile(path, content);
+        lastWrite = Date.now();
+      }
+      return false;
+    },
+    description,
+    { timeoutMs: 30_000 },
+  );
+}
+
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp_schedule_watch_" });
   try {
@@ -109,22 +139,18 @@ Deno.test("scheduled execution: reloads schedules from the managed config workfl
       await Deno.remove(decoy);
 
       // Adding a scheduled workflow to the managed dir registers it.
-      await writeFile(
+      await writeUntil(
         join(managedDir, "workflow-added.yaml"),
         workflowYaml(addedId, "added", "30 3 1 1 *"),
-      );
-      await waitFor(
         () => scheduleOf(service, addedId) === "30 3 1 1 *",
         "schedule registered for a workflow added to the managed dir",
       );
       assertEquals(scheduleOf(service, existingId), "0 0 1 1 *");
 
       // Changing a schedule in the managed dir re-registers it.
-      await writeFile(
+      await writeUntil(
         join(managedDir, "workflow-existing.yaml"),
         workflowYaml(existingId, "existing", "15 4 1 1 *"),
-      );
-      await waitFor(
         () => scheduleOf(service, existingId) === "15 4 1 1 *",
         "schedule updated for a workflow changed in the managed dir",
       );
@@ -148,11 +174,9 @@ Deno.test("scheduled execution: reloads schedules from the repo workflows dir wi
     await service.start();
     try {
       const id = crypto.randomUUID();
-      await writeFile(
+      await writeUntil(
         join(workflowsDir, "workflow-added.yaml"),
         workflowYaml(id, "added", "0 0 1 1 *"),
-      );
-      await waitFor(
         () => scheduleOf(service, id) === "0 0 1 1 *",
         "schedule registered for a workflow added to the repo workflows dir",
       );
