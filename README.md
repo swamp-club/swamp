@@ -14,9 +14,23 @@ Come join the [swamp party on discord](https://discord.gg/swamp-club).
 
 ## Getting Started
 
+Swamp runs on macOS and Linux (x86_64 and arm64) and on Windows (x86_64).
+
+On macOS and Linux:
+
 ```bash
 curl -fsSL https://swamp-club.com/install.sh | sh
 ```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://swamp-club.com/install.ps1 | iex
+```
+
+The Windows installer puts swamp in `C:\Program Files\swamp` and adds it to the
+system PATH when run as administrator, and otherwise in `%LOCALAPPDATA%\swamp`
+with the user PATH.
 
 ### Quick Start
 
