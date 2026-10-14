@@ -22,6 +22,7 @@ import type { Definition } from "../definitions/definition.ts";
 import { Definition as DefinitionClass } from "../definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import { firstRejection } from "./expression_rejection_report.ts";
 import {
   containsExpression,
   extractCelExpression,
@@ -259,10 +260,99 @@ function overlaps(a: string, b: string): boolean {
   return under(a, b) || under(b, a);
 }
 
+/** Evaluates authored constants for {@link constantOutputRaws}. */
+let constantEvaluator: CelEvaluator | undefined;
+
+/** An authored set's constant outputs, computed on first use. */
+interface ConstantOutputs {
+  /** Each authored constant that produces expression text, with that text. */
+  byConstant: Map<string, Set<string>>;
+  /** Every expression text any of them produces. */
+  all: Set<string>;
+}
+
+const constantOutputCache = new WeakMap<
+  ReadonlySet<string>,
+  ConstantOutputs
+>();
+
+/**
+ * The raw text of every expression that an authored constant evaluates to,
+ * such as the `inputs.version` expression text that
+ * `literal('${{ inputs.version }}')` produces. A constant reads no binding
+ * (no free roots), so its output is text the author wrote on purpose, and a
+ * later pass that refuses it has nothing to report (swamp-club#3402).
+ *
+ * Derived only from `authored`, which data cannot extend. Constants that fail
+ * to evaluate are skipped, as are bare assertion predicates.
+ */
+function constantOutputs(authored: ReadonlySet<string>): ConstantOutputs {
+  const cached = constantOutputCache.get(authored);
+  if (cached) return cached;
+  const outputs: ConstantOutputs = { byConstant: new Map(), all: new Set() };
+  for (const raw of authored) {
+    const cel = extractCelExpression(raw);
+    if (cel === null || freeRoots(cel)?.size !== 0) continue;
+    let value: unknown;
+    try {
+      constantEvaluator ??= new CelEvaluator();
+      value = constantEvaluator.evaluate(cel, {});
+    } catch {
+      continue;
+    }
+    const produced = new Set(extractExpressions(value).map((e) => e.raw));
+    if (produced.size === 0) continue;
+    outputs.byConstant.set(raw, produced);
+    for (const output of produced) outputs.all.add(output);
+  }
+  constantOutputCache.set(authored, outputs);
+  return outputs;
+}
+
+/**
+ * The authored constants (see {@link constantOutputs}) whose output includes
+ * one of `raws`. A nested workflow inherits these from its parent, so the
+ * child, too, recognises `literal()` output it receives as the parent
+ * author's text. Evaluating a constant reads no binding, so inheriting one
+ * grants the child no access.
+ */
+export function authoredConstantsProducing(
+  authored: ReadonlySet<string>,
+  raws: Iterable<string>,
+): Set<string> {
+  const wanted = new Set(raws);
+  const constants = new Set<string>();
+  for (const [constant, produced] of constantOutputs(authored).byConstant) {
+    if ([...produced].some((raw) => wanted.has(raw))) {
+      constants.add(constant);
+    }
+  }
+  return constants;
+}
+
+/**
+ * Whether a refusal of `expr` is worth a warning: not when the text is
+ * another templating system's (see {@link isForeignExpression}), which no
+ * swamp evaluation could own, nor when an authored constant produced it, and
+ * only the first time the step's rejection report sees it.
+ */
+function reportsRefusal(
+  expr: ExpressionLocation,
+  authored: AuthoredExpressions,
+): boolean {
+  if (isForeignExpression(expr.celExpression)) return false;
+  if (
+    authored !== "unrestricted" && constantOutputs(authored).all.has(expr.raw)
+  ) return false;
+  return firstRejection(expr.raw);
+}
+
 /**
  * Splits expressions into those the author wrote and those CEL substitution
  * introduced, logging a warning for each rejection so an injection attempt is
- * visible in the run log.
+ * visible in the run log. Text an authored constant produced, such as
+ * `literal()` output, and another templating system's text are refused
+ * without a warning, and a step logs each refused raw text once.
  *
  * The raw expression text is logged because it is the reference, never a
  * resolved value — nothing has been evaluated at this point, and that is the
@@ -281,6 +371,7 @@ export function partitionAuthored(
       allowed.push(expr);
       continue;
     }
+    if (!reportsRefusal(expr, authored)) continue;
     getLogger(["swamp", "expressions"])
       .warn`Refusing to evaluate expression at ${expr.path}: it was not written in the definition or workflow source, so it arrived as data content. Left as literal text. Raw: ${expr.raw}`;
   }
@@ -304,7 +395,7 @@ export function partitionAuthoredAt(
     const inData = expr.start === undefined || expr.end === undefined
       ? provenance.hasDataAtOrBelow(expr.path)
       : provenance.overlapsData(expr.path, expr.start, expr.end);
-    if (inData) {
+    if (inData && reportsRefusal(expr, authored)) {
       getLogger(["swamp", "expressions"])
         .warn`Refusing to evaluate expression at ${expr.path}: it sits in data content, not in the definition or workflow source. Left as literal text. Raw: ${expr.raw}`;
     }

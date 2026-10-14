@@ -206,11 +206,16 @@ import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import {
+  authoredConstantsProducing,
   type AuthoredExpressions,
   collectAuthoredExpressions,
   ExpressionEvaluationService,
   partitionAuthoredAt,
 } from "../expressions/expression_evaluation_service.ts";
+import {
+  createRejectionReport,
+  runWithRejectionReport,
+} from "../expressions/expression_rejection_report.ts";
 import {
   type DeferredExpression,
   deferredExpressionReference,
@@ -6855,6 +6860,12 @@ export class WorkflowExecutionService {
     // Where data sits in the step's task (swamp-club#3205).
     let taskProvenance = (options.stepProvenance ??
       StepProvenanceOverlay.authored()).forStep(step).raw.subtree("task");
+    // The step's passes share one rejection report, so each refused
+    // expression is logged once for the step. It is entered around each pass
+    // rather than the whole body: a scope cannot span this generator's yields.
+    const report = createRejectionReport();
+    const inStepReport = <T>(fn: () => T): T =>
+      runWithRejectionReport(report, fn);
     // Resolve every available expression (self.* from the forEach variable,
     // run.*, etc.) in the task BEFORE the recursion-depth guard, cycle
     // detection, ancestor-set additions, and the child invocation, so they all
@@ -6865,12 +6876,14 @@ export class WorkflowExecutionService {
       const celEvaluator = new CelEvaluator();
       // Synchronous pass: make what it reads local first (swamp-club#3179).
       await prepareExpressionsIn(task, expressionContext);
-      const resolved = resolveAvailableExpressionsTracked(
-        task,
-        taskProvenance,
-        expressionContext,
-        (expr, context) => celEvaluator.evaluate(expr, context),
-        options.authoredExpressions,
+      const resolved = inStepReport(() =>
+        resolveAvailableExpressionsTracked(
+          task,
+          taskProvenance,
+          expressionContext,
+          (expr, context) => celEvaluator.evaluate(expr, context),
+          options.authoredExpressions,
+        )
       );
       task = resolved.data as typeof task;
       taskProvenance = resolved.provenance;
@@ -6881,20 +6894,23 @@ export class WorkflowExecutionService {
     const sourceInputs = task.inputs;
     task = {
       ...task,
-      workflowIdOrName: await this.expressionEvaluator
-        .resolveRuntimeExpressionsInData(
+      workflowIdOrName: await inStepReport(() =>
+        this.expressionEvaluator.resolveRuntimeExpressionsInData(
           task.workflowIdOrName,
           options.secretRedactor,
           expressionContext,
           options.authoredExpressions,
           taskProvenance.subtree("workflowIdOrName"),
-        ) as string,
-      inputs: await resolveRecordExpression(
-        task.inputs,
-        "task.inputs",
-        expressionContext,
-        options.authoredExpressions,
-        taskProvenance.subtree("inputs"),
+        )
+      ) as string,
+      inputs: await inStepReport(() =>
+        resolveRecordExpression(
+          task.inputs,
+          "task.inputs",
+          expressionContext,
+          options.authoredExpressions,
+          taskProvenance.subtree("inputs"),
+        )
       ),
     };
     taskProvenance = recordProvenance(
@@ -6911,12 +6927,14 @@ export class WorkflowExecutionService {
     // steps have written the data it names (swamp-club#2351).
     task = {
       ...task,
-      workflowIdOrName: await resolveScalarExpression(
-        task.workflowIdOrName,
-        "task.workflowIdOrName",
-        expressionContext,
-        options.authoredExpressions,
-        taskProvenance.subtree("workflowIdOrName"),
+      workflowIdOrName: await inStepReport(() =>
+        resolveScalarExpression(
+          task.workflowIdOrName,
+          "task.workflowIdOrName",
+          expressionContext,
+          options.authoredExpressions,
+          taskProvenance.subtree("workflowIdOrName"),
+        )
       ) as string,
     };
 
@@ -6971,12 +6989,15 @@ export class WorkflowExecutionService {
     if (task.inputs && typeof task.inputs !== "string" && expressionContext) {
       // The parent's authored set: the child re-collects its own from its
       // YAML once it re-enters executeWorkflow.
-      const tracked = await this.expressionEvaluator.evaluateDataTracked(
-        task.inputs,
-        inputsProvenance,
-        expressionContext,
-        options.authoredExpressions,
-        "passThrough",
+      const inputs = task.inputs;
+      const tracked = await inStepReport(() =>
+        this.expressionEvaluator.evaluateDataTracked(
+          inputs,
+          inputsProvenance,
+          expressionContext,
+          options.authoredExpressions,
+          "passThrough",
+        )
       );
       evaluatedInputs = tracked.data as Record<string, unknown>;
       inputsProvenance = tracked.provenance;
@@ -6987,12 +7008,14 @@ export class WorkflowExecutionService {
     // expression that references one fails to resolve in the child instead
     // of persisting the secret or silently using a stale pre-resume value.
     const deferred = expressionContext
-      ? this.expressionEvaluator.deferChildInputs(
-        evaluatedInputs,
-        expressionContext,
-        options.authoredExpressions,
-        options.resumeDerived,
-        inputsProvenance,
+      ? inStepReport(() =>
+        this.expressionEvaluator.deferChildInputs(
+          evaluatedInputs,
+          expressionContext,
+          options.authoredExpressions,
+          options.resumeDerived,
+          inputsProvenance,
+        )
       )
       : {
         data: evaluatedInputs,
@@ -7006,8 +7029,9 @@ export class WorkflowExecutionService {
     // inputs survive evaluateData unresolved. They are legitimate provenance
     // in the child, so carry exactly those across; anything else left in the
     // inputs arrived as data content and stays refused.
+    const childInputExpressions = extractExpressions(evaluatedInputs);
     const inheritedExpressions = new Set(
-      extractExpressions(evaluatedInputs).filter((expr) =>
+      childInputExpressions.filter((expr) =>
         !(expr.start !== undefined && expr.end !== undefined &&
           inputsProvenance.overlapsData(expr.path, expr.start, expr.end))
       ).map((expr) => expr.raw).filter((expr) =>
@@ -7017,6 +7041,18 @@ export class WorkflowExecutionService {
         )
       ),
     );
+    // The parent's constants whose output the child receives, such as a
+    // literal() call, so the child recognises that text as the parent
+    // author's and does not report refusing it (swamp-club#3402). A constant
+    // reads no binding, so it grants the child nothing.
+    for (
+      const constant of authoredConstantsProducing(
+        options.authoredExpressions,
+        childInputExpressions.map((expr) => expr.raw),
+      )
+    ) {
+      inheritedExpressions.add(constant);
+    }
 
     // Apply the child workflow's input defaults — the top-level
     // workflowRun() libswamp layer does this, but nested invocations
@@ -7250,14 +7286,18 @@ export class WorkflowExecutionService {
   /**
    * Runs a model method on the step executor, held in the run's in-flight
    * set until it settles so a cancelled run waits for it to record itself
-   * (see {@link InFlightMethodRuns}).
+   * (see {@link InFlightMethodRuns}). The step's passes share one rejection
+   * report, so each refused expression is logged once for the step.
    */
   private executeMethod(
     step: Step,
     ctx: StepExecutionContext,
     options: StepOptions,
   ): Promise<unknown> {
-    const execution = this.executor.execute(step, ctx);
+    const execution = runWithRejectionReport(
+      createRejectionReport(),
+      () => this.executor.execute(step, ctx),
+    );
     return options.inFlightMethodRuns?.track(execution) ?? execution;
   }
 
