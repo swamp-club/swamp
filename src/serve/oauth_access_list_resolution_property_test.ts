@@ -33,7 +33,27 @@ const PROVIDER = "https://provider.test";
 const NAMES = ["alice", "bob", "carol", "dave", "erin", "frank"];
 
 const arbName = fc.constantFrom(...NAMES);
-const arbEntry = fc.oneof(arbName, arbName.map((n) => `user:${n}`));
+/**
+ * Entries that are not plain usernames. Some spell another entry's cache
+ * key (`allowed:<name>`, `unresolved:<name>`), so reading the cache for
+ * them would hand out someone else's sub.
+ */
+const arbColonName = fc.oneof(
+  arbName.map((n) => `allowed:${n}`),
+  arbName.map((n) => `unresolved:${n}`),
+  arbName.map((n) => `unresolved:allowed:${n}`),
+  arbName.map((n) => `group:${n}`),
+);
+const arbEntry = fc.oneof(
+  arbName,
+  arbName.map((n) => `user:${n}`),
+  arbColonName,
+  arbColonName.map((n) => `user:${n}`),
+);
+
+function usernameOfEntry(entry: string): string {
+  return entry.startsWith("user:") ? entry.slice(5) : entry;
+}
 
 /**
  * A provider state (which names exist, which fail transiently), a config
@@ -73,7 +93,9 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
     fc.asyncProperty(arbScenario, async (s) => {
       const cache = priorCache(s.cachedExisting, s.cachedMissing);
       const mode = chooseResolutionMode(s.admins, s.allowedUsers, cache);
+      const calls: string[] = [];
       const resolve = (username: string) => {
+        calls.push(username);
         if (s.failing.includes(username)) {
           return Promise.reject(new Error("503"));
         }
@@ -98,8 +120,27 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
         // Only full mode looks anything up, so only it may abort.
         assert(err instanceof UserError);
         assert(mode === "full");
+        assertLookupsWereNeeded(calls, s.cachedExisting);
         return;
       }
+      assertLookupsWereNeeded(calls, s.cachedExisting);
+
+      // Every grant comes from a plain configured name of the same list:
+      // an entry that is not a plain username never resolves, so it can
+      // never pick up another entry's cached sub.
+      const plainAdmins = s.admins.map(usernameOfEntry).filter((n) =>
+        !n.includes(":")
+      );
+      const plainAllowed = s.allowedUsers.map(usernameOfEntry).filter((n) =>
+        !n.includes(":")
+      );
+      for (const sub of result.admins) {
+        assert(plainAdmins.includes(sub.slice("user:sub-".length)));
+      }
+      for (const sub of result.allowedUsers) {
+        assert(plainAllowed.includes(sub.slice("sub-".length)));
+      }
+      for (const r of result.resolved) assert(!r.username.includes(":"));
 
       const skipped = new Set(
         result.unresolved.map((u) => `${u.kind}:${u.username}`),
@@ -122,8 +163,8 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
         assert(!result.admins.includes(`user:sub-${name}`));
         assert(!result.allowedUsers.includes(`sub-${name}`));
       }
-      // A name that resolved before is never dropped by a later 404: it
-      // keeps its cached sub, so one bad answer cannot revoke a grant.
+      // A name that resolved before keeps its cached sub: it is pinned and
+      // never looked up again, so no answer can revoke or re-point it.
       for (const entry of s.admins) {
         const name = entry.startsWith("user:") ? entry.slice(5) : entry;
         if (s.cachedExisting.includes(name)) {
@@ -153,3 +194,18 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
     }),
   );
 });
+
+/**
+ * Lookups go only to plain names the cache has no sub for: a pinned name
+ * is never looked up again, and an entry that is not a plain username is
+ * never looked up at all.
+ */
+function assertLookupsWereNeeded(
+  calls: readonly string[],
+  cachedExisting: readonly string[],
+): void {
+  for (const name of calls) {
+    assert(!name.includes(":"));
+    assert(!cachedExisting.includes(name));
+  }
+}

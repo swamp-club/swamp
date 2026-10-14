@@ -276,9 +276,11 @@ export async function sendInstanceHeartbeat(
 
 /**
  * Error thrown by {@link resolveUsername} when the provider reports that the
- * username does not exist (HTTP 404). Any other failure — a non-2xx status,
- * a network error or a timeout — throws a plain `Error`, so callers can tell
- * "this user does not exist" apart from "the provider could not answer".
+ * username does not exist (HTTP 404). A refusal of the credential (401 or
+ * 403) throws {@link UsernameLookupRefusedError}. Any other failure — a
+ * non-2xx status, a network error or a timeout — throws a plain `Error`, so
+ * callers can tell "this user does not exist" apart from "the provider could
+ * not answer".
  */
 export class UsernameNotFoundError extends Error {
   readonly username: string;
@@ -289,6 +291,34 @@ export class UsernameNotFoundError extends Error {
     this.username = username;
     this.providerUrl = providerUrl;
     this.name = "UsernameNotFoundError";
+  }
+}
+
+/**
+ * Error thrown by {@link resolveUsername} when the provider refuses the
+ * credential (HTTP 401 or 403). The message names the scope a collective
+ * API token needs, without claiming which credential was used: startup may
+ * look names up with a login token from the device grant instead.
+ */
+export class UsernameLookupRefusedError extends Error {
+  readonly username: string;
+  readonly providerUrl: string;
+  readonly status: number;
+
+  constructor(
+    username: string,
+    providerUrl: string,
+    status: number,
+    statusText: string,
+  ) {
+    super(
+      `Failed to resolve username '${username}': ${status} ${statusText}. ` +
+        `${providerUrl} refused to look up users with this credential; if it is a collective API token, it needs the oauth:manage scope`,
+    );
+    this.username = username;
+    this.providerUrl = providerUrl;
+    this.status = status;
+    this.name = "UsernameLookupRefusedError";
   }
 }
 
@@ -309,6 +339,14 @@ export async function resolveUsername(
   );
   if (resp.status === 404) {
     throw new UsernameNotFoundError(username, providerUrl);
+  }
+  if (resp.status === 401 || resp.status === 403) {
+    throw new UsernameLookupRefusedError(
+      username,
+      providerUrl,
+      resp.status,
+      resp.statusText,
+    );
   }
   if (!resp.ok) {
     throw new Error(

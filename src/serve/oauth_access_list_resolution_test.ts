@@ -25,7 +25,10 @@ import {
   assertThrows,
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
-import { UsernameNotFoundError } from "./oauth_client.ts";
+import {
+  UsernameLookupRefusedError,
+  UsernameNotFoundError,
+} from "./oauth_client.ts";
 import {
   type AccessListResolution,
   assertAccessListsUsable,
@@ -233,22 +236,65 @@ Deno.test("resolveAccessLists: full mode aborts on an allowed-user lookup error 
   );
 });
 
-Deno.test("resolveAccessLists: full mode re-resolves names that are already cached", async () => {
-  const { resolve, calls } = fakeResolver(["alice", "bob"]);
-  await run({
-    admins: ["alice", "bob"],
-    cache: { alice: "sub-alice" },
-    mode: "full",
+Deno.test("resolveAccessLists: full mode looks up only names the cache does not have", async () => {
+  const cache = { alice: "sub-alice", bob: "sub-bob" };
+  const admins = ["alice", "bob", "carol"];
+  const { resolve, calls } = fakeResolver(["alice", "bob", "carol"]);
+  const result = await run({
+    admins,
+    cache,
+    mode: chooseResolutionMode(admins, [], cache),
     resolve,
   });
-  assertEquals(calls, ["alice", "bob"]);
+  assertEquals(calls, ["carol"]);
+  assertEquals(result.admins, [
+    "user:sub-alice",
+    "user:sub-bob",
+    "user:sub-carol",
+  ]);
+  assertEquals(
+    result.resolved.map((r) => [r.username, r.fromCache]),
+    [["alice", true], ["bob", true], ["carol", false]],
+  );
 });
 
-Deno.test("resolveAccessLists: a 404 for a name that resolved before keeps its cached sub", async () => {
-  // Adding carol looks every resolved name up again. A spurious 404 for
-  // alice must not revoke her grant or record her as not found.
+Deno.test("resolveAccessLists: a credential that cannot look users up fails on the added name", async () => {
+  // swamp-club#3435: adding carol with a collective token that lacks
+  // oauth:manage must not look the cached alice up and blame her.
+  const cache = { alice: "sub-alice", bob: "sub-bob" };
+  const admins = ["alice", "bob", "carol"];
+  const calls: string[] = [];
+  const err = await assertRejects(
+    () =>
+      run({
+        admins,
+        cache,
+        mode: chooseResolutionMode(admins, [], cache),
+        resolve: (username) => {
+          calls.push(username);
+          return Promise.reject(
+            new UsernameLookupRefusedError(
+              username,
+              PROVIDER,
+              403,
+              "Forbidden",
+            ),
+          );
+        },
+      }),
+    UserError,
+    "Failed to resolve admin 'carol': Failed to resolve username 'carol': 403 Forbidden.",
+  );
+  assertEquals(calls, ["carol"]);
+  assertStringIncludes(err.message, "oauth:manage");
+  assert(!err.message.includes("is reachable"));
+});
+
+Deno.test("resolveAccessLists: a cached name is never looked up, so a 404 for it cannot drop it", async () => {
+  // A resolved name is pinned: adding carol must not look alice up, so
+  // neither a spurious 404 nor a re-registered name can change her grant.
   const cache = { alice: "sub-alice", "allowed:alice": "sub-alice" };
-  const { resolve } = fakeResolver(["carol"]);
+  const { resolve, calls } = fakeResolver(["carol"]);
   const result = await run({
     admins: ["alice", "carol"],
     allowedUsers: ["alice"],
@@ -256,33 +302,24 @@ Deno.test("resolveAccessLists: a 404 for a name that resolved before keeps its c
     mode: chooseResolutionMode(["alice", "carol"], ["alice"], cache),
     resolve,
   });
+  assertEquals(calls, ["carol"]);
   assertEquals(result.admins, ["user:sub-alice", "user:sub-carol"]);
   assertEquals(result.allowedUsers, ["sub-alice"]);
   assertEquals(result.unresolved, []);
-  assertEquals(result.cache[unresolvedCacheKey("admin", "alice")], undefined);
   assertEquals(result.cache["alice"], "sub-alice");
-  const alice = result.resolved.find((r) =>
-    r.kind === "admin" && r.username === "alice"
-  );
-  assertEquals(alice?.fromCache, true);
-  assertStringIncludes(alice?.notFoundNow ?? "", "not found");
-  const carol = result.resolved.find((r) => r.username === "carol");
-  assertEquals(carol?.notFoundNow, undefined);
 });
 
-Deno.test("resolveAccessLists: a transient error for a name that resolved before still aborts", async () => {
+Deno.test("resolveAccessLists: a cached name is never looked up, so a transient error for it cannot abort", async () => {
   const cache = { alice: "sub-alice" };
-  await assertRejects(
-    () =>
-      run({
-        admins: ["alice", "carol"],
-        cache,
-        mode: "full",
-        resolve: fakeResolver(["carol"], ["alice"]).resolve,
-      }),
-    UserError,
-    "Failed to resolve admin 'alice'",
-  );
+  const { resolve, calls } = fakeResolver(["carol"], ["alice"]);
+  const result = await run({
+    admins: ["alice", "carol"],
+    cache,
+    mode: "full",
+    resolve,
+  });
+  assertEquals(calls, ["carol"]);
+  assertEquals(result.admins, ["user:sub-alice", "user:sub-carol"]);
 });
 
 Deno.test("resolveAccessLists: full mode keeps a previously missing name skipped", async () => {
@@ -299,7 +336,7 @@ Deno.test("resolveAccessLists: full mode keeps a previously missing name skipped
     mode: "full",
     resolve,
   });
-  assertEquals(calls, ["alice", "carol"]);
+  assertEquals(calls, ["carol"]);
   assertEquals(result.admins, ["user:sub-alice", "user:sub-carol"]);
   assertEquals(result.unresolved.map((u) => [u.entry, u.notFoundSince]), [
     ["alic_e", EARLIER],
@@ -333,7 +370,7 @@ Deno.test("resolveAccessLists: a name added back after removal is looked up fres
     mode: chooseResolutionMode(admins, [], cache),
     resolve,
   });
-  assertEquals(calls, ["alice", "bob"]);
+  assertEquals(calls, ["bob"]);
   assertEquals(result.admins, ["user:sub-alice", "user:sub-bob"]);
 });
 
@@ -347,6 +384,93 @@ Deno.test("resolveAccessLists: names that shadow Object.prototype are not treate
   assertEquals(result.admins, ["user:sub-constructor"]);
   assertEquals(result.unresolved.map((u) => u.entry), ["toString"]);
 });
+
+// ── resolveAccessLists: entries that are not plain usernames ──────────
+
+for (
+  const [label, admins] of [
+    ["cached mode", ["alice", "allowed:bob"]],
+    ["full mode", ["alice", "allowed:bob", "carol"]],
+    ["a user: prefix", ["alice", "user:allowed:bob"]],
+  ] as const
+) {
+  Deno.test(`resolveAccessLists: an admin entry naming an allowed-user cache key is skipped (${label})`, async () => {
+    // Admin alice is cached under "alice" and allowed-user bob under
+    // "allowed:bob", so an admin entry "allowed:bob" would read bob's sub
+    // and make him an admin without any lookup.
+    const cache = { alice: "sub-alice", "allowed:bob": "sub-bob" };
+    const { resolve, calls } = fakeResolver(["alice", "bob", "carol"]);
+    const result = await run({
+      admins: [...admins],
+      allowedUsers: ["bob"],
+      cache,
+      mode: chooseResolutionMode(admins, ["bob"], cache),
+      resolve,
+    });
+    assert(!result.admins.includes("user:sub-bob"));
+    assert(!calls.some((c) => c.includes(":")));
+    assertEquals(result.allowedUsers, ["sub-bob"]);
+    assertEquals(result.cache["allowed:bob"], "sub-bob");
+    const skipped = result.unresolved.find((u) => u.kind === "admin");
+    assertEquals(skipped?.entry, admins[1]);
+    assertEquals(skipped?.notFoundSince, undefined);
+    assertStringIncludes(skipped?.reason ?? "", "not a plain username");
+  });
+}
+
+Deno.test("resolveAccessLists: an entry naming a not-found marker is skipped and records nothing", async () => {
+  const cache = {
+    alice: "sub-alice",
+    [unresolvedCacheKey("admin", "ghost")]: EARLIER,
+    [unresolvedCacheKey("allowed-user", "ghost")]: EARLIER,
+  };
+  const admins = ["alice", "unresolved:ghost"];
+  const allowedUsers = ["unresolved:allowed:ghost"];
+  const { resolve, calls } = fakeResolver(["alice"]);
+  const result = await run({
+    admins,
+    allowedUsers,
+    cache,
+    mode: chooseResolutionMode(admins, allowedUsers, cache),
+    resolve,
+  });
+  assertEquals(calls, []);
+  assertEquals(result.admins, ["user:sub-alice"]);
+  assertEquals(result.allowedUsers, []);
+  assertEquals(
+    result.unresolved.map((u) => [u.kind, u.entry, u.notFoundSince]),
+    [
+      ["admin", "unresolved:ghost", undefined],
+      ["allowed-user", "unresolved:allowed:ghost", undefined],
+    ],
+  );
+  assertEquals({ ...result.cache }, { alice: "sub-alice" });
+});
+
+Deno.test("resolveAccessLists: an entry that is not a plain username never forces a lookup", () => {
+  const cache = { alice: "sub-alice" };
+  assertEquals(chooseResolutionMode(["alice", "a:b"], [], cache), "cached");
+  assertEquals(listUncachedNames(["alice", "a:b"], ["c:d"], cache), []);
+});
+
+for (const entry of ["group:eng", "idp-group:eng", "user:group:eng"]) {
+  Deno.test(`resolveAccessLists: ${entry} is skipped as a group`, async () => {
+    const { resolve, calls } = fakeResolver(["alice"]);
+    const result = await run({
+      admins: ["alice", entry],
+      allowedUsers: [entry],
+      mode: "full",
+      resolve,
+    });
+    assertEquals(calls, ["alice"]);
+    assertEquals(result.admins, ["user:sub-alice"]);
+    assertEquals(result.unresolved.length, 2);
+    for (const u of result.unresolved) {
+      assertStringIncludes(u.reason ?? "", "groups are not supported");
+      assert(!(u.reason ?? "").includes("not a plain username"));
+    }
+  });
+}
 
 // ── resolveAccessLists: cached mode ────────────────────────────────────
 
@@ -527,6 +651,32 @@ Deno.test("checkAccessLists: reports why serve would refuse to start", async () 
   );
   assertEquals(check.wouldStart, false);
   assertStringIncludes(check.refusal ?? "", "Failed to resolve admin 'ghost'");
+});
+
+Deno.test("checkAccessLists: reports an entry that is not a plain username as not found", async () => {
+  const { resolve, calls } = fakeResolver(["bob"]);
+  const check = await checkAccessLists(
+    {
+      admins: ["allowed:bob"],
+      allowedUsers: ["bob"],
+      allowedCollectives: [],
+    },
+    resolve,
+    PROVIDER,
+  );
+  assertEquals(calls, ["bob"]);
+  assertEquals(
+    check.entries.map((e) => [e.kind, e.entry, e.status, e.sub]),
+    [
+      ["admin", "allowed:bob", "not-found", undefined],
+      ["allowed-user", "bob", "resolved", "sub-bob"],
+    ],
+  );
+  assertEquals(check.wouldStart, false);
+  assertStringIncludes(
+    check.refusal ?? "",
+    "Failed to resolve admin 'allowed:bob'",
+  );
 });
 
 Deno.test("checkAccessLists: a lookup error other than not-found throws", async () => {

@@ -291,6 +291,18 @@ Peer instances share the vault: each load reads the pins again, so a name a
 peer pinned is not looked up a second time, and each write merges with what a
 peer stored since, keeping the peer's record for a name both recorded.
 
+`--admins` and `--allowed-users` names in OAuth mode are pinned the same way,
+in the `oauth-resolved-admins` key (`src/serve/oauth_access_list_resolution.ts`):
+a resolved name is never looked up again, and a name the provider reports as not
+found stays skipped until it is removed from the list. Startup looks up only
+names with no record, so it needs a credential that can call
+`/api/auth/resolve-user` (a login token, or a collective API token with
+`oauth:manage`) only when a name is added; a refused lookup names that scope.
+An entry must be a plain username: admins, allowed-users and not-found records
+share that one key's map, so an entry containing a colon after the optional
+`user:` prefix (`allowed:bob`, `group:eng`) could spell another entry's record.
+It is skipped with an ERROR, without a lookup, and records nothing.
+
 `swamp access grant list` shows the username beside the `sub`, and audit
 records name an actor resolved this way by username;
 `swamp access can-i` reports the matching grant as `user:<sub>`.
