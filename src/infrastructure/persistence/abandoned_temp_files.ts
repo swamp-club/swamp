@@ -26,6 +26,14 @@ import { join } from "@std/path";
 export const ABANDONED_TEMP_FILE_MAX_AGE_MS = 10 * 60 * 1000;
 
 /**
+ * Minimum age before a temp directory is considered abandoned. Much longer
+ * than the file threshold: a directory can belong to a process that is
+ * paused rather than dead — a laptop asleep mid-download, or a job stopped
+ * with Ctrl+Z — and removing it makes that process fail when it wakes.
+ */
+export const ABANDONED_TEMP_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Best-effort removal of temp files left behind by a crashed process.
  *
  * Removes regular files in `dir` whose name starts with `prefix` and whose
@@ -68,9 +76,9 @@ export async function removeAbandonedTempFiles(
  *
  * Removes directories in `dir` whose name starts with `prefix` and whose
  * newest timestamp — the directory's own mtime, or that of anything directly
- * inside it — is older than {@link ABANDONED_TEMP_FILE_MAX_AGE_MS}. A live
- * writer keeps touching its directory, so a fresh one may belong to a process
- * that is still running and is kept.
+ * inside it — is older than {@link ABANDONED_TEMP_DIR_MAX_AGE_MS}. A live
+ * writer keeps touching its directory, and a paused one may wake, so anything
+ * younger is kept.
  *
  * `dir` may be a shared location such as the OS temp directory, so only real
  * directories are considered: symlinks and files are skipped, entries are
@@ -96,7 +104,7 @@ export async function removeAbandonedTempDirs(
           continue;
         }
         const newest = await newestMtime(path, info);
-        if (newest !== null && now - newest > ABANDONED_TEMP_FILE_MAX_AGE_MS) {
+        if (newest !== null && now - newest > ABANDONED_TEMP_DIR_MAX_AGE_MS) {
           await Deno.remove(path, { recursive: true });
         }
       } catch {

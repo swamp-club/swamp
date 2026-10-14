@@ -396,3 +396,22 @@ Deno.test("downloadToFile: every attempt uses a new HTTP client, so a retry neve
     assertEquals(clients, [{ closed: true }, { closed: true }]);
   });
 });
+
+Deno.test("downloadToFile: an attempt that restarts from zero and receives bytes still resets the retry budget", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "swamp.tar.gz");
+    const rec = recorder();
+    await withServer(
+      [
+        () => sendThen(0, HALF, "drop"),
+        // Ignores the range and drops before passing the old offset.
+        () => sendThen(0, HALF / 2, "drop"),
+        full,
+      ],
+      (url) => downloadToFile(url, path, { ...rec.options, maxAttempts: 2 }),
+    );
+
+    await assertArchive(path);
+    assertEquals(rec.retries.map((r) => r.attempt), [1, 1]);
+  });
+});

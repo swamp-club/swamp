@@ -19,6 +19,7 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { exists } from "@std/fs";
 import {
+  ABANDONED_TEMP_DIR_MAX_AGE_MS,
   ABANDONED_TEMP_FILE_MAX_AGE_MS,
   removeAbandonedTempDirs,
   removeAbandonedTempFiles,
@@ -112,7 +113,7 @@ Deno.test("removeAbandonedTempFiles: tolerates a missing directory", async () =>
 });
 
 const DIR_PREFIX = "swamp-update-";
-const OLD = ABANDONED_TEMP_FILE_MAX_AGE_MS + 60_000;
+const OLD = ABANDONED_TEMP_DIR_MAX_AGE_MS + 60_000;
 
 /** Makes a prefixed directory holding one file, both aged `ageMs`. */
 async function makeAgedDir(parent: string, ageMs: number): Promise<string> {
@@ -145,6 +146,17 @@ Deno.test("removeAbandonedTempDirs: keeps a directory a live download is still w
     await removeAbandonedTempDirs(dir, DIR_PREFIX);
 
     assertEquals(await exists(live), true);
+  });
+});
+
+Deno.test("removeAbandonedTempDirs: keeps a directory a paused download has not touched for an hour", async () => {
+  await withTempDir(async (dir) => {
+    // Older than the file threshold, as after a laptop slept mid-download.
+    const paused = await makeAgedDir(dir, 60 * 60 * 1000);
+
+    await removeAbandonedTempDirs(dir, DIR_PREFIX);
+
+    assertEquals(await exists(paused), true);
   });
 });
 

@@ -45,6 +45,7 @@ function logRenderer(options: Partial<UpdateCheckRendererOptions> = {}) {
     stderrIsTerminal: true,
     writeStderr: (line) => stderr.push(line),
     now: () => clock,
+    columns: () => 120,
     ...options,
   });
   const handlers = renderer.handlers();
@@ -146,7 +147,7 @@ Deno.test("createUpdateCheckRenderer: a retry is reported at once with its reaso
 
   assertEquals(
     r.stderr.at(-1),
-    "Download interrupted (no data received for 30s); retrying from 53.0 MB (attempt 2 of 5)",
+    "Retrying download from 53.0 MB (attempt 2/5): no data received for 30s",
   );
 });
 
@@ -195,4 +196,41 @@ Deno.test("createUpdateCheckRenderer: json mode prints no progress", () => {
     console.log = original;
   }
   assertEquals(logged, []);
+});
+
+Deno.test("createUpdateCheckRenderer: on a terminal a line is cut to fit, so the spinner never wraps", () => {
+  const r = logRenderer({ columns: () => 40 });
+
+  r.send({
+    kind: "download_retrying",
+    data: {
+      attempt: 1,
+      maxAttempts: 5,
+      reason: "error reading a body from connection",
+      resumeFromBytes: 53 * MB,
+    },
+  });
+
+  const shown = r.spinnerMessages.at(-1)!;
+  assertEquals(shown.length, 38);
+  assertEquals(shown, "Retrying download from 53.0 MB (attem\u2026");
+});
+
+Deno.test("createUpdateCheckRenderer: without a terminal lines are not cut", () => {
+  const r = logRenderer({ stderrIsTerminal: false, columns: () => 40 });
+
+  r.send({
+    kind: "download_retrying",
+    data: {
+      attempt: 1,
+      maxAttempts: 5,
+      reason: "error reading a body from connection",
+      resumeFromBytes: 0,
+    },
+  });
+
+  assertEquals(
+    r.stderr.at(-1),
+    "Retrying download (attempt 2/5): error reading a body from connection",
+  );
 });

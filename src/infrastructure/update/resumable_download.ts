@@ -206,8 +206,10 @@ async function attempt(
   options: DownloadOptions & { stallTimeoutMs: number; now: () => number },
 ): Promise<AttemptOutcome> {
   const { signal, onProgress, stallTimeoutMs, now } = options;
-  const startBytes = state.receivedBytes;
-  const progressed = () => state.receivedBytes > startBytes;
+  // Counted per attempt rather than compared with the starting offset, so
+  // bytes received after a restart from zero still count as progress.
+  let bytesThisAttempt = 0;
+  const progressed = () => bytesThisAttempt > 0;
 
   const stall = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -301,12 +303,14 @@ async function attempt(
       try {
         await writeChunk(state.file, value);
       } catch (error: unknown) {
+        await reader.cancel().catch(() => {});
         // A full disk is not a network problem; retrying cannot help.
         throw new UserError(
           `Failed to save the update download: ${describeFailure(error)}`,
         );
       }
       state.receivedBytes += value.byteLength;
+      bytesThisAttempt += value.byteLength;
       report(false);
     }
 

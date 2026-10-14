@@ -46,6 +46,27 @@ export interface UpdateCheckRendererOptions {
   /** Writes one line to stderr; used when there is no terminal. */
   writeStderr?: (line: string) => void;
   now?: () => number;
+  /** The terminal's width; replaced in tests. */
+  columns?: () => number;
+}
+
+/** The terminal's width, or 80 when it cannot be read. */
+function terminalColumns(): number {
+  try {
+    return Deno.consoleSize().columns;
+  } catch {
+    return 80;
+  }
+}
+
+/**
+ * Shortens `message` to fit in `width` columns. The spinner redraws by
+ * clearing only its current row, so a wrapped line would leave copies of
+ * itself behind.
+ */
+function fitTo(message: string, width: number): string {
+  if (message.length <= width) return message;
+  return `${message.slice(0, Math.max(0, width - 1))}\u2026`;
 }
 
 export interface UpdateCheckRenderer extends Renderer<UpdateCheckEvent> {
@@ -101,9 +122,9 @@ function formatRetry(retry: DownloadRetry): string {
   const from = retry.resumeFromBytes > 0
     ? ` from ${formatBytes(retry.resumeFromBytes)}`
     : "";
-  return `Download interrupted (${retry.reason}); retrying${from} (attempt ${
+  return `Retrying download${from} (attempt ${
     retry.attempt + 1
-  } of ${retry.maxAttempts})`;
+  }/${retry.maxAttempts}): ${retry.reason}`;
 }
 
 class LogUpdateCheckRenderer implements UpdateCheckRenderer {
@@ -114,6 +135,7 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
   private readonly stderrIsTerminal: boolean;
   private readonly writeStderr: (line: string) => void;
   private readonly now: () => number;
+  private readonly columns: () => number;
   private readonly progress: DownloadProgressFormatter;
   private lastLineAt = Number.NEGATIVE_INFINITY;
 
@@ -125,6 +147,7 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
       // deno-lint-ignore no-console
       ((line) => console.error(line));
     this.now = options.now ?? Date.now;
+    this.columns = options.columns ?? terminalColumns;
     this.progress = new DownloadProgressFormatter(this.now);
   }
 
@@ -135,7 +158,8 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
    */
   private show(message: string, force: boolean): void {
     if (this.stderrIsTerminal) {
-      this.spinner?.update(message);
+      // Two columns go to the spinner frame and the space after it.
+      this.spinner?.update(fitTo(message, this.columns() - 2));
       return;
     }
     const at = this.now();

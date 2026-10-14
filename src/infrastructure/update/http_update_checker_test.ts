@@ -32,7 +32,10 @@ import {
   HttpUpdateChecker,
 } from "./http_update_checker.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
-import { ABANDONED_TEMP_FILE_MAX_AGE_MS } from "../persistence/abandoned_temp_files.ts";
+import {
+  ABANDONED_TEMP_DIR_MAX_AGE_MS,
+  ABANDONED_TEMP_FILE_MAX_AGE_MS,
+} from "../persistence/abandoned_temp_files.ts";
 import { UserError } from "../../domain/errors.ts";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
 
@@ -872,7 +875,7 @@ Deno.test({
       const partial = join(leftover, "swamp.tar.gz");
       await Deno.writeTextFile(partial, "53 MB of a partial download");
       const staleTime = new Date(
-        Date.now() - ABANDONED_TEMP_FILE_MAX_AGE_MS - 60_000,
+        Date.now() - ABANDONED_TEMP_DIR_MAX_AGE_MS - 60_000,
       );
       await Deno.utime(partial, staleTime, staleTime);
       await Deno.utime(leftover, staleTime, staleTime);
