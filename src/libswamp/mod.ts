@@ -1917,6 +1917,6 @@ export {
   type WorkspaceRemoveEvent,
 } from "./workspace/remove.ts";
 export {
-  expandHome,
   MAX_WORKSPACE_PARENT_LENGTH,
+  resolveChosenFolder,
 } from "./workspace/workspace_store.ts";

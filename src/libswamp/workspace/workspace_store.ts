@@ -197,8 +197,8 @@ export async function defaultWorkspaceParent(
  * relative `parent` is resolved against `relativeTo` (the CLI's working
  * folder) and refused without it.
  *
- * @throws {UserError} code `invalid_name`, `parent_not_absolute`,
- *   `parent_not_found` or `parent_not_a_folder`
+ * @throws {UserError} code `invalid_name`, or one of
+ *   {@link resolveChosenFolder}'s
  */
 export async function newWorkspaceLocation(
   deps: Pick<
@@ -216,65 +216,80 @@ export async function newWorkspaceLocation(
     inDataDir: true,
   };
   const typed = input.parent?.trim() ?? "";
-  let chosen: string;
-  let configured = false;
+  let real: string;
   if (typed !== "") {
-    if (typed.length > MAX_WORKSPACE_PARENT_LENGTH) {
-      throw new UserError(
-        "That folder path is too long.",
-        "parent_not_found",
-      );
-    }
-    let expanded: string;
-    try {
-      expanded = expandHome(typed, deps.homeDir, deps.os);
-    } catch (error) {
-      if (error instanceof UserError) {
-        throw new UserError(error.message, "parent_not_found");
-      }
-      throw error;
-    }
-    if (!isAbsolute(expanded)) {
-      if (input.relativeTo === undefined) {
-        throw new UserError(
-          "Enter the folder's full path, or start it with ~.",
-          "parent_not_absolute",
-        );
-      }
-      expanded = resolve(input.relativeTo, expanded);
-    }
-    chosen = resolve(expanded);
+    real = await resolveChosenFolder(deps, typed, input.relativeTo);
   } else {
     const fromConfig = await deps.configuredParent?.();
     if (fromConfig === undefined) return inDataDir;
-    chosen = fromConfig;
-    configured = true;
-  }
-  let isDirectory: boolean;
-  try {
-    isDirectory = (await Deno.stat(chosen)).isDirectory;
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-    throw markErrorPaths(
-      new UserError(
-        configured
-          ? `The workspaces folder ${chosen} doesn't exist. Create it, or go back to the default with: swamp config set workspaces.dir default`
-          : `There's no folder at ${chosen}. Create it first, or choose another.`,
-        "parent_not_found",
-      ),
-      [chosen],
+    real = await existingFolder(
+      fromConfig,
+      `The workspaces folder ${fromConfig} doesn't exist. Create it, or go back to the default with: swamp config set workspaces.dir default`,
     );
   }
-  if (!isDirectory) {
-    throw markErrorPaths(
-      new UserError(`${chosen} isn't a folder.`, "parent_not_a_folder"),
-      [chosen],
-    );
-  }
-  const real = await Deno.realPath(chosen);
   // The data dir's own folder, however it was spelled, is the default.
   if (real === await realPathOrSelf(root)) return inDataDir;
   return { name, parent: real, path: join(real, name), inDataDir: false };
+}
+
+/**
+ * The real path (symlinks resolved) of a folder the user typed or chose:
+ * `~` expanded, a relative path resolved against `relativeTo` (refused
+ * without it). The folder must already exist.
+ *
+ * @throws {UserError} code `parent_too_long`, `parent_not_absolute`,
+ *   `parent_not_found` or `parent_not_a_folder`
+ */
+export async function resolveChosenFolder(
+  deps: Pick<WorkspaceStoreDeps, "homeDir" | "os">,
+  typed: string,
+  relativeTo?: string,
+): Promise<string> {
+  const raw = typed.trim();
+  if (raw.length > MAX_WORKSPACE_PARENT_LENGTH) {
+    throw new UserError("That folder path is too long.", "parent_too_long");
+  }
+  let expanded: string;
+  try {
+    expanded = expandHome(raw, deps.homeDir, deps.os);
+  } catch (error) {
+    if (error instanceof UserError) {
+      throw new UserError(error.message, "parent_not_found");
+    }
+    throw error;
+  }
+  if (!isAbsolute(expanded)) {
+    if (relativeTo === undefined) {
+      throw new UserError(
+        "Enter the folder's full path, or start it with ~.",
+        "parent_not_absolute",
+      );
+    }
+    expanded = resolve(relativeTo, expanded);
+  }
+  const chosen = resolve(expanded);
+  return await existingFolder(
+    chosen,
+    `There's no folder at ${chosen}. Create it first, or choose another.`,
+  );
+}
+
+/** The real path of an existing folder; `missing` says what to do if not. */
+async function existingFolder(path: string, missing: string): Promise<string> {
+  let isDirectory: boolean;
+  try {
+    isDirectory = (await Deno.stat(path)).isDirectory;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    throw markErrorPaths(new UserError(missing, "parent_not_found"), [path]);
+  }
+  if (!isDirectory) {
+    throw markErrorPaths(
+      new UserError(`${path} isn't a folder.`, "parent_not_a_folder"),
+      [path],
+    );
+  }
+  return await Deno.realPath(path);
 }
 
 /**

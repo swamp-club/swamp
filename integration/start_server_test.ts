@@ -1682,6 +1682,24 @@ Deno.test("startStartServer: start.folder.pick asks where to create when picking
         "Choose where to create the workspace",
         "Choose the swamp repo to import",
       ]);
+
+      // While one dialog is open, a pick for the other purpose is refused
+      // rather than handed that dialog's answer.
+      let release!: () => void;
+      fakes.pickGate = new Promise((resolve) => release = resolve);
+      const open = c.request("start.folder.pick", { purpose: "location" });
+      await waitFor(
+        () => fakes.prompts.length === 3,
+        "the location chooser to open",
+      );
+      assertEquals(
+        (await c.requestError("start.folder.pick", { purpose: "import" }))
+          .code,
+        "picker_busy",
+      );
+      release();
+      assertEquals((await open).path, "/Users/ada/dev");
+      assertEquals(fakes.picks, 3);
     } finally {
       await c.close();
     }

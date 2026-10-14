@@ -23,15 +23,14 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { TelemetryPreferencesFileRepository } from "../../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import { WorkspacePreferencesFileRepository } from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
-import { expandHome } from "../../libswamp/workspace/workspace_store.ts";
-import { resolve } from "@std/path";
+import { resolveChosenFolder } from "../../libswamp/workspace/workspace_store.ts";
 import {
   createScheduler,
   isRunningAsRoot,
   resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
-import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -64,7 +63,8 @@ const WORKSPACES_DIR_DEFAULT = "default";
  * The folder a `workspaces.dir` value names, absolute and as it really is,
  * or undefined for "default".
  *
- * @throws {UserError} when it isn't an existing folder
+ * @throws {UserError} when it isn't an existing folder (see
+ *   `resolveChosenFolder`)
  */
 async function workspacesDirValue(raw: string): Promise<string | undefined> {
   const typed = raw.trim();
@@ -75,24 +75,12 @@ async function workspacesDirValue(raw: string): Promise<string | undefined> {
     );
   }
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
-  const expanded = expandHome(typed, home, Deno.build.os);
-  // A relative folder is taken from where the command runs.
-  const path = resolve(expanded);
-  let isDirectory = false;
-  try {
-    isDirectory = (await Deno.stat(path)).isDirectory;
-  } catch {
-    isDirectory = false;
-  }
-  if (!isDirectory) {
-    throw markErrorPaths(
-      new UserError(
-        `There's no folder at ${path}. Create it first, or choose another.`,
-      ),
-      [path],
-    );
-  }
-  return await Deno.realPath(path);
+  // The same rules as a workspace's --path; relative from where this runs.
+  return await resolveChosenFolder(
+    { os: Deno.build.os, ...(home ? { homeDir: home } : {}) },
+    typed,
+    Deno.cwd(),
+  );
 }
 
 const configGetCommand = new Command()

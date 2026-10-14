@@ -1032,7 +1032,23 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
             });
           }
         })
-        .catch(() => {});
+        .catch((err) => {
+          // Shown under Location; the create itself checks again.
+          if (active) {
+            setLocationCheck({
+              key: locationCheckKey(finalName, typedLocation),
+              reply: {
+                ok: false,
+                field: "location",
+                code: "check_failed",
+                message: errorMessage(
+                  err,
+                  "Couldn't check this folder. Try again.",
+                ),
+              },
+            });
+          }
+        });
     }, 300);
     return () => {
       active = false;

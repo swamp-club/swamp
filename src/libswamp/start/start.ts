@@ -884,8 +884,18 @@ async function isImportedFolder(
   deps: StartDeps,
   path: string,
 ): Promise<boolean> {
-  const entry = (await loadWorkspaceRegistry(deps, { readOnly: true })).list()
-    .find((e) => e.path === path);
+  // Matched by real path: the launch may spell the folder differently
+  // (/tmp vs /private/tmp) from how it was registered.
+  const real = await realPathOrSelf(path);
+  let entry: WorkspaceEntry | undefined;
+  for (
+    const e of (await loadWorkspaceRegistry(deps, { readOnly: true })).list()
+  ) {
+    if (e.path === path || await realPathOrSelf(e.path) === real) {
+      entry = e;
+      break;
+    }
+  }
   return isImportedWorkspace(deps.dataDir, entry ?? { path });
 }
 
@@ -1057,12 +1067,17 @@ export async function startListWorkspaces(
   // too, so a suggestion never collides with a folder that isn't
   // registered.
   const taken = new Set(registry.list().map((e) => e.name));
-  for (const dir of new Set([workspacesRoot(deps.dataDir), defaultLocation])) {
+  const root = workspacesRoot(deps.dataDir);
+  for (const dir of new Set([root, defaultLocation])) {
     try {
       for await (const entry of Deno.readDir(dir)) {
         if (entry.isDirectory) taken.add(entry.name);
       }
     } catch (error) {
+      // The configured folder only feeds the suggestion: one that has
+      // become unreadable or a file never hides the workspace list (a
+      // create there reports the problem).
+      if (dir !== root) continue;
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
   }

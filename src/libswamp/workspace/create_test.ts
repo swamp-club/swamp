@@ -342,3 +342,17 @@ Deno.test("workspaceCreate: a failed registration removes a folder it made but k
     assertEquals(await folderState(join(parent, "mine")), "empty");
   });
 });
+
+Deno.test("workspaceCreate: refuses an over-long --path with its own code", async () => {
+  await withWorkspaceFixture(async (f) => {
+    assertEquals(
+      await errorCode(
+        workspaceCreate(ctx, f.deps, {
+          name: "prod",
+          parent: "/" + "a".repeat(5000),
+        }),
+      ),
+      "parent_too_long",
+    );
+  });
+});

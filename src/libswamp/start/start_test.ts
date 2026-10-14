@@ -2422,3 +2422,65 @@ Deno.test("startCheckWorkspaceLocation: agrees with opening about a repo left un
     assertEquals(chosen.code, "folder_exists");
   });
 });
+
+Deno.test("startListWorkspaces: a configured folder that became a file or unreadable never hides the list", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    await collect(startOpenWorkspace(ctx, f.deps, { workspaceName: "infra" }));
+    const file = join(dir, "not-a-folder");
+    await Deno.writeTextFile(file, "x");
+    const deps = { ...f.deps, configuredParent: () => Promise.resolve(file) };
+    const listed = await startListWorkspaces(ctx, deps);
+    assertEquals(listed.workspaces.map((w) => w.name), ["infra"]);
+    assertEquals(listed.defaultLocation, file);
+    if (Deno.build.os !== "windows") {
+      const locked = join(dir, "locked");
+      await Deno.mkdir(locked);
+      await Deno.chmod(locked, 0o000);
+      try {
+        const lockedDeps = {
+          ...f.deps,
+          configuredParent: () => Promise.resolve(locked),
+        };
+        assertEquals(
+          (await startListWorkspaces(ctx, lockedDeps)).workspaces.length,
+          1,
+        );
+      } finally {
+        await Deno.chmod(locked, 0o755);
+      }
+    }
+  });
+});
+
+Deno.test({
+  name:
+    "startLaunch: the brief finds a created workspace by its real path when the launch spells it differently",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const f = makeFakes(dir);
+      const parent = join(dir, "dev");
+      await Deno.mkdir(parent);
+      await collect(
+        startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
+      );
+      const real = join(parent, "infra");
+      // The same folder reached through a symlink.
+      const link = join(dir, "link");
+      await Deno.symlink(real, link, { type: "dir" });
+      f.repos.add(link);
+      f.tools.set(link, []);
+      const taskId = await newTask(f, link, "list pods");
+      await status(
+        startChooseHarness(ctx, f.deps, {
+          workspacePath: link,
+          taskId,
+          harness: "claude",
+        }),
+      );
+      await collect(startLaunch(ctx, f.deps, { workspacePath: link, taskId }));
+      assertStringIncludes(f.briefs[0].content, "it holds only Swamp's files.");
+    });
+  },
+});

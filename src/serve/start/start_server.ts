@@ -480,6 +480,7 @@ export function startStartServer(
     });
 
   let picking: Promise<{ path: string | null }> | null = null;
+  let pickingPurpose: "import" | "location" | null = null;
   const pickFolder = (
     purpose: "import" | "location",
   ): Promise<{ path: string | null }> => {
@@ -488,6 +489,16 @@ export function startStartServer(
         new StartServerError("stopping", "swamp start is stopping."),
       );
     }
+    // A second pick shares an open dialog only when it asks the same thing.
+    if (picking !== null && pickingPurpose !== purpose) {
+      return Promise.reject(
+        new StartServerError(
+          "picker_busy",
+          "A folder chooser is already open. Finish with it first.",
+        ),
+      );
+    }
+    pickingPurpose = purpose;
     picking ??= (async () => {
       try {
         return await startPickFolder(ctx, deps, { purpose });
@@ -502,6 +513,7 @@ export function startStartServer(
         throw error;
       } finally {
         picking = null;
+        pickingPurpose = null;
       }
     })();
     return picking;
