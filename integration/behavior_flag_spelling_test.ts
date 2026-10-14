@@ -30,6 +30,7 @@
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { generateShellCompletions } from "@cliffy/command/completions";
+import { generatePowerShellCompletions } from "../src/cli/commands/completion_powershell.ts";
 import { buildCommandTree } from "../src/cli/mod.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { COMPLETION_TYPE_NAMES } from "../src/cli/completion_types.ts";
@@ -150,9 +151,11 @@ Deno.test("behavior flags: every completion type stays registered on the root", 
   }
 });
 
-Deno.test("behavior flags: bash, zsh and fish completions still call model_name, model_type and workflow_name", () => {
-  for (const shell of ["bash", "zsh", "fish"] as const) {
-    const script = generateShellCompletions(root, shell);
+Deno.test("behavior flags: bash, zsh, fish and PowerShell completions still call model_name, model_type and workflow_name", () => {
+  for (const shell of ["bash", "zsh", "fish", "powershell"] as const) {
+    const script = shell === "powershell"
+      ? generatePowerShellCompletions("swamp", root)
+      : generateShellCompletions(root, shell);
     for (
       const type of [
         "model_name",

@@ -131,6 +131,11 @@ eval "$(swamp completions zsh)"
 swamp completions fish > ~/.config/fish/completions/swamp.fish
 ```
 
+```powershell
+# PowerShell (Windows PowerShell 5.1 and PowerShell 7) — add to $PROFILE
+swamp completions powershell | Out-String | Invoke-Expression
+```
+
 Completions are directory-dependent — they return names from the current
 directory's swamp repository.
 

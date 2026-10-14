@@ -46,6 +46,7 @@ Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
       ["help", "vault", "put", "prod", "DB_PASSWORD=hunter2"],
       ["completions", "zsh"],
       ["completions", "bash"],
+      ["completions", "powershell"],
       ["version"],
       ["version", "--json"],
       ["update"],
