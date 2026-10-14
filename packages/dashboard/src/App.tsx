@@ -47,6 +47,7 @@ import {
 } from "./components/sidebar_state.ts";
 import { useRouter } from "./hooks/useRouter";
 import { TimeRangeProvider } from "./client/time_range.ts";
+import { RunActivityProvider } from "./client/run_activity.ts";
 import { TimeRangePicker } from "./components/TimeRangePicker.tsx";
 import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
@@ -234,7 +235,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     collapsed ? " sidebar-collapsed" : ""
   }`;
 
-  return (
+  const shell = (
     <div className={appClass}>
       <Sidebar
         activeView={view}
@@ -378,6 +379,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           )}
       </main>
     </div>
+  );
+  // Run summaries in every view re-read on run activity and on coming back
+  // into view, not on a clock (swamp-club#3444).
+  return (
+    <RunActivityProvider activeRuns={health?.activeRuns}>
+      {shell}
+    </RunActivityProvider>
   );
 }
 

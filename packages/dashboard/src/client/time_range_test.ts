@@ -17,11 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   describeTimeRange,
   parseTimeRange,
+  requestTimeBounds,
   resolveTimeRange,
+  TIME_PRESETS,
 } from "./time_range.ts";
 
 const NOW = Date.UTC(2026, 9, 12, 12, 0, 0);
@@ -42,6 +44,38 @@ Deno.test("resolveTimeRange: custom passes both bounds", () => {
     }, NOW),
     { since: "2026-10-01T00:00:00.000Z", until: "2026-10-02T00:00:00.000Z" },
   );
+});
+
+Deno.test("requestTimeBounds: presets go as relative durations", () => {
+  for (const { preset } of TIME_PRESETS) {
+    assertEquals(
+      requestTimeBounds({ kind: "preset", preset }),
+      preset === "all" ? {} : { since: preset },
+    );
+  }
+});
+
+Deno.test("requestTimeBounds: custom passes both ISO bounds", () => {
+  const range = {
+    kind: "custom" as const,
+    from: "2026-10-01T00:00:00.000Z",
+    to: "2026-10-02T00:00:00.000Z",
+  };
+  assertEquals(requestTimeBounds(range), resolveTimeRange(range, NOW));
+});
+
+Deno.test("requestTimeBounds: a preset's request does not move with the clock", () => {
+  // The display bounds roll over with the minute; the request must not,
+  // or every open page re-sends it once a minute (swamp-club#3444).
+  const range = { kind: "preset" as const, preset: "7d" as const };
+  const before = Date.UTC(2026, 9, 14, 16, 0, 59, 900);
+  const after = before + 200;
+  const minute = (t: number) => Math.floor(t / 60_000) * 60_000;
+  assertNotEquals(
+    resolveTimeRange(range, minute(before)),
+    resolveTimeRange(range, minute(after)),
+  );
+  assertEquals(requestTimeBounds(range), { since: "7d" });
 });
 
 Deno.test("parseTimeRange: accepts valid, rejects malformed", () => {

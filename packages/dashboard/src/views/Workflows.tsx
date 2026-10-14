@@ -98,24 +98,12 @@ const SORT_LABELS: Record<Exclude<WorkflowSort, "auto">, string> = {
 export function Workflows({ health, onOpenWorkflow }: WorkflowsProps) {
   const catalog = useWorkflowCatalog(health);
   const {
-    summary: fresh,
+    summary,
     loading: summaryLoading,
     error: summaryError,
   } = useRunSummary({ recentLimit: 20 });
   const { range } = useTimeRange();
   const rangeLabel = describeTimeRange(range);
-
-  // A preset's bounds roll forward every minute, which re-keys the request
-  // and clears its data. Keep showing the last summary for the same range
-  // while the next one loads instead of flashing the skeleton.
-  const rangeKey = JSON.stringify(range);
-  const [held, setHeld] = useState<
-    { key: string; data: RunSummaryData } | null
-  >(null);
-  if (fresh && (held?.data !== fresh || held.key !== rangeKey)) {
-    setHeld({ key: rangeKey, data: fresh });
-  }
-  const summary = fresh ?? (held?.key === rangeKey ? held.data : null);
 
   const [filter, setFilter] = useWorkflowFilter();
   const [group, setGroup] = useQueryState<GroupBy>(

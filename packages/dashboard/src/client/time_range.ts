@@ -68,6 +68,19 @@ export function resolveTimeRange(
   return { since: new Date(now - PRESET_MS[range.preset]).toISOString() };
 }
 
+/**
+ * The bounds to send serve for a range. A preset goes as a relative
+ * duration (`since: "7d"`), which serve reads back from its own clock, so
+ * the request is the same however long the page stays open.
+ */
+export function requestTimeBounds(
+  range: TimeRange,
+): { since?: string; until?: string } {
+  if (range.kind === "custom") return { since: range.from, until: range.to };
+  if (range.preset === "all") return {};
+  return { since: range.preset };
+}
+
 /** Short label for the picker button: "Last 7 days", "Oct 3 – Oct 9". */
 export function describeTimeRange(range: TimeRange, locale?: string): string {
   if (range.kind === "preset") {
@@ -171,12 +184,22 @@ export function useTimeRange(): TimeRangeContextValue {
 }
 
 /**
- * The current range's bounds, recomputed when the range changes. Presets
- * are rounded down to the minute so the request (and its cache key) stays
- * stable across re-renders within the same minute.
+ * The current range's ISO bounds, for work done here: calendars, chart
+ * buckets and filtering rows. A preset's bounds move with the clock
+ * (rounded down to the minute), so they must not key a request that only
+ * accepts a relative bound; use `useRequestTimeBounds` for that.
  */
 export function useTimeBounds(): { since?: string; until?: string } {
   const { range } = useTimeRange();
   const minute = Math.floor(Date.now() / 60_000) * 60_000;
   return useMemo(() => resolveTimeRange(range, minute), [range, minute]);
+}
+
+/**
+ * The current range's bounds to send serve's run summary and run search.
+ * Changes only when the range does.
+ */
+export function useRequestTimeBounds(): { since?: string; until?: string } {
+  const { range } = useTimeRange();
+  return useMemo(() => requestTimeBounds(range), [range]);
 }

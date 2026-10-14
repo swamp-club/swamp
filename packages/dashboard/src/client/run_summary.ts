@@ -23,7 +23,8 @@
 
 import { useRequest } from "./useRequest.ts";
 import { extractObject } from "./extract.ts";
-import { useTimeBounds } from "./time_range.ts";
+import { useRequestTimeBounds } from "./time_range.ts";
+import { useRefetchOnRunActivity } from "./run_activity.ts";
 
 export interface RecentRun {
   runId: string;
@@ -85,13 +86,15 @@ export interface RunSummaryQuery {
 
 /**
  * Fetches the run summary for the dashboard's current time range (or the
- * query's own bounds). `enabled: false` holds the request.
+ * query's own bounds), and fetches it again when serve starts or finishes
+ * a run or the tab comes back into view. `enabled: false` holds the
+ * request.
  */
 export function useRunSummary(
   query: RunSummaryQuery = {},
   options: { enabled?: boolean } = {},
 ) {
-  const bounds = useTimeBounds();
+  const bounds = useRequestTimeBounds();
   const { allTime, since, until, ...rest } = query;
   const payload: Record<string, unknown> = { ...rest };
   if (!allTime) {
@@ -101,6 +104,7 @@ export function useRunSummary(
     if (u) payload.until = u;
   }
   const result = useRequest("workflow.run.summary", payload, options);
+  useRefetchOnRunActivity(result.refetch, options.enabled ?? true);
   return { ...result, summary: extractObject<RunSummaryData>(result.data) };
 }
 
