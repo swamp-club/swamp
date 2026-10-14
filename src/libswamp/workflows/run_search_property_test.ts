@@ -68,7 +68,7 @@ function uuidOf(n: number): string {
 }
 
 interface Fixture {
-  workflows: Array<{ id: string; name: string }>;
+  workflows: Array<{ id: string; name: string; declaresInputs: boolean }>;
   runsOf: Map<string, WorkflowRunSummary[]>;
   allIds: string[];
 }
@@ -94,7 +94,11 @@ const arbFixture: fc.Arbitrary<Fixture> = fc.array(
   }),
   { minLength: 5, maxLength: 60 },
 ).map((rows) => {
-  const workflows = WORKFLOWS.map((name, i) => ({ id: `wf-${i}`, name }));
+  const workflows = WORKFLOWS.map((name, i) => ({
+    id: `wf-${i}`,
+    name,
+    declaresInputs: false,
+  }));
   const runsOf = new Map<string, WorkflowRunSummary[]>(
     workflows.map((w) => [w.id, []]),
   );

@@ -210,8 +210,8 @@ function makeDeps(
   isReadable?: WorkflowRunSummaryDeps["isReadable"],
 ): WorkflowRunSummaryDeps {
   const workflows = [
-    { id: "wf-a", name: "alpha" },
-    { id: "wf-b", name: "beta" },
+    { id: "wf-a", name: "alpha", declaresInputs: false },
+    { id: "wf-b", name: "beta", declaresInputs: false },
   ];
   const runs = [
     {

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
@@ -148,7 +149,7 @@ export async function workflowRunSearchAction(
     : undefined;
 
   const deps: WorkflowRunSearchDeps = {
-    findAllWorkflows: () => workflowRepo.findAll(),
+    findAllWorkflows: () => listWorkflows(workflowRepo),
     // Search reads each workflow's run index snapshot, never the run
     // records: hydrating every run (with its inline step outputs) OOMs on
     // workflows with a large run history (#1173), and the snapshot narrows

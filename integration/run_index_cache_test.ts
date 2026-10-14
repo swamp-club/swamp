@@ -86,7 +86,7 @@ function processOn(dir: string) {
   const workflowRepo = new YamlWorkflowRepository(dir);
   const runRepo = new YamlWorkflowRunRepository(dir);
   const deps: WorkflowRunSearchDeps = {
-    findAllWorkflows: () => workflowRepo.findAll(),
+    findAllWorkflows: () => workflowRepo.findAllListings(),
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
   };
   return {
@@ -219,5 +219,48 @@ Deno.test("run index cache: deleting a workflow's runs empties its results", asy
     await writer.runRepo.deleteAllByWorkflowId(deploy.id);
     assertEquals((await reader.search({})).total, 0);
     assertEquals((await reader.summary()).totals.runs, 0);
+  });
+});
+
+Deno.test("run index cache: renamed and deleted workflows are seen through the workflow listings", async () => {
+  await withRepoDir(async (dir) => {
+    const writer = processOn(dir);
+    const reader = processOn(dir);
+    const deploy = workflowNamed("deploy");
+    const doomed = workflowNamed("doomed");
+    await writer.workflowRepo.save(deploy);
+    await writer.workflowRepo.save(doomed);
+    const oldRun = await startRun(writer.runRepo, deploy);
+    await startRun(writer.runRepo, doomed);
+    await settle(dir, deploy);
+    await settle(dir, doomed);
+    assertEquals((await reader.search({})).total, 2);
+
+    // Renamed: runs keep the name they recorded.
+    const renamed = Workflow.fromData({ ...deploy.toData(), name: "shipped" });
+    await writer.workflowRepo.delete(deploy.id, deploy.name);
+    await writer.workflowRepo.save(renamed);
+    const newRun = await startRun(writer.runRepo, renamed);
+    assertEquals(
+      (await reader.search({ workflow: "deploy" })).data.results.map((r) =>
+        r.runId
+      ),
+      [oldRun.id],
+    );
+    assertEquals(
+      (await reader.search({ workflows: ["shipped"] })).data.results.map((r) =>
+        r.runId
+      ),
+      [newRun.id],
+    );
+
+    // Deleted: its runs are no longer listed.
+    await writer.workflowRepo.delete(doomed.id, doomed.name);
+    const remaining = await reader.search({});
+    assertEquals(remaining.total, 2);
+    assertEquals(
+      remaining.data.results.every((r) => r.workflowId === deploy.id),
+      true,
+    );
   });
 });

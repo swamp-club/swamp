@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { WorkflowListing } from "./workflow_listing.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import type { Workflow } from "./workflow.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
@@ -48,6 +49,14 @@ export interface WorkflowRepository {
    * to filtering `findAll`.
    */
   findAllById?(id: WorkflowId): Promise<Workflow[]>;
+
+  /**
+   * The listing of every workflow {@link findAll} returns, in the same
+   * order (swamp-club#3443). Optional: a repository that can answer without
+   * building every workflow implements it, and a caller falls back to
+   * listing `findAll` (`listWorkflows`).
+   */
+  findAllListings?(): Promise<WorkflowListing[]>;
 
   /**
    * Saves a workflow.

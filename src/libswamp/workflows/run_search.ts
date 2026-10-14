@@ -21,13 +21,12 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { InputsSchema } from "../../domain/definitions/definition.ts";
-import { workflowDeclaresInputs } from "../../domain/workflows/workflow.ts";
 import type {
   RunIndexRun,
   RunIndexSnapshot,
 } from "../../domain/workflows/run_index_snapshot.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
+import type { WorkflowListing } from "../../domain/workflows/workflow_listing.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
@@ -100,9 +99,8 @@ export type WorkflowRunSearchEvent =
  * Dependencies for the workflow run search generator.
  */
 export interface WorkflowRunSearchDeps {
-  findAllWorkflows(): Promise<
-    Array<{ id: string; name: string; inputs?: InputsSchema }>
-  >;
+  /** Every workflow, as listed. */
+  findAllWorkflows(): Promise<readonly WorkflowListing[]>;
   /** The run index snapshot of one workflow (swamp-club#3443). */
   runIndexOf(workflowId: string): Promise<RunIndexSnapshot>;
   /**
@@ -552,9 +550,7 @@ export async function* workflowRunSearch(
 
       const allWorkflows = await deps.findAllWorkflows();
       const workflowsWithInputs = new Set(
-        allWorkflows
-          .filter((w) => workflowDeclaresInputs(w.inputs))
-          .map((w) => w.id),
+        allWorkflows.filter((w) => w.declaresInputs).map((w) => w.id),
       );
       const selection = await selectWorkflowRuns(deps, allWorkflows, filter);
       const page = pageOfSelection(

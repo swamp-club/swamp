@@ -250,8 +250,9 @@ are taken after the per-workflow read filter
 recorded workflow id and name), so an unreadable workflow never reaches totals
 or the timeline.
 
-Both read each workflow's run index snapshot, which serve keeps in memory and
-checks with two stats on each read. The filters, the read filter, `offset`
+Both list workflows through their kept listings and read each workflow's run
+index snapshot, which serve keeps in memory and checks with two stats on each
+read. The filters, the read filter, `offset`
 and `limit` are applied while selecting from the snapshots, and search items
 are built for the page only, so a request costs the runs it matches rather than
 the whole run history (swamp-club#3443; see

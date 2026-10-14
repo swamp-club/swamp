@@ -67,8 +67,8 @@ function makeDeps(
   return {
     findAllWorkflows: () =>
       Promise.resolve([
-        { id: "wf-1", name: "deploy" },
-        { id: "wf-2", name: "test" },
+        { id: "wf-1", name: "deploy", declaresInputs: false },
+        { id: "wf-2", name: "test", declaresInputs: false },
       ]),
     runIndexOf: async (id: string) =>
       RunIndexSnapshot.of(await findAllRunsByWorkflowId(id)),
@@ -159,7 +159,8 @@ Deno.test("workflowRunSearch: a bucket status filter matches the whole bucket", 
       })
     );
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () => Promise.resolve(runs),
   });
   const ids = async (status: string) => {
@@ -182,7 +183,8 @@ Deno.test("workflowRunSearch: a bucket status filter matches the whole bucket", 
 
 Deno.test("workflowRunSearch: filters by since", async () => {
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
         makeRun({
@@ -229,7 +231,8 @@ Deno.test("workflowRunSearch: applies limit", async () => {
 
 Deno.test("workflowRunSearch: includes inputs in results", async () => {
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
         makeRun({
@@ -267,7 +270,8 @@ Deno.test("workflowRunSearch: includes inputs in results", async () => {
 
 Deno.test("workflowRunSearch: filters by inputs", async () => {
   const deps = makeDeps({
-    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllWorkflows: () =>
+      Promise.resolve([{ id: "wf-1", name: "deploy", declaresInputs: false }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
         makeRun({
@@ -314,15 +318,8 @@ Deno.test("workflowRunSearch: surfaces awaitingResume and workflowHasInputs", as
   const deps = makeDeps({
     findAllWorkflows: () =>
       Promise.resolve([
-        {
-          id: "wf-1",
-          name: "deploy",
-          inputs: {
-            type: "object",
-            properties: { authKey: { type: "string" } },
-          },
-        },
-        { id: "wf-2", name: "test" },
+        { id: "wf-1", name: "deploy", declaresInputs: true },
+        { id: "wf-2", name: "test", declaresInputs: false },
       ]),
     findAllRunsByWorkflowId: (id: string) =>
       Promise.resolve(

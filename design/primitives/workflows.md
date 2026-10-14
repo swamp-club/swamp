@@ -3047,6 +3047,17 @@ It does not keep:
 - one built from the records because there was no usable index;
 - one read on a platform that reports no mtime.
 
+Run search and run summary list workflows through
+`WorkflowRepository.findAllListings` (`WorkflowListing`: id, name, whether it
+declares inputs) rather than `findAll`. `YamlWorkflowRepository` keeps each
+file's listing with the stat it was read at, and reads a file again only when
+its stat changed, so a listing costs a directory read and a stat per file. A
+broken file is never kept and is skipped with its warning each time.
+`findByName` and `findById` use the listings when their fast paths miss: they
+read only the file that declares the name or id. A name no file declares,
+such as a renamed or deleted workflow's, reads none. The aggregate itself is
+never cached, because a `Workflow` is mutable.
+
 ### Run Statuses
 
 - `pending`: created but not yet started

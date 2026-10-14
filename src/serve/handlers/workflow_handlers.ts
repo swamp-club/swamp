@@ -21,6 +21,7 @@
  * Workflow-domain request handlers (workflow.* verbs).
  */
 
+import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createWorkflowApprovalsDeps,
@@ -1286,7 +1287,7 @@ export async function handleWorkflowRunSearch(
     // Readability is decided per run while selecting, before the page is
     // cut, so unreadable runs never shorten a page or count in `total`.
     const deps: WorkflowRunSearchDeps = {
-      findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
+      findAllWorkflows: () => listWorkflows(ctx.repoContext.workflowRepo),
       runIndexOf: (id) =>
         ctx.repoContext.workflowRunRepo.runIndexSnapshot(createWorkflowId(id)),
       isReadable: resourceReadability(
@@ -1399,7 +1400,7 @@ export async function handleWorkflowRunSummary(
     const libCtx = handlerLibSwampContext(ctx);
     const canonical = canonicalResources(ctx);
     const deps: WorkflowRunSummaryDeps = {
-      findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
+      findAllWorkflows: () => listWorkflows(ctx.repoContext.workflowRepo),
       runIndexOf: (id) =>
         ctx.repoContext.workflowRunRepo.runIndexSnapshot(createWorkflowId(id)),
       isReadable: resourceReadability(

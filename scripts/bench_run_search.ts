@@ -125,7 +125,7 @@ function depsOn(dir: string): WorkflowRunSearchDeps {
   const workflowRepo = new YamlWorkflowRepository(dir);
   const runRepo = new YamlWorkflowRunRepository(dir);
   return {
-    findAllWorkflows: () => workflowRepo.findAll(),
+    findAllWorkflows: () => workflowRepo.findAllListings(),
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
   };
 }
