@@ -129,7 +129,7 @@ Deno.test("renderWorkflowGraph: renders step-level DAG for jobs with step depend
 
 Deno.test("renderWorkflowGraph: shows task type labels in step DAG", () => {
   const output = renderWorkflowGraph(multiJobWorkflow);
-  assertStringIncludes(output, "- model");
+  assertStringIncludes(output, "- behavior");
   assertStringIncludes(output, "- approval");
   assertStringIncludes(output, "- workflow");
 });

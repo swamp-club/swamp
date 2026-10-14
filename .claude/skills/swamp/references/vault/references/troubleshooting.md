@@ -33,7 +33,7 @@
 ### "no vault is configured"
 
 **Symptom**:
-`Model "..." has sensitive resource output fields but no vault is
+`Behavior "..." has sensitive resource output fields but no vault is
 configured`
 (or `Cannot persist data: ... but no vault is configured`)
 

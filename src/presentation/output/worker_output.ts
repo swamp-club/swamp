@@ -339,7 +339,7 @@ export function renderWorkerQueue(
     formatAge(item.ageMs),
   ]);
   const lines = tableLines(
-    ["REQUIREMENT", "STEP", "MODEL", "QUEUED AT", "AGE"],
+    ["REQUIREMENT", "STEP", "BEHAVIOR", "QUEUED AT", "AGE"],
     rows,
   );
   writeOutput(lines.join("\n"));

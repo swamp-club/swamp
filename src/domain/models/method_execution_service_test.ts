@@ -614,7 +614,7 @@ Deno.test("executeWorkflow - fails fast for sensitive output when only a reserve
         context,
       ),
     UserError,
-    "no vault is configured",
+    'Behavior "cred-maker" has sensitive resource output fields but no vault is configured',
   );
   assertEquals(ran, false);
 });

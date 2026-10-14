@@ -342,7 +342,7 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
               `    ${yellow("•")} ${c.type} ${c.memberKind} '${c.name}'`,
             );
             writeOutput(
-              `      ${dim("wins:")} ${c.winner ?? "the base model"}`,
+              `      ${dim("wins:")} ${c.winner ?? "the base behavior"}`,
             );
             for (const loser of c.losers) {
               writeOutput(`      ${dim("not registered:")} ${loser}`);

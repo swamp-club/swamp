@@ -122,7 +122,7 @@ function renderInstallResultLog(result: InstallResult): void {
     logger
       .info`Dependencies: ${result.dependencies.join(", ")}`;
     logger
-      .info`  This extension invokes models from the above extensions via context.runModel()`;
+      .info`  This extension invokes behaviors from the above extensions via context.runModel()`;
   }
 
   if (result.extendsTypes && result.extendsTypes.length > 0) {

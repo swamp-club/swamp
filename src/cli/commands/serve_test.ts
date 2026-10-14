@@ -93,7 +93,7 @@ Deno.test("serveCommand has correct description", async () => {
   const description = serveCommand.getDescription();
   assertStringIncludes(
     description,
-    "Start a WebSocket API server for workflow and model execution",
+    "Start a WebSocket API server for workflow and behavior execution",
   );
   // Service deployments need HOME set; the description documents this so the
   // guidance is discoverable via `swamp serve --help` (see swamp-club#463).

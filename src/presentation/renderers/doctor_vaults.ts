@@ -68,7 +68,9 @@ class LogDoctorVaultsRenderer implements DoctorVaultsRenderer {
         if (data.findings.length === 0) {
           writeOutput(
             `\n${green("✓")} ${
-              bold("All models with sensitive outputs have a vault configured")
+              bold(
+                "All behaviors with sensitive outputs have a vault configured",
+              )
             } ${dim(`(${data.scanned} definition(s) scanned)`)}`,
           );
           renderUnresolvedLog(data);
@@ -94,7 +96,7 @@ class LogDoctorVaultsRenderer implements DoctorVaultsRenderer {
 
         writeOutput(
           dim(
-            "\n  These models will fail at runtime when writing sensitive data. " +
+            "\n  These behaviors will fail at runtime when writing sensitive data. " +
               "Create a vault: swamp vault create <type> <name>",
           ),
         );

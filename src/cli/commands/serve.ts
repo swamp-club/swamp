@@ -2402,7 +2402,7 @@ const daemonCommand = new Command()
 export const serveCommand = new Command()
   .name("serve")
   .description(
-    "Start a WebSocket API server for workflow and model execution.\n\n" +
+    "Start a WebSocket API server for workflow and behavior execution.\n\n" +
       "Service deployments: swamp loads all extensions — including " +
       "already-pulled repo extensions — through an embedded runtime under the " +
       "swamp data directory (SWAMP_HOME, or ~/.swamp). `swamp serve daemon " +

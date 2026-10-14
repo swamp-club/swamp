@@ -109,6 +109,16 @@ Deno.test("renderMethodExecutions: error line aligns dynamically with short meth
       "error text should align with status column",
     );
     assertEquals(methodIndent, 4, "method name should be at 4-space indent");
+    assertEquals(
+      plain.some((l) => l.startsWith("Direct Method Executions (")),
+      true,
+      "header should use the glossary's method term",
+    );
+    assertEquals(
+      plain.some((l) => l.includes("Behavior: test-model (@test/type)")),
+      true,
+      "each entry should be labelled as a behavior",
+    );
   } finally {
     console.log = originalLog;
   }

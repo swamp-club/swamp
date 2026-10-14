@@ -49,6 +49,7 @@ Deno.test("report get log renderer - renders report content", () => {
     const combined = output.join("\n");
     assertStringIncludes(combined, "cost-report");
     assertStringIncludes(combined, "my-ec2");
+    assertStringIncludes(combined, "Behavior: my-ec2 (aws/ec2)");
   } finally {
     console.log = origLog;
   }
@@ -179,7 +180,7 @@ Deno.test("report get markdown renderer - outputs raw markdown without ANSI esca
     const ansiPattern = /\x1b\[/;
     assertEquals(ansiPattern.test(combined), false);
     assertStringIncludes(combined, "## cost-report");
-    assertStringIncludes(combined, "Model: my-ec2 (aws/ec2)");
+    assertStringIncludes(combined, "Behavior: my-ec2 (aws/ec2)");
     assertStringIncludes(combined, "| Item | Cost |");
   } finally {
     console.log = origLog;
@@ -276,7 +277,7 @@ Deno.test("report get markdown renderer - shows workflow source", () => {
 
     const combined = output.join("\n");
     assertStringIncludes(combined, "Workflow: deploy-pipeline");
-    assertEquals(combined.includes("Model:"), false);
+    assertEquals(combined.includes("Behavior:"), false);
   } finally {
     console.log = origLog;
   }
