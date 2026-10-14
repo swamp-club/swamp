@@ -1045,17 +1045,24 @@ Deno.test("InstallExtensionService.execute: a type collision is still refused wh
   });
 });
 
-Deno.test("installExtension: a _test.ts fixture with a foreign type does not refuse the install, as the loader never loads it (swamp-club#3456)", async () => {
+Deno.test("installExtension: a _test.ts source that registers a foreign type is refused, as pulled trees load _test.ts files (swamp-club#3456)", async () => {
   await withRepo(async (repo) => {
     const n = ids();
+    const foreign = `@other/fixture-${crypto.randomUUID().slice(0, 8)}`;
     await repo.publish(n.a, V1, {
-      models: {
-        "a.ts": n.own("a"),
-        "a_test.ts": `@other/fixture-${crypto.randomUUID().slice(0, 8)}`,
-      },
+      models: { "a.ts": n.own("a"), "ec2_test.ts": foreign },
     });
     const ctx = await repo.ctx(realIndexer(repo));
-    const result = await installExtension({ name: n.a, version: V1 }, ctx);
-    assertEquals(result?.version, V1);
+    const thrown = await assertRejects(
+      () => installExtension({ name: n.a, version: V1 }, ctx),
+      UserError,
+    );
+    assertStringIncludes(
+      thrown.message,
+      `model "${foreign}" in models/ec2_test.ts`,
+    );
+    for (const [key, value] of Object.entries(await repo.snapshot(n.a))) {
+      assertEquals(value, null, key);
+    }
   });
 });

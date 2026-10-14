@@ -213,8 +213,9 @@ export function defaultConcurrency(): number {
 /**
  * The types an indexed tree registers, for the collective check. Extension
  * sources (`export const extension`) add methods to another type rather than
- * registering one, and the loader never loads `_test.ts` files, so both are
- * left out.
+ * registering one, so they are left out. `_test.ts` files are judged like
+ * any other source: the loader walks them in pulled trees, so a behavior
+ * named `docker_image_test.ts` still loads (design/primitives/extensions.md).
  */
 export function runtimeContentTypes(
   index: ExtensionTreeIndex,
@@ -222,12 +223,7 @@ export function runtimeContentTypes(
   const out: RuntimeContentType[] = [];
   for (const source of index.sources) {
     const indexed = source.indexed;
-    if (
-      !indexed || indexed.kind === "extension" ||
-      source.fileName.endsWith("_test.ts")
-    ) {
-      continue;
-    }
+    if (!indexed || indexed.kind === "extension") continue;
     out.push({
       kind: indexed.kind,
       typeNormalized: indexed.typeNormalized,

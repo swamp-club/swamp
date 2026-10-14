@@ -130,16 +130,16 @@ Deno.test("fromStoredArchiveIndex: a stored kind or directory this version does 
   );
 });
 
-Deno.test("runtimeContentTypes: leaves out _test.ts files, which the loader never loads (swamp-club#3456)", () => {
+Deno.test("runtimeContentTypes: judges _test.ts files, which the loader registers from pulled trees (swamp-club#3456)", () => {
   assertEquals(
     runtimeContentTypes({
       sources: [{
         kindDir: "models",
-        absolutePath: "/x/models/a_test.ts",
-        fileName: "a_test.ts",
+        absolutePath: "/x/models/ec2_test.ts",
+        fileName: "ec2_test.ts",
         indexed: {
           kind: "model",
-          typeNormalized: "@other/fixture",
+          typeNormalized: "@swamp/aws/ec2",
           bundlePath: "",
           fingerprint: "f",
           fromCache: false,
@@ -147,6 +147,10 @@ Deno.test("runtimeContentTypes: leaves out _test.ts files, which the loader neve
       }],
       failures: [],
     }),
-    [],
+    [{
+      kind: "model",
+      typeNormalized: "@swamp/aws/ec2",
+      fileName: "ec2_test.ts",
+    }],
   );
 });

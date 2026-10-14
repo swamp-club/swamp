@@ -3403,3 +3403,29 @@ Deno.test("extensionPushPrepare: bundles that finish out of order are packed in 
     },
   );
 });
+
+Deno.test("extensionPushPrepare: a _test.ts source whose loaded type is outside the collective blocks the push, as consumers load it (swamp-club#3456)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": CONSTANT_TYPE_SOURCE,
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        indexArchive: archiveIndex([
+          { fileName: "a.ts", type: "@testuser/thing" },
+          { fileName: "ec2_test.ts", type: "@swamp/aws/ec2" },
+        ]),
+      }),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"]]),
+        localGates: "collect",
+      },
+    );
+    assertEquals(
+      (result.gateFailures[0]?.details as {
+        mismatches: Array<{ fileName: string }>;
+      } | undefined)?.mismatches.map((m) => m.fileName),
+      ["ec2_test.ts"],
+    );
+  });
+});
