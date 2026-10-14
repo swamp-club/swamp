@@ -208,4 +208,23 @@ Deno.test("ci review gates: a change to a local action gets the CI security revi
     "The ci path filter must cover .github/actions/**, which holds the " +
       "adversarial review's prompt and gate.",
   );
+
+  // Running the job is not enough: after an approval, the skip check decides
+  // whether a later push is reviewed again, and the reviewer decides which
+  // files it reads.
+  const security = (await loadGates()).find((g) =>
+    g.heading === "CI Security Review"
+  )!;
+  const skip = stepNamed(security, "Check if review needed").run ?? "";
+  assertStringIncludes(
+    skip,
+    'test("^\\\\.github/(workflows|actions)/")',
+    "The CI security skip check must count .github/actions/ changes, or a " +
+      "push that only changes a local action skips the review.",
+  );
+  assertStringIncludes(
+    stepNamed(security, security.reviewStep).with?.prompt ?? "",
+    ".github/actions/",
+    "The CI security prompt must tell the reviewer to read local actions.",
+  );
 });

@@ -98,7 +98,7 @@ jobs:
           fi
           head_sha="${{ github.event.pull_request.head.sha }}"
           domain_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^\\.github/workflows/"))] | length' 2>/dev/null) || domain_changes=1
+            --jq '[.files[].filename | select(test("^\\.github/(workflows|actions)/"))] | length' 2>/dev/null) || domain_changes=1
           if [ "$domain_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -125,8 +125,9 @@ jobs:
             that could allow attackers to compromise the CI pipeline, exfiltrate secrets, or
             manipulate automated processes.
 
-            First, read every changed workflow file in this PR thoroughly. Then review each
-            file against the following checklist.
+            First, read every changed workflow file (.github/workflows/) and local composite
+            action (.github/actions/) in this PR thoroughly. Then review each file against the
+            following checklist.
 
             ## 1. Prompt Injection
 
