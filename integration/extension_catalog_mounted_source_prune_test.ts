@@ -251,7 +251,12 @@ Deno.test("integration: extension pull succeeds when a local model overrides a m
     assertEquals(f.typeOf(local), f.mountedType);
     // Older binaries left both rows typed, which I-Repo-1 rejects unless
     // the save settles it.
-    f.catalog.setTypeNormalized(f.mountedSource, f.mountedType);
+    // setTypeNormalized takes the stored (canonical) path, as the loader
+    // passes it.
+    f.catalog.setTypeNormalized(
+      canonicalizePath(f.mountedSource),
+      f.mountedType,
+    );
     assertEquals(f.typeOf(f.mountedSource), f.mountedType);
 
     await f.install();

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { fromFileUrl } from "@std/path";
+import { fromFileUrl, toFileUrl } from "@std/path";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { denoProjectArgs } from "../../domain/models/bundle.ts";
@@ -196,8 +196,16 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     entryPoint: string,
     project: ModuleGraphProject,
   ): Promise<SourceModuleGraph> {
+    // A file URL, not the path: deno info resolves its argument through the
+    // import map first, which reads a Windows path (C:\...) as a URL with
+    // the scheme c: and reports it as an external module.
     const command = new Deno.Command(this.denoPath, {
-      args: ["info", "--json", ...denoProjectArgs(project), entryPoint],
+      args: [
+        "info",
+        "--json",
+        ...denoProjectArgs(project),
+        toFileUrl(entryPoint).href,
+      ],
       stdout: "piped",
       stderr: "piped",
       signal: AbortSignal.timeout(DENO_INFO_TIMEOUT_MS),
@@ -225,9 +233,23 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         `deno info returned invalid JSON for ${entryPoint}: ${error}`,
       );
     }
-    return await parseDenoInfoGraph(json, {
+    const graph = await parseDenoInfoGraph(json, {
       exists: fileExists,
       readText: (path) => Deno.readTextFile(path).catch(() => undefined),
     });
+    // The entry point is always a local file, so a graph without one means
+    // deno info resolved something else; pushing on would publish an archive
+    // without its sources.
+    if (graph.modules.length === 0 && graph.missing.length === 0) {
+      throw markErrorPaths(
+        new UserError(
+          `deno info listed no local module for ${entryPoint}, so push cannot ` +
+            `tell which local modules to include. Check that the project's ` +
+            `import map does not remap the entry point's path`,
+        ),
+        [entryPoint],
+      );
+    }
+    return graph;
   }
 }

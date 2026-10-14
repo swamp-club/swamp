@@ -2387,8 +2387,10 @@ Deno.test("settleMountedTypeConflicts: a local row wins over a mounted row", () 
   ]);
 
   assertEquals(conflicts.length, 1);
-  assertEquals(conflicts[0].winner.source_path, local);
-  assertEquals(conflicts[0].loser.source_path, mounted);
+  // The catalog stores canonical paths (lowercase, forward slashes on
+  // Windows).
+  assertEquals(conflicts[0].winner.source_path, canonicalizePath(local));
+  assertEquals(conflicts[0].loser.source_path, canonicalizePath(mounted));
   assertEquals(store.findBySourcePath(local)?.type_normalized, "@t/probe");
   assertEquals(store.findBySourcePath(mounted)?.type_normalized, "");
 

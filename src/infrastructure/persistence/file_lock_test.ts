@@ -27,7 +27,12 @@ import {
 import { join } from "@std/path";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { FileLock, nextBackoffSleep } from "./file_lock.ts";
+import {
+  classifyLockCreateError,
+  createLockFileExclusive,
+  FileLock,
+  nextBackoffSleep,
+} from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import {
   lockSkipping,
@@ -1034,5 +1039,166 @@ Deno.test("FileLock.release: waits for a re-key under way, so it cannot land on 
     await rekeying;
     assertEquals((await next.inspect())?.nonce, next.heldNonce);
     await next.release();
+  });
+});
+
+Deno.test("classifyLockCreateError: AlreadyExists is contention on every OS", async () => {
+  for (const isWindows of [false, true]) {
+    assertEquals(
+      await classifyLockCreateError(
+        new Deno.errors.AlreadyExists("exists"),
+        "/no/such/lock",
+        isWindows,
+      ),
+      "contention",
+    );
+  }
+});
+
+Deno.test("classifyLockCreateError: Windows Access Denied on an existing lock file is contention", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".datastore.lock");
+    await Deno.writeTextFile(lockPath, "{}");
+    const denied = new Deno.errors.PermissionDenied("Access is denied.");
+    assertEquals(
+      await classifyLockCreateError(denied, lockPath, true),
+      "contention",
+    );
+    // Elsewhere Access Denied is a real permission error.
+    assertEquals(
+      await classifyLockCreateError(denied, lockPath, false),
+      "error",
+    );
+  });
+});
+
+Deno.test("classifyLockCreateError: Windows Access Denied with no lock file left is worth one more create", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(
+      await classifyLockCreateError(
+        new Deno.errors.PermissionDenied("Access is denied."),
+        join(dir, ".datastore.lock"),
+        true,
+      ),
+      "retry",
+    );
+  });
+});
+
+Deno.test({
+  name:
+    "classifyLockCreateError: Windows Access Denied when the lock file cannot be stat'ed either is contention",
+  // A directory without search permission denies the stat; Windows has no
+  // mode bits to set this up, and root ignores them.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const locked = join(dir, "locked");
+      await Deno.mkdir(locked);
+      const lockPath = join(locked, ".datastore.lock");
+      await Deno.writeTextFile(lockPath, "{}");
+      await Deno.chmod(locked, 0o600);
+      try {
+        assertEquals(
+          await classifyLockCreateError(
+            new Deno.errors.PermissionDenied("Access is denied."),
+            lockPath,
+            true,
+          ),
+          "contention",
+        );
+      } finally {
+        await Deno.chmod(locked, 0o700);
+      }
+    });
+  },
+});
+
+Deno.test("classifyLockCreateError: any other create error is an error", async () => {
+  for (const isWindows of [false, true]) {
+    assertEquals(
+      await classifyLockCreateError(
+        new Deno.errors.NotFound("no dir"),
+        "/no/such/lock",
+        isWindows,
+      ),
+      "error",
+    );
+  }
+});
+
+/** An open that fails with each error in turn, then returns `file`. */
+function failingOpen(errors: Error[], file: Deno.FsFile) {
+  const calls: string[] = [];
+  return {
+    calls,
+    open: (path: string): Promise<Deno.FsFile> => {
+      calls.push(path);
+      const error = errors.shift();
+      return error ? Promise.reject(error) : Promise.resolve(file);
+    },
+  };
+}
+
+const FAKE_FILE = {} as Deno.FsFile;
+
+Deno.test("createLockFileExclusive: a Windows lock file that finished deleting after the denied create is created on the retry", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".datastore.lock");
+    const { calls, open } = failingOpen(
+      [new Deno.errors.PermissionDenied("Access is denied.")],
+      FAKE_FILE,
+    );
+    assertEquals(
+      await createLockFileExclusive(lockPath, true, open),
+      FAKE_FILE,
+    );
+    assertEquals(calls.length, 2);
+  });
+});
+
+Deno.test("createLockFileExclusive: a genuine Windows permission error is thrown after one retry", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".datastore.lock");
+    const { calls, open } = failingOpen(
+      [
+        new Deno.errors.PermissionDenied("Access is denied."),
+        new Deno.errors.PermissionDenied("Access is denied."),
+      ],
+      FAKE_FILE,
+    );
+    await assertRejects(
+      () => createLockFileExclusive(lockPath, true, open),
+      Deno.errors.PermissionDenied,
+    );
+    assertEquals(calls.length, 2);
+  });
+});
+
+Deno.test("createLockFileExclusive: Windows Access Denied on a held lock is contention without a retry", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".datastore.lock");
+    await Deno.writeTextFile(lockPath, "{}");
+    const { calls, open } = failingOpen(
+      [new Deno.errors.PermissionDenied("Access is denied.")],
+      FAKE_FILE,
+    );
+    assertEquals(await createLockFileExclusive(lockPath, true, open), null);
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("createLockFileExclusive: Access Denied off Windows is thrown at once", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".datastore.lock");
+    const { calls, open } = failingOpen(
+      [new Deno.errors.PermissionDenied("denied")],
+      FAKE_FILE,
+    );
+    await assertRejects(
+      () => createLockFileExclusive(lockPath, false, open),
+      Deno.errors.PermissionDenied,
+    );
+    assertEquals(calls.length, 1);
   });
 });
