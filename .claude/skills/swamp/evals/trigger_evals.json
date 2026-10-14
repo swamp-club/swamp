@@ -258,5 +258,55 @@
     "query": "What does swamp model output get return?",
     "should_trigger": true,
     "note": "behavior domain — legacy output spelling still routes"
+  },
+  {
+    "query": "What does swamp behavior output get return?",
+    "should_trigger": true,
+    "note": "behavior domain — preferred output spelling"
+  },
+  {
+    "query": "Search for behavior types that handle payments",
+    "should_trigger": true,
+    "note": "behavior domain — type search (behavior wording)"
+  },
+  {
+    "query": "Run the validate method on the payment-processor behavior with amount=100",
+    "should_trigger": true,
+    "note": "behavior domain — method execution (behavior wording)"
+  },
+  {
+    "query": "How do I define a workflow in YAML that orchestrates multiple behaviors?",
+    "should_trigger": true,
+    "note": "workflow domain — workflow creation (behavior wording)"
+  },
+  {
+    "query": "Show me all the behavior data currently stored in swamp",
+    "should_trigger": true,
+    "note": "data domain — list data (behavior wording)"
+  },
+  {
+    "query": "How do I create a custom behavior using TypeScript and Zod?",
+    "should_trigger": true,
+    "note": "extension domain — create behavior"
+  },
+  {
+    "query": "How do I swamp extension push my behavior?",
+    "should_trigger": true,
+    "note": "extension-publish domain — push command (behavior wording)"
+  },
+  {
+    "query": "Filter reports by label when running a behavior method",
+    "should_trigger": true,
+    "note": "report domain — report filtering (behavior wording)"
+  },
+  {
+    "query": "Should I use a swamp workflow or a single behavior method for this three-step deploy?",
+    "should_trigger": true,
+    "note": "architecture domain — primitive selection (behavior wording)"
+  },
+  {
+    "query": "How do CEL expressions work for referencing behavior data?",
+    "should_trigger": true,
+    "note": "cross-domain — CEL expressions (behavior wording)"
   }
 ]

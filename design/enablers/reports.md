@@ -56,7 +56,7 @@ workflow steps complete and get summary data for every step.
 ### Execution Path Parity
 
 Method-scope and model-scope reports get the same context fields whether the
-method ran directly via `swamp model method run` or from a workflow step. Both
+method ran directly via `swamp behavior run` or from a workflow step. Both
 paths fill `swampSha`, `outputSpecs`, `executionStatus` and every other
 `MethodReportContext` field. In both paths, reports also run on failed
 executions, with `executionStatus: "failed"` and `errorMessage` set, and
@@ -325,7 +325,7 @@ lazy-indexed after promotion, is a contract violation and is not silently
 ignored (swamp-club#640). `executeReports` then logs a warning naming the
 report and emits a `report_failed` event. It saves a fallback error artifact,
 so `swamp report search` shows the failure, and counts it in
-`ReportExecutionSummary.failures`. That makes `swamp model method run` fail,
+`ReportExecutionSummary.failures`. That makes `swamp behavior run` fail,
 as a required report that loads and then throws would. Names also listed
 in `selection.skip` are exempt, because skip wins and the report was never
 going to run.
@@ -377,7 +377,7 @@ Both artifacts are written with:
 stops method-scoped reports that return nothing for methods they do not apply to
 from hiding real content behind 0-byte versions. Completion is still announced
 (`onReportCompleted` with no data handles), so JSON output and event consumers
-see the report ran. The log-mode `model method run` and `workflow run` output
+see the report ran. The log-mode `behavior run` and `workflow run` output
 hides an empty report entirely, and frames it with an empty body under `-v`.
 
 Data handles are returned in the `ReportExecutionResult` and included in the
@@ -458,12 +458,12 @@ Custom extension reports that output argument values should call
 `context.redactSensitiveArgs(args, kind)` so they do not save secrets.
 
 `redactSensitiveValues` is the one redaction primitive for every surface that
-honors the `sensitive: true` flag. `swamp model get` applies it to a behavior's
-global arguments in the libswamp read path before building `ModelGetData`
-(`src/libswamp/models/get.ts`). The log and JSON renderers, and
-`swamp model search` (same read path), therefore show `"***"`. With no behavior
-type, the schema is unknown and `redactAllValues` redacts everything, as in the
-report path.
+honors the `sensitive: true` flag. `swamp behavior get` applies it to a
+behavior's global arguments in the libswamp read path before building
+`ModelGetData` (`src/libswamp/models/get.ts`). The log and JSON renderers, and
+`swamp behavior search` (same read path), therefore show `"***"`. With no
+behavior type, the schema is unknown and `redactAllValues` redacts everything,
+as in the report path.
 
 Report contexts also get pre-vault arguments. Args are captured before
 `resolveRuntimeExpressionsInDefinition` replaces vault expressions with
@@ -522,7 +522,7 @@ spelling of `model` (swamp-club#3410): the CLI sends and filters on `model`,
 locally and over `--server`, and every other value as typed. `behaviour` is
 not a synonym. A report definition's `scope` stays `"model"`.
 
-### Report Flags on `model method run`
+### Report Flags on `behavior run`
 
 | Flag                              | Description                                      |
 | --------------------------------- | ------------------------------------------------ |
@@ -534,7 +534,7 @@ not a synonym. A report definition's `scope` stays `"model"`.
 
 ### Report Flags on `workflow run`
 
-The same five flags as on `model method run`, with the same meanings:
+The same five flags as on `behavior run`, with the same meanings:
 `--skip-reports`, `--skip-report <name>`, `--skip-report-label <label>`,
 `--report <name>`, `--report-label <label>`.
 

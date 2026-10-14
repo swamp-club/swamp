@@ -199,14 +199,14 @@ combines its expanded iterations, so a downstream step waits for all of them
 
 ## Evaluated Expansion
 
-`swamp workflow evaluate` and `swamp model evaluate` evaluate inputs and CEL
+`swamp workflow evaluate` and `swamp behavior evaluate` evaluate inputs and CEL
 expressions without running anything. They write the result to
 `.swamp/workflows-evaluated/` and `.swamp/definitions-evaluated/`
 (`src/cli/commands/workflow_evaluate.ts`, `src/cli/commands/model_evaluate.ts`).
 
 ## Evaluated Execution
 
-`swamp workflow run` and `swamp model method run` accept `--last-evaluated`. It
+`swamp workflow run` and `swamp behavior run` accept `--last-evaluated`. It
 skips evaluating inputs and CEL and runs the last evaluated version of the
 behaviors and workflows (`src/cli/commands/workflow_run.ts`,
 `src/cli/commands/model_method_run.ts`).
@@ -233,14 +233,14 @@ reports the mismatch.
 Values starting with `@` are read as file paths:
 
 ```sh
-swamp model method run my-model deploy --input cert=@/path/to/cert.pem
-swamp model method run my-model deploy --input token=@~/secrets/token.txt
+swamp behavior run my-model deploy --input cert=@/path/to/cert.pem
+swamp behavior run my-model deploy --input token=@~/secrets/token.txt
 ```
 
 To pass a literal `@`, escape it with `\`:
 
 ```sh
-swamp model method run my-model search --input email=\@user
+swamp behavior run my-model search --input email=\@user
 ```
 
 **Scoped identifiers** (`@namespace/name`) pass through as literals, not file
@@ -252,7 +252,7 @@ starts with a letter, contains at least one `/`, and has no `.`
 
 ```sh
 # Passes @hivemq/base-images as the literal value (not a file path)
-swamp model method run my-model check --input sourceType=@hivemq/base-images
+swamp behavior run my-model check --input sourceType=@hivemq/base-images
 ```
 
 ### JSON-typed values via `:json` suffix
@@ -262,13 +262,13 @@ of a string:
 
 ```sh
 # Array
-swamp model method run my-model search --input 'keywords:json=["typescript","retry"]'
+swamp behavior run my-model search --input 'keywords:json=["typescript","retry"]'
 
 # Object
-swamp model method run my-model deploy --input 'config:json={"port":8080,"replicas":3}'
+swamp behavior run my-model deploy --input 'config:json={"port":8080,"replicas":3}'
 
 # Nested key (suffix attaches to the LEAF segment only)
-swamp model method run my-model deploy --input 'server.config:json={"port":8080}'
+swamp behavior run my-model deploy --input 'server.config:json={"port":8080}'
 # → { server: { config: { port: 8080 } } }
 ```
 
@@ -289,7 +289,7 @@ Array inputs can come from:
 
 ### Reading inputs from stdin
 
-With `--stdin`, `method run` and `workflow run` read stdin to EOF and parse it
+With `--stdin`, `behavior run` and `workflow run` read stdin to EOF and parse it
 as inputs. This lets them sit in Unix pipes, opt-in like `jq -n`.
 
 The format is detected automatically (`parseStdinContent` in
@@ -310,21 +310,21 @@ win on conflict.
 
 ```sh
 # Single JSON object from stdin
-echo '{"run": "echo hello"}' | swamp model method run my-model execute --stdin
+echo '{"run": "echo hello"}' | swamp behavior run my-model execute --stdin
 
 # NDJSON: run method once per line
 printf '{"run":"echo a"}\n{"run":"echo b"}' \
-  | swamp model method run my-model execute --stdin
+  | swamp behavior run my-model execute --stdin
 
 # Pipe from data query via jq, with static overrides
 swamp data query 'modelName == "source"' --json \
   | jq -c '.results[] | {run: .attributes.command}' \
-  | swamp model method run target-model execute --stdin --input env=prod
+  | swamp behavior run target-model execute --stdin --input env=prod
 ```
 
 ## Input Routing for Direct Type Execution
 
-Direct type execution (`swamp model @type method run ...`) has no
+Direct type execution (`swamp behavior run @type ...`) has no
 `definition.inputs` schema to split inputs. The type's own schemas route
 `--input` values instead (`routeInputsBySchema` in
 `src/libswamp/models/direct_execution.ts`):

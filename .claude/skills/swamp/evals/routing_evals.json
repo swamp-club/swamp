@@ -158,5 +158,53 @@
   {
     "query": "Search behavior types with swamp model type search",
     "expected_guide": "behavior"
+  },
+  {
+    "query": "Search for behavior types that handle payments",
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "Run the validate method on the payment-processor behavior",
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "How do I delete a behavior definition?",
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "Search behavior types with swamp behavior type search",
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "How do I define a workflow in YAML that orchestrates multiple behaviors?",
+    "expected_guide": "workflow"
+  },
+  {
+    "query": "Show me all the behavior data currently stored in swamp",
+    "expected_guide": "data"
+  },
+  {
+    "query": "How do I create a custom behavior using TypeScript and Zod?",
+    "expected_guide": "extension"
+  },
+  {
+    "query": "How do I smoke test my extension behavior before pushing?",
+    "expected_guide": "extension"
+  },
+  {
+    "query": "How do I swamp extension push my behavior?",
+    "expected_guide": "extension-publish"
+  },
+  {
+    "query": "Filter reports by label when running a behavior method",
+    "expected_guide": "report"
+  },
+  {
+    "query": "Should I build a behavior or a workflow to automate a three-step deploy?",
+    "expected_guide": "architecture"
+  },
+  {
+    "query": "swamp behavior get is giving me 'Error: ENOENT: no such file or directory'",
+    "expected_guide": "troubleshooting"
   }
 ]

@@ -703,7 +703,7 @@ run on every behavior declaring its behavior id (a copy shares its outputs and
 data) together with the method it ran, a data item on every owning behavior —
 or, for workflow-scope data, its workflow — and a run or approval on its
 workflow. An item with several owners is kept only when all of them are allowed.
-With `model:@acme/*`, `model search` shows only matching behaviors. With
+With `model:@acme/*`, `behavior search` shows only matching behaviors. With
 `model:*` it shows everything. With no `read` grant for the kind, the request is
 refused.
 

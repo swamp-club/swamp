@@ -343,7 +343,7 @@ To construct this checklist:
    successfully posted.
 
    ```
-   swamp model @swamp/issue-lifecycle method run post_attestation issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle post_attestation issue-<N> \
      --input attestation="$(cat /tmp/attestation.json)"
    ```
 

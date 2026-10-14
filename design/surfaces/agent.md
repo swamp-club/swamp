@@ -30,6 +30,6 @@ path or S3. See [datastores](../enablers/datastores.md).
 
 ### CLI Abstraction
 
-The CLI commands (`swamp model`, `swamp workflow`, etc.) hide the storage layer.
-Agents should prefer CLI commands for operations and read the top-level
+The CLI commands (`swamp behavior`, `swamp workflow`, etc.) hide the storage
+layer. Agents should prefer CLI commands for operations and read the top-level
 directories for context.

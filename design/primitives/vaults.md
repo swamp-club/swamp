@@ -782,9 +782,10 @@ format is refused under `--last-evaluated` when it read data or step outputs.
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in
 them becomes `sensitive-<vault>.<key>` (forEach names: `sensitive-<index>`).
-Report arguments, the completed event's arguments and `swamp model evaluate` /
-`swamp workflow evaluate` output show `***`. An auto-created definition stores
-the reference, so a later run reads the vault directly.
+Report arguments, the completed event's arguments and
+`swamp behavior evaluate` / `swamp workflow evaluate` output show `***`. An
+auto-created definition stores the reference, so a later run reads the vault
+directly.
 
 `RunSensitiveValues` and the persisted form live in `src/domain/secrets/`;
 `SplicePair` and the splice sanitizer in `src/domain/expressions/splice_pair.ts`;

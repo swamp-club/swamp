@@ -2324,8 +2324,8 @@ path: `.swamp/workflow-runs/`).
 references, cycles) and checks each step's inputs against the resolved
 method's required arguments. To resolve a step's behavior type, the local path
 first hot-loads pulled and local extensions (`modelRegistry.ensureLoaded()` in
-`src/cli/commands/workflow_validate.ts`), as `swamp model type describe` and
-`swamp model validate` do. With `--server`, the serve instance validates,
+`src/cli/commands/workflow_validate.ts`), as `swamp behavior type describe` and
+`swamp behavior validate` do. With `--server`, the serve instance validates,
 resolving types from its own loaded registry.
 
 Results have three severity levels:
@@ -2982,7 +2982,7 @@ runs. The flags apply to every method step in the workflow:
 
 The options pass from the CLI through `WorkflowRunInput` →
 `StepExecutionContext` → `MethodContext`, so the effect matches
-`swamp model method run`.
+`swamp behavior run`.
 
 ## Workflow Runs
 
@@ -3381,7 +3381,7 @@ a reservation gets "Another operation on this run is in progress; try again".
 A local CLI resume or approve, or a second serve instance on a shared
 datastore, is not covered by the reservation.
 
-Method runs cancel the same way, with `swamp model cancel <model> [--all]
+Method runs cancel the same way, with `swamp behavior cancel <behavior> [--all]
 [--reason <reason>]`. The named form considers only the named behavior's runs,
 never those of another behavior of the same type. (A run an older swamp
 registered names no behavior on its tracker row and is matched from its
@@ -3403,11 +3403,11 @@ its tracker row, as a standalone method run does; the step itself is still
 recorded failed (`DefaultStepExecutor`,
 `src/domain/workflows/execution_service.ts`). When the owner is killed after its
 grace instead, the method-run output it left `running` is cancelled by the
-command, with `OWNER_STOPPED_STEP_ERROR`, before the row is completed. `swamp
-model cancel` never signals a `swamp serve` process. A method run that serve
-executes (a workflow step or a direct method run) carries serve's instance id on
-its tracker row and serve's pid, so stopping its owner would shut down the whole
-server. While that serve is alive, `--all` skips such runs and lists them
+command, with `OWNER_STOPPED_STEP_ERROR`, before the row is completed.
+`swamp behavior cancel` never signals a `swamp serve` process. A method run that
+serve executes (a workflow step or a direct method run) carries serve's instance
+id on its tracker row and serve's pid, so stopping its owner would shut down the
+whole server. While that serve is alive, `--all` skips such runs and lists them
 (`skipped` in `--json`, always present), and the named form cancels the latest
 run serve does not own, listing the rest under `skipped` too, or refuses when
 serve owns them all. Cancel a serve-owned step through its workflow run on the

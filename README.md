@@ -341,9 +341,9 @@ invocation, or set `SWAMP_REPO_DIR` to persist the override across a shell
 session or CI job:
 
 ```bash
-swamp model search --repo-dir /path/to/repo
+swamp behavior search --repo-dir /path/to/repo
 export SWAMP_REPO_DIR=/path/to/repo
-swamp model search
+swamp behavior search
 ```
 
 Priority order (highest to lowest): `--repo-dir` flag → `SWAMP_REPO_DIR` env var
