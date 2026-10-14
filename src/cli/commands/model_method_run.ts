@@ -36,6 +36,7 @@ import {
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
+import { messageFor } from "../../domain/behavior_wording.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
@@ -735,7 +736,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                   throw error;
                 }
                 const message = error instanceof Error
-                  ? error.message
+                  ? messageFor(error, syntax.surface)
                   : String(error);
                 throw new UserError(`Method execution failed: ${message}`);
               } finally {

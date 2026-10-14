@@ -22,6 +22,8 @@ import { z } from "zod";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { modelGet, type ModelGetDeps, type ModelGetEvent } from "./get.ts";
+import { userErrorFromSwampError } from "../errors.ts";
+import { messageFor } from "../../domain/behavior_wording.ts";
 
 function completedData(events: ModelGetEvent[]) {
   const completed = events.find((e) => e.kind === "completed");
@@ -311,6 +313,23 @@ Deno.test("modelGet yields resolving -> error with not_found when model does not
   const last = events[1] as Extract<ModelGetEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
+});
+
+Deno.test("modelGet: a missing behavior reaches userErrorFromSwampError in both spellings", async () => {
+  const deps = makeDeps({ lookupResult: null });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "missing-model"),
+  );
+
+  const last = events[1] as Extract<ModelGetEvent, { kind: "error" }>;
+  const error = userErrorFromSwampError(last.error);
+  assertEquals(error.message, "Behavior not found: missing-model");
+  assertEquals(messageFor(error, "model"), "Model not found: missing-model");
+  assertEquals(
+    messageFor(error, "behavior"),
+    "Behavior not found: missing-model",
+  );
 });
 
 // ---------------------------------------------------------------------------

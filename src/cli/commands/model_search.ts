@@ -26,6 +26,7 @@ import {
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
+  surfaceNounCapitalized,
 } from "../../presentation/command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
@@ -68,6 +69,7 @@ type AnyOptions = any;
  */
 async function createModelFetchPreview(
   definitionRepo: YamlDefinitionRepository,
+  surface: CommandSurface,
 ): Promise<(item: ModelSearchItem) => Promise<ModelGetData>> {
   const libCtx = createLibSwampContext();
   const getDeps = await createModelGetDeps(definitionRepo);
@@ -82,7 +84,9 @@ async function createModelFetchPreview(
       error: () => {},
     });
     if (!result) {
-      throw new Error(`Model not found: ${item.name}`);
+      throw new Error(
+        `${surfaceNounCapitalized(surface)} not found: ${item.name}`,
+      );
     }
     return result;
   };
@@ -137,6 +141,7 @@ export async function modelSearchAction(
 
   const fetchPreview = await createModelFetchPreview(
     repoContext.definitionRepo,
+    surface,
   );
   const renderer = createModelSearchRenderer(
     effectiveMode,

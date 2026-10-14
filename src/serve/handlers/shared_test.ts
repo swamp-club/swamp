@@ -1594,7 +1594,7 @@ Deno.test("isAdminOnlyModelType: a requested type that names no type fails the r
     assertThrows(
       () => isAdminOnlyModelType(typeArg, undefined, ["exp/probe"]),
       Error,
-      "Invalid model type",
+      "Invalid behavior type",
     );
   }
 });

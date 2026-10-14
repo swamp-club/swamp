@@ -25,6 +25,11 @@ import {
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
+import {
+  surfaceNoun,
+  surfaceNounCapitalized,
+} from "../../presentation/command_surface.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createModelDeleteDeps,
@@ -155,7 +160,11 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
         modelIdOrName,
       );
       if (!preResult) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
+        throw new UserError(
+          `${
+            surfaceNounCapitalized(syntax.surface)
+          } not found: ${modelIdOrName}`,
+        );
       }
 
       const marker = await new RepoMarkerRepository().read(
@@ -225,7 +234,10 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
             });
           } catch (error) {
             if ("code" in (error as Record<string, unknown>)) {
-              throw new UserError((error as { message: string }).message);
+              throw carryModelWording(
+                error,
+                new UserError((error as { message: string }).message),
+              );
             }
             throw error;
           }
@@ -233,17 +245,23 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
           // Block if referenced by workflows
           if (preview.referencingWorkflows.length > 0) {
             throw new UserError(
-              `Model '${preview.name}' is referenced by workflow(s): ${
+              `${
+                surfaceNounCapitalized(syntax.surface)
+              } '${preview.name}' is referenced by workflow(s): ${
                 preview.referencingWorkflows.join(", ")
               }. ` +
-                `Remove the model from these workflows before deleting.`,
+                `Remove the ${
+                  surfaceNoun(syntax.surface)
+                } from these workflows before deleting.`,
             );
           }
 
           // Block if data artifacts exist and no --force
           if (preview.dataArtifactCount > 0 && !force) {
             throw new UserError(
-              `Model '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
+              `${
+                surfaceNounCapitalized(syntax.surface)
+              } '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
                 `Delete the data first, or use --force to delete all.`,
             );
           }

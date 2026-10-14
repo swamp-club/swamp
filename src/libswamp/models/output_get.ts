@@ -32,7 +32,8 @@ import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound } from "../errors.ts";
+import { wordedSwampError } from "../errors.ts";
+import { wordedText } from "../../domain/behavior_wording.ts";
 import {
   type OutputReference,
   type OutputReferenceDeps,
@@ -233,16 +234,30 @@ export async function* modelOutputGet(
         case "not_found":
           yield {
             kind: "error",
-            error: notFound("Output or model", outputIdOrModelName),
+            // The details keep notFound's shape; only the text is worded.
+            error: wordedSwampError(
+              "not_found",
+              wordedText((w) =>
+                `Output or ${w.noun} not found: ${outputIdOrModelName}`
+              ),
+              { entityType: "Output or model", idOrName: outputIdOrModelName },
+            ),
           };
           return;
         case "model":
           if (!reference.latest) {
             yield {
               kind: "error",
-              error: notFound(
-                "Output",
-                `no outputs for model: ${reference.definition.name}`,
+              error: wordedSwampError(
+                "not_found",
+                wordedText((w) =>
+                  `Output not found: no outputs for ${w.noun}: ${reference.definition.name}`
+                ),
+                {
+                  entityType: "Output",
+                  idOrName:
+                    `no outputs for model: ${reference.definition.name}`,
+                },
               ),
             };
             return;

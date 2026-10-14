@@ -20,6 +20,11 @@
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  messageFor,
+  wordedText,
+  wordedUserError,
+} from "../../domain/behavior_wording.ts";
+import {
   methodExecutionFailed,
   modelMethodRun,
   type ModelMethodRunDeps,
@@ -645,13 +650,15 @@ Deno.test("modelMethodRun: a timed-out run yields a cancelled event naming the t
 Deno.test("modelNotFound returns correct error", () => {
   const error = modelNotFound("my-model");
   assertEquals(error.code, "model_not_found");
-  assertEquals(error.message, "Model not found: my-model");
+  assertEquals(error.message, "Behavior not found: my-model");
+  assertEquals(messageFor(error, "model"), "Model not found: my-model");
 });
 
 Deno.test("unknownModelType returns correct error", () => {
   const error = unknownModelType("bad/type");
   assertEquals(error.code, "unknown_model_type");
-  assertEquals(error.message, "Unknown model type: bad/type");
+  assertEquals(error.message, "Unknown behavior type: bad/type");
+  assertEquals(messageFor(error, "model"), "Unknown model type: bad/type");
 });
 
 Deno.test("unknownMethod returns correct error", () => {
@@ -1740,4 +1747,13 @@ Deno.test("modelMethodRun: tells onWrittenVersions what a failed run wrote, a wo
     },
     fromWorker,
   ], "failed"]]);
+});
+
+Deno.test("methodExecutionFailed: keeps a worded cause's model spelling (swamp-club#3437)", () => {
+  const cause = wordedUserError(
+    wordedText((w) => `${w.Noun} "x" stores sensitive output`),
+  );
+  const error = methodExecutionFailed(cause);
+  assertEquals(error.message, 'Behavior "x" stores sensitive output');
+  assertEquals(messageFor(error, "model"), 'Model "x" stores sensitive output');
 });

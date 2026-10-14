@@ -52,7 +52,7 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound, validationFailed } from "../errors.ts";
+import { behaviorNotFound, notFound, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { v3RunArtifactCheck } from "./run_artifact_check.ts";
@@ -421,7 +421,7 @@ export async function* dataGet(
         yield {
           kind: "error",
           error: validationFailed(
-            "Either a model name or --workflow is required.",
+            "Either a behavior name or --workflow is required.",
           ),
         };
         return;
@@ -700,7 +700,7 @@ async function* modelScopedGet(
     yield {
       kind: "error",
       error: validationFailed(
-        "A data name is required. Usage: swamp data get <model> <data_name>",
+        "A data name is required. Usage: swamp data get <behavior> <data_name>",
       ),
     };
     return;
@@ -715,7 +715,7 @@ async function* modelScopedGet(
   );
   const result = await lookupDefinition(modelIdOrName);
   if (!result) {
-    yield { kind: "error", error: notFound("Model", modelIdOrName) };
+    yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
     return;
   }
 
@@ -733,7 +733,7 @@ async function* modelScopedGet(
       kind: "error",
       error: notFound(
         "Data",
-        `"${dataName}" for model "${modelIdOrName}"${versionInfo}`,
+        `"${dataName}" for behavior "${modelIdOrName}"${versionInfo}`,
       ),
     };
     return;

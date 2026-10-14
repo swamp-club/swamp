@@ -30,6 +30,7 @@ import { Definition } from "../domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
 import type { DataHandle } from "../domain/models/model.ts";
 import { withConsoleGuard } from "../domain/models/console_guard.ts";
+import { wordedError, wordedText } from "../domain/behavior_wording.ts";
 import {
   dispatchErrorPaths,
   type DispatchExecution,
@@ -179,8 +180,10 @@ export async function runDispatchRunner(
     );
     const method = modelDef.methods[execution.methodName];
     if (!method) {
-      throw new Error(
-        `Method '${execution.methodName}' not found on model '${execution.modelType}'`,
+      throw wordedError(
+        wordedText((w) =>
+          `Method '${execution.methodName}' not found on ${w.noun} '${execution.modelType}'`
+        ),
       );
     }
 

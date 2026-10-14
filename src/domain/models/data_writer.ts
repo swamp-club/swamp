@@ -40,6 +40,7 @@ import type {
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
+import { wordedError, wordedText } from "../behavior_wording.ts";
 import { currentVaultAccess } from "../vaults/run_vault_access.ts";
 import {
   overriddenSpecVaultName,
@@ -576,9 +577,11 @@ export function createResourceWriter(
     const spec = resources[specName];
     if (!spec) {
       const declared = Object.keys(resources).join(", ");
-      throw new Error(
-        `Undeclared resource spec '${specName}' in model '${modelType.normalized}'. ` +
-          `Declared resource specs: ${declared || "(none)"}`,
+      throw wordedError(
+        wordedText((w) =>
+          `Undeclared resource spec '${specName}' in ${w.noun} '${modelType.normalized}'. ` +
+          `Declared resource specs: ${declared || "(none)"}`
+        ),
       );
     }
 
@@ -604,17 +607,21 @@ export function createResourceWriter(
 
     // Validate name is a non-empty string
     if (typeof name !== "string" || name.trim() === "") {
-      throw new Error(
-        `writeResource: instance name must be a non-empty string for spec '${specName}' ` +
-          `in model '${modelType.normalized}', got ${typeof name}`,
+      throw wordedError(
+        wordedText((w) =>
+          `writeResource: instance name must be a non-empty string for spec '${specName}' ` +
+          `in ${w.noun} '${modelType.normalized}', got ${typeof name}`
+        ),
       );
     }
 
     // Validate name is not reserved for internal use
     if (isReservedDataName(name)) {
-      throw new Error(
-        `Data name '${name}' is reserved for internal use in model '${modelType.normalized}'. ` +
-          `Use a different name.`,
+      throw wordedError(
+        wordedText((w) =>
+          `Data name '${name}' is reserved for internal use in ${w.noun} '${modelType.normalized}'. ` +
+          `Use a different name.`
+        ),
       );
     }
 
@@ -1124,25 +1131,31 @@ export function createFileWriterFactory(
     const spec = files[specName];
     if (!spec) {
       const declared = Object.keys(files).join(", ");
-      throw new Error(
-        `Undeclared file spec '${specName}' in model '${modelType.normalized}'. ` +
-          `Declared file specs: ${declared || "(none)"}`,
+      throw wordedError(
+        wordedText((w) =>
+          `Undeclared file spec '${specName}' in ${w.noun} '${modelType.normalized}'. ` +
+          `Declared file specs: ${declared || "(none)"}`
+        ),
       );
     }
 
     // Validate name is a non-empty string
     if (typeof name !== "string" || name.trim() === "") {
-      throw new Error(
-        `createFileWriter: instance name must be a non-empty string for spec '${specName}' ` +
-          `in model '${modelType.normalized}', got ${typeof name}`,
+      throw wordedError(
+        wordedText((w) =>
+          `createFileWriter: instance name must be a non-empty string for spec '${specName}' ` +
+          `in ${w.noun} '${modelType.normalized}', got ${typeof name}`
+        ),
       );
     }
 
     // Validate name is not reserved for internal use
     if (isReservedDataName(name)) {
-      throw new Error(
-        `Data name '${name}' is reserved for internal use in model '${modelType.normalized}'. ` +
-          `Use a different name.`,
+      throw wordedError(
+        wordedText((w) =>
+          `Data name '${name}' is reserved for internal use in ${w.noun} '${modelType.normalized}'. ` +
+          `Use a different name.`
+        ),
       );
     }
 

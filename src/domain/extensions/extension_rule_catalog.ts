@@ -132,7 +132,7 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     scope: "site",
     acceptable: true,
     remediation:
-      "Declare the properties the model reads so CEL expressions can validate against them; keep .passthrough() only beside declared properties.",
+      "Declare the properties the behavior reads so CEL expressions can validate against them; keep .passthrough() only beside declared properties.",
   },
   {
     id: "credentials-sensitive-field",

@@ -32,14 +32,19 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
+  carryModelWording,
+  messageFor,
+  modelWording,
+} from "../../domain/behavior_wording.ts";
+import {
   distinctRemedies,
   type ExpressionPathError,
+  expressionPathErrorInModelWords,
 } from "../../domain/models/validation_service.ts";
 import { formatAvailableKeys } from "../../domain/expressions/schema_path_validator.ts";
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
-  envVarWarningMessage,
   surfaceNounPlural,
 } from "../command_surface.ts";
 
@@ -106,11 +111,7 @@ function formatWarningLines(
         lines.push(`    ${detail.path} passes ${bold(detail.text)}`);
       }
     }
-    // Only the env-var warning's text names the definition kind.
-    const message = w.envVars
-      ? envVarWarningMessage(surface, w.message)
-      : w.message;
-    lines.push(`    ${yellow(arrow)} ${message}`);
+    lines.push(`    ${yellow(arrow)} ${messageFor(w, surface)}`);
   }
   return lines;
 }
@@ -138,14 +139,15 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
     return {
       resolving: () => {},
       completed: (e) => {
-        if (isModelValidateAllData(e.data)) {
-          this.renderAll(e.data);
+        const data = validateDataInSurfaceWords(e.data, this.surface);
+        if (isModelValidateAllData(data)) {
+          this.renderAll(data);
         } else {
-          this.renderSingle(e.data);
+          this.renderSingle(data);
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -214,8 +216,55 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
   }
 }
 
+/**
+ * `data` with its validation errors and warning messages in the spelling of
+ * `surface` (swamp-club#3437): under `swamp model …`, the model words each one
+ * carries. The shape is unchanged. A `--server` reply has no markers, so it
+ * reads as the server wrote it.
+ */
+function inSurfaceWords<
+  T extends {
+    validations: ModelValidationItemData[];
+    warnings?: ModelValidationWarningData[];
+  },
+>(data: T, surface: CommandSurface): T {
+  if (surface !== "model") return data;
+  return {
+    ...data,
+    validations: data.validations.map((v) => ({
+      ...v,
+      ...(v.error === undefined ? {} : { error: modelWording(v) ?? v.error }),
+      ...(v.expressionErrors === undefined ? {} : {
+        expressionErrors: v.expressionErrors.map(
+          expressionPathErrorInModelWords,
+        ),
+      }),
+    })),
+    ...(data.warnings === undefined ? {} : {
+      warnings: data.warnings.map((w) => ({
+        ...w,
+        message: messageFor(w, surface),
+      })),
+    }),
+  };
+}
+
+/** `data`, whole or per-model, in the spelling of `surface`. */
+function validateDataInSurfaceWords(
+  data: ModelValidateData | ModelValidateAllData,
+  surface: CommandSurface,
+): ModelValidateData | ModelValidateAllData {
+  if (!isModelValidateAllData(data)) return inSurfaceWords(data, surface);
+  return {
+    ...data,
+    models: data.models.map((m) => inSurfaceWords(m, surface)),
+  };
+}
+
 class JsonModelValidateRenderer implements ModelValidateRenderer {
   private _passed = true;
+
+  constructor(private readonly surface: CommandSurface) {}
 
   passed(): boolean {
     return this._passed;
@@ -225,15 +274,12 @@ class JsonModelValidateRenderer implements ModelValidateRenderer {
     return {
       resolving: () => {},
       completed: (e) => {
-        if (isModelValidateAllData(e.data)) {
-          this._passed = e.data.passed;
-        } else {
-          this._passed = e.data.passed;
-        }
-        console.log(JSON.stringify(e.data, null, 2));
+        const data = validateDataInSurfaceWords(e.data, this.surface);
+        this._passed = e.data.passed;
+        console.log(JSON.stringify(data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -245,7 +291,7 @@ export function createModelValidateRenderer(
 ): ModelValidateRenderer {
   switch (mode) {
     case "json":
-      return new JsonModelValidateRenderer();
+      return new JsonModelValidateRenderer(surface);
     case "log":
       return new LogModelValidateRenderer(surface);
   }

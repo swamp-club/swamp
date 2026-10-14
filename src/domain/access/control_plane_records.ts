@@ -39,7 +39,7 @@ export function controlPlaneRecordResource(
   record: { name: string; tags?: Record<string, string> },
 ): AccessResource {
   const name = normalizeModelTypeName(type);
-  if (name === null) throw new Error("Model type cannot be empty");
+  if (name === null) throw new Error("Behavior type cannot be empty");
   return {
     kind: "access",
     name,

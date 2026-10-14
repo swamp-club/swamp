@@ -25,6 +25,8 @@ import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_u
 import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
 import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_user_error.ts";
 import type { OutputMode } from "./output.ts";
+import type { CommandSurface } from "../command_surface.ts";
+import { messageFor } from "../../domain/behavior_wording.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 
@@ -51,8 +53,11 @@ const logger = getSwampLogger(["error"]);
  *   wait holds, `lastWait`: the wait that last held the key, how it was
  *   settled and when.
  */
-export function buildErrorJson(err: Error): Record<string, unknown> {
-  const data: Record<string, unknown> = { error: err.message };
+export function buildErrorJson(
+  err: Error,
+  surface: CommandSurface = "behavior",
+): Record<string, unknown> {
+  const data: Record<string, unknown> = { error: messageFor(err, surface) };
   if (
     !(err instanceof UserError) && !(err instanceof ValidationError) &&
     err.stack
@@ -195,6 +200,19 @@ export function platformCertStoreHint(message: string): string | undefined {
 }
 
 /**
+ * `err` with `message` as its message, for a spelling that differs from the
+ * error's own (swamp-club#3437). The stack keeps its frames; only the first
+ * line's message changes. `err` itself is left alone.
+ */
+function inSpelling(err: Error, message: string): Error {
+  if (message === err.message) return err;
+  const shown = new Error(message, { cause: err.cause });
+  shown.name = err.name;
+  if (err.stack) shown.stack = err.stack.replace(err.message, message);
+  return shown;
+}
+
+/**
  * Renders an error to the user.
  *
  * In JSON mode this is the SINGLE emitter for fatal output: it writes
@@ -204,16 +222,24 @@ export function platformCertStoreHint(message: string): string | undefined {
  * message; other errors emit the full Error (stack trace included),
  * except an unreadable OS certificate store, which renders like a
  * UserError with its remedy hint.
+ *
+ * `surface` is the tree the command ran in: under `swamp model …` a message
+ * marked with its model spelling prints that spelling (swamp-club#3437).
  */
-export function renderError(error: unknown, outputMode?: OutputMode): void {
+export function renderError(
+  error: unknown,
+  outputMode?: OutputMode,
+  surface: CommandSurface = "behavior",
+): void {
   const err = error instanceof Error ? error : new Error(String(error));
+  const message = messageFor(err, surface);
   // A certificate-store failure is an environment problem the user can fix,
   // not a swamp bug, so it gets no stack trace even when it arrives raw.
   const certStoreHint = platformCertStoreHint(err.message);
   const hint = tlsErrorHint(err.message) ?? certStoreHint;
 
   if (outputMode === "json") {
-    const json = buildErrorJson(err);
+    const json = buildErrorJson(err, surface);
     if (certStoreHint) {
       delete json.stack;
     }
@@ -229,11 +255,11 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
   }
 
   if (err instanceof UserError || certStoreHint) {
-    console.error(`\n${red(bold("Error:"))} ${err.message}`);
+    console.error(`\n${red(bold("Error:"))} ${message}`);
   } else if (err instanceof ValidationError) {
-    logger.fatal("Error: {message}", { message: err.message });
+    logger.fatal("Error: {message}", { message });
   } else {
-    logger.fatal("{error}", { error: err });
+    logger.fatal("{error}", { error: inSpelling(err, message) });
   }
 
   if (hint) {

@@ -46,6 +46,7 @@ import { isUuid } from "../models/model_lookup.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
+import { markModelWording, wordedText } from "../behavior_wording.ts";
 import { freeRoots } from "./cel_grammar.ts";
 import {
   findVaultGetCalls,
@@ -1115,12 +1116,15 @@ export class ModelResolver {
               data.size,
             );
           } catch (error) {
-            throw new Error(
-              `Could not download ${data.name} of model ${ref}, which the ` +
-                `expression reads: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              { cause: error },
+            const worded = wordedText((w) =>
+              `Could not download ${data.name} of ${w.noun} ${ref}, which ` +
+              `the expression reads: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+            throw markModelWording(
+              new Error(worded.text, { cause: error }),
+              worded.modelText,
             );
           }
           if (localFileSize(contentPath) !== before) {

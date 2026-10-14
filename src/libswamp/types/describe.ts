@@ -22,7 +22,7 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound } from "../errors.ts";
+import { behaviorTypeNotFound } from "../errors.ts";
 import {
   buildDataOutputSpecs,
   type DataOutputSpecDescribeData,
@@ -83,8 +83,7 @@ export async function* typeDescribe(
         const installName = deriveInstallName(modelType.normalized);
         yield {
           kind: "error",
-          error: notFound(
-            "Model type",
+          error: behaviorTypeNotFound(
             `${modelType.raw}\n\n` +
               `This type may be available as an extension:\n` +
               `  Search:  swamp extension search ${searchTerm}\n` +

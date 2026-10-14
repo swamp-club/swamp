@@ -29,7 +29,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { type LookupOptions, selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound } from "../errors.ts";
+import { behaviorNotFound, behaviorTypeNotFound } from "../errors.ts";
 import {
   buildDataOutputSpecs,
   type DataOutputSpecDescribeData,
@@ -109,7 +109,7 @@ export async function* modelMethodDescribe(
       );
       const result = await lookup(modelIdOrName);
       if (!result) {
-        yield { kind: "error", error: notFound("Model", modelIdOrName) };
+        yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
         return;
       }
 
@@ -118,7 +118,7 @@ export async function* modelMethodDescribe(
       if (!modelDef) {
         yield {
           kind: "error",
-          error: notFound("Model type", modelType.normalized),
+          error: behaviorTypeNotFound(modelType.normalized),
         };
         return;
       }

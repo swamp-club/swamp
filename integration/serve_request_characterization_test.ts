@@ -73,7 +73,7 @@ async function fixtures(repo: ServeRepo) {
 }
 
 function modelNotFound(idOrName: string) {
-  return `Model not found: ${idOrName}`;
+  return `Behavior not found: ${idOrName}`;
 }
 
 function workflowNotFound(idOrName: string) {
@@ -421,7 +421,7 @@ function historyRead(type: string, field: string, value: string) {
 }
 
 const outputOrModelNotFound = (value: string) =>
-  `Output or model not found: ${value}`;
+  `Output or behavior not found: ${value}`;
 const invalidOutputId = (value: string) =>
   `Invalid output ID format: ${value}. ` +
   `Expected a UUID or partial ID (3+ hex characters).`;
@@ -442,7 +442,7 @@ function missingError(type: string, value: string): Record<string, unknown> {
     case "model.method.history.logs":
       return {
         code: "model_method_history_logs_failed",
-        message: `No method run or model found: ${value}`,
+        message: `No method run or behavior found: ${value}`,
       };
     case "model.output.data":
     case "model.output.logs":
@@ -496,15 +496,15 @@ Deno.test("serve characterization: a model with no outputs and a workflow with n
     const cases: [string, string, string, Record<string, unknown>][] = [
       ["model.output.get", "outputIdOrModelName", "empty-model", {
         code: "model_output_get_failed",
-        message: "Output not found: no outputs for model: empty-model",
+        message: "Output not found: no outputs for behavior: empty-model",
       }],
       ["model.method.history.get", "outputIdOrModelName", "empty-model", {
         code: "model_method_history_get_failed",
-        message: "Output not found: no outputs for model: empty-model",
+        message: "Output not found: no outputs for behavior: empty-model",
       }],
       ["model.method.history.logs", "outputIdOrModelName", "empty-model", {
         code: "model_method_history_logs_failed",
-        message: "Run not found: for model: empty-model",
+        message: "Run not found: for behavior: empty-model",
       }],
       ["workflow.history.get", "workflowIdOrName", "empty-flow", {
         code: "workflow_history_get_failed",

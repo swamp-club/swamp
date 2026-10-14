@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { markModelWording } from "../../domain/behavior_wording.ts";
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -404,11 +405,12 @@ async function renderEnvVarWarning(surface?: CommandSurface): Promise<string> {
           modelName: "my-model",
           type: "aws/ec2",
           validations: [{ name: "schema", passed: true }],
-          warnings: [{
+          // libswamp marks the data with the warning's model spelling.
+          warnings: [markModelWording({
             name: warning.name,
             message: warning.message,
             envVars: warning.details,
-          }],
+          }, warning.modelMessage)],
           passed: true,
         },
       }]),
@@ -439,4 +441,46 @@ Deno.test("LogModelValidateRenderer - the behavior surface words the env-var war
   );
   assertEquals(output.includes("this model"), false);
   assertEquals(output.includes("separate models"), false);
+});
+
+Deno.test("JsonModelValidateRenderer: a failed validation prints the spelling of the command tree (swamp-club#3437)", async () => {
+  const render = async (surface: "model" | "behavior") => {
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.join(" "));
+    try {
+      await consumeStream(
+        toStream([{
+          kind: "completed",
+          data: {
+            modelId: "def-1",
+            modelName: "my-model",
+            type: "aws/ec2",
+            validations: [
+              markModelWording({
+                name: "Check selection",
+                passed: false,
+                error:
+                  "Required check 'x' not found on behavior type 'aws/ec2'",
+              }, "Required check 'x' not found on model type 'aws/ec2'"),
+            ],
+            warnings: [],
+            passed: false,
+          },
+        }]),
+        createModelValidateRenderer("json", surface).handlers(),
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    return JSON.parse(lines.join("\n")).validations[0].error;
+  };
+  assertEquals(
+    await render("model"),
+    "Required check 'x' not found on model type 'aws/ec2'",
+  );
+  assertEquals(
+    await render("behavior"),
+    "Required check 'x' not found on behavior type 'aws/ec2'",
+  );
 });

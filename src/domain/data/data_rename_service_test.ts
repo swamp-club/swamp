@@ -176,7 +176,7 @@ Deno.test("rename: throws when the model cannot be resolved", async () => {
   await assertRejects(
     () => service.rename("no-such-model", "old", "new"),
     Error,
-    "Model not found: no-such-model",
+    "Behavior not found: no-such-model",
   );
   assertEquals(calls.length, 0);
 });
@@ -290,7 +290,7 @@ Deno.test("rename: byId with a name rejects as model not found", async () => {
       () =>
         service.rename("target-model", "old-data", "new-data", { byId: true }),
       Error,
-      "Model not found: target-model",
+      "Behavior not found: target-model",
     );
     assertEquals(calls.length, 0);
   });

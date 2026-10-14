@@ -57,7 +57,8 @@ import {
   literalSensitiveGlobalArgsMessage,
 } from "../../domain/models/sensitive_field_extractor.ts";
 import type { SwampError } from "../errors.ts";
-import { validationFailed } from "../errors.ts";
+import { validationFailed, wordedSwampError } from "../errors.ts";
+import { wordedText } from "../../domain/behavior_wording.ts";
 import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 
@@ -519,8 +520,11 @@ export async function resolveOrCreateDefinition(
   if (nameViolation) {
     return {
       ok: false,
-      error: validationFailed(
-        `Invalid model name: ${definitionName}. ${nameViolation}`,
+      error: wordedSwampError(
+        "validation_failed",
+        wordedText((w) =>
+          `Invalid ${w.noun} name: ${definitionName}. ${nameViolation}`
+        ),
       ),
     };
   }

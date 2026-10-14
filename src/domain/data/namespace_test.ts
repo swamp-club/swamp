@@ -210,7 +210,7 @@ Deno.test("parseNamespacedModelName: throws on empty model name", () => {
   assertThrows(
     () => parseNamespacedModelName("ns:"),
     Error,
-    "model name is empty",
+    "behavior name is empty",
   );
 });
 

@@ -962,7 +962,10 @@ Deno.test("resolveOrCreateDefinition: refuses to auto-create a definition with a
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(result.error.code, "validation_failed");
-    assertStringIncludes(result.error.message, "Invalid model name: ShUpper.");
+    assertStringIncludes(
+      result.error.message,
+      "Invalid behavior name: ShUpper.",
+    );
     assertStringIncludes(
       result.error.message,
       "must be lowercase alphanumeric",

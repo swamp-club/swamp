@@ -710,7 +710,7 @@ Deno.test("modelCreate: yields validation error for an invalid name without reso
     const last = events[1] as Extract<ModelCreateEvent, { kind: "error" }>;
     assertEquals(last.kind, "error", name);
     assertEquals(last.error.code, "validation_failed", name);
-    assertStringIncludes(last.error.message, `Invalid model name: ${name}.`);
+    assertStringIncludes(last.error.message, `Invalid behavior name: ${name}.`);
     assertStringIncludes(last.error.message, rule);
     assertEquals(calls, [], name);
   }

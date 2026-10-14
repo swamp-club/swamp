@@ -836,7 +836,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (version === undefined && data.isRenamed && data.renamedTo) {
         if (depth >= 5) {
           logger
-            .warn`Rename chain depth exceeded for ${dataName} (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
+            .warn`Rename chain depth exceeded for ${dataName} (behavior ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
           return null;
         }
         return this.findByNameWithDepth(
@@ -2387,7 +2387,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (version === undefined && data.isRenamed && data.renamedTo) {
         if (depth >= 5) {
           logger
-            .warn`Rename chain depth exceeded for ${dataName} (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
+            .warn`Rename chain depth exceeded for ${dataName} (behavior ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
           return null;
         }
         return this.findByNameSyncWithDepth(

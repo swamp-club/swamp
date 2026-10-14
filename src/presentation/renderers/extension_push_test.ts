@@ -136,6 +136,21 @@ for (const license of ["MIT", null]) {
   }
 }
 
+Deno.test("extensionPushRenderer: log preview and summary count behaviors in behavior words", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() => {
+    renderer.renderResolved({
+      ...resolved("default"),
+      models: [{ type: "@test/thing", fileName: "thing.ts" }],
+    });
+    renderer.handlers().completed(completedEvent);
+  });
+  const output = logs.join("\n");
+  assertStringIncludes(output, "Behaviors (1):");
+  assertStringIncludes(output, "Behaviors: 1");
+  assert(!output.includes("Models"));
+});
+
 Deno.test("extensionPushRenderer: a non-SPDX license warning is a log warning and a warnings.license entry", async () => {
   const warning = {
     license: "Swampy-1.0",

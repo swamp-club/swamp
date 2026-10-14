@@ -416,7 +416,7 @@ Deno.test("evaluateDefinition: records failed expressions with their reason and 
     );
     assertStringIncludes(
       failed.get("${{ model.ghost.resource.state.main.attributes }}")!.message,
-      "Model ghost has no resource data",
+      "Behavior ghost has no resource data",
     );
 
     // Evaluation stays lenient: failures keep their raw text.

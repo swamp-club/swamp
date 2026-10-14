@@ -101,7 +101,7 @@ function renderPointersMarkdown(
 
 export const methodSummaryReport: ReportDefinition = {
   description:
-    "Built-in summary of a model method execution including narrative, output schema, and data pointers.",
+    "Built-in summary of a method execution including narrative, output schema, and data pointers.",
   scope: "method",
   labels: ["summary"],
 

@@ -130,7 +130,7 @@ export function buildServeAuthConfig(
     const key = normalizeModelTypeName(entry);
     if (key === null) {
       throw new UserError(
-        `Invalid restricted-model-types entry "${entry}": it names no model type`,
+        `Invalid restricted-model-types entry "${entry}": it names no behavior type`,
       );
     }
     return key;
@@ -249,7 +249,7 @@ export function findIneffectiveRestrictions(
         entry,
         reason: "no-type",
         message:
-          `Invalid restricted-model-types entry "${entry}": it names no model type`,
+          `Invalid restricted-model-types entry "${entry}": it names no behavior type`,
       });
       continue;
     }
@@ -263,7 +263,7 @@ export function findIneffectiveRestrictions(
           entry,
           reason: "unknown-type",
           message:
-            `restricted-model-types entry "${entry}" names no registered model type — check the spelling, or write an extension type as @${key}`,
+            `restricted-model-types entry "${entry}" names no registered behavior type — check the spelling, or write an extension type as @${key}`,
         });
       }
     } else if (isBuiltIn !== undefined && !isBuiltIn(key)) {
@@ -272,7 +272,7 @@ export function findIneffectiveRestrictions(
         entry,
         reason: "unknown-type",
         message:
-          `restricted-model-types entry "${entry}" is not a built-in model type — check the spelling; if it names an extension type, write it as @${key}`,
+          `restricted-model-types entry "${entry}" is not a built-in behavior type — check the spelling; if it names an extension type, write it as @${key}`,
       });
     }
   }

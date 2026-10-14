@@ -661,7 +661,7 @@ for (
       assertEquals(sent[0].error.code, "model_delete_failed");
       assertEquals(
         sent[0].error.message,
-        `Model not found: ${modelIdOrName}`,
+        `Behavior not found: ${modelIdOrName}`,
       );
       assertEquals(sent[0].error.details, {
         reason: "not_found",

@@ -102,7 +102,7 @@ Deno.test("parseExtensionManifest: only the exact behaviors key is a synonym", (
       () =>
         parseExtensionManifest(JSON.stringify({ ...base, [key]: ["a.ts"] })),
       Error,
-      "at least one model",
+      "at least one behavior",
     );
   }
 });

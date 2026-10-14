@@ -121,8 +121,8 @@ function selectorFinding(grant: SpelledGrant): GrantSpellingFinding | null {
   const written = resourceSelectorToString(grant.resource);
   const canonicalSelector = `${kind}:${canonical}`;
   const names = pattern.endsWith("*")
-    ? `model names matching ${shown(pattern)}`
-    : `a model named exactly ${shown(pattern)}`;
+    ? `behavior names matching ${shown(pattern)}`
+    : `a behavior named exactly ${shown(pattern)}`;
   let message: string;
   if (kind === "access" || namesTypePath(pattern)) {
     message = grant.effect === "deny"
@@ -133,7 +133,7 @@ function selectorFinding(grant: SpelledGrant): GrantSpellingFinding | null {
       ? `${shown(written)} matches no control-plane record; write ${
         shown(canonicalSelector)
       } to grant on those records`
-      : `${shown(written)} matches no model type; write ${
+      : `${shown(written)} matches no behavior type; write ${
         shown(canonicalSelector)
       } to grant on those types (as written it matches only ${names})`;
   } else {
@@ -148,7 +148,7 @@ function selectorFinding(grant: SpelledGrant): GrantSpellingFinding | null {
       }`
       : `${
         shown(written)
-      } matches ${names} as written and no model type; to grant on types spelled that way, write ${
+      } matches ${names} as written and no behavior type; to grant on types spelled that way, write ${
         shown(canonicalSelector)
       }`;
   }

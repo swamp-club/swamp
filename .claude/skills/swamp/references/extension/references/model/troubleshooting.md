@@ -158,7 +158,7 @@ user behavior, both files must be in the extensions directories swamp loads
 (`extensions/behaviors/` or `extensions/models/`) — behaviors are loaded before
 extensions automatically.
 
-### "Method 'X' already exists on model type 'Y'"
+### "Method 'X' already exists on behavior type 'Y'"
 
 The extension tries to add a method with the same name as an existing method.
 Extensions can only add new methods, not override existing ones. Use a different

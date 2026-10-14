@@ -110,7 +110,7 @@ export function renderAutoResolveInstalled(
       gutterLine(
         "Installed",
         STATUS_COLORS.success,
-        `${extension}@${version} (${modelsRegistered} models registered)`,
+        `${extension}@${version} (${modelsRegistered} behaviors registered)`,
       ),
     );
   }

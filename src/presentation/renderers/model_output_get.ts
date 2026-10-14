@@ -25,6 +25,7 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 
 class LogModelOutputGetRenderer implements Renderer<ModelOutputGetEvent> {
   handlers(): EventHandlers<ModelOutputGetEvent> {
@@ -34,7 +35,7 @@ class LogModelOutputGetRenderer implements Renderer<ModelOutputGetEvent> {
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -48,7 +49,7 @@ class JsonModelOutputGetRenderer implements Renderer<ModelOutputGetEvent> {
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

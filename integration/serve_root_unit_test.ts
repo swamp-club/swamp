@@ -103,7 +103,7 @@ Deno.test("serve root units: a data.delete whose use case fails still pushes onc
 
     assertEquals(errorOf(frames), {
       code: "data_delete_failed",
-      message: 'No data named "missing" exists for model m1',
+      message: 'No data named "missing" exists for behavior m1',
     });
     assertEquals(observation.ops, ["push[0]"]);
     assertRootUnit(
@@ -584,7 +584,7 @@ Deno.test("serve root units: a model.create whose use case fails pushes nothing 
 
     assertEquals(errorOf(frames), {
       code: "model_create_failed",
-      message: "Model already exists: m1",
+      message: "Behavior already exists: m1",
     });
     assertEquals(observation.ops, []);
     assertRootUnit(

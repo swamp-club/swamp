@@ -427,7 +427,7 @@ function servedModelResolver(
   ctx: ConnectionContext,
 ): ModelReferenceResolver {
   return async (reference) => {
-    const notFound = new UserError(`Model not found: ${reference}`);
+    const notFound = new UserError(`Behavior not found: ${reference}`);
     const allowed = (resource: AccessResource) =>
       isAuthorized(socket, requestId, principal, "read", resource, ctx);
     let found;

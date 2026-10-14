@@ -327,7 +327,7 @@ swamp behavior validate my-shell --method create --json # Validate for a specifi
   "warnings": [
     {
       "name": "Environment variables detected",
-      "message": "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+      "message": "Data stored under this behavior will vary depending on these environment variables at runtime. Consider using separate behaviors per environment, or vault.get() for sensitive values.",
       "envVars": [
         { "path": "globalArguments.baseUrl", "envVar": "JENKINS_BASE_URL" }
       ]

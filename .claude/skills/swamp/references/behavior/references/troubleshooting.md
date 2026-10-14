@@ -17,9 +17,10 @@
 
 ## Common Errors
 
-### "Model not found"
+### "Behavior not found"
 
-**Symptom**: `Error: Model 'my-model' not found`
+**Symptom**: `Error: Behavior not found: my-model` (under `swamp model`:
+`Model not found: my-model`)
 
 **Causes and solutions**:
 
@@ -44,7 +45,7 @@
 
 ### "Method not found"
 
-**Symptom**: `Error: Method 'deploy' not found on model type`
+**Symptom**: `Error: Method 'deploy' not found on behavior type`
 
 **Causes and solutions**:
 

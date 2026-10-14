@@ -190,7 +190,9 @@ export interface LockTimeoutClientError {
 export function lockTimeoutErrorForClient(
   error: LockTimeoutError,
 ): LockTimeoutClientError {
-  const safeLockKey = isPathLike(error.lockKey) ? "model lock" : error.lockKey;
+  const safeLockKey = isPathLike(error.lockKey)
+    ? "behavior lock"
+    : error.lockKey;
   const message = error.holder
     ? `Lock contention on "${safeLockKey}" held by ${error.holder.holder} ` +
       `(pid ${error.holder.pid}) — timed out after ${error.waitedMs}ms`
@@ -420,7 +422,7 @@ export function isAdminOnlyModelType(
 function requestedTypeKey(typeArg: string): string {
   const key = normalizeModelTypeName(typeArg);
   if (key === null) {
-    throw new Error(`Invalid model type: ${JSON.stringify(typeArg)}`);
+    throw new Error(`Invalid behavior type: ${JSON.stringify(typeArg)}`);
   }
   return key;
 }

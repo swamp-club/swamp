@@ -317,7 +317,7 @@ version: "2026.02.26.1"
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes(
     (error as Error).message,
-    "at least one model, workflow, vault, datastore, report, webhook, or skill",
+    "at least one behavior, workflow, vault, datastore, report, webhook, or skill",
   );
 });
 

@@ -511,7 +511,7 @@ class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
           }`,
         );
         writeOutput(
-          `  ${e.result.missingRecords.toLocaleString()} missing record(s) across ${e.result.shortfalls.length} model type(s) will be re-indexed on the next data query`,
+          `  ${e.result.missingRecords.toLocaleString()} missing record(s) across ${e.result.shortfalls.length} behavior type(s) will be re-indexed on the next data query`,
         );
         writeOutput(dim(`\n  ${FOREIGN_ROWS_NOTICE}`));
       },

@@ -268,7 +268,7 @@ Deno.test("builtin add-on: an add-on on a control-plane type never attaches, eve
     );
     assertEquals(
       result.failed.some((f) =>
-        f.error.includes("Cannot extend control-plane model type")
+        f.error.includes("Cannot extend control-plane behavior type")
       ),
       true,
     );

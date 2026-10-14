@@ -24,6 +24,7 @@ import {
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
 } from "../models/model_lookup.ts";
+import { wordedError, wordedText } from "../behavior_wording.ts";
 import type { ModelRefOptions } from "./data_delete_service.ts";
 
 /**
@@ -85,7 +86,9 @@ export class DataRenameService {
       )
       : await findDefinitionByIdOrName(this.definitionRepo, modelRef);
     if (!result) {
-      throw new Error(`Model not found: ${modelRef}`);
+      throw wordedError(
+        wordedText((w) => `${w.Noun} not found: ${modelRef}`),
+      );
     }
     const { definition, type: modelType } = result;
 

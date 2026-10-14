@@ -45,7 +45,8 @@ import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
-import { notFound, validationFailed } from "../errors.ts";
+import { behaviorNotFound, wordedSwampError } from "../errors.ts";
+import { wordedText } from "../../domain/behavior_wording.ts";
 import { getLogger } from "@logtape/logtape";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -291,7 +292,7 @@ export async function modelDeletePreview(
   ctx.logger.debug`Looking up model: ${input.modelIdOrName}`;
   const result = await lookupModel(deps, input);
   if (!result) {
-    throw notFound("Model", input.modelIdOrName);
+    throw behaviorNotFound(input.modelIdOrName);
   }
   const { definition, type: modelType } = result;
 
@@ -337,7 +338,7 @@ export async function* modelDelete(
         if (!result) {
           yield {
             kind: "error",
-            error: notFound("Model", input.modelIdOrName),
+            error: behaviorNotFound(input.modelIdOrName),
           };
           return;
         }
@@ -353,11 +354,14 @@ export async function* modelDelete(
         if (referencingWorkflows.length > 0) {
           yield {
             kind: "error",
-            error: validationFailed(
-              `Model '${definition.name}' is referenced by workflow(s): ${
-                referencingWorkflows.join(", ")
-              }. ` +
-                `Remove the model from these workflows before deleting.`,
+            error: wordedSwampError(
+              "validation_failed",
+              wordedText((w) =>
+                `${w.Noun} '${definition.name}' is referenced by workflow(s): ${
+                  referencingWorkflows.join(", ")
+                }. ` +
+                `Remove the ${w.noun} from these workflows before deleting.`
+              ),
             ),
           };
           return;
@@ -375,9 +379,12 @@ export async function* modelDelete(
         if (live.length > 0 && !input.force) {
           yield {
             kind: "error",
-            error: validationFailed(
-              `Model '${definition.name}' has ${live.length} associated data artifact(s). ` +
-                `Delete the data first, or use --force to delete all.`,
+            error: wordedSwampError(
+              "validation_failed",
+              wordedText((w) =>
+                `${w.Noun} '${definition.name}' has ${live.length} associated data artifact(s). ` +
+                `Delete the data first, or use --force to delete all.`
+              ),
             ),
           };
           return;

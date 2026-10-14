@@ -50,8 +50,8 @@ export function resolveExtensionFile(
 ): string {
   if (root === undefined) {
     throw new UserError(
-      "ctx.extensionFile() is only available for models and reports " +
-        "shipped via an extension manifest. This model does not have an " +
+      "ctx.extensionFile() is only available for behaviors and reports " +
+        "shipped via an extension manifest. This behavior does not have an " +
         "associated manifest.yaml.",
     );
   }

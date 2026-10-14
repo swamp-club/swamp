@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Definition } from "../../domain/definitions/definition.ts";
+import { markModelWording, wordedText } from "../../domain/behavior_wording.ts";
 import {
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
@@ -46,7 +47,12 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import {
+  behaviorNotFound,
+  behaviorTypeNotFound,
+  type SwampError,
+  wordedSwampError,
+} from "../errors.ts";
 
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -119,6 +125,8 @@ interface ValidationResult {
   passed: boolean;
   error?: string;
   expressionErrors?: readonly ExpressionPathError[];
+  /** `error` in model words (swamp-club#3437). */
+  modelError?: string;
 }
 
 /** Raw warning from the domain service. */
@@ -127,6 +135,8 @@ interface ValidationWarningResult {
   message: string;
   envVars?: EnvVarUsageDetail[];
   templates?: ForeignTemplateDetail[];
+  /** The message in model words (swamp-club#3437). */
+  modelMessage?: string;
 }
 
 /**
@@ -263,6 +273,7 @@ export function createModelValidateDeps(
           message: w.message,
           envVars: w.details,
           templates: w.templates,
+          modelMessage: w.modelMessage,
         })),
       };
     },
@@ -273,24 +284,38 @@ export function createModelValidateDeps(
 function toValidationItemData(
   results: ValidationResult[],
 ): ValidationItemData[] {
-  return results.map((r) => ({
-    name: r.name,
-    passed: r.passed,
-    error: r.error,
-    expressionErrors: r.expressionErrors,
-  }));
+  return results.map((r) => {
+    const data: ValidationItemData = {
+      name: r.name,
+      passed: r.passed,
+      error: r.error,
+      expressionErrors: r.expressionErrors,
+    };
+    // A hidden marker holding `error` in model words, so the JSON shape is
+    // unchanged (swamp-club#3437). Each expression error carries its own; see
+    // expressionPathErrorInModelWords.
+    return r.modelError === undefined || r.modelError === r.error
+      ? data
+      : markModelWording(data, r.modelError);
+  });
 }
 
 /** Converts raw validation warnings to the presentation format. */
 function toValidationWarningData(
   warnings: ValidationWarningResult[],
 ): ValidationWarningData[] {
-  return warnings.map((w) => ({
-    name: w.name,
-    message: w.message,
-    envVars: w.envVars,
-    templates: w.templates,
-  }));
+  return warnings.map((w) => {
+    const data: ValidationWarningData = {
+      name: w.name,
+      message: w.message,
+      envVars: w.envVars,
+      templates: w.templates,
+    };
+    // A hidden marker, so the JSON shape is unchanged (swamp-club#3437).
+    return w.modelMessage === undefined
+      ? data
+      : markModelWording(data, w.modelMessage);
+  });
 }
 
 /** Type guard to check if data is ModelValidateAllData. */
@@ -312,7 +337,10 @@ async function* validateAll(
   if (accepted.size === 0) {
     yield {
       kind: "error",
-      error: validationFailed("No models found"),
+      error: wordedSwampError(
+        "validation_failed",
+        wordedText((w) => `No ${w.nouns} found`),
+      ),
     };
     return;
   }
@@ -380,7 +408,7 @@ async function* validateSingle(
   );
   const result = await lookupDefinition(modelIdOrName);
   if (!result) {
-    yield { kind: "error", error: notFound("Model", modelIdOrName) };
+    yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
     return;
   }
   const { definition, type: modelType } = result;
@@ -389,7 +417,7 @@ async function* validateSingle(
   if (!modelDef) {
     yield {
       kind: "error",
-      error: notFound("Model type", modelType.normalized),
+      error: behaviorTypeNotFound(modelType.normalized),
     };
     return;
   }

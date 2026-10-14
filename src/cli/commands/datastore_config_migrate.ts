@@ -163,7 +163,7 @@ function renderV3Migration(
     }
     return;
   }
-  ctx.logger.info`Committed ${adopted("model")} model(s), ${
+  ctx.logger.info`Committed ${adopted("model")} behavior(s), ${
     adopted("workflow")
   } workflow(s) and ${adopted("vault")} vault(s) into datastore config tier`;
   if (plan.lockfile !== undefined) {
@@ -189,14 +189,14 @@ const SKIP_REASON_TEXT: Record<ConfigAdoptionSkipReason, string> = {
 export const datastoreConfigMigrateCommand = new Command()
   .description(
     "Migrate configuration into the datastore.\n\n" +
-      "Copies model definitions, workflow definitions, vault configs,\n" +
+      "Copies behavior definitions, workflow definitions, vault configs,\n" +
       "the extension lockfile, and pulled extensions into the datastore\n" +
       "config tier. Sets managedConfig: true in .swamp.yaml if not already\n" +
       "set, including when another repo has already migrated the datastore.\n" +
       "Idempotent — safe to re-run: the datastore's migration sentinel\n" +
       "prevents duplicate work, and a re-run after a failed push publishes\n" +
       "the migration.\n\n" +
-      "On a v3 datastore it commits the model definitions, workflow\n" +
+      "On a v3 datastore it commits the behavior definitions, workflow\n" +
       "definitions and vault configs not already in the datastore; a\n" +
       "re-run commits nothing. The extension lockfile is committed with\n" +
       "them, and pulled extensions are copied in this checkout only.",

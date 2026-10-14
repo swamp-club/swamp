@@ -49,7 +49,7 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
-import { notFound, type SwampError } from "../errors.ts";
+import { behaviorNotFound, type SwampError } from "../errors.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 
 /** Evaluation result for a single model. */
@@ -282,7 +282,7 @@ async function* evaluateSingle(
   );
   const lookupResult = await lookupDefinition(modelIdOrName);
   if (!lookupResult) {
-    yield { kind: "error", error: notFound("Model", modelIdOrName) };
+    yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
     return;
   }
 

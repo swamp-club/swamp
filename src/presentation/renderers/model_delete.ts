@@ -23,6 +23,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
@@ -49,7 +50,7 @@ class LogModelDeleteRenderer implements Renderer<ModelDeleteEvent> {
         });
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -76,7 +77,7 @@ class JsonModelDeleteRenderer implements Renderer<ModelDeleteEvent> {
         console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

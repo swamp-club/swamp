@@ -39,7 +39,8 @@ import {
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
-import { forbidden, notFound, validationFailed } from "../errors.ts";
+import { behaviorNotFound, wordedSwampError } from "../errors.ts";
+import { wordedText } from "../../domain/behavior_wording.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -249,7 +250,7 @@ export async function* modelEdit(
               .debug`Using symlink fallback for broken model: ${resolvedPath}`;
             filePath = resolvedPath;
           } else {
-            yield { kind: "error", error: notFound("Model", modelIdOrName) };
+            yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
             return;
           }
         }
@@ -263,8 +264,11 @@ export async function* modelEdit(
           if (!definition || !modelType) {
             yield {
               kind: "error",
-              error: validationFailed(
-                "Cannot update model from stdin: the model's YAML is broken and must be fixed in an editor first",
+              error: wordedSwampError(
+                "validation_failed",
+                wordedText((w) =>
+                  `Cannot update ${w.noun} from stdin: the ${w.noun}'s YAML is broken and must be fixed in an editor first`
+                ),
               ),
             };
             return;
@@ -281,8 +285,11 @@ export async function* modelEdit(
             const beforeSave = async (candidate: Definition) => {
               if (candidate.name !== stored.name) {
                 if (!input.allowRename) {
-                  renameRefusal = validationFailed(
-                    `Refusing to rename model '${stored.name}' to '${candidate.name}': the 'name' in the piped definition differs from the model being edited. Pass --allow-rename to rename it, or set 'name: ${stored.name}' to keep the name.`,
+                  renameRefusal = wordedSwampError(
+                    "validation_failed",
+                    wordedText((w) =>
+                      `Refusing to rename ${w.noun} '${stored.name}' to '${candidate.name}': the 'name' in the piped definition differs from the ${w.noun} being edited. Pass --allow-rename to rename it, or set 'name: ${stored.name}' to keep the name.`
+                    ),
                   );
                   return false;
                 }
@@ -290,8 +297,11 @@ export async function* modelEdit(
                 // separate steps, so this does not make names unique.
                 const holder = await deps.lookupDefinition(candidate.name);
                 if (holder && holder.definition.id !== stored.id) {
-                  renameRefusal = validationFailed(
-                    `Cannot rename model '${stored.name}' to '${candidate.name}': another model already has that name.`,
+                  renameRefusal = wordedSwampError(
+                    "validation_failed",
+                    wordedText((w) =>
+                      `Cannot rename ${w.noun} '${stored.name}' to '${candidate.name}': another ${w.noun} already has that name.`
+                    ),
                   );
                   return false;
                 }
@@ -314,8 +324,11 @@ export async function* modelEdit(
               }
               yield {
                 kind: "error",
-                error: forbidden(
-                  `Not allowed to save model '${definition.name}' with the edited name or tags`,
+                error: wordedSwampError(
+                  "forbidden",
+                  wordedText((w) =>
+                    `Not allowed to save ${w.noun} '${definition.name}' with the edited name or tags`
+                  ),
                 ),
               };
               return;
@@ -336,10 +349,13 @@ export async function* modelEdit(
           } catch (error) {
             yield {
               kind: "error",
-              error: validationFailed(
-                `Invalid model YAML from stdin: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
+              error: wordedSwampError(
+                "validation_failed",
+                wordedText((w) =>
+                  `Invalid ${w.noun} YAML from stdin: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                ),
               ),
             };
           }

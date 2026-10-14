@@ -24,6 +24,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { formatSchemaAttributes } from "./model_get.ts";
 import {
   type CommandSurface,
@@ -80,7 +81,7 @@ class LogModelMethodDescribeRenderer
         writeOutput(lines.join("\n"));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -95,7 +96,7 @@ class JsonModelMethodDescribeRenderer
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

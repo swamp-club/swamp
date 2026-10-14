@@ -36,7 +36,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound } from "../errors.ts";
+import { behaviorNotFound, notFound } from "../errors.ts";
 import type { ReportSearchEvent, StoredReportSummary } from "./report_views.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -152,7 +152,7 @@ export async function* reportSearch(
       if (input.model) {
         const result = await deps.lookupDefinition(input.model);
         if (!result) {
-          yield { kind: "error", error: notFound("Model", input.model) };
+          yield { kind: "error", error: behaviorNotFound(input.model) };
           return;
         }
         const items = await deps.findAllForModel(

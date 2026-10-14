@@ -41,6 +41,11 @@ import {
 import { migrateHomeRepoTelemetry } from "../infrastructure/persistence/telemetry_spool_migration.ts";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import {
+  markModelWording,
+  wordedText,
+  wordedUserError,
+} from "../domain/behavior_wording.ts";
+import {
   choosePulledDatastoreDirsOnDisk,
   enumeratePulledExtensionDirs,
 } from "../libswamp/extensions/enumerate_pulled.ts";
@@ -543,7 +548,7 @@ export async function configureStartupExtensions(
         "under a service manager such as systemd, set SWAMP_HOME to an " +
         "isolated directory, e.g. `Environment=SWAMP_HOME=/opt/swamp`, or " +
         "set HOME. Until then, pulled and user extensions are unavailable " +
-        'and workflows that reference them fail with "Unknown model type".',
+        'and workflows that reference them fail with "Unknown behavior type".',
     });
   }
 
@@ -1169,6 +1174,8 @@ function throwOnTransientLoadFailures(
     { file: string; error: string; originalError?: unknown }
   >,
   kind: string,
+  /** `kind` in model words, when it differs (swamp-club#3437). */
+  modelKind: string = kind,
 ): void {
   const transient = failures.filter((f) =>
     isTransientError(f.originalError ?? new Error(f.error))
@@ -1177,11 +1184,13 @@ function throwOnTransientLoadFailures(
   const details = transient
     .map((f) => `${f.file}: ${f.error}`)
     .join("; ");
+  const text = (noun: string) =>
+    `Failed to load ${transient.length} extension ${noun}(s): ${details}. ` +
+    "If another swamp process is writing the extension index, retry once it finishes.";
   throw markErrorPaths(
-    new UserError(
-      `Failed to load ${transient.length} extension ${kind}(s): ${details}. ` +
-        "If another swamp process is writing the extension index, retry once it finishes.",
-      "lock_timeout",
+    markModelWording(
+      new UserError(text(kind), "lock_timeout"),
+      text(modelKind),
     ),
     transient.flatMap((f) => [f.file, ...errorPaths(f.originalError)]),
   );
@@ -1259,7 +1268,7 @@ async function loadUserModels(
       },
     );
 
-    throwOnTransientLoadFailures(result.failed, "model");
+    throwOnTransientLoadFailures(result.failed, "behavior", "model");
 
     // Built-in and other eagerly registered types skip the type loader, so
     // their extensions attach through this hook instead (swamp-club#2846).
@@ -1312,12 +1321,14 @@ async function loadUserModels(
     );
 
     for (const failure of result.failed) {
-      if (failure.error.startsWith("Cannot extend unregistered model type")) {
+      if (
+        failure.error.startsWith("Cannot extend unregistered behavior type")
+      ) {
         logger
           .warn`User extension ${failure.file} targets unregistered base type — will retry once the base is loaded: ${failure.error}`;
       } else {
         logger
-          .warn`Failed to load user model ${failure.file}: ${failure.error}`;
+          .warn`Failed to load user behavior ${failure.file}: ${failure.error}`;
       }
     }
   } catch (error) {
@@ -1327,16 +1338,18 @@ async function loadUserModels(
     // the missing-home case; suppress the misleading per-kind duplicate.
     if (isMissingHomeError(error)) return;
     if (isTransientError(error)) {
-      throw new UserError(
-        `Failed to load extension models: ${
-          error instanceof Error ? error.message : String(error)
-        }. ` +
-          "If another swamp process is writing the extension index, retry once it finishes.",
+      throw wordedUserError(
+        wordedText((w) =>
+          `Failed to load extension ${w.nouns}: ${
+            error instanceof Error ? error.message : String(error)
+          }. ` +
+          "If another swamp process is writing the extension index, retry once it finishes."
+        ),
         "lock_timeout",
       );
     }
     logger
-      .warn`Failed to load user model extensions: ${
+      .warn`Failed to load user behavior extensions: ${
       error instanceof Error ? error.message : String(error)
     }`;
   }
@@ -2766,8 +2779,9 @@ async function runInvocation(
         ) {
           logger.warn`${warning.error}`;
         } else {
+          const kind = warning.kind === "model" ? "behavior" : warning.kind;
           logger
-            .warn`Failed to load user ${warning.kind} ${warning.file}: ${warning.error}`;
+            .warn`Failed to load user ${kind} ${warning.file}: ${warning.error}`;
         }
       }
 

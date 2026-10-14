@@ -357,7 +357,7 @@ Deno.test("ModelRegistry.register throws on duplicate type", () => {
   assertThrows(
     () => registry.register(model2),
     Error,
-    "Model type already registered: swamp/echo",
+    "Behavior type already registered: swamp/echo",
   );
 });
 
@@ -592,7 +592,7 @@ Deno.test("ModelRegistry.extend throws on unregistered type", () => {
         },
       }),
     Error,
-    "Cannot extend unregistered model type: swamp/nonexistent",
+    "Cannot extend unregistered behavior type: swamp/nonexistent",
   );
 });
 
@@ -611,7 +611,7 @@ Deno.test("ModelRegistry.extend throws on method name conflict", () => {
         },
       }),
     Error,
-    "Method 'write' already exists on model type 'swamp/conflict-test'",
+    "Method 'write' already exists on behavior type 'swamp/conflict-test'",
   );
 });
 
@@ -754,7 +754,7 @@ Deno.test("ModelRegistry.register rejects when last upgrade toVersion doesn't ma
   assertThrows(
     () => registry.register(model),
     Error,
-    'Last upgrade toVersion "2025.06.01.1" does not match model version "2026.02.09.1"',
+    'Last upgrade toVersion "2025.06.01.1" does not match behavior version "2026.02.09.1"',
   );
 });
 
@@ -880,7 +880,7 @@ Deno.test("ModelRegistry.extend throws on check name conflict", () => {
         },
       }),
     Error,
-    "Check 'existing-check' already exists on model type 'swamp/check-conflict'",
+    "Check 'existing-check' already exists on behavior type 'swamp/check-conflict'",
   );
 });
 
@@ -972,7 +972,7 @@ Deno.test("ModelRegistry.extend: throws on resource spec name conflict", () => {
       });
     },
     Error,
-    "Resource spec 'data' already exists on model type 'swamp/resource-conflict'",
+    "Resource spec 'data' already exists on behavior type 'swamp/resource-conflict'",
   );
 });
 
@@ -1164,7 +1164,7 @@ Deno.test("ModelRegistry.applyExtensionMembers: rejects an addition that exists 
         {},
       ),
     Error,
-    "Method 'write' already exists on model type 'swamp/apply-reject-add'",
+    "Method 'write' already exists on behavior type 'swamp/apply-reject-add'",
   );
   const after = registry.get("swamp/apply-reject-add")!;
   assertEquals(after, before);
@@ -1183,7 +1183,7 @@ Deno.test("ModelRegistry.applyExtensionMembers: rejects an override of a missing
         { methods: { ghost: stubMethod("ghost") } },
       ),
     Error,
-    "Method 'ghost' does not exist on model type 'swamp/apply-reject-override'",
+    "Method 'ghost' does not exist on behavior type 'swamp/apply-reject-override'",
   );
 });
 
@@ -1214,7 +1214,7 @@ Deno.test("ModelRegistry.applyExtensionMembers: throws on unregistered type", ()
   assertThrows(
     () => registry.applyExtensionMembers("swamp/apply-none", {}, {}),
     Error,
-    "Cannot extend unregistered model type: swamp/apply-none",
+    "Cannot extend unregistered behavior type: swamp/apply-none",
   );
 });
 
@@ -1578,7 +1578,7 @@ Deno.test("ModelRegistry.extend: refuses control-plane types", () => {
     assertThrows(
       () => registry.extend(type, extensionMethod()),
       Error,
-      "Cannot extend control-plane model type",
+      "Cannot extend control-plane behavior type",
     );
     assertThrows(
       () =>
@@ -1588,7 +1588,7 @@ Deno.test("ModelRegistry.extend: refuses control-plane types", () => {
           {},
         ),
       Error,
-      "Cannot extend control-plane model type",
+      "Cannot extend control-plane behavior type",
     );
     assertEquals("addon_method" in registry.get(type)!.methods, false);
   }

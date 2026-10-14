@@ -248,7 +248,7 @@ export async function* dataSearch(
         if (!modelResult) {
           yield {
             kind: "error",
-            error: validationFailed(`Model not found: ${input.model}`),
+            error: validationFailed(`Behavior not found: ${input.model}`),
           };
           return;
         }

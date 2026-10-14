@@ -2059,6 +2059,31 @@ Deno.test("validateModel: resolved globalArgs also appear in unresolvedMethodArg
 
 // ---------- Check Selection Validation Tests ----------
 
+Deno.test("validateModel: a missing required check reads in behavior words, with the model spelling for swamp model", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { require: ["nonexistent-check"] },
+  });
+
+  const { results } = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  const type = testModelWithChecks.type.normalized;
+  assertEquals(
+    selResult?.error,
+    `Required check "nonexistent-check" not found on behavior type "${type}"`,
+  );
+  assertEquals(
+    selResult?.modelError,
+    `Required check "nonexistent-check" not found on model type "${type}"`,
+  );
+});
+
 Deno.test("validateModel check selection passes when no selection set", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({

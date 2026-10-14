@@ -19,6 +19,7 @@
 
 import type { ControlPlaneStore } from "./control_plane_store.ts";
 import { UserError } from "../errors.ts";
+import { markModelWording, wordedText } from "../behavior_wording.ts";
 
 /** Describes what a sync operation is about. */
 export interface SyncContext {
@@ -759,15 +760,16 @@ export class ModelLockLostError extends UserError {
           : "now released"
       })`
     ).join(", ");
-    super(
+    const worded = wordedText((w) =>
       `This run lost its lock on ${names} before pushing: the lock was ` +
-        `force-released or taken over by another process, which may have ` +
-        `written the same data version.\nNothing was pushed, and this ` +
-        `host's copy of the model's data was refreshed from the datastore, ` +
-        `which may replace what this run wrote. Run the method or workflow ` +
-        `again.`,
-      "model_lock_lost",
+      `force-released or taken over by another process, which may have ` +
+      `written the same data version.\nNothing was pushed, and this ` +
+      `host's copy of the ${w.noun}'s data was refreshed from the datastore, ` +
+      `which may replace what this run wrote. Run the method or workflow ` +
+      `again.`
     );
+    super(worded.text, "model_lock_lost");
+    markModelWording(this, worded.modelText);
     this.name = "ModelLockLostError";
     this.lost = lost;
   }

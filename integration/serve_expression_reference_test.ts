@@ -460,7 +460,7 @@ Deno.test("serve expressions: run inputs are authorized against the caller", asy
           assertRefused(envFrames, "env from a run-only caller");
           assertStringIncludes(
             errorFrame(envFrames)!.error!.message,
-            "reference it in the model definition",
+            "reference it in the behavior definition",
           );
           assertRefused(
             await run(

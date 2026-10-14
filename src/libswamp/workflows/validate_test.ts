@@ -196,8 +196,8 @@ Deno.test("workflowValidate: warning does not affect passed aggregation", async 
       Promise.resolve([
         WorkflowValidationResult.pass("schema"),
         WorkflowValidationResult.warning(
-          "step inputs (model not found)",
-          "Model instance not found",
+          "step inputs (behavior not found)",
+          "Behavior instance not found",
         ),
       ]),
   });

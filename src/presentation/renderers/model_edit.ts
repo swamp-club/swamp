@@ -23,6 +23,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { carryModelWording } from "../../domain/behavior_wording.ts";
 
 class LogModelEditRenderer implements Renderer<ModelEditEvent> {
   handlers(): EventHandlers<ModelEditEvent> {
@@ -71,7 +72,7 @@ class LogModelEditRenderer implements Renderer<ModelEditEvent> {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }
@@ -86,7 +87,7 @@ class JsonModelEditRenderer implements Renderer<ModelEditEvent> {
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw carryModelWording(e.error, new UserError(e.error.message));
       },
     };
   }

@@ -24,6 +24,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
+import { messageFor } from "../../domain/behavior_wording.ts";
 import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 import { dim } from "@std/fmt/colors";
@@ -41,7 +42,6 @@ import {
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
-  envVarWarningMessage,
   surfaceNoun,
 } from "../command_surface.ts";
 
@@ -117,7 +117,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
         for (const detail of e.envVars) {
           writeContentLine(`${detail.path} uses ${detail.envVar}`);
         }
-        writeContentLine(envVarWarningMessage(this.surface, e.message));
+        writeContentLine(messageFor(e, this.surface));
       },
       evaluating_expressions: () => {},
       executing: (e) => {
@@ -282,6 +282,8 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
 class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
   private _failed = false;
 
+  constructor(private readonly surface: CommandSurface) {}
+
   handlers(): EventHandlers<ModelMethodRunEvent> {
     return {
       validating_inputs: () => {},
@@ -307,7 +309,7 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
             warning: "env_var_usage",
             modelName: e.modelName,
             envVars: e.envVars,
-            message: e.message,
+            message: messageFor(e, this.surface),
           },
           null,
           2,
@@ -362,7 +364,9 @@ export function createModelMethodRunRenderer(
 ): ModelMethodRunRenderer {
   switch (mode) {
     case "json":
-      return new JsonModelMethodRunRenderer();
+      return new JsonModelMethodRunRenderer(
+        opts.surface ?? DEFAULT_COMMAND_SURFACE,
+      );
     case "log":
       return new ConsoleModelMethodRunRenderer(opts);
   }

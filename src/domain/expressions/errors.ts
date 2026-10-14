@@ -17,6 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  markModelWording,
+  modelWording,
+  wordedText,
+} from "../behavior_wording.ts";
+
 /**
  * Base error for all expression-related errors.
  */
@@ -46,12 +52,10 @@ export class ModelNotFoundError extends ExpressionError {
     expression?: string,
     path?: string,
   ) {
-    super(
-      `Model not found: ${modelRef}`,
-      expression,
-      path,
-    );
+    const worded = wordedText((w) => `${w.Noun} not found: ${modelRef}`);
+    super(worded.text, expression, path);
     this.name = "ModelNotFoundError";
+    markModelWording(this, worded.modelText);
   }
 }
 
@@ -89,6 +93,15 @@ export class UnresolvedExpressionError extends ExpressionError {
       cause,
     );
     this.name = "UnresolvedExpressionError";
+    // The wrapper adds text, so it builds its own model spelling from the
+    // cause's (swamp-club#3437).
+    const causeModelText = modelWording(cause);
+    if (causeModelText !== undefined) {
+      markModelWording(
+        this,
+        `Expression in ${path} could not be evaluated: ${causeModelText}`,
+      );
+    }
   }
 }
 

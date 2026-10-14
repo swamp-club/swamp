@@ -2348,9 +2348,9 @@ Deno.test("extensionPushPrepare: a model without a literal version is an uncatal
     assertEquals(findings[0].line, undefined);
     assertEquals(
       findings[0].message,
-      "Model export has no string-literal version in its export const model " +
-        "object, so the registry catalog will not list this model type. " +
-        "The extension still installs and the model still runs.",
+      "Behavior export has no string-literal version in its export const model " +
+        "object, so the registry catalog will not list this behavior type. " +
+        "The extension still installs and the behavior still runs.",
     );
     assertStringIncludes(findings[0].remediation ?? "", "repeating both");
     assertEquals(result.reviewRulesResult.errors, []);
@@ -2375,11 +2375,11 @@ Deno.test("extensionPushPrepare: the uncatalogued-model message names an annotat
     );
     assertStringIncludes(
       messages.get(paths["models/a.ts"]) ?? "",
-      "Model export has a type annotation, so it is not read as a plain",
+      "Behavior export has a type annotation, so it is not read as a plain",
     );
     assertStringIncludes(
       messages.get(paths["models/b.ts"]) ?? "",
-      "Model export has neither a string-literal type nor a string-literal version",
+      "Behavior export has neither a string-literal type nor a string-literal version",
     );
   });
 });

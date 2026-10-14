@@ -639,7 +639,7 @@ export async function checkVersionConsistency(
       check: "version-drift",
       output:
         `manifest version "${manifestVersion}" was not bumped but one or ` +
-        `more model versions changed (bump the manifest version)`,
+        `more behavior versions changed (bump the manifest version)`,
     });
   }
 
@@ -684,9 +684,9 @@ export async function checkUpgradeChainConsistency(
           `${
             basename(file)
           }: last upgrade toVersion "${lastToVersion}" does not match ` +
-          `model version "${modelVersion}". The upgrade chain must terminate ` +
+          `behavior version "${modelVersion}". The upgrade chain must terminate ` +
           `at the current version — add an upgrade entry for "${modelVersion}" ` +
-          `or update the model version to match.`,
+          `or update the behavior version to match.`,
       });
     }
   }
@@ -728,10 +728,11 @@ export async function checkVersionBumpWithoutUpgrade(
 
     issues.push({
       check: "version-bump-upgrade",
-      output: `${basename(file)}: model has version "${modelVersion}" but no ` +
+      output:
+        `${basename(file)}: behavior has version "${modelVersion}" but no ` +
         `upgrades array. Existing instances will not auto-migrate to this ` +
         `version. Add an upgrades entry (even a no-op) — see ` +
-        `references/extension/references/model/upgrades.md. If this model ` +
+        `references/extension/references/model/upgrades.md. If this behavior ` +
         `is new and has never been published, pass --skip-upgrade-check ` +
         `to acknowledge.`,
     });

@@ -70,14 +70,21 @@ import {
 } from "../expressions/schema_path_validator.ts";
 import { freeRoots, typeChecksAsConstant } from "../expressions/cel_grammar.ts";
 import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
+import {
+  markModelWording,
+  type WordedText,
+  wordedText,
+} from "../behavior_wording.ts";
 
 /**
  * The second remedy for template-like text, for when it is another service's
  * syntax rather than a swamp expression with its syntax slightly wrong. The
  * example rebuilds the matched form, so it differs per form.
  */
-function foreignTemplateRemedy(example: string): string {
-  return `If this is another service's template syntax, pass it through with literal(), e.g. ${example}, or have the model type declare the field with .meta({ foreignTemplate: true }).`;
+function foreignTemplateRemedy(example: string): WordedText {
+  return wordedText((w) =>
+    `If this is another service's template syntax, pass it through with literal(), e.g. ${example}, or have the ${w.noun} type declare the field with .meta({ foreignTemplate: true }).`
+  );
 }
 
 /**
@@ -86,7 +93,7 @@ function foreignTemplateRemedy(example: string): string {
  */
 const MALFORMED_EXPRESSION_MESSAGES: Record<
   TemplateSyntaxForm,
-  { issue: string; suggestion: string; remedy?: string }
+  { issue: string; suggestion: string; remedy?: WordedText }
 > = {
   "bare-double-brace": {
     issue: "Expression uses {{...}} instead of ${{...}}",
@@ -117,6 +124,16 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
 export const FOREIGN_TEMPLATE_WARNING_NAME = "Template syntax passed through";
 
 /**
+ * The env-var usage warning in both spellings. Shared by validation, method
+ * runs and workflow runs, so all three say the same thing.
+ */
+export function envVarWarningText(): WordedText {
+  return wordedText((w) =>
+    `Data stored under this ${w.noun} will vary depending on these environment variables at runtime. Consider using separate ${w.nouns} per environment, or vault.get() for sensitive values.`
+  );
+}
+
+/**
  * Value object representing a validation warning.
  *
  * Warnings do not cause validation to fail — they surface information
@@ -130,7 +147,14 @@ export class ValidationWarning {
     readonly message: string,
     readonly details?: EnvVarUsageDetail[],
     readonly templates?: ForeignTemplateDetail[],
-  ) {}
+    /**
+     * The message in model words, printed under `swamp model …`
+     * (swamp-club#3437). Equal to `message` when no word differs.
+     */
+    readonly modelMessage: string = message,
+  ) {
+    markModelWording(this, modelMessage);
+  }
 
   /**
    * Creates a warning about environment variable usage in a model definition.
@@ -138,12 +162,13 @@ export class ValidationWarning {
   static envVarUsage(
     envVars: EnvVarUsageDetail[],
   ): ValidationWarning {
-    const message =
-      "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.";
+    const worded = envVarWarningText();
     return new ValidationWarning(
       "Environment variables detected",
-      message,
+      worded.text,
       envVars,
+      undefined,
+      worded.modelText,
     );
   }
 
@@ -155,13 +180,16 @@ export class ValidationWarning {
   static foreignTemplateSyntax(
     templates: ForeignTemplateDetail[],
   ): ValidationWarning {
-    const message =
-      "This text is not a swamp expression and is passed to the method unchanged. If you meant a swamp expression, write ${{ ... }} and reference one of swamp's namespaces (model, self, inputs, env, vault, data). If it is another service's template syntax, the model type can declare the field with .meta({ foreignTemplate: true }) to silence this warning.";
+    // `model` in the namespace list is the expression namespace, not a noun.
+    const worded = wordedText((w) =>
+      `This text is not a swamp expression and is passed to the method unchanged. If you meant a swamp expression, write \${{ ... }} and reference one of swamp's namespaces (model, self, inputs, env, vault, data). If it is another service's template syntax, the ${w.noun} type can declare the field with .meta({ foreignTemplate: true }) to silence this warning.`
+    );
     return new ValidationWarning(
       FOREIGN_TEMPLATE_WARNING_NAME,
-      message,
+      worded.text,
       undefined,
       templates,
+      worded.modelText,
     );
   }
 
@@ -171,7 +199,8 @@ export class ValidationWarning {
   equals(other: ValidationWarning): boolean {
     return (
       this.name === other.name &&
-      this.message === other.message
+      this.message === other.message &&
+      this.modelMessage === other.modelMessage
     );
   }
 }
@@ -212,6 +241,11 @@ export class ValidationResult {
      * equality on `error` covers them.
      */
     readonly expressionErrors?: readonly ExpressionPathError[],
+    /**
+     * `error` in model words, printed under `swamp model …`
+     * (swamp-club#3437). Equal to `error` when no word differs.
+     */
+    readonly modelError: string | undefined = error,
   ) {}
 
   /**
@@ -228,8 +262,15 @@ export class ValidationResult {
     name: string,
     error: string,
     expressionErrors?: readonly ExpressionPathError[],
+    modelError: string = error,
   ): ValidationResult {
-    return new ValidationResult(name, false, error, expressionErrors);
+    return new ValidationResult(
+      name,
+      false,
+      error,
+      expressionErrors,
+      modelError,
+    );
   }
 
   /**
@@ -385,6 +426,52 @@ export function formatExpressionPathErrors(
   }
   for (const remedy of distinctRemedies(errors)) lines.push(remedy);
   return lines.join("\n");
+}
+
+/**
+ * Where an expression path error keeps its model-words counterpart. A
+ * module-private symbol on a non-enumerable property, so JSON output never
+ * sees it (swamp-club#3437).
+ */
+const MODEL_SPELLING = Symbol("swamp.expressionPathErrorModelSpelling");
+
+/**
+ * An expression path error whose `error` and `remedy` read in behavior words,
+ * carrying its model-words counterpart for `swamp model …`.
+ */
+function wordedPathError(
+  base: Omit<ExpressionPathError, "error" | "remedy">,
+  error: WordedText,
+  remedy?: WordedText,
+): ExpressionPathError {
+  const inWords = (
+    pick: (worded: WordedText) => string,
+  ): ExpressionPathError => ({
+    ...base,
+    error: pick(error),
+    ...(remedy === undefined ? {} : { remedy: pick(remedy) }),
+  });
+  const behavior = inWords((worded) => worded.text);
+  Object.defineProperty(behavior, MODEL_SPELLING, {
+    value: inWords((worded) => worded.modelText),
+    enumerable: false,
+    writable: false,
+    configurable: true,
+  });
+  return behavior;
+}
+
+/**
+ * `error` as `swamp model …` prints it: its model-words counterpart, or
+ * `error` itself when no word differs.
+ */
+export function expressionPathErrorInModelWords(
+  error: ExpressionPathError,
+): ExpressionPathError {
+  const counterpart = (error as unknown as Record<symbol, unknown>)[
+    MODEL_SPELLING
+  ];
+  return (counterpart as ExpressionPathError | undefined) ?? error;
 }
 
 /**
@@ -869,12 +956,11 @@ export class DefaultModelValidationService implements ModelValidationService {
     const errors: ExpressionPathError[] = malformed.map((m) => {
       const { issue, suggestion, remedy } =
         MALFORMED_EXPRESSION_MESSAGES[m.form];
-      return {
-        expression: m.text,
-        error: `${issue} at "${m.path}"`,
-        suggestion,
-        ...(remedy === undefined ? {} : { remedy }),
-      };
+      return wordedPathError(
+        { expression: m.text, suggestion },
+        wordedText(() => `${issue} at "${m.path}"`),
+        remedy,
+      );
     });
 
     // An unclosed expression already has its error; its references would
@@ -987,6 +1073,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       "Expression paths",
       formatExpressionPathErrors(errors),
       errors,
+      formatExpressionPathErrors(errors.map(expressionPathErrorInModelWords)),
     );
   }
 
@@ -1117,10 +1204,10 @@ export class DefaultModelValidationService implements ModelValidationService {
     // Look up the referenced model
     const result = await definitionRepo.findByNameGlobal(ref.modelRef);
     if (!result) {
-      return {
-        expression: ref.rawExpression,
-        error: `Referenced model "${ref.modelRef}" not found`,
-      };
+      return wordedPathError(
+        { expression: ref.rawExpression },
+        wordedText((w) => `Referenced ${w.noun} "${ref.modelRef}" not found`),
+      );
     }
 
     // Ensure the referenced type is fully loaded — without this,
@@ -1129,11 +1216,12 @@ export class DefaultModelValidationService implements ModelValidationService {
     await modelRegistry.ensureTypeLoaded(result.type);
     const targetDefinition = modelRegistry.get(result.type);
     if (!targetDefinition) {
-      return {
-        expression: ref.rawExpression,
-        error:
-          `Unknown model type "${result.type.normalized}" for model "${ref.modelRef}"`,
-      };
+      return wordedPathError(
+        { expression: ref.rawExpression },
+        wordedText((w) =>
+          `Unknown ${w.noun} type "${result.type.normalized}" for ${w.noun} "${ref.modelRef}"`
+        ),
+      );
     }
 
     // Get the appropriate schema based on type and determine path to validate
@@ -1154,12 +1242,17 @@ export class DefaultModelValidationService implements ModelValidationService {
         : [];
 
       if (availableSpecs.length > 0 && !availableSpecs.includes(specName)) {
-        return {
-          expression: ref.rawExpression,
-          error:
-            `Unknown resource spec "${specName}" on model "${ref.modelRef}"`,
-          suggestion: `Available resource specs: ${availableSpecs.join(", ")}`,
-        };
+        return wordedPathError(
+          {
+            expression: ref.rawExpression,
+            suggestion: `Available resource specs: ${
+              availableSpecs.join(", ")
+            }`,
+          },
+          wordedText((w) =>
+            `Unknown resource spec "${specName}" on ${w.noun} "${ref.modelRef}"`
+          ),
+        );
       }
 
       // path[1] is the instanceName — skip validation (any name is valid)
@@ -1217,11 +1310,15 @@ export class DefaultModelValidationService implements ModelValidationService {
         : [];
 
       if (availableSpecs.length > 0 && !availableSpecs.includes(specName)) {
-        return {
-          expression: ref.rawExpression,
-          error: `Unknown file spec "${specName}" on model "${ref.modelRef}"`,
-          suggestion: `Available file specs: ${availableSpecs.join(", ")}`,
-        };
+        return wordedPathError(
+          {
+            expression: ref.rawExpression,
+            suggestion: `Available file specs: ${availableSpecs.join(", ")}`,
+          },
+          wordedText((w) =>
+            `Unknown file spec "${specName}" on ${w.noun} "${ref.modelRef}"`
+          ),
+        );
       }
 
       // path[1] is the instanceName — skip validation (any name is valid)
@@ -1360,7 +1457,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     definition: Definition,
     modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
-    const errors: string[] = [];
+    const errors: WordedText[] = [];
 
     // Validate appliesTo references existing methods
     if (modelDef.checks) {
@@ -1369,13 +1466,17 @@ export class DefaultModelValidationService implements ModelValidationService {
         if (check.appliesTo) {
           if (check.appliesTo.length === 0) {
             errors.push(
-              `Check "${checkName}" has empty appliesTo array — it will never run. Remove appliesTo to run on all mutating methods`,
+              wordedText(() =>
+                `Check "${checkName}" has empty appliesTo array — it will never run. Remove appliesTo to run on all mutating methods`
+              ),
             );
           }
           for (const methodName of check.appliesTo) {
             if (!availableMethods.has(methodName)) {
               errors.push(
-                `Check "${checkName}" references unknown method "${methodName}" in appliesTo`,
+                wordedText(() =>
+                  `Check "${checkName}" references unknown method "${methodName}" in appliesTo`
+                ),
               );
             }
           }
@@ -1397,7 +1498,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       for (const name of selection.require) {
         if (!availableChecks.has(name)) {
           errors.push(
-            `Required check "${name}" not found on model type "${modelDef.type.normalized}"`,
+            wordedText((w) =>
+              `Required check "${name}" not found on ${w.noun} type "${modelDef.type.normalized}"`
+            ),
           );
         }
       }
@@ -1408,7 +1511,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       for (const name of selection.skip) {
         if (!availableChecks.has(name)) {
           errors.push(
-            `Skipped check "${name}" not found on model type "${modelDef.type.normalized}"`,
+            wordedText((w) =>
+              `Skipped check "${name}" not found on ${w.noun} type "${modelDef.type.normalized}"`
+            ),
           );
         }
       }
@@ -1421,7 +1526,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
       for (const name of overlap) {
         errors.push(
-          `Check "${name}" is in both require and skip lists — skip takes precedence`,
+          wordedText(() =>
+            `Check "${name}" is in both require and skip lists — skip takes precedence`
+          ),
         );
       }
     }
@@ -1431,7 +1538,12 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     return Promise.resolve(
-      ValidationResult.fail("Check selection", errors.join("; ")),
+      ValidationResult.fail(
+        "Check selection",
+        errors.map((e) => e.text).join("; "),
+        undefined,
+        errors.map((e) => e.modelText).join("; "),
+      ),
     );
   }
 }

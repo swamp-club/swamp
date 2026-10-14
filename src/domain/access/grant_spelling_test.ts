@@ -47,7 +47,7 @@ Deno.test("findGrantSpellingIssues: names the canonical spelling of a model sele
     });
     assertEquals(finding.part, "selector");
     assertEquals(finding.canonical, canonical);
-    assertStringIncludes(finding.message, "no model type");
+    assertStringIncludes(finding.message, "no behavior type");
   }
 });
 
@@ -142,12 +142,15 @@ Deno.test("findGrantSpellingIssues: an allow message reads a wildcard as a patte
     effect: "allow",
     resource: { kind: "model", pattern: "@Acme/*" },
   });
-  assertStringIncludes(wildcard.message, "model names matching '@Acme/*'");
+  assertStringIncludes(wildcard.message, "behavior names matching '@Acme/*'");
   const [exact] = findGrantSpellingIssues({
     effect: "allow",
     resource: { kind: "model", pattern: "AWS::EC2::VPC" },
   });
-  assertStringIncludes(exact.message, "a model named exactly 'AWS::EC2::VPC'");
+  assertStringIncludes(
+    exact.message,
+    "a behavior named exactly 'AWS::EC2::VPC'",
+  );
 });
 
 Deno.test("findGrantSpellingIssues: literal messages fit exact, prefix and fragment matches", () => {
@@ -185,7 +188,7 @@ Deno.test("findGrantSpellingIssues: an allow that may name model names offers bo
   });
   assertStringIncludes(
     finding.message,
-    "matches a model named exactly 'Prod-DB' as written and no model type",
+    "matches a behavior named exactly 'Prod-DB' as written and no behavior type",
   );
   assertStringIncludes(finding.message, "write 'model:prod-db'");
 });

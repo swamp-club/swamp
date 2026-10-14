@@ -166,9 +166,9 @@ async function adminOnlyStepFields(
 function describe(target: StepTarget): string {
   switch (target.kind) {
     case "model":
-      return `model ${target.modelIdOrName} method ${target.methodName}`;
+      return `behavior ${target.modelIdOrName} method ${target.methodName}`;
     case "direct":
-      return `model ${target.modelName} (${target.modelType}) method ${target.methodName}`;
+      return `behavior ${target.modelName} (${target.modelType}) method ${target.methodName}`;
     case "workflow":
       return `workflow ${target.workflowIdOrName}`;
   }

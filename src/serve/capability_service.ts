@@ -191,7 +191,7 @@ export class CapabilityService {
     const requested = ModelType.create(paramModelType).normalized;
     if (requested !== dispatch.modelType.normalized) {
       throw new Error(
-        `${verb}: model type '${requested}' is outside the active dispatch scope`,
+        `${verb}: behavior type '${requested}' is outside the active dispatch scope`,
       );
     }
   }
@@ -375,7 +375,7 @@ export class CapabilityService {
     });
     if (leaked) {
       throw new Error(
-        "Query matched access-control or infrastructure model data which is not permitted from workers",
+        "Query matched access-control or infrastructure behavior data which is not permitted from workers",
       );
     }
     return records.map((record) => jsonSafeClone(record));

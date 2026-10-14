@@ -33,7 +33,7 @@ import {
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound, type SwampError } from "../errors.ts";
+import { behaviorNotFound, notFound, type SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
@@ -161,7 +161,7 @@ export async function* dataVersions(
       );
       const result = await lookupDefinition(input.modelIdOrName);
       if (!result) {
-        yield { kind: "error", error: notFound("Model", input.modelIdOrName) };
+        yield { kind: "error", error: behaviorNotFound(input.modelIdOrName) };
         return;
       }
       const { definition, type: modelType } = result;
@@ -177,7 +177,7 @@ export async function* dataVersions(
           kind: "error",
           error: notFound(
             "Data",
-            `"${input.dataName}" for model "${input.modelIdOrName}"`,
+            `"${input.dataName}" for behavior "${input.modelIdOrName}"`,
           ),
         };
         return;

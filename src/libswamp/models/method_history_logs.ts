@@ -32,7 +32,12 @@ import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_outp
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
-import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import {
+  type SwampError,
+  validationFailed,
+  wordedSwampError,
+} from "../errors.ts";
+import { wordedText } from "../../domain/behavior_wording.ts";
 import {
   type OutputReference,
   type OutputReferenceDeps,
@@ -183,24 +188,32 @@ export async function* modelMethodHistoryLogs(
         case "not_found":
           yield {
             kind: "error",
-            error: {
-              code: "not_found",
-              message:
-                `No method run or model found: ${input.outputIdOrModelName}`,
-              details: {
+            error: wordedSwampError(
+              "not_found",
+              wordedText((w) =>
+                `No method run or ${w.noun} found: ${input.outputIdOrModelName}`
+              ),
+              {
                 entityType: "Method run or model",
                 idOrName: input.outputIdOrModelName,
               },
-            },
+            ),
           };
           return;
         case "model":
           if (!reference.latest) {
             yield {
               kind: "error",
-              error: notFound(
-                "Run",
-                `for model: ${reference.definition.name}`,
+              // The details keep notFound's shape; only the text is worded.
+              error: wordedSwampError(
+                "not_found",
+                wordedText((w) =>
+                  `Run not found: for ${w.noun}: ${reference.definition.name}`
+                ),
+                {
+                  entityType: "Run",
+                  idOrName: `for model: ${reference.definition.name}`,
+                },
               ),
             };
             return;

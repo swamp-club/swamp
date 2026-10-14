@@ -22,7 +22,7 @@ import { modelRegistry } from "./model.ts";
 import type { Definition, DefinitionId } from "../definitions/definition.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { UserError } from "../errors.ts";
+import { wordedText, wordedUserError } from "../behavior_wording.ts";
 
 /**
  * UUID regex pattern for detecting if an argument is a UUID (versions 1-8).
@@ -213,7 +213,11 @@ export function createModelReferenceResolver(
 ): (idOrName: string) => Promise<{ modelType: string; modelId: string }> {
   return async (idOrName) => {
     const found = await findDefinitionByIdOrName(definitionRepo, idOrName);
-    if (!found) throw new UserError(`Model not found: ${idOrName}`);
+    if (!found) {
+      throw wordedUserError(
+        wordedText((w) => `${w.Noun} not found: ${idOrName}`),
+      );
+    }
     return { modelType: found.type.normalized, modelId: found.definition.id };
   };
 }

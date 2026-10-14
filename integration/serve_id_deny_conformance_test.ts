@@ -1077,7 +1077,7 @@ Deno.test("serve id-deny conformance: an empty data model name takes the every-m
       ),
     );
     assertEquals(got?.error?.code, "data_get_failed");
-    assertStringIncludes(got!.error!.message, "model name or --workflow");
+    assertStringIncludes(got!.error!.message, "behavior name or --workflow");
 
     // data.list: takes the any-grant path whose results are filtered per
     // item, not a named check on "".
@@ -1535,7 +1535,7 @@ Deno.test("serve id-deny conformance: an output whose model's type is not regist
     );
     assertEquals(errorFrame(frames)?.error, {
       code: "model_output_get_failed",
-      message: `Output or model not found: ${prefix}`,
+      message: `Output or behavior not found: ${prefix}`,
     });
   });
 });
@@ -1992,7 +1992,7 @@ Deno.test("serve id-deny conformance: model() by a denied or missing model fails
       assertEquals(error?.error?.code, "data_query_failed", label);
       assertEquals(
         error?.error?.message,
-        `Model not found: ${reference}`,
+        `Behavior not found: ${reference}`,
         label,
       );
       // Only the argument is echoed: the denied model's id never leaks
@@ -2034,7 +2034,7 @@ Deno.test("serve id-deny conformance: behavior() is authorized exactly as model(
       assertEquals(error?.error?.code, "data_query_failed", label);
       assertEquals(
         error?.error?.message,
-        `Model not found: ${reference}`,
+        `Behavior not found: ${reference}`,
         label,
       );
       if (reference !== f.prodModel.id) {

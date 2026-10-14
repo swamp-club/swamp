@@ -29,6 +29,13 @@ import {
 } from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
+  markModelWording,
+  wordedError,
+  wordedText,
+  wordedUserError,
+} from "../../domain/behavior_wording.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
+import {
   V3ReplicationError,
   V3ReplicationUnavailableError,
 } from "../../domain/datastore_v3/litestream_replication.ts";
@@ -995,4 +1002,79 @@ Deno.test("buildErrorJson: a refused signal carries the refusal, and the key's l
     ),
     { error: "expired", code: "validation_failed", refusal: "expired" },
   );
+});
+
+/** Captures what `fn` writes with console.error. */
+function captureStderr(fn: () => void): string {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    fn();
+  } finally {
+    console.error = originalError;
+  }
+  return logs.join("\n");
+}
+
+Deno.test("renderError: a worded error prints the spelling of the command tree (swamp-club#3437)", () => {
+  const error = wordedUserError(wordedText((w) => `${w.Noun} not found: x`));
+  const underModel = captureStderr(() => renderError(error, "log", "model"));
+  assertStringIncludes(underModel, "Model not found: x");
+  const underBehavior = captureStderr(() =>
+    renderError(error, "log", "behavior")
+  );
+  assertStringIncludes(underBehavior, "Behavior not found: x");
+  // Outside both trees, the surface defaults to behavior.
+  assertStringIncludes(
+    captureStderr(() => renderError(error, "log")),
+    "Behavior not found: x",
+  );
+});
+
+Deno.test("buildErrorJson: the error text follows the surface and adds no fields", () => {
+  const error = wordedUserError(
+    wordedText((w) => `${w.Noun} not found: x`),
+    "not_found",
+  );
+  assertEquals(buildErrorJson(error, "model"), {
+    error: "Model not found: x",
+    code: "not_found",
+  });
+  assertEquals(buildErrorJson(error, "behavior"), {
+    error: "Behavior not found: x",
+    code: "not_found",
+  });
+});
+
+Deno.test("renderError: a libswamp not-found keeps its model spelling through userErrorFromSwampError", () => {
+  // The shape libswamp's behaviorNotFound returns.
+  const swampError = markModelWording(
+    { code: "not_found", message: "Behavior not found: my-server" },
+    "Model not found: my-server",
+  );
+  const error = userErrorFromSwampError(swampError);
+  const json = captureStderr(() => renderError(error, "json", "model"));
+  assertEquals(JSON.parse(json).error, "Model not found: my-server");
+  const log = captureStderr(() => renderError(error, "log", "behavior"));
+  assertStringIncludes(log, "Behavior not found: my-server");
+});
+
+Deno.test("renderError: a worded plain Error prints the model spelling in log mode under swamp model", async () => {
+  const records: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => records.push(args.join(" "));
+  try {
+    await initializeLogging({});
+    renderError(
+      wordedError(wordedText((w) => `${w.Noun} type cannot be empty`)),
+      "log",
+      "model",
+    );
+  } finally {
+    console.error = originalError;
+  }
+  const output = records.join("\n");
+  assertStringIncludes(output, "Model type cannot be empty");
+  assertEquals(output.includes("Behavior type"), false);
 });
