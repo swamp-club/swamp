@@ -3082,10 +3082,17 @@ loads for itself. `swamp serve` and the local
 dashboard child fill the cache in the background once they are listening
 (`RunIndexWarmup`, `src/serve/run_index_warmup.ts`). They read one workflow at
 a time, so requests that arrive meanwhile interleave with the warm-up or wait
-on the load it already has in flight. Shutdown aborts the warm-up before it
-drains runs, and waits for it after the drain. The warm-up passes its abort
-signal into each read, so a rebuild or repair in flight stops between records
-without writing the index.
+on the load it already has in flight. Before loading a workflow, the warm-up
+counts its record files; a workflow with more runs than the cache holds is
+skipped, since its snapshot would not be kept. That listing is repeated when
+the index is then read, a cost the warm-up pays only once at startup. Shutdown
+aborts the warm-up before it drains runs, and waits for it after the drain. The
+warm-up passes its abort signal into each read, so its own rebuild or repair
+stops between records without writing the index. Shutdown does not wait for the
+read in flight to end, though (swamp-club#3468): a plain read of an intact
+index, a load a request started, or a repair queued behind another reader does
+not watch that signal. The warm-up stops waiting for it at once and leaves it
+to finish in the background.
 
 Run search and run summary list workflows through
 `WorkflowRepository.findAllListings` (`WorkflowListing`: id, name, whether it
