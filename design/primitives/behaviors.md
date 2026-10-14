@@ -63,6 +63,8 @@ Argument names in help follow the spelling too: `behavior_id_or_name`,
 Shell completion offers the `behaviour` alias in zsh only: the bash and fish
 scripts Cliffy generates leave command aliases out, though typing
 `swamp behaviour` works in every shell.
+Telemetry records each `swamp behavior` command in its `swamp model` form and
+keeps the typed word in `commandSpelling` (see `design/operations.md`).
 
 These names stay `model`, because existing repos, workflows, extensions and
 scripts depend on them:

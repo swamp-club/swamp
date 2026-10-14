@@ -520,6 +520,12 @@ queries) are replaced with `<REDACTED>`. Only categorical values defined by
 swamp itself (like model types) are recorded. Option values are never recorded —
 only the option keys.
 
+`swamp behavior` and `swamp behaviour` commands are recorded in their
+`swamp model` form, so `swamp behavior run my-model deploy` is recorded as
+`swamp model method run my-model deploy`. The word you typed is kept in
+`commandSpelling` (`behavior`, `behaviour` or `model`). Commands outside these
+groups have no `commandSpelling`.
+
 ### Viewing Telemetry Stats
 
 `swamp telemetry stats` reads the user-global spool and summarizes recent

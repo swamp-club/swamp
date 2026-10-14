@@ -236,6 +236,7 @@ import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
 import {
   buildKnownSensitiveValues,
   resolveTelemetryInvocation,
+  toRecordedInvocation,
 } from "./telemetry_invocation.ts";
 import type { AnyCommand } from "./cli_schema.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -2433,7 +2434,9 @@ async function runInvocation(
           const sensitive: string[] = [];
           await recordAndFlushError(
             telemetryCtx,
-            resolveTelemetryInvocation(commandTree, args, sensitive),
+            toRecordedInvocation(
+              resolveTelemetryInvocation(commandTree, args, sensitive),
+            ),
             startTime,
             error,
             knownSensitiveValues(sensitive, repoDir),
@@ -2767,12 +2770,11 @@ async function runInvocation(
   // throws. Redaction is decided per declared argument, see
   // telemetry_invocation.ts (swamp-club#2817).
   // The raw values it redacts are kept only in memory, to scrub them exactly
-  // from an error message below; they are never recorded.
+  // from an error message below; they are never recorded. A `swamp behavior`
+  // invocation is recorded in its `swamp model` form (swamp-club#3411).
   const redactedValues: string[] = [];
-  const telemetryInvocation = resolveTelemetryInvocation(
-    cli,
-    args,
-    redactedValues,
+  const telemetryInvocation = toRecordedInvocation(
+    resolveTelemetryInvocation(cli, args, redactedValues),
   );
 
   bootstrapSpan.end();

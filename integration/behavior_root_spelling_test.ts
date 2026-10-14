@@ -30,7 +30,12 @@ import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStrictEquals } from "@std/assert";
 import { buildCommandTree } from "../src/cli/mod.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
-import { resolveTelemetryInvocation } from "../src/cli/telemetry_invocation.ts";
+import {
+  resolveTelemetryInvocation,
+  toRecordedInvocation,
+} from "../src/cli/telemetry_invocation.ts";
+import { behaviorTwinPath } from "../src/cli/behavior_twin.ts";
+import type { CommandInvocationData } from "../src/domain/telemetry/mod.ts";
 
 const root = buildCommandTree();
 
@@ -101,4 +106,111 @@ Deno.test("root: every model command has a behavior twin and every behavior comm
     assert(fromModel.includes(path), `behavior-only command: ${path}`);
   }
   assertEquals(fromModel.length, fromBehavior.length);
+});
+
+/** The recorded invocation for `args`, and the values it redacted. */
+function record(args: string[]): {
+  recorded: CommandInvocationData;
+  sensitive: string[];
+} {
+  const sensitive: string[] = [];
+  const recorded = toRecordedInvocation(
+    resolveTelemetryInvocation(root, args, sensitive),
+  );
+  return { recorded, sensitive };
+}
+
+/** `invocation` without its commandSpelling. */
+function withoutSpelling(
+  invocation: CommandInvocationData,
+): CommandInvocationData {
+  const { commandSpelling: _spelling, ...rest } = invocation;
+  return rest;
+}
+
+/**
+ * Every way to type the command at `path` under `group`: the last word as its
+ * name or as any of its aliases.
+ */
+function typedSpellings(group: string, path: string[]): string[][] {
+  if (path.length === 0) return [[]];
+  const leaf = at([group, ...path]);
+  const head = path.slice(0, -1);
+  return [leaf.getName(), ...leaf.getAliases()].map((word) => [...head, word]);
+}
+
+Deno.test("root: every behavior spelling records exactly what its swamp model spelling records (swamp-club#3411)", () => {
+  const modelPaths = [[], ...commandPaths(at(["model"]))]
+    .filter((path) => !(path.length === 1 && path[0] === "method"));
+  let checked = 0;
+  for (const modelPath of modelPaths) {
+    const behaviorPath = modelPath[0] === "method"
+      ? modelPath.slice(1)
+      : modelPath;
+    const positionals = at(["model", ...modelPath]).getArguments()
+      .map((_arg: unknown, index: number) => `value-${index}`);
+    const behaviorSpellings = typedSpellings("behavior", behaviorPath);
+    const modelSpellings = typedSpellings("model", modelPath);
+    assertEquals(behaviorSpellings.length, modelSpellings.length);
+    for (const [index, typed] of behaviorSpellings.entries()) {
+      for (const tail of [[], [...positionals, "--json"]]) {
+        const model = record(["model", ...modelSpellings[index], ...tail]);
+        assertEquals(model.recorded.commandSpelling, "model");
+        for (const spelling of ["behavior", "behaviour"]) {
+          const label = [spelling, ...typed, ...tail].join(" ");
+          const behavior = record([spelling, ...typed, ...tail]);
+          assertEquals(behavior.recorded.commandSpelling, spelling, label);
+          assertEquals(
+            withoutSpelling(behavior.recorded),
+            withoutSpelling(model.recorded),
+            label,
+          );
+          assertEquals(behavior.sensitive, model.sensitive, label);
+          checked++;
+        }
+      }
+    }
+  }
+  // Every command, both root spellings, with and without positionals.
+  assert(checked >= modelPaths.length * 4, `checked ${checked}`);
+});
+
+Deno.test("root: every behavior path's twin resolves in the model tree (swamp-club#3411)", () => {
+  for (const path of [[], ...behaviorPaths]) {
+    for (const spelling of ["behavior", "behaviour"]) {
+      const twin = behaviorTwinPath([spelling, ...path]);
+      assertEquals(twin[0], "model");
+      const command = at(twin);
+      assertEquals(command.getName(), twin.at(-1), twin.join(" "));
+      // The group roots differ by the method level; below them, a twin has
+      // the same subcommands.
+      if (path.length === 0) continue;
+      assertEquals(
+        command.getCommands(true).map((c: AnyCommand) => c.getName()).sort(),
+        at(["behavior", ...path]).getCommands(true)
+          .map((c: AnyCommand) => c.getName()).sort(),
+        twin.join(" "),
+      );
+    }
+  }
+});
+
+Deno.test("root: other groups record no commandSpelling (swamp-club#3411)", () => {
+  for (
+    const args of [
+      [],
+      ["workflow", "run", "w"],
+      ["data", "get", "m", "d"],
+      ["help", "behavior"],
+      ["nope"],
+    ]
+  ) {
+    const { recorded } = record(args);
+    assertEquals("commandSpelling" in recorded, false, args.join(" "));
+    assertEquals(
+      recorded,
+      resolveTelemetryInvocation(root, args, []),
+      args.join(" "),
+    );
+  }
 });

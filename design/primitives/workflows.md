@@ -3739,6 +3739,8 @@ method run <name> <method>` invocation: `command="model"`,
 `subcommand="method"`, `args=["run", <modelName>, <methodName>]` and
 `commandPath=["model", "method", "run"]`. Analytics that group by command or
 method therefore count direct and workflow-internal invocations the same way.
+Children carry no `commandSpelling`, because no root word was typed for them;
+a direct invocation records the word typed (swamp-club#3411).
 Per-executor and per-behavior-type queries read `workflowContext` directly,
 without joining through the parent.
 

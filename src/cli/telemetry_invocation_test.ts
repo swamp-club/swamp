@@ -24,6 +24,7 @@ import {
   buildKnownSensitiveValues,
   REDACTED,
   resolveTelemetryInvocation,
+  toRecordedInvocation,
   UNKNOWN_OPTION,
 } from "./telemetry_invocation.ts";
 
@@ -541,4 +542,126 @@ Deno.test("buildKnownSensitiveValues: resolves values, adds locations, drops num
       "~/acme/x",
     ].sort(),
   );
+});
+
+Deno.test("toRecordedInvocation: records behavior run as model method run, keeping the typed spelling", () => {
+  const resolved = resolveTelemetryInvocation(buildTree(), [
+    "behaviour",
+    "run",
+    "my-model",
+    "deploy",
+    "--input",
+    "secret=x",
+  ]);
+  assertEquals(toRecordedInvocation(resolved), {
+    command: "model",
+    subcommand: "method",
+    args: ["run", "my-model", "deploy"],
+    optionKeys: ["--input"],
+    globalOptions: [],
+    commandPath: ["model", "method", "run"],
+    commandSpelling: "behaviour",
+  });
+});
+
+Deno.test("toRecordedInvocation: maps other behavior words directly", () => {
+  assertEquals(
+    toRecordedInvocation({
+      command: "behavior",
+      subcommand: "type",
+      args: ["get", "command/shell"],
+      optionKeys: [],
+      globalOptions: ["--json"],
+      commandPath: ["behavior", "type", "describe"],
+    }),
+    {
+      command: "model",
+      subcommand: "type",
+      args: ["get", "command/shell"],
+      optionKeys: [],
+      globalOptions: ["--json"],
+      commandPath: ["model", "type", "describe"],
+      commandSpelling: "behavior",
+    },
+  );
+  assertEquals(
+    toRecordedInvocation({
+      command: "behavior",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+      commandPath: ["behavior"],
+    }),
+    {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+      commandPath: ["model"],
+      commandSpelling: "behavior",
+    },
+  );
+});
+
+Deno.test("toRecordedInvocation: moves describe and history under method", () => {
+  assertEquals(
+    toRecordedInvocation({
+      command: "behavior",
+      subcommand: "history",
+      args: ["list", "q"],
+      optionKeys: [],
+      globalOptions: [],
+      commandPath: ["behavior", "history", "search"],
+    }),
+    {
+      command: "model",
+      subcommand: "method",
+      args: ["history", "list", "q"],
+      optionKeys: [],
+      globalOptions: [],
+      commandPath: ["model", "method", "history", "search"],
+      commandSpelling: "behavior",
+    },
+  );
+});
+
+Deno.test("toRecordedInvocation: model invocations gain only commandSpelling model", () => {
+  const resolved = resolveTelemetryInvocation(buildTree(), [
+    "model",
+    "method",
+    "run",
+    "my-model",
+    "deploy",
+  ]);
+  assertEquals(toRecordedInvocation(resolved), {
+    ...resolved,
+    commandSpelling: "model",
+  });
+});
+
+Deno.test("toRecordedInvocation: other groups are returned unchanged without commandSpelling", () => {
+  for (
+    const resolved of [
+      resolveTelemetryInvocation(buildTree(), []),
+      resolveTelemetryInvocation(buildTree(), ["vault", "get", "v", "k"]),
+      resolveTelemetryInvocation(buildTree(), ["nope", "x"]),
+    ]
+  ) {
+    const recorded = toRecordedInvocation(resolved);
+    assertEquals(recorded, resolved);
+    assertEquals("commandSpelling" in recorded, false);
+  }
+});
+
+Deno.test("toRecordedInvocation: leaves resolveTelemetryInvocation's raw behavior path alone", () => {
+  const resolved = resolveTelemetryInvocation(buildTree(), [
+    "behavior",
+    "get",
+    "x",
+  ]);
+  toRecordedInvocation(resolved);
+  assertEquals(resolved.command, "behavior");
+  assertEquals(resolved.commandPath, ["behavior", "get"]);
+  assertEquals(resolved.args, ["x"]);
+  assertEquals("commandSpelling" in resolved, false);
 });
