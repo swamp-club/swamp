@@ -26,6 +26,7 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { renderError } from "../output/error_output.ts";
 import {
   type DownloadProgress,
   type DownloadRetry,
@@ -257,5 +258,25 @@ export function createUpdateCheckRenderer(
       return new JsonUpdateCheckRenderer();
     case "log":
       return new LogUpdateCheckRenderer(options);
+  }
+}
+
+/**
+ * Renders a cancelled update (the user pressed Ctrl+C). Log mode prints a
+ * plain line, as other commands do for a cancel the user chose. JSON mode
+ * writes the error document to stderr with `code: "cancelled"`, so a script
+ * can tell a cancel from a failure without relying on the exit code alone.
+ */
+export function renderUpdateCancelled(
+  mode: OutputMode,
+  checkOnly: boolean,
+): void {
+  const message = checkOnly
+    ? "Update check cancelled."
+    : "Update cancelled. The installed swamp binary was not changed.";
+  if (mode === "json") {
+    renderError(new UserError(message, "cancelled"), mode);
+  } else {
+    getSwampLogger(["update"]).info(message);
   }
 }

@@ -17,14 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
 import { cancelled } from "../../libswamp/errors.ts";
 import type { UpdateCheckEvent } from "../../libswamp/update/check.ts";
 import {
   createUpdateCheckRenderer,
+  renderUpdateCancelled,
   type UpdateCheckRendererOptions,
 } from "./update_check.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+
+await initializeLogging({});
 
 const MB = 1024 * 1024;
 
@@ -233,4 +237,57 @@ Deno.test("createUpdateCheckRenderer: without a terminal lines are not cut", () 
     r.stderr.at(-1),
     "Retrying download (attempt 2/5): error reading a body from connection",
   );
+});
+
+/** Runs `fn`, returning what it wrote through each console method. */
+function captureConsole(fn: () => void): { out: string; err: string } {
+  const out: string[] = [];
+  const err: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    error: console.error,
+  };
+  console.log = (...args: unknown[]) => out.push(args.join(" "));
+  console.info = (...args: unknown[]) => out.push(args.join(" "));
+  console.error = (...args: unknown[]) => err.push(args.join(" "));
+  try {
+    fn();
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.error = original.error;
+  }
+  return { out: out.join("\n"), err: err.join("\n") };
+}
+
+Deno.test("renderUpdateCancelled: log mode prints a plain line, not an error", () => {
+  const { out, err } = captureConsole(() =>
+    renderUpdateCancelled("log", false)
+  );
+
+  assertStringIncludes(
+    out,
+    "Update cancelled. The installed swamp binary was not changed.",
+  );
+  assertEquals(out.includes("Error:"), false);
+  assertEquals(err, "");
+});
+
+Deno.test("renderUpdateCancelled: json mode writes the error with code cancelled to stderr", () => {
+  const { out, err } = captureConsole(() =>
+    renderUpdateCancelled("json", false)
+  );
+
+  assertEquals(out, "");
+  assertEquals(JSON.parse(err), {
+    error: "Update cancelled. The installed swamp binary was not changed.",
+    code: "cancelled",
+  });
+});
+
+Deno.test("renderUpdateCancelled: a cancelled check says only the check was cancelled", () => {
+  const { err } = captureConsole(() => renderUpdateCancelled("json", true));
+
+  assertEquals(JSON.parse(err).error, "Update check cancelled.");
 });

@@ -29,9 +29,11 @@ import {
   type UpdateCheckDeps,
 } from "../../libswamp/update/check.ts";
 import type { UpdateResult } from "../../domain/update/update_service.ts";
-import { renderError } from "../../presentation/output/error_output.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
-import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
+import {
+  createUpdateCheckRenderer,
+  renderUpdateCancelled,
+} from "../../presentation/renderers/update_check.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
@@ -648,14 +650,7 @@ export const updateCommand = new Command()
 
       if (renderer.cancelled) {
         spinner?.stop();
-        renderError(
-          new UserError(
-            options.check
-              ? "Update check cancelled."
-              : "Update cancelled. The installed swamp binary was not changed.",
-          ),
-          ctx.outputMode,
-        );
+        renderUpdateCancelled(ctx.outputMode, options.check ?? false);
         Deno.exitCode = 130;
         return;
       }
