@@ -81,15 +81,13 @@ const InventorySchema = z.object({
   ),
 }).strict();
 
-type Inventory = z.infer<typeof InventorySchema>;
-
 const INVENTORY = InventorySchema.parse(
   JSON.parse(
     await Deno.readTextFile(
       join(ROOT, "integration", "secret_sink_inventory.json"),
     ),
   ),
-) satisfies Inventory;
+);
 
 const DESIGN_DOC = await Deno.readTextFile(
   join(ROOT, "design", "enablers", "typed-secrets.md"),
@@ -110,7 +108,8 @@ const POLICY =
 function section71Destinations(doc: string): string[] {
   const start = doc.indexOf("### 7.1 Destination contract");
   assert(start >= 0, "design doc has no Section 7.1 heading");
-  const end = doc.indexOf("\n### ", start + 1);
+  const next = doc.indexOf("\n### ", start + 1);
+  const end = next < 0 ? doc.length : next;
   const lines = doc.slice(start, end).split("\n");
   const names = new Set<string>();
   for (const line of lines) {
@@ -210,7 +209,7 @@ interface PrimitiveScan {
   family: string;
   pattern: RegExp;
   dirs?: readonly string[];
-  /** Fewest sites the scan must find, proving the pattern still matches. */
+  /** The scan must find more sites than this, proving the pattern matches. */
   floor: number;
 }
 

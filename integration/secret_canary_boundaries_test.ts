@@ -497,11 +497,13 @@ Deno.test(
         );
       }
       const holding: string[] = [];
+      let files = 0;
       for await (
         const entry of walk(join(repoDir, ".swamp", "secrets"), {
           includeDirs: false,
         })
       ) {
+        files++;
         const text = new TextDecoder("latin1").decode(
           await Deno.readFile(entry.path),
         );
@@ -509,11 +511,22 @@ Deno.test(
           const utf8 = new TextDecoder("latin1").decode(
             new TextEncoder().encode(canary.value),
           );
-          if (text.includes(utf8) || text.includes(canary.value.slice(0, 13))) {
+          // The whole value, or either random half alone.
+          const forms = [
+            utf8,
+            canary.value.slice(0, 13),
+            canary.value.slice(-10),
+          ];
+          if (forms.some((form) => text.includes(form))) {
             holding.push(`${canary.class}: ${entry.name}`);
           }
         }
       }
+      // Proves the walk reached the provider's storage.
+      assert(
+        files >= canaries.length,
+        `only ${files} files under .swamp/secrets`,
+      );
       assertEquals(holding, []);
     } finally {
       if (Deno.build.os === "windows") {
