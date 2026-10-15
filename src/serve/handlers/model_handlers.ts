@@ -160,6 +160,7 @@ import {
   authorizeAnyOrReject,
   authorizeOrReject,
   clientErrorDetails,
+  confirmRunReplicated,
   type ConnectionContext,
   exceptionTypeForClient,
   filterByResources,
@@ -1088,7 +1089,9 @@ export async function handleModelMethodRun(
             } else {
               await runUnderModelLocks(modelLocks, doRun);
             }
-            if (modelLocks) {
+            // With replication on, the terminal waits for the root's commit
+            // and its confirmation below (swamp-club#3489).
+            if (modelLocks && ctx.confirmReplicated === undefined) {
               buffer.finish({ kind: "done" });
               await detachedTelemetry?.finish(null);
             }
@@ -1102,9 +1105,21 @@ export async function handleModelMethodRun(
           }
         },
       );
-      if (!modelLocks) {
-        buffer.finish({ kind: "done" });
-        await detachedTelemetry?.finish(null);
+      if (!modelLocks || ctx.confirmReplicated !== undefined) {
+        // Reported finished only once its commits are replicated
+        // (swamp-club#3489); answered here, so a failure is not answered
+        // again below.
+        const unconfirmed = await confirmRunReplicated(
+          ctx,
+          "method_execution_failed",
+        );
+        if (unconfirmed === undefined) {
+          buffer.finish({ kind: "done" });
+          await detachedTelemetry?.finish(null);
+        } else {
+          buffer.finish({ kind: "error", ...unconfirmed });
+          await detachedTelemetry?.finish(new Error(unconfirmed.message));
+        }
       }
     } catch (error) {
       if (!answered) {

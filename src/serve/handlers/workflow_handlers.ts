@@ -211,6 +211,7 @@ import {
   cancelReasonFor,
   captureDecisionSubject,
   clientErrorDetails,
+  confirmRunReplicated,
   type ConnectionContext,
   exceptionTypeForClient,
   filterByResources,
@@ -653,7 +654,17 @@ export async function handleWorkflowRun(
           vaultAccess,
         },
       );
-      buffer.finish({ kind: "done" });
+      // Reported finished only once its commits are replicated
+      // (swamp-club#3489).
+      const unconfirmed = await confirmRunReplicated(
+        ctx,
+        "workflow_execution_failed",
+      );
+      buffer.finish(
+        unconfirmed === undefined
+          ? { kind: "done" }
+          : { kind: "error", ...unconfirmed },
+      );
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         buffer.finish({

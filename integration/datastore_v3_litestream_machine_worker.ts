@@ -34,6 +34,7 @@ import { setV3ReplicationForTesting } from "../src/infrastructure/datastore_v3/l
 import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import {
   closeV3Datastores,
+  confirmV3Replicated,
   ensureV3CopyCurrent,
   holdV3Writer,
   startV3ReplicationUpkeep,
@@ -71,6 +72,11 @@ export type MachineRequest =
     readonly close: boolean;
   }
   | { readonly kind: "close" }
+  /**
+   * Serve confirming a write request's commits before it answers
+   * (swamp-club#3489).
+   */
+  | { readonly kind: "confirm" }
   /** A read-only command: makes the copy current, counts its commits. */
   | { readonly kind: "read" }
   | { readonly kind: "pause"; readonly ms: number }
@@ -196,6 +202,8 @@ async function handle(request: MachineRequest): Promise<unknown> {
         );
         if (request.close) await closeV3Datastores();
       });
+    case "confirm":
+      return await inEnv(() => confirmV3Replicated(init!.datastorePath));
     case "close":
       return await inEnv(async () => {
         try {

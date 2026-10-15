@@ -206,6 +206,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/litestream_replication.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/litestream_replication.ts",
+  // swamp-club#3489: serve answers a write whose commits a sync did not
+  // confirm, or whose lease was fenced, with the CLI's error codes.
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/litestream_replication.ts",
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/writer_lease.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {

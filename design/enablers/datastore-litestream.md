@@ -618,6 +618,11 @@ at 1 GB. p50.
 > takeover, and a checkout-local `commits.db` while replicating (moved here
 > from 4E so D2 is testable end to end). See
 > [Phase 4D2](#phase-4d2-restore-refresh-and-takeover-swamp-club3482).
+>
+> **Built, dormant (swamp-club#3489, Phase 4D3):** serve confirms each write
+> request's commits before it answers, with concurrent requests sharing
+> syncs. See
+> [Phase 4D3](#phase-4d3-serve-confirms-each-write-request-swamp-club3489).
 
 
 - **4D: an idle sidecar for solo mode,** behind a pidfile and a short socket
@@ -778,8 +783,9 @@ and it never costs the lease. Abandoned lineages are kept in
 fence, or a 30 s probe that finds the sidecar not answering, replaces it through
 one tracked replacement at a time, which shutdown waits for. The closing sync
 gets what the drain left, and at least 10 s, so `--shutdown-drain-timeout 0`
-still syncs. Commits between drains replicate passively within Litestream's
-1–2 s lag. The maintenance timer also syncs the read model's unsynced files and
+still syncs. Commits between drains replicate within Litestream's 1–2 s lag,
+and since Phase 4D3 a write request waits for its own confirmation before it
+answers. The maintenance timer also syncs the read model's unsynced files and
 clears their list (swamp-club#3337), on start and every hour. This is the one
 change that is live on filesystem-v3 serve today, and it changes no file
 content. A systemd-managed serve needs `KillMode=mixed` or `process`: under the
@@ -949,7 +955,8 @@ publish at a time per datastore, so an earlier head is never published over
 a later one), on its 30-second
 replication probe as well as at its drains and shutdown, since its commits
 replicate passively. A takeover after serve dies keeps every commit up to its
-last probe; that interval is serve's loss window in solo mode. A retake after
+last probe. Since Phase 4D3 that window holds only commits nothing
+acknowledged: a write request publishes its own head before it answers. A retake after
 another writer makes the copy current through the same path, restoring into
 serve's open store in place, then prepares its lineage before it holds a
 sidecar again. From the retake until that restore lands, the copy is not
@@ -1022,6 +1029,135 @@ nothing unacknowledged but a failed writer's published head.
   needs a migration step (publish the shared database as the first
   lineage) before the setting is exposed.
 - Windows stays unavailable while the pin is below 0.5.18.
+
+## Phase 4D3: serve confirms each write request (swamp-club#3489)
+
+Dormant like D1 and D2. With replication off, serve sets no confirmation, and
+no request waits.
+
+**The gap.** D2 restores to the published head's high-water mark. Serve
+answered write requests before their commits were replicated, and published a
+head only on its 30 s probe, at drains and at shutdown. So a takeover after
+serve died could drop up to 30 s of writes serve had acknowledged. That breaks
+the decision above: a write waits for replication before it reports success.
+
+**The seam is the request, not the root.** Most serve handlers send their
+success reply inside their root unit of work, before the root commits, so a
+confirmation in the root's flush would come after the reply. Instead, dispatch
+wraps each write request in `confirmRequest` (`src/serve/handlers/shared.ts`):
+
+- While the handler runs, its replies for that request id are held. Run
+  events pass.
+- When the handler ends, serve calls `confirmV3Replicated` and then sends the
+  held replies in order. It does so only if serve's commit mark moved while
+  the handler ran. A wrapped request that committed nothing, such as
+  `run doctor` without `--fix`, never waits on other writers' commits.
+- A held reply that is already an error goes out without waiting.
+
+`CONFIRMED_WRITE_REQUESTS` (`src/serve/write_confirmation.ts`) names the
+wrapped requests:
+
+- every request gated for its push;
+- `model.method.run`, `workflow.run` and `workflow.resume`;
+- `workflow.cancel`;
+- `run.doctor`.
+
+A fitness rule pins the dispatch to that set. Over HTTP, the device-auth mint
+confirms its commits, outside the sync gate, before it hands out the token.
+Left out on purpose:
+
+- reads;
+- `model.validate`;
+- `vault.put`, whose secrets are always local;
+- `workflow.signal` and `workflow.trigger.*`, which write control-plane
+  records outside the commit log.
+
+**Runs.** On v3 a run is one root, so its steps' changes commit together when
+the root ends. No per-step commit exists to confirm, and step events stream
+unheld. Serve confirms where it reports a run finished:
+
+- an inline run's `done` waits in the request's hold;
+- a detached run (`workflow.run`, `model.method.run`, and resumes through
+  `startDetachedResume`, auto-resumes included) confirms before its buffer's
+  terminal.
+
+A run with model locks used to report `done` inside its root, while it held
+the locks. With replication on, it reports after the root and the
+confirmation, still before the locks are released. So a slow replica keeps
+the locks for up to the 10 s request deadline longer.
+
+**Group commit.** `ReplicationGroupCommit`
+(`src/domain/datastore_v3/replication_group_commit.ts`) runs one sync at a time
+per datastore. It is built on `syncAndPublish`, so it also serialises with the
+probe and the closing sync.
+
+- A request is confirmed by a successful sync whose published head covers the
+  high-water mark read after its commits landed.
+- Requests waiting when a sync starts are covered by it. A request that
+  arrives during a sync waits for the next one, unless the head that sync
+  publishes covers it anyway.
+- The next sync starts as soon as the current one settles, for every request
+  still waiting.
+- A request whose commits an earlier head already covers does not sync.
+- A failed sync rejects only the requests it covered. A sync that publishes no
+  head, from the bare-sync fallback or with no sidecar held (released for a
+  replacement, or closed), confirms nothing.
+
+**Failure** follows the CLI:
+
+- an unconfirmed sync answers `datastore_v3_replication_unconfirmed`;
+- a fenced lease answers `datastore_v3_writer_fenced`, with the published
+  wording from D2;
+- a commit that fails after the handler queued its success replaces the
+  success with the error.
+
+After any of these, the handler's later replies for the request are dropped.
+The commits stay in `commits.db` and ship with the next sync. A request's sync
+gets 10 s (`SERVE_REQUEST_SYNC_DEADLINE_MS`), not the CLI's minute, so a stuck
+sidecar fails requests rather than holding them.
+
+**Background writes** confirm nothing, because none acknowledges a write to a
+user. The 30 s probe stays their backstop:
+
+- bookkeeping GC, boot reconciliation and method-run settle;
+- token GC and secret migration, worker GC, and shutdown interrupt;
+- scheduled and webhook runs (a webhook replies `queued` before its run);
+- nested-run cascades;
+- worker data-plane and capability writes. These reply to a worker, whose
+  step reaches a client only through the run's confirmed terminal.
+
+The sync gate is unwired on filesystem datastores, so the confirmation never
+waits inside it. If a gate is ever wired for v3, the wait must stay outside the
+exclusive gate, or gated writes could not share syncs.
+
+**Measured** with `scripts/bench_v3_serve_confirm.ts` on macOS arm64, on a warm
+sidecar, over 100 requests:
+
+| Replica                       | Commit alone (p50) | Added, one request (p50 / p95) | Added, 8 concurrent (p50 / p95) | Syncs for 96 concurrent |
+| ----------------------------- | ------------------ | ------------------------------ | ------------------------------- | ----------------------- |
+| File                          | 0.3 ms             | 16.7 / 20.3 ms                 | 20.9 / 40.4 ms                  | 24                      |
+| Local S3 emulator (ministack) | 0.4 ms             | 11.7 / 15.3 ms                 | 14.5 / 18.2 ms                  | 24                      |
+
+One request adds a warm forced sync, as Phase 4A measured (15–18 ms on a file
+replica). Concurrent requests share about one sync per four. A far bucket adds
+its round trips, which Phase 4A modelled at 24–283 ms.
+
+**Tests.**
+
+- Unit and property tests for the coordinator, driven by deferred promises
+  with no clock.
+- Unit tests for the reply hold.
+- `integration/serve_v3_replication_confirm_test.ts`, with real Litestream and
+  a file replica:
+  - a reply goes out only once a published head covers its commit;
+  - concurrent writes share syncs;
+  - an unconfirmed sync fails the request, and the next sync ships the
+    commit;
+  - a request that commits nothing makes no sync.
+- `datastore_v3_litestream_restore_test.ts`: a write confirmed before serve
+  answers survives a crash and a takeover.
+- `integration/serve_write_confirmation_rules_test.ts` pins the dispatch, and
+  that only serve, with replication on, sets the confirmation.
 
 ## Upgrades
 
