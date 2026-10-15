@@ -1,5 +1,6 @@
 ---
 audience: everyone
+enables: [serve]
 last-verified: 2026-10-05 @ HEAD
 ---
 
