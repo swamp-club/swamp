@@ -45,10 +45,7 @@ import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_r
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { bundleExtension } from "../src/domain/models/bundle.ts";
-import {
-  emptyArchiveIndex,
-  emptyTreeIndexer,
-} from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
+import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const NAME = "@test/pull-shared";
 const VERSION = "2026.10.14.1";
@@ -196,7 +193,6 @@ async function pull(
     repoDir: consumer,
     alreadyPulled: new Set(),
     depth: 0,
-    indexExtensionTree: emptyTreeIndexer,
     force,
   });
 }

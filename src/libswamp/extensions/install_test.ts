@@ -35,7 +35,6 @@ import type { InstallContext } from "./pull.ts";
 import { ManagedLockfileUnpublishedError } from "./managed_lockfile_transaction.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
-import { emptyTreeIndexer } from "./extension_tree_index_test_helpers.ts";
 
 async function collectEvents(
   gen: AsyncIterable<ExtensionInstallEvent>,
@@ -191,7 +190,6 @@ Deno.test("extensionInstall: reinstalls when filesChecksum mismatches on-disk di
             force: true,
             alreadyPulled: new Set<string>(),
             depth: 0,
-            indexExtensionTree: emptyTreeIndexer,
           };
         },
       }),
@@ -426,7 +424,6 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
             force: true,
             alreadyPulled: new Set<string>(),
             depth: 0,
-            indexExtensionTree: emptyTreeIndexer,
           };
         },
       }),
@@ -524,7 +521,6 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
           force: true,
           alreadyPulled: new Set<string>(),
           depth: 0,
-          indexExtensionTree: emptyTreeIndexer,
         }),
       }),
     );
@@ -569,7 +565,6 @@ async function makeStubInstallContext(
     force: true,
     alreadyPulled: new Set<string>(),
     depth: 0,
-    indexExtensionTree: emptyTreeIndexer,
   };
 }
 

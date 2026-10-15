@@ -51,7 +51,6 @@ import {
   installExtension,
 } from "../src/libswamp/extensions/pull.ts";
 import { RemoveExtensionService } from "../src/libswamp/extensions/remove_extension_service.ts";
-import { emptyTreeIndexer } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 // swamp-club#2838: two checkouts share one datastore's config tier. A
 // directory stands in for the bucket, copied whole on each fetch and
@@ -170,7 +169,6 @@ async function withWorld(fn: (w: World) => Promise<void>): Promise<void> {
       force: true,
       alreadyPulled: new Set(),
       depth: 0,
-      indexExtensionTree: emptyTreeIndexer,
     });
 
     return {
