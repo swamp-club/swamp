@@ -1860,11 +1860,14 @@ Deno.test("buildIndex: a row with no recorded modules whose source no longer dec
       undefined,
       "a helper with no row gets no recorded modules",
     );
-    const { calls } = await withMockedCommand(
-      bundler,
-      () => noExport.buildIndex(modelsDir),
-    );
-    assertEquals(calls.length, 0, "the next scan finds it fresh");
+    const stale = await findStaleFiles({
+      modelsDir,
+      catalog,
+      discoverFiles: () => Promise.resolve(["rec.ts"]),
+      kinds: ["model"],
+      repoDir: dir,
+    });
+    assertEquals(stale, [], "the next scan finds it fresh");
   } finally {
     catalog.close();
     await Deno.remove(dir, { recursive: true }).catch(() => {});

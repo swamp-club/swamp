@@ -1689,9 +1689,13 @@ export class ExtensionCatalogStore {
   /**
    * Clears the graph-pending mark on `sourcePath`'s recorded list, and
    * returns whether it was set: the caller is about to use up the one
-   * retry. Writes only when the mark is set.
+   * retry. Writes only when the mark is set, so a warm rebundle of a
+   * source with no mark takes no write lock.
    */
   takeSourceGraphPending(sourcePath: string): boolean {
+    if (!this.isSourceGraphPending(sourcePath)) return false;
+    // The update's row count, not the read above, decides who takes the
+    // retry when two processes race.
     const result = this.db.prepare(
       "UPDATE source_modules SET graph_pending = 0 WHERE source_path = ? AND graph_pending != 0",
     ).run(canonicalizePath(sourcePath));
