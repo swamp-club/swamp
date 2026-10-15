@@ -31,7 +31,11 @@ import { parseResourceSelector } from "./resource_selector.ts";
 import type { AuthMode } from "./serve_auth_config.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { Definition } from "../definitions/definition.ts";
-import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type {
+  UnifiedDataRepository,
+  UnreadableModelRecord,
+} from "../data/repositories.ts";
+import { UnreadableAccessRecordsError } from "./policy_snapshot_loader.ts";
 import { ModelType } from "../models/model_type.ts";
 import { createResourceWriter } from "../models/data_writer.ts";
 
@@ -120,13 +124,17 @@ export function createAdminGrantStore(
       const grantDataItems = [...canonical, ...orphaned];
 
       const configGrants = new Map<string, StoredConfigGrant[]>();
+      const unreadable: UnreadableModelRecord[] = [];
       for (const { data, modelType, modelId } of grantDataItems) {
-        const attrs = await readAttributes(
-          dataRepo,
-          modelType,
-          modelId,
-          data.name,
-        );
+        let attrs: Record<string, unknown> | null;
+        try {
+          attrs = await readAttributes(dataRepo, modelType, modelId, data.name);
+        } catch (error) {
+          // Any grant may be a config grant; materializing without it could
+          // duplicate or orphan it, so the whole query refuses, naming each.
+          unreadable.push({ modelType, modelId, dataName: data.name, error });
+          continue;
+        }
         if (!attrs) continue;
         const parsed = GrantSchema.safeParse(attrs);
         if (parsed.success && parsed.data.source === "config") {
@@ -139,6 +147,12 @@ export function createAdminGrantStore(
             configGrants.set(modelName, [copy]);
           }
         }
+      }
+      if (unreadable.length > 0) {
+        throw UnreadableAccessRecordsError.forReadFailures(
+          "grant",
+          unreadable,
+        );
       }
       return configGrants;
     },

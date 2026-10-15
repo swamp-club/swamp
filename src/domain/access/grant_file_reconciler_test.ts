@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { Grant } from "../models/access/grant_model.ts";
 import { type GrantFileEntry, parseGrantFile } from "./grant_file.ts";
@@ -26,6 +26,14 @@ import {
   type FileGrantStore,
   reconcileAllFileGrants,
 } from "./grant_file_reconciler.ts";
+
+import { createFileGrantStore } from "./grant_file_reconciler.ts";
+import { UnreadableAccessRecordsError } from "./policy_snapshot_loader.ts";
+import { Data } from "../data/data.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import { GRANT_MODEL_TYPE } from "../models/access/grant_model.ts";
+import type { ModelType } from "../models/model_type.ts";
 
 await initializeLogging({});
 
@@ -911,4 +919,51 @@ grants:
   assertEquals(second.totalUpdated, 0);
   assertEquals(second.totalUnchanged, 6);
   assertEquals(store.written.size, 0);
+});
+
+/** A data repository holding two grants, one whose content read fails. */
+function repoWithUnreadableGrant(): UnifiedDataRepository {
+  const data = Data.create({
+    name: "grant-main",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "resource", modelName: "g" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+  });
+  return {
+    findAllForType(type: ModelType) {
+      if (type.normalized !== GRANT_MODEL_TYPE.normalized) {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        ["ok", "bad"].map((modelId) => ({ data, modelType: type, modelId })),
+      );
+    },
+    getContent(_type: ModelType, modelId: string) {
+      if (modelId === "bad") {
+        return Promise.reject(new Deno.errors.PermissionDenied("raw"));
+      }
+      return Promise.resolve(new TextEncoder().encode("{}"));
+    },
+  } as unknown as UnifiedDataRepository;
+}
+
+Deno.test("createFileGrantStore: a grant whose content cannot be read refuses the query with the error naming it and its fix", async () => {
+  const definitions = {} as DefinitionRepository;
+  const store = createFileGrantStore(
+    definitions,
+    definitions,
+    repoWithUnreadableGrant(),
+  );
+  const error = await assertRejects(
+    () => store.queryFileGrants(),
+    UnreadableAccessRecordsError,
+  );
+  assertEquals(error.records.map((r) => [r.modelId, r.cause]), [[
+    "bad",
+    "unreadable",
+  ]]);
+  assertStringIncludes(error.message, "swamp/grant/bad cannot be read");
+  assertStringIncludes(error.message, "read access");
 });

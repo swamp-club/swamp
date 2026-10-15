@@ -197,6 +197,15 @@ function isOwnChange(
   ownVersions: ReadonlySet<string> | undefined,
 ): boolean {
   if (!after || !ownVersions) return false;
+  // Something turning unreadable, or readable again, is never an own write.
+  if (
+    !sameEntries(
+      unreadableEntries(before?.entries),
+      unreadableEntries(after.entries),
+    )
+  ) {
+    return false;
+  }
   const beforeVersions = before?.versions ?? new Set<string>();
   const added = [...after.versions].filter((v) => !beforeVersions.has(v));
   const removed = [...beforeVersions].filter((v) => !after.versions.has(v));
@@ -218,6 +227,15 @@ function unreadableFingerprint(error: unknown): RecordFingerprint {
     entries: new Map([["!unreadable", unreadableEntry(error)]]),
     versions: new Set(),
   };
+}
+
+/** The entries of a fingerprint that record something it could not read. */
+function unreadableEntries(
+  entries: ReadonlyMap<string, string> | undefined,
+): Map<string, string> {
+  return new Map(
+    [...entries ?? []].filter(([, entry]) => entry.startsWith("!unreadable")),
+  );
 }
 
 /** The fingerprint entry of something that could not be read: its error. */
@@ -280,7 +298,9 @@ async function walk(
     children = await Array.fromAsync(Deno.readDir(dir));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
-    entries.set(prefix, unreadableEntry(error));
+    // Beside the directory's own entry, which stays: a version directory
+    // that cannot be read is still that version.
+    entries.set(`${prefix}/!unreadable`, unreadableEntry(error));
     return;
   }
   for (const child of children) {

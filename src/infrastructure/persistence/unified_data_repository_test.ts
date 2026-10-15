@@ -814,6 +814,47 @@ Deno.test("findAllForType: a data name that fails is reported by name, and the m
   }
 });
 
+Deno.test("findAllForType: a version whose metadata.yaml is missing is reported as NotFound when asked, and reads as no data otherwise", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+  const repo = new FileSystemUnifiedDataRepository(
+    tmpDir,
+    undefined,
+    catalogStore,
+  );
+  try {
+    await repo.save(
+      testType,
+      "model-1",
+      makeJsonData("item"),
+      new TextEncoder().encode("1"),
+    );
+    await Deno.remove(
+      join(
+        repo.getDataNameDir(testType, "model-1", "item"),
+        "1",
+        "metadata.yaml",
+      ),
+    );
+
+    assertEquals(await repo.findAllForType(testType), []);
+    const unreadable: UnreadableModelRecord[] = [];
+    assertEquals(await repo.findAllForType(testType, { unreadable }), []);
+    assertEquals(
+      unreadable.map((r) => [r.modelId, r.dataName]),
+      [["model-1", "item"]],
+    );
+    assert(unreadable[0].error instanceof Deno.errors.NotFound);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
 Deno.test({
   name:
     "findAllForType: a model directory it cannot list is reported with no data name",

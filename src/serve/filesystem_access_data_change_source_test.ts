@@ -462,3 +462,23 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "FilesystemAccessDataChangeSource: a version turning unreadable in the cycle of an own write is still a change",
+  ignore: IGNORE_CHMOD,
+  fn: async () => {
+    await withSource(async ({ grantDir, bus, source }) => {
+      await writeVersion(grantDir, "g1", 1);
+      await source.prime();
+      await writeVersion(grantDir, "g1", 2);
+      await ownRun(bus, GRANT, "g1", 2);
+      await whileUnreadable(
+        join(grantDir, "g1", "grant-main", "1"),
+        async () => {
+          assertEquals(await source.detect(), 1);
+        },
+      );
+    });
+  },
+});

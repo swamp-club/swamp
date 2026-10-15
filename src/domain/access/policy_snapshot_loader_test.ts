@@ -1036,6 +1036,7 @@ type FakeRecord =
       | "metadata"
       | "schema"
       | "validation"
+      | "no-metadata"
       | "json";
     /** Listed under the orphaned `@`-prefixed type, with no definition. */
     orphaned?: boolean;
@@ -1056,18 +1057,22 @@ type FakeRecord =
  */
 function createChangingDataRepo(
   records: Map<string, FakeRecord>,
-): UnifiedDataRepository & { failListing: boolean } {
+): UnifiedDataRepository & {
+  failListing: boolean;
+  failOrphanedListing: boolean;
+} {
   let reads = 0;
   const repo = {
     failListing: false,
+    failOrphanedListing: false,
     findAllForType(
       type: ModelType,
       options?: FindAllForTypeOptions,
     ) {
-      if (repo.failListing) {
+      const orphaned = type.normalized.startsWith("@");
+      if (repo.failListing || (orphaned && repo.failOrphanedListing)) {
         return Promise.reject(new Deno.errors.PermissionDenied("type dir"));
       }
-      const orphaned = type.normalized.startsWith("@");
       const canonical = orphaned ? type.normalized.slice(1) : type.normalized;
       const kind = canonical === GRANT_MODEL_TYPE.normalized
         ? "grant"
@@ -1085,7 +1090,8 @@ function createChangingDataRepo(
           (record.unreadable === "listing" ||
             record.unreadable === "metadata" ||
             record.unreadable === "schema" ||
-            record.unreadable === "validation")
+            record.unreadable === "validation" ||
+            record.unreadable === "no-metadata")
         ) {
           const schemaError = new Error("metadata fails its schema");
           schemaError.name = "ZodError";
@@ -1098,6 +1104,8 @@ function createChangingDataRepo(
               ? new SyntaxError("bad metadata.yaml")
               : record.unreadable === "schema"
               ? schemaError
+              : record.unreadable === "no-metadata"
+              ? new Deno.errors.NotFound("metadata.yaml is missing")
               : new Error("invalid data id"),
           });
           continue;
@@ -1133,7 +1141,10 @@ function createChangingDataRepo(
       );
     },
   };
-  return repo as unknown as UnifiedDataRepository & { failListing: boolean };
+  return repo as unknown as UnifiedDataRepository & {
+    failListing: boolean;
+    failOrphanedListing: boolean;
+  };
 }
 
 /** Runs `fn` with the snapshot loader's logs captured, as level and text. */
@@ -1746,4 +1757,44 @@ Deno.test("PolicySnapshotLoader.load: builds run one at a time, so an older buil
 
   // B ran after A, read the revoke, and committed last.
   assertEquals(effectsFor(loader, "user:adam"), []);
+});
+
+Deno.test("PolicySnapshotLoader.load: an orphaned type directory that cannot be listed fails the build, keeping its denies", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const repo = createChangingDataRepo(records);
+  const loader = new PolicySnapshotLoader(repo, new EventBus(), "manual");
+  await loader.load();
+
+  repo.failOrphanedListing = true;
+  await assertRejects(() => loader.load(), Deno.errors.PermissionDenied);
+  await loader.dispose();
+  assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
+});
+
+Deno.test("PolicySnapshotLoader.load: a record whose metadata goes missing keeps a deny it carried, and one never read is skipped", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+    ["new", { kind: "grant", unreadable: "no-metadata" }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  // A record never read with missing metadata does not fail the first build.
+  await loader.load();
+  assertEquals(loader.unreadable, []);
+
+  records.set("d", { kind: "grant", unreadable: "no-metadata" });
+  await loader.load();
+  await loader.dispose();
+  assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
+  assertEquals(
+    loader.unreadable.map((r) => [r.modelId, r.cause, r.outcome]),
+    [["d", "unreadable", "kept-last-known-deny"]],
+  );
 });

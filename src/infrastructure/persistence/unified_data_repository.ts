@@ -823,7 +823,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * With `strict`, a metadata file that parses to nothing (an empty or
-   * truncated `metadata.yaml`) throws instead of reading as no data.
+   * truncated `metadata.yaml`) throws SyntaxError, and one missing from a
+   * version that exists throws NotFound, instead of reading as no data.
    */
   private async findByNameWithDepth(
     type: ModelType,
@@ -879,6 +880,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       return data;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
+        if (strict) {
+          throw new Deno.errors.NotFound(
+            `metadata.yaml of ${dataName} version ${versionToRead} is missing`,
+          );
+        }
         return null;
       }
       throw error;
@@ -957,8 +963,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * Each rename marker followed is pushed to `renames` when given.
    *
    * With `skipped`, a data name that cannot be read, or whose metadata is
-   * empty (see {@link findByNameWithDepth}), is passed to it and the other
-   * names are still read; without it, any such name fails the whole model.
+   * empty or missing (see {@link findByNameWithDepth}), is passed to it and
+   * the other names are still read; without it, any such name fails the
+   * whole model, and missing or empty metadata reads as no data.
    */
   private async collectModelData(
     type: ModelType,
@@ -985,7 +992,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             strict: true,
           });
         } catch (error) {
-          if (error instanceof Deno.errors.NotFound) continue;
           skipped(dataName, error);
         }
       }

@@ -278,7 +278,7 @@ export class UnreadableAccessRecordsError extends UserError {
 
   constructor(records: readonly UnreadableAccessRecord[]) {
     super(
-      `Cannot build the policy snapshot: ${records.length} grant or group record(s) cannot be loaded. A record that cannot be loaded may be a deny, which would go unenforced, so the snapshot is not built until each is fixed:\n${
+      `Cannot load the access policy: ${records.length} grant or group record(s) cannot be loaded. A record that cannot be loaded may be a deny, which would go unenforced, so the policy is not loaded until each is fixed:\n${
         records.map((r) =>
           `  - ${r.record} ${problemOf(r)} (${r.error}): ${remedyFor(r)}`
         ).join("\n")
@@ -287,6 +287,23 @@ export class UnreadableAccessRecordsError extends UserError {
     );
     this.name = "UnreadableAccessRecordsError";
     this.records = records;
+  }
+
+  /**
+   * The error for the records a reader of every stored grant or group could
+   * not read, such as serve's boot reconcilers of file and admin grants,
+   * which run before the first snapshot is built and otherwise fail with
+   * the bare read error.
+   */
+  static forReadFailures(
+    kind: "grant" | "group",
+    failures: readonly UnreadableModelRecord[],
+  ): UnreadableAccessRecordsError {
+    return new UnreadableAccessRecordsError(
+      failures.map((failure) =>
+        unreadableRecord(kind, { ...failure, cause: "unreadable" }, "left-out")
+      ),
+    );
   }
 }
 
@@ -355,6 +372,20 @@ function failedAccessData(
       error,
       cause: causeOfSkippedModel(error),
     }));
+}
+
+/**
+ * Whether a record failed only because part of it is missing (NotFound),
+ * and no earlier build read it. Like content gone missing (see
+ * `#readRecord`), that is a record mid-write, skipped as before; once read,
+ * a record that goes missing keeps what it carried.
+ */
+function missingAndNeverRead(
+  failed: FailedRecord,
+  lastKnown: ReadonlyMap<string, unknown>,
+): boolean {
+  return failed.error instanceof Deno.errors.NotFound &&
+    !lastKnown.has(recordKey(failed.modelType, failed.modelId));
 }
 
 /**
@@ -624,8 +655,10 @@ export class PolicySnapshotLoader {
       this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE, skippedGrants),
       this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE, skippedGroups),
     ]);
-    const failedGrants = failedAccessData(skippedGrants, "grant-main");
-    const failedGroups = failedAccessData(skippedGroups, "group-main");
+    const failedGrants = failedAccessData(skippedGrants, "grant-main")
+      .filter((failed) => !missingAndNeverRead(failed, this.#lastKnownGrants));
+    const failedGroups = failedAccessData(skippedGroups, "group-main")
+      .filter((failed) => !missingAndNeverRead(failed, this.#lastKnownGroups));
 
     const lastKnownGrants = new Map<string, Grant>();
     const lastKnownGroups = new Map<string, Group>();
@@ -903,7 +936,10 @@ export class PolicySnapshotLoader {
       orphaned = await this.#dataRepo.findAllForType(orphanedType, {
         unreadable,
       });
-    } catch {
+    } catch (error) {
+      // As for the canonical type, a type directory that cannot be listed
+      // fails the build, keeping the previous snapshot and its denies.
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
       orphaned = [];
     }
     return [...canonical, ...orphaned];
