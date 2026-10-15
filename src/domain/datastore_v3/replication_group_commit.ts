@@ -116,6 +116,9 @@ export class ReplicationGroupCommit {
     ).finally(() => {
       this.#syncing = false;
       this.#next();
+    }).catch(() => {
+      // Unreachable: both handlers only settle waiters. Each caller awaits
+      // its own `confirm`, which is where a sync's outcome surfaces.
     });
   }
 }

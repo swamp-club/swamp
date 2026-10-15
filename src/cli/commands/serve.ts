@@ -514,6 +514,7 @@ import {
   confirmV3Replicated,
   keepV3WriterMarkers,
   startV3ReplicationUpkeep,
+  v3CommitMark,
   v3DatastoreFor,
   V3MaintenanceTimer,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -2954,6 +2955,10 @@ export const serveCommand = new Command()
         datastoreConfig.path,
       )
       : undefined;
+    const replicationMark = confirmReplicated !== undefined &&
+        !isCustomDatastoreConfig(datastoreConfig)
+      ? ((path: string) => () => v3CommitMark(path))(datastoreConfig.path)
+      : undefined;
 
     let configPoller: ConfigPoller | null = null;
     let accessDataPoller: AccessDataPoller | null = null;
@@ -4635,6 +4640,7 @@ export const serveCommand = new Command()
         syncService,
         syncGate,
         ...(confirmReplicated !== undefined && { confirmReplicated }),
+        ...(replicationMark !== undefined && { replicationMark }),
         workerGateway,
         policySnapshotLoader,
         authConfig,

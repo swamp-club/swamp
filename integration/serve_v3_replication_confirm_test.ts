@@ -32,6 +32,7 @@ import {
   closeV3Datastores,
   confirmV3Replicated,
   holdV3Writer,
+  v3CommitMark,
   v3DatastoreFor,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { unixLitestreamControl } from "../src/infrastructure/datastore_v3/litestream/litestream_control_client.ts";
@@ -103,7 +104,10 @@ function observingSocket(env: ReplicationEnv) {
 
 /** Serve's context as serve.ts builds it while replication is on. */
 function confirmingCtx(env: ReplicationEnv) {
-  return { confirmReplicated: () => confirmV3Replicated(env.datastorePath) };
+  return {
+    confirmReplicated: () => confirmV3Replicated(env.datastorePath),
+    replicationMark: () => v3CommitMark(env.datastorePath),
+  };
 }
 
 /** A write request: commits, then replies inside its handler, as serve's do. */
@@ -243,6 +247,31 @@ Deno.test({
       assertEquals(counting.state.syncs, after);
       assertEquals(replies.map((r) => r.message.id), ["w1", "r1"]);
       await closeV3Datastores();
+    }, { deps: { control: counting.control } });
+  },
+});
+
+Deno.test({
+  name:
+    "serve write confirmation: a request that commits nothing never waits on another writer's unconfirmed commit",
+  ignore,
+  async fn() {
+    const counting = countingControl();
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
+      const { socket, replies } = observingSocket(env);
+      await writeRequest(env, socket, "w1");
+      // A background write nothing confirms, while the sidecar fails.
+      await commitIn(env, 1);
+      counting.state.failNext = 1;
+      const before = counting.state.syncs;
+      await confirmRequest(confirmingCtx(env), socket, "r1", () => {
+        send(socket, { type: "done", id: "r1" });
+        return Promise.resolve();
+      });
+      assertEquals(counting.state.syncs, before);
+      assertEquals(replies.map((r) => r.message.type), ["done", "done"]);
+      await closeV3Datastores().catch(() => {});
     }, { deps: { control: counting.control } });
   },
 });

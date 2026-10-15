@@ -316,6 +316,12 @@ export interface ConnectionContext {
    */
   confirmReplicated?: () => Promise<void>;
   /**
+   * The high-water mark of serve's commits, set with `confirmReplicated`:
+   * read when a write request starts, so one that committed nothing — a
+   * `run doctor` without `--fix` — never waits on other writers' commits.
+   */
+  replicationMark?: () => number;
+  /**
    * Remote-execution worker gateway. When present, `rpc.*` frames on this
    * socket are routed to it (worker enrollment and capability verbs); the
    * legacy client protocol on the same listener is unaffected. See
@@ -2128,7 +2134,7 @@ const unconfirmedRequests = new WeakMap<WebSocket, Set<string>>();
  * nothing waits.
  */
 export async function confirmRequest(
-  ctx: Pick<ConnectionContext, "confirmReplicated">,
+  ctx: Pick<ConnectionContext, "confirmReplicated" | "replicationMark">,
   socket: WebSocket,
   requestId: string,
   handler: () => Promise<void>,
@@ -2144,12 +2150,16 @@ export async function confirmRequest(
   const replies: ServerMessage[] = [];
   held.set(requestId, replies);
   const errored = () => replies.some((reply) => reply.type === "error");
+  // A request during which nothing committed has nothing to confirm.
+  const before = ctx.replicationMark?.();
+  const committed = () =>
+    before === undefined || ctx.replicationMark!() !== before;
   let failure: { readonly error: unknown } | undefined;
   let ended = false;
   try {
     await handler();
     ended = true;
-    if (!errored()) await confirm();
+    if (!errored() && committed()) await confirm();
   } catch (error) {
     failure = { error };
   } finally {

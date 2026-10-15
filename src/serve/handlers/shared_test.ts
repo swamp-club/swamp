@@ -2090,3 +2090,27 @@ Deno.test("replicationErrorForClient: keeps the replication codes and falls back
   );
   assertEquals(replicationErrorForClient(new Error("boom"), "f").code, "f");
 });
+
+Deno.test("confirmRequest: a request during which nothing committed is not confirmed", async () => {
+  const { socket, sent } = messageSocket();
+  const confirm = manualConfirm();
+  let mark = 4;
+  const ctx = { ...confirm, replicationMark: () => mark };
+  await confirmRequest(ctx, socket, "r1", () => {
+    send(socket, { type: "done", id: "r1" });
+    return Promise.resolve();
+  });
+  assertEquals(confirm.calls.length, 0);
+  assertEquals(sent, [{ type: "done", id: "r1" }]);
+  const done = confirmRequest(ctx, socket, "r2", () => {
+    mark = 5;
+    send(socket, { type: "done", id: "r2" });
+    return Promise.resolve();
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(confirm.calls.length, 1);
+  confirm.calls[0].resolve();
+  await done;
+  assertEquals(sent.length, 2);
+});

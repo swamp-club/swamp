@@ -812,6 +812,19 @@ export async function confirmV3Replicated(
   await group.confirm(mark);
 }
 
+/**
+ * The high-water mark of the commits this process made to the v3 datastore
+ * at `datastorePath`, or -1 when it is not open: serve reads it when a write
+ * request starts, so a request that committed nothing confirms nothing.
+ */
+export function v3CommitMark(datastorePath: string): number {
+  const datastore = resolve(datastorePath);
+  const handle = [...opened.values()].find((h) =>
+    resolve(h.datastorePath) === datastore
+  );
+  return handle?.commitStore.highWaterMark().cursor ?? -1;
+}
+
 /** One group commit's sync: the held sidecar's, at a request's deadline. */
 async function syncForRequests(
   datastore: string,

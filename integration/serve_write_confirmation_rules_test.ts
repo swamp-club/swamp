@@ -40,12 +40,17 @@ async function confirmedCases(): Promise<Set<string>> {
   );
   const start = source.indexOf("switch (request.type) {");
   assert(start > 0, "handleMessage's dispatch switch was not found");
-  const cases = [...source.slice(start).matchAll(/\n {4}case "([^"]+)":\n/g)];
+  // The switch ends at the first brace back at its own indent.
+  const end = source.indexOf("\n  }\n", start);
+  assert(end > start, "handleMessage's dispatch switch has no end");
+  const body = source.slice(start, end);
+  const cases = [...body.matchAll(/\n {4}case "([^"]+)":\n/g)];
   const wrapped = new Set<string>();
   for (const [index, match] of cases.entries()) {
-    const end = cases[index + 1]?.index ?? source.length - start;
-    const body = source.slice(start).slice(match.index!, end);
-    if (body.includes("confirmed(() =>")) wrapped.add(match[1]);
+    const caseEnd = cases[index + 1]?.index ?? body.length;
+    if (body.slice(match.index!, caseEnd).includes("confirmed(() =>")) {
+      wrapped.add(match[1]);
+    }
   }
   return wrapped;
 }

@@ -1049,7 +1049,9 @@ wraps each write request in `confirmRequest` (`src/serve/handlers/shared.ts`):
 - While the handler runs, its replies for that request id are held. Run
   events pass.
 - When the handler ends, serve calls `confirmV3Replicated` and then sends the
-  held replies in order.
+  held replies in order. It does so only if serve's commit mark moved while
+  the handler ran. A wrapped request that committed nothing, such as
+  `run doctor` without `--fix`, never waits on other writers' commits.
 - A held reply that is already an error goes out without waiting.
 
 `CONFIRMED_WRITE_REQUESTS` (`src/serve/write_confirmation.ts`) names the
@@ -1081,7 +1083,8 @@ unheld. Serve confirms where it reports a run finished:
 
 A run with model locks used to report `done` inside its root, while it held
 the locks. With replication on, it reports after the root and the
-confirmation, still before the locks are released.
+confirmation, still before the locks are released. So a slow replica keeps
+the locks for up to the 10 s request deadline longer.
 
 **Group commit.** `ReplicationGroupCommit`
 (`src/domain/datastore_v3/replication_group_commit.ts`) runs one sync at a time
