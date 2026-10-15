@@ -24,6 +24,11 @@
 //
 // Non-ASCII inputs are built from code points so no editor or formatter can
 // normalize them (a precomposed e-acute has size 1; e + U+0301 has size 2).
+//
+// The regex syntax pins (inline flags, \p{L} without the u flag, \A and \z)
+// also depend on the JavaScript engine in the pinned Deno version, not only on
+// cel-js. If one fails after a Deno upgrade with cel-js unchanged, the engine
+// changed: re-review the design all the same.
 
 import { assertEquals } from "@std/assert";
 import { EvaluationError } from "cel-js";

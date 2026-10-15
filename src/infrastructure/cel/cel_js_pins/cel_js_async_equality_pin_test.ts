@@ -175,7 +175,10 @@ Deno.test(
       assertEquals(env.evaluate("s != t", { s, t }), false);
       assertEquals(env.evaluate("[s] == [t]", { s, t }), true);
       assertEquals(env.evaluate("s in [t]", { s, t }), true);
-      await waitFor(() => leaked === 3, "three unobserved handler rejections");
+      // Wait for at least 3, then assert exactly 3, so an extra leak fails
+      // with its count instead of timing out between polls.
+      await waitFor(() => leaked >= 3, "three unobserved handler rejections");
+      assertEquals(leaked, 3);
     } finally {
       globalThis.removeEventListener("unhandledrejection", onRejection);
     }
