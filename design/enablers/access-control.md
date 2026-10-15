@@ -759,16 +759,28 @@ changes.
    write and stays staged in manual mode, as a pull never returns the
    puller's own writes. Anything else, including a local CLI write, is a peer
    change. A v3 datastore has one writer at a time and runs no poller.
+4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
+   logged-in user's collectives every `--group-refresh-interval` and closes
+   connections whose admission lapsed
+   (`src/serve/collective_refresh_service.ts`). It applies a userinfo answer
+   only when its subject matches the token's principal; otherwise it keeps the
+   token's snapshot and logs a warning.
 5. **Unreadable records** (swamp-club#3386): a grant or group record that
    exists but cannot be read (a directory or file this process may not
    read, such as one a peer wrote with a restrictive umask or another uid)
-   or whose JSON does not parse never fails a build, and never vanishes
-   silently. `findAllForType` reports the model directories it skips, and
-   the loader treats them like a content read that failed:
+   or whose JSON does not parse never vanishes silently. `findAllForType`
+   reports the model directories it skips, and the loader treats them like
+   a content read that failed.
+
+   The first build of a loader has no earlier version to fall back on, so
+   it fails closed: it throws `UnreadableAccessRecordsError`, naming the
+   records, and serve refuses to start, as do `swamp access reload` and
+   `swamp access check`. Every later build succeeds:
    - a grant whose last-known version, read by an earlier build of this
      process, was an active deny stays in force (fail closed);
    - any other grant is left out. Leaving out an allow is fail safe. A deny
-     this process never read cannot be enforced, and the error log says so;
+     that appeared after the first build and was never read cannot be
+     enforced, and the error log says so;
    - a group keeps its last-known members, so deny grants on it still
      apply, and allow grants to the group are suspended, so a member removed
      in the version that cannot be read gets no allow through the group.
@@ -782,20 +794,15 @@ changes.
    The poller rebuilds every cycle while that list is non-empty, because the
    filesystem change source cannot see a file turning readable again (a mode
    change moves only its ctime) and a remote datastore's read can fail for
-   one cycle. The change source fingerprints an unreadable record as its
-   error, so the record counts as changed when it turns unreadable and when
-   it reads again, and every other record is still compared. A build that
-   throws (a grant or group type directory that cannot be listed) keeps the
-   previous snapshot and last-known records. The poller logs a failed cycle
-   at warning, and from the third consecutive failure on at error, saying
-   other processes' grant and revoke changes are not being applied; it logs
-   recovery at info.
-4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
-   logged-in user's collectives every `--group-refresh-interval` and closes
-   connections whose admission lapsed
-   (`src/serve/collective_refresh_service.ts`). It applies a userinfo answer
-   only when its subject matches the token's principal; otherwise it keeps the
-   token's snapshot and logs a warning.
+   one cycle. A rebuild that finds the same unreadable records logs its
+   snapshot line at debug. The change source fingerprints each directory or
+   entry it cannot read as its error and keeps walking everything beside it,
+   so an unreadable old version never hides a new version of the record, and
+   every other record is still compared. A build that throws (a grant or
+   group type directory that cannot be listed) keeps the previous snapshot
+   and last-known records. The poller logs a failed cycle at warning, and
+   from the third consecutive failure on at error, saying other processes'
+   grant and revoke changes are not being applied; it logs recovery at info.
 
 The `GrantBasedAccessDecisionService` picks up a rebuilt snapshot on the next
 request. There is no per-request locking or snapshot versioning.

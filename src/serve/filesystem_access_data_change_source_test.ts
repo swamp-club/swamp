@@ -439,3 +439,26 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "FilesystemAccessDataChangeSource: an unreadable old version does not hide a later version of the same record",
+  ignore: IGNORE_CHMOD,
+  fn: async () => {
+    await withSource(async ({ grantDir, source }) => {
+      await writeVersion(grantDir, "g1", 1);
+      await writeVersion(grantDir, "g1", 2, "active");
+      await source.prime();
+      await whileUnreadable(
+        join(grantDir, "g1", "grant-main", "1"),
+        async () => {
+          assertEquals(await source.detect(), 1);
+          assertEquals(await source.detect(), 0);
+          // A peer revokes it in a new version beside the unreadable one.
+          await writeVersion(grantDir, "g1", 3, "revoked");
+          assertEquals(await source.detect(), 1);
+        },
+      );
+    });
+  },
+});

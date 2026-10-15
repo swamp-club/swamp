@@ -209,6 +209,27 @@ export interface UnreadableAccessRecord {
 }
 
 /**
+ * A loader's first build found records it could not read. Before any
+ * build has succeeded there is no last-known version to fall back on, so a
+ * deny among them would go unenforced; the build fails closed instead, as
+ * serve's boot load and the one-shot access commands always have for a
+ * content file they could not read.
+ */
+export class UnreadableAccessRecordsError extends Error {
+  readonly records: readonly UnreadableAccessRecord[];
+
+  constructor(records: readonly UnreadableAccessRecord[]) {
+    super(
+      `Cannot build the policy snapshot: ${records.length} grant or group record(s) cannot be read, and a deny among them would not be enforced: ${
+        records.map((r) => `${r.record} (${r.error})`).join(", ")
+      }. Make them readable to this process and retry.`,
+    );
+    this.name = "UnreadableAccessRecordsError";
+    this.records = records;
+  }
+}
+
+/**
  * The grant a snapshot keeps for a grant record it cannot read: the version
  * an earlier build read if that was an active deny (fail closed), and
  * nothing otherwise. Leaving out an allow is fail safe; a deny never read
@@ -278,6 +299,8 @@ export class PolicySnapshotLoader {
    * debug instead of repeating the error.
    */
   #reportedUnreadable = new Map<string, string>();
+  /** Whether a build has succeeded, so last-known versions exist. */
+  #built = false;
   /**
    * Each active grant already checked for spellings, by id, with the effect,
    * selector and condition it was checked as, so a reload neither repeats
@@ -374,7 +397,6 @@ export class PolicySnapshotLoader {
     snapshot: PolicySnapshot;
     grantCount: number;
     groupCount: number;
-    unreadable: readonly UnreadableAccessRecord[];
   }> {
     const result = await this.#buildSnapshotWithCounts();
     this.#snapshot = result.snapshot;
@@ -402,15 +424,16 @@ export class PolicySnapshotLoader {
   /**
    * Builds the snapshot. A record that cannot be read never fails the
    * build (swamp-club#3386): an active deny or the group members an earlier
-   * build read stay in force, and anything else is left out. The records'
-   * last-known versions and the unreadable list are committed only when the
-   * build succeeds, so a build that throws leaves them as they were.
+   * build read stay in force, and anything else is left out. The first
+   * build has nothing to fall back on, so it throws
+   * {@link UnreadableAccessRecordsError} instead. The records' last-known
+   * versions and the unreadable list are committed only when the build
+   * succeeds, so a build that throws leaves them as they were.
    */
   async #buildSnapshotWithCounts(): Promise<{
     snapshot: PolicySnapshot;
     grantCount: number;
     groupCount: number;
-    unreadable: readonly UnreadableAccessRecord[];
   }> {
     const unreadableGrants: UnreadableModelRecord[] = [];
     const unreadableGroups: UnreadableModelRecord[] = [];
@@ -482,10 +505,25 @@ export class PolicySnapshotLoader {
       });
     }
     grants = withoutAllowsToGroups(grants, suspendedGroups);
+    if (!this.#built && unreadable.length > 0) {
+      throw new UnreadableAccessRecordsError(unreadable);
+    }
 
-    logger
-      .info`Loaded policy snapshot: ${grants.length} active grant(s), ${groups.length} group(s)`;
-    for (const grant of grantsReferencingUnsupplied(grants)) {
+    // The poller rebuilds every cycle while records cannot be read; a build
+    // that finds them as the last one did is a retry, logged at debug.
+    const retry = unreadable.length > 0 &&
+      unreadable.length === this.#reportedUnreadable.size &&
+      unreadable.every((u) =>
+        this.#reportedUnreadable.get(u.record) === `${u.outcome}|${u.error}`
+      );
+    if (retry) {
+      logger
+        .debug`Loaded policy snapshot: ${grants.length} active grant(s), ${groups.length} group(s)`;
+    } else {
+      logger
+        .info`Loaded policy snapshot: ${grants.length} active grant(s), ${groups.length} group(s)`;
+    }
+    for (const grant of retry ? [] : grantsReferencingUnsupplied(grants)) {
       logger
         .warn`Grant ${grant.id} has a condition on collective or owner, which serve does not supply yet: as a deny it refuses every ${grant.resource.kind} request of its subject, and as an allow it never matches (${grant.condition})`;
     }
@@ -499,11 +537,11 @@ export class PolicySnapshotLoader {
     this.#lastKnownGrants = lastKnownGrants;
     this.#lastKnownGroups = lastKnownGroups;
     this.#unreadable = unreadable;
+    this.#built = true;
     return {
       snapshot,
       grantCount: grants.length,
       groupCount: groups.length,
-      unreadable,
     };
   }
 

@@ -69,13 +69,14 @@ export interface FilesystemAccessDataChangeSourceOptions {
  * write one interval early, but a peer's change is never swallowed: a peer's
  * version is never named by this process's events.
  *
- * A record that cannot be read (a peer wrote it with a restrictive umask or
- * as another uid) does not stop the cycle (swamp-club#3386). It gets a
- * fingerprint naming the error, so it counts as changed when it turns
- * unreadable and again when it reads, and every other record is still
- * compared. While it stays unreadable it is not counted again: the policy
- * loader cannot read it either, and the poller retries a snapshot that is
- * missing records on its own.
+ * A record, or a part of one, that cannot be read (a peer wrote it with a
+ * restrictive umask or as another uid) does not stop the cycle
+ * (swamp-club#3386). Each directory or entry that cannot be read is
+ * fingerprinted as its error, so it counts as changed when it turns
+ * unreadable and again when it reads, while everything readable beside it
+ * and every other record is still compared. While it stays unreadable it
+ * is not counted again; a snapshot missing records it could not read is
+ * retried by the poller on its own.
  */
 export class FilesystemAccessDataChangeSource {
   readonly #dirs: readonly string[];
@@ -164,13 +165,8 @@ export class FilesystemAccessDataChangeSource {
       }
       for (const modelId of modelIds) {
         const entries = new Map<string, string>();
-        try {
-          for (const dataName of ACCESS_DATA_NAMES) {
-            await walk(join(dir, modelId, dataName), dataName, entries);
-          }
-        } catch (error) {
-          fingerprint.set(join(dir, modelId), unreadableFingerprint(error));
-          continue;
+        for (const dataName of ACCESS_DATA_NAMES) {
+          await walk(join(dir, modelId, dataName), dataName, entries);
         }
         const versions = new Set<string>();
         for (const [path, entry] of entries) {
@@ -218,11 +214,15 @@ function isOwnChange(
  * stays equal, so the record is not counted every cycle.
  */
 function unreadableFingerprint(error: unknown): RecordFingerprint {
-  const name = error instanceof Error ? error.name : "Error";
   return {
-    entries: new Map([["!unreadable", name]]),
+    entries: new Map([["!unreadable", unreadableEntry(error)]]),
     versions: new Set(),
   };
+}
+
+/** The fingerprint entry of something that could not be read: its error. */
+function unreadableEntry(error: unknown): string {
+  return `!unreadable:${error instanceof Error ? error.name : "Error"}`;
 }
 
 function versionNumber(versionPath: string): number {
@@ -266,7 +266,9 @@ async function listDirectories(dir: string): Promise<string[]> {
  * Records every entry under `dir` by its `/`-joined path relative to the
  * record directory. Symlinks are recorded, never followed, and dot-named
  * entries (atomic-write temp files) are skipped. An entry removed mid-walk
- * is left out.
+ * is left out. A directory or entry that cannot be read is recorded as its
+ * error and its siblings are still walked, so an unreadable old version
+ * never hides a new version or a changed `latest` beside it.
  */
 async function walk(
   dir: string,
@@ -278,7 +280,8 @@ async function walk(
     children = await Array.fromAsync(Deno.readDir(dir));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
-    throw error;
+    entries.set(prefix, unreadableEntry(error));
+    return;
   }
   for (const child of children) {
     if (child.name.startsWith(".")) continue;
@@ -289,7 +292,8 @@ async function walk(
       info = await Deno.lstat(fullPath);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) continue;
-      throw error;
+      entries.set(path, unreadableEntry(error));
+      continue;
     }
     // A directory is recorded by name only: its own mtime moves whenever
     // a temp file comes and goes, and its children carry every real change.

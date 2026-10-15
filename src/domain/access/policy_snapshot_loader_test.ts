@@ -48,6 +48,7 @@ import {
   createConditionEvaluator,
   PolicySnapshotLoader,
   retainedUnreadableGrant,
+  UnreadableAccessRecordsError,
   withoutAllowsToGroups,
 } from "./policy_snapshot_loader.ts";
 import { MissingConditionFieldError } from "./condition_fields.ts";
@@ -1144,30 +1145,64 @@ Deno.test("PolicySnapshotLoader.load: an unreadable deny it read before stays in
     records.set("d", { kind: "grant", unreadable });
     records.set("a", { kind: "grant", unreadable });
     records.set("o", { kind: "grant", attrs: { ...other, state: "revoked" } });
-    const result = await loader.loadWithCounts();
+    await loader.load();
 
     assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
     assertEquals(
-      result.unreadable.map((r) => [r.record, r.kind, r.outcome]).sort(),
+      loader.unreadable.map((r) => [r.record, r.kind, r.outcome]).sort(),
       [
         ["swamp/grant/a", "grant", "left-out"],
         ["swamp/grant/d", "grant", "kept-last-known-deny"],
       ],
     );
-    assertEquals(loader.unreadable, result.unreadable);
   }
   await loader.dispose();
 });
 
-Deno.test("PolicySnapshotLoader.load: an unreadable deny it never read is left out and logged as not enforced", async () => {
-  const records = new Map<string, FakeRecord>([
-    ["d", { kind: "grant", unreadable: "content" }],
-  ]);
+Deno.test("PolicySnapshotLoader.load: the first build refuses a record it cannot read, so serve does not start without a deny", async () => {
+  for (const unreadable of ["content", "listing", "json"] as const) {
+    const records = new Map<string, FakeRecord>([
+      ["d", { kind: "grant", unreadable }],
+      ["a", { kind: "grant", attrs: makeGrant({ id: "allow-1" }) }],
+    ]);
+    const loader = new PolicySnapshotLoader(
+      createChangingDataRepo(records),
+      new EventBus(),
+      "manual",
+    );
+    const error = await assertRejects(
+      () => loader.load(),
+      UnreadableAccessRecordsError,
+    );
+    assertEquals(error.records.map((r) => r.record), ["swamp/grant/d"]);
+    assertStringIncludes(error.message, "swamp/grant/d");
+    // Nothing was committed: the snapshot is still the empty one.
+    assertEquals(effectsFor(loader, "user:adam"), []);
+    assertEquals(loader.unreadable, []);
+
+    // Once readable, the first build succeeds.
+    records.set("d", {
+      kind: "grant",
+      attrs: makeGrant({ id: "deny-1", effect: "deny" }),
+    });
+    await loader.load();
+    await loader.dispose();
+    assertEquals(effectsFor(loader, "user:adam"), [
+      "allow:allow-1",
+      "deny:deny-1",
+    ]);
+  }
+});
+
+Deno.test("PolicySnapshotLoader.load: after a first build, a new record it never read is left out and logged as not enforced", async () => {
+  const records = new Map<string, FakeRecord>();
   const loader = new PolicySnapshotLoader(
     createChangingDataRepo(records),
     new EventBus(),
     "manual",
   );
+  await loader.load();
+  records.set("d", { kind: "grant", unreadable: "content" });
   const logs = await capturingLoaderLogs(async () => {
     await loader.load();
   });
@@ -1179,6 +1214,29 @@ Deno.test("PolicySnapshotLoader.load: an unreadable deny it never read is left o
   assertEquals(errors.length, 1);
   assertStringIncludes(errors[0].message, "swamp/grant/d");
   assertStringIncludes(errors[0].message, "never read by this process");
+});
+
+Deno.test("PolicySnapshotLoader.load: a rebuild that finds the same unreadable records logs the snapshot at debug", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  records.set("d", { kind: "grant", unreadable: "content" });
+  const logs = await capturingLoaderLogs(async () => {
+    await loader.load();
+    await loader.load();
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const loaded = logs.filter((l) => l.message.startsWith("Loaded policy"));
+  assertEquals(loaded.map((l) => l.level), ["info", "debug", "debug"]);
 });
 
 Deno.test("PolicySnapshotLoader.load: a record whose JSON does not parse keeps its last-known deny", async () => {
