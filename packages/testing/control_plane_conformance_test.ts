@@ -385,3 +385,77 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a namesp
     );
   });
 });
+
+/**
+ * A sync service whose namespaced push into an upgraded namespace moves
+ * every root `_control` record into it except those under `keep`, as the
+ * S3 and GCS extensions' migrateRootControlPlaneToNamespace does.
+ */
+function migratingFixtures(
+  remote: InMemoryRemote,
+  dir: string,
+  keep: readonly string[],
+) {
+  const fixtures = remoteFixtures(remote, dir);
+  const root = remote.datastoreControlPlaneStore!();
+  const upgraded = new Set<string>();
+  const migrating = (service: DatastoreSyncService): DatastoreSyncService => ({
+    ...service,
+    pushChanged: async (options) => {
+      const ns = options?.namespace;
+      if (ns && upgraded.has(ns)) {
+        for (const [key, data] of remote.controlPlaneRecords()) {
+          if (!key.startsWith("_control/")) continue;
+          const relative = key.slice("_control/".length);
+          if (keep.some((dir) => relative.startsWith(dir))) continue;
+          remote.seedControlPlane(relative, data, { namespace: ns });
+          await root.delete(relative);
+        }
+      }
+      return await service.pushChanged(options);
+    },
+  });
+  return {
+    namespace: "team",
+    openDatastoreStore: () => remote.datastoreControlPlaneStore!(),
+    openSyncService: fixtures.openSyncService,
+    openNamespacedSyncFixture: async () => {
+      const fixture = await fixtures.openNamespacedSyncFixture();
+      return { ...fixture, service: migrating(fixture.service) };
+    },
+    markNamespaceUpgradedFromSolo: (namespace: string) => {
+      upgraded.add(namespace);
+      return Promise.resolve();
+    },
+  };
+}
+
+Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a namespaced push that keeps writer/ at the root but moves lineage/, and removes the moved record", async () => {
+  await withRemoteDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    await assertRejects(
+      () =>
+        assertWritableDatastoreControlPlaneStoreConformance(
+          migratingFixtures(remote, dir, ["writer/"]),
+        ),
+      Error,
+      "a record under lineage/ must stay at the datastore-wide root",
+    );
+    assertEquals(
+      [...remote.controlPlaneRecords().keys()].filter((key) =>
+        key.includes("/lineage/") || key.includes("/writer/")
+      ),
+      [],
+    );
+  });
+});
+
+Deno.test("assertWritableDatastoreControlPlaneStoreConformance: passes a namespaced push that keeps writer/ and lineage/ at the root", async () => {
+  await withRemoteDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    const result = await assertWritableDatastoreControlPlaneStoreConformance(
+      migratingFixtures(remote, dir, ["writer/", "lineage/"]),
+    );
+    assertEquals(result.namespacedPushSkipped, undefined);
+  });
+});

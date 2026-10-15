@@ -22,6 +22,7 @@ import type { DatastoreVerifier } from "./datastore_health.ts";
 import type { DatastoreSyncService } from "./datastore_sync_service.ts";
 import type { DatastoreControlPlaneStore } from "./control_plane_store.ts";
 import type { DatastoreStorage } from "./datastore_storage.ts";
+import type { V3ReplicaTarget } from "./replica_target.ts";
 
 /**
  * Factory interface for user-defined datastores.
@@ -77,15 +78,19 @@ export interface DatastoreProvider {
   /**
    * `true` declares that this datastore can hold the v3 writer lease: no
    * namespaced pull or push moves or copies the records under
-   * `_control/writer/`, so they stay at the datastore root whatever
-   * namespace a checkout syncs, and {@link datastoreControlPlaneStore}
-   * returns a `WritableDatastoreControlPlaneStore`. It promises nothing
-   * about any other `_control/` record.
+   * `_control/writer/` or `_control/lineage/`, so they stay at the datastore
+   * root whatever namespace a checkout syncs, and
+   * {@link datastoreControlPlaneStore} returns a
+   * `WritableDatastoreControlPlaneStore`. The replication lineages live
+   * under `lineage/` (swamp-club#3482): one moved into a namespace would
+   * hide the published head a restore reads. It promises nothing about any
+   * other `_control/` record.
    *
    * Only the literal `true` declares it. Without it swamp refuses to bind
    * the lease, since a push that moved `_control/writer/` into a namespace
    * would let a second writer take a fence already in use (swamp-club#3414).
-   * Declare it only in a release whose push skips `_control/writer/`, and
+   * Declare it only in a release whose push skips `_control/writer/` and
+   * `_control/lineage/`, and
    * check it with `assertWritableDatastoreControlPlaneStoreConformance`,
    * namespaced-push case included.
    */
@@ -99,6 +104,27 @@ export interface DatastoreProvider {
    * Optional — swamp does not call it yet. The v3 opt-in will require it.
    */
   storage?(): DatastoreStorage;
+
+  /**
+   * Where this datastore's v3 Litestream replica lives
+   * ({@link V3ReplicaTarget}): the bucket, and the key prefix of the
+   * datastore root that {@link storage} and
+   * {@link datastoreControlPlaneStore} write under. Core appends
+   * `_litestream/<fence>/` to the prefix; the provider never builds replica
+   * paths.
+   *
+   * The target never carries credentials. Litestream resolves them from the
+   * AWS SDK default chain (environment, shared config and SSO, container or
+   * instance identity) or Google ADC, so a datastore whose credentials come
+   * from anywhere else cannot be replicated. Throw, rather than return a
+   * target Litestream cannot reach: a GCS datastore with a custom
+   * `apiEndpoint`, for example, which Litestream has no equivalent for.
+   *
+   * Optional — swamp does not call it yet (swamp-club#3507). The v3 opt-in
+   * will require it. Check an implementation with
+   * `assertReplicaTargetConformance`.
+   */
+  replicaTarget?(): V3ReplicaTarget;
 
   /**
    * Register a namespace in the datastore.

@@ -454,9 +454,13 @@ function databaseConfigLines(
     "dbs:",
     `  - path: ${q(commitsDb)}`,
     "    replica:",
-    `      type: ${replica.type}`,
+    // Litestream names its GCS replica type "gs".
+    `      type: ${replica.type === "gcs" ? "gs" : replica.type}`,
     `      path: ${q(replicaPath)}`,
   ];
+  if (replica.type === "gcs") {
+    lines.push(`      bucket: ${q(replica.bucket)}`);
+  }
   if (replica.type === "s3") {
     lines.push(`      bucket: ${q(replica.bucket)}`);
     if (replica.region !== undefined) {
@@ -464,6 +468,8 @@ function databaseConfigLines(
     }
     if (replica.endpoint !== undefined) {
       lines.push(`      endpoint: ${q(replica.endpoint)}`);
+    }
+    if (replica.forcePathStyle ?? replica.endpoint !== undefined) {
       lines.push("      force-path-style: true");
     }
   }
