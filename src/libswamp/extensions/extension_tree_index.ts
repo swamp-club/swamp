@@ -183,10 +183,14 @@ export function createExtensionTreeIndexer(options: {
       1,
       Math.min(options.concurrency ?? defaultConcurrency(), files.length),
     );
-    try {
-      await Promise.all(Array.from({ length: lanes }, lane));
-    } finally {
-      await prober.release();
+    // Settled, not raced: a lane still running after another failed would
+    // start a new host after the release below.
+    const settled = await Promise.allSettled(
+      Array.from({ length: lanes }, lane),
+    );
+    await prober.release();
+    for (const outcome of settled) {
+      if (outcome.status === "rejected") throw outcome.reason;
     }
     const sources: ExtensionTreeSource[] = [];
     const failures: ExtensionTreeFailure[] = [];

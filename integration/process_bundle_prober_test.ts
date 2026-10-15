@@ -295,27 +295,34 @@ Deno.test("ProcessBundleProber: Deno.exit rethrown as another error's cause is s
   });
 });
 
-Deno.test("ProcessBundleProber: a bundle that spins in synchronous code is timed-out, and release ends its host (swamp-club#3494)", async () => {
-  await withProber({ timeoutMs: 300 }, async ({ prober, bundle }) => {
-    const pidFile = await Deno.makeTempFile({ prefix: "swamp_3494_pid_" });
-    try {
-      const result = await prober.probe(
-        await bundle(
-          "spin",
-          `Deno.writeTextFileSync(${
-            JSON.stringify(pidFile)
-          }, String(Deno.pid));\n` +
-            "while (true) {}\n",
-        ),
-      );
-      assertEquals(result, { tag: "timed-out", timeoutMs: 300 });
-      // A timed-out probe is not reusable, so its host is already stopped.
-      const pid = Number(await Deno.readTextFile(pidFile));
-      assertEquals(isProcessAlive(pid), false);
-    } finally {
-      await Deno.remove(pidFile).catch(() => {});
-    }
-  });
+Deno.test({
+  name:
+    "ProcessBundleProber: a bundle that spins in synchronous code is timed-out, and release ends its host (swamp-club#3494)",
+  // Deno.kill(pid, 0) is no liveness check on Windows, so the host's
+  // pid cannot be watched there.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withProber({ timeoutMs: 300 }, async ({ prober, bundle }) => {
+      const pidFile = await Deno.makeTempFile({ prefix: "swamp_3494_pid_" });
+      try {
+        const result = await prober.probe(
+          await bundle(
+            "spin",
+            `Deno.writeTextFileSync(${
+              JSON.stringify(pidFile)
+            }, String(Deno.pid));\n` +
+              "while (true) {}\n",
+          ),
+        );
+        assertEquals(result, { tag: "timed-out", timeoutMs: 300 });
+        // A timed-out probe is not reusable, so its host is already stopped.
+        const pid = Number(await Deno.readTextFile(pidFile));
+        assertEquals(isProcessAlive(pid), false);
+      } finally {
+        await Deno.remove(pidFile).catch(() => {});
+      }
+    });
+  },
 });
 
 Deno.test("ProcessBundleProber: lines a bundle writes to stdout directly are logged, not taken as an answer", async () => {
@@ -414,26 +421,57 @@ Deno.test("bundle probe host: exits when stdin closes, though a bundle left an i
   }
 });
 
-Deno.test("ProcessBundleProber: a host from another build than this swamp refuses to probe, as a retryable failed import", async () => {
+Deno.test("ProcessBundleProber: a host from another build than this swamp refuses to probe, as a retryable failed import, and is not started again", async () => {
   const entry = new URL(
     "../src/infrastructure/runtime/bundle_probe_host.ts",
     import.meta.url,
   ).href;
   const source = sourceProbeHostCommand();
   const config = source.args[source.args.indexOf("--config") + 1];
+  let started = 0;
   const prober = new ProcessBundleProber({
     // A host as a binary swamp update replaced would start: it reports
     // build 2 to a parent running build 1.
+    command: () => {
+      started++;
+      return {
+        command: Deno.execPath(),
+        args: [
+          "eval",
+          "--config",
+          config,
+          `import { runBundleProbeHost } from ${JSON.stringify(entry)};\n` +
+          `Deno.exit(await runBundleProbeHost("2.0.0"));`,
+        ],
+        env: { SWAMP_BUILD_VERSION: "1.0.0" },
+      };
+    },
+  });
+  const request = {
+    importUrl: "data:text/javascript,export%20const%20x%20%3D%201%3B",
+    kind: "vault" as const,
+  };
+  try {
+    for (let probe = 0; probe < 2; probe++) {
+      const result = await prober.probe(request);
+      assertEquals(result.tag, "import-failed");
+      assertStringIncludes(
+        result.tag === "import-failed" ? result.message : "",
+        "swamp 1.0.0 is running, but its binary is now 2.0.0",
+      );
+    }
+    // The binary does not change back, so the second probe starts no host.
+    assertEquals(started, 1);
+  } finally {
+    await prober.release();
+  }
+});
+
+Deno.test("ProcessBundleProber: a host that cannot be started is a retryable failed import, not a thrown probe", async () => {
+  const prober = new ProcessBundleProber({
     command: () => ({
-      command: Deno.execPath(),
-      args: [
-        "eval",
-        "--config",
-        config,
-        `import { runBundleProbeHost } from ${JSON.stringify(entry)};\n` +
-        `Deno.exit(await runBundleProbeHost("2.0.0"));`,
-      ],
-      env: { SWAMP_BUILD_VERSION: "1.0.0" },
+      command: join(Deno.cwd(), "no-such-swamp-binary-3494"),
+      args: [],
     }),
   });
   try {
@@ -444,36 +482,43 @@ Deno.test("ProcessBundleProber: a host from another build than this swamp refuse
     assertEquals(result.tag, "import-failed");
     assertStringIncludes(
       result.tag === "import-failed" ? result.message : "",
-      "swamp 1.0.0 is running, but its binary is now 2.0.0",
+      "the probe host did not start",
     );
   } finally {
     await prober.release();
   }
 });
 
-Deno.test("ProcessBundleProber: a host that dies between probes is replaced by the next probe", async () => {
-  await withProber({}, async ({ prober, type, bundle }) => {
-    const pidFile = await Deno.makeTempFile({ prefix: "swamp_3494_pid_" });
-    try {
-      const first = await prober.probe(
-        await bundle(
-          "pid",
-          `Deno.writeTextFileSync(${
-            JSON.stringify(pidFile)
-          }, String(Deno.pid));\n` +
-            VAULT(type("pid")),
-        ),
-      );
-      assertEquals(first.tag, "primary");
-      const pid = Number(await Deno.readTextFile(pidFile));
-      Deno.kill(pid, "SIGKILL");
-      await waitFor(() => !isProcessAlive(pid), "the host to die");
-      const next = await prober.probe(await bundle("ok", VAULT(type("ok"))));
-      assertEquals(next.tag, "primary");
-    } finally {
-      await Deno.remove(pidFile).catch(() => {});
-    }
-  });
+Deno.test({
+  name:
+    "ProcessBundleProber: a host that dies between probes is replaced by the next probe",
+  // Deno.kill(pid, 0) is no liveness check on Windows, so the host's
+  // pid cannot be watched there.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withProber({}, async ({ prober, type, bundle }) => {
+      const pidFile = await Deno.makeTempFile({ prefix: "swamp_3494_pid_" });
+      try {
+        const first = await prober.probe(
+          await bundle(
+            "pid",
+            `Deno.writeTextFileSync(${
+              JSON.stringify(pidFile)
+            }, String(Deno.pid));\n` +
+              VAULT(type("pid")),
+          ),
+        );
+        assertEquals(first.tag, "primary");
+        const pid = Number(await Deno.readTextFile(pidFile));
+        Deno.kill(pid, "SIGKILL");
+        await waitFor(() => !isProcessAlive(pid), "the host to die");
+        const next = await prober.probe(await bundle("ok", VAULT(type("ok"))));
+        assertEquals(next.tag, "primary");
+      } finally {
+        await Deno.remove(pidFile).catch(() => {});
+      }
+    });
+  },
 });
 
 /** A bundle that starts `sleep`, which inherits the host's pipes. */

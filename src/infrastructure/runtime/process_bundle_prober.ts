@@ -241,6 +241,11 @@ export class ProcessBundleProber implements BundleProber {
   private abandon: ((message: string) => void) | undefined;
   /** Stops of hosts that died between probes, which release waits for. */
   private dropped: Promise<void> = Promise.resolve();
+  /**
+   * Why hosts refuse this swamp, once one said it is another build: every
+   * later host would too, as the binary does not change back.
+   */
+  private mismatch: string | undefined;
 
   constructor(
     options: {
@@ -278,7 +283,22 @@ export class ProcessBundleProber implements BundleProber {
   private async probeOne(
     request: BundleProbeRequest,
   ): Promise<BundleProbeResult> {
-    const host = this.host ??= startProbeHost(this.command());
+    if (this.mismatch !== undefined) {
+      return { tag: "import-failed", message: this.mismatch };
+    }
+    let host: ProbeHost;
+    try {
+      host = this.host ??= startProbeHost(this.command());
+    } catch (error) {
+      // Not the bundle's doing (the binary moved, or no descriptors left),
+      // so a retryable failed import, as a host that never starts is.
+      return {
+        tag: "import-failed",
+        message: `the probe host did not start: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const reply = await new Promise<
@@ -296,10 +316,10 @@ export class ProcessBundleProber implements BundleProber {
                 // The startup timer runs on until the kind adapter is in.
                 return;
               case "version-mismatch":
-                return failed(
+                this.mismatch =
                   `swamp ${reply.parent} is running, but its binary is now ` +
-                    `${reply.host}; restart swamp to index extension sources`,
-                );
+                  `${reply.host}; restart swamp to index extension sources`;
+                return failed(this.mismatch);
               case "started":
                 clearTimeout(timer);
                 timer = setTimeout(
