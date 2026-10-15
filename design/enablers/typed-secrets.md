@@ -843,7 +843,10 @@ runner stderr, `run_tracker.db` pending-run payloads, control-plane wait
 records, `_catalog.db` tags, the serve audit WAL and store at request/response
 detail levels, the CLI command audit, and on v3 every record's copy in
 `commits.db` and `_blobs/`. Rules tests pin imports/callers; integration tests
-demonstrate behavior.
+demonstrate behavior. The checked-in inventory,
+integration/secret_sink_inventory.json, is the list every phase gate is
+measured against. Its rules test fails when this section or the code names a
+destination the inventory lacks.
 
 ### 7.2 Strict shell usage
 
@@ -1305,7 +1308,10 @@ list), a frozen initial compatibility corpus, and a canary helper that
 distinguishes allowed plaintext boundaries from prohibited destinations.
 Characterize current worker secret authorization (the post-resolution allowlist
 and remote `readResource`) and control/data-plane secret traffic; any legacy
-repair has its own regression and release notes.
+repair has its own regression and release notes. The inventory and the
+allowed-boundary canary tests live in this repository; the engine-1
+characterization of prohibited sinks runs in the swamp-uat acceptance suite,
+where each baseline exception names the phase that removes it.
 
 Implement and release the reader ratchets (`evaluatedFormat`/`sensitiveFormat`
 validation in the evaluated definition and workflow repositories,
@@ -1519,7 +1525,9 @@ temporary execution locations, not just the local `.swamp/` directory. Exclude
 legitimate vault storage, protected reveal/write data-plane traffic, and
 designated plaintext consumers from the zero-plaintext assertion; test their
 authorization and lifetime instead. Legacy-engine baseline exceptions never
-waive an engine-2 gate.
+waive an engine-2 gate. Prohibited-sink scans run black-box against the
+compiled binary in swamp-uat, outside the release gate; allowed boundaries and
+protected traffic are tested in-process here.
 
 ### 12.3 Repository conventions and release evidence
 
@@ -1566,6 +1574,7 @@ provider cancellation capabilities are published compatibility boundaries.
 | Remote execution and capabilities                   | `src/domain/remote/protocol.ts`, `remote_dispatch.ts`, `session_credential.ts`, `src/serve/dispatch_service.ts`, `dispatch_registry.ts`, `capability_service.ts`, `worker_gateway.ts`, `data_plane.ts`, `src/worker/remote_method_context.ts`, `data_plane_client.ts`, `dispatch_handler.ts`, `exec_dispatch.ts` |
 | Doctor and repo commands                            | `src/cli/commands/doctor.ts`, `doctor_datastores.ts`, `repo_init.ts`, `src/libswamp/repo/init.ts`, `src/domain/repo/repo_service.ts`                                                                                                                                                                             |
 | Authoring/security regression corpus                | `integration/expression_provenance_test.ts`, `literal_expression_test.ts`, `sensitive_data_delivery_test.ts`, `foreign_template_text_test.ts`                                                                                                                                                                    |
+| Sink inventory and canary boundaries | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts` |
 
 Implementation PRs should update this inventory as new seams are introduced.
 Completion means the documented gates pass for the supported surface, not merely
