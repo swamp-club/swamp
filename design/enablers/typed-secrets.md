@@ -1311,7 +1311,14 @@ and remote `readResource`) and control/data-plane secret traffic; any legacy
 repair has its own regression and release notes. The inventory and the
 allowed-boundary canary tests live in this repository; the engine-1
 characterization of prohibited sinks runs in the swamp-uat acceptance suite,
-where each baseline exception names the phase that removes it.
+where each baseline exception names the phase that removes it. The one
+exception is the remote path: the worker-authorization and control/data-plane
+characterization (`integration/remote_secrets_baseline_*`, swamp-club#3512)
+runs in-process here, because its sinks (dispatch and bootstrap frames, runner
+stderr, step-lease errors) sit between serve, the worker supervisor and the
+runner, where a black-box scan cannot separate the hops. Those tests pin
+current behavior as a baseline for Phase 5; they are not a zero-plaintext
+gate, and each disclosure they pin names its own issue.
 
 Implement and release the reader ratchets (`evaluatedFormat`/`sensitiveFormat`
 validation in the evaluated definition and workflow repositories,
@@ -1527,7 +1534,8 @@ designated plaintext consumers from the zero-plaintext assertion; test their
 authorization and lifetime instead. Legacy-engine baseline exceptions never
 waive an engine-2 gate. Prohibited-sink scans run black-box against the
 compiled binary in swamp-uat, outside the release gate; allowed boundaries and
-protected traffic are tested in-process here.
+protected traffic are tested in-process here, as is the remote-path baseline
+described under Phase 0.
 
 ### 12.3 Repository conventions and release evidence
 
@@ -1576,6 +1584,7 @@ provider cancellation capabilities are published compatibility boundaries.
 | Doctor and repo commands                            | `src/cli/commands/doctor.ts`, `doctor_datastores.ts`, `repo_init.ts`, `src/libswamp/repo/init.ts`, `src/domain/repo/repo_service.ts`                                                                                                                                                                             |
 | Authoring/security regression corpus                | `integration/expression_provenance_test.ts`, `literal_expression_test.ts`, `sensitive_data_delivery_test.ts`, `foreign_template_text_test.ts`                                                                                                                                                                    |
 | Sink inventory and canary boundaries                | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                          |
+| Remote secret-path baseline                         | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                            |
 
 Implementation PRs should update this inventory as new seams are introduced.
 Completion means the documented gates pass for the supported surface, not merely
