@@ -124,12 +124,16 @@ type Command =
   /**
    * A new writer takes the lease and recovers. With `cutAfter`, power is cut
    * when the recovery reaches that many removals (after landing an entry it
-   * has not settled, at 0), and a further writer recovers.
+   * has not settled, at 0), or before it raises the floor when it removed
+   * fewer but some; the
+   * cut keeps the first `cutKeep` removals since the last fsync, and a
+   * further writer recovers.
    */
   | {
     readonly kind: "restart";
     readonly takeover: boolean;
     readonly cutAfter?: number;
+    readonly cutKeep?: number;
   }
   | { readonly kind: "compact" }
   | { readonly kind: "age" }
@@ -187,6 +191,7 @@ const arbCommand: fc.Arbitrary<Command> = fc.oneof(
       kind: fc.constant("restart" as const),
       takeover: fc.boolean(),
       cutAfter: fc.option(fc.integer({ min: 0, max: 2 }), { nil: undefined }),
+      cutKeep: fc.integer({ min: 0, max: 2 }),
     }, { requiredKeys: ["kind", "takeover"] }),
     weight: 3,
   },
@@ -349,17 +354,21 @@ async function runModel(commands: readonly Command[]): Promise<void> {
   let recovering = false;
   /** Removals a recovery makes before the power is cut; unset for none. */
   let cutAfterRemovals: number | undefined;
+  /** Whether the recovery being cut has removed an entry yet. */
+  let removedBeforeCut = false;
   const wrapRemoval = (kind: "settle" | "discard") => {
     const remove = outbox[kind].bind(outbox);
     outbox[kind] = async (keys: readonly OutboxKey[]) => {
       if (cutAfterRemovals !== undefined) {
         if (cutAfterRemovals === 0) throw new Killed();
         cutAfterRemovals--;
+        removedBeforeCut = true;
       }
       const removed: RemovedEntry[] = [];
       for (const key of keys) {
-        if (recovering && kind === "discard") {
-          // A recovery's drop is reported: it must never land later.
+        if (recovering) {
+          // A recovery settles only landed commits, so removing one that has
+          // not landed is a drop, reported: it must never land later.
           const record = groups.get(key.txnId);
           if (
             record !== undefined && record.failedAt === undefined &&
@@ -383,6 +392,13 @@ async function runModel(commands: readonly Command[]): Promise<void> {
   };
   wrapRemoval("settle");
   wrapRemoval("discard");
+  // The floor's write is fsynced: a cut before it loses the recovery's
+  // relaxed removals.
+  const raiseFloor = outbox.raiseFloor.bind(outbox);
+  outbox.raiseFloor = (fence: number) => {
+    if (cutAfterRemovals === 0 && removedBeforeCut) throw new Killed();
+    return raiseFloor(fence);
+  };
 
   /**
    * Cuts the power: the process dies, and the WAL keeps a prefix of the
@@ -695,12 +711,13 @@ async function runModel(commands: readonly Command[]): Promise<void> {
           await takeLease(command.takeover);
           if (command.cutAfter !== undefined) {
             cutAfterRemovals = command.cutAfter;
+            removedBeforeCut = false;
             try {
               await recover();
             } catch (error) {
               if (!(error instanceof Killed)) throw error;
               coverage.recoveryCuts++;
-              cutPower(0);
+              cutPower(command.cutKeep ?? 0);
               // A new writer, under a new fence.
               await takeLease(false);
             } finally {
@@ -749,7 +766,7 @@ async function runModel(commands: readonly Command[]): Promise<void> {
 const arbInterleaving = fc.array(arbCommand, { minLength: 1, maxLength: 40 });
 
 /**
- * Each a unit's discard after a reported failure, then a power cut before
+ * Each a discard after a reported failure or drop, then a power cut before
  * anything else fsyncs the outbox (swamp-club#3506): rare in random runs.
  */
 const STAGE: Command = { kind: "stage", target: 0, big: false };
@@ -767,6 +784,18 @@ const DISCARD_THEN_CUT: Command[][] = [
     { kind: "checkpoint", fault: "fail-append" },
     { kind: "abandon" },
     CUT,
+  ],
+  // A killed writer leaves a run entry and its unit's data entry; the next
+  // recovery drops the data entry (head moved) and the run entry with it,
+  // and power is cut before the floor, keeping only the first drop. The run
+  // partition's head is unchanged: only the run entry's fsynced drop keeps
+  // the run record from landing at the recovery after.
+  [
+    { kind: "stage-run" },
+    { kind: "checkpoint", fault: "fail-append" },
+    STAGE,
+    { kind: "checkpoint", fault: "stray-commit-then-kill" },
+    { kind: "restart", takeover: false, cutAfter: 2, cutKeep: 1 },
   ],
 ];
 
