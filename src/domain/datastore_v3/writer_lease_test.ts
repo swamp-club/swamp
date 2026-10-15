@@ -207,3 +207,24 @@ Deno.test("WriterFencedError: names both fences and carries the fenced code", ()
     true,
   );
 });
+
+Deno.test("WriterFencedError: a replicating writer fenced after publishing says its changes may still appear", () => {
+  const published = new WriterFencedError(6, 7, "published");
+  assertEquals(published.code, WRITER_FENCED_CODE);
+  assertEquals(
+    published.message,
+    "Another swamp process took over the writer lease of the v3 datastore " +
+      "(fence 7) while this one held fence 6, after this command had " +
+      "published its changes to the datastore's replica. They may still " +
+      "appear: the writer that took over may restore them. Check whether " +
+      "they did before running the command again.",
+  );
+  // Without replication the message is unchanged.
+  assertEquals(
+    new WriterFencedError(6, 7).message,
+    "Another swamp process took over the writer lease of the v3 datastore " +
+      "(fence 7) while this one held fence 6. A v3 datastore takes one " +
+      "writer at a time, so nothing more from this command was committed. " +
+      "Run the command again.",
+  );
+});

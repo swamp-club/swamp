@@ -37,6 +37,8 @@
 
 import { dirname, fromFileUrl, join } from "@std/path";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
+import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
+import { WriterFencedError } from "../../../domain/datastore_v3/writer_lease.ts";
 import {
   decideLineage,
   replicaPathFor,
@@ -144,17 +146,27 @@ export interface ReplicationRequest {
   assertLeaseCurrent(): Promise<void>;
 }
 
+/** What {@link ReplicationHandle.sync} runs between the sync and the lease check. */
+export interface SyncOptions {
+  beforeLeaseCheck?(txid: string): Promise<void>;
+}
+
 /** A command's use of the sidecar, from acquire to release. */
 export interface ReplicationHandle {
   /** The lineage the sidecar replicates. */
   readonly lineageFence: number;
   /**
-   * Forces one sync and confirms every commit made before it, then checks
-   * the writer lease.
+   * Forces one sync and confirms every commit made before it, then runs
+   * `options.beforeLeaseCheck` with the replicated TXID (16 hex digits),
+   * then checks the writer lease (swamp-club#3482: what a writer publishes
+   * must be visible before its check passes). Resolves with the TXID.
    *
    * @throws V3ReplicationError
    */
-  sync(deadlineMs: number): Promise<void>;
+  sync(
+    deadlineMs: number,
+    options?: SyncOptions,
+  ): Promise<string>;
   /** Whether the sidecar still answers on its control socket. */
   probe(): Promise<boolean>;
   /** Records the use and lets the sidecar idle out. Idempotent. */
@@ -603,6 +615,109 @@ export class LitestreamReplicator {
     }
   }
 
+  /**
+   * Stops the sidecar of the `commits.db` at `commitsDb`, when one runs, so
+   * the copy can be replaced by a restore (swamp-club#3482), and keeps any
+   * other from starting until the returned release: `use.lock` is held
+   * exclusively throughout, which every acquire waits for. This process
+   * must hold no use of that sidecar. A sidecar it cannot verify as this
+   * user's, on this host, for this database, is refused, never killed.
+   *
+   * @throws V3ReplicationUnavailableError
+   */
+  async quiesce(commitsDb: string): Promise<() => void> {
+    const paths = await replicationPathsFor(
+      commitsDb,
+      this.deps.privateRoot ?? defaultPrivateRoot(),
+    );
+    if (this.#held.has(paths.commitsDb)) {
+      throw new V3ReplicationUnavailableError(
+        "this process still holds the sidecar of the copy it must restore",
+      );
+    }
+    if (await ensureSharedDir(paths) !== "own") {
+      throw markErrorPaths(
+        new V3ReplicationUnavailableError(
+          `${paths.sharedDir} belongs to another user`,
+        ),
+        [paths.sharedDir],
+      );
+    }
+    const use = await Deno.open(paths.useLock, {
+      read: true,
+      write: true,
+      create: true,
+    });
+    try {
+      await this.#waitForLock(
+        use,
+        true,
+        "another command is using the sidecar of the copy this one must restore",
+      );
+      const processes = this.deps.processes;
+      const read = await readPresence(paths);
+      if (read.kind === "foreign") {
+        throw markErrorPaths(
+          new V3ReplicationUnavailableError(
+            `${paths.presence} belongs to another user`,
+          ),
+          [paths.presence],
+        );
+      }
+      if (!await this.#supervisorLockFree(paths)) {
+        const record = read.kind === "found" ? read.record : undefined;
+        if (
+          record === undefined || record.hostname !== Deno.hostname() ||
+          record.uid !== Deno.uid() ||
+          !isSupervisorFor(
+            await processes.commandLine(record.supervisorPid),
+            paths.commitsDb,
+          )
+        ) {
+          throw new V3ReplicationUnavailableError(
+            "a Litestream sidecar this command cannot verify holds the copy " +
+              "it must restore",
+          );
+        }
+        processes.signalGroup(record.supervisorPid, "SIGKILL");
+        if (record.litestreamPid !== undefined) {
+          processes.signal(record.litestreamPid, "SIGKILL");
+        }
+        const until = this.deps.now() + this.deps.timings.startWaitMs;
+        while (!await this.#supervisorLockFree(paths)) {
+          if (this.deps.now() >= until) {
+            throw new V3ReplicationUnavailableError(
+              "the Litestream sidecar of the copy being restored did not stop",
+            );
+          }
+          await this.deps.sleep(this.deps.timings.pollMs);
+        }
+      } else if (
+        read.kind === "found" && read.record.litestreamPid !== undefined &&
+        read.record.hostname === Deno.hostname() &&
+        read.record.uid === Deno.uid() &&
+        processes.isAlive(read.record.litestreamPid) &&
+        isLitestreamFor(
+          await processes.commandLine(read.record.litestreamPid),
+          paths.config,
+        )
+      ) {
+        // A Litestream its dead supervisor left behind.
+        processes.signal(read.record.litestreamPid, "SIGKILL");
+      }
+      await Deno.remove(paths.socket).catch(() => {});
+    } catch (error) {
+      use.close();
+      throw error;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      use.close();
+    };
+  }
+
   async #supervisorLockFree(paths: ReplicationPaths): Promise<boolean> {
     const probe = await Deno.open(paths.supervisorLock, {
       read: true,
@@ -641,7 +756,7 @@ class SharedHandle {
     let released = false;
     return {
       lineageFence: this.lineageFence,
-      sync: (deadlineMs) => this.sync(deadlineMs),
+      sync: (deadlineMs, options) => this.sync(deadlineMs, options),
       probe: () => this.probe(),
       release: async () => {
         if (released) return;
@@ -651,7 +766,7 @@ class SharedHandle {
     };
   }
 
-  async sync(deadlineMs: number): Promise<void> {
+  async sync(deadlineMs: number, options: SyncOptions = {}): Promise<string> {
     let response;
     try {
       response = await this.deps.control.sync(
@@ -673,17 +788,44 @@ class SharedHandle {
         { cause: error },
       );
     }
-    if (!isReplicated(response)) {
+    const txid = normalizeTxid(response.replicated_txid);
+    if (!isReplicated(response) || txid === undefined) {
       await this.#condemn();
       throw new V3ReplicationError(
         `Litestream answered ${JSON.stringify(response)}`,
       );
+    }
+    let published = false;
+    if (options.beforeLeaseCheck !== undefined) {
+      try {
+        await options.beforeLeaseCheck(txid);
+        published = true;
+      } catch (error) {
+        throw error instanceof V3ReplicationError
+          ? error
+          : new V3ReplicationError(
+            `the replicated state could not be published: ${messageOf(error)}`,
+            { cause: error },
+          );
+      }
     }
     // The lease could have been taken over while the sync ran: a fenced
     // writer reports nothing as replicated.
     try {
       await this.assertLeaseCurrent();
     } catch (error) {
+      if (published) {
+        // The head is out: the writer that took over may restore these
+        // commits, so saying nothing landed would not be true.
+        const fenced = error instanceof WriterFencedError ? error : undefined;
+        const refused = new WriterFencedError(
+          fenced?.fence,
+          fenced?.currentFence,
+          "published",
+        );
+        refused.cause = error;
+        throw refused;
+      }
       throw new V3ReplicationError(
         `this process lost its writer lease while the sync ran: ${
           messageOf(error)
@@ -691,6 +833,7 @@ class SharedHandle {
         { cause: error },
       );
     }
+    return txid;
   }
 
   async probe(): Promise<boolean> {

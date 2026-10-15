@@ -2940,7 +2940,7 @@ export const serveCommand = new Command()
     // while replication is off (swamp-club#3416).
     const v3Replication = v3Maintenance !== undefined &&
         !isCustomDatastoreConfig(datastoreConfig)
-      ? startV3ReplicationUpkeep(datastoreConfig.path)
+      ? startV3ReplicationUpkeep(resolvedRepoDir, datastoreConfig)
       : undefined;
 
     let configPoller: ConfigPoller | null = null;

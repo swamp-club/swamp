@@ -2449,6 +2449,13 @@ that.
 - Serve handles several namespaces with one connection and one sidecar, not
   one of each per namespace.
 - Failover restores one database.
+- One database per datastore, but one copy per machine while replicating
+  (swamp-club#3482, Phase 4D2): each checkout keeps its own `commits.db`
+  under `.swamp/_datastore_v3_copies/<datastore hash>/`, restored from the
+  replica and replicated by its writer. Chunks, the format marker and the
+  lease stay in the datastore. `v3CommitsDbPath` is the only place that
+  decides which file a checkout opens (a fitness rule pins it), and without
+  replication it is the datastore's own, as before.
 - The cost: restoring one namespace restores them all, and a busy namespace
   grows the shared file. Namespaces that share a datastore already share its
   bucket and its writer, so that is accepted.
@@ -4225,6 +4232,15 @@ takeover leaves behind (Phase 4A in `datastore-litestream.md`). D1
 compacts, forces one sync, checks `replicated_txid` and the lease, then closes
 the stores before it releases the sidecar and the lease. See "Phase 4D1" in
 `datastore-litestream.md`.
+
+D2 (swamp-club#3482) restores. While replicating, each checkout has its own
+copy of `commits.db`, so the store-wide `writer_fence` fences one copy only:
+across machines a zombie is fenced by the lease check every writer runs
+before it acknowledges, and by the restore, which keeps only what a writer
+acknowledged. A writer takes the lease, then makes its copy current from the
+published lineage (the highest confirmed one, in `_control/lineage/`), then
+raises the fence in it, so every commit the previous writer acknowledged is
+in what it writes on. See "Phase 4D2" in `datastore-litestream.md`.
 
 **Buckets.** The lease runs over any store with `putIfAbsent`
 (`v3WriterLease`), and its tests run against the in-memory remote's control

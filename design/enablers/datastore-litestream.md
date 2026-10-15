@@ -273,7 +273,8 @@ nothing stops two writers sharing a path.
   full snapshot, which costs the same as an initial sync (3.4 s per GB locally).
 - **So:** "a generation per fence" becomes **a replica path per fence**. The
   fence id comes from the leader lease in team mode and the writer lease in solo
-  mode (swamp-club#3359; `datastores.md`, **v3 writer lease**). Restore reads the current fence from that record, then restores
+  mode (swamp-club#3359; `datastores.md`, **v3 writer lease**). Restore reads the current lineage from the records published beside it
+  (Phase 4D2), then restores
   `_litestream/<fence>/`. Paths left by older fences are garbage-collected after
   the next fence's first confirmed sync. In solo mode the path's fence is the
   one at which the checkout's replication lineage began, so consecutive
@@ -612,6 +613,11 @@ at 1 GB. p50.
 > **Built, dormant (swamp-club#3416, Phase 4D1):** every 4D item below except
 > restore and takeover (D2). See
 > [Phase 4D1: the idle sidecar](#phase-4d1-the-idle-sidecar-swamp-club3416).
+>
+> **Built, dormant (swamp-club#3482, Phase 4D2):** restore, refresh and
+> takeover, and a checkout-local `commits.db` while replicating (moved here
+> from 4E so D2 is testable end to end). See
+> [Phase 4D2](#phase-4d2-restore-refresh-and-takeover-swamp-club3482).
 
 
 - **4D: an idle sidecar for solo mode,** behind a pidfile and a short socket
@@ -803,6 +809,220 @@ run a real Litestream from `SWAMP_LITESTREAM_PATH`, which `verify-build` fetches
 and hash-checks. They are ignored when it is unset, and on Windows. The S3 case
 runs only with `SWAMP_TEST_LITESTREAM_S3_ENDPOINT`.
 
+### Phase 4D2: restore, refresh and takeover (swamp-club#3482)
+
+Built and dormant, behind the same internal `SWAMP_V3_REPLICA` setting as
+D1. With it unset nothing changes: the datastore's own `commits.db`, and
+nothing written under `_control/lineage/`.
+
+**A copy per checkout.** While replicating, each checkout keeps its own
+`commits.db` under `.swamp/_datastore_v3_copies/<hash of the datastore's
+canonical path>/`, with D1's `.commits.db-replication/` beside it. Chunks,
+the format marker and the lease stay in the datastore. Two checkouts on one
+filesystem-v3 datastore then behave like two machines on a bucket, which is
+what the tests use. `v3CommitsDbPath` alone decides the file; a fitness rule
+pins it.
+
+**The published lineage.** Each lineage's records live in the datastore's
+control plane, beside the lease, at `_control/lineage/<fence>/`:
+
+- `started.json`, created once (`putIfAbsent`) by the writer that begins the
+  lineage, before its sidecar uploads: the fence, holder, replica root and
+  time;
+- `head-<writer fence>.json`, rewritten by that writer after each sync
+  Litestream confirmed: the TXID and swamp's **high-water mark**, the commit
+  store's last cursor and the commit at it. Each writer has its own key and a
+  read takes the highest writer's, so a head never goes backwards: two
+  processes in one checkout share and continue one lineage, and the first,
+  fenced and publishing late, must not overwrite the head of the second,
+  which already acknowledged more. `copy.json` likewise only moves forward;
+- `confirmed.json`, created once, after the lineage's first head.
+
+**The current state** is the highest lineage under the current replica root
+that is started, confirmed and has a head. Records under another root, or
+that do not parse, are ignored.
+
+> **Decision: head, then confirmation, then the lease check.** A writer's
+> end of command is: sync, publish the head, publish the confirmation (the
+> first time), check the lease, acknowledge. A model-based property test
+> found two orders that lose acknowledged commits: a writer that crashed
+> between a confirmation and its head left a current lineage with no mark
+> to restore to, and a head published after the lease check let a paused
+> writer acknowledge a commit the next writer's restore never saw. With the
+> head first, every commit a writer acknowledged is under a head that any
+> later lease holder reads. The cost: a writer that then fails its lease
+> check leaves a head over commits nobody acknowledged. Like the commits D1
+> keeps after a failed sync, they stay restorable until a newer lineage is
+> confirmed.
+> The writer is told so: its command fails as fenced
+> (`datastore_v3_writer_fenced`) with a message saying its changes may still
+> appear, because the writer that took over may restore them, and to check
+> before running the command again. Without replication the fenced message
+> still says nothing more was committed.
+
+**Behind, cheaply.** `copy.json` beside the copy records which lineage, up
+to which TXID, the copy holds. Before a command's first read or write it
+reads the lineage records once (one list, then at most four small gets) and
+compares (`decideLocalCopy`): the copy is current when it holds the current
+lineage at or past its head, or when it is the copy whose own lineage, not
+yet confirmed, is the newest started. Otherwise it is **missing**, **behind**
+or **foreign**, and is restored. A current copy downloads nothing.
+
+**The restore** (`restoreV3Copy`) runs the hash-checked binary into a temp
+file beside the copy, with `-txid` set to the head:
+
+1. A TXID inside a range that compaction merged after its L0 files expired
+   cannot be restored. Measured on 0.5.17: with L0 retained (the default
+   is five minutes), `restore -txid` gives exactly that state, later commits
+   excluded; once L0 expired, any TXID inside a merged range fails with
+   `no matching backup files available`, and only boundaries restore. Then
+   the latest state is restored instead.
+2. The result must pass SQLite's `integrity_check` (swamp's own, not
+   Litestream's `-integrity-check`, so validation does not depend on the
+   sidecar's version) and have a schema this swamp reads.
+3. Every commit past the high-water mark is removed
+   (`SqliteCommitStore.truncateAfter`): what a zombie writer uploaded after
+   its last acknowledgement never lands. Removed commits release their chunk
+   references as compaction does, and later commits get higher cursors.
+4. The temp file is installed. A missing copy is hard-linked into place, never over a file a reader
+   created meanwhile, which is then updated in place instead. An
+   existing one is updated **in place** (`replaceContentFrom`): every table
+   copied from the restored file in one write transaction, through the
+   store's queue, so open connections, serve's included, keep working and see
+   the change atomically. `ATTACH` would do this in one statement, but Deno
+   refuses it under the compiled binary's granular permissions, so the rows
+   go through a second connection.
+
+A restore is refused when the restored file does not hold the acknowledged
+commit at the mark (another history), or when the commits past the mark were
+compacted and cannot be removed. That happens only when a writer kept writing
+after it lost the lease, then compacted, and the head's TXID had left L0.
+The error says how to recover: remove that lineage's records under
+`_control/lineage/<fence>/`, so its last acknowledged state is unreachable and
+the one before it is current.
+
+Restores of one copy are serialized by `restore.lock`, and the copy's
+sidecar is stopped for the restore (`LitestreamReplicator.quiesce`, which
+holds `use.lock` exclusively so none starts meanwhile). A read-only command
+that cannot get either within the lock timeout reads its copy as it is; a
+writer fails. A reader in a checkout another process is writing does not
+restore: that writer keeps the copy current.
+
+**The checkout after a restore.** When the commit at the read model's cursor
+changed (a foreign lineage, or dropped commits that were never
+acknowledged), the checkout is rebuilt as after an interrupted writer: the
+catalog is emptied, every commit replayed, and files no commit owns removed.
+It runs under the writer lease, so no writer materialises files meanwhile: a
+reader that cannot take the lease only replays, and the dropped commits'
+files stay until a rebuild. A cursor whose commit the copy no longer stores
+counts as moved. Otherwise the read model catches up incrementally.
+
+**Takeover.** `holdV3Writer` takes the lease, then makes the copy current,
+then raises `writer_fence` in it, then decides the lineage:
+
+- it continues only while its lineage was published (`started.json`) and no
+  lineage was started after it (`mayContinueLineage`), the fence rule holds,
+  and nothing was restored. A restore always restarts the lineage, since
+  Litestream must never continue a path over a different database;
+- otherwise it restarts at its fence, claims the lineage (`putIfAbsent`; a
+  claim that exists refuses), and its sidecar uploads a full first snapshot
+  to the new path.
+
+The old writer's order is unchanged: sync, publish, check the lease,
+acknowledge. The new writer's is lease, then restore, so every commit the
+old writer acknowledged is in what the new one restores. A zombie's later
+uploads go to its own old path, past its head, which no restore keeps once a
+newer lineage is confirmed.
+
+Across machines, `commits.db`'s store-wide `writer_fence` no longer fences:
+each copy has its own. The lease check before every acknowledgement and the
+restore truncated to the mark take its place; the model-based property test
+and the zombie integration test hold them to that.
+
+**Fences outside a writer's hold** (a read-only recovery, serve's retake)
+continue the copy's lineage only under the same rule, and never claim one,
+so a hold on a stale copy can never continue a lineage another writer
+superseded. The next writer restarts.
+
+**Serve** publishes a head whenever its last commit moved (one sync and
+publish at a time per datastore, so an earlier head is never published over
+a later one), on its 30-second
+replication probe as well as at its drains and shutdown, since its commits
+replicate passively. A takeover after serve dies keeps every commit up to its
+last probe; that interval is serve's loss window in solo mode. A retake after
+another writer makes the copy current through the same path, restoring into
+serve's open store in place, then prepares its lineage before it holds a
+sidecar again. From the retake until that restore lands, the copy is not
+current: serve's commits are refused as fenced, and chunks are not collected,
+so nothing lands on, or is collected from, a copy that lacks the other
+writer's commits.
+
+**Garbage collection.** After a lineage's first confirmation, once the
+writer's lease check passed, the lineages below it under the current replica
+root are collected: their paths, then their records. Paths are always
+derived from the replica setting and a fence (`replicaPathFor`), never read
+from a record; a file replica's path must be a directory directly under the
+root's `_litestream/`, not a symlink. The current lineage and anything started
+after it are never touched. Abandoned lineages under another root are
+forgotten, not deleted. On S3 and GCS the paths stay until 4E collects them
+through `storage/1`; their records stay with them. Collection is best effort
+and never fails a command.
+
+**Measured** on macOS arm64 with the pinned 0.5.17
+(`scripts/bench_v3_restore.ts`, median of 5):
+
+| Replica | Size | Check on a current copy | Full restore |
+| --- | --- | --- | --- |
+| file | 1.2 MB | 0.33 ms | 37 ms |
+| file | 116 MB | 0.21 ms | 604 ms |
+| ministack S3, local | 1.2 MB | 0.78 ms | 42 ms |
+| ministack S3, local | 116 MB | 0.20 ms | 571 ms |
+| ministack S3, 20 ms RTT | 1.2 MB | 0.45 ms | 306 ms |
+| ministack S3, 20 ms RTT | 116 MB | 0.35 ms | 19.7 s |
+
+The check reads the control plane on the filesystem in every row; on a
+bucket it becomes one list and up to four gets, about three round trips,
+measured with 4E. The 20 ms RTT restore of a small copy is about 15 round
+trips, half Phase 4A's modelled 32 for a cold restore with credentials. The
+116 MB figure through the proxy is bound by the proxy, which delays every
+64 KB chunk (about 6 MB/s), not by Litestream; the real-bucket check before
+4E measures bandwidth. **The first-clone budget:** a fresh machine pays one
+check and one full restore before its first command; afterwards a command
+whose copy is current pays only the check.
+
+**Tests.** `integration/datastore_v3_litestream_restore_test.ts` runs real
+Litestream with a file replica, each "machine" a worker with its own module
+state, host name (as the lease sees it) and checkout: a fresh restore, a
+stale refresh, a current reader that restores nothing, a takeover, a zombie
+stalled past its lease that commits and is resumed after the takeover, a
+writer killed before its first confirmation, a lease taken on a stale copy,
+serve's retake restoring into its open store, GC that leaves a planted
+symlink alone, setup on a second checkout, and the opt-in S3 case.
+`integration/datastore_v3_litestream_restorer_test.ts` drives the restorer's
+fallback, truncation and refusals with a stand-in binary.
+`published_lineage_property_test.ts` runs the protocol model-based over two
+or three writers with crashes at every step, zombies, late heads and
+recovery holds, checking that the restore keeps every acknowledged commit and
+nothing unacknowledged but a failed writer's published head.
+
+**Known limits, dormant.**
+
+- `swamp datastore namespace list` reads the checkout's copy as it is,
+  without refreshing it.
+- A fenced writer can publish heads on its old lineage until the new
+  writer's lineage is confirmed, so the new writer's next refresh can
+  restore commits whose command failed, and they become durable in its
+  lineage. This is the head-first trade-off above. Before chunk garbage
+  collection runs against replicated copies, 4E must account for it:
+  truncation releases chunk references that another copy may still
+  restore.
+- Turning replication on over a datastore that already has a shared
+  `commits.db` starts every checkout from an empty copy, because nothing
+  is published yet. The shared commits are ignored without a warning. 4E
+  needs a migration step (publish the shared database as the first
+  lineage) before the setting is exposed.
+- Windows stays unavailable while the pin is below 0.5.18.
+
 ## Upgrades
 
 The pinned version belongs to the swamp release that pins it. Each version
@@ -938,6 +1158,13 @@ macOS.
   - The v3 opt-in refuses v3 for a GCS datastore with a custom `apiEndpoint`,
     until that gap is closed.
   - Read-only commands don't start a sidecar.
+  - restore, refresh and takeover from the published lineage, a
+    checkout-local `commits.db` while replicating, and garbage collection of
+    replaced lineages on a file replica (built, dormant: swamp-club#3482);
+  - 4E: garbage collection of replaced lineage paths on S3 and GCS, through
+    `storage/1` (D2 keeps their records and paths);
+  - 4E: the lineage records move with the lease to the bucket's
+    datastore-wide control plane (swamp-club#3364).
 - **Phase 5 (serve leader):**
   - a replica path per fence, not a generation;
   - the leader checks its fence before acknowledging outbox entries;
