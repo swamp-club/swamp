@@ -167,6 +167,7 @@ export interface UpdateCheckRenderer extends Renderer<UpdateCheckEvent> {
 class DownloadProgressFormatter {
   private samples: { at: number; bytes: number }[] = [];
   private startedAt: number | null = null;
+  private lastAt: number | null = null;
   private last: DownloadProgress | null = null;
 
   constructor(private readonly now: () => number) {}
@@ -175,6 +176,7 @@ class DownloadProgressFormatter {
   private record(progress: DownloadProgress): number | null {
     const at = this.now();
     this.startedAt ??= at;
+    this.lastAt = at;
     this.last = progress;
     const last = this.samples.at(-1);
     // A download restarted from zero makes the old samples meaningless.
@@ -246,20 +248,21 @@ class DownloadProgressFormatter {
 
   /**
    * The line left on the terminal once `newVersion` is installed: a check,
-   * the new version, and the full bar, size and time taken as far as the
-   * download reported them.
+   * the new version, and the full bar, size and download time as far as the
+   * download reported them. The time ends at the last progress event, so the
+   * checksum and install that follow are not counted.
    */
   formatFinished(newVersion: string, width: number): string {
     const check: Segment = { text: "\u2713 ", color: "green" };
     const version: Segment = { text: `swamp ${newVersion}`, color: "green" };
     const last = this.last;
-    if (!last || this.startedAt === null) {
+    if (!last || this.startedAt === null || this.lastAt === null) {
       return fitSegments([check, version], width);
     }
     const size = last.totalBytes ?? last.receivedBytes;
     const summary: Segment = {
       text: ` \u00b7 ${formatBytes(size)} in ${
-        formatClock((this.now() - this.startedAt) / 1000)
+        formatClock((this.lastAt - this.startedAt) / 1000)
       }`,
       color: "muted",
     };
@@ -331,10 +334,11 @@ class LogUpdateCheckRenderer implements UpdateCheckRenderer {
   /**
    * Ends the live progress before anything else is written, so the next
    * output starts on its own row: an installed update leaves a final line
-   * with the new version, anything else clears the row.
+   * with the new version, anything else clears the row. Under `-q` the row
+   * is always cleared, so the spinner leaves nothing behind.
    */
   private settleSpinner(newVersion: string | null): void {
-    if (newVersion !== null && this.stderrIsTerminal) {
+    if (newVersion !== null && this.stderrIsTerminal && !this.quiet) {
       this.spinner?.finish(
         this.progress.formatFinished(newVersion, this.liveWidth()),
       );

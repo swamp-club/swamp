@@ -415,6 +415,30 @@ Deno.test("createUpdateCheckRenderer: an installed update finishes the spinner b
   assertEquals(order[1], "out swamp updated successfully!");
 });
 
+Deno.test("createUpdateCheckRenderer: the final line's time stops at the last progress event", () => {
+  const r = logRenderer();
+  r.at(0);
+  r.send(progress(0));
+  r.at(5000);
+  r.send(progress(100 * MB));
+  // Checksum and install take a while before completed arrives.
+  r.at(65_000);
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertStringIncludes(order[0], "100.0 MB in 0:05");
+});
+
+Deno.test("createUpdateCheckRenderer: -q clears the row after an update instead of leaving a line", () => {
+  const r = logRenderer({ quiet: true });
+  r.send(progress(100 * MB));
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertEquals(order[0], "stop");
+  assertEquals(order.some((c) => c.startsWith("finish")), false);
+});
+
 Deno.test("createUpdateCheckRenderer: without a total the final line has no bar", () => {
   const r = logRenderer();
   r.at(0);
