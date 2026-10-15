@@ -49,6 +49,7 @@
  */
 
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
+import { FENCE_DIGITS, MAX_FENCE } from "../datastore/replica_path_store.ts";
 import { UserError } from "../errors.ts";
 
 /** The control-plane prefix of the lease's records. */
@@ -63,12 +64,6 @@ export const WRITER_LEASE_CLOCK_SKEW_MS = 10_000;
 
 /** Error code for a writer whose lease another writer took over. */
 export const WRITER_FENCED_CODE = "datastore_v3_writer_fenced";
-
-/** Digits a fence is padded to in its key, so keys sort by fence. */
-const FENCE_DIGITS = 12;
-
-/** The largest fence a key can carry. */
-const MAX_FENCE = 10 ** FENCE_DIGITS - 1;
 
 /** The store the lease's records live in: create-only puts are required. */
 export type WriterLeaseStore =

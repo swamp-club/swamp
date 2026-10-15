@@ -23,6 +23,7 @@ import type { DatastoreSyncService } from "./datastore_sync_service.ts";
 import type { DatastoreControlPlaneStore } from "./control_plane_store.ts";
 import type { DatastoreStorage } from "./datastore_storage.ts";
 import type { V3ReplicaTarget } from "./replica_target.ts";
+import type { ReplicaPathStore } from "./replica_path_store.ts";
 
 /**
  * Factory interface for user-defined datastores.
@@ -127,6 +128,22 @@ export interface DatastoreProvider {
    * `assertReplicaTargetConformance`.
    */
   replicaTarget?(): V3ReplicaTarget;
+
+  /**
+   * The Litestream lineage paths under the replica target's
+   * `<prefix>/_litestream/` ({@link ReplicaPathStore}), so swamp can remove
+   * the path of a lineage a takeover replaced. `storage/1` is chunk-keyed
+   * and cannot reach them. It lists fence directories and removes one
+   * fence's objects; it never touches anything outside
+   * `<prefix>/_litestream/<fence>/`, and refuses a fence that is not the
+   * 12-digit padded form.
+   *
+   * Optional — swamp does not call it yet (swamp-club#3531). Without it, a
+   * bucket replica keeps every old lineage's path and records, and chunk
+   * collection stays deferred while they are registered. Check an
+   * implementation with `assertReplicaPathConformance`.
+   */
+  replicaPaths?(): ReplicaPathStore;
 
   /**
    * Register a namespace in the datastore.

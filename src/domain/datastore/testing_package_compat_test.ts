@@ -38,6 +38,7 @@ import type {
   StoredChunk as CanonicalStoredChunk,
 } from "./datastore_storage.ts";
 import type { V3ReplicaTarget as CanonicalV3ReplicaTarget } from "./replica_target.ts";
+import type { ReplicaPathStore as CanonicalReplicaPathStore } from "./replica_path_store.ts";
 import type { DistributedLock as CanonicalDistributedLock } from "./distributed_lock.ts";
 import type { DatastoreVerifier as CanonicalDatastoreVerifier } from "./datastore_health.ts";
 import type {
@@ -54,6 +55,7 @@ import type {
   DatastoreVerifier as TestingDatastoreVerifier,
   DistributedLock as TestingDistributedLock,
   LockInfo as TestingLockInfo,
+  ReplicaPathStore as TestingReplicaPathStore,
   StorageCapabilities as TestingStorageCapabilities,
   StoredChunk as TestingStoredChunk,
   SyncCapabilities as TestingSyncCapabilities,
@@ -163,10 +165,18 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
   const _testingReplicaTarget: TestingDatastoreProvider["replicaTarget"] = (
     {} as CanonicalDatastoreProvider
   ).replicaTarget;
+  // The replica paths, in both directions.
+  const _replicaPaths: CanonicalDatastoreProvider["replicaPaths"] =
+    provider.replicaPaths;
+  const _testingReplicaPaths: TestingDatastoreProvider["replicaPaths"] = (
+    {} as CanonicalDatastoreProvider
+  ).replicaPaths;
 
   void [
     _replicaTarget,
     _testingReplicaTarget,
+    _replicaPaths,
+    _testingReplicaPaths,
     _lock,
     _verifier,
     _path,
@@ -202,6 +212,14 @@ function _checkV3ReplicaTarget(target: TestingV3ReplicaTarget) {
   const _target: CanonicalV3ReplicaTarget = target;
   const _back: TestingV3ReplicaTarget = {} as CanonicalV3ReplicaTarget;
   void [_target, _back];
+}
+
+// Replica path stores: one written against the testing type is one core
+// can use, and vice versa.
+function _checkReplicaPathStore(store: TestingReplicaPathStore) {
+  const _store: CanonicalReplicaPathStore = store;
+  const _back: TestingReplicaPathStore = {} as CanonicalReplicaPathStore;
+  void [_store, _back];
 }
 
 // Control-plane stores: a store written against the testing types is one
@@ -262,6 +280,7 @@ Deno.test("testing package datastore types: compile-time compatibility check", (
     _checkWritableDatastoreControlPlaneStore,
     _checkDatastoreStorage,
     _checkV3ReplicaTarget,
+    _checkReplicaPathStore,
     _checkLockInfoFields,
   ];
 });

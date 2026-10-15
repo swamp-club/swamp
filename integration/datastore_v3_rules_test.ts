@@ -729,6 +729,27 @@ Deno.test("datastore v3: only the replica target resolver calls replicaTarget()"
   );
 });
 
+/** Production files that call a provider's `replicaPaths()`. */
+const PINNED_REPLICA_PATHS_CALLERS: readonly string[] = [
+  `${LITESTREAM_DIR}/replica_target_resolver.ts`,
+];
+
+Deno.test("datastore v3: only the replica target resolver calls replicaPaths()", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if (/\.replicaPaths\s*\(/.test(await Deno.readTextFile(filePath))) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_REPLICA_PATHS_CALLERS,
+    "Production callers of replicaPaths()",
+    "A provider's replica paths reach lineage collection only through\n" +
+      "resolveV3ReplicaPaths (swamp-club#3531).",
+  );
+});
+
 /**
  * Production files outside the resolver that use it. Dormant until Phase 4E
  * switches the sidecar's replica from `v3ReplicaSetting()` to the
@@ -742,9 +763,10 @@ Deno.test("datastore v3: nothing uses the replica target resolver yet", async ()
   for await (const filePath of productionSourceFiles(SRC_DIR)) {
     if (repoRelative(filePath) === resolver) continue;
     if (
-      /\b(resolveV3ReplicaSetting|replicaSettingFromTarget)\b/.test(
-        await Deno.readTextFile(filePath),
-      )
+      /\b(resolveV3ReplicaSetting|replicaSettingFromTarget|resolveV3ReplicaPaths)\b/
+        .test(
+          await Deno.readTextFile(filePath),
+        )
     ) {
       found.push(repoRelative(filePath));
     }

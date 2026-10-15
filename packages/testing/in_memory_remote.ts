@@ -149,11 +149,13 @@ import type {
   DatastoreStorage,
   DatastoreSyncOptions,
   DatastoreSyncService,
+  ReplicaPathStore,
   StoredChunk,
   SyncCapabilities,
   V3ReplicaTarget,
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
+import { replicaPathFenceProblem } from "./replica_path_fence.ts";
 
 /**
  * The behaviours that differ between extension releases, or that a later
@@ -248,6 +250,13 @@ export interface InMemoryRemoteOptions {
    * prefix, so a target that matches where it writes has prefix `""`.
    */
   replicaTarget?: V3ReplicaTarget;
+  /**
+   * Gives the remote a `replicaPaths()` over the objects under
+   * `_litestream/`, and a `putReplicaObject` to write one there as
+   * Litestream would. `removePath` deletes two objects per listing page,
+   * so a fence with more exercises its paging. Default false.
+   */
+  replicaPaths?: boolean;
 }
 
 /** A remote operation a failure can be injected into. */
@@ -257,7 +266,8 @@ export type InMemoryRemoteFailure =
   | "prepare"
   | "commit"
   | "fetch"
-  | "controlPlane";
+  | "controlPlane"
+  | "replicaPaths";
 
 /** Options for {@link InMemoryRemote.failNext}. */
 export interface FailNextOptions {
@@ -378,11 +388,26 @@ export interface InMemoryRemote {
   /** A provider's replica target. Present only with `replicaTarget`. */
   replicaTarget?(): V3ReplicaTarget;
   /**
+   * A provider's replica paths, over the objects under `_litestream/`.
+   * Every call returns a handle onto the same objects; `failNext` with
+   * `"replicaPaths"` fails its next call. Present only with
+   * `replicaPaths`.
+   */
+  replicaPaths?(): ReplicaPathStore;
+  /**
+   * Writes an object at `key`, which must start with `_litestream/`, as
+   * Litestream would. Present only with `replicaPaths`.
+   */
+  putReplicaObject?(key: string, bytes: Uint8Array): void;
+  /** Deletes the replica object at `key`. Present only with `replicaPaths`. */
+  deleteReplicaObject?(key: string): void;
+  /**
    * Whether the remote holds an object at `key`, as a bucket would key it:
    * a committed file, a control-plane record at `_control/<key>` or
-   * `<namespace>/_control/<key>`, or a chunk at
-   * `_blobs/<namespace>/sha256/<first two hex>/<sha256>`. What
-   * `assertReplicaTargetConformance`'s `objectExists` option expects.
+   * `<namespace>/_control/<key>`, a chunk at
+   * `_blobs/<namespace>/sha256/<first two hex>/<sha256>`, or a replica
+   * object under `_litestream/`. What `assertReplicaTargetConformance`'s
+   * and `assertReplicaPathConformance`'s `objectExists` options expect.
    */
   objectExists(key: string): Promise<boolean>;
   /**
@@ -683,6 +708,10 @@ export function createInMemoryRemote(
     namespace ? `${namespace}/_control/${key}` : `_control/${key}`;
   const chunkStorage = options?.storage ? createChunkStorage() : undefined;
   const replicaTarget = options?.replicaTarget;
+  // Objects under `_litestream/`, keyed as a bucket would key them.
+  const replicaObjects = options?.replicaPaths
+    ? new Map<string, Uint8Array>()
+    : undefined;
 
   // Stored objects, written at once by prepare and push.
   const objects = new Map<string, Uint8Array>();
@@ -1437,6 +1466,47 @@ export function createInMemoryRemote(
     };
   }
 
+  function replicaPathStore(
+    replicaObjects: Map<string, Uint8Array>,
+  ): ReplicaPathStore {
+    // Runs `fn` as a promise, so a throw (an injected failure, an aborted
+    // signal, a refused fence) rejects.
+    const settle = <T>(fn: () => T): Promise<T> =>
+      new Promise((resolve) => resolve(fn()));
+    return {
+      list: (signal) =>
+        settle(() => {
+          checkReachable("replicaPaths", "datastore");
+          signal.throwIfAborted();
+          const fences = new Set<string>();
+          for (const key of replicaObjects.keys()) {
+            const rest = key.slice(REPLICA_ROOT.length);
+            const slash = rest.indexOf("/");
+            if (slash > 0) fences.add(rest.slice(0, slash));
+          }
+          return [...fences];
+        }),
+      removePath: (fence, signal) =>
+        settle(() => {
+          checkReachable("replicaPaths", "datastore");
+          const problem = replicaPathFenceProblem(fence);
+          if (problem !== undefined) {
+            throw new Error(`Refusing to remove a replica path: ${problem}`);
+          }
+          const dir = `${REPLICA_ROOT}${fence}/`;
+          // A page at a time, as a bucket listing returns them.
+          for (;;) {
+            signal.throwIfAborted();
+            const page = [...replicaObjects.keys()]
+              .filter((key) => key.startsWith(dir))
+              .slice(0, REPLICA_PAGE_SIZE);
+            if (page.length === 0) return;
+            for (const key of page) replicaObjects.delete(key);
+          }
+        }),
+    };
+  }
+
   return {
     connect,
     files: () => new Map(committed),
@@ -1469,10 +1539,27 @@ export function createInMemoryRemote(
     ...(replicaTarget !== undefined
       ? { replicaTarget: () => replicaTarget }
       : {}),
+    ...(replicaObjects !== undefined
+      ? {
+        replicaPaths: () => replicaPathStore(replicaObjects),
+        putReplicaObject(key: string, bytes: Uint8Array) {
+          if (!key.startsWith(REPLICA_ROOT)) {
+            throw new Error(
+              `a replica object is under ${REPLICA_ROOT}: ${key}`,
+            );
+          }
+          replicaObjects.set(key, bytes.slice());
+        },
+        deleteReplicaObject(key: string) {
+          replicaObjects.delete(key);
+        },
+      }
+      : {}),
     objectExists: (key) =>
       Promise.resolve(
         committed.has(key) || controlRecords.has(key) ||
-          (chunkStorage?.hasObject(key) ?? false),
+          (chunkStorage?.hasObject(key) ?? false) ||
+          (replicaObjects?.has(key) ?? false),
       ),
     connections: () => instanceCount,
     controlPlaneReads: () => reads.map((read) => ({ ...read })),
@@ -1514,6 +1601,12 @@ export function createInMemoryRemote(
     },
   };
 }
+
+/** Where the in-memory remote keeps replica objects. */
+const REPLICA_ROOT = "_litestream/";
+
+/** Objects `removePath` deletes per listing page. */
+const REPLICA_PAGE_SIZE = 2;
 
 /**
  * The `storage/1` model behind {@link InMemoryRemoteOptions.storage}:

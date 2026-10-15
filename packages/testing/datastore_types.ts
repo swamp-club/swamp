@@ -317,6 +317,45 @@ export interface DatastoreProvider {
    * `assertReplicaTargetConformance`.
    */
   replicaTarget?(): V3ReplicaTarget;
+
+  /**
+   * The Litestream lineage paths under the replica target's
+   * `<prefix>/_litestream/`, so swamp can remove the path of a lineage a
+   * takeover replaced. `storage/1` is chunk-keyed and cannot reach them. It
+   * lists fence directories and removes one fence's objects; it never
+   * touches anything outside `<prefix>/_litestream/<fence>/`, and refuses a
+   * fence that is not the 12-digit padded form.
+   *
+   * Optional; swamp does not call it yet. Without it, a bucket replica keeps
+   * every old lineage's path and records, and chunk collection stays
+   * deferred while they are registered. Check an implementation with
+   * `assertReplicaPathConformance`.
+   */
+  replicaPaths?(): ReplicaPathStore;
+}
+
+/**
+ * The lineage paths of a datastore's Litestream replica: the fence
+ * directories under `<prefix>/_litestream/`, where `<prefix>` is the
+ * replica target's. A fence is always the 12-digit padded form swamp writes
+ * (`000000000042`). Nothing outside `<prefix>/_litestream/<fence>/` is ever
+ * listed or touched.
+ */
+export interface ReplicaPathStore {
+  /**
+   * The fence directories present under `<prefix>/_litestream/`, without
+   * their trailing slash, in any order. A directory whose name is not a
+   * fence may be returned; swamp ignores it.
+   */
+  list(signal: AbortSignal): Promise<string[]>;
+
+  /**
+   * Deletes every object under `<prefix>/_litestream/<fence>/`, paging
+   * through listings, and resolves once none is left. Resolves when nothing
+   * is there. Throws, deleting nothing, when `fence` is not exactly 12
+   * digits from `000000000001`.
+   */
+  removePath(fence: string, signal: AbortSignal): Promise<void>;
 }
 
 /**

@@ -205,6 +205,37 @@ record and a chunk it writes land at `<prefix>/_control/…` and
 `<prefix>/_blobs/…`. It deletes both. `replicaTargetProblem(value)` returns
 swamp's reason for refusing a target, for unit tests of your own.
 
+## Replica Path Conformance
+
+For a provider that implements `replicaPaths()`:
+
+```typescript
+import { assertReplicaPathConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("replica path conformance", async () => {
+  await assertReplicaPathConformance({
+    replicaTarget: () => provider.replicaTarget!(),
+    openReplicaPaths: () => provider.replicaPaths!(),
+    openStorage: () => provider.storage!(),
+    // Write, delete and read with your own client, as Litestream would.
+    writeObject: (key, bytes) => putObject(config.bucket, key, bytes),
+    deleteObject: (key) => deleteObject(config.bucket, key),
+    objectExists: (key) => headObject(config.bucket, key),
+    // Above the backend's listing page size, against an emulator.
+    objectsPerFence: 1001,
+  });
+});
+```
+
+It writes objects under two fences of its own, a look-alike directory and a
+chunk, then checks `list` returns both fences, `removePath` deletes exactly one
+fence's objects (every page of them), and malformed fences are refused without
+deleting anything. It removes what it wrote. `replicaPathFenceProblem(value)`
+returns swamp's reason for refusing a fence.
+
+For tests, the in-memory remote's `replicaPaths` option gives a conforming
+`replicaPaths()`, with `putReplicaObject` to seed what Litestream would write.
+
 ## Mocking External Calls
 
 Test the exact production code path by intercepting at the runtime boundary.

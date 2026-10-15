@@ -21,21 +21,33 @@
  * Turns a datastore provider's replica target into the replica its
  * Litestream sidecar replicates to (swamp-club#3507).
  *
+ * Also hands lineage collection the provider's replica paths
+ * (swamp-club#3531), through {@link resolveV3ReplicaPaths}.
+ *
  * Dormant: nothing in production calls it yet. The sidecar still takes its
  * replica from `v3ReplicaSetting()` alone; Phase 4E switches those call
- * sites to {@link resolveV3ReplicaSetting}. A fitness rule in
- * `integration/datastore_v3_rules_test.ts` pins both.
+ * sites to {@link resolveV3ReplicaSetting}, and passes
+ * {@link resolveV3ReplicaPaths} to lineage collection. Fitness rules in
+ * `integration/datastore_v3_rules_test.ts` pin all of it.
  *
  * @module
  */
 
 import type { DatastoreProvider } from "../../../domain/datastore/datastore_provider.ts";
+import type { ReplicaPathStore } from "../../../domain/datastore/replica_path_store.ts";
 import {
   parseV3ReplicaTarget,
   type V3ReplicaTarget,
 } from "../../../domain/datastore/replica_target.ts";
 import { UserError } from "../../../domain/errors.ts";
-import { type V3ReplicaSetting, v3ReplicaSetting } from "./replica_setting.ts";
+import { getSwampLogger } from "../../logging/logger.ts";
+import {
+  replicaRootOf,
+  type V3ReplicaSetting,
+  v3ReplicaSetting,
+} from "./replica_setting.ts";
+
+const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
 /** The replica Litestream replicates to for `target`. */
 export function replicaSettingFromTarget(
@@ -91,4 +103,50 @@ export function resolveV3ReplicaSetting(
     );
   }
   return replicaSettingFromTarget(parseV3ReplicaTarget(target, datastoreType));
+}
+
+/**
+ * A provider's replica paths and the replica root they are under: the root
+ * of the provider's own replica target. Lineage collection uses the store
+ * only for that root, so a replica set elsewhere (the internal setting
+ * tests use) never has paths removed from the provider's bucket.
+ */
+export interface V3ReplicaPaths {
+  /** `replicaRootOf` the provider's replica target. */
+  readonly root: string;
+  readonly store: ReplicaPathStore;
+}
+
+/**
+ * The provider's replica paths, which lineage collection removes a
+ * replaced lineage's bucket path through, or undefined when the provider
+ * has none, or no usable replica target to bind them to. A provider that
+ * throws is logged and treated as having none: collection then keeps the
+ * paths and records, as it does without the capability, and never fails
+ * a command.
+ */
+export function resolveV3ReplicaPaths(
+  provider: Pick<DatastoreProvider, "replicaPaths" | "replicaTarget">,
+  datastoreType: string,
+): V3ReplicaPaths | undefined {
+  if (
+    provider.replicaPaths === undefined ||
+    provider.replicaTarget === undefined
+  ) {
+    return undefined;
+  }
+  try {
+    const target = parseV3ReplicaTarget(
+      provider.replicaTarget(),
+      datastoreType,
+    );
+    return {
+      root: replicaRootOf(replicaSettingFromTarget(target)),
+      store: provider.replicaPaths(),
+    };
+  } catch (error) {
+    logger
+      .warn`The ${datastoreType} datastore's replica paths cannot be used, so old replication lineage paths are kept: ${error}`;
+    return undefined;
+  }
 }
