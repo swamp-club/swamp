@@ -41,8 +41,9 @@
  *   commit that did land the first time is reported `duplicate` by the store
  *   and lands once. `commit` ends the unit whether or not it succeeds (the
  *   `UnitOfWork` contract), so what is still pending when the unit's own
- *   commit fails is lost with it; the Phase 4 outbox makes it durable. A
- *   caller that must retry checkpoints first.
+ *   commit fails is reported failed and dropped with it. A caller that must
+ *   retry checkpoints first. A retry older than `OUTBOX_RETRY_BOUND_MS` is
+ *   refused (`retry-expired`) rather than appended.
  * - A refusal (`CommitRejectedError`) drops the refused partition's
  *   changes: they can never land as they are, and keeping them would block
  *   every partition staged after them. The flush goes on to the other
@@ -84,9 +85,20 @@
  * of the commit's chunks is actually missing. A superseded put that was
  * dropped never commits, so it needs no check.
  *
- * **The outbox seam.** The unit appends through a {@link CommitSink}. In
- * Phase 3 that is the local `CommitStore`; Phase 4 passes the outbox, which
- * makes the pending retry durable.
+ * **The outbox (swamp-club#3490).** The unit appends through a
+ * {@link CommitSink}. A sink with an {@link SinkOutbox} (a v3 datastore's)
+ * makes each commit durable across a crash: under the partition's lock,
+ * the unit prepares the commit with the head it was built on, then appends
+ * it, checks its chunks and settles the entry. A process that dies in
+ * between leaves the entry for the next writer to land
+ * (`commit_outbox_recovery.ts`). A refusal discards the refused entry and
+ * every run entry of the unit (decision 7); a unit that ends with a commit
+ * still failing discards its entries, since the failure was reported. A
+ * sink without an outbox, the bare `CommitStore` tests pass, prepares
+ * nothing. Before preparing, and after, the unit reads the sweep state; when
+ * a chunk sweep may have overlapped (`sweepMayOverlap`) it checks its chunks
+ * before the append too, so no landed commit names a chunk a sweep deleted
+ * even when the writer dies before its post-commit check.
  *
  * **Root and child units.** A unit opened with an open commit-log unit for
  * the same hook as `parent` is its child. A child keeps its changes to
@@ -133,6 +145,15 @@ import {
   type PutOp,
   putOp,
 } from "../../domain/datastore_v3/op.ts";
+import {
+  type HeadIdentity,
+  OUTBOX_RETRY_BOUND_DAYS,
+  OUTBOX_RETRY_BOUND_MS,
+  type OutboxKey,
+  type OutboxPreparation,
+  sweepMayOverlap,
+  type SweepState,
+} from "../../domain/datastore_v3/commit_outbox.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
@@ -140,13 +161,37 @@ import {
   typedStagers,
   unitOfWorkBinding,
 } from "../persistence/unit_of_work_binding.ts";
+import { getSwampLogger } from "../logging/logger.ts";
+
+const logger = getSwampLogger(["datastore", "v3"]);
 
 /**
- * Where a commit-log unit appends its commits: the outbox seam. Phase 3
- * passes the `CommitStore` itself; Phase 4 passes the outbox. `head` gives
- * the seq the next commit takes.
+ * Where a commit-log unit appends its commits: the outbox seam. A bare
+ * `CommitStore` appends directly; a v3 datastore's sink also carries the
+ * outbox. `head` gives the seq the next commit takes.
  */
-export type CommitSink = Pick<CommitStore, "append" | "head">;
+export type CommitSink = Pick<CommitStore, "append" | "head"> & {
+  /** Makes each commit durable until it has landed (swamp-club#3490). */
+  readonly outbox?: SinkOutbox;
+};
+
+/** What a {@link CommitSink} offers a unit to keep its commits durable. */
+export interface SinkOutbox {
+  /** The partition's head and the txnId of its head commit. */
+  headIdentity(
+    namespace: string,
+    partition: PartitionKey,
+  ): Promise<HeadIdentity>;
+  /**
+   * Records a commit about to be appended. Refuses when this process no
+   * longer holds the writer lease.
+   */
+  prepare(preparation: OutboxPreparation): Promise<void>;
+  /** Removes entries that landed, or that the unit gave up. */
+  remove(keys: readonly OutboxKey[]): Promise<void>;
+  /** The chunk sweep's state now. */
+  sweepState(): Promise<SweepState>;
+}
 
 /** What a commit-log unit needs to commit. */
 export interface CommitLogUnitOptions {
@@ -199,6 +244,8 @@ interface Group {
   readonly partition: PartitionKey;
   /** Fixed when the group forms, so a retry of its commit lands once. */
   readonly txnId: string;
+  /** When it formed, epoch milliseconds: a retry past the bound is refused. */
+  readonly formedAt: number;
   readonly changes: readonly TypedChange[];
   /**
    * The flush that formed it. A partition's changes split into several
@@ -292,6 +339,11 @@ export function createCommitLogUnitOfWork(
   let refusals: PartitionRefusal[] = [];
   /** Serializes this unit's commits and checkpoints. */
   let flushing: Promise<void> = Promise.resolve();
+  /** The unit's outbox entries not yet settled, by txnId. */
+  const outbox: UnitOutbox = {
+    unitId: crypto.randomUUID(),
+    prepared: new Map(),
+  };
 
   /**
    * Drops a stream put that `change` supersedes before its stream is read:
@@ -347,7 +399,10 @@ export function createCommitLogUnitOfWork(
 
   const flush = (): Promise<void> => {
     const run = flushing.then(async () => {
-      pending = [...pending, ...formGroups(staged, ++formations)];
+      pending = [
+        ...pending,
+        ...formGroups(staged, ++formations, clock().getTime()),
+      ];
       staged = [];
       streamPuts.clear();
       // Run partitions last (decision 7); a stable sort keeps the rest in
@@ -365,7 +420,14 @@ export function createCommitLogUnitOfWork(
         if (group === undefined) break;
         inFlight = group;
         try {
-          await appendGroup(group, options, clock, stored, supersededInFlight);
+          await appendGroup(
+            group,
+            options,
+            clock,
+            stored,
+            supersededInFlight,
+            outbox,
+          );
         } catch (error) {
           // A seq gap only means another append moved the head first; the
           // group stays pending, is rebuilt at the new head, and the flush
@@ -391,6 +453,14 @@ export function createCommitLogUnitOfWork(
               other.partition.equals(group.partition))
           );
           pending = pending.filter((other) => !dropped.includes(other));
+          // Decision 7 across a crash: with the refused entries go the
+          // unit's run entries, so a recovery never lands a run record that
+          // names what was refused.
+          await discardEntries(
+            options,
+            outbox,
+            [...dropped, ...pending.filter((other) => runRank(other) === 1)],
+          );
           const refusal: PartitionRefusal = {
             partition: group.partition,
             reason: error.reason,
@@ -453,8 +523,10 @@ export function createCommitLogUnitOfWork(
       await flushing;
       staged = [];
       streamPuts.clear();
+      const abandoned = pending;
       pending = [];
       refusals = [];
+      await discardEntries(options, outbox, abandoned);
       return;
     }
     if (parent !== undefined) {
@@ -472,7 +544,14 @@ export function createCommitLogUnitOfWork(
       streamPuts.clear();
       return;
     }
-    await flush();
+    try {
+      await flush();
+    } catch (error) {
+      // The unit ends with these commits failed, and the caller is told so:
+      // a later recovery must not land them.
+      await discardEntries(options, outbox, pending);
+      throw error;
+    }
   };
 
   const uow: CommitLogUnitOfWork = {
@@ -645,6 +724,7 @@ function requireBatchWithinLimit(changes: readonly TypedChange[]): void {
 function formGroups(
   batches: readonly (readonly TypedChange[])[],
   formation: number,
+  formedAt: number,
 ): Group[] {
   type Forming = { partition: PartitionKey; changes: TypedChange[] };
   const groups: Forming[] = [];
@@ -676,6 +756,7 @@ function formGroups(
   return groups.map((group) => ({
     partition: group.partition,
     txnId: crypto.randomUUID(),
+    formedAt,
     changes: group.changes,
     formation,
   }));
@@ -740,7 +821,21 @@ async function appendGroup(
   clock: () => Date,
   storedOps: WeakMap<PendingPut, PutOp>,
   superseded: WeakSet<PendingPut>,
+  unitOutbox: UnitOutbox,
 ): Promise<void> {
+  if (clock().getTime() - group.formedAt > OUTBOX_RETRY_BOUND_MS) {
+    // The store may have pruned a landed first attempt's txnId: appending
+    // now could land it twice.
+    throw new CommitRejectedError(
+      "retry-expired",
+      `The commit of partition ${group.partition} has been retried for longer ` +
+        `than ${OUTBOX_RETRY_BOUND_DAYS} days; it was dropped`,
+    );
+  }
+  const outbox = options.sink.outbox;
+  // Read before any content is stored or refreshed: a sweep that starts,
+  // deletes and ends before the entry is prepared moves the epoch.
+  const sweepBefore = await outbox?.sweepState();
   const ops: Op[] = [];
   const stored: StoredContent[] = [];
   for (const change of group.changes) {
@@ -780,10 +875,12 @@ async function appendGroup(
       // A seq gap means another writer moved the head between the read and
       // the append; one rebuild at the new head usually lands it.
       for (let attempt = 1;; attempt++) {
-        const head = await options.sink.head(
+        const base = await outbox?.headIdentity(
           options.namespace,
           group.partition,
         );
+        const head = base ??
+          await options.sink.head(options.namespace, group.partition);
         const commit = Commit.create({
           seq: head.seq + 1,
           partition: group.partition,
@@ -794,6 +891,22 @@ async function appendGroup(
           at: clock().toISOString(),
           ops,
         });
+        if (
+          outbox !== undefined && base !== undefined &&
+          sweepBefore !== undefined
+        ) {
+          // Prepared with the head just read, under the partition's lock; a
+          // rebuild prepares again with its new base. Tracked first, so a
+          // prepare that persisted and then failed is still discarded.
+          unitOutbox.prepared.set(
+            group.txnId,
+            outboxKeyOfGroup(options, group),
+          );
+          await outbox.prepare({ commit, unitId: unitOutbox.unitId, base });
+          if (sweepMayOverlap(sweepBefore, await outbox.sweepState())) {
+            await restoreMissingChunks(stored, options);
+          }
+        }
         try {
           await options.sink.append(commit);
           return;
@@ -810,6 +923,64 @@ async function appendGroup(
     },
   );
   await restoreMissingChunks(stored, options);
+  if (outbox !== undefined) {
+    const key = unitOutbox.prepared.get(group.txnId);
+    unitOutbox.prepared.delete(group.txnId);
+    // A settle that fails costs a duplicate on the next recovery, never the
+    // commit, which has landed.
+    if (key !== undefined) {
+      await outbox.remove([key]).catch((error) =>
+        logger
+          .debug`Settling the outbox entry of a landed commit failed; the next recovery settles it: ${error}`
+      );
+    }
+  }
+}
+
+/** A unit's outbox bookkeeping. */
+interface UnitOutbox {
+  readonly unitId: string;
+  /** Entries prepared and not settled, by the group's txnId. */
+  readonly prepared: Map<string, OutboxKey>;
+}
+
+function outboxKeyOfGroup(
+  options: CommitLogUnitOptions,
+  group: Group,
+): OutboxKey {
+  return {
+    namespace: options.namespace,
+    partition: group.partition.toString(),
+    txnId: group.txnId,
+  };
+}
+
+/**
+ * Removes the outbox entries of `groups` that the unit prepared: a refusal,
+ * an abandon or a failed end. A removal that fails is logged and the
+ * original outcome stands; the sink retries it when the datastore closes.
+ */
+async function discardEntries(
+  options: CommitLogUnitOptions,
+  unitOutbox: UnitOutbox,
+  groups: readonly Group[],
+): Promise<void> {
+  const outbox = options.sink.outbox;
+  if (outbox === undefined) return;
+  const keys: OutboxKey[] = [];
+  for (const group of groups) {
+    const key = unitOutbox.prepared.get(group.txnId);
+    if (key === undefined) continue;
+    unitOutbox.prepared.delete(group.txnId);
+    keys.push(key);
+  }
+  if (keys.length === 0) return;
+  try {
+    await outbox.remove(keys);
+  } catch (error) {
+    logger
+      .warn`Discarding ${keys.length} outbox entries of failed v3 commits failed; they are discarded again when the datastore closes: ${error}`;
+  }
 }
 
 /** Content a landed commit names as chunks, and where it came from. */

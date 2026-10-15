@@ -57,6 +57,7 @@ import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projecti
 import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
 import { DEFAULT_CHUNK_GRACE_MS } from "../../domain/datastore_v3/chunk_collector.ts";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
+import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
 import {
   type CommitChange,
   CommitsCompactedError,
@@ -290,6 +291,34 @@ const MIGRATIONS: readonly string[] = [
     fence INTEGER NOT NULL
   ) STRICT;
   `,
+  // 4 → 5: pruning compacted_txns (swamp-club#3490). When each compacted
+  // commit was made, so txnIds older than the commit outbox's retry bound
+  // can go; those compacted before this migration count from it. The
+  // compaction point's own commit, whose txnId a high-water mark check
+  // reads and pruning keeps. A partition head's txnId is looked up by seq
+  // once its commit was compacted. IF NOT EXISTS, as for 2 → 3.
+  `
+  CREATE TABLE IF NOT EXISTS compacted_txn_times (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    txn_id TEXT NOT NULL,
+    committed_at INTEGER NOT NULL,
+    PRIMARY KEY (namespace, partition, txn_id)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS compacted_txn_times_by_time
+    ON compacted_txn_times (committed_at);
+  INSERT OR IGNORE INTO compacted_txn_times (namespace, partition, txn_id, committed_at)
+    SELECT namespace, partition, txn_id, CAST(strftime('%s', 'now') AS INTEGER) * 1000
+    FROM compacted_txns;
+  CREATE INDEX IF NOT EXISTS compacted_txns_by_seq
+    ON compacted_txns (namespace, partition, seq);
+  CREATE TABLE IF NOT EXISTS compaction_point_commit (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    txn_id TEXT NOT NULL
+  ) STRICT;
+  `,
 ];
 
 /** Error code for a `commits.db` written by a newer swamp. */
@@ -385,6 +414,7 @@ export class SqliteCommitStore implements CommitStore {
   readonly #selectHead: StatementSync;
   readonly #selectTxnSeq: StatementSync;
   readonly #selectTxnUpTo: StatementSync;
+  readonly #selectTxnAtSeq: StatementSync;
   readonly #selectMaxSeq: StatementSync;
   readonly #insertCommit: StatementSync;
   readonly #upsertHead: StatementSync;
@@ -422,6 +452,10 @@ export class SqliteCommitStore implements CommitStore {
     this.#selectTxnUpTo = db.prepare(
       "SELECT 1 AS found FROM commits WHERE namespace = ?1 AND partition = ?2 AND txn_id = ?3 AND seq <= ?4 " +
         "UNION ALL SELECT 1 FROM compacted_txns WHERE namespace = ?1 AND partition = ?2 AND txn_id = ?3 AND seq <= ?4 LIMIT 1",
+    );
+    this.#selectTxnAtSeq = db.prepare(
+      "SELECT txn_id FROM commits WHERE namespace = ?1 AND partition = ?2 AND seq = ?3 " +
+        "UNION ALL SELECT txn_id FROM compacted_txns WHERE namespace = ?1 AND partition = ?2 AND seq = ?3 LIMIT 1",
     );
     // A partition's last stored seq, or its compacted seq when compaction
     // removed every commit it had.
@@ -865,6 +899,50 @@ export class SqliteCommitStore implements CommitStore {
     return changes;
   }
 
+  /**
+   * A partition's head and the txnId of the commit at it (swamp-club#3490),
+   * for the commit outbox's base: the stored commit's, else the compacted
+   * one's. When compaction folded the head commit and its txnId was pruned
+   * since, only the seq is known; a restore never takes the store below the
+   * compaction point, so the seq alone still names that commit.
+   */
+  headIdentity(
+    namespace: string,
+    partition: PartitionKey,
+  ): Promise<HeadIdentity> {
+    if (this.#closed) return Promise.reject(closedError());
+    const key = partition.toString();
+    return Promise.resolve(this.#readTransaction(() => {
+      const seq = (this.#selectHead.get(namespace, key) as
+        | { seq: number }
+        | undefined)?.seq ?? 0;
+      if (seq === 0) return { seq, txnId: undefined };
+      const row = this.#selectTxnAtSeq.get(namespace, key, seq) as
+        | { txn_id: string }
+        | undefined;
+      return { seq, txnId: row?.txn_id };
+    }));
+  }
+
+  /**
+   * The seq a commit with `txnId` landed at in the partition, stored or
+   * compacted, or undefined when none did (swamp-club#3490): how a recovery
+   * tells an outbox entry that landed before its writer died.
+   */
+  landedSeq(
+    namespace: string,
+    partition: PartitionKey,
+    txnId: string,
+  ): Promise<number | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    const row = this.#selectTxnSeq.get(
+      namespace,
+      partition.toString(),
+      txnId,
+    ) as { seq: number } | undefined;
+    return Promise.resolve(row?.seq);
+  }
+
   head(namespace: string, partition: PartitionKey): Promise<PartitionHead> {
     if (this.#closed) return Promise.reject(closedError());
     const row = this.#selectHead.get(namespace, partition.toString()) as
@@ -994,9 +1072,11 @@ export class SqliteCommitStore implements CommitStore {
     const last = (this.#db.prepare("SELECT MAX(cursor) AS cursor FROM commits")
       .get() as { cursor: number | null }).cursor ?? 0;
     const target = Math.min(through, last);
+    const pruneTxnsBefore = options.pruneTxnsBefore?.getTime();
     let compacted = 0;
     let batches = 0;
     let released = 0;
+    let prunedTxns = 0;
     for (;;) {
       options.signal?.throwIfAborted();
       const point = this.#point();
@@ -1066,8 +1146,11 @@ export class SqliteCommitStore implements CommitStore {
           foldCommit(this.#base, commits[i], row.cursor, MATERIALISED_SUBDIRS);
         });
         for (let i = 0; i < rows.length; i++) {
-          const row = rows[i];
-          this.#base.compactCommit(row, commits[i].chunkRefs());
+          this.#base.compactCommit(
+            rows[i],
+            commits[i].chunkRefs(),
+            Date.parse(commits[i].at),
+          );
         }
         for (const snapshot of snapshots) {
           this.#upsertSnapshot.run(
@@ -1077,8 +1160,11 @@ export class SqliteCommitStore implements CommitStore {
             snapshot.body,
           );
         }
-        this.#base.setPoint(rows[rows.length - 1].cursor);
+        this.#base.setPoint(rows[rows.length - 1]);
         released += this.#base.finish(now - retention);
+        if (pruneTxnsBefore !== undefined) {
+          prunedTxns += this.#base.pruneTxns(pruneTxnsBefore);
+        }
         options.beforeCommit?.();
         this.#db.exec("COMMIT");
       } catch (error) {
@@ -1091,7 +1177,13 @@ export class SqliteCommitStore implements CommitStore {
       compacted += rows.length;
       batches++;
     }
-    return { point: this.#point(), compacted, batches, released };
+    return {
+      point: this.#point(),
+      compacted,
+      batches,
+      released,
+      ...(pruneTxnsBefore !== undefined ? { prunedTxns } : {}),
+    };
   }
 
   readCompactedBase(
@@ -1754,6 +1846,10 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   readonly #upsertReleased: StatementSync;
   readonly #pruneReleased: StatementSync;
   readonly #insertCompactedTxn: StatementSync;
+  readonly #insertTxnTime: StatementSync;
+  readonly #pruneTxns: StatementSync;
+  readonly #pruneTxnTimes: StatementSync;
+  readonly #upsertPointCommit: StatementSync;
   readonly #deleteCommit: StatementSync;
   readonly #updatePoint: StatementSync;
   /** The batch's time, for released chunks. */
@@ -1844,6 +1940,27 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     );
     this.#insertCompactedTxn = db.prepare(
       "INSERT INTO compacted_txns (namespace, partition, txn_id, seq) VALUES (?, ?, ?, ?)",
+    );
+    this.#insertTxnTime = db.prepare(
+      "INSERT OR REPLACE INTO compacted_txn_times (namespace, partition, txn_id, committed_at) VALUES (?, ?, ?, ?)",
+    );
+    // Never the compaction point's own commit: a high-water mark at the
+    // point is checked against it. Driven by the time index, so a batch
+    // costs what it prunes.
+    const old =
+      "SELECT t.namespace, t.partition, t.txn_id FROM compacted_txn_times AS t " +
+      "WHERE t.committed_at < ?1 AND NOT EXISTS (SELECT 1 FROM compaction_point_commit AS p " +
+      "WHERE p.namespace = t.namespace AND p.partition = t.partition AND p.txn_id = t.txn_id)";
+    this.#pruneTxns = db.prepare(
+      `DELETE FROM compacted_txns WHERE (namespace, partition, txn_id) IN (${old})`,
+    );
+    this.#pruneTxnTimes = db.prepare(
+      `DELETE FROM compacted_txn_times WHERE (namespace, partition, txn_id) IN (${old})`,
+    );
+    this.#upsertPointCommit = db.prepare(
+      "INSERT INTO compaction_point_commit (id, namespace, partition, txn_id) VALUES (1, ?, ?, ?) " +
+        "ON CONFLICT (id) DO UPDATE SET namespace = excluded.namespace, " +
+        "partition = excluded.partition, txn_id = excluded.txn_id",
     );
     this.#deleteCommit = db.prepare("DELETE FROM commits WHERE cursor = ?");
     this.#updatePoint = db.prepare(
@@ -2028,20 +2145,41 @@ class SqliteCompactedBase implements CompactedBaseWriter {
    * Removes a folded commit: its txnId moves to compacted_txns, the
    * references it counted are dropped, and its row is deleted.
    */
-  compactCommit(row: CommitRow, chunkRefs: readonly string[]): void {
+  compactCommit(
+    row: CommitRow,
+    chunkRefs: readonly string[],
+    committedAt: number,
+  ): void {
     this.#insertCompactedTxn.run(
       row.namespace,
       row.partition,
       row.txn_id,
       row.seq,
     );
+    this.#insertTxnTime.run(
+      row.namespace,
+      row.partition,
+      row.txn_id,
+      Number.isFinite(committedAt) ? committedAt : this.#now,
+    );
     for (const sha256 of chunkRefs) this.#release(row.namespace, sha256);
     this.#deleteCommit.run(row.cursor);
   }
 
-  /** Moves the compaction point. */
-  setPoint(cursor: number): void {
-    this.#updatePoint.run(cursor);
+  /** Moves the compaction point to the folded commit `row`. */
+  setPoint(row: CommitRow): void {
+    this.#updatePoint.run(row.cursor);
+    this.#upsertPointCommit.run(row.namespace, row.partition, row.txn_id);
+  }
+
+  /**
+   * Forgets the txnIds of compacted commits made before `before` (epoch
+   * milliseconds), except the compaction point's own; returns how many.
+   */
+  pruneTxns(before: number): number {
+    const pruned = Number(this.#pruneTxns.run(before).changes);
+    this.#pruneTxnTimes.run(before);
+    return pruned;
   }
 
   /**

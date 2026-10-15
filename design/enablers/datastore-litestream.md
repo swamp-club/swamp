@@ -29,7 +29,7 @@ and the `_control/` records this layout sits beside.
    supervises, downloaded on first v3 use.** See
    [Obtaining the binary](#obtaining-the-binary).
 2. **Talk to it through its control socket.** `POST /sync {"wait": true}` is how
-   the outbox learns that a commit has reached the bucket (see
+   a writer learns that a commit has reached the bucket (see
    [Knowing a commit is replicated](#knowing-a-commit-is-replicated)).
 3. **One sidecar per datastore writer, kept alive between commands.** In solo
    mode a write command reuses an idle sidecar, or starts one, and forces a
@@ -219,14 +219,14 @@ and returns `{status, txid, replicated_txid}`. `status` is `synced` or
 - Litestream's TXIDs count **LTX files**, not SQLite transactions. One LTX file
   covers every transaction committed since the last one. There is no
   per-transaction mapping, and none is needed.
-- **The rule for the outbox:** a commit is replicated once a `/sync` call that
+- **The confirmation rule:** a commit is replicated once a `/sync` call that
   _started after the commit returned_ comes back with status `synced` or
   `no_change` and `replicated_txid >= txid`. One call confirms every commit
   before it, so a burst of commits costs one sync.
 - A forced sync costs one LTX upload: 9–15 ms on local emulators, about 44 ms
   with a warm connection and 30 ms RTT, and about 165 ms on a cold per-command
   connection (see the startup table).
-- A forced sync is always possible, so the outbox never has to wait out the 1–2
+- A forced sync is always possible, so a writer never has to wait out the 1–2
   s passive lag.
 
 ## Shutdown and crash (Q5)
@@ -243,8 +243,12 @@ and returns `{status, txid, replicated_txid}`. `status` is `synced` or
 - **Machine loss** (kill -9 the sidecar, then restore from the bucket alone):
   every confirmed commit was present in 50 of 50 runs (file), 20 of 20 (S3) and
   10 of 10 on each CI platform. What was lost was exactly the commits since the
-  last confirmation: at most 6 in a confirm-every-7 loop. The outbox has to
-  cover that window, and with this rule it does.
+  last confirmation: at most 6 in a confirm-every-7 loop. A write command's
+  success waits for the confirmation (Phase 4D1), so no command in that window
+  was told it succeeded. The commit outbox (Phase 4F, below) does not cover
+  the window: it settles an entry once its commit lands in the local copy, so
+  a commit lost with the machine before its confirmation stays lost, and its
+  command failed.
 - **Sidecar killed, then restarted on the same local files:** it shipped
   everything, including 50 commits made while it was down. 50 of 50 runs.
 - **Writer killed mid-loop** (the CLI dying): every commit the writer completed
@@ -1069,6 +1073,30 @@ nothing unacknowledged but a failed writer's published head.
   while such a lineage is registered (swamp-club#3491).
 - Windows stays unavailable while the pin is below 0.5.18.
 
+## Phase 4F: the commit outbox and replication (swamp-club#3490)
+
+The commit outbox (`datastores.md`, **v3 commit outbox**) makes a commit a
+writer prepared durable on its own machine until it lands. What it means for
+replication:
+
+- **Local, never replicated.** It is a file of its own beside whichever
+  `commits.db` the checkout uses (`commits-outbox.db`): the datastore's, or
+  while replicating the checkout's copy. Litestream's config names only
+  `commits.db`, so the outbox never reaches the bucket or another machine.
+- **A restore leaves it alone.** A D2 restore replaces `commits.db`'s content
+  in place or installs a new file over it; the outbox beside it keeps its
+  entries, and the fence chain judges them: an entry from before another
+  copy's lease is dropped, and one whose partition the restore moved on is
+  dropped by the head check.
+- **It settles on landing, not on confirmation.** Replication is unchanged:
+  a recovered commit is replicated like any other, and a command's success
+  still waits for the confirmed sync. A commit that landed locally and was
+  dropped by a later restore before its confirmation is lost, as before.
+- **Turning replication on** drops, and reports, what the shared
+  `commits.db`'s outbox still holds when a copy is first seeded from it: no
+  fence is raised on the shared store once replication is on, so nothing can
+  judge those entries.
+
 ## Phase 4D3: serve confirms each write request (swamp-club#3489)
 
 Dormant like D1 and D2. With replication off, serve sets no confirmation, and
@@ -1325,7 +1353,7 @@ macOS.
     (Phase 4A);
   - SHA-256 check on download and on every start (built: swamp-club#3358);
   - `commits.db` keeps SQLite's default checkpointing and never forces one;
-  - the outbox rule above;
+  - the confirmation rule above;
   - `litestream sync` as the client on Windows, and Windows gated on Litestream
     0.5.18 or later. Never pin a build from main. If 0.5.18 isn't released when
     Phase 4 ships, Windows solo stays on v2, with a warning when v3 is

@@ -68,7 +68,8 @@ import { readModelStateDir } from "../record_path_guard.ts";
 import { ReadModelState } from "../read_model_state.ts";
 import { SqliteCommitStore } from "../sqlite_commit_store.ts";
 import { READ_MODEL_STATE_FILE } from "../sqlite_read_model.ts";
-import { v3SharedCommitsDbPath } from "../v3_datastore.ts";
+import { SqliteCommitOutbox } from "../sqlite_commit_outbox.ts";
+import { v3OutboxPath, v3SharedCommitsDbPath } from "../v3_datastore.ts";
 import { LineageRegistry } from "./lineage_registry.ts";
 import {
   installByLink,
@@ -299,6 +300,33 @@ export async function makeV3CopyCurrent(
 }
 
 /**
+ * Reports and discards the commits left in the shared `commits.db`'s outbox
+ * (swamp-club#3490) once replication is on: nothing raises a fence on the
+ * shared store any more, so no recovery can judge them, and a copy seeded
+ * from it never lands them. Runs under the writer lease.
+ */
+async function dropSharedOutboxEntries(sharedCommitsDb: string): Promise<void> {
+  const outbox = new SqliteCommitOutbox(v3OutboxPath(sharedCommitsDb));
+  try {
+    if (!await outbox.hasEntries()) return;
+    const { entries, unreadable } = await outbox.entries();
+    await outbox.remove([
+      ...entries.map((entry) => ({
+        namespace: entry.commit.namespace,
+        partition: entry.commit.partition.toString(),
+        txnId: entry.commit.txnId,
+      })),
+      ...unreadable.map((entry) => entry.key),
+    ]);
+    const count = entries.length + unreadable.length;
+    logger
+      .warn`Dropped ${count} v3 commits a swamp process prepared on the datastore's shared commit store before replication was turned on, and did not land. Their changes are not in the datastore`;
+  } finally {
+    await outbox.close();
+  }
+}
+
+/**
  * Seeds a writer's copy from the datastore's shared `commits.db` when
  * replication is turned on over a datastore that already has commits
  * (swamp-club#3491): no lineage was ever confirmed, under any replica root,
@@ -322,6 +350,9 @@ async function seedFromSharedDatabase(
   },
 ): Promise<V3CopyRefresh> {
   const shared = v3SharedCommitsDbPath(resolve(copy.datastorePath));
+  if (resolve(shared) !== resolve(paths.commitsDb)) {
+    await dropSharedOutboxEntries(shared);
+  }
   const unseeded = async () =>
     resolve(shared) !== resolve(paths.commitsDb) &&
     commitsIn(paths.commitsDb) === 0 &&

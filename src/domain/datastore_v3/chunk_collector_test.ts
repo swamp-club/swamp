@@ -545,3 +545,89 @@ Deno.test("ChunkCollector: refuses a grace period or verify budget that is not a
     "verifyBytes",
   );
 });
+
+Deno.test("ChunkCollector.collect: marks the sweep in progress with a heartbeat per batch, and ends it when the sweep fails", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  for (let i = 0; i < CHUNK_COLLECTION_BATCH + 1; i++) {
+    storage.seed("acme", `orphan-${i}`, OLD);
+  }
+  const calls: string[] = [];
+  const sweep = {
+    begin: () => Promise.resolve(void calls.push("begin")),
+    heartbeat: () => Promise.resolve(void calls.push("heartbeat")),
+    end: () => Promise.resolve(void calls.push("end")),
+  };
+  await collector(storage, refs, { sweep }).collect(ACME, { signal });
+  // Begun first, ended last, and a heartbeat for each of the two batches.
+  assertEquals(calls[0], "begin");
+  assertEquals(calls.at(-1), "end");
+  assertEquals(calls.filter((call) => call === "heartbeat").length >= 2, true);
+
+  calls.length = 0;
+  storage.seed("acme", "another", OLD);
+  refs.afterLookup = () => {
+    throw new Error("store gone");
+  };
+  await assertRejects(
+    () => collector(storage, refs, { sweep }).collect(ACME, { signal }),
+    Error,
+    "store gone",
+  );
+  assertEquals(calls[0], "begin");
+  assertEquals(calls.at(-1), "end");
+});
+
+Deno.test("ChunkCollector.collect: a sweeper that may not delete deletes nothing, and one that loses the lease mid-batch puts the batch back", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  const orphans = [
+    storage.seed("acme", "orphan-1", OLD),
+    storage.seed("acme", "orphan-2", OLD),
+  ];
+  await assertRejects(
+    () =>
+      collector(storage, refs, {
+        assertMayDelete: () => {
+          throw new Error("fenced");
+        },
+      }).collect(ACME, { signal }),
+    Error,
+    "fenced",
+  );
+  assertEquals(storage.deleted, []);
+
+  // Current before the deletes, lost by the re-check after them.
+  let checks = 0;
+  await assertRejects(
+    () =>
+      collector(storage, refs, {
+        assertMayDelete: () => {
+          if (++checks > 1) throw new Error("fenced");
+        },
+      }).collect(ACME, { signal }),
+    Error,
+    "fenced",
+  );
+  assertEquals(storage.deleted.length, 2);
+  assertEquals(storage.stored("acme"), [...orphans].sort());
+});
+
+Deno.test("ChunkCollector.collect: a sweep monitor that fails to end leaves the sweep's own error to the caller", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  storage.seed("acme", "orphan", OLD);
+  refs.afterLookup = () => {
+    throw new Error("store gone");
+  };
+  const sweep = {
+    begin: () => Promise.resolve(),
+    heartbeat: () => Promise.resolve(),
+    end: () => Promise.reject(new Error("outbox locked")),
+  };
+  await assertRejects(
+    () => collector(storage, refs, { sweep }).collect(ACME, { signal }),
+    Error,
+    "store gone",
+  );
+});

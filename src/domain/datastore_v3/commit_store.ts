@@ -183,6 +183,13 @@ export interface CompactHistoryOptions {
    * a higher one refuses the compaction.
    */
   readonly fence?: number;
+  /**
+   * Forgets the txnIds of compacted commits made before this instant
+   * (swamp-club#3490), except the compaction point's own commit's. A retry
+   * of a commit whose txnId was forgotten would land again, so the writer
+   * passes now less `COMPACTED_TXN_RETENTION_MS`, past every retry it makes.
+   */
+  readonly pruneTxnsBefore?: Date;
 }
 
 /** What {@link CommitStore.compactHistory} did. */
@@ -195,6 +202,8 @@ export interface CompactionReport {
   readonly batches: number;
   /** Chunks no stored commit or base record names any more. */
   readonly released: number;
+  /** Compacted txnIds forgotten; present when `pruneTxnsBefore` was given. */
+  readonly prunedTxns?: number;
 }
 
 /**
