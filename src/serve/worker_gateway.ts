@@ -184,6 +184,11 @@ interface WorkerEntry {
   verifying?: boolean;
   /** Another verification was asked for while one was running. */
   verifyAgain?: boolean;
+  /**
+   * A probe was refused for want of a slot while the worker was unverified.
+   * The next dispatch to end with no slots held probes it again.
+   */
+  probeRefusedForCapacity?: boolean;
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Fires at the token's `expiresAt` to disconnect the worker. */
   expiryTimer?: ReturnType<typeof setTimeout>;
@@ -507,6 +512,9 @@ export class WorkerGateway {
       throw new WorkerNotDispatchableError(name, "disconnected");
     }
     if (entry.activeDispatchIds.length >= entry.capacity) {
+      if (entry.status === "unverified" && params.probeMarker) {
+        entry.probeRefusedForCapacity = true;
+      }
       throw new WorkerNotDispatchableError(name, "at_capacity");
     }
     if (entry.status === "unverified" && !params.probeMarker) {
@@ -527,7 +535,6 @@ export class WorkerGateway {
       },
     );
     const dispatchStart = performance.now();
-    const channelAtStart = entry.channel;
     entry.activeDispatchIds.push(params.dispatchId);
     // An unverified worker is only ever sent a probe, and the probe's result
     // has not been judged yet: it holds a slot but stays unverified, so the
@@ -649,12 +656,13 @@ export class WorkerGateway {
         }
         this.#options.onWorkerIdle?.(this.#snapshot(entry));
       }
-      // A reconnect under verify-on-enroll turns the worker unverified while
-      // dispatches sent on its old socket still hold its slots, so its
-      // enrollment probe can be refused for want of one. When the last of
-      // them ends, probe again: nothing else would (swamp-club#3388).
+      // An unverified worker's enrollment probe can be refused for want of
+      // a slot: one held by a dispatch from before a reconnect
+      // (swamp-club#3388), or by a manual probe (swamp-club#3404). When the
+      // last slot frees, probe again, whichever socket that dispatch used:
+      // nothing else would.
       if (
-        currentStatus === "unverified" && channelAtStart !== entry.channel &&
+        currentStatus === "unverified" && entry.probeRefusedForCapacity &&
         entry.activeDispatchIds.length === 0 &&
         entry.channel !== null && !entry.channel.closed &&
         this.#options.verifyWorker
@@ -1147,7 +1155,8 @@ export class WorkerGateway {
       entry.verifyAgain = false;
       if (
         this.#workers.get(workerName) === entry &&
-        entry.status === "unverified" && entry.channel !== null
+        entry.status === "unverified" && entry.channel !== null &&
+        !entry.channel.closed
       ) {
         this.#startEnrollmentVerify(workerName);
       }
@@ -1156,6 +1165,10 @@ export class WorkerGateway {
 
   async #runEnrollmentVerify(workerName: string): Promise<void> {
     const verifyWorker = this.#options.verifyWorker!;
+    // This run answers any refusal seen before it; only one it meets itself
+    // calls for another.
+    const started = this.#workers.get(workerName);
+    if (started) started.probeRefusedForCapacity = false;
     try {
       const probeResult = await verifyWorker(workerName);
       const entry = this.#workers.get(workerName);
