@@ -1485,7 +1485,7 @@ export const model = {
         // issue backwards, so the entry targets the status the issue holds —
         // the issue page groups entries by targetStatus, and a triaged entry
         // would hide the reopen above the approval.
-        const state = await context.readResource("state-main") as
+        const state = await context.readResource!("state-main") as
           | StateData
           | null;
         const reopened = state?.phase === "approved";

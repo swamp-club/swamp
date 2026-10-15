@@ -33,7 +33,11 @@ cannot implement without approval.
 An approved plan that turns out to be wrong goes back to planning with
 `iterate`. The plan, its version history and its feedback rounds are kept. The
 swamp-club issue stays `in_progress`, because swamp-club never moves an issue
-backwards, and the reopen entry is recorded under `in_progress` too. The revised
+backwards. Only the reopen entry itself is recorded under `in_progress`; the
+planning entries that follow it (`adversarial_review`, `resolve_findings`,
+further `iterate` calls) still target `triaged`, so the issue page groups them
+with the earlier planning entries. An issue linked while the plan is reopened is
+caught up to `triaged`, and `approve` brings it to `in_progress`. The revised
 plan needs a fresh `adversarial_review` before it can be approved again.
 
 ## Using with Claude Code (recommended)
