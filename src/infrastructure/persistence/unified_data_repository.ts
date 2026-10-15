@@ -592,7 +592,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       for (const modelId of await listSubdirectories(typeDir)) {
         try {
-          const dataItems = await this.findAllForModel(modelType, modelId);
+          // A caller collecting what it skips also learns of empty metadata,
+          // which otherwise reads as the data not being there.
+          const dataItems = options?.unreadable
+            ? await this.collectModelData(modelType, modelId, undefined, true)
+            : await this.findAllForModel(modelType, modelId);
           for (const data of dataItems) {
             results.push({ data, modelType, modelId });
           }
@@ -809,12 +813,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
+  /**
+   * With `strict`, a metadata file that parses to nothing (an empty or
+   * truncated `metadata.yaml`) throws instead of reading as no data.
+   */
   private async findByNameWithDepth(
     type: ModelType,
     modelId: string,
     dataName: string,
     version: number | undefined,
     depth: number,
+    strict = false,
   ): Promise<Data | null> {
     const versionToRead = version ?? (await this.getLatestVersion(
       type,
@@ -832,7 +841,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       const content = await Deno.readTextFile(metadataPath);
       const metadata = parseYaml(content) as DataMetadata | null;
-      if (!metadata) return null;
+      if (!metadata) {
+        if (strict) {
+          throw new SyntaxError(
+            `metadata.yaml of ${dataName} version ${versionToRead} is empty`,
+          );
+        }
+        return null;
+      }
       const data = Data.fromData(metadata);
 
       // Follow forward references for latest lookups (not explicit version requests)
@@ -848,6 +864,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           data.renamedTo,
           undefined,
           depth + 1,
+          strict,
         );
       }
 
@@ -929,12 +946,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * The latest data of each name under a model, following rename forwards.
-   * Each rename marker followed is pushed to `renames` when given.
+   * Each rename marker followed is pushed to `renames` when given. With
+   * `strict`, empty metadata throws (see {@link findByNameWithDepth}).
    */
   private async collectModelData(
     type: ModelType,
     modelId: string,
     renames?: RenameForward[],
+    strict = false,
   ): Promise<Data[]> {
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
@@ -946,9 +965,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // from depth 1: the same reads as an unversioned findByName, with
         // the marker visible on the way.
         const latest = await this.getLatestVersion(type, modelId, dataName);
-        let data = latest === null
-          ? null
-          : await this.findByName(type, modelId, dataName, latest);
+        let data = latest === null ? null : await this.findByNameWithDepth(
+          type,
+          modelId,
+          dataName,
+          latest,
+          0,
+          strict,
+        );
         if (data?.isRenamed && data.renamedTo) {
           renames?.push({
             modelType: type,
@@ -962,6 +986,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             data.renamedTo,
             undefined,
             1,
+            strict,
           );
         }
         if (data && !seen.has(data.name)) {

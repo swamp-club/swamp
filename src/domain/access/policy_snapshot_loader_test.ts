@@ -1027,7 +1027,16 @@ type FakeRecord =
   | { kind: "group"; attrs: Group }
   | {
     kind: "grant" | "group";
-    unreadable: "content" | "listing" | "metadata" | "schema" | "json";
+    unreadable:
+      | "content"
+      | "content-syntax"
+      | "missing"
+      | "invalid"
+      | "listing"
+      | "metadata"
+      | "schema"
+      | "validation"
+      | "json";
     /** Listed under the orphaned `@`-prefixed type, with no definition. */
     orphaned?: boolean;
   };
@@ -1037,9 +1046,13 @@ type FakeRecord =
  * unreadable at "listing" is reported by findAllForType, as the filesystem
  * repository reports a directory it cannot read, and at "metadata" as it
  * reports metadata that does not parse, and at "schema" as it reports
- * metadata that fails its schema; at "content", getContent throws,
+ * metadata that fails its schema, and at "validation" as it reports any
+ * other metadata error; at "content", getContent throws,
  * with a message that differs on every read, as a remote error's may; at
- * "json", the content does not parse.
+ * "content-syntax", it throws SyntaxError, as a remote read of a malformed
+ * response may; at "missing", it returns null; at "invalid", the content
+ * parses but fails the grant or group schema; at "json", the content does
+ * not parse.
  */
 function createChangingDataRepo(
   records: Map<string, FakeRecord>,
@@ -1071,7 +1084,8 @@ function createChangingDataRepo(
           "unreadable" in record &&
           (record.unreadable === "listing" ||
             record.unreadable === "metadata" ||
-            record.unreadable === "schema")
+            record.unreadable === "schema" ||
+            record.unreadable === "validation")
         ) {
           const schemaError = new Error("metadata fails its schema");
           schemaError.name = "ZodError";
@@ -1082,7 +1096,9 @@ function createChangingDataRepo(
               ? new Deno.errors.PermissionDenied("listing")
               : record.unreadable === "metadata"
               ? new SyntaxError("bad metadata.yaml")
-              : schemaError,
+              : record.unreadable === "schema"
+              ? schemaError
+              : new Error("invalid data id"),
           });
           continue;
         }
@@ -1102,6 +1118,13 @@ function createChangingDataRepo(
           return Promise.reject(
             new Deno.errors.PermissionDenied(`raw, read ${++reads}`),
           );
+        }
+        if (record.unreadable === "content-syntax") {
+          return Promise.reject(new SyntaxError("malformed response"));
+        }
+        if (record.unreadable === "missing") return Promise.resolve(null);
+        if (record.unreadable === "invalid") {
+          return Promise.resolve(new TextEncoder().encode("{}"));
         }
         return Promise.resolve(new TextEncoder().encode("{not json"));
       }
@@ -1544,7 +1567,7 @@ Deno.test("PolicySnapshotLoader.load: the first-build error does not tell a reco
 
   const lines = error.message.split("\n");
   const newer = lines.find((l) => l.includes("swamp/grant/newer ")) ?? "";
-  assertStringIncludes(newer, "does not recognise");
+  assertStringIncludes(newer, "is not valid for this swamp");
   assertStringIncludes(newer, "if a newer swamp wrote it, upgrade this one");
   assertStringIncludes(newer, "swamp data delete newer grant-main -y");
   const orphan = lines.find((l) => l.includes("@swamp/grant/orphan ")) ?? "";
@@ -1555,4 +1578,103 @@ Deno.test("PolicySnapshotLoader.load: the first-build error does not tell a reco
     error.records.map((r) => [r.modelId, r.cause, r.orphaned]).sort(),
     [["newer", "unrecognised", false], ["orphan", "corrupt", true]],
   );
+});
+
+Deno.test("PolicySnapshotLoader.load: each way a record fails is classed by where it failed", async () => {
+  const cases: Array<[FakeRecord & { unreadable: string }, string]> = [
+    [{ kind: "grant", unreadable: "content" }, "unreadable"],
+    // A failed read is unreadable whatever its error class.
+    [{ kind: "grant", unreadable: "content-syntax" }, "unreadable"],
+    [{ kind: "grant", unreadable: "json" }, "corrupt"],
+    [{ kind: "grant", unreadable: "invalid" }, "unrecognised"],
+    [{ kind: "grant", unreadable: "listing" }, "unreadable"],
+    [{ kind: "grant", unreadable: "metadata" }, "corrupt"],
+    [{ kind: "grant", unreadable: "schema" }, "unrecognised"],
+    [{ kind: "grant", unreadable: "validation" }, "unrecognised"],
+  ];
+  for (const [record, cause] of cases) {
+    const loader = new PolicySnapshotLoader(
+      createChangingDataRepo(new Map([["r", record]])),
+      new EventBus(),
+      "manual",
+    );
+    const error = await assertRejects(
+      () => loader.load(),
+      UnreadableAccessRecordsError,
+    );
+    await loader.dispose();
+    assertEquals(
+      error.records.map((r) => r.cause),
+      [cause],
+      record.unreadable,
+    );
+  }
+});
+
+Deno.test("PolicySnapshotLoader.load: a deny it read before stays in force when its content fails the schema or goes missing", async () => {
+  for (const unreadable of ["invalid", "missing"] as const) {
+    const deny = makeGrant({ id: "deny-1", effect: "deny" });
+    const records = new Map<string, FakeRecord>([
+      ["d", { kind: "grant", attrs: deny }],
+    ]);
+    const loader = new PolicySnapshotLoader(
+      createChangingDataRepo(records),
+      new EventBus(),
+      "manual",
+    );
+    await loader.load();
+    records.set("d", { kind: "grant", unreadable });
+    await loader.load();
+    await loader.dispose();
+
+    assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"], unreadable);
+    assertEquals(
+      loader.unreadable.map((r) => [r.cause, r.outcome]),
+      [[
+        unreadable === "invalid" ? "unrecognised" : "unreadable",
+        "kept-last-known-deny",
+      ]],
+      unreadable,
+    );
+  }
+});
+
+Deno.test("PolicySnapshotLoader.load: a record never read whose content is missing is skipped, as before", async () => {
+  const records = new Map<string, FakeRecord>([
+    ["m", { kind: "grant", unreadable: "missing" }],
+    ["a", { kind: "grant", attrs: makeGrant({ id: "allow-1" }) }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  await loader.dispose();
+  assertEquals(effectsFor(loader, "user:adam"), ["allow:allow-1"]);
+  assertEquals(loader.unreadable, []);
+});
+
+Deno.test("PolicySnapshotLoader.load: a grant that fails the schema is described by its first issues, not a JSON dump", async () => {
+  const records = new Map<string, FakeRecord>([
+    ["bad", { kind: "grant", unreadable: "invalid" }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  const error = await assertRejects(
+    () => loader.load(),
+    UnreadableAccessRecordsError,
+  );
+  await loader.dispose();
+
+  const line = error.message.split("\n")[1];
+  assertStringIncludes(line, "is not valid for this swamp");
+  assertStringIncludes(line, "ZodError: ");
+  assertStringIncludes(line, "subject: ");
+  assertStringIncludes(line, "more");
+  assertEquals(line.includes("[\n"), false);
+  assertEquals(error.message.split("\n").length, 2);
 });

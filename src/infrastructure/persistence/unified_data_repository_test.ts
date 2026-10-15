@@ -723,6 +723,50 @@ Deno.test("findAllForType: returns empty for missing type directory", async () =
   }
 });
 
+Deno.test("findAllForType: reports a model whose metadata is empty when asked, and skips it otherwise", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+  const repo = new FileSystemUnifiedDataRepository(
+    tmpDir,
+    undefined,
+    catalogStore,
+  );
+  try {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    await repo.save(testType, "model-ok", makeJsonData("item-ok"), encode("1"));
+    await repo.save(
+      testType,
+      "model-empty",
+      makeJsonData("item-empty"),
+      encode("2"),
+    );
+    await Deno.writeTextFile(
+      join(
+        repo.getDataNameDir(testType, "model-empty", "item-empty"),
+        "1",
+        "metadata.yaml",
+      ),
+      "",
+    );
+
+    const plain = await repo.findAllForType(testType);
+    assertEquals(plain.map((r) => r.modelId), ["model-ok"]);
+
+    const unreadable: UnreadableModelRecord[] = [];
+    const results = await repo.findAllForType(testType, { unreadable });
+    assertEquals(results.map((r) => r.modelId), ["model-ok"]);
+    assertEquals(unreadable.map((r) => r.modelId), ["model-empty"]);
+    assert(unreadable[0].error instanceof SyntaxError);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
 Deno.test({
   name:
     "findAllForType: reports a model it cannot read and still returns the rest",

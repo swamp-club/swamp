@@ -624,15 +624,17 @@ allow, and turning the setting on can only narrow access.
 
 **Do not store a grant that names `signal` while an older build shares the
 datastore.** A build from before this action cannot parse such a grant, and
-`PolicySnapshotLoader` skips a stored grant that fails schema validation
-without a warning.
-The whole grant is lost to that build, not only its `signal`: an allow for
-`signal, read` no longer grants `read`, and a deny for `run, signal` no longer
-denies `run`, so the older build allows what the grant was written to stop.
-Rolling back to an older build has the same effect on grants made meanwhile. A
-declarative grant file fails closed instead: the older build refuses to start
-on it. Upgrade every host that reads the datastore before the first grant
-naming `signal` is created.
+`PolicySnapshotLoader` in builds before swamp-club#3386 skips a stored grant
+that fails schema validation without a warning. The whole grant is lost to that
+build, not only its `signal`: an allow for `signal, read` no longer grants
+`read`, and a deny for `run, signal` no longer denies `run`, so the older build
+allows what the grant was written to stop. Rolling back to an older build has
+the same effect on grants made meanwhile. A declarative grant file fails closed
+instead: the older build refuses to start on it. From swamp-club#3386 on, a
+build that cannot validate a stored grant or group treats it as unrecognised
+(item 5 of the PolicySnapshot lifecycle below): it refuses to start on it, and
+once running it keeps a deny it read earlier. Upgrade every host that reads the
+datastore before the first grant naming `signal` is created.
 
 An `AccessDecision` whose grant passed `approve` or `signal` only through `run`
 carries `impliedBy: "run"`. `swamp access check` and `swamp access can-i` show it
@@ -777,17 +779,22 @@ changes.
    start, as do `swamp access reload` and `swamp access check`. A record that
    cannot be loaded may be a deny, and the loader cannot tell. The error lists
    each record with its fix:
-   - corrupt (its JSON or metadata does not parse, `SyntaxError`): it never
-     loads by itself, so the error names the command that removes it,
-     `swamp data delete <model-id> grant-main -y` (`group-main` for a group). An
-     orphaned record (`@swamp/grant`, `@swamp/group`) has no definition that
-     command can reach, so the error names its directory,
+   - corrupt (its JSON or metadata does not parse, or its `metadata.yaml` is
+     empty): it never loads by itself, so the error names the command that
+     removes it, `swamp data delete <model-id> grant-main -y` (`group-main` for
+     a group). An orphaned record (`@swamp/grant`, `@swamp/group`) has no
+     definition that command can reach, so the error names its directory,
      `data/@swamp/grant/<model-id>`, instead;
-   - unrecognised (its metadata fails this build's schema, `ZodError`): a newer
-     swamp may have written it, so the error says to upgrade first and only
-     otherwise to remove it;
-   - unreadable (anything else, such as `PermissionDenied`): give the process
-     read access and retry.
+   - unrecognised (it parses, but its grant, group or metadata fails this
+     build's validation): a newer swamp may have written it, so the error says
+     to upgrade first and only otherwise to remove it;
+   - unreadable (reading it failed: a filesystem error such as
+     `PermissionDenied`, any error from a remote read, or content gone missing
+     from a record read before): give the process read access and retry.
+
+   A record is classed by where it failed, not by its error's class: a remote
+   read that fails with a parse error is still unreadable, since the next read
+   may succeed.
 
    This applies to allows too, so a datastore with one damaged record of any
    kind stops these commands until it is fixed, where earlier releases skipped

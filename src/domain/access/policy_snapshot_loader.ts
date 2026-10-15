@@ -210,9 +210,10 @@ export interface UnreadableAccessRecord {
   readonly dataName: string;
   /**
    * `corrupt` when its JSON or metadata does not parse; `unrecognised` when
-   * its metadata fails this build's schema, as metadata a newer swamp wrote
-   * may; neither loads again by itself. `unreadable` when reading it
-   * failed, as for a file this process may not read, which a retry can fix.
+   * it parses but fails this build's grant, group or metadata validation,
+   * as a record a newer swamp wrote may; neither loads again by itself.
+   * `unreadable` when reading it failed (a file this process may not read,
+   * a remote read that failed, content gone missing), which a retry can fix.
    */
   readonly cause: "unreadable" | "corrupt" | "unrecognised";
   /**
@@ -233,7 +234,7 @@ function problemOf(record: UnreadableAccessRecord): string {
     case "corrupt":
       return "is corrupt";
     case "unrecognised":
-      return "has metadata this swamp does not recognise";
+      return "is not valid for this swamp";
     case "unreadable":
       return "cannot be read";
   }
@@ -323,28 +324,39 @@ export function withoutAllowsToGroups(
 /** The contents of a record, or why they could not be read. */
 type RecordRead =
   | { attrs: Record<string, unknown> }
-  | { error: unknown }
+  | { error: unknown; cause: UnreadableAccessRecord["cause"] }
   | null;
 
+/** A record a build could not load, before its outcome is decided. */
+interface FailedRecord {
+  modelType: ModelType;
+  modelId: string;
+  error: unknown;
+  cause: UnreadableAccessRecord["cause"];
+}
+
 /**
- * The record a build could not load. A parse failure (JSON or YAML, which
- * throw SyntaxError) is corrupt; metadata that fails its schema (ZodError)
- * is unrecognised, since a newer swamp may have written it; anything else,
- * such as PermissionDenied or a remote read that failed, is unreadable.
+ * Why the repository skipped a model directory. A filesystem error (any
+ * `Deno.errors` class, such as PermissionDenied) is a failed read, which a
+ * retry can fix; a parse failure (SyntaxError) is corrupt; any other error
+ * comes from validating its metadata, which a newer swamp may have written.
  */
+function causeOfSkippedModel(error: unknown): UnreadableAccessRecord["cause"] {
+  if (
+    Object.values(Deno.errors).some((errorClass) => error instanceof errorClass)
+  ) {
+    return "unreadable";
+  }
+  return error instanceof SyntaxError ? "corrupt" : "unrecognised";
+}
+
+/** The record a build could not load, with what the snapshot did with it. */
 function unreadableRecord(
   kind: "grant" | "group",
-  modelType: ModelType,
-  modelId: string,
-  error: unknown,
+  { modelType, modelId, error, cause }: FailedRecord,
   outcome: UnreadableRecordOutcome,
 ): UnreadableAccessRecord {
   const errorName = error instanceof Error ? error.name : "Error";
-  const cause = error instanceof SyntaxError
-    ? "corrupt"
-    : errorName === "ZodError"
-    ? "unrecognised"
-    : "unreadable";
   return {
     record: recordKey(modelType, modelId),
     kind,
@@ -353,11 +365,36 @@ function unreadableRecord(
     cause,
     orphaned: modelType.normalized.startsWith("@"),
     errorName,
-    error: error instanceof Error
-      ? `${error.name}: ${error.message}`
-      : String(error),
+    error: describeError(error),
     outcome,
   };
+}
+
+/** The most validation issues a description names before counting the rest. */
+const DESCRIBED_ISSUES = 3;
+
+/**
+ * An error's class and message on one line. A validation error's message is
+ * a JSON dump of every issue, so it is described by its first issues as
+ * `path: message` instead.
+ */
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const issues = (error as { issues?: unknown }).issues;
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return `${error.name}: ${error.message}`;
+  }
+  const named = issues.slice(0, DESCRIBED_ISSUES).map((issue) => {
+    const { path, message } = issue as { path?: unknown; message?: unknown };
+    const at = Array.isArray(path) && path.length > 0
+      ? path.join(".")
+      : "(root)";
+    return `${at}: ${String(message)}`;
+  });
+  const more = issues.length > DESCRIBED_ISSUES
+    ? `; and ${issues.length - DESCRIBED_ISSUES} more`
+    : "";
+  return `${error.name}: ${named.join("; ")}${more}`;
 }
 
 /** What a build's log and retry check compare a record across builds by. */
@@ -541,12 +578,20 @@ export class PolicySnapshotLoader {
     grantCount: number;
     groupCount: number;
   }> {
-    const unreadableGrants: UnreadableModelRecord[] = [];
-    const unreadableGroups: UnreadableModelRecord[] = [];
+    const skippedGrants: UnreadableModelRecord[] = [];
+    const skippedGroups: UnreadableModelRecord[] = [];
     const [grantDataItems, groupDataItems] = await Promise.all([
-      this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE, unreadableGrants),
-      this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE, unreadableGroups),
+      this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE, skippedGrants),
+      this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE, skippedGroups),
     ]);
+    const failedGrants: FailedRecord[] = skippedGrants.map((skipped) => ({
+      ...skipped,
+      cause: causeOfSkippedModel(skipped.error),
+    }));
+    const failedGroups: FailedRecord[] = skippedGroups.map((skipped) => ({
+      ...skipped,
+      cause: causeOfSkippedModel(skipped.error),
+    }));
 
     const lastKnownGrants = new Map<string, Grant>();
     const lastKnownGroups = new Map<string, Group>();
@@ -555,19 +600,33 @@ export class PolicySnapshotLoader {
     let grants: Grant[] = [];
     for (const { data, modelType, modelId } of grantDataItems) {
       if (data.name !== "grant-main") continue;
-      const read = await this.#readRecord(modelType, modelId, data.name);
+      const record = recordKey(modelType, modelId);
+      const read = await this.#readRecord(
+        modelType,
+        modelId,
+        data.name,
+        this.#lastKnownGrants.has(record),
+      );
       if (!read) continue;
       if ("error" in read) {
-        unreadableGrants.push({ modelType, modelId, error: read.error });
+        failedGrants.push({ modelType, modelId, ...read });
         continue;
       }
       const parsed = GrantSchema.safeParse(read.attrs);
-      if (!parsed.success) continue;
-      lastKnownGrants.set(recordKey(modelType, modelId), parsed.data);
+      if (!parsed.success) {
+        failedGrants.push({
+          modelType,
+          modelId,
+          error: parsed.error,
+          cause: "unrecognised",
+        });
+        continue;
+      }
+      lastKnownGrants.set(record, parsed.data);
       if (parsed.data.state === "active") grants.push(parsed.data);
     }
-    for (const { modelType, modelId, error } of unreadableGrants) {
-      const record = recordKey(modelType, modelId);
+    for (const failed of failedGrants) {
+      const record = recordKey(failed.modelType, failed.modelId);
       const last = this.#lastKnownGrants.get(record);
       if (last) lastKnownGrants.set(record, last);
       const kept = retainedUnreadableGrant(last);
@@ -575,9 +634,7 @@ export class PolicySnapshotLoader {
       unreadable.push(
         unreadableRecord(
           "grant",
-          modelType,
-          modelId,
-          error,
+          failed,
           kept ? "kept-last-known-deny" : "left-out",
         ),
       );
@@ -587,19 +644,33 @@ export class PolicySnapshotLoader {
     const suspendedGroups = new Set<string>();
     for (const { data, modelType, modelId } of groupDataItems) {
       if (data.name !== "group-main") continue;
-      const read = await this.#readRecord(modelType, modelId, data.name);
+      const record = recordKey(modelType, modelId);
+      const read = await this.#readRecord(
+        modelType,
+        modelId,
+        data.name,
+        this.#lastKnownGroups.has(record),
+      );
       if (!read) continue;
       if ("error" in read) {
-        unreadableGroups.push({ modelType, modelId, error: read.error });
+        failedGroups.push({ modelType, modelId, ...read });
         continue;
       }
       const parsed = GroupSchema.safeParse(read.attrs);
-      if (!parsed.success) continue;
-      lastKnownGroups.set(recordKey(modelType, modelId), parsed.data);
+      if (!parsed.success) {
+        failedGroups.push({
+          modelType,
+          modelId,
+          error: parsed.error,
+          cause: "unrecognised",
+        });
+        continue;
+      }
+      lastKnownGroups.set(record, parsed.data);
       groups.push(parsed.data);
     }
-    for (const { modelType, modelId, error } of unreadableGroups) {
-      const record = recordKey(modelType, modelId);
+    for (const failed of failedGroups) {
+      const record = recordKey(failed.modelType, failed.modelId);
       const last = this.#lastKnownGroups.get(record);
       if (last) {
         lastKnownGroups.set(record, last);
@@ -609,9 +680,7 @@ export class PolicySnapshotLoader {
       unreadable.push(
         unreadableRecord(
           "group",
-          modelType,
-          modelId,
-          error,
+          failed,
           last ? "kept-last-known-members" : "left-out",
         ),
       );
@@ -752,26 +821,38 @@ export class PolicySnapshotLoader {
   }
 
   /**
-   * A record's parsed JSON, null when it has no content, or the error that
-   * kept it from being read or parsed.
+   * A record's parsed JSON, or the error that kept it from being read or
+   * parsed. A failed read is unreadable whatever its error class, since a
+   * remote read can fail any way and a retry may succeed; JSON that does not
+   * parse is corrupt. Content that is missing is null for a record never
+   * read, and a failed read for one that was (`known`): its content went
+   * missing mid-write or was lost, and it must not drop a deny it carried.
    */
   async #readRecord(
     modelType: ModelType,
     modelId: string,
     dataName: string,
+    known: boolean,
   ): Promise<RecordRead> {
     let content: Uint8Array | null;
     try {
       content = await this.#dataRepo.getContent(modelType, modelId, dataName);
     } catch (error) {
-      return { error };
+      return { error, cause: "unreadable" };
     }
-    if (!content) return null;
+    if (!content) {
+      return known
+        ? {
+          error: new Deno.errors.NotFound("its content is missing"),
+          cause: "unreadable",
+        }
+        : null;
+    }
     try {
       const text = new TextDecoder().decode(content);
       return { attrs: JSON.parse(text) as Record<string, unknown> };
     } catch (error) {
-      return { error };
+      return { error, cause: "corrupt" };
     }
   }
 
