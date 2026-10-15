@@ -33,6 +33,7 @@ import {
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
+  firstSymlinkUnder,
 } from "./push.ts";
 import { notAuthenticated, type SwampError } from "../errors.ts";
 import { buildPrepareInput } from "./push_test_helpers.ts";
@@ -3428,4 +3429,64 @@ Deno.test("extensionPushPrepare: a _test.ts source whose loaded type is outside 
       ["ec2_test.ts"],
     );
   });
+});
+
+Deno.test("extensionPushPrepare: a file with a symlink on its path is refused by the symlink rule, and never analyzed or read for metadata (swamp-club#3421)", async () => {
+  await withCollectFixture({}, async (dir, input) => {
+    const linkDir = join(dir, "models", "foo");
+    const linked = join(linkDir, "foo.ts");
+    const analyzed: string[][] = [];
+    const extracted: string[][] = [];
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: (files) => {
+        analyzed.push([...files]);
+        return Promise.resolve({ errors: [], warnings: [] });
+      },
+      extractContentMetadata: (models, _dir, workflows) => {
+        extracted.push([...models, ...workflows.map((w) => w.sourcePath)]);
+        return Promise.resolve({
+          models: [],
+          extensions: [],
+          workflows: [],
+          vaults: [],
+          datastores: [],
+          reports: [],
+          webhooks: [],
+          skills: [],
+        });
+      },
+    });
+
+    const result = await extensionPushPrepare(ctx, deps, {
+      ...input,
+      allModelFiles: [...input.allModelFiles, linked],
+      modelEntryPoints: [...input.modelEntryPoints, linked],
+      symlinkedPaths: new Map([[linked, linkDir]]),
+    });
+
+    const safety = result.gateFailures.find((f) => f.gate === "safety");
+    assertStringIncludes(
+      JSON.stringify(safety?.details ?? {}),
+      `${linkDir} is a symlink`,
+    );
+    assertEquals(analyzed.some((files) => files.includes(linked)), false);
+    assertEquals(extracted.some((files) => files.includes(linked)), false);
+  });
+});
+
+Deno.test("firstSymlinkUnder: finds a symlink anywhere in a staged tree without following it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "staged-" });
+  try {
+    await Deno.mkdir(join(dir, "extension", "files"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "extension", "manifest.yaml"), "x");
+    assertEquals(await firstSymlinkUnder(dir), undefined);
+
+    const link = join(dir, "extension", "files", "notes.md");
+    await Deno.symlink(join(dir, "extension", "manifest.yaml"), link, {
+      type: "file",
+    });
+    assertEquals(await firstSymlinkUnder(dir), link);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

@@ -544,7 +544,7 @@ Deno.test("resolveExtensionFiles rejects NFC/NFD unicode collisions", async () =
   });
 });
 
-Deno.test("resolveExtensionFiles rejects symlinks in additionalFiles", async () => {
+Deno.test("resolveExtensionFiles: a symlinked additionalFiles entry is listed unread for the safety gate (swamp-club#3421)", async () => {
   await withTempRepo(async (dir) => {
     const modelsDir = join(dir, "extensions", "models");
     await Deno.writeTextFile(
@@ -569,18 +569,16 @@ Deno.test("resolveExtensionFiles rejects symlinks in additionalFiles", async () 
       }),
     );
 
-    await assertRejects(
-      () =>
-        resolveExtensionFiles({
-          repoDir: dir,
-          manifestPath,
-          repoContext: stubRepoContext,
-          logger,
-          moduleGraphReader: graphReader,
-        }),
-      UserError,
-      "symlink",
-    );
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+      moduleGraphReader: graphReader,
+    });
+
+    assertEquals(result.additionalFilePaths, [link]);
+    assertEquals(result.symlinkedPaths.get(link), link);
   });
 });
 
@@ -3133,6 +3131,353 @@ Deno.test("resolveExtensionFiles: the package.json bare-specifier scan does not 
       assertEquals(result.allModelFiles, [link]);
     } finally {
       await Deno.remove(outside, { recursive: true });
+    }
+  });
+});
+
+// --- Symlinks anywhere on an extension file's path (swamp-club#3421) ---
+
+/** Runs `fn` with a directory outside the repo holding target.ts with SECRET. */
+async function withOutsideDir(
+  fn: (outside: string) => Promise<void>,
+): Promise<void> {
+  const outside = await Deno.makeTempDir({ prefix: "swamp-3421-outside-" });
+  try {
+    await Deno.writeTextFile(
+      join(outside, "target.ts"),
+      `export const s = "${SECRET}";\n`,
+    );
+    await fn(outside);
+  } finally {
+    await Deno.remove(outside, { recursive: true });
+  }
+}
+
+Deno.test("resolveExtensionFiles: a model directory symlinked inside the repository is refused unread", async () => {
+  await withTempRepo(async (dir) => {
+    const real = join(dir, "real", "foo");
+    await Deno.mkdir(real, { recursive: true });
+    await Deno.writeTextFile(join(real, "foo.ts"), "export const x = 1;\n");
+    const linkDir = join(dir, "extensions", "models", "foo");
+    await Deno.symlink(real, linkDir, { type: "dir" });
+    const entry = join(linkDir, "foo.ts");
+    const { reader, reads } = scriptedReader({});
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath: await writeModelManifest(dir, ["foo/foo.ts"]),
+      repoContext: stubRepoContext,
+      logger,
+      moduleGraphReader: reader,
+    });
+
+    assertEquals(reads, []);
+    assertEquals(result.allModelFiles, [entry]);
+    assertEquals(result.sourcePlan.entries, []);
+    assertEquals([...result.symlinkedPaths], [[entry, linkDir]]);
+  });
+});
+
+Deno.test("resolveExtensionFiles: a model directory symlinked out of the repository is refused by the symlink rule, not containment", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideDir(async (outside) => {
+      const linkDir = join(dir, "extensions", "models", "bar");
+      await Deno.symlink(outside, linkDir, { type: "dir" });
+      const entry = join(linkDir, "target.ts");
+      const { reader, reads } = scriptedReader({});
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath: await writeModelManifest(dir, ["bar/target.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: reader,
+      });
+
+      assertEquals(reads, []);
+      assertEquals(result.allModelFiles, [entry]);
+      assertEquals(result.symlinkedPaths.get(entry), linkDir);
+      assertEquals(JSON.stringify(result).includes(SECRET), false);
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: a module behind a symlinked directory is refused, and what only it imports is never named", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideDir(async (outside) => {
+      const modelsDir = join(dir, "extensions", "models");
+      const model = join(modelsDir, "m.ts");
+      const linkDir = join(dir, "extensions", "lib");
+      await Deno.symlink(outside, linkDir, { type: "dir" });
+      const shared = join(linkDir, "target.ts");
+      const behind = join(linkDir, "behind.ts");
+      await Deno.writeTextFile(model, 'import "../lib/target.ts";\n');
+      const { reader } = scriptedReader({
+        [model]: {
+          modules: [
+            { path: model, kind: "code" },
+            { path: shared, kind: "code" },
+            { path: behind, kind: "code" },
+          ],
+          edges: [importEdge(model, shared, 0), importEdge(shared, behind, 0)],
+          missing: [],
+        },
+      });
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath: await writeModelManifest(dir, ["m.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: reader,
+      });
+
+      assertEquals(result.allModelFiles, [model, shared].sort());
+      assertEquals(
+        result.sourcePlan.entries.map((e) => e.sourcePath),
+        [model],
+      );
+      assertEquals(result.entryPointsReachingSymlinks, [model]);
+      assertEquals([...result.symlinkedPaths], [[shared, linkDir]]);
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: include, additional and binary files through a symlinked directory are listed unread", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideDir(async (outside) => {
+      const modelsDir = join(dir, "extensions", "models");
+      await Deno.writeTextFile(
+        join(modelsDir, "m.ts"),
+        "export const x = 1;\n",
+      );
+      await Deno.writeTextFile(join(outside, "notes.md"), SECRET);
+      await Deno.writeTextFile(join(outside, "tool.sh"), SECRET);
+      const includeLink = join(modelsDir, "data");
+      const filesLink = join(dir, "linked");
+      await Deno.symlink(outside, includeLink, { type: "dir" });
+      await Deno.symlink(outside, filesLink, { type: "dir" });
+      const manifestPath = join(dir, "manifest.yaml");
+      await Deno.writeTextFile(
+        manifestPath,
+        stringifyYaml({
+          manifestVersion: 1,
+          name: "@test/linkext",
+          version: "2026.03.03.1",
+          models: ["m.ts"],
+          include: ["data/notes.md"],
+          additionalFiles: ["linked/notes.md"],
+          binaries: ["linked/tool.sh"],
+        }),
+      );
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath,
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: graphReader,
+      });
+
+      const include = join(includeLink, "notes.md");
+      const additional = join(filesLink, "notes.md");
+      const binary = join(filesLink, "tool.sh");
+      assertEquals(result.includeFilePaths, [include]);
+      assertEquals(result.additionalFilePaths, [additional]);
+      assertEquals(result.binaryFilePaths, [binary]);
+      assertEquals(
+        [...result.symlinkedPaths].sort(),
+        [
+          [additional, filesLink],
+          [binary, filesLink],
+          [include, includeLink],
+        ].sort(),
+      );
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: lenient resolution (fmt) leaves out include and additional files behind a symlink", async () => {
+  await withTempRepo(async (dir) => {
+    await withOutsideDir(async (outside) => {
+      const modelsDir = join(dir, "extensions", "models");
+      await Deno.writeTextFile(
+        join(modelsDir, "m.ts"),
+        "export const x = 1;\n",
+      );
+      await Deno.symlink(outside, join(dir, "linked"), { type: "dir" });
+      const manifestPath = join(dir, "manifest.yaml");
+      await Deno.writeTextFile(
+        manifestPath,
+        stringifyYaml({
+          manifestVersion: 1,
+          name: "@test/linkext",
+          version: "2026.03.03.1",
+          models: ["m.ts"],
+          additionalFiles: ["linked/target.ts"],
+        }),
+      );
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath,
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: graphReader,
+        lenientSources: true,
+      });
+
+      assertEquals(result.additionalFilePaths, []);
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: a workflow file that is a symlink into .swamp/workflows is listed by its own path, never resolved", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(join(modelsDir, "m.ts"), "export const x = 1;\n");
+    const stored = join(dir, ".swamp", "workflows");
+    await Deno.mkdir(stored, { recursive: true });
+    const target = join(stored, "workflow-1.yaml");
+    await Deno.writeTextFile(target, "name: setup\njobs: {}\n");
+    const wfDir = join(dir, "workflows", "setup");
+    await Deno.mkdir(wfDir, { recursive: true });
+    const link = join(wfDir, "workflow.yaml");
+    await Deno.symlink(target, link, { type: "file" });
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/linkext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        workflows: ["setup/workflow.yaml"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+      moduleGraphReader: graphReader,
+    });
+
+    assertEquals(result.workflowFiles, [{
+      sourcePath: link,
+      archiveName: "setup.yaml",
+    }]);
+    assertEquals(result.symlinkedPaths.get(link), link);
+  });
+});
+
+Deno.test("resolveExtensionFiles: a symlinked extensions directory refuses the files under it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-resolve-ext-test-" });
+  try {
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      stringifyYaml({ swampVersion: "0.1.0" }),
+    );
+    const shared = join(dir, "shared");
+    await Deno.mkdir(join(shared, "models"), { recursive: true });
+    await Deno.writeTextFile(
+      join(shared, "models", "m.ts"),
+      "export const x = 1;\n",
+    );
+    const linkDir = join(dir, "extensions");
+    await Deno.symlink(shared, linkDir, { type: "dir" });
+    const { reader, reads } = scriptedReader({});
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath: await writeModelManifest(dir, ["m.ts"]),
+      repoContext: stubRepoContext,
+      logger,
+      moduleGraphReader: reader,
+    });
+
+    const entry = join(linkDir, "models", "m.ts");
+    assertEquals(reads, []);
+    assertEquals(result.symlinkedPaths.get(entry), linkDir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("resolveExtensionFiles: a symlinked skill directory and a symlink inside a skill are refused, never walked", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    await withOutsideDir(async (outside) => {
+      await Deno.writeTextFile(
+        join(dir, "extensions", "models", "m.ts"),
+        "export const x = 1;\n",
+      );
+      const skills = join(dir, ".claude", "skills");
+      const kept = join(skills, "kept");
+      await Deno.mkdir(kept, { recursive: true });
+      await Deno.writeTextFile(
+        join(kept, "SKILL.md"),
+        "---\nname: kept\n---\n",
+      );
+      const innerLink = join(kept, "ref.md");
+      await Deno.symlink(join(outside, "target.ts"), innerLink, {
+        type: "file",
+      });
+      const linkedSkill = join(skills, "linked");
+      await Deno.symlink(outside, linkedSkill, { type: "dir" });
+      const manifestPath = join(dir, "manifest.yaml");
+      await Deno.writeTextFile(
+        manifestPath,
+        stringifyYaml({
+          manifestVersion: 1,
+          name: "@test/linkext",
+          version: "2026.03.03.1",
+          models: ["m.ts"],
+          skills: ["kept", "linked"],
+        }),
+      );
+
+      const result = await resolveExtensionFiles({
+        repoDir: dir,
+        manifestPath,
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: graphReader,
+      });
+
+      assertEquals(result.skillDirs.map((s) => s.name), ["kept"]);
+      assertEquals(result.allSkillFiles, [join(kept, "SKILL.md")]);
+      assertEquals(
+        [...result.symlinkedPaths].sort(),
+        [[innerLink, innerLink], [linkedSkill, linkedSkill]].sort(),
+      );
+    });
+  });
+});
+
+Deno.test("resolveExtensionFiles: a repository reached through a symlinked parent is not refused", async () => {
+  await withTempRepo(async (dir) => {
+    const parentLink = await Deno.makeTempDir({ prefix: "swamp-3421-link-" });
+    try {
+      const link = join(parentLink, "repo");
+      await Deno.symlink(dir, link, { type: "dir" });
+      await Deno.writeTextFile(
+        join(dir, "extensions", "models", "m.ts"),
+        "export const x = 1;\n",
+      );
+
+      const result = await resolveExtensionFiles({
+        repoDir: link,
+        manifestPath: await writeModelManifest(link, ["m.ts"]),
+        repoContext: stubRepoContext,
+        logger,
+        moduleGraphReader: graphReader,
+      });
+
+      assertEquals(result.symlinkedPaths.size, 0);
+      assertEquals(result.allModelFiles.length, 1);
+    } finally {
+      await Deno.remove(parentLink, { recursive: true });
     }
   });
 });

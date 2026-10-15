@@ -468,3 +468,38 @@ Deno.test("parseStoredArchiveIndex: keeps a well-formed index and drops any othe
     assertEquals(parseStoredArchiveIndex(bad), undefined, JSON.stringify(bad));
   }
 });
+
+Deno.test("computePackageCacheHash: a symlinked file is hashed by its path alone, never read (swamp-club#3421)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const target = join(tmp, "target.md");
+    await Deno.writeTextFile(target, "one");
+    const link = join(tmp, "notes.md");
+    await Deno.symlink(target, link, { type: "file" });
+    const input = await makeHashInput(tmp, {
+      additionalFilePaths: [link],
+      symlinkedPaths: new Set([link]),
+    });
+
+    const before = await computePackageCacheHash(input);
+    await Deno.writeTextFile(target, "two");
+    const after = await computePackageCacheHash(input);
+
+    assertEquals(after, before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("computePackageCacheHash: an empty symlinked set hashes as before the field existed", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const input = await makeHashInput(tmp);
+    assertEquals(
+      await computePackageCacheHash({ ...input, symlinkedPaths: new Set() }),
+      await computePackageCacheHash(input),
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

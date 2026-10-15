@@ -275,6 +275,12 @@ export interface ExtensionPushPrepareInput {
    * bundled (swamp-club#3420).
    */
   entryPointsReachingSymlinks?: string[];
+  /**
+   * Extension files with a symlink on their path, to the first symlinked
+   * component (swamp-club#3421). Nothing reads them; the safety gate
+   * refuses each by the symlink rule.
+   */
+  symlinkedPaths?: ReadonlyMap<string, string>;
   dryRun: boolean;
   /**
    * What to do with the registry-side checks (authentication, collective
@@ -624,7 +630,10 @@ import {
 } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { findPublishedVersion } from "./published_version_lookup.ts";
-import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
+import {
+  analyzeExtensionSafety,
+  symlinkIssue,
+} from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   checkExtensionQuality,
   checkUpgradeChainConsistency,
@@ -1097,34 +1106,41 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 3. Extract content metadata
+  // 3. Extract content metadata. A file with a symlink on its path is
+  // never read: the safety gate refuses it (swamp-club#3421).
+  const symlinked = input.symlinkedPaths ?? new Map<string, string>();
+  const readable = symlinked.size > 0
+    ? withoutFiles(input, new Set(symlinked.keys()))
+    : input;
   let contentMetadata: ExtensionContentMetadata | undefined;
   try {
     // Entry points under the behaviors directory are read from it, so
     // each `fileName` is the entry point's path inside the archive's
     // models/ (swamp-club#3338).
-    const behaviorEntryPoints = input.modelEntryPoints.filter((f) =>
-      modelsArchiveBase(input, f) !== input.modelsDir
+    const behaviorEntryPoints = readable.modelEntryPoints.filter((f) =>
+      modelsArchiveBase(input, f) !== readable.modelsDir
     );
     contentMetadata = await deps.extractContentMetadata(
       behaviorEntryPoints.length > 0
-        ? input.modelEntryPoints.filter((f) => !behaviorEntryPoints.includes(f))
-        : input.modelEntryPoints,
-      input.modelsDir,
-      input.workflowFiles,
-      input.allVaultFiles,
-      input.vaultsDir,
-      input.allDatastoreFiles,
-      input.datastoresDir,
-      input.allReportFiles,
-      input.reportsDir,
-      input.allWebhookFiles,
-      input.webhooksDir,
+        ? readable.modelEntryPoints.filter((f) =>
+          !behaviorEntryPoints.includes(f)
+        )
+        : readable.modelEntryPoints,
+      readable.modelsDir,
+      readable.workflowFiles,
+      readable.allVaultFiles,
+      readable.vaultsDir,
+      readable.allDatastoreFiles,
+      readable.datastoresDir,
+      readable.allReportFiles,
+      readable.reportsDir,
+      readable.allWebhookFiles,
+      readable.webhooksDir,
     );
     if (behaviorEntryPoints.length > 0) {
       const fromBehaviors = await deps.extractContentMetadata(
         behaviorEntryPoints,
-        input.behaviorsDir!,
+        readable.behaviorsDir!,
         [],
         [],
         "",
@@ -1221,10 +1237,20 @@ export async function extensionPushPrepare(
     ...(sidecar ? [sidecar.path] : []),
   ];
   const binaryExemptSet = new Set(input.binaryFilePaths);
-  const safetyResult = await deps.analyzeExtensionSafety(
-    allFiles,
+  // A file with a symlink on its path is refused by the symlink rule
+  // without being stat'd or read; the analyzer sees the rest
+  // (swamp-club#3421).
+  const analyzed = await deps.analyzeExtensionSafety(
+    allFiles.filter((file) => !symlinked.has(file)),
     binaryExemptSet,
   );
+  const safetyResult = {
+    ...analyzed,
+    errors: [
+      ...[...symlinked].map(([file, link]) => symlinkIssue(file, link)),
+      ...analyzed.errors,
+    ],
+  };
 
   if (safetyResult.errors.length > 0) {
     for (const issue of safetyResult.errors) {
@@ -1281,8 +1307,8 @@ export async function extensionPushPrepare(
   }
 
   // 8. Validate skills and populate content metadata
-  if (input.skillDirs.length > 0) {
-    const skillResult = await validateExtensionSkills(input.skillDirs);
+  if (gated.skillDirs.length > 0) {
+    const skillResult = await validateExtensionSkills(gated.skillDirs);
     if (skillResult.errors.length > 0) {
       failGate(
         "skills",
@@ -1300,7 +1326,7 @@ export async function extensionPushPrepare(
       const skillsByName = new Map(
         skillResult.skills.map((s) => [s.name, s]),
       );
-      contentMetadata.skills = input.skillDirs.map((s) => {
+      contentMetadata.skills = gated.skillDirs.map((s) => {
         const validated = skillsByName.get(s.name);
         return {
           dirName: s.name,
@@ -1658,6 +1684,14 @@ function withoutFiles(
     allWebhookFiles: input.allWebhookFiles.filter(keep),
     webhookEntryPoints: input.webhookEntryPoints.filter(keep),
     workflowFiles: input.workflowFiles.filter((wf) => keep(wf.sourcePath)),
+    // A skill directory holding a rejected path (a symlink inside it, or
+    // the directory itself) goes with it.
+    skillDirs: input.skillDirs.filter((d) =>
+      ![...rejected].some((f) =>
+        f === d.absolutePath || f.startsWith(d.absolutePath + SEPARATOR)
+      )
+    ),
+    allSkillFiles: input.allSkillFiles.filter(keep),
     includeFilePaths: input.includeFilePaths.filter(keep),
     additionalFilePaths: additional.map((e) => e.path),
     binaryFilePaths: binaries.map((e) => e.path),
@@ -2833,6 +2867,21 @@ function buildResolvedData(
   };
 }
 
+/** The first symlink under `dir`, found without following any. */
+export async function firstSymlinkUnder(
+  dir: string,
+): Promise<string | undefined> {
+  for await (const entry of Deno.readDir(dir)) {
+    const path = join(dir, entry.name);
+    if (entry.isSymlink) return path;
+    if (entry.isDirectory) {
+      const found = await firstSymlinkUnder(path);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
 async function bundleAndArchive(
   input: ExtensionPushPrepareInput,
   deps: ExtensionPushPrepareDeps,
@@ -3239,6 +3288,16 @@ async function createArchive(
     // explicitly, so the previous BSD-tar `COPYFILE_DISABLE=1` env var (which
     // suppressed macOS resource forks) is no longer needed: AppleDouble
     // siblings are filtered defensively in the archiver itself.
+    // The archive never holds a symlink: staging copies files, so one
+    // here is a bug, refused before it can be packaged (swamp-club#3421).
+    const stagedLink = await firstSymlinkUnder(extDir);
+    if (stagedLink !== undefined) {
+      throw validationFailed(
+        `Refusing to archive the symlink ${
+          relative(extDir, stagedLink)
+        }: an extension archive holds regular files only. This is a bug in push.`,
+      );
+    }
     const tarPath = join(tmpDir, "extension.tar.gz");
     try {
       await createTarGz(extDir, tarPath);

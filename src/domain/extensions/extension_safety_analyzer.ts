@@ -83,6 +83,22 @@ function issue(
   };
 }
 
+/**
+ * The symlink-rule error for `file`, whose path has the symlink `link` on
+ * it: the file itself, or a directory above it below the extension's root
+ * (swamp-club#3421). Names the link, never its target.
+ */
+export function symlinkIssue(file: string, link: string): SafetyIssue {
+  return issue(
+    "symlink",
+    file,
+    (link === file
+      ? "Symlinks are not allowed in extensions."
+      : `Symlinks are not allowed in extensions: ${link} is a symlink.`) +
+      " Copy the file into the extension tree instead.",
+  );
+}
+
 /** A detection a content rule reports: its message, and the line when it has one. */
 export interface ContentDetection {
   message: string;
@@ -312,9 +328,7 @@ export async function analyzeExtensionSafety(
     }
 
     if (stat.isSymlink) {
-      errors.push(
-        issue("symlink", file, "Symlinks are not allowed in extensions."),
-      );
+      errors.push(symlinkIssue(file, file));
       continue;
     }
 
