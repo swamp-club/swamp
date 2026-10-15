@@ -162,6 +162,12 @@ export interface FreshnessScan {
 const UNREADABLE_PLACEHOLDER = "MISSING";
 
 /**
+ * The most local modules the catalog records for one source. A longer
+ * list is neither written nor read back (swamp-club#3487).
+ */
+export const MAX_SOURCE_MODULES = 10_000;
+
+/**
  * Where {@link computeSourceFingerprint} finds the local modules a source
  * was last bundled from. The extension catalog records them from the
  * entry point's module graph each time it is bundled (swamp-club#3385).
@@ -294,6 +300,12 @@ export interface FreshnessCatalog extends SourceModuleLookup {
   removeByRawSourcePath(rawSourcePath: string): void;
   /** Forgets the local modules recorded for `sourcePath`. */
   deleteSourceModules(sourcePath: string): void;
+  /**
+   * Whether the list recorded for `sourcePath` is the fallback walk,
+   * recorded after a good bundle whose module graph could not be read,
+   * and the graph has not been retried yet (swamp-club#3487).
+   */
+  isSourceGraphPending(sourcePath: string): boolean;
 }
 
 export interface FindStaleFilesParams {
@@ -414,15 +426,19 @@ export async function scanCatalogFreshness(
         }
 
         // A fingerprint without recorded modules only covers the relative
-        // imports inside `dir`. Pulled sources keep it: they cannot
-        // rebundle locally.
+        // imports inside `dir`, and so does a fallback recorded when the
+        // module graph could not be read, until its one retry
+        // (swamp-club#3487). Pulled sources with no recorded modules are
+        // not forced stale: they may be served a pre-built bundle that
+        // records nothing.
         if (
           repoDir !== undefined &&
-          catalog.findSourceModules(absolutePath) === undefined &&
           !isPulledExtensionPath(
             normalizeFreshnessPath(absolutePath),
             normalizeFreshnessPath(resolve(repoDir)),
-          )
+          ) &&
+          (catalog.findSourceModules(absolutePath) === undefined ||
+            catalog.isSourceGraphPending(absolutePath))
         ) {
           stale.push({ absolutePath, relativePath, baseDir: dir });
           continue;

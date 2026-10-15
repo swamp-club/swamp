@@ -3000,11 +3000,21 @@ process. A recorded list stays valid until the source changes: a relative import
 can only reach a new module if a recorded module's content changes or a recorded
 missing module appears, and either changes the fingerprint. A source with no
 recorded list falls back to the relative imports `resolveLocalImports` finds
-within the kind's directory. Pulled sources, whose bundles ship pre-built and
-cannot rebundle locally, stay on that fallback. A local source with no list (a
-catalog an earlier binary wrote) is stale once, so its bundle is rebuilt and its
-list recorded. A bundle attempt that fails, or a graph that cannot be read,
-records the fallback, so a failing source is not retried on every command.
+within the kind's directory. Pulled sources with no recorded list are not forced
+stale, since their bundles ship pre-built and may be served without a rebuild; a
+pulled source that does rebundle locally gets its graph recorded like any other.
+A local source with no list (a catalog an earlier binary wrote) is stale once,
+so its bundle is rebuilt and its list recorded. A bundle attempt that fails
+records the fallback, so a failing source is not retried on every command. A
+good bundle whose graph cannot be read (a `deno info` timeout under load)
+records the fallback marked graph pending, and the warm scan finds that local
+source stale once more (swamp-club#3487). `rebundleAndUpdateCatalog` clears the
+mark before it can return or throw, so the retry is used up however it ends: it
+records the graph, or keeps the fallback for good when the graph fails again. A
+graph naming more than `MAX_SOURCE_MODULES` (10,000) modules records the
+fallback without a retry, and the catalog refuses longer lists. A catalog row
+whose source no longer declares the kind's export is given the fallback too, so
+it settles.
 Production loaders get the reader from `createDenoInfoModuleGraphReader`;
 `integration/extension_loader_wiring_rules_test.ts` keeps each construction that
 has a catalog passing it. Two changes are not seen: adding a `deno.json` that

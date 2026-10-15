@@ -77,6 +77,13 @@ class FakeCatalog implements FreshnessCatalog {
 
   deleteSourceModules(sourcePath: string): void {
     this.sourceModules.delete(sourcePath);
+    this.graphPending.delete(sourcePath);
+  }
+
+  readonly graphPending = new Set<string>();
+
+  isSourceGraphPending(sourcePath: string): boolean {
+    return this.graphPending.has(sourcePath);
   }
 
   snapshot(): ExtensionTypeRow[] {
@@ -1194,6 +1201,7 @@ Deno.test("computeSourceFingerprint: recording the walked modules keeps the walk
 async function scanOneMatchingSource(args: {
   pulled?: boolean;
   recorded?: boolean;
+  graphPending?: boolean;
   withoutRepoDir?: boolean;
 }): Promise<boolean> {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_3385_heal_" });
@@ -1207,6 +1215,7 @@ async function scanOneMatchingSource(args: {
 
     const catalog = new FakeCatalog();
     if (args.recorded) catalog.sourceModules.set(file, [file]);
+    if (args.graphPending) catalog.graphPending.add(file);
     catalog.add(catalogRow({
       source_path: file,
       type_normalized: "@user/a",
@@ -1243,6 +1252,24 @@ Deno.test("scanCatalogFreshness: a pulled source with no recorded modules is fre
 
 Deno.test("scanCatalogFreshness: without repoDir a source with no recorded modules is fresh (swamp-club#3385)", async () => {
   assertEquals(await scanOneMatchingSource({ withoutRepoDir: true }), false);
+});
+
+Deno.test("scanCatalogFreshness: a local source whose recorded modules are graph pending is stale (swamp-club#3487)", async () => {
+  assertEquals(
+    await scanOneMatchingSource({ recorded: true, graphPending: true }),
+    true,
+  );
+});
+
+Deno.test("scanCatalogFreshness: a pulled source whose recorded modules are graph pending is fresh (swamp-club#3487)", async () => {
+  assertEquals(
+    await scanOneMatchingSource({
+      pulled: true,
+      recorded: true,
+      graphPending: true,
+    }),
+    false,
+  );
 });
 
 Deno.test("scanCatalogFreshness: a removed row's recorded modules are forgotten (swamp-club#3385)", async () => {

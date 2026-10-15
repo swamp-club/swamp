@@ -37,6 +37,7 @@ import {
   createFreshnessCache,
   type FreshnessCache,
   type FreshnessScan,
+  MAX_SOURCE_MODULES,
   removeUnseenCatalogRows,
   scanCatalogFreshness,
   type SourceModuleLookup,
@@ -324,35 +325,65 @@ export class ExtensionLoader {
    * fingerprint covers each of them wherever it lives and however it is
    * imported (swamp-club#3385). The module graph names them all; when it
    * cannot be read, the relative imports within `boundaryDir` stand in.
+   *
+   * A graph that could not be read is retried once: the fallback is
+   * recorded graph pending, so the next warm scan finds the source stale,
+   * unless this bundle was that retry (`graphRetry`), in which case the
+   * fallback is kept (swamp-club#3487). A graph over
+   * {@link MAX_SOURCE_MODULES} is not retried. A catalog error is logged,
+   * not thrown: the bundle it follows is good.
    */
   private async recordSourceModules(
     absolutePath: string,
     boundaryDir: string,
     denoPath: string,
     denoConfigPath: string | undefined,
+    graphRetry: boolean,
   ): Promise<void> {
     const catalog = this.repository?.getCatalogStore();
     if (!catalog) return;
-    let modules: string[] | undefined;
-    if (this.moduleGraphReader) {
-      try {
-        const graph = await this.moduleGraphReader(
-          denoPath,
-          this.denoRuntime.getDenoEnv(),
-        ).read(absolutePath, { denoConfigPath });
-        modules = [
-          ...graph.modules.map((m) => m.path),
-          ...graph.missing.map((m) => m.path),
-          ...(denoConfigPath ? [denoConfigPath] : []),
-        ];
-      } catch (error) {
-        this.logger
-          .debug`Could not read the module graph of ${absolutePath}: ${error}`;
+    try {
+      let modules: string[] | undefined;
+      let graphPending = false;
+      if (this.moduleGraphReader) {
+        try {
+          const graph = await this.moduleGraphReader(
+            denoPath,
+            this.denoRuntime.getDenoEnv(),
+          ).read(absolutePath, { denoConfigPath });
+          modules = [
+            ...graph.modules.map((m) => m.path),
+            ...graph.missing.map((m) => m.path),
+            ...(denoConfigPath ? [denoConfigPath] : []),
+          ];
+          if (modules.length > MAX_SOURCE_MODULES) {
+            this.logger
+              .debug`The module graph of ${absolutePath} names ${modules.length} modules, over ${MAX_SOURCE_MODULES}`;
+            modules = undefined;
+          }
+        } catch (error) {
+          graphPending = !graphRetry;
+          if (graphPending) {
+            this.logger
+              .debug`Could not read the module graph of ${absolutePath}, retrying on the next scan: ${error}`;
+          } else {
+            this.logger
+              .debug`Could not read the module graph of ${absolutePath} on retry, keeping the relative imports: ${error}`;
+          }
+        }
       }
+      modules ??=
+        (await resolveLocalImports([absolutePath], boundaryDir)).resolvedFiles;
+      if (modules.length > MAX_SOURCE_MODULES) {
+        this.logger
+          .debug`Not recording the ${modules.length} modules of ${absolutePath}, over ${MAX_SOURCE_MODULES}`;
+        return;
+      }
+      catalog.recordSourceModules(absolutePath, modules, { graphPending });
+    } catch (error) {
+      this.logger
+        .debug`Could not record the modules of ${absolutePath}: ${error}`;
     }
-    modules ??=
-      (await resolveLocalImports([absolutePath], boundaryDir)).resolvedFiles;
-    catalog.recordSourceModules(absolutePath, modules);
   }
 
   /**
@@ -2011,8 +2042,22 @@ export class ExtensionLoader {
       outranked?: TypelessRow;
     }
   > {
+    // A graph-pending source is stale for its one retry. Use the retry up
+    // before anything that can return or throw, so a source that leaves
+    // by any path is not stale again for it (swamp-club#3487).
+    const graphRetry = catalog.takeSourceGraphPending(absolutePath);
     const source = await Deno.readTextFile(absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
+      // A row with no recorded modules is stale on every scan; record the
+      // relative imports so it settles. A source with no row gets none, as
+      // nothing would remove them.
+      if (catalog.findBySourcePath(absolutePath) !== undefined) {
+        await this.recordFallbackSourceModules(absolutePath, baseDir)
+          .catch((error) => {
+            this.logger
+              .debug`Could not record the modules of ${absolutePath}: ${error}`;
+          });
+      }
       return {};
     }
     // A source with no row is stale on every scan. When an import at this
@@ -2037,6 +2082,7 @@ export class ExtensionLoader {
       relativePath,
       denoPath,
       baseDir,
+      { graphRetry },
     );
     const { js } = bundled;
 
@@ -2390,7 +2436,11 @@ export class ExtensionLoader {
     relativePath: string,
     denoPath: string,
     boundaryDir: string,
-    options?: { trustPulledCache?: boolean },
+    options?: {
+      trustPulledCache?: boolean;
+      /** This bundle is the one retry of a graph-pending source. */
+      graphRetry?: boolean;
+    },
   ): Promise<BundleResult> {
     if (this.repoDir) {
       const bundlePath = this.resolveBundlePath(
@@ -2499,6 +2549,7 @@ export class ExtensionLoader {
         boundaryDir,
         denoPath,
         denoConfigPath,
+        options?.graphRetry ?? false,
       );
       return { js, fromCache: false };
     }
