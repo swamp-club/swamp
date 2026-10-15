@@ -69,6 +69,7 @@ function serveRegistry(
         username: "seth",
         organizations: [
           { slug: "acme", name: "Acme", role: "owner", personal: false },
+          { slug: "seth", name: "seth", role: "owner", personal: true },
         ],
         ...(entitlements ? { collectiveEntitlements: entitlements } : {}),
       });
@@ -99,6 +100,7 @@ async function withScenario(
     input: (registryChecks: "collect" | "enforce") => ExtensionPushPrepareInput;
     root: string;
   }) => Promise<void>,
+  extensionName = "@acme/internal",
 ): Promise<void> {
   const root = await Deno.makeTempDir();
   const registry = serveRegistry(entitlements);
@@ -107,7 +109,7 @@ async function withScenario(
     await Deno.writeTextFile(source, "export const model = {};\n");
     const manifest = parseExtensionManifest(JSON.stringify({
       manifestVersion: 1,
-      name: "@acme/internal",
+      name: extensionName,
       version: "2026.10.06.1",
       repository: "https://example.com/repo",
       models: ["model.ts"],
@@ -209,30 +211,50 @@ async function filesUnder(root: string): Promise<string[]> {
   return names.sort();
 }
 
-// The registry never starts a trial at publish: a free collective whose
-// trial ended and one with no trial are refused alike.
+const ENDED_TRIAL = {
+  state: "expired",
+  startedAt: "2026-07-20T00:00:00.000Z",
+  endsAt: "2026-08-19T00:00:00.000Z",
+  daysRemaining: 0,
+  totalDays: 30,
+} as const;
+
+// The registry's verdict decides; a registry that sends none (older or
+// self-hosted) is decided from the trial, and reads the same. The registry
+// never starts a trial at publish, so no trial is refused like an ended one.
 const REFUSED_STANDINGS = [
   {
-    trial: {
-      state: "expired",
-      startedAt: "2026-07-20T00:00:00.000Z",
-      endsAt: "2026-08-19T00:00:00.000Z",
-      daysRemaining: 0,
-    },
-    standing: "and its trial ended on 2026-08-19",
+    trial: ENDED_TRIAL,
+    verdict: "trial-ended",
+    refusal:
+      `Collective "@acme"'s 30-day free trial has ended. Private extensions need a paid plan;`,
   },
-  { trial: null, standing: "and has no trial" },
+  {
+    trial: ENDED_TRIAL,
+    verdict: undefined,
+    refusal:
+      `Collective "@acme"'s 30-day free trial has ended. Private extensions need a paid plan;`,
+  },
+  {
+    trial: ENDED_TRIAL,
+    verdict: "paywalled",
+    refusal: `Private extensions in "@acme" need a paid plan;`,
+  },
+  {
+    trial: null,
+    verdict: undefined,
+    refusal: `Private extensions in "@acme" need a paid plan;`,
+  },
 ] as const;
 
-Deno.test("extension push entitlement: a free collective with no trial or an ended one is refused in the dry run and the push alike, from one whoami call", async () => {
-  for (const { trial, standing } of REFUSED_STANDINGS) {
-    await assertRefusedAlike(trial, standing);
+Deno.test("extension push entitlement: a refused collective is refused in the dry run and the push alike, from one whoami call", async () => {
+  for (const standing of REFUSED_STANDINGS) {
+    await assertRefusedAlike(standing);
   }
 });
 
 async function assertRefusedAlike(
-  trial: (typeof REFUSED_STANDINGS)[number]["trial"],
-  standing: string,
+  { trial, verdict, refusal }: (typeof REFUSED_STANDINGS)[number],
 ): Promise<void> {
   await withScenario([{
     slug: "acme",
@@ -240,9 +262,10 @@ async function assertRefusedAlike(
     planName: "Free",
     subscriptionStatus: null,
     trial,
+    ...(verdict ? { privateExtensions: verdict } : {}),
   }], async ({ registry, deps, input, root }) => {
-    const expected = `Collective "@acme" is on the Free plan ${standing}. ` +
-      `Private publication requires a paid plan; upgrade at ${registry.serverUrl}/o/acme/billing.`;
+    const expected =
+      `${refusal} upgrade at ${registry.serverUrl}/o/acme/billing.`;
 
     const dryRun = await extensionPushPrepare(ctx, deps, input("collect"));
     const check = dryRun.registryChecks.find((c) =>
@@ -267,6 +290,53 @@ async function assertRefusedAlike(
     assertEquals(await filesUnder(root), ["model.ts"]);
   });
 }
+
+Deno.test("extension push entitlement: a personal namespace the registry covers through another collective passes and the push proceeds (swamp-club#3311)", async () => {
+  // The issue's repro: the personal trial ended, a paid team covers it.
+  await withScenario(
+    [
+      {
+        slug: "acme",
+        plan: "team",
+        planName: "Team",
+        subscriptionStatus: "active",
+        trial: null,
+        privateExtensions: "allowed",
+      },
+      {
+        slug: "seth",
+        plan: "free",
+        planName: "Free",
+        subscriptionStatus: null,
+        trial: ENDED_TRIAL,
+        privateExtensions: "allowed",
+      },
+    ],
+    async ({ registry, deps, input }) => {
+      const prepared = await extensionPushPrepare(ctx, deps, input("enforce"));
+      const check = prepared.registryChecks.find((c) =>
+        c.name === "private-entitlement"
+      );
+      assertEquals(check, {
+        name: "private-entitlement",
+        status: "passed",
+        message:
+          'Collective "@seth" is covered by a paid plan or active trial on another collective you belong to, which allows private extensions.',
+      });
+      assertEquals(
+        (prepared.collectiveEntitlement as { privateExtensions?: string })
+          ?.privateExtensions,
+        "allowed",
+      );
+      // The push went on past the check to the version lookup.
+      assertEquals(registry.requests, [
+        "GET /api/whoami",
+        "GET /api/v1/extensions/%40seth%2Finternal/versions",
+      ]);
+    },
+    "@seth/internal",
+  );
+});
 
 Deno.test("extension push entitlement: a paid collective passes the check and the push proceeds to the registry", async () => {
   await withScenario([{

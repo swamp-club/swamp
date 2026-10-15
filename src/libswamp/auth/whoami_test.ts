@@ -26,6 +26,7 @@ import {
   type AuthDeps,
   type AuthWhoamiEvent,
   createAuthDeps,
+  entitlementsOf,
   whoami,
 } from "./whoami.ts";
 
@@ -470,6 +471,49 @@ Deno.test("whoami maps server entitlement onto the identity", async () => {
   assertEquals(keeb.plan, "free");
   assertEquals(keeb.trial?.state, "active");
   assertEquals(keeb.trial?.daysRemaining, 13);
+
+  assertEquals(acme.privateExtensions, "allowed");
+  assertEquals(keeb.privateExtensions, "allowed");
+});
+
+Deno.test("entitlementsOf: passes the registry's privateExtensions verdict on as it came, unknown values included", () => {
+  const entitlements = entitlementsOf({
+    authenticated: true,
+    collectiveEntitlements: [
+      { slug: "alice", plan: "free", privateExtensions: "allowed" },
+      { slug: "acme", plan: "free", privateExtensions: "trial-ended" },
+      { slug: "lapsed", plan: "free", privateExtensions: "paywalled" },
+      { slug: "future", plan: "free", privateExtensions: "waitlisted" },
+      { slug: "older", plan: "free" },
+    ],
+  });
+
+  assertEquals(
+    entitlements?.map((e) => [e.slug, e.privateExtensions]),
+    [
+      ["alice", "allowed"],
+      ["acme", "trial-ended"],
+      ["lapsed", "paywalled"],
+      ["future", "waitlisted"],
+      ["older", undefined],
+    ],
+  );
+  assertEquals("privateExtensions" in entitlements![4], false);
+});
+
+Deno.test("entitlementsOf: drops a privateExtensions value that is not a string", () => {
+  const entitlements = entitlementsOf({
+    authenticated: true,
+    collectiveEntitlements: [
+      {
+        slug: "acme",
+        plan: "free",
+        privateExtensions: true as unknown as string,
+      },
+    ],
+  });
+
+  assertEquals("privateExtensions" in entitlements![0], false);
 });
 
 Deno.test("whoami leaves entitlement absent when the server sends none", async () => {

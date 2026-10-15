@@ -422,6 +422,46 @@ Deno.test("JsonAuthWhoamiRenderer - passes plan and entitlement through verbatim
   assertEquals(parsed.collectiveEntitlements[0].trial, trial);
 });
 
+Deno.test("JsonAuthWhoamiRenderer - passes the registry's privateExtensions verdict through per collective", () => {
+  const output = captureLog(
+    makeEntitledIdentity([
+      {
+        slug: "acme",
+        plan: "team",
+        planName: "Team",
+        privateExtensions: "allowed",
+      },
+      {
+        slug: "alice",
+        plan: "free",
+        planName: "Free",
+        trial: {
+          state: "expired",
+          startedAt: null,
+          endsAt: null,
+          daysRemaining: 0,
+        },
+        privateExtensions: "allowed",
+      },
+      {
+        slug: "lapsed",
+        plan: "free",
+        planName: "Free",
+        privateExtensions: "paywalled",
+      },
+    ], "team"),
+    "json",
+  );
+  const parsed = JSON.parse(output);
+
+  assertEquals(
+    parsed.collectiveEntitlements.map((
+      e: { slug: string; privateExtensions?: string },
+    ) => [e.slug, e.privateExtensions]),
+    [["acme", "allowed"], ["alice", "allowed"], ["lapsed", "paywalled"]],
+  );
+});
+
 Deno.test("JsonAuthWhoamiRenderer - omits entitlement keys when the server sent none", () => {
   const output = captureLog(makeIdentity({ collectives: ["org-a"] }), "json");
   const parsed = JSON.parse(output);

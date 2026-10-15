@@ -314,6 +314,8 @@ export interface CollectiveTrial {
   /** ISO timestamp, or null when the registry sent none. */
   endsAt: string | null;
   daysRemaining: number;
+  /** The trial's full length in days, when the registry sent it. */
+  totalDays?: number;
 }
 
 /**
@@ -327,6 +329,12 @@ export interface CollectiveEntitlement {
   plan?: string;
   planName?: string;
   trial?: CollectiveTrial | null;
+  /**
+   * The registry's own verdict on private extensions for the collective:
+   * `allowed`, `trial-ended` or `paywalled` today. Absent from registries
+   * that predate it; any other value is one this client does not know.
+   */
+  privateExtensions?: string;
 }
 
 /** Inputs for the private-entitlement check. */
@@ -346,11 +354,25 @@ export function collectiveBillingUrl(serverUrl: string, slug: string): string {
   return `${serverUrl.replace(/\/+$/, "")}/o/${slug}/billing`;
 }
 
-const PAID_PLAN_REQUIRED = "Private publication requires a paid plan";
+const PAID_PLAN_REQUIRED = "Private extensions need a paid plan";
+
+/** The registry's own answer on private extensions, when it is one we know. */
+type PrivateExtensionsVerdict = "allowed" | "trial-ended" | "paywalled";
+
+function isKnownVerdict(value: string): value is PrivateExtensionsVerdict {
+  return value === "allowed" || value === "trial-ended" ||
+    value === "paywalled";
+}
 
 /** The plan as the registry labels it, falling back to its id. */
 function planLabel(entitlement: CollectiveEntitlement): string {
   return entitlement.planName ?? entitlement.plan ?? "";
+}
+
+/** A paid plan: anything but no plan, a Personal License or admin standing. */
+function isPaidPlan(plan: string | undefined): boolean {
+  return plan !== undefined && plan !== "free" && plan !== "personal" &&
+    plan !== "admin";
 }
 
 /**
@@ -368,92 +390,175 @@ function activeTrial(trial: CollectiveTrial): string {
     ? "1 day left"
     : `${trial.daysRemaining} days left`;
   return trial.endsAt
-    ? `an active trial (${days}, ends ${isoDate(trial.endsAt)})`
-    : `an active trial (${days})`;
+    ? `its free trial (${days}, ends ${isoDate(trial.endsAt)})`
+    : `its free trial (${days})`;
 }
 
-function endedTrial(trial: CollectiveTrial): string {
-  return trial.endsAt
-    ? `its trial ended on ${isoDate(trial.endsAt)}`
-    : "its trial has ended";
+/**
+ * What the registry reported for a collective, as one outcome: allowed or
+ * refused with the sentence that says why, or undecided with the reason the
+ * registry is left to decide at publish.
+ */
+type EntitlementAssessment =
+  | { kind: "allowed"; sentence: string }
+  | { kind: "refused"; sentence: string }
+  | { kind: "undecided"; reason: string };
+
+/** Why a collective is allowed, from the standing the registry reported. */
+function allowedSentence(
+  collective: string,
+  entitlement: CollectiveEntitlement,
+): string {
+  const allows = "which allows private extensions.";
+  if (entitlement.plan === "admin") {
+    return `Collective "@${collective}" has admin standing, ${allows}`;
+  }
+  if (isPaidPlan(entitlement.plan)) {
+    return `Collective "@${collective}" is on the ${
+      planLabel(entitlement)
+    } plan, ${allows}`;
+  }
+  const trial = entitlement.trial ?? undefined;
+  if (trial?.state === "active") {
+    return `Collective "@${collective}" is in ${activeTrial(trial)}, ${allows}`;
+  }
+  // The registry allows it although the collective's own standing does not:
+  // a personal namespace covered by a collective its owner belongs to.
+  return `Collective "@${collective}" is covered by a paid plan or active trial on another collective you belong to, ${allows}`;
+}
+
+/** Why a collective is refused, naming what it needs and where to get it. */
+function refusedSentence(
+  collective: string,
+  entitlement: CollectiveEntitlement,
+  verdict: "trial-ended" | "paywalled",
+  serverUrl: string,
+): string {
+  const upgrade = `upgrade at ${collectiveBillingUrl(serverUrl, collective)}.`;
+  if (verdict === "trial-ended") {
+    const totalDays = entitlement.trial?.totalDays;
+    const length = typeof totalDays === "number" && totalDays > 0
+      ? `${totalDays}-day `
+      : "";
+    return `Collective "@${collective}"'s ${length}free trial has ended. ${PAID_PLAN_REQUIRED}; ${upgrade}`;
+  }
+  if (entitlement.plan === "personal") {
+    return `Collective "@${collective}" has a Personal License, which does not include private extensions. ${PAID_PLAN_REQUIRED}; ${upgrade}`;
+  }
+  return `Private extensions in "@${collective}" need a paid plan; ${upgrade}`;
+}
+
+/**
+ * Decides a collective's private entitlement from what the registry reported.
+ *
+ * The registry's `privateExtensions` verdict decides when it is present: it
+ * already applies rules the plan and trial cannot show, such as a personal
+ * namespace covered by another collective its owner belongs to. A verdict
+ * this client does not know is undecided. A registry that sends no verdict
+ * (an older or self-hosted one) is decided from plan and trial: a paid plan
+ * or an active trial is allowed, an ended trial or none is refused (a trial
+ * starts only when its collective is created, never at publish).
+ */
+function assessEntitlement(
+  collective: string,
+  entitlement: CollectiveEntitlement | undefined,
+  serverUrl: string,
+): EntitlementAssessment {
+  const unreported: EntitlementAssessment = {
+    kind: "undecided",
+    reason: `the registry did not report entitlement for "@${collective}"`,
+  };
+  if (!entitlement) return unreported;
+  const reported = entitlement.privateExtensions;
+  let verdict: PrivateExtensionsVerdict;
+  if (reported !== undefined) {
+    if (!isKnownVerdict(reported)) {
+      return {
+        kind: "undecided",
+        reason:
+          `the registry reported a private-extensions verdict for "@${collective}" that this client does not know`,
+      };
+    }
+    verdict = reported;
+  } else {
+    if (entitlement.plan === undefined) return unreported;
+    const trial = entitlement.trial ?? undefined;
+    if (entitlement.plan === "personal") {
+      return {
+        kind: "undecided",
+        reason:
+          `the registry did not say whether the Personal License on "@${collective}" includes private extensions`,
+      };
+    }
+    if (entitlement.plan === "admin" || isPaidPlan(entitlement.plan)) {
+      verdict = "allowed";
+    } else if (trial?.state === "active") {
+      verdict = "allowed";
+    } else if (trial?.state === "expired") {
+      verdict = "trial-ended";
+    } else if (trial === undefined || trial.state === "none") {
+      verdict = "paywalled";
+    } else {
+      return {
+        kind: "undecided",
+        reason:
+          `the registry reported a trial state for "@${collective}" that this client does not know`,
+      };
+    }
+  }
+  return verdict === "allowed"
+    ? { kind: "allowed", sentence: allowedSentence(collective, entitlement) }
+    : {
+      kind: "refused",
+      sentence: refusedSentence(collective, entitlement, verdict, serverUrl),
+    };
 }
 
 /**
  * Decides the private-entitlement check from what the registry reported.
  *
- * A paid plan passes, as does a free plan with an active trial, each named.
- * A free plan with no trial, or whose trial has ended, fails with the message
- * a real push throws, naming the collective, its plan and the upgrade page:
- * a trial starts only when its collective is created, never at publish. No
- * entitlement for the collective is undecided and says the registry did not
- * report it; so is a trial state this client does not know.
+ * An allowed collective passes, saying why: its paid plan, its free trial,
+ * admin standing, or (for a personal namespace) another collective's cover. A
+ * refused one fails with the message a real push throws, naming what it
+ * needs and the upgrade page; no message ever names a plan the collective is
+ * not on. No entitlement for the collective is undecided and says the
+ * registry did not report it, as is anything else this client cannot read.
  */
 export function evaluatePrivateEntitlement(
   input: PrivateEntitlementInput,
 ): RegistryCheckResult {
   const collective = collectiveOf(input.extensionName);
-  const entitlement = input.entitlements?.find((e) => e.slug === collective);
   const name = "private-entitlement";
-  if (!entitlement || entitlement.plan === undefined) {
-    return registryCheckNotRun(
-      name,
-      "entitlement-undecided",
-      `the registry did not report entitlement for "@${collective}"; private publication is decided at publish`,
-    );
-  }
-  const plan = planLabel(entitlement);
-  if (entitlement.plan !== "free") {
-    return {
-      name,
-      status: "passed",
-      message:
-        `Collective "@${collective}" is on the ${plan} plan, which allows private extensions.`,
-    };
-  }
-  const trial = entitlement.trial ?? undefined;
-  if (trial?.state === "active") {
-    return {
-      name,
-      status: "passed",
-      message: `Collective "@${collective}" is on the ${plan} plan with ${
-        activeTrial(trial)
-      }, which allows private extensions.`,
-    };
-  }
-  const upgrade = `${PAID_PLAN_REQUIRED}; upgrade at ${
-    collectiveBillingUrl(input.serverUrl, collective)
-  }.`;
-  if (trial?.state === "expired") {
-    return {
-      name,
-      status: "failed",
-      message: `Collective "@${collective}" is on the ${plan} plan and ${
-        endedTrial(trial)
-      }. ${upgrade}`,
-    };
-  }
-  if (trial === undefined || trial.state === "none") {
-    return {
-      name,
-      status: "failed",
-      message:
-        `Collective "@${collective}" is on the ${plan} plan and has no trial. ${upgrade}`,
-    };
-  }
-  return registryCheckNotRun(
-    name,
-    "entitlement-undecided",
-    `the registry reported a trial state for "@${collective}" that this client does not know; private publication is decided at publish`,
+  const assessment = assessEntitlement(
+    collective,
+    input.entitlements?.find((e) => e.slug === collective),
+    input.serverUrl,
   );
+  switch (assessment.kind) {
+    case "allowed":
+      return { name, status: "passed", message: assessment.sentence };
+    case "refused":
+      return { name, status: "failed", message: assessment.sentence };
+    case "undecided":
+      return registryCheckNotRun(
+        name,
+        "entitlement-undecided",
+        `${assessment.reason}; private publication is decided at publish`,
+      );
+  }
+}
+
+/** A sentence carried after "reported that", its first letter lowered. */
+function lowerFirst(sentence: string): string {
+  return sentence.charAt(0).toLowerCase() + sentence.slice(1);
 }
 
 /**
  * The registry's own refusal of a private publication, followed by what it
  * reported for the collective at sign-in. The report is stated as a report,
  * never as the cause: the registry decided, and this says what it had said
- * about the collective. The upgrade pointer is added only when the registry
- * reported a free plan without an active trial. Nothing here names a plan the
- * registry did not send.
+ * about the collective, in the words the entitlement check uses. The upgrade
+ * pointer comes only with a refusal the registry had already reported.
  */
 export function explainPrivatePublishRefusal(
   serverMessage: string,
@@ -467,26 +572,17 @@ export function explainPrivatePublishRefusal(
   const refusal = /[.!?]$/.test(serverMessage.trim())
     ? serverMessage.trim()
     : `${serverMessage.trim()}.`;
-  const entitlement = input.entitlement;
-  if (!entitlement || entitlement.plan === undefined) {
-    return `${refusal} At sign-in the registry did not report entitlement for "@${collective}".`;
+  const assessment = assessEntitlement(
+    collective,
+    input.entitlement,
+    input.serverUrl,
+  );
+  if (assessment.kind === "undecided") {
+    return `${refusal} At sign-in ${assessment.reason}.`;
   }
-  const plan = planLabel(entitlement);
-  const trial = entitlement.trial ?? undefined;
-  if (entitlement.plan !== "free") {
-    return `${refusal} At sign-in the registry reported "@${collective}" on the ${plan} plan.`;
-  }
-  if (trial?.state === "active") {
-    return `${refusal} At sign-in the registry reported "@${collective}" on the ${plan} plan with ${
-      activeTrial(trial)
-    }.`;
-  }
-  const standing = trial?.state === "expired"
-    ? `; ${endedTrial(trial)}`
-    : " with no trial reported";
-  return `${refusal} At sign-in the registry reported "@${collective}" on the ${plan} plan${standing}. ${PAID_PLAN_REQUIRED}; upgrade at ${
-    collectiveBillingUrl(input.serverUrl, collective)
-  }.`;
+  return `${refusal} At sign-in the registry reported that ${
+    lowerFirst(assessment.sentence)
+  }`;
 }
 
 /** A published version as the registry lists it. */

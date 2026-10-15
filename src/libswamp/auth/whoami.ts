@@ -61,6 +61,8 @@ export interface WhoamiCollectiveEntitlement {
   /** Owner/admin only — absent when the server withheld it. */
   subscriptionStatus?: string | null;
   trial?: WhoamiTrial | null;
+  /** The registry's verdict on private extensions, passed on as it came. */
+  privateExtensions?: string;
 }
 
 export interface WhoamiIdentity {
@@ -173,6 +175,9 @@ export function entitlementsOf(
       ? { subscriptionStatus: entitlement.subscriptionStatus }
       : {}),
     ...(entitlement.trial !== undefined ? { trial: entitlement.trial } : {}),
+    ...(typeof entitlement.privateExtensions === "string"
+      ? { privateExtensions: entitlement.privateExtensions }
+      : {}),
   }));
 }
 

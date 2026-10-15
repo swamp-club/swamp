@@ -32,13 +32,23 @@ import {
 const SERVER = "https://registry.test";
 const REFUSAL = "Private publication requires a paid plan";
 
-/** The plans the registry knows, as id and label. */
+/** The plans and standings the registry reports, as id and label. */
 const PLANS = [
   { plan: "free", planName: "Free" },
   { plan: "team", planName: "Team" },
   { plan: "business", planName: "Business" },
   { plan: "enterprise", planName: "Enterprise" },
+  { plan: "personal", planName: "Personal License" },
+  { plan: "admin", planName: "Admin" },
 ] as const;
+
+/** The registry's verdicts, plus none sent and one this client does not know. */
+const VERDICTS = ["allowed", "trial-ended", "paywalled"] as const;
+const verdictArb = fc.oneof(
+  fc.constant(undefined),
+  fc.constantFrom(...VERDICTS),
+  fc.stringMatching(/^[a-z]{3,12}$/).map((s) => `future-${s}`),
+);
 
 const trialArb = fc.oneof(
   fc.constant(undefined),
@@ -58,6 +68,7 @@ const trialArb = fc.oneof(
       }).map((d) => d.toISOString()),
     ),
     daysRemaining: fc.nat({ max: 60 }),
+    totalDays: fc.option(fc.integer({ min: 1, max: 90 }), { nil: undefined }),
   }),
 );
 
@@ -66,11 +77,13 @@ const reportedArb = fc.record({
   known: fc.constantFrom(...PLANS),
   labelled: fc.boolean(),
   trial: trialArb,
-}).map(({ known, labelled, trial }): CollectiveEntitlement => ({
+  verdict: verdictArb,
+}).map(({ known, labelled, trial, verdict }): CollectiveEntitlement => ({
   slug: "acme",
   plan: known.plan,
   ...(labelled ? { planName: known.planName } : {}),
   ...(trial !== undefined ? { trial } : {}),
+  ...(verdict !== undefined ? { privateExtensions: verdict } : {}),
 }));
 
 /** The plan labels a message may not mention unless the registry sent them. */
@@ -100,7 +113,30 @@ function assertNamesOnlyReportedPlans(
   }
 }
 
-Deno.test("evaluatePrivateEntitlement: the verdict follows the reported plan and trial, and names no other plan", () => {
+/** No message calls the absence of a plan a plan (swamp-club#3311). */
+function assertNeverFreePlan(message: string): void {
+  assert(
+    !message.toLowerCase().includes("free plan"),
+    `message calls a collective's standing a Free plan: ${message}`,
+  );
+}
+
+/** The status the reported entitlement decides, verdict first. */
+function expectedStatus(
+  entitlement: CollectiveEntitlement,
+): "passed" | "failed" | "not-run" {
+  const verdict = entitlement.privateExtensions;
+  if (verdict !== undefined) {
+    if (verdict === "allowed") return "passed";
+    if (verdict === "trial-ended" || verdict === "paywalled") return "failed";
+    return "not-run";
+  }
+  if (entitlement.plan === "personal") return "not-run";
+  if (entitlement.plan !== "free") return "passed";
+  return entitlement.trial?.state === "active" ? "passed" : "failed";
+}
+
+Deno.test("evaluatePrivateEntitlement: the verdict decides when sent, plan and trial otherwise, and no message says Free plan", () => {
   fc.assert(
     fc.property(reportedArb, (entitlement) => {
       const result = evaluatePrivateEntitlement({
@@ -109,31 +145,31 @@ Deno.test("evaluatePrivateEntitlement: the verdict follows the reported plan and
         serverUrl: SERVER,
       });
       assertEquals(result.name, "private-entitlement");
-      assertNamesOnlyReportedPlans(result.message, entitlement);
-      assertStringIncludes(result.message, '"@acme"');
-      const trialState = entitlement.trial?.state ?? "none";
-      if (entitlement.plan !== "free") {
-        assertEquals(result.status, "passed");
-      } else if (trialState === "active") {
-        assertEquals(result.status, "passed");
-      } else {
-        // An ended trial and no trial alike: no trial starts at publish.
-        assertEquals(result.status, "failed");
-        assertStringIncludes(
-          result.message,
-          collectiveBillingUrl(SERVER, "acme"),
-        );
+      assertEquals(result.status, expectedStatus(entitlement));
+      if (result.status === "not-run") {
+        assertEquals(result.cause, "entitlement-undecided");
       }
-      // Dates are the registry's: only the date part of what it sent.
-      const endsAt = entitlement.trial?.endsAt;
-      if (endsAt && trialState !== "none" && entitlement.plan === "free") {
-        assertStringIncludes(result.message, endsAt.slice(0, 10));
+      assertNamesOnlyReportedPlans(result.message, entitlement);
+      assertNeverFreePlan(result.message);
+      assertStringIncludes(result.message, '"@acme"');
+      // The upgrade page comes with a refusal, and only with one.
+      assertEquals(
+        result.message.includes(collectiveBillingUrl(SERVER, "acme")),
+        result.status === "failed",
+      );
+      // An unknown verdict is never echoed back.
+      const verdict = entitlement.privateExtensions;
+      if (
+        verdict !== undefined &&
+        !(VERDICTS as readonly string[]).includes(verdict)
+      ) {
+        assert(!result.message.includes(verdict), result.message);
       }
     }),
   );
 });
 
-Deno.test("evaluatePrivateEntitlement: an absent plan is always undecided, whatever else was sent", () => {
+Deno.test("evaluatePrivateEntitlement: an absent plan without a verdict is always undecided, whatever else was sent", () => {
   fc.assert(
     fc.property(
       fc.option(fc.array(reportedArb.map((e) => ({ ...e, slug: "other" }))), {
@@ -157,7 +193,7 @@ Deno.test("evaluatePrivateEntitlement: an absent plan is always undecided, whate
   );
 });
 
-Deno.test("explainPrivatePublishRefusal: starts with the registry's sentence and names only the reported plan", () => {
+Deno.test("explainPrivatePublishRefusal: starts with the registry's sentence, names only the reported plan, never says Free plan", () => {
   fc.assert(
     fc.property(
       fc.option(reportedArb, { nil: undefined }),
@@ -171,10 +207,13 @@ Deno.test("explainPrivatePublishRefusal: starts with the registry's sentence and
         assert(message.startsWith(`${REFUSAL}.`));
         assertStringIncludes(message, '"@acme"');
         assertNamesOnlyReportedPlans(message, entitlement);
-        const pointer = collectiveBillingUrl(SERVER, "acme");
-        const freeWithoutAccess = entitlement?.plan === "free" &&
-          entitlement.trial?.state !== "active";
-        assertEquals(message.includes(pointer), freeWithoutAccess === true);
+        assertNeverFreePlan(message.slice(REFUSAL.length));
+        const refused = entitlement !== undefined &&
+          expectedStatus(entitlement) === "failed";
+        assertEquals(
+          message.includes(collectiveBillingUrl(SERVER, "acme")),
+          refused,
+        );
       },
     ),
   );
