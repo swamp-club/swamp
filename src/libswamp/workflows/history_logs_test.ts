@@ -21,6 +21,10 @@ import { assertEquals } from "@std/assert";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { collect } from "../testing.ts";
+import {
+  FAKE_REAPED_CUTOFF,
+  fakeWatermarks,
+} from "../retention/reaped_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   workflowHistoryLogs,
@@ -167,4 +171,49 @@ Deno.test("workflowHistoryLogs acts on a passed reference without looking the ar
     { kind: "completed" }
   >;
   assertEquals(completed.data.type, "no_log_file");
+});
+
+Deno.test("workflowHistoryLogs: a missing run says runs before the retention cutoff were reaped", async () => {
+  const deps = makeDeps({
+    isPartialId: () => false,
+    findWorkflow: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["workflowRuns"]),
+  });
+  const events = await collect<WorkflowHistoryLogsEvent>(
+    workflowHistoryLogs(createLibSwampContext(), deps, {
+      runIdOrWorkflow: "abc",
+      repoDir: "/repo",
+    }),
+  );
+  const last = events[events.length - 1] as Extract<
+    WorkflowHistoryLogsEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.code, "not_found");
+  assertEquals(
+    last.error.message,
+    `No workflow run or workflow found: abc; runs before ${FAKE_REAPED_CUTOFF} have been reaped by retention (14d)`,
+  );
+  assertEquals(
+    (last.error.details as Record<string, unknown>).retention,
+    "14d",
+  );
+});
+
+Deno.test("workflowHistoryLogs: without a watermark repository the not-found is unchanged", async () => {
+  const deps = makeDeps({
+    isPartialId: () => false,
+    findWorkflow: () => Promise.resolve(null),
+  });
+  const events = await collect<WorkflowHistoryLogsEvent>(
+    workflowHistoryLogs(createLibSwampContext(), deps, {
+      runIdOrWorkflow: "abc",
+      repoDir: "/repo",
+    }),
+  );
+  const last = events[events.length - 1] as Extract<
+    WorkflowHistoryLogsEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.error.message, "No workflow run or workflow found: abc");
 });

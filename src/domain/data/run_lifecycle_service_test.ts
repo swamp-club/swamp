@@ -454,3 +454,205 @@ Deno.test("gcAll: a failing wait record cleanup does not fail a run collection t
 
   assertEquals(result.workflowRunsDeleted, 1);
 });
+
+Deno.test("gcAll: passes the limit to the run and output collections and reports more when either stopped at it", async () => {
+  const seen: { runs?: unknown; outputs?: unknown } = {};
+  const runRepo = {
+    ...createMockWorkflowRunRepo(),
+    deleteOlderThan: (_cutoff: Date, options?: unknown) => {
+      seen.runs = options;
+      return Promise.resolve({
+        deleted: 2,
+        bytesReclaimed: 20,
+        deletedRunIds: ["a", "b"],
+        more: true,
+      });
+    },
+  };
+  const outputRepo = {
+    ...createMockOutputRepo(),
+    deleteByMethodLifetime: (_cutoff: Date, options?: unknown) => {
+      seen.outputs = options;
+      return Promise.resolve({ deleted: 1, bytesReclaimed: 5, more: false });
+    },
+  };
+  const service = new DefaultRunLifecycleService(
+    runRepo,
+    outputRepo,
+    createMockSnapshotRepo(),
+    () => Promise.resolve(new Set()),
+  );
+
+  const result = await service.gcAll({
+    workflowRunRetentionDays: 30,
+    outputRetentionDays: 30,
+    dryRun: false,
+    limit: 2,
+  });
+
+  assertEquals(seen.runs, { dryRun: false, limit: 2 });
+  assertEquals(seen.outputs, { dryRun: false, limit: 2 });
+  assertEquals(result.workflowRunsDeleted, 2);
+  assertEquals(result.outputsDeleted, 1);
+  assertEquals(result.more, true);
+});
+
+Deno.test("gcAll: without a limit passes no limit and reports no more", async () => {
+  const seen: { runs?: unknown; outputs?: unknown } = {};
+  const runRepo = {
+    ...createMockWorkflowRunRepo(),
+    deleteOlderThan: (_cutoff: Date, options?: unknown) => {
+      seen.runs = options;
+      return Promise.resolve({ deleted: 0, bytesReclaimed: 0 });
+    },
+  };
+  const outputRepo = {
+    ...createMockOutputRepo(),
+    deleteByMethodLifetime: (_cutoff: Date, options?: unknown) => {
+      seen.outputs = options;
+      return Promise.resolve({ deleted: 0, bytesReclaimed: 0 });
+    },
+  };
+  const service = new DefaultRunLifecycleService(
+    runRepo,
+    outputRepo,
+    createMockSnapshotRepo(),
+    () => Promise.resolve(new Set()),
+  );
+
+  const result = await service.gcAll({
+    workflowRunRetentionDays: 30,
+    outputRetentionDays: 30,
+    dryRun: true,
+  });
+
+  assertEquals(seen.runs, { dryRun: true });
+  assertEquals(seen.outputs, { dryRun: true });
+  assertEquals(result.more, false);
+});
+
+Deno.test("gcAll: reports more when only the output collection stopped at its limit", async () => {
+  const outputRepo = {
+    ...createMockOutputRepo(),
+    deleteByMethodLifetime: () =>
+      Promise.resolve({ deleted: 1, bytesReclaimed: 5, more: true }),
+  };
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo(),
+    outputRepo,
+    createMockSnapshotRepo(),
+    () => Promise.resolve(new Set()),
+  );
+
+  const result = await service.gcAll({
+    workflowRunRetentionDays: 30,
+    outputRetentionDays: 30,
+    dryRun: false,
+    limit: 1,
+  });
+
+  assertEquals(result.more, true);
+});
+
+Deno.test("gcRunSnapshots: with a snapshot retention removes old snapshots of finished runs, keeps unfinished runs' and young ones", async () => {
+  const snapshotRepo = createMockSnapshotRepo([
+    snapshot("old-succeeded", 10),
+    snapshot("old-failed", 10),
+    snapshot("old-cancelled", 10),
+    snapshot("old-running", 10),
+    snapshot("old-suspended", 10),
+    snapshot("young-succeeded", 1),
+  ]);
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo(),
+    createMockOutputRepo(),
+    snapshotRepo,
+    () =>
+      Promise.resolve(
+        new Set([
+          "old-succeeded",
+          "old-failed",
+          "old-cancelled",
+          "old-running",
+          "old-suspended",
+          "young-succeeded",
+        ]),
+      ),
+    undefined,
+    () =>
+      Promise.resolve(
+        new Set([
+          "old-succeeded",
+          "old-failed",
+          "old-cancelled",
+          "young-succeeded",
+        ]),
+      ),
+  );
+
+  const result = await service.gcRunSnapshots({
+    retentionDays: 30,
+    deletedRunIds: [],
+    dryRun: false,
+    snapshotRetentionDays: 7,
+  });
+
+  assertEquals(result, { deleted: 3, bytesReclaimed: 300 });
+  assertEquals(snapshotRepo.deletedRunIds.sort(), [
+    "old-cancelled",
+    "old-failed",
+    "old-succeeded",
+  ]);
+});
+
+Deno.test("gcRunSnapshots: without a snapshot retention keeps every live run's snapshot and never reads run statuses", async () => {
+  const snapshotRepo = createMockSnapshotRepo([
+    snapshot("old-succeeded", 40),
+    snapshot("old-orphan", 40),
+  ]);
+  let statusReads = 0;
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo(),
+    createMockOutputRepo(),
+    snapshotRepo,
+    () => Promise.resolve(new Set(["old-succeeded"])),
+    undefined,
+    () => {
+      statusReads++;
+      return Promise.resolve(new Set(["old-succeeded"]));
+    },
+  );
+
+  const result = await service.gcRunSnapshots({
+    retentionDays: 30,
+    deletedRunIds: [],
+    dryRun: false,
+  });
+
+  assertEquals(result, { deleted: 1, bytesReclaimed: 100 });
+  assertEquals(snapshotRepo.deletedRunIds, ["old-orphan"]);
+  assertEquals(statusReads, 0);
+});
+
+Deno.test("gcAll: passes the snapshot retention to the snapshot pass, and a dry run deletes nothing", async () => {
+  const snapshotRepo = createMockSnapshotRepo([snapshot("old-succeeded", 10)]);
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo(),
+    createMockOutputRepo(),
+    snapshotRepo,
+    () => Promise.resolve(new Set(["old-succeeded"])),
+    undefined,
+    () => Promise.resolve(new Set(["old-succeeded"])),
+  );
+
+  const result = await service.gcAll({
+    workflowRunRetentionDays: 30,
+    outputRetentionDays: 30,
+    dryRun: true,
+    snapshotRetentionDays: 7,
+  });
+
+  assertEquals(result.snapshotsDeleted, 1);
+  assertEquals(result.snapshotBytesReclaimed, 100);
+  assertEquals(snapshotRepo.deletedRunIds, []);
+});

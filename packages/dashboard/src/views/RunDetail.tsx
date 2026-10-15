@@ -379,7 +379,12 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
             <strong>This run could not be loaded.</strong>
             <p>
               {historyReq.errorInfo?.reason === "not_found"
-                ? "It may have been deleted, or the link is wrong."
+                ? historyReq.errorInfo.reapedBefore
+                  ? `Runs before ${
+                    new Date(historyReq.errorInfo.reapedBefore)
+                      .toLocaleString()
+                  } have been reaped by retention.`
+                  : "It may have been deleted, or the link is wrong."
                 : runUnreadableHint(local)}
             </p>
             <code className="rd-error-detail">{historyReq.error}</code>

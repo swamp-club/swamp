@@ -31,6 +31,7 @@ import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
+import { writeReapedRunsLine } from "./workflow_run_search.tsx";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "gray",
@@ -100,6 +101,7 @@ class JsonWorkflowHistorySearchRenderer
         const output: WorkflowHistorySearchData = {
           query: e.data.query,
           results: filtered,
+          ...(e.data.reapedBefore ? { reapedBefore: e.data.reapedBefore } : {}),
         };
         console.log(JSON.stringify(output, null, 2));
       },
@@ -158,6 +160,7 @@ class InkWorkflowHistorySearchRenderer
         if (result) {
           this._selected = result.item;
         }
+        writeReapedRunsLine(e.data.reapedBefore);
       },
       error: (e) => {
         throw new UserError(e.error.message);

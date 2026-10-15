@@ -64,10 +64,12 @@ import type {
 import type { CatalogStore } from "./catalog_store.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
+  type AgedDataVersionPage,
   type ContentAvailability,
   type DeferredWriteReceipt,
   type FindAllForTypeOptions,
   type FindAllGlobalOptions,
+  type FindVersionsCreatedBeforeOptions,
   type ForeignContentFetcher,
   type GarbageCollectionResult,
   OwnershipValidationError,
@@ -3274,6 +3276,51 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       pending_host: processHostIdentity(),
     });
     this.catalogStore.recordLocalWrite();
+  }
+
+  findVersionsCreatedBefore(
+    cutoff: Date,
+    options: FindVersionsCreatedBeforeOptions,
+  ): Promise<AgedDataVersionPage> {
+    const after = options.cursor === undefined
+      ? undefined
+      : JSON.parse(options.cursor) as { createdAt: string; rowId: number };
+    const rows = this.catalogStore.rowsCreatedBefore(
+      this.namespace,
+      cutoff.toISOString(),
+      options.limit,
+      after,
+      options.excludeTypes,
+    );
+    const last = rows[rows.length - 1];
+    return Promise.resolve({
+      versions: rows.map((row) => ({
+        type: ModelType.create(row.type_normalized),
+        modelId: row.model_id,
+        dataName: row.data_name,
+        version: row.version,
+        createdAt: new Date(row.created_at),
+        size: row.size,
+      })),
+      cursor: last && rows.length >= options.limit
+        ? JSON.stringify({ createdAt: last.created_at, rowId: last.row_id })
+        : undefined,
+    });
+  }
+
+  hasPendingVersions(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<boolean> {
+    return Promise.resolve(
+      this.catalogStore.pendingVersions(
+        this.namespace,
+        type.normalized,
+        modelId,
+        dataName,
+      ).size > 0,
+    );
   }
 
   /**

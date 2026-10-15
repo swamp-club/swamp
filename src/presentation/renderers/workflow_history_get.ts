@@ -21,7 +21,7 @@ import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { WorkflowHistoryGetEvent } from "../../libswamp/workflows/history_get.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { UserError } from "../../domain/errors.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import { renderWorkflowRunDisplay } from "./workflow_run_display.ts";
 
 class LogWorkflowHistoryGetRenderer
@@ -33,7 +33,7 @@ class LogWorkflowHistoryGetRenderer
         renderWorkflowRunDisplay(e.data, "log");
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }
@@ -48,7 +48,7 @@ class JsonWorkflowHistoryGetRenderer
         renderWorkflowRunDisplay(e.data, "json");
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }

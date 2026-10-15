@@ -38,6 +38,7 @@ import {
   libSwampContextForRepo,
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
+  resolveRetentionWatermarks,
   resolveSignalWaitSupport,
   runRecordCurrencyOver,
   runsLiveInDatastore,
@@ -179,6 +180,7 @@ import {
   WorkerGateway,
 } from "../../serve/worker_gateway.ts";
 import {
+  bookkeepingGracePeriodMs,
   DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
   DEFAULT_WORKER_GC_INTERVAL_MS,
   workerGcListPredicate,
@@ -186,8 +188,11 @@ import {
 } from "../../serve/worker_gc_service.ts";
 import {
   createBookkeepingRecordQuery,
+  createWorkerTokenNameQuery,
   reapEndedBookkeepingRecords,
 } from "../../serve/bookkeeping_gc.ts";
+import { resolveAuditStoreRetentionDays } from "../../domain/audit/audit_service.ts";
+import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
 import {
   DEFAULT_TOKEN_GC_GRACE_PERIOD_MS,
   DEFAULT_TOKEN_GC_INTERVAL_MS,
@@ -340,6 +345,7 @@ import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
+import { createRetentionHealthProvider } from "../../serve/retention_health.ts";
 import { createHealthStreamResponse } from "../../serve/health_stream.ts";
 import {
   cachedHealthResourceResolver,
@@ -511,6 +517,7 @@ import {
 } from "../../domain/serve/deployment_mode.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import {
+  compactRetentionQuietly,
   confirmV3Replicated,
   keepV3WriterMarkers,
   startV3ReplicationUpkeep,
@@ -518,6 +525,16 @@ import {
   v3DatastoreFor,
   V3MaintenanceTimer,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import { pushChangedToRemote } from "../../serve/handlers/shared.ts";
+import {
+  DEFAULT_RETENTION_GC_INITIAL_DELAY_MS,
+  DEFAULT_RETENTION_GC_INTERVAL_MS,
+  RetentionGcService,
+} from "../../serve/retention_gc_service.ts";
+import { runRepoRetention } from "../../libswamp/retention/run.ts";
+import { withSyncGate } from "../../serve/sync_gate.ts";
+import { GcMutex } from "../../serve/gc_mutex.ts";
+import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
   setV3SyncDeadline,
   v3ReplicationEnabled,
@@ -2925,6 +2942,9 @@ export const serveCommand = new Command()
       // Serve outlives any other writer: once it is done, serve writes again.
       retakeLostV3Lease: true,
     });
+    // Serve applies retention on its own timer; its shutdown runs no
+    // end-of-command pass (swamp-club#3473).
+    takeRetentionCandidate();
 
     // One gate per serve process, shared by the pollers, the WebSocket
     // mutation handlers and the device-auth mint path so a pull can never
@@ -3538,6 +3558,11 @@ export const serveCommand = new Command()
           new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
         ),
       },
+    );
+    repoContext.retentionWatermarks = resolveRetentionWatermarks(
+      datastoreConfig,
+      syncService,
+      { namespaceBound: true },
     );
     attachSignalWaits(
       repoContext,
@@ -4486,6 +4511,10 @@ export const serveCommand = new Command()
 
     let heartbeatService: InstanceHeartbeatService | undefined;
     let workerGcService: WorkerGcService | undefined;
+    // Assigned once below, after the connection context exists; declared
+    // here because the shutdown path above that point disposes it.
+    // deno-lint-ignore prefer-const
+    let retentionGcService: RetentionGcService | undefined;
     let serverTokenGcService: ServerTokenGcService | undefined;
     let continuationSweepService: ContinuationSweepService | undefined;
     // Fills the run index cache in the background once serve is listening,
@@ -4631,10 +4660,12 @@ export const serveCommand = new Command()
       resolvedRepoDir,
       datastoreConfig,
     );
+    const gcMutex = new GcMutex();
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
         repoContext,
+        gcMutex,
         datastoreConfig,
         datastoreResolver,
         syncService,
@@ -4747,10 +4778,18 @@ export const serveCommand = new Command()
       }
       const auditStores = auditStoresWithConfig.map((s) => s.store);
       if (auditStores.length > 0) {
+        // A store without its own retention.days keeps the repo's audit
+        // retention (.swamp.yaml garbageCollection), read once at boot: a
+        // change to it needs a serve restart.
+        const repoAuditRetentionMs = RetentionPolicy.fromConfig(
+          repoMarker?.garbageCollection,
+        ).retentionMs("audit");
         const storesWithRetention = auditStoresWithConfig.map(
           ({ store, entry }) => {
-            const retentionDays = (entry as { retention?: { days?: number } })
-              ?.retention?.days;
+            const retentionDays = resolveAuditStoreRetentionDays(
+              (entry as { retention?: { days?: number } })?.retention?.days,
+              repoAuditRetentionMs,
+            );
             return retentionDays ? { store, retentionDays } : store;
           },
         );
@@ -5802,6 +5841,15 @@ export const serveCommand = new Command()
       scheduleEnabled: enableSchedule,
       webhookProvider: webhookService ?? null,
       remoteOnly: merged.remoteOnly,
+      // Retention config and watermarks, read at most once a minute: the
+      // watermarks may live on a remote control plane (swamp-club#3473).
+      retentionProvider: createRetentionHealthProvider({
+        readConfig: async () =>
+          (await new RepoMarkerRepository().read(
+            RepoPath.create(resolvedRepoDir),
+          ))?.garbageCollection,
+        watermarks: repoContext.retentionWatermarks,
+      }),
       // Any valid token may read health, so one collection (component
       // probes included) serves every reader and stream tick for a second.
       snapshotMaxAgeMs: HEALTH_SNAPSHOT_MAX_AGE_MS,
@@ -6913,6 +6961,9 @@ export const serveCommand = new Command()
       if (workerGcService) {
         await workerGcService.dispose();
       }
+      if (retentionGcService) {
+        await retentionGcService.dispose();
+      }
       if (serverTokenGcService) {
         await serverTokenGcService.dispose();
       }
@@ -7368,6 +7419,13 @@ export const serveCommand = new Command()
       workerGcService = new WorkerGcService({
         intervalMs: DEFAULT_WORKER_GC_INTERVAL_MS,
         gracePeriodMs: DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+        // Read per sweep so a .swamp.yaml retention change needs no restart.
+        resolveGracePeriodMs: async () =>
+          bookkeepingGracePeriodMs(
+            (await new RepoMarkerRepository().read(
+              RepoPath.create(resolvedRepoDir),
+            ))?.garbageCollection,
+          ),
         syncService,
         syncNamespace: gcSyncNamespace,
         syncGate,
@@ -7376,6 +7434,10 @@ export const serveCommand = new Command()
             {
               query: createBookkeepingRecordQuery(
                 repoContext.dataQueryService,
+              ),
+              listWorkerTokenNames: createWorkerTokenNameQuery(
+                repoContext.dataQueryService,
+                repoContext.unifiedDataRepo.namespace,
               ),
               repo: repoContext.unifiedDataRepo,
               markDirty: repoContext.markDirty,
@@ -7410,6 +7472,85 @@ export const serveCommand = new Command()
       });
       workerGcService.start();
     }
+
+    // Retention (swamp-club#3473): applies `.swamp.yaml` garbageCollection
+    // hourly when `automatic` is on. The policy is read every tick, so turning
+    // it on or off needs no restart; with it off a tick reads one file.
+    retentionGcService = new RetentionGcService({
+      intervalMs: DEFAULT_RETENTION_GC_INTERVAL_MS,
+      initialDelayMs: DEFAULT_RETENTION_GC_INITIAL_DELAY_MS,
+      instanceId,
+      mutex: gcMutex,
+      watermarks: repoContext.retentionWatermarks,
+      readPolicy: async () =>
+        RetentionPolicy.fromConfig(
+          (await new RepoMarkerRepository().read(
+            RepoPath.create(resolvedRepoDir),
+          ))?.garbageCollection,
+        ),
+      runPass: (policy, isStopping) =>
+        runRepoRetention(
+          {
+            repoDir: resolvedRepoDir,
+            datastoreResolver: repoDatastoreResolver,
+            markDirty: repoContext.markDirty,
+            signalWaits: repoContext.signalWaits,
+            continuationClaims: repoContext.continuationClaims?.store,
+            dataRepos: {
+              catalogStore: repoContext.catalogStore,
+              unifiedDataRepo: repoContext.unifiedDataRepo,
+              workflowRunRepo: repoContext.workflowRunRepo,
+            },
+            watermarks: repoContext.retentionWatermarks,
+            // The gate is taken per batch, never for the whole pass, so
+            // handler mutations and worker writes wait one batch at most.
+            runBatch: (fn) =>
+              withSyncGate(
+                syncGate,
+                () =>
+                  runInRootUnitOfWork(
+                    repoContext,
+                    { flush: () => pushChangedToRemote(connectionCtx) },
+                    fn,
+                  ),
+              ),
+            afterPass: async () => {
+              repoContext.catalogStore.checkpoint();
+              if (v3Maintenance && !isCustomDatastoreConfig(datastoreConfig)) {
+                // Folds the history that still holds reaped content.
+                await compactRetentionQuietly(
+                  v3DatastoreFor(resolvedRepoDir, datastoreConfig),
+                  new Date(),
+                );
+              }
+            },
+          },
+          {
+            policy,
+            isStopping,
+            // Busy: every run slot taken. The next pass continues.
+            shouldBackOff: () =>
+              activeRunRegistry.size >= (maxConcurrentRuns ?? 100),
+          },
+        ),
+      onPass: (result) => {
+        emitSystemAuditEvent(
+          connectionCtx,
+          "retention.pass",
+          JSON.stringify({
+            complete: result.complete,
+            stoppedBy: result.stoppedBy,
+            kinds: result.kinds.map((k) => ({
+              kind: k.kind,
+              cutoff: k.cutoff,
+              deleted: k.deleted,
+              bytesReclaimed: k.bytesReclaimed,
+            })),
+          }),
+        );
+      },
+    });
+    retentionGcService.start();
 
     // Server token GC — deletes revoked tokens, and expired ones past the
     // grace period, in every auth mode. In OAuth mode it starts after token

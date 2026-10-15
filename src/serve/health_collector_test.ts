@@ -449,3 +449,36 @@ Deno.test("HealthCollector: a cached snapshot does not re-emit transitions", asy
   await collector.collect();
   assertEquals(transitions, ["unhealthy"]);
 });
+
+Deno.test("HealthCollector: has no retention component without a provider", async () => {
+  const snapshot = await new HealthCollector(makeDeps()).collect();
+  assertEquals(snapshot.retention, undefined);
+});
+
+Deno.test("HealthCollector: includes the retention component a provider gives", async () => {
+  const retention = {
+    automatic: true,
+    configured: true,
+    kinds: [{
+      kind: "workflowRuns",
+      retention: "30d",
+      cutoff: "2026-09-15T00:00:00.000Z",
+      lastPassAt: "2026-10-15T00:00:00.000Z",
+      complete: true,
+    }],
+  };
+  const snapshot = await new HealthCollector(makeDeps({
+    retentionProvider: { retention: () => Promise.resolve(retention) },
+  })).collect();
+  assertEquals(snapshot.retention, retention);
+});
+
+Deno.test("HealthCollector: leaves retention out when its provider fails", async () => {
+  const snapshot = await new HealthCollector(makeDeps({
+    retentionProvider: {
+      retention: () => Promise.reject(new Error("control plane down")),
+    },
+  })).collect();
+  assertEquals(snapshot.retention, undefined);
+  assertEquals(snapshot.ready, true);
+});

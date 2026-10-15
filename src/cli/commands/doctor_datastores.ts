@@ -47,7 +47,17 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { resolveDatastoreForRepo } from "../repo_context.ts";
+import {
+  requireInitializedRepoReadOnly,
+  resolveDatastoreForRepo,
+} from "../repo_context.ts";
+import {
+  retentionScanSourcesFor,
+  scanRetention,
+} from "../../libswamp/datastores/retention_check.ts";
+import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
+import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -110,8 +120,34 @@ async function resolveProvider(
   return typeInfo.createProvider(config.config);
 }
 
+/**
+ * Scans the repository's storage for items older than each kind's retention
+ * (`--retention`, swamp-club#3473), through the read-only repository context:
+ * no lock, no sync. Watermarks are read where the datastore keeps them
+ * locally (a filesystem datastore).
+ */
+async function checkRetention(
+  repoDir: string,
+  outputMode: OutputMode,
+): Promise<RetentionCheckSummary> {
+  const opened = await requireInitializedRepoReadOnly({ repoDir, outputMode });
+  const { datastoreConfig } = await resolveDatastoreForRepo(opened.repoDir);
+  return await scanRetention(
+    retentionScanSourcesFor({
+      repoDir: opened.repoDir,
+      datastoreConfig,
+      datastoreResolver: opened.datastoreResolver,
+      dataRepo: opened.repoContext.unifiedDataRepo,
+      watermarks: opened.repoContext.retentionWatermarks,
+    }),
+    RetentionPolicy.fromConfig(opened.marker?.garbageCollection),
+    new Date(),
+  );
+}
+
 async function createDoctorDatastoresDeps(
   repoDir: string,
+  outputMode: OutputMode,
 ): Promise<DoctorDatastoresDeps> {
   await datastoreTypeRegistry.ensureLoaded();
   return {
@@ -188,6 +224,7 @@ async function createDoctorDatastoresDeps(
       });
     },
     checkCatalogCompleteness: () => checkCatalogCompleteness(repoDir),
+    checkRetention: () => checkRetention(repoDir, outputMode),
   };
 }
 
@@ -462,6 +499,10 @@ export const doctorDatastoresCommand = withRemoteOptions(
     .example("Check this repo's datastore", "swamp doctor datastores")
     .example("Machine-readable output for CI", "swamp doctor datastores --json")
     .example(
+      "Check that nothing is stored past its retention",
+      "swamp doctor datastores --retention",
+    )
+    .example(
       "Preview datastore repair",
       "swamp doctor datastores --repair",
     )
@@ -480,6 +521,10 @@ export const doctorDatastoresCommand = withRemoteOptions(
     .option(
       "-y, --yes",
       "Execute the repair (without this, --repair shows a preview).",
+    )
+    .option(
+      "--retention",
+      "Also scan storage for workflow runs, snapshots, outputs, data versions and audit logs older than the garbageCollection retention in .swamp.yaml, and show each kind's last retention pass.",
     ),
 ).action(async function (options: AnyOptions) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -498,7 +543,7 @@ export const doctorDatastoresCommand = withRemoteOptions(
       { server, token },
       {
         type: "doctor.datastores",
-        payload: {},
+        payload: options.retention ? { retention: true } : {},
       },
     );
     const renderer = createDoctorDatastoresRenderer(cliCtx.outputMode);
@@ -519,6 +564,11 @@ export const doctorDatastoresCommand = withRemoteOptions(
 
   if (options.yes && !options.repair) {
     throw new UserError("The --yes flag requires --repair.");
+  }
+  if (options.retention && options.repair) {
+    throw new UserError(
+      "--retention is a check and cannot be combined with --repair.",
+    );
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
@@ -647,11 +697,11 @@ export const doctorDatastoresCommand = withRemoteOptions(
     return;
   }
 
-  const deps = await createDoctorDatastoresDeps(repoDir);
+  const deps = await createDoctorDatastoresDeps(repoDir, cliCtx.outputMode);
   const renderer = createDoctorDatastoresRenderer(cliCtx.outputMode);
 
   await consumeStream(
-    doctorDatastores(libCtx, deps),
+    doctorDatastores(libCtx, deps, { retention: Boolean(options.retention) }),
     renderer.handlers(),
   );
 

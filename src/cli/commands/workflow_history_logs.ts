@@ -108,11 +108,14 @@ export const workflowHistoryLogsCommand = withRemoteOptions(
     );
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createWorkflowHistoryLogsDeps(
-    repoDir,
-    datastoreResolver,
-    repoContext.workflowRepo,
-  );
+  const deps = {
+    ...createWorkflowHistoryLogsDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.workflowRepo,
+    ),
+    retentionWatermarks: repoContext.retentionWatermarks,
+  };
 
   const renderer = createWorkflowHistoryLogsRenderer(cliCtx.outputMode);
   await consumeStream(

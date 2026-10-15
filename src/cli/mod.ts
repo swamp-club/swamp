@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runRetentionAtCommandEnd } from "./retention_teardown.ts";
 import { Command } from "@cliffy/command";
 import { isAbsolute, join, resolve } from "@std/path";
 import {
@@ -2829,6 +2830,10 @@ async function runInvocation(
     // Flush datastore sync (push to S3 + release lock)
     await withSpan("swamp.cli.teardown", {}, async () => {
       await flushDatastoreSync();
+      // After the command's locks are released, before the v3 writer hold
+      // ends: the pass takes the lock itself, and compacts v3 history as
+      // the writer (swamp-club#3473). At most hourly; never fails the run.
+      await runRetentionAtCommandEnd();
       await closeV3DatastoresAfterSuccess();
       await runGateRefresh(gateOutcome);
 

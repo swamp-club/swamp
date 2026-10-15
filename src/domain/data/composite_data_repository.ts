@@ -23,10 +23,12 @@ import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 import { coerceModelType } from "../models/model_type.ts";
 import type { Namespace } from "./namespace.ts";
 import type {
+  AgedDataVersionPage,
   ContentAvailability,
   DeferredWriteReceipt,
   FindAllForTypeOptions,
   FindAllGlobalOptions,
+  FindVersionsCreatedBeforeOptions,
   ForeignContentFetcher,
   GarbageCollectionResult,
   UnifiedDataRepository,
@@ -186,6 +188,27 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     options?: { dryRun?: boolean },
   ): Promise<GarbageCollectionResult> {
     return this.persistent.collectGarbage(type, modelId, options);
+  }
+
+  // Ephemeral data lives only as long as the process, so data retention
+  // reads and ages out persistent data alone.
+  findVersionsCreatedBefore(
+    cutoff: Date,
+    options: FindVersionsCreatedBeforeOptions,
+  ): Promise<AgedDataVersionPage> {
+    if (!this.persistent.findVersionsCreatedBefore) {
+      return Promise.resolve({ versions: [] });
+    }
+    return this.persistent.findVersionsCreatedBefore(cutoff, options);
+  }
+
+  hasPendingVersions(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<boolean> {
+    if (!this.persistent.hasPendingVersions) return Promise.resolve(false);
+    return this.persistent.hasPendingVersions(type, modelId, dataName);
   }
 
   rename(

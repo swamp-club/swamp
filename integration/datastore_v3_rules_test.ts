@@ -197,6 +197,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
   // swamp-club#3491: and makes a replicated checkout's copy current first.
   "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#3473: `doctor datastores --retention` reads how far back a
+  // v3 datastore's history reaches (v3RetentionHistory), read-only.
+  "src/libswamp/datastores/retention_check.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3279: run-record artifacts resolve through the resolver on
   // v3, where a removed version can be written again.
   "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
@@ -207,6 +210,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/litestream/v3_replication.ts",
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/litestream_replication.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#3473: the end-of-command retention pass compacts v3 history
+  // after a pass, as the writer, before teardown closes the hold.
+  "src/cli/retention_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/litestream_replication.ts",
   // swamp-club#3489: serve answers a write whose commits a sync did not
   // confirm, or whose lease was fenced, with the CLI's error codes.
@@ -509,6 +515,9 @@ const PINNED_STREAM_DIR_USERS: readonly string[] = [
   "src/infrastructure/persistence/jsonl_vault_audit_repository.ts",
   // globalTelemetryDir: the user-global spool.
   "src/infrastructure/persistence/paths.ts",
+  // swampPath(repoDir, audit): `doctor datastores --retention` lists the
+  // command audit days, read-only (swamp-club#3473).
+  "src/libswamp/datastores/retention_check.ts",
   // swampPath(repoDir, telemetry): drains the legacy repo-local spool.
   "src/infrastructure/persistence/telemetry_spool_migration.ts",
 ];
@@ -794,6 +803,8 @@ const PINNED_V3_DATASTORE_FOR_CALLERS: readonly string[] = [
   "src/cli/commands/datastore_gc.ts",
   "src/cli/commands/datastore_status.ts",
   "src/cli/commands/serve.ts",
+  // swamp-club#3473: after requireInitializedRepo made the copy current.
+  "src/cli/retention_teardown.ts",
   "src/infrastructure/datastore_v3/v3_config_adoption.ts",
   "src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/serve/handlers/admin_handlers.ts",

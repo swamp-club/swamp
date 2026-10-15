@@ -139,6 +139,37 @@ export interface FindAllForTypeOptions {
 }
 
 /**
+ * A stored version created before a retention cutoff
+ * (see {@link UnifiedDataRepository.findVersionsCreatedBefore}).
+ */
+export interface AgedDataVersion {
+  type: ModelType;
+  modelId: string;
+  dataName: string;
+  version: number;
+  createdAt: Date;
+  /** Content size in bytes, as recorded when the version was written. */
+  size: number;
+}
+
+/** One page of {@link AgedDataVersion}s, oldest first. */
+export interface AgedDataVersionPage {
+  versions: AgedDataVersion[];
+  /** Pass back to read the next page; absent on the last page. */
+  cursor?: string;
+}
+
+/** Options for {@link UnifiedDataRepository.findVersionsCreatedBefore}. */
+export interface FindVersionsCreatedBeforeOptions {
+  /** Most versions to return in this page. */
+  limit: number;
+  /** The previous page's cursor. */
+  cursor?: string;
+  /** Normalized model types to leave out. */
+  excludeTypes?: readonly string[];
+}
+
+/**
  * Repository interface for unified Data storage with versioning.
  */
 export interface UnifiedDataRepository {
@@ -627,4 +658,26 @@ export interface UnifiedDataRepository {
     modelName: string,
     dataName: string,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>>;
+
+  /**
+   * Lists promoted versions of this repository's namespace created before
+   * `cutoff`, oldest first and a page at a time, from an index on creation
+   * time rather than a walk of every data item. In-flight deferred writes
+   * are never listed. Data retention reads its candidates here. Absent when
+   * the repository cannot list by age.
+   */
+  findVersionsCreatedBefore?(
+    cutoff: Date,
+    options: FindVersionsCreatedBeforeOptions,
+  ): Promise<AgedDataVersionPage>;
+
+  /**
+   * Whether a data name has an in-flight deferred write: a version written
+   * but not yet promoted or rolled back. Deleting the name would lose it.
+   */
+  hasPendingVersions?(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<boolean>;
 }

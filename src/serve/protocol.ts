@@ -841,7 +841,13 @@ export type DatastoreNamespaceListPayload = Record<string, never>;
 
 export type DoctorVaultsPayload = Record<string, never>;
 
-export type DoctorDatastoresPayload = Record<string, never>;
+export interface DoctorDatastoresPayload {
+  /**
+   * Also scan storage for items older than each kind's retention
+   * (`swamp doctor datastores --retention`, swamp-club#3473).
+   */
+  retention?: boolean;
+}
 
 export type DoctorSecretsPayload = Record<string, never>;
 

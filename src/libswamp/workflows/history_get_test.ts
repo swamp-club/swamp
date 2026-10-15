@@ -32,6 +32,10 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { collect } from "../testing.ts";
+import {
+  FAKE_REAPED_CUTOFF,
+  fakeWatermarks,
+} from "../retention/reaped_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 import {
@@ -527,4 +531,58 @@ Deno.test("nestedWaitView: a run with a finished nested run is not awaiting resu
 
   review.applyWaitOutcome(acceptedOutcomeFor(review.signalWait!, {}));
   assertEquals((await nestedWaitView(deps, parent)).awaitingResume, true);
+});
+
+Deno.test("workflowHistoryGet: a missing run says runs before the retention cutoff were reaped", async () => {
+  const deps = makeDeps({
+    findWorkflow: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["workflowRuns"]),
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "abc"),
+  );
+  const last = events[1] as Extract<WorkflowHistoryGetEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "not_found");
+  assertEquals(
+    last.error.message,
+    `No workflow run or workflow found: abc; runs before ${FAKE_REAPED_CUTOFF} have been reaped by retention (14d)`,
+  );
+  assertEquals(last.error.details, {
+    entityType: "Workflow run or workflow",
+    idOrName: "abc",
+    reapedBefore: FAKE_REAPED_CUTOFF,
+    retention: "14d",
+  });
+});
+
+Deno.test("workflowHistoryGet: a workflow with no runs left says runs were reaped", async () => {
+  const deps = makeDeps({
+    findLatestRun: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["workflowRuns"]),
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "my-workflow"),
+  );
+  const last = events[1] as Extract<WorkflowHistoryGetEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "not_found");
+  assertEquals(
+    (last.error.details as Record<string, unknown>).reapedBefore,
+    FAKE_REAPED_CUTOFF,
+  );
+});
+
+Deno.test("workflowHistoryGet: without a watermark for runs the not-found is unchanged", async () => {
+  const deps = makeDeps({
+    findWorkflow: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["data"]),
+  });
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "abc"),
+  );
+  const last = events[1] as Extract<WorkflowHistoryGetEvent, { kind: "error" }>;
+  assertEquals(last.error.message, "No workflow run or workflow found: abc");
+  assertEquals(last.error.details, {
+    entityType: "Workflow run or workflow",
+    idOrName: "abc",
+  });
 });

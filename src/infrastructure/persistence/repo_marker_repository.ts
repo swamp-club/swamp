@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { parse as parseYaml } from "@std/yaml";
 import { stringify as stringifyYaml } from "@std/yaml/unstable-stringify";
 import { atomicWriteTextFile } from "./atomic_write.ts";
@@ -24,17 +25,26 @@ import type { SwampVersion } from "../../domain/repo/swamp_version.ts";
 import type { RepoPath } from "../../domain/repo/repo_path.ts";
 import { swampMarkerPath } from "./paths.ts";
 import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
-import { parseDataDuration } from "../../domain/data/duration.ts";
+import {
+  checkRetentionConfig,
+  type RetentionConfig,
+} from "../../domain/retention/retention_policy.ts";
 import type { AiTool } from "../../domain/repo/ai_tool.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { removedDriverFieldMessage } from "../../domain/removed_driver_fields.ts";
 
 export type { AiTool };
 
-export interface GarbageCollectionConfig {
-  workflowRuns?: string;
-  outputs?: string;
-}
+const logger = getLogger(["swamp", "persistence", "repo-marker"]);
+
+/** Unknown-key warnings already logged, so a marker read many times warns once. */
+const warnedUnknownKeys = new Set<string>();
+
+/**
+ * The `garbageCollection` block: retention per kind of history and whether
+ * it is applied automatically (see `RetentionPolicy`).
+ */
+export type GarbageCollectionConfig = RetentionConfig;
 
 /**
  * Data structure for the .swamp.yaml marker file.
@@ -110,40 +120,20 @@ function validateGarbageCollection(
   data: RepoMarkerData,
   path: string,
 ): void {
-  const config = data.garbageCollection;
-  if (config === undefined) return;
-
-  if (typeof config !== "object" || config === null || Array.isArray(config)) {
+  const { errors, unknownKeys } = checkRetentionConfig(data.garbageCollection);
+  if (errors.length > 0) {
     throw markErrorPaths(
-      new UserError(`${path}: garbageCollection must be a mapping`),
+      new UserError(`${path}: ${errors[0].message}`),
       [path],
     );
   }
-
-  for (const field of ["workflowRuns", "outputs"] as const) {
-    const duration = config[field];
-    if (duration === undefined) continue;
-    if (typeof duration !== "string") {
-      throw markErrorPaths(
-        new UserError(
-          `${path}: garbageCollection.${field} must be a duration string`,
-        ),
-        [path],
-      );
-    }
-
-    try {
-      if (parseDataDuration(duration) <= 0) {
-        throw new Error("duration must be positive");
-      }
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          `${path}: garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w`,
-        ),
-        [path],
-      );
-    }
+  // Unknown keys were silently ignored before retention gained more kinds,
+  // so they are warned about rather than refused.
+  for (const key of unknownKeys) {
+    const warning = `${path}\0${key}`;
+    if (warnedUnknownKeys.has(warning)) continue;
+    warnedUnknownKeys.add(warning);
+    logger.warn`${path}: ignoring unknown key garbageCollection.${key}`;
   }
 }
 

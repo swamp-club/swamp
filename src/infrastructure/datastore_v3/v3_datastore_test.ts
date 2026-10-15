@@ -34,6 +34,14 @@ import {
   openV3Datastore,
 } from "./v3_datastore.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
+import {
+  blobPut,
+  deleteVersion,
+  modelCommit,
+  savePut,
+  versionOp,
+} from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-datastore-" });
@@ -254,5 +262,116 @@ Deno.test("listV3Namespaces: reads a checkpointed commits.db without writing to 
       "infra",
       "team",
     ]);
+  });
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff, never inside the safety window, and the sweep then reclaims removed content (swamp-club#3473)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    // Far past the chunks' real modification times, so only the release
+    // grace keeps them; moved forward instead of slept.
+    let now = Date.parse("2030-01-01T00:00:00.000Z");
+    const handle = openV3Datastore({
+      repoDir: join(dir, "a"),
+      datastorePath,
+      clock: () => new Date(now),
+    });
+    const signal = () => AbortSignal.timeout(30_000);
+    const ago = (days: number) => new Date(now - days * DAY_MS).toISOString();
+    const content = (text: string) =>
+      handle.chunkStore.write(
+        SOLO_NAMESPACE,
+        new TextEncoder().encode(text.repeat(64)),
+        signal(),
+      );
+    const storedChunks = async () => {
+      const hashes: string[] = [];
+      for await (const chunk of handle.storage.list("_default", signal())) {
+        hashes.push(chunk.sha256);
+      }
+      return hashes.sort();
+    };
+    try {
+      const reaped = await content("reaped");
+      const kept = await content("kept");
+      const history = [
+        // Written long ago, then removed by retention 10 days ago.
+        [30, [await blobPut("a", 1, reaped), versionOp("a", 1)]],
+        [10, [deleteVersion("a", 1)]],
+        // Older than a 3-day cutoff, but inside the 7-day safety window.
+        [5, [await blobPut("b", 1, kept), versionOp("b", 1)]],
+        // Newer than any cutoff here.
+        [1, [await savePut("c", 1), versionOp("c", 1)]],
+      ] as const;
+      let seq = 1;
+      for (const [days, ops] of history) {
+        await handle.commitStore.append(
+          modelCommit(seq, ops, { at: ago(days), txnId: `txn-${seq}` }),
+        );
+        seq++;
+      }
+      const reapedChunks = [...reaped.chunkHashes()].sort();
+      const all = await storedChunks();
+
+      // Well under the default policy's 10,000 commits: nothing is due.
+      assertEquals(await handle.compactIfDue(signal()), undefined);
+
+      // A 20-day cutoff folds only the write; the remove is newer, so the
+      // base still names the reaped content.
+      const older = await handle.compactBefore(
+        new Date(now - 20 * DAY_MS),
+        signal(),
+      );
+      assertEquals(older.bound.toISOString(), ago(20));
+      assertEquals(older.compactedThrough, 1);
+      assertEquals(older.report?.compacted, 1);
+      now += DAY_MS + 60 * 60 * 1000;
+      assertEquals((await handle.collectChunks(signal())).deleted, 0);
+      assertEquals(await storedChunks(), all);
+
+      // A 3-day cutoff is held back to the 7-day window: the remove folds,
+      // the commits inside the window and after the cutoff stay.
+      const cutoff = new Date(now - 3 * DAY_MS);
+      const folded = await handle.compactBefore(cutoff, signal());
+      assertEquals(folded.bound.toISOString(), ago(7));
+      assertEquals(folded.compactedThrough, 2);
+      assertEquals(folded.report?.compacted, 1);
+      assertEquals(await handle.describe(), {
+        storedCommits: 2,
+        compactedThrough: 2,
+      });
+      // Within the release grace the reaped chunks are still kept.
+      assertEquals((await handle.collectChunks(signal())).deleted, 0);
+      // Past it, they are deleted and nothing else is.
+      now += DAY_MS + 60 * 60 * 1000;
+      const sweep = await handle.collectChunks(signal());
+      assertEquals(sweep.deleted, reapedChunks.length);
+      assertEquals(
+        await storedChunks(),
+        all.filter((hash) => !reapedChunks.includes(hash)),
+      );
+      for (const hash of kept.chunkHashes()) {
+        assert((await storedChunks()).includes(hash));
+      }
+
+      // Two days on, the window has slid past the second write, which now
+      // folds; the commit newer than the cutoff still stays.
+      const later = await handle.compactBefore(cutoff, signal());
+      assertEquals(later.bound.toISOString(), ago(7));
+      assertEquals(later.compactedThrough, 3);
+      assertEquals(await handle.describe(), {
+        storedCommits: 1,
+        compactedThrough: 3,
+      });
+      // Nothing more is older than the bound: another call folds nothing.
+      const again = await handle.compactBefore(cutoff, signal());
+      assertEquals(again.report, undefined);
+      assertEquals(again.compactedThrough, 3);
+    } finally {
+      await handle.close();
+    }
   });
 });

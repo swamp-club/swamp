@@ -826,9 +826,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   async deleteOlderThan(
     cutoff: Date,
-    options?: { dryRun?: boolean },
+    options?: { dryRun?: boolean; limit?: number },
   ): Promise<
-    { deleted: number; bytesReclaimed: number; deletedRunIds: string[] }
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      deletedRunIds: string[];
+      more: boolean;
+    }
   > {
     const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
     // A finished nested run is kept while its parent still exists and has not
@@ -888,9 +893,18 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     // Repo-local workflow dirs a log was removed from, each with one removed
     // log path, so the dirs left empty can be removed once their index is.
     const localLogDirs = new Map<string, string>();
+    // With a limit, the scan stops at the first collectible run past it, so
+    // `more` is only set when another run is waiting to be collected.
+    const limit = options?.limit;
+    let more = false;
+    const limitReached = (): boolean => {
+      if (limit === undefined || deleted < limit) return false;
+      more = true;
+      return true;
+    };
 
     try {
-      for await (const entry of Deno.readDir(this.baseDir)) {
+      scan: for await (const entry of Deno.readDir(this.baseDir)) {
         if (!entry.isDirectory) continue;
         const workflowId = entry.name as WorkflowId;
         const dir = this.getRunsDir(workflowId);
@@ -914,6 +928,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               const content = await Deno.readTextFile(yamlPath);
               const data = parseYaml(content) as WorkflowRunData | null;
               if (!data) {
+                if (limitReached()) break scan;
                 let fileBytes = stat.size ?? 0;
                 if (!options?.dryRun) {
                   await signalChange(this.markDirty, {
@@ -965,6 +980,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               // Read a parent only for a child old enough to collect.
               if (await keepForParent(data)) continue;
               if (await keepForChild(data)) continue;
+              if (limitReached()) break scan;
 
               let fileBytes = stat.size ?? 0;
               if (!options?.dryRun) {
@@ -1018,11 +1034,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
     }
 
-    bytesReclaimed += await this.sweepOrphanLogs(
-      cutoffMs,
-      options?.dryRun ?? false,
-      localLogDirs,
-    );
+    // A batch that stopped at its limit leaves the orphaned-log sweep to the
+    // final batch: it scans every repo-local log, and the logs of the runs
+    // this batch deleted are already removed with them.
+    if (!more) {
+      bytesReclaimed += await this.sweepOrphanLogs(
+        cutoffMs,
+        options?.dryRun ?? false,
+        localLogDirs,
+      );
+    }
 
     for (const dir of affectedDirs) {
       await deleteRunIndex(dir);
@@ -1036,7 +1057,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       await cleanupEmptyParentDirs(logPath, this.getLocalRunsDir());
     }
 
-    return { deleted, bytesReclaimed, deletedRunIds };
+    return { deleted, bytesReclaimed, deletedRunIds, more };
   }
 
   /**

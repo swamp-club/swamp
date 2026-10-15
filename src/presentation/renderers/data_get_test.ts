@@ -374,3 +374,26 @@ Deno.test("JsonDataGetRenderer: prints queries with the command target", async (
     console.log = originalLog;
   }
 });
+
+Deno.test("createDataGetRenderer: the JSON error keeps the not_found code", () => {
+  const handlers = createDataGetRenderer("json").handlers();
+  const message =
+    "Not found: abc; runs before 2026-10-01T00:00:00.000Z have been reaped by retention (14d)";
+  const error = assertThrows(
+    () =>
+      handlers.error({
+        kind: "error",
+        error: {
+          code: "not_found",
+          message,
+          details: {
+            reapedBefore: "2026-10-01T00:00:00.000Z",
+            retention: "14d",
+          },
+        },
+      }),
+    UserError,
+  );
+  assertEquals(error.message, message);
+  assertEquals(error.code, "not_found");
+});

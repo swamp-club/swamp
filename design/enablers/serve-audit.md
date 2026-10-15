@@ -85,8 +85,12 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    configurable (default 100MB).
 6. **StoreSink** batches events and, on a timer or a full batch, writes
    date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
-   configured **AuditStore** target. Each target can set its own retention; old
-   date partitions are deleted automatically.
+   configured **AuditStore** target. Each target can set its own retention
+   (`retention.days`); a target without one takes the repository's
+   `.swamp.yaml` `garbageCollection.audit` (else `retention`), rounded up to
+   whole days (swamp-club#3473). Old date partitions are deleted
+   automatically. The repository default is read when serve starts, so a
+   change to it needs a restart.
 7. **RemoteAuditStore** adapts `ControlPlaneStore` with a key prefix.
 
 ## Delivery to sinks

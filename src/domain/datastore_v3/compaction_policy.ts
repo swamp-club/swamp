@@ -74,25 +74,56 @@ export interface CompactionRetention {
   readonly since: string;
 }
 
-/** The retention a policy asks for at `now`. */
+/**
+ * The instant before which a compaction may fold commits at `now`. Without
+ * `before` it is the policy's own bound, `now` less `retainMs`. With
+ * `before` (a retention cutoff, swamp-club#3473) it is the earlier of the
+ * two: a commit newer than the cutoff is never folded, and neither is one
+ * inside the policy's period, however old the cutoff asks for.
+ *
+ * The period is the safety window: the default keeps 7 days, the outbox's
+ * retry bound (`OUTBOX_RETRY_BOUND_MS`), so a commit a writer may still
+ * retry, or a checkout a little behind may still replay, stays a commit.
+ */
+export function compactionBound(
+  policy: CompactionPolicy,
+  now: Date,
+  before?: Date,
+): Date {
+  const bound = now.getTime() - policy.retainMs;
+  return new Date(
+    before === undefined ? bound : Math.min(bound, before.getTime()),
+  );
+}
+
+/**
+ * The retention a policy asks for at `now`. With `before`, a retention
+ * cutoff, the newest-commits floor no longer applies: every commit written
+ * before {@link compactionBound} may be folded, however few there are.
+ */
 export function retentionOf(
   policy: CompactionPolicy,
   now: Date,
+  before?: Date,
 ): CompactionRetention {
   return {
-    commits: policy.retainCommits,
-    since: new Date(now.getTime() - policy.retainMs).toISOString(),
+    commits: before === undefined ? policy.retainCommits : 0,
+    since: compactionBound(policy, now, before).toISOString(),
   };
 }
 
 /**
  * The cursor to compact through, or undefined when the candidate folds
- * fewer commits than the policy's minimum.
+ * fewer commits than the policy's minimum. With `before`, a retention
+ * cutoff, any commit the retention allows is worth folding: the cutoff asks
+ * that nothing older than it remain, not that compaction pay for itself.
  */
 export function compactionTarget(
   candidate: CompactionCandidate,
   policy: CompactionPolicy,
+  before?: Date,
 ): number | undefined {
   if (candidate.through === undefined) return undefined;
-  return candidate.commits >= policy.minCommits ? candidate.through : undefined;
+  const minCommits = before === undefined ? policy.minCommits : 1;
+  return candidate.commits >= minCommits ? candidate.through : undefined;
 }

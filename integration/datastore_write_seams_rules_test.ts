@@ -548,12 +548,18 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/data/prune.ts: createDataPruneDeps: YamlWorkflowRunRepository",
   "src/libswamp/data/rename.ts: createDataRenameDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/data/rename.ts: createDataRenameDeps: YamlDefinitionRepository",
-  "src/libswamp/data/run_gc.ts: createRunGcDeps: YamlEvaluatedWorkflowRepository",
-  "src/libswamp/data/run_gc.ts: createRunGcDeps: YamlOutputRepository",
-  "src/libswamp/data/run_gc.ts: createRunGcDeps: YamlWorkflowRunRepository",
+  "src/libswamp/data/run_gc.ts: createRunLifecycleService: YamlEvaluatedWorkflowRepository",
+  "src/libswamp/data/run_gc.ts: createRunLifecycleService: YamlOutputRepository",
+  "src/libswamp/data/run_gc.ts: createRunLifecycleService: YamlWorkflowRunRepository",
   "src/libswamp/data/versions.ts: createDataVersionsDeps: FileSystemUnifiedDataRepository",
+  // swamp-club#3473: the retention pass prunes the repo-local agent command
+  // log (.swamp/audit), never a datastore tier.
+  "src/libswamp/retention/collectors.ts: createRetentionCollectors: JsonlAuditRepository",
   "src/libswamp/data/versions.ts: createDataVersionsDeps: YamlDefinitionRepository",
   // Built directly in src/libswamp/datastores/.
+  // `doctor datastores --retention` lists run snapshots, read-only
+  // (swamp-club#3473).
+  "src/libswamp/datastores/retention_check.ts: checkSnapshots: YamlEvaluatedWorkflowRepository",
   "src/libswamp/datastores/setup.ts: createDatastoreSetupDeps: YamlVaultConfigRepository",
   // Built directly in src/libswamp/extensions/.
   "src/libswamp/extensions/list.ts: createExtensionListDeps: LockfileRepository",
@@ -731,6 +737,9 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/vaults/list_keys.ts: createVaultListKeysDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/put.ts: createVaultPutDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/read_secret.ts: createVaultReadSecretDeps: YamlVaultConfigRepository",
+  // Only lists run snapshots: `doctor datastores --retention` writes nothing
+  // (swamp-club#3473).
+  "src/libswamp/datastores/retention_check.ts: checkSnapshots: YamlEvaluatedWorkflowRepository",
   "src/libswamp/datastores/setup.ts: createDatastoreSetupDeps: YamlVaultConfigRepository",
   // repo init writes the default vault (swamp-club#3259) into the new repo's
   // own vaults/ before any datastore is configured, so there is nothing to
@@ -959,8 +968,12 @@ const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   // The catalog's SQLite WAL checkpoint, which shares the name and pushes
   // nothing.
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
-  "src/libswamp/data/gc.ts: createDataGcDeps",
+  "src/libswamp/data/gc.ts: createDataGcDepsFrom",
   "src/libswamp/data/prune.ts: createDataPruneDeps",
+  // swamp-club#3473: after a retention pass, serve's timer and the CLI's
+  // end-of-command pass checkpoint the catalog's WAL.
+  "src/cli/commands/serve.ts: serveCommand",
+  "src/cli/retention_teardown.ts: runRetentionAtCommandEnd",
   "src/libswamp/datastores/compact.ts: datastoreCompact",
   // swamp-club#3279: a v3 root's checkpoint commits the partitions touched
   // so far, then runs the checkpoint option it was given; the managed
@@ -1563,11 +1576,16 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/cli/commands/datastore_gc.ts: datastoreGcCommand",
   "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
   "src/cli/commands/serve.ts: serveCommand",
+  // swamp-club#3473: the end-of-command retention pass compacts v3 history.
+  "src/cli/retention_teardown.ts: runRetentionAtCommandEnd",
   "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
   // `datastore namespace list`, CLI and serve: a v3 datastore has no
   // namespace manifests, so its commits.db names the namespaces
   // (swamp-club#3301).
   "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps",
+  // `doctor datastores --retention` reports a v3 datastore's history
+  // (swamp-club#3473).
+  "src/libswamp/datastores/retention_check.ts: retentionScanSourcesFor",
   // Commands v3 refuses choose a read-only open before they open, so the
   // refusal takes no writer lease and changes nothing (swamp-club#3359):
   // `datastore sync` and `datastore migrate-index`.

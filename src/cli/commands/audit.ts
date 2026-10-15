@@ -36,7 +36,12 @@ import type { AuditTimelineResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-import { AuditService } from "../../domain/audit/audit_service.ts";
+import {
+  auditRetentionDays,
+  AuditService,
+  DEFAULT_AUDIT_RETENTION_DAYS,
+} from "../../domain/audit/audit_service.ts";
+import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
 import {
   type BashCommandEntry,
   createBashCommandEntry,
@@ -157,12 +162,35 @@ export function resolveAuditRepoDir(target: AuditHookTarget): string | null {
 }
 
 /**
+ * The number of days the repository at `repoDir` keeps CLI audit data: its
+ * `garbageCollection` audit retention in whole days (rounded up), or
+ * {@link DEFAULT_AUDIT_RETENTION_DAYS} when unset or when `.swamp.yaml`
+ * cannot be read. Never throws: it runs inside the audit hook.
+ *
+ * @internal Exported for testing
+ */
+export async function resolveRepoAuditRetentionDays(
+  repoDir: string,
+): Promise<number> {
+  try {
+    const marker = await new RepoMarkerRepository().read(
+      RepoPath.create(repoDir),
+    );
+    const policy = RetentionPolicy.fromConfig(marker?.garbageCollection);
+    return auditRetentionDays(policy.retentionMs("audit"));
+  } catch {
+    return DEFAULT_AUDIT_RETENTION_DAYS;
+  }
+}
+
+/**
  * Appends a hook's bash command entry to the audit log of the repository
  * {@link resolveAuditRepoDir} picks. Writes nothing when no initialized
  * repository is found.
  *
- * @param options.cleanup Start old-data cleanup after the append (default
- *   `true`). Tests pass `false` so no unawaited directory scan outlives them.
+ * @param options.cleanup Delete audit data older than the repo's audit
+ *   retention after the append (default `true`). The cleanup is awaited and
+ *   its failures are only logged.
  * @returns Whether the entry was recorded.
  * @internal Exported for testing
  */
@@ -180,9 +208,10 @@ export async function recordHookEntry(
   await repository.append(entry);
 
   if (options.cleanup ?? true) {
-    // Fire-and-forget cleanup of old audit data
     const service = new AuditService(repository);
-    service.cleanupOldAuditData();
+    await service.cleanupOldAuditData(
+      await resolveRepoAuditRetentionDays(repoDir),
+    );
   }
   return true;
 }

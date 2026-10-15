@@ -93,6 +93,35 @@ Deno.test("resolveRunGcInput: omitted output policy uses the output default", ()
   );
 });
 
+Deno.test("resolveRunGcInput: resolves retention and evaluatedSnapshots from the policy", () => {
+  assertEquals(
+    resolveRunGcInput(undefined, {
+      retention: "1w",
+      evaluatedSnapshots: "3d",
+    }),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 7,
+      outputRetentionDays: 7,
+      evaluatedSnapshotRetentionDays: 3,
+    },
+  );
+});
+
+Deno.test("resolveRunGcInput: a request run retention drops the snapshot retention", () => {
+  assertEquals(
+    resolveRunGcInput(
+      { workflowRunRetentionDays: 2 },
+      { retention: "1w", evaluatedSnapshots: "3d" },
+    ),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 2,
+      outputRetentionDays: 7,
+    },
+  );
+});
+
 // --- sync tests: data mutations must push to the remote datastore ---
 
 function createMockSocket(): WebSocket & { sent: string[] } {

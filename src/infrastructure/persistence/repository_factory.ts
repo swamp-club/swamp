@@ -50,6 +50,7 @@
  * ```
  */
 
+import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
 import type {
   ContinuationClaims,
   RunRecordCurrency,
@@ -508,6 +509,13 @@ export interface RepositoryContext {
    * same file, and where the sync service has no `fetchContent`.
    */
   runRecordCurrency?: RunRecordCurrency;
+  /**
+   * The per-kind retention watermarks of this datastore
+   * (swamp-club#3473): when each kind was last reaped and up to when.
+   * Absent where the datastore has no control-plane store every host
+   * reads, or for a read-only command on a custom datastore.
+   */
+  retentionWatermarks?: RetentionWatermarkRepository;
 }
 
 /**

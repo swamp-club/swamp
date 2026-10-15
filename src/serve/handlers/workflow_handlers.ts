@@ -1017,13 +1017,16 @@ export async function handleWorkflowHistoryGet(
   const access = await resolveRunAccess(
     ctx.repoContext.workflowRepo,
     async () => {
-      const deps = createWorkflowHistoryGetDeps(
-        ctx.repoDir,
-        ctx.datastoreResolver,
-        ctx.repoContext.workflowRepo,
-        dataReadPolicy(socket, ctx, principal),
-        ctx.repoContext.signalWaits,
-      );
+      const deps = {
+        ...createWorkflowHistoryGetDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.workflowRepo,
+          dataReadPolicy(socket, ctx, principal),
+          ctx.repoContext.signalWaits,
+        ),
+        retentionWatermarks: ctx.repoContext.retentionWatermarks,
+      };
       return {
         deps,
         reference: await resolveRunReference(deps, payload.workflowIdOrName),
@@ -1115,11 +1118,14 @@ export async function handleWorkflowHistoryLogs(
   const access = await resolveRunAccess(
     ctx.repoContext.workflowRepo,
     async () => {
-      const deps = createWorkflowHistoryLogsDeps(
-        ctx.repoDir,
-        ctx.datastoreResolver,
-        ctx.repoContext.workflowRepo,
-      );
+      const deps = {
+        ...createWorkflowHistoryLogsDeps(
+          ctx.repoDir,
+          ctx.datastoreResolver,
+          ctx.repoContext.workflowRepo,
+        ),
+        retentionWatermarks: ctx.repoContext.retentionWatermarks,
+      };
       return {
         deps,
         reference: await resolveRunReference(deps, payload.runIdOrWorkflow),
@@ -1216,6 +1222,7 @@ export async function handleWorkflowHistorySearch(
         ctx.repoContext.workflowRunRepo.findAllSummariesFromIndex(
           createWorkflowId(id),
         ),
+      retentionWatermarks: ctx.repoContext.retentionWatermarks,
     };
 
     let result: Record<string, unknown> | undefined;
@@ -1308,6 +1315,7 @@ export async function handleWorkflowRunSearch(
         "read",
         ctx,
       ),
+      retentionWatermarks: ctx.repoContext.retentionWatermarks,
     };
 
     let result: Record<string, unknown> | undefined;

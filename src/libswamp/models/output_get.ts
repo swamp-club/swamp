@@ -41,6 +41,8 @@ import {
 } from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { withReapedHint } from "../retention/reaped.ts";
+import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
 /**
  * Data structure for provenance information.
  */
@@ -135,6 +137,12 @@ export interface ModelOutputGetDeps extends OutputReferenceDeps<OutputInfo> {
     definitionId: string,
   ) => Promise<Definition | null>;
   modelTypes: () => ModelType[];
+  /**
+   * Where retention records how far it has reaped. With it an output that is
+   * not found says that outputs before the cutoff have been reaped
+   * (swamp-club#3473).
+   */
+  retentionWatermarks?: RetentionWatermarkRepository;
 }
 
 /** Options for {@link modelOutputGet}. */
@@ -235,12 +243,19 @@ export async function* modelOutputGet(
           yield {
             kind: "error",
             // The details keep notFound's shape; only the text is worded.
-            error: wordedSwampError(
-              "not_found",
-              wordedText((w) =>
-                `Output or ${w.noun} not found: ${outputIdOrModelName}`
+            error: await withReapedHint(
+              wordedSwampError(
+                "not_found",
+                wordedText((w) =>
+                  `Output or ${w.noun} not found: ${outputIdOrModelName}`
+                ),
+                {
+                  entityType: "Output or model",
+                  idOrName: outputIdOrModelName,
+                },
               ),
-              { entityType: "Output or model", idOrName: outputIdOrModelName },
+              "outputs",
+              deps.retentionWatermarks,
             ),
           };
           return;
@@ -248,16 +263,20 @@ export async function* modelOutputGet(
           if (!reference.latest) {
             yield {
               kind: "error",
-              error: wordedSwampError(
-                "not_found",
-                wordedText((w) =>
-                  `Output not found: no outputs for ${w.noun}: ${reference.definition.name}`
+              error: await withReapedHint(
+                wordedSwampError(
+                  "not_found",
+                  wordedText((w) =>
+                    `Output not found: no outputs for ${w.noun}: ${reference.definition.name}`
+                  ),
+                  {
+                    entityType: "Output",
+                    idOrName:
+                      `no outputs for model: ${reference.definition.name}`,
+                  },
                 ),
-                {
-                  entityType: "Output",
-                  idOrName:
-                    `no outputs for model: ${reference.definition.name}`,
-                },
+                "outputs",
+                deps.retentionWatermarks,
               ),
             };
             return;

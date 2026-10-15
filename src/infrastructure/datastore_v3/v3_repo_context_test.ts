@@ -38,10 +38,12 @@ import {
   closeV3Datastores,
   collectChunksQuietly,
   compactQuietly,
+  compactRetentionQuietly,
   holdV3Writer,
   v3DatastoreFor,
   V3MaintenanceTimer,
   v3RepositoryFactoryConfig,
+  v3RetentionHistory,
 } from "./v3_repo_context.ts";
 import {
   holdsV3WriterLock,
@@ -150,6 +152,64 @@ Deno.test("compactQuietly: a failing compaction is logged, not thrown", async ()
   await compactQuietly(handle);
 });
 
+Deno.test("compactRetentionQuietly: compacts before the cutoff, then sweeps, and reports both (swamp-club#3473)", async () => {
+  const calls: string[] = [];
+  const cutoff = new Date("2026-10-01T00:00:00.000Z");
+  const bound = new Date("2026-09-30T00:00:00.000Z");
+  const handle = {
+    datastorePath: "/fake",
+    compactBefore: (given: Date) => {
+      calls.push(`compact ${given.toISOString()}`);
+      return Promise.resolve({
+        bound,
+        compactedThrough: 7,
+        report: { point: 7, compacted: 4, batches: 1, released: 2 },
+      });
+    },
+    collectChunks: () => {
+      calls.push("collect");
+      return Promise.resolve({ deleted: 2 });
+    },
+  } as unknown as V3Datastore;
+  assertEquals(await compactRetentionQuietly(handle, cutoff), {
+    bound,
+    compactedThrough: 7,
+    compacted: 4,
+    chunksDeleted: 2,
+  });
+  assertEquals(calls, [`compact ${cutoff.toISOString()}`, "collect"]);
+});
+
+Deno.test("compactRetentionQuietly: a failing compaction is logged, not thrown, and skips the sweep", async () => {
+  let collected = false;
+  const handle = {
+    datastorePath: "/fake",
+    compactBefore: () => Promise.reject(new Error("disk full")),
+    collectChunks: () => {
+      collected = true;
+      return Promise.resolve({ deleted: 0 });
+    },
+  } as unknown as V3Datastore;
+  assertEquals(await compactRetentionQuietly(handle, new Date()), undefined);
+  assertEquals(collected, false);
+});
+
+Deno.test("compactRetentionQuietly: a failing sweep still reports the compaction", async () => {
+  const bound = new Date("2026-09-30T00:00:00.000Z");
+  const handle = {
+    datastorePath: "/fake",
+    compactBefore: () =>
+      Promise.resolve({ bound, compactedThrough: 0, report: undefined }),
+    collectChunks: () => Promise.reject(new Error("disk gone")),
+  } as unknown as V3Datastore;
+  assertEquals(await compactRetentionQuietly(handle, new Date()), {
+    bound,
+    compactedThrough: 0,
+    compacted: 0,
+    chunksDeleted: 0,
+  });
+});
+
 Deno.test("v3RepositoryFactoryConfig: managedConfig with the config tier left out is refused", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
@@ -164,6 +224,23 @@ Deno.test("v3RepositoryFactoryConfig: managedConfig with the config tier left ou
       UserError,
       "leave `config` out",
     );
+  });
+});
+
+Deno.test("v3RetentionHistory: an empty history and the 7-day bound retention compacts before (swamp-club#3473)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const now = new Date("2026-10-15T00:00:00.000Z");
+    const history = await v3RetentionHistory(
+      join(dir, "repo"),
+      { type: "filesystem", path: datastorePath },
+      now,
+    );
+    assertEquals(history, {
+      oldestCommitAt: null,
+      compactionBound: new Date("2026-10-08T00:00:00.000Z"),
+    });
   });
 });
 

@@ -90,6 +90,17 @@ export interface RenameForwardRow {
   renamed_to: string;
 }
 
+/** A row {@link CatalogStore.rowsCreatedBefore} returns. */
+export interface CatalogAgedRow {
+  row_id: number;
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  version: number;
+  created_at: string;
+  size: number;
+}
+
 /**
  * SQLite-backed metadata catalog for data query.
  *
@@ -847,6 +858,42 @@ export class CatalogStore {
       version: number;
     }[];
     return new Set(rows.map((r) => r.version));
+  }
+
+  /**
+   * One page of promoted (not pending) rows of a namespace created before
+   * `cutoffIso`, oldest first, through the created_at index rather than a
+   * table scan. Pass the last row's `created_at` and `row_id` as `after` to
+   * read the next page. Rows of `excludeTypes` are left out.
+   */
+  rowsCreatedBefore(
+    namespace: string,
+    cutoffIso: string,
+    limit: number,
+    after?: { createdAt: string; rowId: number },
+    excludeTypes: readonly string[] = [],
+  ): CatalogAgedRow[] {
+    const clauses = ["created_at < ?", "namespace = ?", "is_pending = 0"];
+    const params: (string | number)[] = [cutoffIso, namespace];
+    if (after) {
+      clauses.push("(created_at > ? OR (created_at = ? AND rowid > ?))");
+      params.push(after.createdAt, after.createdAt, after.rowId);
+    }
+    if (excludeTypes.length > 0) {
+      clauses.push(
+        `type_normalized NOT IN (${excludeTypes.map(() => "?").join(", ")})`,
+      );
+      for (const type of excludeTypes) params.push(type);
+    }
+    params.push(limit);
+    return this.db.prepare(
+      `SELECT rowid AS row_id, type_normalized, model_id, data_name, version,
+              created_at, size
+       FROM catalog INDEXED BY idx_catalog_created_at
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY created_at, rowid
+       LIMIT ?`,
+    ).all(...params) as unknown as CatalogAgedRow[];
   }
 
   /**

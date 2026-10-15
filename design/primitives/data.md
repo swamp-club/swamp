@@ -246,12 +246,19 @@ versions:
 | `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a behavior                                                                                | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
 | `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                                                                               | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
 | `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records and their run snapshots; never `data/`                                                                     | `src/domain/data/run_lifecycle_service.ts`                                     |
+| Retention (`garbageCollection.data`) | Every version older than the cutoff, the latest included, except built-in access/serve types and names with an unpromoted write | `data_lifecycle_service.ts` `deleteDataOlderThan`; `src/libswamp/retention/`   |
 
 Post-run GC applies both count and duration caps; its failures warn and never
 fail the run. `swamp data gc` phase 2 collects by count or duration.
 `swamp data delete` confirms unless `--force`/`--yes`; `--dry-run` previews
 `--prefix`/`--all`. `swamp run gc` uses `.swamp.yaml` `garbageCollection`,
-otherwise 30 days each.
+otherwise 30 days each. `.swamp.yaml` `garbageCollection.data` (else
+`retention`) is a repository-wide maximum age on top of each spec's own
+policy: `swamp data gc` applies it first, and with `automatic: true` serve
+and the CLI apply it hourly (see [repo.md](../surfaces/repo.md#retention)).
+It ignores a spec's `lifetime: infinite` and count caps, deletes a name whose
+latest version is older than the cutoff, and skips tombstones only in the
+lifetime phase, not here.
 
 Expiry rules (`calculateExpiration`, `isExpired`): duration lifetimes expire
 at `createdAt + duration`; `infinite` never; `workflow` and `job` when the

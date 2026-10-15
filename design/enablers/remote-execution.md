@@ -629,8 +629,10 @@ counts (worker 20; token, lease, pending-dispatch 10; fleet-probe 1), with
 (`src/domain/models/worker/*_model.ts`).
 
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs periodically
-on the serve side (default interval 1 h, default grace period 24 h). Each cycle
-has two independent parts, so a failure in one never skips the other:
+on the serve side (default interval 1 h, default grace period 24 h). The grace
+period is the repository's `.swamp.yaml` `garbageCollection.bookkeeping` (else
+`retention`) when `automatic` is on, read on every cycle (swamp-club#3473). Each cycle has two
+independent parts, so a failure in one never skips the other:
 
 - **Workers and tokens.** It prunes worker records disconnected for longer than
   the grace period, then removes their stale bindings from enrollment tokens
@@ -642,6 +644,10 @@ has two independent parts, so a failure in one never skips the other:
   older than the grace period (`src/domain/models/worker/bookkeeping_retention.ts`,
   `src/serve/bookkeeping_gc.ts`). Active leases and waiting dispatches are never
   touched. There is no CLI equivalent; only serve writes these records.
+- **Enrollment tokens.** In the same reap, it deletes enrollment token records
+  that were revoked or have expired longer than the grace period ago and that
+  no worker record (connected or not) names. Fire records and dashboard
+  sessions are not bookkeeping: they keep their own fixed lifetimes.
 
 Both parts only list records in the repository's own namespace, and both commit
 their deletes to a remote datastore as sync-gate units — the worker prune as one

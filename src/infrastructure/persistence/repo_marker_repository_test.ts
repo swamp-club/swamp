@@ -188,6 +188,80 @@ garbageCollection:
   });
 });
 
+Deno.test("RepoMarkerRepository.read parses every retention key", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+garbageCollection:
+  retention: 30d
+  automatic: true
+  workflowRuns: 14d
+  evaluatedSnapshots: 3d
+  outputs: 7d
+  data: 30d
+  audit: 90d
+  bookkeeping: 24h
+`,
+    );
+
+    const result = await repo.read(RepoPath.create(dir));
+
+    assertEquals(result?.garbageCollection, {
+      retention: "30d",
+      automatic: true,
+      workflowRuns: "14d",
+      evaluatedSnapshots: "3d",
+      outputs: "7d",
+      data: "30d",
+      audit: "90d",
+      bookkeeping: "24h",
+    });
+  });
+});
+
+Deno.test("RepoMarkerRepository.read keeps a block with an unknown key", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+garbageCollection:
+  workflowRuns: 7d
+  runs: 1d
+`,
+    );
+
+    const result = await repo.read(RepoPath.create(dir));
+
+    assertEquals(result?.garbageCollection?.workflowRuns, "7d");
+  });
+});
+
+Deno.test("RepoMarkerRepository.read rejects snapshots kept longer than runs", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+garbageCollection:
+  workflowRuns: 7d
+  evaluatedSnapshots: 14d
+`,
+    );
+
+    await assertRejects(
+      () => repo.read(RepoPath.create(dir)),
+      Error,
+      "garbageCollection.evaluatedSnapshots must not be longer than workflowRuns",
+    );
+  });
+});
+
 Deno.test("RepoMarkerRepository.write and read roundtrip garbage collection retention", async () => {
   await withTempDir(async (dir) => {
     const repo = new RepoMarkerRepository();

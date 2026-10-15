@@ -38,6 +38,7 @@ import {
   type RepairUnmigratedDataEvent,
 } from "./doctor_datastores.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import type { RetentionCheckSummary } from "./retention_check.ts";
 
 function makeDeps(
   config: DatastoreConfig,
@@ -1202,4 +1203,118 @@ Deno.test("repairUnmigratedData: refuses a namespace named after a layout direct
     assertEquals(error.error.code, "validation_failed");
   }
   assertEquals(removedFiles, []);
+});
+
+function retentionSummary(
+  overrides: Partial<RetentionCheckSummary> = {},
+): RetentionCheckSummary {
+  return {
+    configured: true,
+    automatic: true,
+    checkedAt: "2026-10-15T00:00:00.000Z",
+    kinds: [],
+    ...overrides,
+  };
+}
+
+function retentionFinding(events: DoctorDatastoresEvent[]) {
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  return {
+    finding: completed.data.healthFindings.find((f) => f.check === "retention"),
+    summary: completed.data.retentionFinding,
+  };
+}
+
+Deno.test("doctorDatastores: runs the retention check only with the retention option", async () => {
+  let calls = 0;
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(filesystemConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, []),
+    checkRetention: () => {
+      calls++;
+      return Promise.resolve(retentionSummary());
+    },
+  };
+
+  const without = retentionFinding(
+    await collect<DoctorDatastoresEvent>(
+      doctorDatastores(createLibSwampContext(), deps),
+    ),
+  );
+  assertEquals(calls, 0);
+  assertEquals(without.finding, undefined);
+  assertEquals(without.summary, undefined);
+
+  const withCheck = retentionFinding(
+    await collect<DoctorDatastoresEvent>(
+      doctorDatastores(createLibSwampContext(), deps, { retention: true }),
+    ),
+  );
+  assertEquals(calls, 1);
+  assertEquals(withCheck.finding?.passed, true);
+  assertEquals(withCheck.summary?.configured, true);
+});
+
+Deno.test("doctorDatastores: the retention check passes with a message when retention is not configured", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(filesystemConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, []),
+    checkRetention: () =>
+      Promise.resolve(retentionSummary({ configured: false })),
+  };
+  const { finding } = retentionFinding(
+    await collect<DoctorDatastoresEvent>(
+      doctorDatastores(createLibSwampContext(), deps, { retention: true }),
+    ),
+  );
+  assertEquals(finding?.passed, true);
+  assertStringIncludes(finding!.message, "not configured");
+});
+
+Deno.test("doctorDatastores: the retention check fails on overdue items or v3 history past its bound", async () => {
+  const overdueKind = {
+    kind: "workflowRuns" as const,
+    retention: "30d",
+    cutoff: "2026-09-15T00:00:00.000Z",
+    scanned: true,
+    overdue: 2,
+    items: [],
+    kept: 0,
+    watermark: null,
+  };
+  for (
+    const summary of [
+      retentionSummary({ kinds: [overdueKind] }),
+      retentionSummary({
+        v3History: {
+          oldestCommitAt: "2026-09-01T00:00:00.000Z",
+          compactionBound: "2026-10-08T00:00:00.000Z",
+          failBefore: "2026-10-07T00:00:00.000Z",
+          overdue: true,
+        },
+      }),
+    ]
+  ) {
+    const deps: DoctorDatastoresDeps = {
+      ...makeDeps(filesystemConfig, {
+        healthy: true,
+        message: "ok",
+        latencyMs: 1,
+      }, []),
+      checkRetention: () => Promise.resolve(summary),
+    };
+    const { finding } = retentionFinding(
+      await collect<DoctorDatastoresEvent>(
+        doctorDatastores(createLibSwampContext(), deps, { retention: true }),
+      ),
+    );
+    assertEquals(finding?.passed, false);
+  }
 });

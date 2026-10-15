@@ -76,6 +76,47 @@ export interface LifecycleGCResult {
 }
 
 /**
+ * Result of {@link DataLifecycleService.deleteDataOlderThan}.
+ */
+export interface DataRetentionResult {
+  /** Data names deleted whole: every version was older than the cutoff. */
+  entriesDeleted: number;
+  /** Versions deleted, counting those of whole names. */
+  versionsDeleted: number;
+  /** Bytes the deleted versions held, as recorded when they were written. */
+  bytesReclaimed: number;
+  /** True when the run stopped at its limit with candidates left. */
+  more: boolean;
+  /** Whether this was a dry run. */
+  dryRun: boolean;
+}
+
+/** Options for {@link DataLifecycleService.deleteDataOlderThan}. */
+export interface DeleteDataOlderThanOptions {
+  dryRun: boolean;
+  /**
+   * Most versions to delete in this call. A name deleted whole counts all
+   * its versions and is never split, so a call can go past the limit by the
+   * versions of its last name.
+   */
+  limit?: number;
+  /**
+   * Whether data of a (normalized) model type is never deleted by
+   * retention. Injected so the data context stays independent of the
+   * retention context, which owns the exemption list.
+   */
+  isExempt: (modelType: string) => boolean;
+  /**
+   * The exempt model types, when the caller can list them: the repository
+   * then leaves them out of its candidates. `isExempt` is still checked.
+   */
+  exemptTypes?: readonly string[];
+}
+
+/** Versions read from the repository per page of retention candidates. */
+const RETENTION_PAGE_SIZE = 500;
+
+/**
  * Predicate answering whether a model definition still exists for the given
  * (type, modelId). Injected as a port so the lifecycle service stays decoupled
  * from the definition repository — the libswamp layer wires this using the same
@@ -155,6 +196,18 @@ export interface DataLifecycleService {
   deleteExpiredData(options?: {
     dryRun?: boolean;
   }): Promise<LifecycleGCResult>;
+
+  /**
+   * Deletes every version of model data created before `cutoff`, including
+   * a data name's latest version (strict retention). A name whose latest
+   * version is older than the cutoff is deleted whole; otherwise only its
+   * older versions go. Model types exempt from retention, and names with an
+   * in-flight deferred write, are left alone.
+   */
+  deleteDataOlderThan(
+    cutoff: Date,
+    options: DeleteDataOlderThanOptions,
+  ): Promise<DataRetentionResult>;
 
   /**
    * Finds all orphaned data — data whose owning model definition no longer
@@ -465,6 +518,146 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       dryRun,
       expiredEntries,
     };
+  }
+
+  async deleteDataOlderThan(
+    cutoff: Date,
+    options: DeleteDataOlderThanOptions,
+  ): Promise<DataRetentionResult> {
+    const { dryRun, limit, isExempt } = options;
+    const result: DataRetentionResult = {
+      entriesDeleted: 0,
+      versionsDeleted: 0,
+      bytesReclaimed: 0,
+      more: false,
+      dryRun,
+    };
+    const repo = this.dataRepo;
+    if (!repo.findVersionsCreatedBefore) return result;
+
+    // Names already settled (deleted whole, or skipped) and versions already
+    // counted. A dry run deletes nothing, so later pages list them again.
+    const settledNames = new Set<string>();
+    const countedVersions = new Set<string>();
+    const atLimit = () =>
+      limit !== undefined && result.versionsDeleted >= limit;
+
+    let cursor: string | undefined;
+    do {
+      const page = await repo.findVersionsCreatedBefore(cutoff, {
+        limit: RETENTION_PAGE_SIZE,
+        cursor,
+        excludeTypes: options.exemptTypes,
+      });
+      cursor = page.cursor;
+
+      // Group the page's versions by data name, oldest name first.
+      const groups = new Map<string, typeof page.versions>();
+      for (const aged of page.versions) {
+        const key = [aged.type.normalized, aged.modelId, aged.dataName].join(
+          "\0",
+        );
+        const group = groups.get(key);
+        if (group) group.push(aged);
+        else groups.set(key, [aged]);
+      }
+
+      for (const [nameKey, group] of groups) {
+        if (settledNames.has(nameKey)) continue;
+        const { type, modelId, dataName } = group[0];
+        if (isExempt(type.normalized)) {
+          settledNames.add(nameKey);
+          continue;
+        }
+        if (atLimit()) {
+          result.more = true;
+          return result;
+        }
+        try {
+          // An in-flight deferred write would be lost with its name, and
+          // which version will be latest is not known until it settles.
+          if (await repo.hasPendingVersions?.(type, modelId, dataName)) {
+            settledNames.add(nameKey);
+            continue;
+          }
+          const latestVersion = repo.getLatestVersionSync(
+            type,
+            modelId,
+            dataName,
+          );
+          if (latestVersion === null) {
+            // No promoted latest to judge the name by; leave it.
+            settledNames.add(nameKey);
+            continue;
+          }
+          // Read the latest version itself, not a rename's target.
+          const latest = await repo.findByName(
+            type,
+            modelId,
+            dataName,
+            latestVersion,
+          );
+
+          if (latest && latest.createdAt.getTime() < cutoff.getTime()) {
+            const sizes = new Map(group.map((v) => [v.version, v.size]));
+            const versions = await repo.listVersions(type, modelId, dataName);
+            let bytes = 0;
+            for (const version of versions) {
+              bytes += sizes.get(version) ??
+                (await repo.findByName(type, modelId, dataName, version))
+                  ?.size ??
+                0;
+            }
+            // Version by version, never the name's directory: a writer
+            // without the global lock (a serve run) may add a version
+            // after this read, and the per-version path keeps whatever
+            // was not listed here, re-pointing latest at it.
+            const listed = versions.filter((v) => v <= latestVersion)
+              .sort((a, b) => a - b);
+            if (!dryRun) {
+              for (const version of listed) {
+                await repo.delete(type, modelId, dataName, version);
+              }
+            }
+            settledNames.add(nameKey);
+            result.entriesDeleted++;
+            result.versionsDeleted += listed.length;
+            result.bytesReclaimed += bytes;
+            continue;
+          }
+
+          // The latest version is within retention: trim only the older
+          // versions, through the per-version path that keeps the latest
+          // marker and catalog flags consistent.
+          for (const aged of group) {
+            if (aged.version >= latestVersion) continue;
+            const versionKey = `${nameKey}\0${aged.version}`;
+            if (countedVersions.has(versionKey)) continue;
+            if (atLimit()) {
+              result.more = true;
+              return result;
+            }
+            if (!dryRun) {
+              await repo.delete(type, modelId, dataName, aged.version);
+            }
+            countedVersions.add(versionKey);
+            result.versionsDeleted++;
+            result.bytesReclaimed += aged.size;
+          }
+        } catch (error) {
+          logger.error(
+            "Error applying data retention to {path}",
+            {
+              path: `${type.toDirectoryPath()}/${modelId}/${dataName}`,
+              error,
+            },
+          );
+          settledNames.add(nameKey);
+        }
+      }
+    } while (cursor !== undefined);
+
+    return result;
   }
 
   async findOrphanedData(

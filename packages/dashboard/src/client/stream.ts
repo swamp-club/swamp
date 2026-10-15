@@ -95,15 +95,21 @@ export class RequestError extends Error {
   readonly code: string;
   readonly reason?: string;
   readonly entityType?: string;
+  /** On a not_found: items before this ISO time were reaped by retention. */
+  readonly reapedBefore?: string;
 
   constructor(message: string, code: string, details?: unknown) {
     super(message);
     this.name = "RequestError";
     this.code = code;
     if (details !== null && typeof details === "object") {
-      const { reason, entityType } = details as Record<string, unknown>;
+      const { reason, entityType, reapedBefore } = details as Record<
+        string,
+        unknown
+      >;
       if (typeof reason === "string") this.reason = reason;
       if (typeof entityType === "string") this.entityType = entityType;
+      if (typeof reapedBefore === "string") this.reapedBefore = reapedBefore;
     }
   }
 }
@@ -113,6 +119,7 @@ export interface RequestErrorInfo {
   code: string;
   reason?: string;
   entityType?: string;
+  reapedBefore?: string;
 }
 
 /** Reads the structured parts of an error thrown by a request. */
@@ -122,5 +129,7 @@ export function requestErrorInfo(error: unknown): RequestErrorInfo | null {
     code: error.code,
     ...(error.reason !== undefined && { reason: error.reason }),
     ...(error.entityType !== undefined && { entityType: error.entityType }),
+    ...(error.reapedBefore !== undefined &&
+      { reapedBefore: error.reapedBefore }),
   };
 }

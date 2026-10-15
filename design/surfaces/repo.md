@@ -167,10 +167,10 @@ options are:
   step's — also prunes versions beyond an integer `garbageCollection` cap; a
   workflow step gets no post-run pass. `swamp data gc` still does repo-wide
   manual GC.
-- `garbageCollection`: repository defaults for manual `swamp run gc` cleanup.
-  `workflowRuns` and `outputs` take positive durations such as `7d` or `2w`;
-  omitted values keep the 30-day default. It does not run cleanup on its own or
-  change how `autoGc` treats behavior data.
+- `garbageCollection`: how long each kind of history is kept, and whether
+  swamp enforces it on its own (swamp-club#3473). See
+  [Retention](#retention). Separate from `autoGc`, which trims one behavior's
+  data versions by their declared policy.
 - `serverAddress`: default `swamp serve` URL for the repo. When set, every
   serve-aware command uses it without `SWAMP_SERVE_URL` or `--server`.
   Precedence: `--server` flag > `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env >
@@ -188,16 +188,12 @@ options are:
 method outputs (`.swamp/outputs/`). `data gc` does not cover these; it
 handles `.swamp/data/` (versioned data with lifetime/version policies).
 
-- **Default retention**: `.swamp.yaml` can configure independent values:
-  ```yaml
-  garbageCollection:
-    workflowRuns: 7d
-    outputs: 1d
-  ```
-  Omitted values use 30 days (`DEFAULT_WORKFLOW_RUN_RETENTION_DAYS` and
-  `DEFAULT_OUTPUT_RETENTION_DAYS` in
-  `src/domain/data/run_lifecycle_service.ts`). `--older-than` overrides both
-  for one invocation.
+- **Default retention**: the `garbageCollection` keys `workflowRuns`,
+  `outputs` and `evaluatedSnapshots`, each falling back to `retention` (see
+  [Retention](#retention)). Omitted values use 30 days
+  (`DEFAULT_WORKFLOW_RUN_RETENTION_DAYS` and `DEFAULT_OUTPUT_RETENTION_DAYS`
+  in `src/domain/data/run_lifecycle_service.ts`). `--older-than` overrides
+  runs and outputs for one invocation; snapshots then follow their runs.
 - **Terminal runs only**: only succeeded, failed or cancelled runs are deleted.
   Running and suspended workflow runs are never deleted, however old.
 - **Run snapshots**: each collected run's evaluated-workflow snapshot
@@ -228,8 +224,84 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
   directory holding a record gc cannot read keeps all its logs.
 - **Flags**: `--dry-run`, `--force`, `--older-than <duration>` (uses
   `parseDuration`; units m, h, d, w, mo, y).
-- **Manual-only**: nothing cleans these stores automatically or after a run
-  yet. `swamp run gc` is the only way.
+- **Automatic**: with `garbageCollection.automatic: true` the same
+  collectors run on their own; see [Retention](#retention).
+
+### Retention
+
+`.swamp.yaml` `garbageCollection` sets how long each kind of history is kept
+(swamp-club#3473):
+
+```yaml
+garbageCollection:
+  retention: 30d          # default for every kind below
+  automatic: true         # enforce it: serve timer, CLI end of command
+  workflowRuns: 14d       # run records, run logs, wait records, claims
+  evaluatedSnapshots: 3d  # must not be longer than workflowRuns
+  outputs: 7d             # method outputs and their run logs
+  data: 30d               # every data version, the latest included
+  audit: 90d              # .swamp/audit logs; default for serve audit stores
+  bookkeeping: 24h        # serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
+```
+
+- **Precedence** (`RetentionPolicy`, `src/domain/retention/`): a one-off
+  override (`--older-than`), then the kind's key, then `retention`. A kind
+  with none of these is never reaped automatically; the manual commands keep
+  their built-in defaults.
+- **Validation** (`checkRetentionConfig`): positive durations only,
+  `automatic` a boolean, `evaluatedSnapshots` not longer than the run
+  retention. Unknown keys are logged once and ignored, as before.
+- **What is never removed**: runs that have not finished (running,
+  suspended, waiting, interrupted) and their snapshots; a finished nested
+  run whose parent has not finished; data of the built-in access and serve
+  state types (`swamp/server-token`, `grant`, `group`, `enrollment-token`,
+  `worker`, `step-lease`, `pending-dispatch`, `fleet-probe`, see
+  `retention_exemptions.ts`); a data name with a deferred write not yet
+  promoted. Definitions, vaults and repo config are configuration, not
+  history.
+- **Data**: strict. A name whose latest version is older than the cutoff is
+  deleted, version by version (so a version a serve run writes meanwhile
+  survives and becomes latest), and `data.latest()` for a behavior that has
+  not run within the window finds nothing. `retention` alone applies this
+  too, in manual `swamp data gc` as well. Candidates come from the catalog's
+  `created_at` index, not a scan. Grants and groups are exempt in both their
+  stored spellings (`swamp/grant`, `@swamp/grant`).
+- **Automatic passes** (`runRepoRetention`, `src/libswamp/retention/`): the
+  collectors run in order (runs, snapshots, outputs, data, audit), in
+  batches of 100. Each batch is traced (`swamp.retention.batch`).
+  - `swamp serve` runs `RetentionGcService` five minutes after start and then
+    hourly. It reads `.swamp.yaml` each tick, takes the sync gate per batch
+    (never for the whole pass), backs off while every run slot is taken,
+    shares a mutex with `run.gc` and `data.gc` (taken before the sync gate,
+    in that order everywhere), claims the hour only once it holds the
+    mutex, and writes one
+    `retention.pass` system audit event per pass. Of several serves on one
+    datastore, the one that claims the hour (`putIfAbsent` on
+    `_control/retention/claims/<hour>`) runs it.
+  - A CLI command that opened the repository to write runs a pass in
+    teardown, after its own locks are released (`runRetentionAtCommandEnd`,
+    `src/cli/retention_teardown.ts`): at most hourly per checkout
+    (`.swamp/retention-last-attempt.json`) and per datastore (the same hourly
+    claim), taking the datastore lock through `requireInitializedRepo` with a
+    2-second wait (`lockWaitMs`), stopping after 10 seconds of batches and
+    capping its v3 compaction and chunk sweep at 10 seconds each. A failure
+    after the lock was taken releases it at once.
+    Read-only commands, hook mode and `swamp serve` itself never run one. A
+    failure is logged at debug and never fails the command.
+- **Watermarks**: one record per kind at `_control/retention/watermarks/<kind>`
+  in the datastore (below the namespace; the extension's control plane on a
+  custom datastore), overwritten on each pass: cutoff, retention, last pass,
+  counts, and whether the pass finished. Lookups of a missing run, output or
+  data item add "items before `<cutoff>` have been reaped by retention".
+- **Proof**: `swamp doctor datastores --retention` scans storage for items
+  past their cutoff and fails with the list; with `automatic` on it allows
+  two hours past the cutoff (one pass interval and slack). Serve health
+  shows each kind's watermark.
+- **v3 datastores**: a removal is a new commit, and the removed content stays
+  in history until that commit is folded. Each pass compacts history older
+  than the 7-day outbox window (`compactRetentionQuietly`) and sweeps chunks
+  after their 24-hour grace, so reaped content leaves a v3 datastore within
+  about 8 days of being reaped.
 
 ## RepoIndexService
 

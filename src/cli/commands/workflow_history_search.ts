@@ -145,6 +145,7 @@ export async function workflowHistorySearchAction(
     // inline step outputs) OOMs on workflows with a large run history (#1173).
     findAllRunsByWorkflowId: (id) =>
       runRepo.findAllSummariesFromIndex(createWorkflowId(id)),
+    retentionWatermarks: repoContext.retentionWatermarks,
   };
 
   const fetchPreview = effectiveMode === "log"

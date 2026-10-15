@@ -28,6 +28,8 @@ import type {
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import type { WorkflowListing } from "../../domain/workflows/workflow_listing.ts";
 
+import { findReapedBefore, type ReapedBefore } from "../retention/reaped.ts";
+import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
 /**
@@ -80,6 +82,11 @@ export interface WorkflowRunSearchItem {
 export interface WorkflowRunSearchData {
   query: string;
   results: WorkflowRunSearchItem[];
+  /**
+   * Set when retention has reaped runs: older runs than `cutoff` are gone,
+   * so the listing cannot show them (swamp-club#3473).
+   */
+  reapedBefore?: ReapedBefore;
 }
 
 export type WorkflowRunSearchEvent =
@@ -116,6 +123,11 @@ export interface WorkflowRunSearchDeps {
    * name. Asked once per distinct pair. Without it every run is readable.
    */
   isReadable?(workflowId: string, workflowName: string): Promise<boolean>;
+  /**
+   * Where retention records how far it has reaped. With it the listing says
+   * that older runs have been reaped (swamp-club#3473).
+   */
+  retentionWatermarks?: RetentionWatermarkRepository;
 }
 
 /**
@@ -662,11 +674,16 @@ export async function* workflowRunSearch(
         }
       }
 
+      const reaped = await findReapedBefore(
+        deps.retentionWatermarks,
+        "workflowRuns",
+      );
       yield {
         kind: "completed",
         data: {
           query: input.query ?? "",
           results,
+          ...(reaped ? { reapedBefore: reaped } : {}),
         },
         total: selection.total,
         ...(filter.sinceMs !== undefined

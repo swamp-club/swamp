@@ -423,6 +423,21 @@ swamp run gc --older-than 7d
 outputs). `swamp data gc` cleans `.swamp/data/` (the data catalog) — they cover
 different storage areas.
 
+To keep history bounded without running these by hand, set retention in
+`.swamp.yaml`; `swamp serve` then applies it hourly, and a CLI-only repo at the
+end of a writing command at most hourly:
+
+```yaml
+garbageCollection:
+  retention: 30d # default for every kind
+  automatic: true # off unless set
+  workflowRuns: 14d # optional per kind: evaluatedSnapshots, outputs, data, audit, bookkeeping
+```
+
+`data` retention also deletes a behavior's latest version once it is older than
+the cutoff. Running and suspended runs, and serve access state (tokens, grants,
+workers), are never removed. Check with `swamp doctor datastores --retention`.
+
 ### Data Versions Not Visible
 
 ```bash

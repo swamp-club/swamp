@@ -155,6 +155,7 @@ export async function workflowRunSearchAction(
     // workflows with a large run history (#1173), and the snapshot narrows
     // by time before any run is looked at (swamp-club#3443).
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
+    retentionWatermarks: repoContext.retentionWatermarks,
   };
 
   const fetchPreview = effectiveMode === "log"

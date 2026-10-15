@@ -287,6 +287,7 @@ export {
   type DoctorDatastoresData,
   type DoctorDatastoresDeps,
   type DoctorDatastoresEvent,
+  type DoctorDatastoresOptions,
   type NamespaceContaminationFinding,
   repairCatalogDuplicateLatest,
   type RepairCatalogDuplicateLatestDeps,
@@ -301,9 +302,22 @@ export {
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
   type RepairUnmigratedDataEvent,
+  retentionFindingMessage,
   type UnmigratedDataRepairResult,
   type VaultMismatchFinding,
 } from "./datastores/doctor_datastores.ts";
+export {
+  RETENTION_CHECK_ITEM_LIMIT,
+  retentionCheckFailed,
+  type RetentionCheckSummary,
+  type RetentionCheckWatermark,
+  type RetentionKindCheck,
+  type RetentionOverdueItem,
+  type RetentionScanSources,
+  retentionScanSourcesFor,
+  type RetentionV3HistoryCheck,
+  scanRetention,
+} from "./datastores/retention_check.ts";
 export {
   modelOutputSearch,
   type ModelOutputSearchData,
@@ -1427,6 +1441,13 @@ export {
   runGcPreview,
   runGcRetentionFromPolicy,
 } from "./data/run_gc.ts";
+
+// Retention (swamp-club#3473)
+export { type RepoRetentionDeps, runRepoRetention } from "./retention/run.ts";
+export {
+  type RetentionKindResult,
+  type RetentionPassResult,
+} from "./retention/pass.ts";
 
 // Model create operations
 export {

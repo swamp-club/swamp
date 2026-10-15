@@ -21,6 +21,8 @@ import { assert, assertEquals } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  bookkeepingGracePeriodMs,
+  DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
   type WorkerGcDeps,
   workerGcListPredicate,
   WorkerGcService,
@@ -40,6 +42,7 @@ const EMPTY_RESULT = {
 const EMPTY_REAP: BookkeepingReapResult = {
   leasesDeleted: 0,
   dispatchesDeleted: 0,
+  tokensDeleted: 0,
   failed: 0,
   unreadable: 0,
   batches: 0,
@@ -267,4 +270,69 @@ Deno.test("WorkerGcService: a tick runs with no active span when started under o
     assert(seen.length >= 2);
     for (const span of seen) assertEquals(span, undefined);
   });
+});
+
+Deno.test("bookkeepingGracePeriodMs: with automatic on, the bookkeeping key wins, then retention, then 24h", () => {
+  assertEquals(
+    bookkeepingGracePeriodMs(undefined),
+    DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+  );
+  assertEquals(
+    bookkeepingGracePeriodMs({ automatic: true, retention: "2d" }),
+    2 * 86_400_000,
+  );
+  assertEquals(
+    bookkeepingGracePeriodMs({
+      automatic: true,
+      retention: "2d",
+      bookkeeping: "6h",
+    }),
+    6 * 3_600_000,
+  );
+  assertEquals(
+    bookkeepingGracePeriodMs({ automatic: true, audit: "1h" }),
+    DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+  );
+});
+
+Deno.test("bookkeepingGracePeriodMs: without automatic, a retention for manual gc leaves the 24h grace", () => {
+  assertEquals(
+    bookkeepingGracePeriodMs({ retention: "2h", bookkeeping: "1h" }),
+    DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+  );
+});
+
+Deno.test("WorkerGcService: each sweep resolves the configured grace period for prune and bookkeeping", async () => {
+  let configured = 5000;
+  const pruneGrace: number[] = [];
+  const reapGrace: number[] = [];
+  const svc = new WorkerGcService(makeDeps({
+    resolveGracePeriodMs: () => Promise.resolve(configured),
+    runPrune: (grace) => {
+      pruneGrace.push(grace);
+      return Promise.resolve(EMPTY_RESULT);
+    },
+    reapBookkeeping: (grace) => {
+      reapGrace.push(grace);
+      return Promise.resolve(EMPTY_REAP);
+    },
+  }));
+  await svc.runOnce();
+  configured = 7000;
+  await svc.runOnce();
+  assertEquals(pruneGrace, [5000, 7000]);
+  assertEquals(reapGrace, [5000, 7000]);
+});
+
+Deno.test("WorkerGcService: a failing grace resolver falls back to the default grace period", async () => {
+  let pruneGrace: number | undefined;
+  const svc = new WorkerGcService(makeDeps({
+    resolveGracePeriodMs: () => Promise.reject(new Error("bad marker")),
+    runPrune: (grace) => {
+      pruneGrace = grace;
+      return Promise.resolve(EMPTY_RESULT);
+    },
+  }));
+  await svc.runOnce();
+  assertEquals(pruneGrace, 1000);
 });
