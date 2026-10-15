@@ -17,14 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  ExtensionTreeIndex,
-  ExtensionTreeIndexer,
-} from "./extension_tree_index.ts";
-
-/** An indexer for fixtures whose archives hold no loadable sources. */
-export const emptyTreeIndexer: ExtensionTreeIndexer = () =>
-  Promise.resolve({ sources: [], failures: [] });
+import type { ExtensionTreeIndex } from "./extension_tree_index.ts";
 
 /** A push `indexArchive` for fixtures whose archives hold no loadable sources. */
 export const emptyArchiveIndex = (

@@ -60,7 +60,6 @@ import { readInstalledExtensionDigest } from "../../infrastructure/persistence/i
 import { detectLocalEditsForExtension } from "./local_edits.ts";
 import { STAGING_DIR_NAME } from "../../domain/extensions/install_journal.ts";
 import type { ExtensionReplacement } from "../../domain/extensions/extension_replacement.ts";
-import { emptyTreeIndexer } from "./extension_tree_index_test_helpers.ts";
 
 Deno.test("parseExtensionRef: parses name without version", () => {
   const ref = parseExtensionRef("@myorg/my-ext");
@@ -305,7 +304,6 @@ async function makeStubDeps(
     repoDir: tmpDir,
     alreadyPulled: new Set(),
     depth: 0,
-    indexExtensionTree: emptyTreeIndexer,
     installExtensionFn: installFn,
   };
 }
@@ -548,7 +546,6 @@ Deno.test(
         repoDir: tmpDir,
         alreadyPulled: new Set(),
         depth: 0,
-        indexExtensionTree: emptyTreeIndexer,
         force: false,
       };
       const ref: ExtensionRef = { name: "@shrug/mercury", version: null };
@@ -589,7 +586,6 @@ Deno.test(
         repoDir: tmpDir,
         alreadyPulled: new Set(),
         depth: 0,
-        indexExtensionTree: emptyTreeIndexer,
         force: false,
       };
       const ref: ExtensionRef = { name: "@shrug/mercury", version: null };
@@ -729,7 +725,6 @@ function skillInstallContext(
     repoDir,
     alreadyPulled: new Set(),
     depth: 0,
-    indexExtensionTree: emptyTreeIndexer,
     force: opts.force ?? false,
     logger: opts.logger,
   };
@@ -2588,7 +2583,6 @@ function channelContext(
     repoDir,
     alreadyPulled: new Set(),
     depth: 0,
-    indexExtensionTree: emptyTreeIndexer,
     force: opts.force ?? false,
     channel: opts.channel,
     logger: opts.logger,
@@ -3021,7 +3015,6 @@ Deno.test(
         repoDir,
         alreadyPulled: new Set(),
         depth: 0,
-        indexExtensionTree: emptyTreeIndexer,
         force: false,
         onUnoptedPrerelease: (n) => notices.push(n),
       };

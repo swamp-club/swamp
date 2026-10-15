@@ -55,9 +55,6 @@ import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_u
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import "../../domain/models/models.ts";
-import { emptyTreeIndexer } from "./extension_tree_index_test_helpers.ts";
-import { createExtensionTreeIndexer } from "./extension_tree_index.ts";
-import { UserError } from "../../domain/errors.ts";
 
 await initializeLogging({});
 
@@ -137,7 +134,6 @@ async function buildArchive(
     await Deno.writeTextFile(join(extDir, "manifest.yaml"), lines.join("\n"));
     for (const [file, type] of Object.entries(spec.models ?? {})) {
       await ensureDir(join(extDir, "models"));
-      await ensureDir(dirname(join(extDir, "models", file)));
       await Deno.writeTextFile(join(extDir, "models", file), MODEL(type));
     }
     for (const [skill, files] of Object.entries(spec.skills ?? {})) {
@@ -213,7 +209,6 @@ class Repo {
       force: true,
       alreadyPulled: new Set(),
       depth: 0,
-      indexExtensionTree: emptyTreeIndexer,
       ...overrides,
     };
   }
@@ -880,189 +875,5 @@ Deno.test("InstallExtensionService.execute: a lockfile that cannot be read back 
     });
     assertEquals(await repo.snapshot(n.a), before);
     assertEquals(await stagingLeft(repo.repoDir), []);
-  });
-});
-
-/** The indexer the CLI wires, loading sources as the loader does. */
-function realIndexer(repo: Repo) {
-  return {
-    indexExtensionTree: createExtensionTreeIndexer({
-      denoRuntime: testDenoRuntime,
-      repoDir: repo.repoDir,
-    }),
-  };
-}
-
-Deno.test("InstallExtensionService.execute: an upgrade that registers a type outside its collective is refused and leaves the previous version (swamp-club#3456)", async () => {
-  await withRepo(async (repo) => {
-    const n = ids();
-    await repo.publish(n.a, V1, { models: { "a_v1.ts": n.own("a1") } });
-    await repo.install(n.a, V1, realIndexer(repo));
-    const before = await repo.snapshot(n.a);
-
-    const foreign = `@other/x-${crypto.randomUUID().slice(0, 8)}`;
-    await repo.publish(n.a, V2, {
-      models: { "a_v2.ts": n.own("a2"), "lib/helper.ts": foreign },
-    });
-    const thrown = await assertRejects(
-      () => repo.install(n.a, V2, realIndexer(repo)),
-      UserError,
-    );
-
-    assertStringIncludes(thrown.message, `Refused to install ${n.a}`);
-    assertStringIncludes(
-      thrown.message,
-      `model "${foreign}" in models/lib/helper.ts`,
-    );
-    assertStringIncludes(thrown.message, "The install was rolled back");
-    assertEquals(await repo.snapshot(n.a), before);
-    assertEquals(await stagingLeft(repo.repoDir), []);
-    const ctx = await repo.ctx();
-    assertEquals(
-      repo.repository(ctx).loadByName(n.a).map((e) => e.version),
-      [V1],
-    );
-  });
-});
-
-Deno.test("installExtension: a first install whose dependency registers a foreign type is refused whole and leaves nothing behind (swamp-club#3456)", async () => {
-  await withRepo(async (repo) => {
-    const n = ids();
-    const foreign = `@other/x-${crypto.randomUUID().slice(0, 8)}`;
-    await repo.publish(n.d, V1, { models: { "d.ts": foreign } });
-    await repo.publish(n.a, V1, {
-      models: { "a.ts": n.own("a") },
-      dependencies: [n.d],
-    });
-    const ctx = await repo.ctx(realIndexer(repo));
-    const thrown = await assertRejects(
-      () => installExtension({ name: n.a, version: V1 }, ctx),
-      UserError,
-    );
-
-    assertStringIncludes(thrown.message, `Extension ${n.d} registers types`);
-    for (const name of [n.a, n.d]) {
-      for (const [key, value] of Object.entries(await repo.snapshot(name))) {
-        assertEquals(value, null, `${name} ${key}`);
-      }
-    }
-    assertEquals(await stagingLeft(repo.repoDir), []);
-  });
-});
-
-Deno.test("installExtension: an extension whose types are all in its collective installs as before (swamp-club#3456)", async () => {
-  await withRepo(async (repo) => {
-    const n = ids();
-    await repo.publish(n.a, V1, { models: { "a.ts": n.own("a") } });
-    const ctx = await repo.ctx(realIndexer(repo));
-    const result = await installExtension({ name: n.a, version: V1 }, ctx);
-
-    assertEquals(result?.version, V1);
-    assertEquals(
-      ((await repo.lockfile())[n.a] as Record<string, unknown>).version,
-      V1,
-    );
-  });
-});
-
-Deno.test("installExtension: an install whose sources cannot be checked is rolled back, not committed unchecked (swamp-club#3456)", async () => {
-  await withRepo(async (repo) => {
-    const n = ids();
-    await repo.publish(n.a, V1, { models: { "a_v1.ts": n.own("a1") } });
-    await repo.install(n.a, V1, realIndexer(repo));
-    const before = await repo.snapshot(n.a);
-
-    await repo.publish(n.a, V2, { models: { "a_v2.ts": n.own("a2") } });
-    const ctx = await repo.ctx({
-      indexExtensionTree: () => Promise.reject(new Error("disk went away")),
-    });
-    const thrown = await assertRejects(
-      () => installExtension({ name: n.a, version: V2 }, ctx),
-      UserError,
-    );
-
-    assertStringIncludes(thrown.message, "disk went away");
-    assertStringIncludes(thrown.message, "The install was rolled back");
-    assertEquals(await repo.snapshot(n.a), before);
-    assertEquals(await stagingLeft(repo.repoDir), []);
-  });
-});
-
-Deno.test("InstallExtensionService.execute: reusing the collective check's index records the same catalog as a full pass (swamp-club#3456)", async () => {
-  const n = ids();
-  const catalogs: string[] = [];
-  for (const reuse of [true, false]) {
-    await withRepo(async (repo) => {
-      await repo.publish(n.a, V1, {
-        models: { "a.ts": n.own("a"), "lib/b.ts": n.own("b") },
-      });
-      const ctx = await repo.ctx();
-      const repository = repo.repository(ctx);
-      await new InstallExtensionService({
-        denoRuntime: testDenoRuntime,
-        repository,
-        // Without the check's index the catalog save runs its own full pass.
-        ...(reuse ? {} : {
-          installExtensionFn: (ref, installCtx, options) =>
-            installExtension(ref, installCtx, {
-              underLock: (pending) => options!.underLock!(pending),
-            }),
-        }),
-      }).execute({ name: n.a, version: V1 }, ctx);
-      const [extension] = repository.loadByName(n.a);
-      const recorded = [...extension.sources.values()].map((s) =>
-        repo.catalog.findSourceModules(s.id.canonicalPath) ?? null
-      );
-      catalogs.push(
-        JSON.stringify({
-          // sourceMtime is when each repo wrote its copy of the file.
-          sources: [...extension.sources.values()]
-            .map(({ sourceMtime: _, ...rest }) => rest)
-            .sort((x, y) => x.id.relativePath.localeCompare(y.id.relativePath)),
-          recorded,
-        }).replaceAll(repo.repoDir, "<repo>"),
-      );
-    });
-  }
-  assertEquals(catalogs[0], catalogs[1]);
-  assertStringIncludes(catalogs[0], n.own("b"));
-});
-
-Deno.test("InstallExtensionService.execute: a type collision is still refused when the catalog save reuses the check's index (swamp-club#3456)", async () => {
-  await withRepo(async (repo) => {
-    const n = ids();
-    await repo.publish(n.b, V1, { models: { "b.ts": n.shared } });
-    await repo.install(n.b, V1, realIndexer(repo));
-
-    await repo.publish(n.c, V1, { models: { "c.ts": n.shared } });
-    await assertRejects(
-      () => repo.install(n.c, V1, realIndexer(repo)),
-      DuplicateTypeUserError,
-    );
-    for (const [key, value] of Object.entries(await repo.snapshot(n.c))) {
-      assertEquals(value, null, key);
-    }
-  });
-});
-
-Deno.test("installExtension: a _test.ts source that registers a foreign type is refused, as pulled trees load _test.ts files (swamp-club#3456)", async () => {
-  await withRepo(async (repo) => {
-    const n = ids();
-    const foreign = `@other/fixture-${crypto.randomUUID().slice(0, 8)}`;
-    await repo.publish(n.a, V1, {
-      models: { "a.ts": n.own("a"), "ec2_test.ts": foreign },
-    });
-    const ctx = await repo.ctx(realIndexer(repo));
-    const thrown = await assertRejects(
-      () => installExtension({ name: n.a, version: V1 }, ctx),
-      UserError,
-    );
-    assertStringIncludes(
-      thrown.message,
-      `model "${foreign}" in models/ec2_test.ts`,
-    );
-    for (const [key, value] of Object.entries(await repo.snapshot(n.a))) {
-      assertEquals(value, null, key);
-    }
   });
 });

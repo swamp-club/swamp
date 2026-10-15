@@ -26,17 +26,6 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
-import {
-  type CollectiveMismatch,
-  collectiveMismatchesForTypes,
-} from "../../domain/extensions/extension_collective_validator.ts";
-import {
-  createExtensionTreeIndexer,
-  type ExtensionTreeIndex,
-  type ExtensionTreeIndexer,
-  runtimeContentTypes,
-} from "./extension_tree_index.ts";
-import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import type {
   InstallChange,
   InstallRollbackOutcome,
@@ -290,13 +279,6 @@ export interface InstallContext {
   alreadyPulled: Set<string>;
   depth: number;
   /**
-   * Loads an installed extension's sources the way the loader does, so
-   * install can refuse an extension that registers types outside its
-   * collective before it is committed (swamp-club#3456). Required, so every
-   * install path supplies it.
-   */
-  indexExtensionTree: ExtensionTreeIndexer;
-  /**
    * Optional lockfile-anchored integrity check. When set, installExtension
    * verifies the downloaded archive's SHA-256 matches this value BEFORE
    * extraction and throws a UserError on mismatch. Scoped strictly to the
@@ -462,8 +444,6 @@ export interface ExtensionPullDeps {
    */
   denoRuntime?: DenoRuntime;
   repository?: ExtensionRepository;
-  /** See {@link InstallContext.indexExtensionTree}. */
-  indexExtensionTree: ExtensionTreeIndexer;
 }
 
 /**
@@ -1015,10 +995,7 @@ export interface InstallOptions {
    * {@link PendingInstall.rollback}. One it leaves pending, by throwing
    * or otherwise, is committed. Not passed to dependency installs.
    */
-  underLock?: (
-    pending: PendingInstall,
-    indexed?: ReadonlyMap<string, ExtensionTreeIndex>,
-  ) => Promise<void>;
+  underLock?: (pending: PendingInstall) => Promise<void>;
 }
 
 /** Signature of {@link installExtension}, for callers' test seams. */
@@ -1053,105 +1030,12 @@ export async function installExtension(
 ): Promise<InstallResult | undefined> {
   return await installLocked(ref, ctx, async (pending) => {
     try {
-      const indexed = await refuseForeignCollectiveTypes(pending, ctx);
-      await options?.underLock?.(pending, indexed);
+      await options?.underLock?.(pending);
     } finally {
       await pending.commit();
     }
     return pending.result;
   });
-}
-
-/**
- * Loads every source of the extension and the dependencies the install
- * put in, and rolls the whole install back when any registers a type
- * outside its own extension's collective: that type would otherwise stand
- * in for another collective's (swamp-club#3456). A source that does not
- * load is not a mismatch: the loader cannot register it either. Returns
- * each extension's index by name, so the catalog save need not load every
- * source again.
- */
-async function refuseForeignCollectiveTypes(
-  pending: PendingInstall,
-  ctx: InstallContext,
-): Promise<Map<string, ExtensionTreeIndex>> {
-  const indexed = new Map<string, ExtensionTreeIndex>();
-  const pulledRoot = resolvePulledExtensionsRoot(resolve(ctx.repoDir));
-  const refused: Array<{ name: string; mismatches: CollectiveMismatch[] }> = [];
-  const pendingResults = [pending.result];
-  for (let i = 0; i < pendingResults.length; i++) {
-    const result = pendingResults[i];
-    for (const dep of result.dependencyResults) pendingResults.push(dep);
-    let index: ExtensionTreeIndex;
-    try {
-      index = await ctx.indexExtensionTree(join(pulledRoot, result.name));
-    } catch (error) {
-      // Unchecked is not installed: an extension whose sources could not
-      // be read is rolled back rather than committed unchecked.
-      const outcome = await pending.rollback();
-      throw new UserError(
-        `Could not check the types ${result.name} registers (${
-          error instanceof Error ? error.message : String(error)
-        }). ${rollbackEnding(outcome, result.name)}`,
-      );
-    }
-    indexed.set(result.name, index);
-    const mismatches = collectiveMismatchesForTypes(
-      result.name,
-      runtimeContentTypes(index),
-    );
-    if (mismatches.length > 0) refused.push({ name: result.name, mismatches });
-  }
-  if (refused.length === 0) return indexed;
-  const outcome = await pending.rollback();
-  throw new UserError(foreignCollectiveMessage(refused, outcome));
-}
-
-function foreignCollectiveMessage(
-  refused: Array<{ name: string; mismatches: CollectiveMismatch[] }>,
-  outcome: InstallRollbackOutcome,
-): string {
-  const lines = refused.flatMap(({ name, mismatches }) => [
-    `Extension ${name} registers types outside its collective ${
-      name.slice(0, name.indexOf("/") + 1)
-    }:`,
-    ...mismatches.map((m) =>
-      `  ${m.kind} "${m.identifier}" in ${kindDirOf(m.kind)}/${m.fileName}`
-    ),
-  ]);
-  const names = refused.map((r) => r.name).join(", ");
-  const ending = rollbackEnding(outcome, refused[0].name);
-  return [
-    `Refused to install ${names}: every type an extension registers must ` +
-    "start with the extension's own collective.",
-    ...lines,
-    ending,
-  ].join("\n");
-}
-
-/** What became of an install that was rolled back after a refusal. */
-function rollbackEnding(outcome: InstallRollbackOutcome, name: string): string {
-  return outcome.status === "kept"
-    ? `It was installed anyway: the lockfile could not be restored. Remove ` +
-      `it with \`swamp extension rm ${name}\`.`
-    : outcome.status === "unsettled"
-    ? "The install was not completed, and its rollback could not finish: " +
-      "the next `swamp extension` install or removal will finish it."
-    : "The install was rolled back; any version installed before is still " +
-      "installed.";
-}
-
-const KIND_DIRS_BY_KIND: Record<CollectiveMismatch["kind"], string> = {
-  model: "models",
-  vault: "vaults",
-  datastore: "datastores",
-  report: "reports",
-  webhook: "webhooks",
-  workflow: "workflows",
-};
-
-function kindDirOf(kind: CollectiveMismatch["kind"]): string {
-  return KIND_DIRS_BY_KIND[kind];
 }
 
 /**
@@ -3080,7 +2964,6 @@ export async function* extensionPull(
         getVersionChannels: deps.getVersionChannels,
         onReplacing: deps.onReplacing,
         onUnoptedPrerelease: deps.onUnoptedPrerelease,
-        indexExtensionTree: deps.indexExtensionTree,
       };
 
       // Let ConflictError propagate — CLI catches it for the two-phase prompt
@@ -3206,10 +3089,6 @@ export async function createExtensionPullDeps(
     depth: 0,
     denoRuntime: args?.denoRuntime,
     repository: args?.repository,
-    indexExtensionTree: createExtensionTreeIndexer({
-      denoRuntime: args?.denoRuntime ?? new EmbeddedDenoRuntime(),
-      repoDir,
-    }),
   };
 }
 
@@ -3249,9 +3128,5 @@ export async function createInstallContext(
     alreadyPulled: new Set(),
     depth: 0,
     channel: opts.channel,
-    indexExtensionTree: createExtensionTreeIndexer({
-      denoRuntime: new EmbeddedDenoRuntime(),
-      repoDir: opts.repoDir,
-    }),
   };
 }

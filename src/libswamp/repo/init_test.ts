@@ -41,7 +41,6 @@ import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_mark
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { ManagedLockfileUnpublishedError } from "../extensions/managed_lockfile_transaction.ts";
-import { emptyTreeIndexer } from "../extensions/extension_tree_index_test_helpers.ts";
 
 function makeInitDeps(
   overrides: Partial<RepoInitDeps> = {},
@@ -567,7 +566,6 @@ Deno.test("repoUpgrade: completes with warning when extension install fails", as
             force: true,
             alreadyPulled: new Set<string>(),
             depth: 0,
-            indexExtensionTree: emptyTreeIndexer,
           }),
         },
       }),
@@ -672,7 +670,6 @@ Deno.test("repoUpgrade: an unpublished lockfile change from the install pass is 
                   force: true,
                   alreadyPulled: new Set<string>(),
                   depth: 0,
-                  indexExtensionTree: emptyTreeIndexer,
                 }),
                 installExtensionFn: () =>
                   Promise.reject(

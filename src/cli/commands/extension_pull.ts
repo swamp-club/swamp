@@ -88,7 +88,6 @@ export { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 
 import { promptConfirmation } from "../prompt_helpers.ts";
 import { overwritePrompt } from "../../presentation/renderers/extension_pull_prompts.ts";
-import { createExtensionTreeIndexer } from "../../libswamp/extensions/extension_tree_index.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -171,10 +170,6 @@ export async function pullExtension(
     repository: ctx.repository,
     getVersionChannels: ctx.getVersionChannels,
     installExtensionFn: ctx.installExtensionFn,
-    indexExtensionTree: createExtensionTreeIndexer({
-      denoRuntime: ctx.denoRuntime ?? new EmbeddedDenoRuntime(),
-      repoDir: ctx.repoDir,
-    }),
   };
   const renderer = createExtensionPullRenderer(outputMode);
   // The forced retry after a conflict reaches the same extensions again;
