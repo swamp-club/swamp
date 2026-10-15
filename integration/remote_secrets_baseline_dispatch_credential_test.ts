@@ -185,7 +185,6 @@ async function withOrchestrator(
       await drainBookkeeping(o);
     } finally {
       await o.shutdown();
-      o.gateway.sessions.dispose();
     }
   });
 }

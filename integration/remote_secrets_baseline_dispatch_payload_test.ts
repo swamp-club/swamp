@@ -29,6 +29,7 @@
 import {
   assert,
   assertEquals,
+  assertExists,
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
@@ -193,19 +194,25 @@ Deno.test({
         );
         const raw = captured.raw;
 
-        assertEquals(Object.keys(raw).sort(), [
-          "bundleFingerprint",
-          "dispatchCredential",
-          "dispatchId",
-          "environmentSnapshot",
-          "execution",
-          "leaseId",
-          "reportBundleFingerprints",
-          "secretBag",
-          "secretValues",
-          "step",
-          "unresolvedMethodArgs",
-        ]);
+        // `lockHolder` rides along only when the test process inherits a
+        // lock holder (a swamp workflow step running the suite sets one);
+        // it carries no secret, so the key set leaves it out.
+        assertEquals(
+          Object.keys(raw).filter((k) => k !== "lockHolder").sort(),
+          [
+            "bundleFingerprint",
+            "dispatchCredential",
+            "dispatchId",
+            "environmentSnapshot",
+            "execution",
+            "leaseId",
+            "reportBundleFingerprints",
+            "secretBag",
+            "secretValues",
+            "step",
+            "unresolvedMethodArgs",
+          ],
+        );
         const execution = raw.execution as Record<string, unknown>;
         assertEquals(Object.keys(execution).sort(), [
           "definitionMeta",
@@ -442,6 +449,7 @@ async function runnerResultFor(
   const result = frames.map((f) => JSON.parse(f)).find((f) =>
     f.type === "runner.result"
   );
+  assertExists(result, "the runner sent a result frame");
   return result.result as DispatchResult;
 }
 
