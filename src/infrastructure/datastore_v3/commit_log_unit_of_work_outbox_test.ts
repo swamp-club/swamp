@@ -53,6 +53,13 @@ function bytesOf(length: number): Uint8Array {
   return bytes;
 }
 
+/** The outbox removals the sink saw, in order: `settle:` or `discard:`. */
+function removals(sink: OutboxMemorySink): string[] {
+  return sink.events.filter((event) =>
+    event.startsWith("settle:") || event.startsWith("discard:")
+  );
+}
+
 function blobChange(name: string) {
   return {
     partition: MODEL,
@@ -78,10 +85,10 @@ Deno.test("commit-log unit with an outbox: prepares each commit with its base be
   assertEquals(sink.events, [
     `prepare:${first.txnId}`,
     `append:${first.txnId}`,
-    `remove:${first.txnId}`,
+    `settle:${first.txnId}`,
     `prepare:${second.txnId}`,
     `append:${second.txnId}`,
-    `remove:${second.txnId}`,
+    `settle:${second.txnId}`,
   ]);
   assertEquals(sink.entries.size, 0);
 });
@@ -130,8 +137,11 @@ Deno.test("commit-log unit with an outbox: a failed append keeps the entry while
   await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
   await assertRejects(() => uow.checkpoint(), Error, "disk full");
   assertEquals(sink.entries.size, 1, "durable while the unit may retry");
+  const [txnId] = [...sink.entries.keys()];
   await assertRejects(() => uow.commit(), Error, "disk full");
   assertEquals(sink.entries.size, 0, "the failure was reported");
+  // Durable: a discard a power cut undid could be landed by a recovery.
+  assertEquals(removals(sink), [`discard:${txnId}`]);
 });
 
 Deno.test("commit-log unit with an outbox: a failed discard leaves the commit's own error to the caller", async () => {
@@ -162,10 +172,12 @@ Deno.test("commit-log unit with an outbox: abandon discards what it prepared", a
   };
   await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
   await assertRejects(() => uow.checkpoint());
+  const [txnId] = [...sink.entries.keys()];
   fail = false;
   await uow.abandon();
   assertEquals(sink.entries.size, 0);
   assertEquals(sink.landed, []);
+  assertEquals(removals(sink), [`discard:${txnId}`]);
 });
 
 Deno.test("commit-log unit with an outbox: a refusal discards the refused entry and the unit's run entries, and held runs are never prepared", async () => {
@@ -185,6 +197,9 @@ Deno.test("commit-log unit with an outbox: a refusal discards the refused entry 
     op: await savePut("a", 1, "a", "absent"),
   });
   await first.commit();
+  const settled = removals(sink);
+  assertEquals(settled.length, 1);
+  assert(settled[0].startsWith("settle:"), "the landed commit settles");
   const uow = createCommitLogUnitOfWork(contextHook(), options);
   await uow.stageOp({ partition: runPartition(), op: await runPut("r1") });
   await assertRejects(() => uow.checkpoint(), Error, "transient");
@@ -202,6 +217,12 @@ Deno.test("commit-log unit with an outbox: a refusal discards the refused entry 
   );
   assert(error.heldRuns.length > 0);
   assertEquals(sink.entries.size, 0, "no run entry outlives the refusal");
+  const discarded = removals(sink).slice(1);
+  assertEquals(discarded.length, 2, "the refused entry and the run entry");
+  assert(
+    discarded.every((event) => event.startsWith("discard:")),
+    `a refusal discards durably, never settles: ${discarded}`,
+  );
   assertEquals(
     sink.events.filter((event) => event.startsWith("prepare:")).length,
     3,

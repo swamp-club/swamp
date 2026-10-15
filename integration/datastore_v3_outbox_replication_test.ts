@@ -80,7 +80,8 @@ Deno.test({
           outbox: {
             headIdentity: (ns, p) => handle.commitStore.headIdentity(ns, p),
             prepare: (preparation) => handle.outbox.prepare(preparation),
-            remove: () => Promise.resolve(),
+            settle: () => Promise.resolve(),
+            discard: () => Promise.resolve(),
             sweepState: () => handle.outbox.sweepState(Date.now()),
           },
         },

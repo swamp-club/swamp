@@ -524,7 +524,8 @@ Deno.test("v3 outbox: serve's retake lands what a writer between its two holds l
           outbox: {
             headIdentity: (ns, p) => other.commitStore.headIdentity(ns, p),
             prepare: (preparation) => other.outbox.prepare(preparation),
-            remove: () => Promise.resolve(),
+            settle: () => Promise.resolve(),
+            discard: () => Promise.resolve(),
             sweepState: () => other.outbox.sweepState(Date.now()),
           },
         },

@@ -116,7 +116,7 @@ export class MemorySink implements CommitSink {
 export class OutboxMemorySink extends MemorySink {
   /** The entries prepared and not removed, by txnId. */
   readonly entries = new Map<string, OutboxPreparation>();
-  /** Outbox calls and appends, in order: `prepare:<txnId>` and so on. */
+  /** Outbox calls and appends, in order: `prepare:<txnId>`, `settle:`, `discard:`, `append:`. */
   readonly events: string[] = [];
   /** The sweep state each read returns, in turn; quiet once used up. */
   sweepStates: SweepState[] = [];
@@ -140,17 +140,23 @@ export class OutboxMemorySink extends MemorySink {
       this.entries.set(preparation.commit.txnId, preparation);
       return Promise.resolve();
     },
-    remove: (keys) => {
-      this.beforeRemove(keys);
-      for (const key of keys) {
-        this.events.push(`remove:${key.txnId}`);
-        this.entries.delete(key.txnId);
-      }
-      return Promise.resolve();
-    },
+    settle: (keys) => this.#remove("settle", keys),
+    discard: (keys) => this.#remove("discard", keys),
     sweepState: () =>
       Promise.resolve(this.sweepStates.shift() ?? { epoch: 0, active: false }),
   };
+
+  #remove(
+    kind: "settle" | "discard",
+    keys: readonly OutboxKey[],
+  ): Promise<void> {
+    this.beforeRemove(keys);
+    for (const key of keys) {
+      this.events.push(`${kind}:${key.txnId}`);
+      this.entries.delete(key.txnId);
+    }
+    return Promise.resolve();
+  }
 
   async headIdentityOf(
     namespace: string,

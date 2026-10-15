@@ -96,27 +96,51 @@ Deno.test("createOutboxCommitSink: reports the head with its commit's txnId", as
   });
 });
 
-Deno.test("createOutboxCommitSink: a removal that fails is owed, and retried when asked", async () => {
+Deno.test("createOutboxCommitSink: a settle or discard that fails is owed, and retried durably when asked", async () => {
   await withStores(async (store, outbox) => {
     const sink = createOutboxCommitSink({ commitStore: store, outbox });
-    const commit = modelCommit(1, [await savePut("a", 1)]);
-    await sink.outbox!.prepare({
-      commit,
-      unitId: "u",
-      base: { seq: 0, txnId: undefined },
+    const landed = modelCommit(1, [await savePut("a", 1)]);
+    const failed = modelCommit(1, [await savePut("b", 1)], {
+      txnId: "txn-failed",
     });
-    const remove = outbox.remove.bind(outbox);
+    for (const commit of [landed, failed]) {
+      await sink.outbox!.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+    }
+    const calls: string[] = [];
+    const settle = outbox.settle.bind(outbox);
+    const discard = outbox.discard.bind(outbox);
     let fail = true;
-    outbox.remove = (keys) =>
-      fail ? Promise.reject(new Error("database is locked")) : remove(keys);
+    outbox.settle = (keys) => {
+      calls.push(`settle:${keys.length}`);
+      return fail
+        ? Promise.reject(new Error("database is locked"))
+        : settle(keys);
+    };
+    outbox.discard = (keys) => {
+      calls.push(`discard:${keys.length}`);
+      return fail
+        ? Promise.reject(new Error("database is locked"))
+        : discard(keys);
+    };
     await assertRejects(
-      () => sink.outbox!.remove([outboxKeyOf(commit)]),
+      () => sink.outbox!.settle([outboxKeyOf(landed)]),
       Error,
       "locked",
     );
-    assertEquals(await outbox.hasEntries(), true);
+    await assertRejects(
+      () => sink.outbox!.discard([outboxKeyOf(failed)]),
+      Error,
+      "locked",
+    );
+    assertEquals((await outbox.entries()).entries.length, 2);
     fail = false;
     await sink.retryOwedRemovals();
     assertEquals(await outbox.hasEntries(), false);
+    // The owed discard's failure was reported, so the retry is durable.
+    assertEquals(calls, ["settle:1", "discard:1", "discard:2"]);
   });
 });

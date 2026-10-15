@@ -104,6 +104,12 @@ const REF_LOOKUP_PAGE = 500;
 export interface SqliteCommitOutboxOptions {
   /** When an entry is first prepared; the system clock by default. */
   readonly clock?: () => Date;
+  /**
+   * Called inside each write transaction with the connection's
+   * `PRAGMA synchronous` value (2 is FULL, 1 NORMAL): tests observe which
+   * writes are fsynced through it.
+   */
+  readonly onWrite?: (synchronous: number) => void;
 }
 
 interface EntryRow {
@@ -121,17 +127,19 @@ interface EntryRow {
 /**
  * The outbox at `path`. One connection per instance; every write is one
  * transaction with `synchronous=FULL`, so a prepared entry survives a power
- * cut as the commit store's appends do.
+ * cut as the commit store's appends do. A settle alone skips the fsync.
  */
 export class SqliteCommitOutbox implements CommitOutbox {
   readonly #path: string;
   readonly #clock: () => Date;
+  readonly #onWrite: ((synchronous: number) => void) | undefined;
   #db: DatabaseSync | undefined;
   #closed = false;
 
   constructor(path: string, options: SqliteCommitOutboxOptions = {}) {
     this.#path = path;
     this.#clock = options.clock ?? (() => new Date());
+    this.#onWrite = options.onWrite;
   }
 
   /** The outbox file's path. */
@@ -170,7 +178,19 @@ export class SqliteCommitOutbox implements CommitOutbox {
     });
   }
 
-  remove(keys: readonly OutboxKey[]): Promise<void> {
+  settle(keys: readonly OutboxKey[]): Promise<void> {
+    // A settle lost to a power cut costs one more settle at the next
+    // recovery, which finds the commit landed: no fsync of its own.
+    return this.#remove(keys, false);
+  }
+
+  discard(keys: readonly OutboxKey[]): Promise<void> {
+    // A discarded entry's outcome was reported; back after a power cut, the
+    // next recovery could land it. So a discard is fsynced.
+    return this.#remove(keys, true);
+  }
+
+  #remove(keys: readonly OutboxKey[], durable: boolean): Promise<void> {
     if (keys.length === 0) return Promise.resolve();
     return this.#write((db) => {
       const select = db.prepare(
@@ -190,9 +210,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
         deleteChunks.run(row.sequence);
         deleteEntry.run(row.sequence);
       }
-      // A removal lost to a power cut costs one more settle or drop at the
-      // next recovery, never a commit: no fsync of its own.
-    }, { create: false, durable: false });
+    }, { create: false, durable });
   }
 
   async entries(): Promise<OutboxListing> {
@@ -357,6 +375,12 @@ export class SqliteCommitOutbox implements CommitOutbox {
       try {
         db.exec("BEGIN IMMEDIATE");
         try {
+          if (this.#onWrite !== undefined) {
+            const row = db.prepare("PRAGMA synchronous").get() as
+              | { synchronous: number }
+              | undefined;
+            this.#onWrite(row?.synchronous ?? -1);
+          }
           const result = body(db);
           db.exec("COMMIT");
           return Promise.resolve(result);

@@ -79,7 +79,8 @@ Deno.test("SqliteCommitOutbox: reads see an outbox nothing wrote as empty, and c
     assertEquals(await outbox.chain(), undefined);
     assertEquals(await outbox.referencedChunks("", [HASH_A]), new Set());
     assertEquals(await outbox.sweepState(0), { epoch: 0, active: false });
-    await outbox.remove([{ namespace: "", partition: "p", txnId: "t" }]);
+    await outbox.settle([{ namespace: "", partition: "p", txnId: "t" }]);
+    await outbox.discard([{ namespace: "", partition: "p", txnId: "t" }]);
     await outbox.raiseFloor(3);
     assertEquals(await exists(path), false);
     await outbox.close();
@@ -129,12 +130,49 @@ Deno.test("SqliteCommitOutbox: a prepared entry survives a reopen, and a re-prep
     assertEquals(entry.base, { seq: 1, txnId: "txn-other" });
     assertEquals(entry.commit.seq, 2);
     assert(entry.commit.equals(rebuilt));
-    await reopened.remove([outboxKeyOf(first)]);
+    await reopened.settle([outboxKeyOf(first)]);
     assertEquals(
       (await reopened.entries()).entries.map((e) => e.commit.txnId),
       ["txn-other"],
     );
     await reopened.close();
+  });
+});
+
+Deno.test("SqliteCommitOutbox: a discard is fsynced and a settle is not, and later writes are fsynced again", async () => {
+  await withTempDir(async (dir) => {
+    const modes: number[] = [];
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"), {
+      onWrite: (synchronous) => modes.push(synchronous),
+    });
+    const landed = modelCommit(1, [await savePut("a", 1)]);
+    const failed = modelCommit(2, [await savePut("b", 1)]);
+    for (const commit of [landed, failed]) {
+      await outbox.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: commit.seq - 1, txnId: undefined },
+      });
+    }
+    const FULL = 2;
+    const NORMAL = 1;
+    assertEquals(modes, [FULL, FULL], "a prepare is fsynced");
+    modes.length = 0;
+    await outbox.settle([outboxKeyOf(landed)]);
+    assertEquals(modes, [NORMAL], "a lost settle is settled again");
+    modes.length = 0;
+    await outbox.discard([outboxKeyOf(failed)]);
+    assertEquals(modes, [FULL], "a discarded failure must stay discarded");
+    modes.length = 0;
+    await outbox.settle([outboxKeyOf(landed)]);
+    await outbox.raiseFloor(1);
+    assertEquals(
+      modes,
+      [NORMAL, FULL],
+      "a settle leaves the connection at FULL",
+    );
+    assertEquals(await outbox.hasEntries(), false);
+    await outbox.close();
   });
 });
 
@@ -162,7 +200,7 @@ Deno.test("SqliteCommitOutbox: names the chunks of its entries until they are re
       await outbox.referencedChunks("", [HASH_A, HASH_B]),
       new Set([HASH_B]),
     );
-    await outbox.remove([outboxKeyOf(commit)]);
+    await outbox.discard([outboxKeyOf(commit)]);
     assertEquals(await outbox.referencedChunks("", [HASH_B]), new Set());
     await outbox.close();
   });
