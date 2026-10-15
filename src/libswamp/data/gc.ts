@@ -19,6 +19,7 @@
 
 import {
   type DataRetentionResult,
+  type DataRetentionScan,
   DefaultDataLifecycleService,
   type ExpiredDataInfo,
   type LifecycleGCResult,
@@ -135,7 +136,7 @@ export interface DataGcDeps {
   /** Deletes model data created before `cutoff` (data retention). */
   deleteDataOlderThan?: (
     cutoff: Date,
-    opts: { dryRun: boolean; limit?: number },
+    opts: { dryRun: boolean; limit?: number; scan?: DataRetentionScan },
   ) => Promise<DataRetentionResult>;
   /** Checkpoints the catalog WAL. Omit in tests that don't need compaction. */
   compactCatalog?: () => {

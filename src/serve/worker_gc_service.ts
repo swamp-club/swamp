@@ -37,8 +37,8 @@ export const DEFAULT_WORKER_GC_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000; // 24 hour
 
 /**
  * The worker GC grace period for a repo's `garbageCollection` block: its
- * bookkeeping retention (`bookkeeping`, else `retention`) when `automatic`
- * is on, else {@link DEFAULT_WORKER_GC_GRACE_PERIOD_MS}. A retention set
+ * `bookkeeping` key when `automatic` is on (the shared `retention` never
+ * applies), else {@link DEFAULT_WORKER_GC_GRACE_PERIOD_MS}. A retention set
  * only for manual gc never shortens how long serve keeps workers.
  */
 export function bookkeepingGracePeriodMs(

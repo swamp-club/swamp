@@ -359,3 +359,59 @@ Deno.test("deleteDataOlderThan: a name emptied on the filesystem keeps counting 
     assertEquals(next.version, 4);
   });
 });
+
+Deno.test("deleteDataOlderThan: a scan kept across batches reads each kept name once per pass", async () => {
+  const repo = inMemory();
+  // Names retention keeps (on v3 every unchanged name's latest) ...
+  for (const name of ["k1", "k2", "k3", "k4"]) await save(repo, name);
+  // ... and one with old versions to trim behind them.
+  for (let i = 0; i < 5; i++) await save(repo, "trim");
+  const oldest = await repo.findByName(TYPE, "model-1", "trim", 5);
+  const cutoff = cutoffAfter(oldest!);
+  await save(repo, "trim");
+
+  const pendingChecks = new Map<string, number>();
+  const counting = new Proxy(repo, {
+    get(target, prop, receiver) {
+      if (prop === "hasPendingVersions") {
+        return (
+          ...args: Parameters<NonNullable<typeof repo.hasPendingVersions>>
+        ) => {
+          const name = args[2];
+          pendingChecks.set(name, (pendingChecks.get(name) ?? 0) + 1);
+          return target.hasPendingVersions!(...args);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  const scan = {
+    settledNames: new Set<string>(),
+    countedVersions: new Set<string>(),
+  };
+  let batches = 0;
+  let deleted = 0;
+  while (true) {
+    batches++;
+    const result = await service(counting).deleteDataOlderThan(cutoff, {
+      dryRun: false,
+      isExempt,
+      keepLatestVersion: true,
+      limit: 1,
+      scan,
+    });
+    deleted += result.versionsDeleted;
+    if (!result.more) break;
+  }
+
+  assertEquals(deleted, 5);
+  assertEquals(await repo.listVersions(TYPE, "model-1", "trim"), [6]);
+  // Each kept name is read once, though the pass took several batches; only
+  // the name still being trimmed is read again by each batch.
+  assertEquals(batches > 4, true);
+  for (const name of ["k1", "k2", "k3", "k4"]) {
+    assertEquals(pendingChecks.get(name), 1, name);
+  }
+});

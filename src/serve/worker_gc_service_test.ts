@@ -272,14 +272,15 @@ Deno.test("WorkerGcService: a tick runs with no active span when started under o
   });
 });
 
-Deno.test("bookkeepingGracePeriodMs: with automatic on, the bookkeeping key wins, then retention, then 24h", () => {
+Deno.test("bookkeepingGracePeriodMs: with automatic on, only the bookkeeping key sets it, else 24h", () => {
   assertEquals(
     bookkeepingGracePeriodMs(undefined),
     DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
   );
+  // The shared default never shortens the worker grace.
   assertEquals(
     bookkeepingGracePeriodMs({ automatic: true, retention: "2d" }),
-    2 * 86_400_000,
+    DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
   );
   assertEquals(
     bookkeepingGracePeriodMs({

@@ -37,8 +37,8 @@ export type RetentionKind = typeof RETENTION_KINDS[number];
 /** The `.swamp.yaml` `garbageCollection` block. */
 export interface RetentionConfig {
   /**
-   * Default timeframe for every kind without its own value, except `data`,
-   * which must be set on its own.
+   * Default timeframe for every kind without its own value, except `data`
+   * and `bookkeeping`, which must be set on their own.
    */
   retention?: string;
   /** Apply retention automatically (serve timer, CLI end of command). */
@@ -163,9 +163,11 @@ export function checkRetentionConfig(
   // unset one follows the run retention.
   const valid = withoutIgnored(config as RetentionConfig, ignored);
   if (errors.length === 0 && valid.evaluatedSnapshots !== undefined) {
-    const policy = RetentionPolicy.fromConfig(valid);
-    const snapshots = policy.retentionMs("evaluatedSnapshots");
-    const runs = policy.retentionMs("workflowRuns");
+    const snapshots = parseDataDuration(valid.evaluatedSnapshots);
+    const runsDuration = valid.workflowRuns ?? valid.retention;
+    const runs = runsDuration === undefined
+      ? undefined
+      : parseDataDuration(runsDuration);
     if (
       snapshots !== undefined && runs !== undefined && snapshots > runs
     ) {
@@ -207,8 +209,18 @@ export function withoutIgnored(
 export class RetentionPolicy {
   private constructor(private readonly config: RetentionConfig) {}
 
+  /**
+   * The policy of a `garbageCollection` block as `.swamp.yaml` holds it.
+   * Values {@link checkRetentionConfig} ignores are dropped or held here,
+   * never in the file: a command that rewrites `.swamp.yaml` must save the
+   * user's block as written.
+   */
   static fromConfig(config: RetentionConfig | undefined): RetentionPolicy {
-    return new RetentionPolicy({ ...(config ?? {}) });
+    if (config === undefined) return new RetentionPolicy({});
+    const { errors, ignored } = checkRetentionConfig(config);
+    return new RetentionPolicy(
+      withoutIgnored(config, [...errors, ...ignored]),
+    );
   }
 
   /** True when retention runs on its own (serve timer, CLI end of command). */
@@ -226,6 +238,9 @@ export class RetentionPolicy {
     // included: it applies only when `data` is set, never from the shared
     // default.
     if (kind === "data") return this.config.data;
+    // Bookkeeping retention is serve's worker GC grace: a shared default
+    // meant for history must not prune a worker that is merely offline.
+    if (kind === "bookkeeping") return this.config.bookkeeping;
     if (kind === "evaluatedSnapshots") {
       return this.config.evaluatedSnapshots ??
         this.durationFor("workflowRuns");

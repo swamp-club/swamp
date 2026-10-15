@@ -234,14 +234,14 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
 
 ```yaml
 garbageCollection:
-  retention: 30d          # default for every kind below except data
+  retention: 30d          # default for every kind below except data and bookkeeping
   automatic: true         # enforce it: serve timer, CLI end of command
   workflowRuns: 14d       # run records, run logs, wait records, claims
   evaluatedSnapshots: 3d  # optional; unset, snapshots go with their runs (orphans swept)
   outputs: 7d             # method outputs and their run logs
   data: 30d               # opt-in only: every data version, the latest included
   audit: 90d              # .swamp/audit logs; default for serve audit stores (with automatic on)
-  bookkeeping: 24h        # serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
+  bookkeeping: 24h        # opt-in: serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
 ```
 
 - **Units**: as `--older-than`: `m` is minutes and `mo` months, so
@@ -257,7 +257,9 @@ garbageCollection:
   key recognised since swamp-club#3473 (`retention`, `automatic`,
   `evaluatedSnapshots`, `data`, `audit`, `bookkeeping`), and an explicit
   `evaluatedSnapshots` longer than the run retention, is logged once and
-  dropped; a value longer than `1000y` is held at `1000y`. Unknown keys are
+  ignored by the policy; a value longer than `1000y` is held at `1000y`.
+  The file itself keeps the user's block as written, so a command that
+  rewrites `.swamp.yaml` never strips or changes it. Unknown keys are
   logged once and ignored. An unset `evaluatedSnapshots` follows the run
   retention rather than `retention`, so `retention: 30d` with
   `workflowRuns: 7d` is valid; only an explicit value removes a kept run's
@@ -291,7 +293,8 @@ garbageCollection:
   `doctor --retention` counts that version as kept.
 - **Automatic passes** (`runRepoRetention`, `src/libswamp/retention/`): the
   collectors run in order (runs, snapshots, outputs, data, audit), in
-  batches of 100. Each batch is traced (`swamp.retention.batch`).
+  batches of 100. Data batches share one scan per pass, resuming where the
+  last stopped, so a name retention keeps is read once per pass. Each batch is traced (`swamp.retention.batch`).
   - `swamp serve` runs `RetentionGcService` five minutes after start and then
     hourly. It reads `.swamp.yaml` each tick, takes the sync gate per batch
     (never for the whole pass), backs off while every run slot is taken,

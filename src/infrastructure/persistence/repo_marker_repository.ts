@@ -28,7 +28,6 @@ import type { DatastoreConfigData } from "../../domain/datastore/datastore_confi
 import {
   checkRetentionConfig,
   type RetentionConfig,
-  withoutIgnored,
 } from "../../domain/retention/retention_policy.ts";
 import type { AiTool } from "../../domain/repo/ai_tool.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
@@ -131,10 +130,9 @@ function validateGarbageCollection(
     );
   }
   // Keys recognised since swamp-club#3473 were silently ignored before, so a
-  // bad value in one is warned about and dropped rather than refused.
-  if (ignored.length > 0 && data.garbageCollection) {
-    data.garbageCollection = withoutIgnored(data.garbageCollection, ignored);
-  }
+  // bad value in one is warned about rather than refused. The block itself
+  // is left as written: RetentionPolicy drops or holds such values, and a
+  // command that rewrites `.swamp.yaml` saves the user's block unchanged.
   for (const entry of ignored) {
     warnOnce(
       path,

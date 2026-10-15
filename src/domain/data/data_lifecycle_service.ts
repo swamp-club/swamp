@@ -124,6 +124,22 @@ export interface DeleteDataOlderThanOptions {
    * high-water mark reaches version allocation).
    */
   keepLatestVersion?: boolean;
+  /**
+   * Scan state a caller keeps across the batches of one pass, so each batch
+   * resumes where the last stopped instead of re-reading every name it kept
+   * from the oldest row. Absent, the call scans from the start.
+   */
+  scan?: DataRetentionScan;
+}
+
+/** Where a batched data retention pass has got to (see `scan`). */
+export interface DataRetentionScan {
+  /** The page the last batch stopped in; absent before the first. */
+  cursor?: string;
+  /** Names already settled: deleted, kept, exempt or skipped. */
+  readonly settledNames: Set<string>;
+  /** Versions already counted (a dry run lists them again). */
+  readonly countedVersions: Set<string>;
 }
 
 /** Versions read from the repository per page of retention candidates. */
@@ -551,13 +567,18 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
     // Names already settled (deleted whole, or skipped) and versions already
     // counted. A dry run deletes nothing, so later pages list them again.
-    const settledNames = new Set<string>();
-    const countedVersions = new Set<string>();
+    const scan = options.scan;
+    const settledNames = scan?.settledNames ?? new Set<string>();
+    const countedVersions = scan?.countedVersions ?? new Set<string>();
     const atLimit = () =>
       limit !== undefined && result.versionsDeleted >= limit;
 
-    let cursor: string | undefined;
+    let cursor: string | undefined = scan?.cursor;
     do {
+      // The page a batch stops in is read again by the next one; the names
+      // it settled are skipped there.
+      const pageCursor = cursor;
+      if (scan) scan.cursor = pageCursor;
       const page = await repo.findVersionsCreatedBefore(cutoff, {
         limit: RETENTION_PAGE_SIZE,
         cursor,
@@ -673,6 +694,12 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
             result.versionsDeleted++;
             result.bytesReclaimed += aged.size;
           }
+          // Rows come oldest first and the latest is the name's newest, so
+          // once it is among them every older version has been seen: the
+          // name is settled, and later batches of the pass skip it.
+          if (group.some((aged) => aged.version === latestVersion)) {
+            settledNames.add(nameKey);
+          }
         } catch (error) {
           logger.error(
             "Error applying data retention to {path}",
@@ -687,6 +714,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       }
     } while (cursor !== undefined);
 
+    if (scan) scan.cursor = undefined;
     return result;
   }
 

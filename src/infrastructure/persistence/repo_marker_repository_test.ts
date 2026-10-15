@@ -241,7 +241,7 @@ garbageCollection:
   });
 });
 
-Deno.test("RepoMarkerRepository.read drops a bad value in a newly recognised key", async () => {
+Deno.test("RepoMarkerRepository.read keeps a bad value in a newly recognised key as written", async () => {
   await withTempDir(async (dir) => {
     const repo = new RepoMarkerRepository();
     await Deno.writeTextFile(
@@ -257,8 +257,19 @@ garbageCollection:
 
     const result = await repo.read(RepoPath.create(dir));
 
-    // Both were ignored before swamp-club#3473: dropped, never refused.
-    assertEquals(result?.garbageCollection, { workflowRuns: "7d" });
+    // Loaded, never refused, and kept as written so a command that rewrites
+    // .swamp.yaml saves the user's block unchanged; RetentionPolicy ignores
+    // the bad values.
+    assertEquals(result?.garbageCollection, {
+      workflowRuns: "7d",
+      evaluatedSnapshots: "14d",
+      data: "forever",
+    });
+    await repo.write(RepoPath.create(dir), result!);
+    assertEquals(
+      (await repo.read(RepoPath.create(dir)))?.garbageCollection,
+      result?.garbageCollection,
+    );
   });
 });
 

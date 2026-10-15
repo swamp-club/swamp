@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   checkRetentionConfig,
+  type RetentionConfig,
   RetentionPolicy,
   withoutIgnored,
 } from "./retention_policy.ts";
@@ -181,9 +182,25 @@ Deno.test("checkRetentionConfig: holds a retention too long for a date at 1000y,
   assertEquals(checkRetentionConfig({ retention: "1000y" }).ignored, []);
 });
 
-Deno.test("RetentionPolicy.cutoff: an unrepresentable cutoff means no retention", () => {
+Deno.test("RetentionPolicy.fromConfig: holds an over-long retention at 1000y, never an unrepresentable cutoff", () => {
+  const now = new Date("2026-10-15T00:00:00.000Z");
   const policy = RetentionPolicy.fromConfig({ retention: "300000y" });
-  assertEquals(policy.cutoff("workflowRuns", new Date()), undefined);
+  assertEquals(policy.durationFor("workflowRuns"), "1000y");
+  assertEquals(policy.cutoff("workflowRuns", now)?.getUTCFullYear(), 1027);
+});
+
+Deno.test("RetentionPolicy.fromConfig: ignores bad values without touching the given block", () => {
+  const block = {
+    workflowRuns: "7d",
+    evaluatedSnapshots: "14d",
+    data: "forever",
+    automatic: "yes",
+  } as unknown as RetentionConfig;
+  const policy = RetentionPolicy.fromConfig(block);
+  assertEquals(policy.durationFor("evaluatedSnapshots"), "7d");
+  assertEquals(policy.durationFor("data"), undefined);
+  assertEquals(policy.automatic, false);
+  assertEquals(block.data, "forever");
 });
 
 Deno.test("RetentionPolicy.durationFor: data never follows the shared default", () => {

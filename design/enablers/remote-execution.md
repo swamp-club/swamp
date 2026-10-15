@@ -630,8 +630,8 @@ counts (worker 20; token, lease, pending-dispatch 10; fleet-probe 1), with
 
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs periodically
 on the serve side (default interval 1 h, default grace period 24 h). The grace
-period is the repository's `.swamp.yaml` `garbageCollection.bookkeeping` (else
-`retention`) when `automatic` is on, read on every cycle (swamp-club#3473). Each cycle has two
+period is the repository's `.swamp.yaml` `garbageCollection.bookkeeping` (never the
+shared `retention`) when `automatic` is on, read on every cycle (swamp-club#3473). Each cycle has two
 independent parts, so a failure in one never skips the other:
 
 - **Workers and tokens.** It prunes worker records disconnected for longer than

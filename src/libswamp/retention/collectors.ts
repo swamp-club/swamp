@@ -33,6 +33,7 @@ import type { CatalogStore } from "../../infrastructure/persistence/catalog_stor
 import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { RetentionCollector } from "./pass.ts";
+import type { DataRetentionScan } from "../../domain/data/data_lifecycle_service.ts";
 
 const DAY_MS = 86_400_000;
 
@@ -103,6 +104,12 @@ export function createRetentionCollectors(
     );
   const auditRepo = sources.auditRepo ??
     new JsonlAuditRepository(sources.repoDir);
+  // One scan per pass: each data batch resumes where the last stopped, so
+  // names retention keeps are read once per pass, not once per batch.
+  const dataScan: DataRetentionScan = {
+    settledNames: new Set(),
+    countedVersions: new Set(),
+  };
   const daysBefore = (cutoff: Date): number =>
     Math.max(0, (now() - cutoff.getTime()) / DAY_MS);
 
@@ -159,6 +166,7 @@ export function createRetentionCollectors(
         const result = await data.deleteDataOlderThan(cutoff, {
           dryRun: false,
           limit,
+          scan: dataScan,
         });
         return {
           deleted: result.versionsDeleted,
