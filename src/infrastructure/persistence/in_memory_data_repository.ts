@@ -31,6 +31,7 @@ import {
   type ContentAvailability,
   type DeferredWriteReceipt,
   EphemeralBudgetExceededError,
+  type FindAllForTypeOptions,
   type FindAllGlobalOptions,
   type GarbageCollectionResult,
   OwnershipValidationError,
@@ -602,6 +603,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
 
   findAllForType(
     type: ModelTypeInput,
+    // Nothing held in memory is ever unreadable.
+    _options?: FindAllForTypeOptions,
   ): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {

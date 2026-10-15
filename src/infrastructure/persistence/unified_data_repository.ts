@@ -66,6 +66,7 @@ import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
   type ContentAvailability,
   type DeferredWriteReceipt,
+  type FindAllForTypeOptions,
   type FindAllGlobalOptions,
   type ForeignContentFetcher,
   type GarbageCollectionResult,
@@ -578,6 +579,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   /** One type's data, model ids in name order; see {@link findAllGlobal}. */
   async findAllForType(
     type: ModelTypeInput,
+    options?: FindAllForTypeOptions,
   ): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
@@ -590,12 +592,25 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       for (const modelId of await listSubdirectories(typeDir)) {
         try {
-          const dataItems = await this.findAllForModel(modelType, modelId);
+          // A caller collecting what it skips learns of each data name that
+          // failed, empty metadata included, which otherwise reads as the
+          // data not being there, and still gets the model's other data.
+          const unreadable = options?.unreadable;
+          const dataItems = unreadable
+            ? await this.collectModelData(
+              modelType,
+              modelId,
+              undefined,
+              (dataName, error) =>
+                unreadable.push({ modelType, modelId, dataName, error }),
+            )
+            : await this.findAllForModel(modelType, modelId);
           for (const data of dataItems) {
             results.push({ data, modelType, modelId });
           }
-        } catch {
-          // Skip invalid model directories
+        } catch (error) {
+          // Skip invalid model directories, telling a caller that asks.
+          options?.unreadable?.push({ modelType, modelId, error });
         }
       }
     } catch (error) {
@@ -806,12 +821,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
+  /**
+   * With `strict`, a metadata file that parses to nothing (an empty or
+   * truncated `metadata.yaml`) throws SyntaxError, and one missing from a
+   * version that exists throws NotFound, instead of reading as no data.
+   */
   private async findByNameWithDepth(
     type: ModelType,
     modelId: string,
     dataName: string,
     version: number | undefined,
     depth: number,
+    strict = false,
   ): Promise<Data | null> {
     const versionToRead = version ?? (await this.getLatestVersion(
       type,
@@ -829,7 +850,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       const content = await Deno.readTextFile(metadataPath);
       const metadata = parseYaml(content) as DataMetadata | null;
-      if (!metadata) return null;
+      if (!metadata) {
+        if (strict) {
+          throw new SyntaxError(
+            `metadata.yaml of ${dataName} version ${versionToRead} is empty`,
+          );
+        }
+        return null;
+      }
       const data = Data.fromData(metadata);
 
       // Follow forward references for latest lookups (not explicit version requests)
@@ -845,12 +873,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           data.renamedTo,
           undefined,
           depth + 1,
+          strict,
         );
       }
 
       return data;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
+        if (strict) {
+          throw new Deno.errors.NotFound(
+            `metadata.yaml of ${dataName} version ${versionToRead} is missing`,
+          );
+        }
         return null;
       }
       throw error;
@@ -927,11 +961,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   /**
    * The latest data of each name under a model, following rename forwards.
    * Each rename marker followed is pushed to `renames` when given.
+   *
+   * With `skipped`, a data name that cannot be read, or whose metadata is
+   * empty or missing (see {@link findByNameWithDepth}), is passed to it and
+   * the other names are still read; without it, any such name fails the
+   * whole model, and missing or empty metadata reads as no data.
    */
   private async collectModelData(
     type: ModelType,
     modelId: string,
     renames?: RenameForward[],
+    skipped?: (dataName: string, error: unknown) => void,
   ): Promise<Data[]> {
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
@@ -939,31 +979,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     try {
       for (const dataName of await listSubdirectories(dataDir)) {
-        // Read the name's own latest version, then follow a rename marker
-        // from depth 1: the same reads as an unversioned findByName, with
-        // the marker visible on the way.
-        const latest = await this.getLatestVersion(type, modelId, dataName);
-        let data = latest === null
-          ? null
-          : await this.findByName(type, modelId, dataName, latest);
-        if (data?.isRenamed && data.renamedTo) {
-          renames?.push({
-            modelType: type,
-            modelId,
-            dataName,
-            renamedTo: data.renamedTo,
+        if (!skipped) {
+          await this.collectDataName(type, modelId, dataName, results, seen, {
+            renames,
+            strict: false,
           });
-          data = await this.findByNameWithDepth(
-            type,
-            modelId,
-            data.renamedTo,
-            undefined,
-            1,
-          );
+          continue;
         }
-        if (data && !seen.has(data.name)) {
-          seen.add(data.name);
-          results.push(data);
+        try {
+          await this.collectDataName(type, modelId, dataName, results, seen, {
+            renames,
+            strict: true,
+          });
+        } catch (error) {
+          skipped(dataName, error);
         }
       }
     } catch (error) {
@@ -974,6 +1003,51 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     return results;
+  }
+
+  /**
+   * Adds one data name's latest data to `results`, unless `seen` already
+   * holds its name: its own latest version, then a rename marker followed
+   * from depth 1 — the same reads as an unversioned findByName, with the
+   * marker visible on the way.
+   */
+  private async collectDataName(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    results: Data[],
+    seen: Set<string>,
+    { renames, strict }: { renames?: RenameForward[]; strict: boolean },
+  ): Promise<void> {
+    const latest = await this.getLatestVersion(type, modelId, dataName);
+    let data = latest === null ? null : await this.findByNameWithDepth(
+      type,
+      modelId,
+      dataName,
+      latest,
+      0,
+      strict,
+    );
+    if (data?.isRenamed && data.renamedTo) {
+      renames?.push({
+        modelType: type,
+        modelId,
+        dataName,
+        renamedTo: data.renamedTo,
+      });
+      data = await this.findByNameWithDepth(
+        type,
+        modelId,
+        data.renamedTo,
+        undefined,
+        1,
+        strict,
+      );
+    }
+    if (data && !seen.has(data.name)) {
+      seen.add(data.name);
+      results.push(data);
+    }
   }
 
   save(

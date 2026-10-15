@@ -23,7 +23,7 @@ import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
-import type { RenameForward } from "./repositories.ts";
+import type { RenameForward, UnreadableModelRecord } from "./repositories.ts";
 
 function createTestData(overrides: Partial<{
   name: string;
@@ -316,6 +316,26 @@ Deno.test("CompositeUnifiedDataRepository: findAllGlobal reports rename markers 
       [["old", "new"]],
     );
   }
+});
+
+Deno.test("CompositeUnifiedDataRepository: findAllForType passes the unreadable collector to both repos", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  for (
+    const [repo, modelId] of [[persistent, "p"], [ephemeral, "e"]] as const
+  ) {
+    repo.findAllForType = (type, options) => {
+      options?.unreadable?.push({
+        modelType: ModelType.create(String(type)),
+        modelId,
+        error: new Deno.errors.PermissionDenied(),
+      });
+      return Promise.resolve([]);
+    };
+  }
+
+  const unreadable: UnreadableModelRecord[] = [];
+  await composite.findAllForType(TEST_TYPE, { unreadable });
+  assertEquals(unreadable.map((r) => r.modelId).sort(), ["e", "p"]);
 });
 
 // --- Content-ensuring step routing (swamp-club#3178) ---

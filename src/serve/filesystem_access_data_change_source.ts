@@ -68,6 +68,15 @@ export interface FilesystemAccessDataChangeSourceOptions {
  * run publishes the event therefore reloads, which can apply a staged own
  * write one interval early, but a peer's change is never swallowed: a peer's
  * version is never named by this process's events.
+ *
+ * A record, or a part of one, that cannot be read (a peer wrote it with a
+ * restrictive umask or as another uid) does not stop the cycle
+ * (swamp-club#3386). Each directory or entry that cannot be read is
+ * fingerprinted as its error, so it counts as changed when it turns
+ * unreadable and again when it reads, while everything readable beside it
+ * and every other record is still compared. While it stays unreadable it
+ * is not counted again; a snapshot missing records it could not read is
+ * retried by the poller on its own.
  */
 export class FilesystemAccessDataChangeSource {
   readonly #dirs: readonly string[];
@@ -147,7 +156,14 @@ export class FilesystemAccessDataChangeSource {
   async #fingerprint(): Promise<Fingerprint> {
     const fingerprint: Fingerprint = new Map();
     for (const dir of this.#dirs) {
-      for (const modelId of await listDirectories(dir)) {
+      let modelIds: string[];
+      try {
+        modelIds = await listDirectories(dir);
+      } catch (error) {
+        fingerprint.set(dir, unreadableFingerprint(error));
+        continue;
+      }
+      for (const modelId of modelIds) {
         const entries = new Map<string, string>();
         for (const dataName of ACCESS_DATA_NAMES) {
           await walk(join(dir, modelId, dataName), dataName, entries);
@@ -181,6 +197,15 @@ function isOwnChange(
   ownVersions: ReadonlySet<string> | undefined,
 ): boolean {
   if (!after || !ownVersions) return false;
+  // Something turning unreadable, or readable again, is never an own write.
+  if (
+    !sameEntries(
+      unreadableEntries(before?.entries),
+      unreadableEntries(after.entries),
+    )
+  ) {
+    return false;
+  }
   const beforeVersions = before?.versions ?? new Set<string>();
   const added = [...after.versions].filter((v) => !beforeVersions.has(v));
   const removed = [...beforeVersions].filter((v) => !after.versions.has(v));
@@ -188,6 +213,34 @@ function isOwnChange(
   if (!added.every((v) => ownVersions.has(v))) return false;
   const oldestAdded = minOf(added.map(versionNumber))!;
   return removed.every((v) => versionNumber(v) < oldestAdded);
+}
+
+/**
+ * The fingerprint of a record or directory that could not be read: one
+ * entry naming the error, and no versions. It differs from any readable
+ * fingerprint, so turning unreadable or readable again counts as a change,
+ * and it never counts as an own change. While the same error persists it
+ * stays equal, so the record is not counted every cycle.
+ */
+function unreadableFingerprint(error: unknown): RecordFingerprint {
+  return {
+    entries: new Map([["!unreadable", unreadableEntry(error)]]),
+    versions: new Set(),
+  };
+}
+
+/** The entries of a fingerprint that record something it could not read. */
+function unreadableEntries(
+  entries: ReadonlyMap<string, string> | undefined,
+): Map<string, string> {
+  return new Map(
+    [...entries ?? []].filter(([, entry]) => entry.startsWith("!unreadable")),
+  );
+}
+
+/** The fingerprint entry of something that could not be read: its error. */
+function unreadableEntry(error: unknown): string {
+  return `!unreadable:${error instanceof Error ? error.name : "Error"}`;
 }
 
 function versionNumber(versionPath: string): number {
@@ -231,7 +284,9 @@ async function listDirectories(dir: string): Promise<string[]> {
  * Records every entry under `dir` by its `/`-joined path relative to the
  * record directory. Symlinks are recorded, never followed, and dot-named
  * entries (atomic-write temp files) are skipped. An entry removed mid-walk
- * is left out.
+ * is left out. A directory or entry that cannot be read is recorded as its
+ * error and its siblings are still walked, so an unreadable old version
+ * never hides a new version or a changed `latest` beside it.
  */
 async function walk(
   dir: string,
@@ -243,7 +298,10 @@ async function walk(
     children = await Array.fromAsync(Deno.readDir(dir));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
-    throw error;
+    // Beside the directory's own entry, which stays: a version directory
+    // that cannot be read is still that version.
+    entries.set(`${prefix}/!unreadable`, unreadableEntry(error));
+    return;
   }
   for (const child of children) {
     if (child.name.startsWith(".")) continue;
@@ -254,7 +312,8 @@ async function walk(
       info = await Deno.lstat(fullPath);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) continue;
-      throw error;
+      entries.set(path, unreadableEntry(error));
+      continue;
     }
     // A directory is recorded by name only: its own mtime moves whenever
     // a temp file comes and goes, and its children carry every real change.

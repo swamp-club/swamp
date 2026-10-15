@@ -24,7 +24,6 @@ import {
   type Grant,
   GRANT_MODEL_TYPE,
   grantModel,
-  GrantSchema,
 } from "../models/access/grant_model.ts";
 import { parseSubject, subjectToString } from "./subject.ts";
 import { parseResourceSelector } from "./resource_selector.ts";
@@ -32,7 +31,7 @@ import type { AuthMode } from "./serve_auth_config.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
-import { ModelType } from "../models/model_type.ts";
+import { readStoredGrants } from "./stored_grant_reader.ts";
 import { createResourceWriter } from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "admin-materializer"]);
@@ -111,33 +110,16 @@ export function createAdminGrantStore(
 ): AdminGrantStore {
   return {
     async queryConfigGrants() {
-      const [canonical, orphaned] = await Promise.all([
-        dataRepo.findAllForType(GRANT_MODEL_TYPE),
-        dataRepo.findAllForType(
-          ModelType.create(`@${GRANT_MODEL_TYPE.normalized}`),
-        ).catch(() => []),
-      ]);
-      const grantDataItems = [...canonical, ...orphaned];
-
       const configGrants = new Map<string, StoredConfigGrant[]>();
-      for (const { data, modelType, modelId } of grantDataItems) {
-        const attrs = await readAttributes(
-          dataRepo,
-          modelType,
-          modelId,
-          data.name,
-        );
-        if (!attrs) continue;
-        const parsed = GrantSchema.safeParse(attrs);
-        if (parsed.success && parsed.data.source === "config") {
-          const modelName = data.tags["modelName"] ?? "";
-          const copy = { grant: parsed.data, modelId };
-          const copies = configGrants.get(modelName);
-          if (copies) {
-            copies.push(copy);
-          } else {
-            configGrants.set(modelName, [copy]);
-          }
+      for (const { grant, data, modelId } of await readStoredGrants(dataRepo)) {
+        if (grant.source !== "config") continue;
+        const modelName = data.tags["modelName"] ?? "";
+        const copy = { grant, modelId };
+        const copies = configGrants.get(modelName);
+        if (copies) {
+          copies.push(copy);
+        } else {
+          configGrants.set(modelName, [copy]);
         }
       }
       return configGrants;
@@ -186,24 +168,6 @@ export function createAdminGrantStore(
       );
     },
   };
-}
-
-async function readAttributes(
-  dataRepo: UnifiedDataRepository,
-  modelType: ModelType,
-  modelId: string,
-  dataName: string,
-): Promise<Record<string, unknown> | null> {
-  const content = await dataRepo.getContent(modelType, modelId, dataName);
-  if (!content) return null;
-  try {
-    const text = new TextDecoder().decode(content);
-    return JSON.parse(text) as Record<string, unknown>;
-  } catch (error) {
-    logger
-      .warn`Skipping ${modelType.normalized}/${modelId}/${dataName}: failed to parse JSON content: ${error}`;
-    return null;
-  }
 }
 
 export async function materializeAdmins(
