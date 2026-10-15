@@ -27,6 +27,7 @@ import {
   defaultPackageCacheRoot,
   ExtensionPackageCache,
   type PackageCacheHashInput,
+  parseStoredArchiveIndex,
 } from "./extension_package_cache.ts";
 
 function makeManifest(
@@ -439,5 +440,66 @@ Deno.test("computePackageCacheHash: the quality.yaml sidecar beside the manifest
     assertNotEquals(withSidecar, changed);
   } finally {
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("parseStoredArchiveIndex: keeps a well-formed index and drops any other value (swamp-club#3456)", () => {
+  const good = {
+    sources: [{
+      kindDir: "models",
+      fileName: "a.ts",
+      kind: "model",
+      typeNormalized: "@acme/a",
+    }],
+    failures: [{ kindDir: "models", fileName: "b.ts", reason: "boom" }],
+  };
+  assertEquals(parseStoredArchiveIndex(good), good);
+  for (
+    const bad of [
+      undefined,
+      null,
+      "index",
+      { sources: [] },
+      { sources: "x", failures: [] },
+      { sources: [{ kindDir: "models", fileName: "a.ts" }], failures: [] },
+      { sources: [], failures: [{ kindDir: "models", fileName: 1 }] },
+    ]
+  ) {
+    assertEquals(parseStoredArchiveIndex(bad), undefined, JSON.stringify(bad));
+  }
+});
+
+Deno.test("computePackageCacheHash: a symlinked file is hashed by its path alone, never read (swamp-club#3421)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const target = join(tmp, "target.md");
+    await Deno.writeTextFile(target, "one");
+    const link = join(tmp, "notes.md");
+    await Deno.symlink(target, link, { type: "file" });
+    const input = await makeHashInput(tmp, {
+      additionalFilePaths: [link],
+      symlinkedPaths: new Set([link]),
+    });
+
+    const before = await computePackageCacheHash(input);
+    await Deno.writeTextFile(target, "two");
+    const after = await computePackageCacheHash(input);
+
+    assertEquals(after, before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("computePackageCacheHash: an empty symlinked set hashes as before the field existed", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const input = await makeHashInput(tmp);
+    assertEquals(
+      await computePackageCacheHash({ ...input, symlinkedPaths: new Set() }),
+      await computePackageCacheHash(input),
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
   }
 });

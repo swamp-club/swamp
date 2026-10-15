@@ -9,6 +9,7 @@ Source files:
 - `src/domain/datastore/datastore_health.ts`
 - `src/domain/datastore/datastore_sync_service.ts`
 - `src/domain/datastore/datastore_storage.ts`
+- `src/domain/datastore/replica_target.ts`
 
 ## DatastoreProvider
 
@@ -25,6 +26,7 @@ interface DatastoreProvider {
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
   readonly datastoreWideLease?: boolean;
   storage?(): DatastoreStorage;
+  replicaTarget?(): V3ReplicaTarget;
 
   registerNamespace?(
     datastorePath: string,
@@ -115,7 +117,8 @@ namespace): the v3 writer lease keeps its records under `_control/writer/`.
 ### `datastoreWideLease?`
 
 Set it to `true` only when no namespaced pull or push moves or copies
-`_control/writer/`, so the writer lease stays at the datastore root, and
+`_control/writer/` or `_control/lineage/`, so the writer lease and the
+replication lineages stay at the datastore root, and
 `datastoreControlPlaneStore()` returns a writable store. Swamp refuses to bind
 the v3 writer lease without it, whatever the store offers. Only the literal
 `true` counts. Prove it with
@@ -127,6 +130,36 @@ case running (see testing.md).
 Optional, and not called by swamp yet: it is the content storage of the coming
 v3 datastore. Returns a [`DatastoreStorage`](#datastorestorage) scoped to the
 datastore root, like `datastoreControlPlaneStore()`.
+
+### `replicaTarget()?`
+
+Optional, and not called by swamp yet. It says where the coming v3 datastore's
+Litestream replica lives. Swamp appends `_litestream/<fence>/` to `prefix`, so
+never build replica paths yourself.
+
+```typescript
+type V3ReplicaTarget =
+  | {
+    type: "s3";
+    bucket: string;
+    prefix: string; // datastore root: no leading or trailing "/", or ""
+    region?: string;
+    endpoint?: string; // http(s) URL, no userinfo, query or fragment
+    forcePathStyle?: boolean; // unset: on whenever endpoint is set
+  }
+  | { type: "gcs"; bucket: string; prefix: string };
+```
+
+- `prefix` must be the root that `storage()` and `datastoreControlPlaneStore()`
+  write under.
+- Never put credentials in it. Swamp refuses any field outside these, and
+  Litestream resolves credentials from the AWS SDK default chain or Google ADC.
+  A datastore whose credentials come from anywhere else cannot be replicated.
+- Throw when Litestream cannot reach the datastore, for example GCS with a
+  custom `apiEndpoint`, rather than return a target that replicates somewhere
+  else. Swamp shows your message, naming the datastore.
+
+Prove it with `assertReplicaTargetConformance` (see testing.md).
 
 ## DatastoreStorage
 

@@ -74,19 +74,21 @@ Write in plain English:
 
 ### Enablers
 
-| Doc                                                        | Enables              | Notes                                                                |
-| ---------------------------------------------------------- | -------------------- | -------------------------------------------------------------------- |
-| [expressions](./enablers/expressions.md)                   | behaviors, workflows | CEL surface                                                          |
-| [inputs](./enablers/inputs.md)                             | behaviors, workflows |                                                                      |
-| [data-query](./enablers/data-query.md)                     | data                 | `data query`, catalog                                                |
-| [datastores](./enablers/datastores.md)                     | data                 | To be split: operator view / sync contract / locking                 |
-| [datastore-litestream](./enablers/datastore-litestream.md) | data                 | v3 `commits.db` replication: sidecar, outbox sync rule, fences       |
-| [remote-execution](./enablers/remote-execution.md)         | serve                | Workers, leases, runners, data plane; serve protocol to be extracted |
-| [reports](./enablers/reports.md)                           | behaviors, workflows |                                                                      |
-| [run-tracker](./enablers/run-tracker.md)                   | workflows, behaviors | To fold into a workflow-execution doc                                |
-| [doctor-secrets](./enablers/doctor-secrets.md)             | behaviors            | To fold into behaviors.md operations section                         |
-| [doctor-vaults](./enablers/doctor-vaults.md)               | vaults               | To fold into vaults.md operations section                            |
-| [access-control](./enablers/access-control.md)             | serve                | Principals, grants, subjects, evaluation model, can-i                |
+| Doc                                                        | Enables                             | Notes                                                                |
+| ---------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| [expressions](./enablers/expressions.md)                   | behaviors, workflows                | CEL surface                                                          |
+| [typed-secrets](./enablers/typed-secrets.md)               | behaviors, workflows, vaults, serve | Engine 2 plan; expressions.md still describes engine 1               |
+| [inputs](./enablers/inputs.md)                             | behaviors, workflows                |                                                                      |
+| [data-query](./enablers/data-query.md)                     | data                                | `data query`, catalog                                                |
+| [datastores](./enablers/datastores.md)                     | data                                | To be split: operator view / sync contract / locking                 |
+| [datastore-litestream](./enablers/datastore-litestream.md) | data                                | v3 `commits.db` replication: sidecar, outbox sync rule, fences       |
+| [remote-execution](./enablers/remote-execution.md)         | serve                               | Workers, leases, runners, data plane; serve protocol to be extracted |
+| [reports](./enablers/reports.md)                           | behaviors, workflows                |                                                                      |
+| [run-tracker](./enablers/run-tracker.md)                   | workflows, behaviors                | To fold into a workflow-execution doc                                |
+| [doctor-secrets](./enablers/doctor-secrets.md)             | behaviors                           | To fold into behaviors.md operations section                         |
+| [doctor-vaults](./enablers/doctor-vaults.md)               | vaults                              | To fold into vaults.md operations section                            |
+| [access-control](./enablers/access-control.md)             | serve                               | Principals, grants, subjects, evaluation model, can-i                |
+| [serve-audit](./enablers/serve-audit.md)                   | serve                               | Chain-hashed audit events, write-ahead log, `audit.query`            |
 
 ### Surfaces
 

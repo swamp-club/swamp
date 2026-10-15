@@ -511,12 +511,17 @@ import {
 } from "../../domain/serve/deployment_mode.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import {
+  confirmV3Replicated,
   keepV3WriterMarkers,
   startV3ReplicationUpkeep,
+  v3CommitMark,
   v3DatastoreFor,
   V3MaintenanceTimer,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
-import { setV3SyncDeadline } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
+import {
+  setV3SyncDeadline,
+  v3ReplicationEnabled,
+} from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
 
 const DISPATCH_ENV_ALLOW_HELP =
   "Comma-separated environment variable names; only these ship to workers with each " +
@@ -2940,7 +2945,19 @@ export const serveCommand = new Command()
     // while replication is off (swamp-club#3416).
     const v3Replication = v3Maintenance !== undefined &&
         !isCustomDatastoreConfig(datastoreConfig)
-      ? startV3ReplicationUpkeep(datastoreConfig.path)
+      ? startV3ReplicationUpkeep(resolvedRepoDir, datastoreConfig)
+      : undefined;
+    // A write request answers once its commits are replicated; nothing waits
+    // while replication is off (swamp-club#3489).
+    const confirmReplicated = v3Replication !== undefined &&
+        !isCustomDatastoreConfig(datastoreConfig) && v3ReplicationEnabled()
+      ? ((path: string) => () => confirmV3Replicated(path))(
+        datastoreConfig.path,
+      )
+      : undefined;
+    const replicationMark = confirmReplicated !== undefined &&
+        !isCustomDatastoreConfig(datastoreConfig)
+      ? ((path: string) => () => v3CommitMark(path))(datastoreConfig.path)
       : undefined;
 
     let configPoller: ConfigPoller | null = null;
@@ -4622,6 +4639,8 @@ export const serveCommand = new Command()
         datastoreResolver,
         syncService,
         syncGate,
+        ...(confirmReplicated !== undefined && { confirmReplicated }),
+        ...(replicationMark !== undefined && { replicationMark }),
         workerGateway,
         policySnapshotLoader,
         authConfig,
@@ -6558,6 +6577,7 @@ export const serveCommand = new Command()
             connectionCtx.instanceId,
             deviceRemoteAddr,
             connectionCtx.resolvedUserNames,
+            connectionCtx.confirmReplicated,
           );
         }
         if (isDashboardSessionRequest && authConfig.mode !== "none") {
@@ -7479,12 +7499,13 @@ export const serveCommand = new Command()
       continuationSweepService = new ContinuationSweepService({
         intervalMs: continuationSweepIntervalMs,
         bootPassOnly,
-        sweep: async ({ boot, isStopping }) => {
+        sweep: async ({ boot, isStopping, signal }) => {
           const result = await sweepContinuations(connectionCtx, {
             // A dead holder's claim is replaced only while the run records
             // are current: after boot they go stale on a synced datastore.
             takeover: !synced || boot,
             isStopping,
+            signal,
           });
           if (!isStopping()) await sweepHeldSignalsWhenDue(connectionCtx);
           return result;

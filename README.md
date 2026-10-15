@@ -14,9 +14,23 @@ Come join the [swamp party on discord](https://discord.gg/swamp-club).
 
 ## Getting Started
 
+Swamp runs on macOS and Linux (x86_64 and arm64) and on Windows (x86_64).
+
+On macOS and Linux:
+
 ```bash
 curl -fsSL https://swamp-club.com/install.sh | sh
 ```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://swamp-club.com/install.ps1 | iex
+```
+
+The Windows installer puts swamp in `C:\Program Files\swamp` and adds it to the
+system PATH when run as administrator, and otherwise in `%LOCALAPPDATA%\swamp`
+with the user PATH.
 
 ### Quick Start
 
@@ -129,6 +143,11 @@ eval "$(swamp completions zsh)"
 
 # Fish
 swamp completions fish > ~/.config/fish/completions/swamp.fish
+```
+
+```powershell
+# PowerShell (Windows PowerShell 5.1 and PowerShell 7) — add to $PROFILE
+swamp completions powershell | Out-String | Invoke-Expression
 ```
 
 Completions are directory-dependent — they return names from the current

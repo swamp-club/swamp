@@ -41,7 +41,10 @@ import {
   v3DatastoreFor,
   V3MaintenanceTimer,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
-import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
+import {
+  type FilesystemDatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../src/domain/datastore/datastore_config.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
@@ -603,6 +606,58 @@ Deno.test("v3 serve background: the device-auth mint commits the token it writes
       await ctx.definitionRepo.findByName(SERVER_TOKEN_MODEL_TYPE, tokenName),
     );
     assert(await assertCheckoutsAgree(repos, datastorePath, "mint") > 0);
+  });
+});
+
+Deno.test("v3 serve background: the device-auth mint hands out its token only once its commits are confirmed (swamp-club#3489)", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await registerTokenVault(repos);
+    const ctx = repos.a.repoContext;
+    const confirmations: boolean[] = [];
+    const deps = (confirm: () => Promise<void>) =>
+      createDeviceAuthDeps(
+        {
+          ...createServeCtx(repos.serveRepo).authConfig,
+          oauthClientId: "client",
+        },
+        "secret",
+        repos.repoA,
+        ctx,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        confirm,
+      );
+    const mint = (confirm: () => Promise<void>) =>
+      deps(confirm).mintServerToken(
+        "user:someone",
+        "someone@example.com",
+        ["acme"],
+        [],
+        repos.repoA,
+        ctx,
+      );
+    const store = v3DatastoreFor(
+      repos.repoA,
+      repos.a.datastoreConfig as FilesystemDatastoreConfig,
+    ).commitStore;
+    const before = store.highWaterMark().cursor;
+    const credential = await mint(() => {
+      // Confirmed only after the mint committed.
+      confirmations.push(store.highWaterMark().cursor > before);
+      return Promise.resolve();
+    });
+    assertExists(credential);
+    assertEquals(confirmations, [true]);
+    const unconfirmed = await mint(() =>
+      Promise.reject(new Error("the sidecar did not answer"))
+    ).then(() => undefined, (error: Error) => error.message);
+    assertEquals(unconfirmed, "the sidecar did not answer");
   });
 });
 

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   fenceKey,
   type FenceRecord,
@@ -206,4 +206,34 @@ Deno.test("WriterFencedError: names both fences and carries the fenced code", ()
     released.message.includes("swamp datastore lock release --force"),
     true,
   );
+});
+
+Deno.test("WriterFencedError: a replicating writer fenced after publishing says its changes may still appear", () => {
+  const published = new WriterFencedError(6, 7, "published");
+  assertEquals(published.code, WRITER_FENCED_CODE);
+  assertEquals(
+    published.message,
+    "Another swamp process took over the writer lease of the v3 datastore " +
+      "(fence 7) while this one held fence 6, after this command had " +
+      "published its changes to the datastore's replica. They may still " +
+      "appear: the writer that took over may restore them. Check whether " +
+      "they did before running the command again.",
+  );
+  // Without replication the message is unchanged.
+  assertEquals(
+    new WriterFencedError(6, 7).message,
+    "Another swamp process took over the writer lease of the v3 datastore " +
+      "(fence 7) while this one held fence 6. A v3 datastore takes one " +
+      "writer at a time, so nothing more from this command was committed. " +
+      "Run the command again.",
+  );
+});
+
+Deno.test("WriterFencedError: a retaken lease on a copy not yet current says this process holds it again (swamp-club#3491)", () => {
+  const error = new WriterFencedError(9, undefined, "copy-restoring");
+  assertEquals(error.code, WRITER_FENCED_CODE);
+  assertStringIncludes(error.message, "This swamp process took over");
+  assertStringIncludes(error.message, "at fence 9");
+  assertStringIncludes(error.message, "still being brought up to date");
+  assertEquals(error.message.includes("Another swamp process"), false);
 });

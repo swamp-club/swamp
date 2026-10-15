@@ -244,32 +244,64 @@ export function parseWriterLeaseKey(
   return { kind: match[1] as "fence" | "heartbeat" | "released", fence };
 }
 
+/** Why a writer was fenced: see {@link WriterFencedError}. */
+export type WriterFencedReason =
+  | "taken-over"
+  | "released"
+  | "published"
+  | "copy-restoring";
+
 /**
  * Thrown when a writer's lease was taken over or released while it held it:
- * nothing more it commits lands.
+ * nothing more it commits lands. With reason `published`, a replicating
+ * writer found it out only after it had published its commits' head
+ * (swamp-club#3482): the writer that took over may restore them, so they
+ * may still land. With reason `copy-restoring`, this process holds the
+ * lease again (serve's retake) but its copy is not yet current
+ * (swamp-club#3491).
  */
 export class WriterFencedError extends UserError {
   constructor(
     readonly fence: number | undefined,
     readonly currentFence: number | undefined,
-    reason: "taken-over" | "released" = "taken-over",
+    reason: WriterFencedReason = "taken-over",
   ) {
-    super(
-      (reason === "released"
-        ? "This swamp process's writer lease on the v3 datastore was released " +
-          "(`swamp datastore lock release --force`)"
-        : "Another swamp process took over the writer lease of the v3 " +
-          "datastore" +
-          (currentFence !== undefined ? ` (fence ${currentFence})` : "")) +
-        (fence !== undefined
-          ? ` while this one held fence ${fence}`
-          : " while this one wrote without a fence") +
-        ". A v3 datastore takes one writer at a time, so nothing more from " +
-        "this command was committed. Run the command again.",
-      WRITER_FENCED_CODE,
-    );
+    super(fencedMessage(fence, currentFence, reason), WRITER_FENCED_CODE);
     this.name = "WriterFencedError";
   }
+}
+
+function fencedMessage(
+  fence: number | undefined,
+  currentFence: number | undefined,
+  reason: WriterFencedReason,
+): string {
+  if (reason === "copy-restoring") {
+    return "This swamp process took over the writer lease of the v3 " +
+      "datastore again" + (fence !== undefined ? ` at fence ${fence}` : "") +
+      ", after another writer held it, and its copy of the datastore is " +
+      "still being brought up to date from the replica, so nothing from " +
+      "this command was committed. Run the command again.";
+  }
+  const takenOver = "Another swamp process took over the writer lease of " +
+    "the v3 datastore" +
+    (currentFence !== undefined ? ` (fence ${currentFence})` : "");
+  if (reason === "published") {
+    return takenOver +
+      (fence !== undefined ? ` while this one held fence ${fence}` : "") +
+      ", after this command had published its changes to the datastore's " +
+      "replica. They may still appear: the writer that took over may " +
+      "restore them. Check whether they did before running the command again.";
+  }
+  return (reason === "released"
+    ? "This swamp process's writer lease on the v3 datastore was released " +
+      "(`swamp datastore lock release --force`)"
+    : takenOver) +
+    (fence !== undefined
+      ? ` while this one held fence ${fence}`
+      : " while this one wrote without a fence") +
+    ". A v3 datastore takes one writer at a time, so nothing more from " +
+    "this command was committed. Run the command again.";
 }
 
 /** Thrown by {@link WriterLease.acquire} when another writer holds the lease. */

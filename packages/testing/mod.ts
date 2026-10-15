@@ -152,6 +152,7 @@ export type {
   StoredChunk,
   SyncCapabilities,
   SyncContext,
+  V3ReplicaTarget,
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
@@ -193,6 +194,13 @@ export type {
 export { assertStorageConformance } from "./storage_conformance.ts";
 
 export type { StorageConformanceOptions } from "./storage_conformance.ts";
+
+export {
+  assertReplicaTargetConformance,
+  replicaTargetProblem,
+} from "./replica_target_conformance.ts";
+
+export type { ReplicaTargetConformanceOptions } from "./replica_target_conformance.ts";
 
 export {
   createInMemoryRemote,

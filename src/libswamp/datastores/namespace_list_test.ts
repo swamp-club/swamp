@@ -153,7 +153,7 @@ async function listFor(
   const events = await collect<NamespaceListEvent>(
     datastoreNamespaceList(
       createLibSwampContext(),
-      await createNamespaceListDeps(config),
+      await createNamespaceListDeps(config, config.path),
     ),
   );
   const completed = events.at(-1) as Extract<

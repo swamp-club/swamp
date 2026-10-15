@@ -132,8 +132,16 @@ const GUARDED_PINNED = [
   // already checked, as holdV3Writer does on filesystem.
   "src/infrastructure/datastore_v3/datastore_writer_lease_store.ts:datastoreWriterLeaseStore",
   // swamp-club#3359: holdV3Writer also opens the handle, to record its
-  // writer lease's fence in commits.db.
-  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer (x2)",
+  // writer lease's fence in commits.db. swamp-club#3482: while replicating
+  // it opens it once the copy is current, raises the fence there, and
+  // opens it for the sidecar's path.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer (x5)",
+  // swamp-club#3482: making the copy current reads the handle of the
+  // datastore holdV3Writer or v3RepositoryFactoryConfig passes it, after
+  // the same check; serve's upkeep does the same for the config serve's
+  // checked context resolved.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:ensureV3CopyCurrent",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:startV3ReplicationUpkeep",
   // swamp-club#3299: interrupted-writer recovery opens the handle and
   // inspects the writer lock of the datastore v3RepositoryFactoryConfig or
   // holdV3Writer passes it, after the same check.

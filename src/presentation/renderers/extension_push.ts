@@ -260,9 +260,13 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
-  private namedLine(entry: { type: string; name?: string; fileName: string }) {
+  private namedLine(
+    entry: { type?: string; name?: string; fileName: string },
+  ) {
     const file = this.resolvedFile(entry.fileName);
-    if (entry.name) {
+    if (entry.type === undefined) {
+      this.logger.info`  type unknown (${file})`;
+    } else if (entry.name) {
       this.logger.info`  ${entry.type} - ${entry.name} (${file})`;
     } else {
       this.logger.info`  ${entry.type} (${file})`;
@@ -303,7 +307,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.models.length > 0) {
       this.logger.info`Behaviors (${data.models.length}):`;
       for (const m of data.models) {
-        this.logger.info`  ${m.type} (${this.resolvedFile(m.fileName)})`;
+        const file = this.resolvedFile(m.fileName);
+        if (m.type === undefined) {
+          this.logger.info`  type unknown (${file})`;
+        } else {
+          this.logger.info`  ${m.type} (${file})`;
+        }
         if (m.globalArguments && m.globalArguments.length > 0) {
           this.logger.info`    Global Arguments:`;
           for (const arg of m.globalArguments) {
@@ -346,7 +355,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       this.logger.info`Reports (${data.reports.length}):`;
       for (const r of data.reports) {
         const file = this.resolvedFile(r.fileName);
-        if (r.scope) {
+        if (r.name === undefined) {
+          this.logger.info`  name unknown (${file})`;
+        } else if (r.scope) {
           this.logger.info`  ${r.name} [${r.scope}] (${file})`;
         } else {
           this.logger.info`  ${r.name} (${file})`;

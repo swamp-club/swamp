@@ -144,8 +144,9 @@ Push rejects:
 - **Duplicate entries** (case-insensitive, NFC-normalized). Two entries that
   would resolve to the same archive path fail with a clear error — fix the
   manifest before re-running push.
-- **Symlinks**. Entries pointing at symlinks are rejected to prevent archive
-  bloat and path escapes. Copy the target file into the extension tree instead.
+- **Symlinks**. An entry that is a symlink, or is reached through a symlinked
+  directory, is refused by the `symlink` safety rule. Copy the target file into
+  the extension tree instead.
 - **Directories and other non-regular files**. Each entry names one file;
   `additionalFiles: [docs]` fails with "Additional file is a directory: docs".
   List the files under `docs/` individually. `binaries` and `include` entries
@@ -574,9 +575,12 @@ too. A real drift finding has no `cause`. None of these block the push.
 ### Unaudited dependencies
 
 The dependency trust audit queries OSV.dev and the npm registry for each `npm:`
-import. When either lookup fails, the dependency is **not audited**, never
-passed: its `warnings.dependencyTrust` entry carries `cause: "not-audited"` and
-a message naming the failed lookup and the HTTP status or network error, and in
+import, asking OSV about the exact version the specifier resolves to (a range
+resolves to its highest published match). When either lookup fails, or no
+published version matches the specifier, the dependency is **not audited**,
+never passed: its `warnings.dependencyTrust` entry carries
+`cause: "not-audited"` and a message naming the failed lookup (with the HTTP
+status or network error) or the unmatched specifier, and in
 `swamp extension quality` it is marked `?` and loses the `dependency-trust`
 factor. Unaudited dependencies are gated like safety and review warnings: an
 interactive push prompts, `--yes` waives them, and the summaries list them under
@@ -729,7 +733,7 @@ can be accepted, an `acceptance` object describing the edit (see
 | Rule                        | Detail                                                                                                                                                                                                                                                                                                                                |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `eval()` / `new Function()` | Dynamic code execution not allowed in `.ts` files: global `eval` in any form, the `Function` constructor, `.constructor(...)` calls, and members named `eval` or `Function` (`x.eval(...)`). Methods _defined_ with those names, and text in strings, comments and regexes, are fine. The error lists each location as `line:column`. |
-| Symlinks                    | Symlinked files are not allowed                                                                                                                                                                                                                                                                                                       |
+| Symlinks                    | Any symlink on a file's path, including a symlinked directory such as `extensions/` or a skill directory, is refused                                                                                                                                                                                                                  |
 | Hidden files                | Files starting with `.` are not allowed                                                                                                                                                                                                                                                                                               |
 | Disallowed extensions       | Only `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt` in `additionalFiles`. Files in the `binaries` manifest field are exempt — use `binaries` for executables and files with other extensions.                                                                                                                                         |
 | File too large              | Individual files must be under 1 MB                                                                                                                                                                                                                                                                                                   |

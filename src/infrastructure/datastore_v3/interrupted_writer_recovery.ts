@@ -44,7 +44,9 @@
  *   may have written. The marker is removed last, so a recovery that fails
  *   midway runs again in full on the next command.
  *
- * The Phase 4 outbox will make an interrupted commit durable instead.
+ * The commit outbox (swamp-club#3490, `commit_outbox_recovery.ts`) lands a
+ * commit that was being appended when the writer died before this runs, so
+ * its files are kept; this recovery removes what is left.
  *
  * @module
  */
@@ -222,8 +224,10 @@ export async function recoverInterruptedWriter(
   }
   let release: (() => Promise<void>) | undefined;
   try {
+    // Through the handle, which records the fence in the outbox's chain too
+    // (swamp-club#3490).
     release = await tryAcquireV3WriterLock(handle.datastorePath, {
-      fenceStore: handle.commitStore,
+      fenceStore: handle,
     });
   } catch (error) {
     logger

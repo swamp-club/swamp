@@ -195,6 +195,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#3301: `datastore namespace list` reads a v3 datastore's
   // namespaces from its commits.db, read-only, for the CLI and serve.
   "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#3491: and makes a replicated checkout's copy current first.
+  "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3279: run-record artifacts resolve through the resolver on
   // v3, where a removed version can be written again.
   "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
@@ -206,6 +208,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/litestream_replication.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/litestream_replication.ts",
+  // swamp-club#3489: serve answers a write whose commits a sync did not
+  // confirm, or whose lease was fenced, with the CLI's error codes.
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/litestream_replication.ts",
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/writer_lease.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -699,5 +705,112 @@ Deno.test("datastore v3: only replica_setting.ts reads the internal replica sett
     "Production readers of SWAMP_V3_REPLICA",
     "The Litestream sidecar is dormant: only replica_setting.ts may read the\n" +
       "internal setting that turns it on (swamp-club#3416).",
+  );
+});
+
+/** Production files that call a provider's `replicaTarget()`. */
+const PINNED_REPLICA_TARGET_CALLERS: readonly string[] = [
+  `${LITESTREAM_DIR}/replica_target_resolver.ts`,
+];
+
+Deno.test("datastore v3: only the replica target resolver calls replicaTarget()", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if (/\.replicaTarget\s*\(/.test(await Deno.readTextFile(filePath))) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_REPLICA_TARGET_CALLERS,
+    "Production callers of replicaTarget()",
+    "A provider's replica target reaches Litestream only through\n" +
+      "resolveV3ReplicaSetting, which checks it (swamp-club#3507).",
+  );
+});
+
+/**
+ * Production files outside the resolver that use it. Dormant until Phase 4E
+ * switches the sidecar's replica from `v3ReplicaSetting()` to the
+ * datastore's own target.
+ */
+const PINNED_REPLICA_TARGET_RESOLVER_USERS: readonly string[] = [];
+
+Deno.test("datastore v3: nothing uses the replica target resolver yet", async () => {
+  const resolver = `${LITESTREAM_DIR}/replica_target_resolver.ts`;
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if (repoRelative(filePath) === resolver) continue;
+    if (
+      /\b(resolveV3ReplicaSetting|replicaSettingFromTarget)\b/.test(
+        await Deno.readTextFile(filePath),
+      )
+    ) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_REPLICA_TARGET_RESOLVER_USERS,
+    "Production users of the replica target resolver",
+    "Replication from a datastore's own replica target is dormant until\n" +
+      "Phase 4E (swamp-club#3507). Switch the source there, not here.",
+  );
+});
+
+/**
+ * Production files that name `commits.db` (swamp-club#3482): only
+ * `v3CommitsDbPath` decides which one a checkout opens, the datastore's or,
+ * while replicating, the checkout's own copy.
+ */
+const PINNED_COMMITS_DB_NAMERS: readonly string[] = [
+  "src/infrastructure/datastore_v3/v3_datastore.ts",
+];
+
+Deno.test("datastore v3: only v3_datastore.ts names commits.db", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const source = await Deno.readTextFile(filePath);
+    if (source.includes("COMMITS_DB_FILE") || source.includes('"commits.db"')) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_COMMITS_DB_NAMERS,
+    "Production files naming commits.db",
+    "Open the commit store through v3CommitsDbPath (or a V3Datastore's\n" +
+      "commitsDbPath): while replicating, each checkout has its own copy.",
+  );
+});
+
+/**
+ * Production callers of `v3DatastoreFor` (swamp-club#3482). While
+ * replicating it opens only a copy this process made current, so each
+ * caller must run after a repository context, a writer hold or serve's
+ * start has done that.
+ */
+const PINNED_V3_DATASTORE_FOR_CALLERS: readonly string[] = [
+  "src/cli/commands/datastore_gc.ts",
+  "src/cli/commands/datastore_status.ts",
+  "src/cli/commands/serve.ts",
+  "src/infrastructure/datastore_v3/v3_config_adoption.ts",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/serve/handlers/admin_handlers.ts",
+];
+
+Deno.test("datastore v3: v3DatastoreFor's callers are pinned", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if ((await Deno.readTextFile(filePath)).includes("v3DatastoreFor(")) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_V3_DATASTORE_FOR_CALLERS,
+    "Production callers of v3DatastoreFor",
+    "Make the checkout's copy current first (a repository context, a writer\n" +
+      "hold, or ensureV3CopyCurrent), then pin the caller here.",
   );
 });

@@ -53,7 +53,13 @@ export type CommitRejection =
    * A data-version op names a version its name already holds live, and the
    * commit carries no `data.append` put for that version.
    */
-  | "version-live";
+  | "version-live"
+  /**
+   * A retry older than the commit outbox's retry bound (swamp-club#3490):
+   * refused before it is appended, since the store may no longer know its
+   * txnId. Raised by the writer, never by the partition.
+   */
+  | "retry-expired";
 
 /** A commit the partition refused. The partition is unchanged. */
 export class CommitRejectedError extends Error {

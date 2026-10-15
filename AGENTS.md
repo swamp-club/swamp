@@ -37,6 +37,11 @@ the work yourself step by step rather than author a swamp workflow.
   `""value""`. Numbers and other primitives render unquoted, so a bare
   `${count}` is correct in all cases.
 
+- Copy between SQLite databases through a second `node:sqlite` connection, not
+  `ATTACH DATABASE`: Deno refuses `ATTACH` without full permissions for the
+  path, and the compiled binary and `deno run test` run with granular
+  `--allow-*` flags (the error reads "too many attached databases - max 0").
+
 - The `organizations` array from `GET /api/whoami` is an authorization contract,
   not a general-purpose payload. `getCollectives()` in
   `src/infrastructure/http/swamp_club_client.ts` reduces it to slugs, and

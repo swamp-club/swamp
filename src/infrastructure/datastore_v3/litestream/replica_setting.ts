@@ -42,7 +42,10 @@ export type V3ReplicaSetting =
     readonly path: string;
     readonly endpoint?: string;
     readonly region?: string;
-  };
+    /** Path-style addressing; unset, it is on whenever `endpoint` is set. */
+    readonly forcePathStyle?: boolean;
+  }
+  | { readonly type: "gcs"; readonly bucket: string; readonly path: string };
 
 /**
  * The replica `SWAMP_V3_REPLICA` names, or undefined when it is unset, which
@@ -98,9 +101,16 @@ export function parseV3ReplicaSetting(raw: string): V3ReplicaSetting {
  * under the same root.
  */
 export function replicaRootOf(setting: V3ReplicaSetting): string {
-  return setting.type === "file"
-    ? `file:${setting.path}`
-    : `s3:${setting.endpoint ?? ""}:${setting.bucket}:${setting.path}`;
+  // Addressing style does not move the replica, so `forcePathStyle` is not
+  // part of it.
+  switch (setting.type) {
+    case "file":
+      return `file:${setting.path}`;
+    case "s3":
+      return `s3:${setting.endpoint ?? ""}:${setting.bucket}:${setting.path}`;
+    case "gcs":
+      return `gcs:${setting.bucket}:${setting.path}`;
+  }
 }
 
 function invalid(reason: string): UserError {

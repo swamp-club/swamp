@@ -1245,3 +1245,25 @@ Deno.test("extensionPushRenderer: JSON push carries the omitted count beside the
   assertEquals(doc.warnings.registry, [{ message: "one" }]);
   assertEquals(doc.registryWarningsOmitted, 3);
 });
+
+Deno.test("extensionPushRenderer: an entry whose type is unknown says so instead of repeating its path (swamp-club#3456)", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() => {
+    renderer.renderResolved({
+      ...resolved("default"),
+      models: [{ fileName: "thing.ts" }],
+      vaults: [{ fileName: "v.ts" }],
+      reports: [{ fileName: "r.ts" }],
+    });
+  });
+  const output = logs.join("\n");
+  assertEquals(
+    logs.filter((line) => line.includes("type unknown")).length,
+    2,
+  );
+  assertEquals(
+    logs.filter((line) => line.includes("name unknown")).length,
+    1,
+  );
+  assert(!output.includes("undefined"));
+});

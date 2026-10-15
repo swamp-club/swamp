@@ -285,6 +285,7 @@ breaks the contract; call them from your own `Deno.test`.
 | `assertControlPlaneStoreConformance`                  | A `controlPlaneStore()`: round-trip, list, atomic create        |
 | `assertWritableDatastoreControlPlaneStoreConformance` | A writable `datastoreControlPlaneStore()` at the datastore root |
 | `assertStorageConformance`                            | A `storage()`: the `storage/1` chunk contract                   |
+| `assertReplicaTargetConformance`                      | A `replicaTarget()`: valid, credential-free, at the root        |
 
 ### `assertControlPlaneStoreConformance`
 
@@ -313,23 +314,25 @@ For a provider whose `datastoreControlPlaneStore()` returns a
 writer lease keeps its records (`_control/writer/`) there, at the datastore root
 whatever namespace a checkout syncs. It runs the control-plane store checks and
 the read-only datastore-wide checks, then checks that writes stay at the root
-and that a `writer/` record survives a namespaced push. That last case needs
-`openNamespacedSyncFixture` (a fresh service and its cache directory) and
-`markNamespaceUpgradedFromSolo`, which puts the backend in the state where a
-namespaced push moves root `_control/` records into the namespace: for the S3
-and GCS extensions, a legacy `<prefix>/<namespace>/.datastore-index.json`
-existing. A push into a fresh namespace never triggers that move, so without
-both the case is skipped rather than passing without checking anything. Check
-`namespacedPushSkipped` in the result to make sure it ran. The move takes every
-root `_control/` record, so the case also skips when the root holds any record
-the suite did not write: run it against an empty bucket or prefix, never one a
-swamp uses. It syncs a fresh namespace of its own and leaves that namespace's
-index and the legacy index behind, and can leave its one data file.
+and that a `writer/` record and a `lineage/` record survive a namespaced push.
+That last case needs `openNamespacedSyncFixture` (a fresh service and its cache
+directory) and `markNamespaceUpgradedFromSolo`, which puts the backend in the
+state where a namespaced push moves root `_control/` records into the namespace:
+for the S3 and GCS extensions, a legacy
+`<prefix>/<namespace>/.datastore-index.json` existing. A push into a fresh
+namespace never triggers that move, so without both the case is skipped rather
+than passing without checking anything. Check `namespacedPushSkipped` in the
+result to make sure it ran. The move takes every root `_control/` record, so the
+case also skips when the root holds any record the suite did not write: run it
+against an empty bucket or prefix, never one a swamp uses. It syncs a fresh
+namespace of its own and leaves that namespace's index and the legacy index
+behind, and can leave its one data file.
 
 Swamp binds the v3 writer lease only to a provider that declares
 `datastoreWideLease: true`; the store's shape is not enough. Declare it only in
-a release whose namespaced push leaves `_control/writer/` at the root, and
-assert in that release's test that the namespaced-push case ran, as below.
+a release whose namespaced push leaves `_control/writer/` and
+`_control/lineage/` at the root, and assert in that release's test that the
+namespaced-push case ran, as below.
 
 ```typescript
 Deno.test("writable datastore-wide control-plane store conformance", async () => {
@@ -379,6 +382,40 @@ Deno.test("storage/1 conformance", async () => {
 `setLastModified` is optional: without it the checks that `touch` and `put`
 refresh `lastModified` are skipped. `createInMemoryRemote({ storage: true })`
 provides a conforming storage, with `setChunkLastModified` as the hook.
+
+### `assertReplicaTargetConformance`
+
+For a provider that implements `replicaTarget()`, which says where the coming v3
+datastore's Litestream replica lives (swamp does not call it yet). It checks
+that the target is one swamp accepts: its type's fields only, so no credentials;
+a bucket; a `prefix` with no leading, trailing or repeated `/` and no `.` or
+`..` segment; an http or https `endpoint` with no userinfo, query or fragment.
+It checks the target names `bucket`, and that its `prefix` is the datastore
+root: a control-plane record the suite writes must exist at
+`<prefix>/_control/<key>` and a chunk at
+`<prefix>/_blobs/<namespace>/sha256/<xx>/<sha256>`. `objectExists` answers for a
+full key in the bucket, read with the test's own client.
+
+```typescript
+Deno.test("replica target conformance", async () => {
+  await assertReplicaTargetConformance({
+    replicaTarget: () => provider.replicaTarget!(),
+    bucket: config.bucket,
+    openStorage: () => provider.storage!(),
+    openDatastoreStore: () =>
+      provider
+        .datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
+    objectExists: (key) => headObject(config.bucket, key),
+  });
+});
+```
+
+`replicaTargetProblem(value)` returns swamp's reason for refusing a target, or
+`undefined`.
+`createInMemoryRemote({ controlPlane: true, storage: true,
+replicaTarget })`
+returns `replicaTarget` as given, unchecked, and provides `objectExists`; it
+writes at the bucket root, so its matching prefix is `""`.
 
 ### `assertSyncServiceRoundTripConformance`
 

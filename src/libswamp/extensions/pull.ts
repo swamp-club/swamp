@@ -46,7 +46,7 @@ import {
 } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
-import { WorkerBundleProber } from "../../infrastructure/runtime/worker_bundle_prober.ts";
+import { ProcessBundleProber } from "../../infrastructure/runtime/process_bundle_prober.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import { findPublishedVersions } from "./published_version_lookup.ts";
 import {
@@ -2982,7 +2982,7 @@ export async function* extensionPull(
             new InstallExtensionService({
               denoRuntime: denoRt,
               repository: repo,
-              bundleProber: new WorkerBundleProber(),
+              bundleProber: new ProcessBundleProber(),
             }).execute(r, c)
           : installExtension);
       const result = await install(resolvedRef, installCtx);

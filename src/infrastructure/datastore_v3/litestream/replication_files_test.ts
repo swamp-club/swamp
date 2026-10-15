@@ -30,12 +30,14 @@ import {
   ensurePrivateDir,
   ensureSharedDir,
   isMarkedForReplacement,
+  litestreamReplicaPath,
   markForReplacement,
   readLineage,
   readPresence,
   removeLineage,
   removeOwnPresence,
   renderLitestreamConfig,
+  renderLitestreamRestoreConfig,
   replicationPathsFor,
   writeLineage,
   writePresence,
@@ -247,6 +249,112 @@ Deno.test("renderLitestreamConfig: an s3 replica with an endpoint uses path-styl
   assertStringIncludes(config, 'endpoint: "http://e"');
   assertStringIncludes(config, "force-path-style: true");
   assertEquals(/secret|access/i.test(config), false);
+});
+
+// The rendering every SWAMP_V3_REPLICA setting had before replica targets
+// (swamp-club#3507), byte for byte: an unset forcePathStyle changes nothing.
+Deno.test("renderLitestreamRestoreConfig: an s3 setting without forcePathStyle renders as before", () => {
+  const head = [
+    "logging:",
+    "  level: warn",
+    "dbs:",
+    '  - path: "/d/commits.db"',
+    "    replica:",
+  ];
+  assertEquals(
+    renderLitestreamRestoreConfig(
+      "/d/commits.db",
+      {
+        type: "s3",
+        bucket: "b",
+        path: "p",
+        endpoint: "http://e",
+        region: "us-east-1",
+      },
+      "p/_litestream/000000000001",
+    ),
+    [
+      ...head,
+      "      type: s3",
+      '      path: "p/_litestream/000000000001"',
+      '      bucket: "b"',
+      '      region: "us-east-1"',
+      '      endpoint: "http://e"',
+      "      force-path-style: true",
+    ].join("\n") + "\n",
+  );
+  assertEquals(
+    renderLitestreamRestoreConfig(
+      "/d/commits.db",
+      { type: "s3", bucket: "b", path: "p" },
+      "p/_litestream/000000000001",
+    ),
+    [
+      ...head,
+      "      type: s3",
+      '      path: "p/_litestream/000000000001"',
+      '      bucket: "b"',
+    ].join("\n") + "\n",
+  );
+});
+
+Deno.test("renderLitestreamConfig: forcePathStyle false turns path style off for an endpoint", () => {
+  const config = renderLitestreamConfig(
+    { commitsDb: "/d/commits.db", socket: "/s" },
+    {
+      type: "s3",
+      bucket: "b",
+      path: "p",
+      endpoint: "https://e",
+      forcePathStyle: false,
+    },
+    "p/_litestream/000000000001",
+  );
+  assertStringIncludes(config, 'endpoint: "https://e"');
+  // Left out, Litestream would still use path style for an endpoint.
+  assertStringIncludes(config, "force-path-style: false");
+  assertEquals(config.includes("force-path-style: true"), false);
+});
+
+Deno.test("renderLitestreamConfig: forcePathStyle true turns path style on without an endpoint", () => {
+  const config = renderLitestreamConfig(
+    { commitsDb: "/d/commits.db", socket: "/s" },
+    { type: "s3", bucket: "b", path: "p", forcePathStyle: true },
+    "p/_litestream/000000000001",
+  );
+  assertStringIncludes(config, "force-path-style: true");
+});
+
+// Litestream 0.5.17 refuses `type: gcs` ("unknown replica type"); its GCS
+// replica type is `gs`. Checked against the pinned binary on fake-gcs.
+Deno.test("renderLitestreamRestoreConfig: a gcs replica is Litestream's gs type and names its bucket", () => {
+  assertEquals(
+    renderLitestreamRestoreConfig(
+      "/d/commits.db",
+      { type: "gcs", bucket: "g", path: "root" },
+      "root/_litestream/000000000002",
+    ),
+    [
+      "logging:",
+      "  level: warn",
+      "dbs:",
+      '  - path: "/d/commits.db"',
+      "    replica:",
+      "      type: gs",
+      '      path: "root/_litestream/000000000002"',
+      '      bucket: "g"',
+    ].join("\n") + "\n",
+  );
+});
+
+Deno.test("litestreamReplicaPath: a gcs replica path is an object key", () => {
+  assertEquals(
+    litestreamReplicaPath(
+      { type: "gcs", bucket: "g", path: "" },
+      "/_litestream/000000000002",
+    ),
+    "_litestream/000000000002",
+  );
 });
 
 Deno.test({

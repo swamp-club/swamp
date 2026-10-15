@@ -184,6 +184,12 @@ interface WorkerEntry {
   verifying?: boolean;
   /** Another verification was asked for while one was running. */
   verifyAgain?: boolean;
+  /**
+   * A probe was refused for want of a slot while the unverified worker's
+   * enrollment verification was running. The next dispatch to end with no
+   * slots held probes it again.
+   */
+  probeRefusedForCapacity?: boolean;
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Fires at the token's `expiresAt` to disconnect the worker. */
   expiryTimer?: ReturnType<typeof setTimeout>;
@@ -507,6 +513,11 @@ export class WorkerGateway {
       throw new WorkerNotDispatchableError(name, "disconnected");
     }
     if (entry.activeDispatchIds.length >= entry.capacity) {
+      if (
+        entry.status === "unverified" && entry.verifying && params.probeMarker
+      ) {
+        entry.probeRefusedForCapacity = true;
+      }
       throw new WorkerNotDispatchableError(name, "at_capacity");
     }
     if (entry.status === "unverified" && !params.probeMarker) {
@@ -527,7 +538,6 @@ export class WorkerGateway {
       },
     );
     const dispatchStart = performance.now();
-    const channelAtStart = entry.channel;
     entry.activeDispatchIds.push(params.dispatchId);
     // An unverified worker is only ever sent a probe, and the probe's result
     // has not been judged yet: it holds a slot but stays unverified, so the
@@ -649,12 +659,13 @@ export class WorkerGateway {
         }
         this.#options.onWorkerIdle?.(this.#snapshot(entry));
       }
-      // A reconnect under verify-on-enroll turns the worker unverified while
-      // dispatches sent on its old socket still hold its slots, so its
-      // enrollment probe can be refused for want of one. When the last of
-      // them ends, probe again: nothing else would (swamp-club#3388).
+      // An unverified worker's enrollment probe can be refused for want of
+      // a slot: one held by a dispatch from before a reconnect
+      // (swamp-club#3388), or by a manual probe (swamp-club#3404). When the
+      // last slot frees, probe again, whichever socket that dispatch used:
+      // nothing else would.
       if (
-        currentStatus === "unverified" && channelAtStart !== entry.channel &&
+        currentStatus === "unverified" && entry.probeRefusedForCapacity &&
         entry.activeDispatchIds.length === 0 &&
         entry.channel !== null && !entry.channel.closed &&
         this.#options.verifyWorker
@@ -788,6 +799,12 @@ export class WorkerGateway {
       }
 
       const capacity = (params.resourceLimits?.capacity as number) ?? 1;
+      // Under verify-on-enroll the worker is unverified until its probe
+      // passes. The durable record says so too, so `swamp worker list`
+      // matches the pool while the probe is pending (swamp-club#3501).
+      const initialStatus = this.#options.verifyOnEnroll
+        ? "unverified"
+        : "idle";
 
       if (reconnecting) {
         existing.channel = state.channel;
@@ -796,7 +813,12 @@ export class WorkerGateway {
           typeArg: WORKER_MODEL_TYPE.normalized,
           definitionName: workerDefinitionName(workerName),
           methodName: "set_status",
-          inputs: existing.activeDispatchIds.length > 0
+          inputs: initialStatus === "unverified"
+            ? {
+              status: "unverified",
+              activeDispatchIds: [...existing.activeDispatchIds],
+            }
+            : existing.activeDispatchIds.length > 0
             ? {
               status: "busy",
               activeDispatchIds: [...existing.activeDispatchIds],
@@ -818,6 +840,7 @@ export class WorkerGateway {
             swampVersion: params.swampVersion,
             protocolVersion: params.protocolVersion,
             capacity,
+            status: initialStatus,
           },
         });
       }
@@ -825,9 +848,6 @@ export class WorkerGateway {
       // All durable transitions succeeded — only now mutate the pool, wire
       // the capability handlers, and issue the credential, so a failed
       // enrollment leaves no orphaned state behind.
-      const initialStatus = this.#options.verifyOnEnroll
-        ? "unverified"
-        : "idle";
       const entry: WorkerEntry = reconnecting ? existing : {
         name: workerName,
         tokenName: name,
@@ -845,6 +865,9 @@ export class WorkerGateway {
       };
       if (reconnecting && this.#options.verifyOnEnroll) {
         entry.status = "unverified";
+        // A refusal from before the reconnect is answered by the probe this
+        // enrollment starts.
+        entry.probeRefusedForCapacity = false;
       }
       entry.channel = state.channel;
       entry.closeSocket = state.closeSocket;
@@ -1147,7 +1170,8 @@ export class WorkerGateway {
       entry.verifyAgain = false;
       if (
         this.#workers.get(workerName) === entry &&
-        entry.status === "unverified" && entry.channel !== null
+        entry.status === "unverified" && entry.channel !== null &&
+        !entry.channel.closed
       ) {
         this.#startEnrollmentVerify(workerName);
       }
@@ -1156,6 +1180,10 @@ export class WorkerGateway {
 
   async #runEnrollmentVerify(workerName: string): Promise<void> {
     const verifyWorker = this.#options.verifyWorker!;
+    // This run answers any refusal seen before it; only one it meets itself
+    // calls for another.
+    const started = this.#workers.get(workerName);
+    if (started) started.probeRefusedForCapacity = false;
     try {
       const probeResult = await verifyWorker(workerName);
       const entry = this.#workers.get(workerName);

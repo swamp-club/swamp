@@ -31,6 +31,7 @@
     "@std/cli": "jsr:@std/cli@^1.0.29",
     "@std/fs": "jsr:@std/fs@^1.0.23",
     "@std/path": "jsr:@std/path@^1.1.4",
+    "@std/semver": "jsr:@std/semver@^1.0.8",
     "@std/streams": "jsr:@std/streams@^1.1.0",
     "@std/tar": "jsr:@std/tar@^0.1.10",
     "@std/yaml": "jsr:@std/yaml@^1.1.0",

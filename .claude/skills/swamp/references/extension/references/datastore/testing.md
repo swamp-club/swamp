@@ -151,7 +151,8 @@ instead (options and example in the `@swamp-club/swamp-testing` README). A
 provider that declares `datastoreWideLease: true` must run its namespaced-push
 case: pass `openNamespacedSyncFixture` and `markNamespaceUpgradedFromSolo`, use
 an empty bucket or prefix, and assert `result.namespacedPushSkipped` is
-`undefined`.
+`undefined`. That case checks a `writer/` and a `lineage/` record stay at the
+root.
 
 ## Storage Conformance
 
@@ -176,6 +177,33 @@ signal. It writes under namespaces of its own and deletes what it wrote. Without
 `setLastModified` (e.g. against a real bucket) the refresh checks are skipped.
 `createInMemoryRemote({ storage: true })` gives a conforming in-memory
 `storage()` for tests.
+
+## Replica Target Conformance
+
+For a provider that implements `replicaTarget()`:
+
+```typescript
+import { assertReplicaTargetConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("replica target conformance", async () => {
+  await assertReplicaTargetConformance({
+    replicaTarget: () => provider.replicaTarget!(),
+    bucket: config.bucket,
+    openStorage: () => provider.storage!(),
+    openDatastoreStore: () =>
+      provider
+        .datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
+    // Read with your own client, not through the provider.
+    objectExists: (key) => headObject(config.bucket, key),
+  });
+});
+```
+
+It checks the target is one swamp accepts (no credential fields, a clean
+`prefix`, a plain http(s) `endpoint`), names `bucket`, and that a control-plane
+record and a chunk it writes land at `<prefix>/_control/…` and
+`<prefix>/_blobs/…`. It deletes both. `replicaTargetProblem(value)` returns
+swamp's reason for refusing a target, for unit tests of your own.
 
 ## Mocking External Calls
 

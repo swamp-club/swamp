@@ -53,6 +53,7 @@ import {
   buildFindingsReport,
   type FindingsReport,
 } from "../src/presentation/renderers/extension_findings_report.ts";
+import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const MANIFEST = [
   "manifestVersion: 1",
@@ -100,6 +101,7 @@ function fakeDeps(): ExtensionPushPrepareDeps {
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
+    indexArchive: emptyArchiveIndex,
     bundleEntryPoint: () => Promise.resolve("export const model = {};\n"),
     ensureDenoPath: () => Promise.resolve("unused-deno"),
     getDenoEnv: () => ({}),

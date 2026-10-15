@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { STOPPED, stoppedBy, untilStopped } from "./until_stopped.ts";
 
 const logger = getSwampLogger(["serve", "run-index-warmup"]);
 
@@ -41,8 +42,6 @@ export interface RunIndexWarmupDeps {
    */
   warm(workflowId: string, signal: AbortSignal): Promise<unknown>;
 }
-
-const STOPPED = Symbol("stopped");
 
 /**
  * Reads every workflow's run index snapshot once serve is listening, so the
@@ -104,11 +103,7 @@ export class RunIndexWarmup {
   async #warmAll(signal: AbortSignal): Promise<void> {
     const started = Date.now();
     let warmed = 0;
-    const { promise: stopped, resolve: onStopped } = Promise.withResolvers<
-      typeof STOPPED
-    >();
-    const onAbort = () => onStopped(STOPPED);
-    signal.addEventListener("abort", onAbort, { once: true });
+    const { stopped, release } = stoppedBy(signal);
     try {
       const ids = await this.#deps.listWorkflowIds();
       for (const id of ids) {
@@ -139,7 +134,7 @@ export class RunIndexWarmup {
       logger.warn`Run index warm-up could not list workflows: ${error}`;
       return;
     } finally {
-      signal.removeEventListener("abort", onAbort);
+      release();
     }
     if (signal.aborted) {
       logger.debug`Run index warm-up stopped after ${warmed} workflows`;
@@ -149,17 +144,4 @@ export class RunIndexWarmup {
       Date.now() - started
     } ms`;
   }
-}
-
-/**
- * Settles as `work` does, or with `STOPPED` once `stopped` resolves first.
- * `work` is then let go: its outcome, failure included, is no longer
- * wanted.
- */
-function untilStopped<T>(
-  work: Promise<T>,
-  stopped: Promise<typeof STOPPED>,
-): Promise<T | typeof STOPPED> {
-  work.catch(() => {});
-  return Promise.race([work, stopped]);
 }

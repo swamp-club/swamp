@@ -41,8 +41,15 @@ import {
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import type {
+  HeadIdentity,
+  OutboxKey,
+  OutboxPreparation,
+  SweepState,
+} from "../../domain/datastore_v3/commit_outbox.ts";
+import type {
   CommitLogUnitOptions,
   CommitSink,
+  SinkOutbox,
 } from "./commit_log_unit_of_work.ts";
 
 export const WRITER = { host: "host-a", pid: 4242, instance: "cli-1" } as const;
@@ -99,6 +106,65 @@ export class MemorySink implements CommitSink {
   /** The commits that landed on one partition, in seq order. */
   commitsOf(partition: PartitionKey): Commit[] {
     return this.landed.filter((commit) => commit.partition.equals(partition));
+  }
+}
+
+/**
+ * A {@link MemorySink} with an in-memory outbox (swamp-club#3490), recording
+ * every outbox call in `events` beside the appends.
+ */
+export class OutboxMemorySink extends MemorySink {
+  /** The entries prepared and not removed, by txnId. */
+  readonly entries = new Map<string, OutboxPreparation>();
+  /** Outbox calls and appends, in order: `prepare:<txnId>`, `settle:`, `discard:`, `append:`. */
+  readonly events: string[] = [];
+  /** The sweep state each read returns, in turn; quiet once used up. */
+  sweepStates: SweepState[] = [];
+  /** Runs before each removal; a throw fails it. */
+  beforeRemove: (keys: readonly OutboxKey[]) => void = () => {};
+
+  constructor() {
+    super();
+    const append = this.append.bind(this);
+    this.append = (commit) => {
+      this.events.push(`append:${commit.txnId}`);
+      return append(commit);
+    };
+  }
+
+  readonly outbox: SinkOutbox = {
+    headIdentity: (namespace, partition) =>
+      this.headIdentityOf(namespace, partition),
+    prepare: (preparation) => {
+      this.events.push(`prepare:${preparation.commit.txnId}`);
+      this.entries.set(preparation.commit.txnId, preparation);
+      return Promise.resolve();
+    },
+    settle: (keys) => this.#remove("settle", keys),
+    discard: (keys) => this.#remove("discard", keys),
+    sweepState: () =>
+      Promise.resolve(this.sweepStates.shift() ?? { epoch: 0, active: false }),
+  };
+
+  #remove(
+    kind: "settle" | "discard",
+    keys: readonly OutboxKey[],
+  ): Promise<void> {
+    this.beforeRemove(keys);
+    for (const key of keys) {
+      this.events.push(`${kind}:${key.txnId}`);
+      this.entries.delete(key.txnId);
+    }
+    return Promise.resolve();
+  }
+
+  async headIdentityOf(
+    namespace: string,
+    partition: PartitionKey,
+  ): Promise<HeadIdentity> {
+    const head = await this.head(namespace, partition);
+    const last = this.commitsOf(partition).at(-1);
+    return { seq: head.seq, txnId: head.seq === 0 ? undefined : last?.txnId };
   }
 }
 

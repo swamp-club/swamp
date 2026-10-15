@@ -42,6 +42,7 @@ import {
 import { createLibSwampContext } from "../../../src/libswamp/context.ts";
 import { extractTarGz } from "../../../src/infrastructure/archive/tar_archive.ts";
 import { computeChecksum } from "../../../src/domain/models/checksum.ts";
+import { emptyArchiveIndex } from "../../../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const HERE = dirname(fromFileUrl(import.meta.url));
 
@@ -148,6 +149,7 @@ function prepareDeps(): ExtensionPushPrepareDeps {
       Promise.resolve({ errors: [], warnings: [], passed: true }),
     // A bundle that keeps the entry point's text, so the export name the
     // author wrote travels into the archive as it would through deno bundle.
+    indexArchive: emptyArchiveIndex,
     bundleEntryPoint: async (entryPoint) =>
       `// bundle\n${await Deno.readTextFile(entryPoint)}`,
     ensureDenoPath: () => Promise.resolve("/unused/deno"),

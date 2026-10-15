@@ -1,0 +1,404 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { getLogger } from "@logtape/logtape";
+import { dirname, fromFileUrl, join } from "@std/path";
+import { TextLineStream } from "@std/streams";
+import type {
+  BundleProber,
+  BundleProbeRequest,
+  BundleProbeResult,
+} from "../../domain/extensions/bundle_prober.ts";
+import { sanitizeDataUrlError } from "../../domain/models/bundle.ts";
+import { attachProcessJob } from "../process/windows_job.ts";
+import { findChildPids } from "../process/process_kill.ts";
+import {
+  BUNDLE_PROBE_FRAME_ENV,
+  BUNDLE_PROBE_HOST_MARKER,
+  type BundleProbeHostReply,
+} from "./bundle_probe_host.ts";
+
+const logger = getLogger(["swamp", "extensions", "probe"]);
+
+/** How long one bundle's import may take before it is given up on. */
+export const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * How long the host may take to say it is ready to import. Starting it
+ * and loading the kind adapter is swamp's own work, so running out of this
+ * is never held against the bundle.
+ */
+export const DEFAULT_PROBE_STARTUP_TIMEOUT_MS = 60_000;
+
+/** The command line that starts a probe host. */
+export interface ProbeHostCommand {
+  readonly command: string;
+  readonly args: readonly string[];
+  /** Variables to set on top of this process's environment. */
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+/** A `deno run` of the host entry by the deno at `denoPath`, from source. */
+export function sourceProbeHostCommand(
+  denoPath: string = Deno.execPath(),
+): ProbeHostCommand {
+  const entry = fromFileUrl(new URL("./bundle_probe_host.ts", import.meta.url));
+  // The repo's import map, found from this file, so the host resolves its
+  // imports whatever the parent's working directory.
+  const config = join(dirname(entry), "..", "..", "..", "deno.json");
+  return {
+    command: denoPath,
+    args: ["run", "-A", "--config", config, entry],
+  };
+}
+
+/**
+ * How a process running as `execPath` starts a probe host: from source,
+ * where `execPath` is deno, a `deno run` of the host entry; otherwise the
+ * swamp binary itself with the host marker.
+ */
+export function probeHostCommandFor(execPath: string): ProbeHostCommand {
+  return /[\\/]deno(\.exe)?$/i.test(execPath)
+    ? sourceProbeHostCommand(execPath)
+    : { command: execPath, args: [BUNDLE_PROBE_HOST_MARKER] };
+}
+
+/** How this process starts a probe host. */
+export function hostProbeHostCommand(): ProbeHostCommand {
+  return probeHostCommandFor(Deno.execPath());
+}
+
+/** What a probe in flight hears from its host. */
+interface HostListener {
+  reply(reply: BundleProbeHostReply): void;
+  /** The host is gone: it exited, crashed or was killed. */
+  gone(message: string): void;
+}
+
+/** A running probe host process. */
+interface ProbeHost {
+  send(request: BundleProbeRequest): Promise<void>;
+  listen(listener: HostListener | undefined): void;
+  /** Kills the host and waits until its process and output have ended. */
+  stop(): Promise<void>;
+}
+
+const encoder = new TextEncoder();
+
+/** How long a host's last output is read for after it ends. */
+const OUTPUT_GRACE_MS = 500;
+
+/** Lists a process's children; {@link findChildPids} by default. */
+export type ChildLister = (pid: number) => Promise<number[]>;
+
+function startProbeHost(
+  command: ProbeHostCommand,
+  listChildren: ChildLister,
+): ProbeHost {
+  const frame = `@@swamp-probe-${crypto.randomUUID()}@@`;
+  // The host stays in this process's group, so a Ctrl+C reaches it as it
+  // reaches swamp; on Windows its job ends it when swamp ends.
+  const child = new Deno.Command(command.command, {
+    args: [...command.args],
+    env: { ...command.env, [BUNDLE_PROBE_FRAME_ENV]: frame },
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const job = attachProcessJob(child.pid);
+  const writer = child.stdin.getWriter();
+  let listener: HostListener | undefined;
+  let goneMessage: string | undefined;
+  /** Set once the host has exited, after which its pid may be reused. */
+  let exited = false;
+
+  // Both pipes are read as long as the host lives, so a bundle that prints
+  // a lot never blocks the host on a full pipe and gets blamed for the
+  // stall.
+  const stdout = child.stdout.pipeThrough(new TextDecoderStream())
+    .pipeThrough(new TextLineStream()).getReader();
+  const stderr = child.stderr.pipeThrough(new TextDecoderStream())
+    .pipeThrough(new TextLineStream()).getReader();
+  const readStdout = async () => {
+    for (
+      let next = await stdout.read();
+      !next.done;
+      next = await stdout.read()
+    ) {
+      const line = next.value;
+      const at = line.indexOf(frame);
+      // A reply can follow output the bundle left without a newline.
+      const before = at === -1 ? line : line.slice(0, at);
+      if (before !== "") logger.debug`Output of the probe host: ${before}`;
+      if (at === -1) continue;
+      let reply: BundleProbeHostReply;
+      try {
+        reply = JSON.parse(
+          line.slice(at + frame.length),
+        ) as BundleProbeHostReply;
+      } catch {
+        continue;
+      }
+      listener?.reply(reply);
+    }
+  };
+  const readStderr = async () => {
+    for (
+      let next = await stderr.read();
+      !next.done;
+      next = await stderr.read()
+    ) {
+      if (next.value !== "") {
+        logger.debug`Output of the probe host: ${next.value}`;
+      }
+    }
+  };
+  const reading = Promise.all([
+    readStdout().catch(() => {}),
+    readStderr().catch(() => {}),
+  ]);
+  const finished = (async () => {
+    const status = await child.status;
+    exited = true;
+    // A process a bundle started holds the pipes open after the host ends,
+    // so they may never close: what the host wrote before it ended is read
+    // within a grace period, then reading stops (swamp-club#3494).
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      reading,
+      new Promise<void>((done) => {
+        grace = setTimeout(done, OUTPUT_GRACE_MS);
+      }),
+    ]);
+    clearTimeout(grace);
+    await Promise.all([
+      stdout.cancel().catch(() => {}),
+      stderr.cancel().catch(() => {}),
+    ]);
+    await reading;
+    // After the output is read, so an answer written just before the host
+    // ended still reaches its probe first.
+    goneMessage = `the probe host exited with code ${status.code}`;
+    listener?.gone(goneMessage);
+  })();
+
+  return {
+    async send(request) {
+      await writer.write(encoder.encode(JSON.stringify(request) + "\n"));
+    },
+    listen(next) {
+      listener = next;
+      if (next && goneMessage !== undefined) next.gone(goneMessage);
+    },
+    async stop() {
+      listener = undefined;
+      // Processes a bundle started end with the host, as they ended with a
+      // terminated worker. Listed before the kill, which reparents them; on
+      // Windows the job ends them.
+      // Only while the host runs: once it has exited and been reaped, its
+      // pid may belong to an unrelated process whose children are not ours.
+      const started = job || exited ? [] : await listChildren(child.pid);
+      // Killed before stdin is closed: a write to a host that stopped
+      // reading would otherwise never finish.
+      if (job) job.terminate();
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Exited already.
+      }
+      for (const pid of started) {
+        try {
+          Deno.kill(pid, "SIGKILL");
+        } catch {
+          // Exited already.
+        }
+      }
+      // Aborted, not closed: a close waits for pending writes, which a
+      // process a bundle started may hold up by keeping the pipe open.
+      await writer.abort().catch(() => {});
+      await finished;
+    },
+  };
+}
+
+/**
+ * Probes bundles in a probe host process (`bundle_probe_host.ts`). The host
+ * is started by the first probe, so a pass with nothing to probe costs
+ * nothing, and is reused for later probes until one of them hangs, exits
+ * or crashes it. Unlike a worker, a host can always be stopped: a bundle
+ * that spins in synchronous code at import is killed with it, not left
+ * running for the life of the process (swamp-club#3494).
+ *
+ * Only the bundle's own import is timed: the timeout starts when the host
+ * reports it is ready to import. A host that never gets that far, or is
+ * released under a probe, answers `import-failed`, which is retried, and
+ * never `timed-out`, which is pinned to the source.
+ *
+ * The host shares swamp's permissions, environment and filesystem: it keeps
+ * a misbehaving import from ending, stalling or printing into a command,
+ * and is not a sandbox for untrusted code.
+ */
+export class ProcessBundleProber implements BundleProber {
+  private readonly timeoutMs: number;
+  private readonly startupTimeoutMs: number;
+  private readonly command: () => ProbeHostCommand;
+  private readonly listChildren: ChildLister;
+  private host: ProbeHost | undefined;
+  private queue: Promise<unknown> = Promise.resolve();
+  /** Settles the probe in flight, if any, without an answer from it. */
+  private abandon: ((message: string) => void) | undefined;
+  /** Stops of hosts that died between probes, which release waits for. */
+  private dropped: Promise<void> = Promise.resolve();
+  /**
+   * Why hosts refuse this swamp, once one said it is another build: every
+   * later host would too, as the binary does not change back.
+   */
+  private mismatch: string | undefined;
+
+  constructor(
+    options: {
+      timeoutMs?: number;
+      startupTimeoutMs?: number;
+      command?: () => ProbeHostCommand;
+      listChildren?: ChildLister;
+    } = {},
+  ) {
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+    this.startupTimeoutMs = options.startupTimeoutMs ??
+      DEFAULT_PROBE_STARTUP_TIMEOUT_MS;
+    this.command = options.command ?? hostProbeHostCommand;
+    this.listChildren = options.listChildren ?? findChildPids;
+  }
+
+  /** Probes run one at a time: the host answers a single request. */
+  probe(request: BundleProbeRequest): Promise<BundleProbeResult> {
+    const next = this.queue.then(() => this.probeOne(request));
+    this.queue = next.catch(() => {});
+    return next;
+  }
+
+  /**
+   * Stops the host. A probe still in flight is answered at once as a
+   * failed import, not left to run out its timeout against a host that is
+   * gone.
+   */
+  async release(): Promise<void> {
+    const host = this.host;
+    this.host = undefined;
+    this.abandon?.("the probe was released before it finished");
+    await host?.stop();
+    await this.dropped;
+  }
+
+  private async probeOne(
+    request: BundleProbeRequest,
+  ): Promise<BundleProbeResult> {
+    if (this.mismatch !== undefined) {
+      return { tag: "import-failed", message: this.mismatch };
+    }
+    let host: ProbeHost;
+    try {
+      host = this.host ??= startProbeHost(this.command(), this.listChildren);
+    } catch (error) {
+      // Not the bundle's doing (the binary moved, or no descriptors left),
+      // so a retryable failed import, as a host that never starts is.
+      return {
+        tag: "import-failed",
+        message: `the probe host did not start: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reply = await new Promise<
+        Extract<BundleProbeHostReply, { type: "done" }>
+      >((resolve) => {
+        const settle = (result: BundleProbeResult) =>
+          resolve({ type: "done", result, output: [] });
+        const failed = (message: string) =>
+          settle({ tag: "import-failed", message });
+        this.abandon = failed;
+        host.listen({
+          reply: (reply) => {
+            switch (reply.type) {
+              case "ready":
+                // The startup timer runs on until the kind adapter is in.
+                return;
+              case "version-mismatch":
+                this.mismatch =
+                  `swamp ${reply.parent} is running, but its binary is now ` +
+                  `${reply.host}; restart swamp to index extension sources`;
+                return failed(this.mismatch);
+              case "started":
+                clearTimeout(timer);
+                timer = setTimeout(
+                  () => settle({ tag: "timed-out", timeoutMs: this.timeoutMs }),
+                  this.timeoutMs,
+                );
+                return;
+              case "done":
+                return resolve(reply);
+            }
+          },
+          gone: failed,
+        });
+        timer = setTimeout(
+          () => failed("the probe host did not start"),
+          this.startupTimeoutMs,
+        );
+        host.send(request).catch(() =>
+          failed("the probe host stopped reading")
+        );
+      });
+      for (const line of reply.output) {
+        logger.debug`Output at import of ${
+          sanitizeDataUrlError(request.importUrl)
+        }: ${line}`;
+      }
+      // Only a host that answered with a finished import is reused, and
+      // only while it stays alive: one that dies between probes is dropped,
+      // so the next probe starts its own.
+      if (this.host === host) {
+        if (isReusable(reply.result)) {
+          host.listen({
+            reply: () => {},
+            gone: () => {
+              if (this.host !== host) return;
+              this.host = undefined;
+              const stopped = host.stop();
+              this.dropped = this.dropped.then(() => stopped);
+            },
+          });
+        } else {
+          await this.release();
+        }
+      }
+      return reply.result;
+    } finally {
+      this.abandon = undefined;
+      clearTimeout(timer);
+    }
+  }
+}
+
+function isReusable(result: BundleProbeResult): boolean {
+  return result.tag === "primary" || result.tag === "secondary" ||
+    result.tag === "no-export" || result.tag === "validation-failed";
+}

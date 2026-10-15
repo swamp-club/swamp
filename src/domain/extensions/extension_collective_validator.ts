@@ -116,3 +116,34 @@ export function validateContentCollectives(
     mismatches,
   };
 }
+
+/** A type an extension source registers when it is loaded. */
+export interface RuntimeContentType {
+  kind: CollectiveMismatch["kind"];
+  /** The type as the loader registers it (its normalized form). */
+  typeNormalized: string;
+  fileName: string;
+}
+
+/**
+ * The loaded types that are outside the extension's collective. Static
+ * metadata reads a type only when the source writes it as a string literal,
+ * so a type held in a constant, spread in or computed is checked here
+ * against the identity the loader actually registers (swamp-club#3456).
+ */
+export function collectiveMismatchesForTypes(
+  extensionName: string,
+  types: readonly RuntimeContentType[],
+): CollectiveMismatch[] {
+  const slashIndex = extensionName.indexOf("/");
+  if (slashIndex === -1) return [];
+  const collectivePrefix = extensionName.slice(0, slashIndex + 1)
+    .toLowerCase();
+  return types
+    .filter((t) => !t.typeNormalized.toLowerCase().startsWith(collectivePrefix))
+    .map((t) => ({
+      kind: t.kind,
+      identifier: t.typeNormalized,
+      fileName: t.fileName,
+    }));
+}

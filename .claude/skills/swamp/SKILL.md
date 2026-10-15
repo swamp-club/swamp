@@ -100,7 +100,8 @@ swamp extension push manifest.yaml             # publish an extension
    expected state. Proceed only when validation passes.
 4. **Verify args** — run `swamp help <subcommand>` (e.g.
    `swamp help behavior run`) to confirm exact flags and arguments before
-   executing. The output is structured JSON — the canonical CLI schema.
+   executing. The output is structured JSON — the canonical CLI schema. Do not
+   guess flags from memory.
 5. **Execute** — run the command.
 6. **On failure** — load
    [references/troubleshooting/guide.md](references/troubleshooting/guide.md)
@@ -121,7 +122,3 @@ swamp extension push manifest.yaml             # publish an extension
    wraps the API — check with `swamp behavior type search`. Composing with
    `--json` output (e.g. piping through `jq`) is fine — the anti-pattern is
    bypassing swamp entirely.
-4. **Verify flags with `swamp help` before executing.** `swamp help <command>`
-   outputs the full CLI schema as structured JSON — every subcommand, argument,
-   and option. Always run it to confirm exact flags before executing a swamp
-   command (workflow step 4). Do not guess flags from memory.

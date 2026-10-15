@@ -7,6 +7,7 @@
   - [Module exports both model and behavior](#module-exports-both-model-and-behavior)
   - [Type defined in both extensions/models/ and extensions/behaviors/](#type-defined-in-both-extensionsmodels-and-extensionsbehaviors)
   - [Behavior missing from the registry catalog (uncatalogued-model)](#behavior-missing-from-the-registry-catalog-uncatalogued-model)
+  - [Content uses collectives that don't match](#content-uses-collectives-that-dont-match)
   - [Unknown resource spec / Unknown file spec](#unknown-resource-spec-or-unknown-file-spec)
   - [Model type already registered](#model-type-already-registered)
   - [Uses a reserved collective](#uses-a-reserved-collective)
@@ -82,6 +83,20 @@ export const behavior = {
 ```
 
 Republish after the fix; the new version is catalogued.
+
+### "Content uses collectives that don't match"
+
+Every type an extension registers must start with the extension's own
+collective. Push checks the type each source registers when it is loaded, not
+only the literal in its text, so a type held in a constant, an import or a
+spread is checked too, and so is any `.ts` file under a kind directory (helper
+files included) that exports a behavior. Fix the type the listed file registers,
+or move the file to an extension in that collective.
+
+- **Push** lists each offending `kind: type in file` under "Collective errors".
+- **`unverified-collective` warning**: push could neither read the type from the
+  text nor load the source (the warning names the import or top-level error).
+  Fix that error, or write the type as a string literal.
 
 ### "Unknown resource spec" or "Unknown file spec"
 

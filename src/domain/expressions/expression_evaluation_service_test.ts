@@ -26,6 +26,7 @@ import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
+  authoredConstantsProducing,
   collectAuthoredExpressions,
   containsEnvExpression,
   containsRuntimeExpression,
@@ -35,6 +36,10 @@ import {
   partitionAuthoredAt,
 } from "./expression_evaluation_service.ts";
 import { extractExpressions } from "./expression_parser.ts";
+import {
+  createRejectionReport,
+  runWithRejectionReport,
+} from "./expression_rejection_report.ts";
 import { ProvenanceMap } from "./provenance_map.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -1891,4 +1896,140 @@ Deno.test("partitionAuthoredAt: the data-content warning quotes the raw expressi
     assertStringIncludes(messages[0], "at run:");
     assertEquals(messages[0].endsWith(`Raw: ${raw}`), true, messages[0]);
   }
+});
+
+// ============================================================================
+// Refusals of text the author wrote on purpose stay silent (swamp-club#3402)
+// ============================================================================
+
+const LITERAL_OF_VERSION = "${{ literal('${{ inputs.version }}') }}";
+const VERSION = "${{ inputs.version }}";
+const GITHUB_SHA = "${{ github.sha }}";
+
+Deno.test("partitionAuthored: refuses literal() output without a warning (swamp-club#3402)", async () => {
+  const messages = await capturingExpressionWarnings(() => {
+    assertEquals(
+      partitionAuthored(
+        extractExpressions({ run: `echo 'MSG=${VERSION}'` }),
+        new Set([LITERAL_OF_VERSION]),
+      ),
+      [],
+    );
+  });
+  assertEquals(messages, []);
+});
+
+Deno.test("partitionAuthored: refuses output of any authored constant without a warning (swamp-club#3402)", async () => {
+  for (
+    const constant of [
+      "${{ '${{ inputs.version }}' }}",
+      "${{ literal('${{ inputs.') + literal('version }}') }}",
+      '${{ literal("${{ inputs.version }}") }}',
+    ]
+  ) {
+    const messages = await capturingExpressionWarnings(() => {
+      assertEquals(
+        partitionAuthored(
+          extractExpressions({ run: VERSION }),
+          new Set([constant]),
+        ),
+        [],
+      );
+    });
+    assertEquals(messages, [], constant);
+  }
+});
+
+Deno.test("partitionAuthored: refuses another templating system's text without a warning (swamp-club#3402)", async () => {
+  const messages = await capturingExpressionWarnings(() => {
+    assertEquals(
+      partitionAuthored(extractExpressions({ run: GITHUB_SHA }), new Set()),
+      [],
+    );
+  });
+  assertEquals(messages, []);
+});
+
+Deno.test("partitionAuthored: still warns for swamp text no authored constant produced (swamp-club#3402)", async () => {
+  for (
+    const authored of [
+      // A constant that produces other text.
+      "${{ literal('${{ inputs.other }}') }}",
+      // Reads a binding, so its output is not the author's alone.
+      "${{ inputs.prefix + '${{ inputs.version }}' }}",
+      // A bare assertion predicate is not a `${{ }}` constant.
+      "literal('${{ inputs.version }}')",
+      // A constant that fails to evaluate is skipped.
+      "${{ now() }}",
+    ]
+  ) {
+    const messages = await capturingExpressionWarnings(() => {
+      assertEquals(
+        partitionAuthored(
+          extractExpressions({ run: VERSION }),
+          new Set([authored]),
+        ),
+        [],
+      );
+    });
+    assertEquals(messages.length, 1, authored);
+    assertEquals(messages[0].endsWith(`Raw: ${VERSION}`), true, messages[0]);
+  }
+});
+
+Deno.test("partitionAuthoredAt: refuses data holding literal() output or foreign text without a warning (swamp-club#3402)", async () => {
+  for (const raw of [VERSION, GITHUB_SHA]) {
+    const messages = await capturingExpressionWarnings(() => {
+      assertEquals(
+        partitionAuthoredAt(
+          extractExpressions({ run: raw }),
+          new Set([raw, LITERAL_OF_VERSION]),
+          ProvenanceMap.data(),
+        ),
+        [],
+      );
+    });
+    assertEquals(messages, [], raw);
+  }
+});
+
+Deno.test("partitionAuthored: a rejection report logs each refused raw once (swamp-club#3402)", async () => {
+  const refuse = () =>
+    partitionAuthored(
+      extractExpressions({ a: VERSION, b: VERSION }),
+      new Set(),
+    );
+
+  const unscoped = await capturingExpressionWarnings(() => {
+    refuse();
+    refuse();
+  });
+  assertEquals(unscoped.length, 4);
+
+  const scoped = await capturingExpressionWarnings(() => {
+    const report = createRejectionReport();
+    runWithRejectionReport(report, refuse);
+    runWithRejectionReport(report, () =>
+      partitionAuthoredAt(
+        extractExpressions({ run: VERSION }),
+        new Set([VERSION]),
+        ProvenanceMap.data(),
+      ));
+    runWithRejectionReport(createRejectionReport(), refuse);
+  });
+  assertEquals(scoped.length, 2);
+});
+
+Deno.test("authoredConstantsProducing: names the constants whose output includes a raw (swamp-club#3402)", () => {
+  const authored = new Set([
+    LITERAL_OF_VERSION,
+    "${{ literal('${{ github.sha }}') }}",
+    "${{ inputs.version }}",
+    "${{ literal('plain') }}",
+  ]);
+  assertEquals(
+    [...authoredConstantsProducing(authored, [VERSION])],
+    [LITERAL_OF_VERSION],
+  );
+  assertEquals([...authoredConstantsProducing(authored, ["${{ x }}"])], []);
 });

@@ -473,17 +473,24 @@ export async function listTarGzEntries(
  * AppleDouble files (`._foo`) are not produced because we walk the source
  * tree explicitly via `Deno.readDir` rather than asking BSD `tar` to copy
  * extended attributes — the underlying mechanism doesn't run.
+ *
+ * On Windows, which has no POSIX modes, Deno reports 0o666 for every file and
+ * folder. Recording that would leave folders without the execute bit, so a
+ * POSIX extractor that honours modes (the registry scorer) could not enter
+ * them. Windows archives record 0o755 folders and 0o644 files instead — what
+ * a POSIX host with the usual 022 umask records.
  */
 export async function createTarGz(
   sourceDir: string,
   archivePath: string,
+  os: typeof Deno.build.os = Deno.build.os,
 ): Promise<void> {
   const resolvedSource = await Deno.realPath(sourceDir);
   const archiveTopName = basename(resolvedSource);
   const parent = dirname(resolvedSource);
 
   const inputs: TarStreamInput[] = [];
-  await collectEntries(resolvedSource, parent, archiveTopName, inputs);
+  await collectEntries(resolvedSource, parent, archiveTopName, inputs, os);
 
   const file = await Deno.open(archivePath, {
     write: true,
@@ -497,11 +504,16 @@ export async function createTarGz(
     .pipeTo(file.writable);
 }
 
+/** Modes recorded on Windows, where Deno's reported mode is meaningless. */
+const WINDOWS_DIRECTORY_MODE = 0o755;
+const WINDOWS_FILE_MODE = 0o644;
+
 async function collectEntries(
   absPath: string,
   parent: string,
   topName: string,
   out: TarStreamInput[],
+  os: typeof Deno.build.os,
 ): Promise<void> {
   const stat = await Deno.lstat(absPath);
   // Record the path relative to the archive root using forward slashes —
@@ -528,7 +540,11 @@ async function collectEntries(
     out.push({
       type: "directory",
       path: archivePath + "/",
-      options: { mode: stat.mode ?? undefined },
+      options: {
+        mode: os === "windows"
+          ? WINDOWS_DIRECTORY_MODE
+          : stat.mode ?? undefined,
+      },
     });
     const children: string[] = [];
     for await (const child of Deno.readDir(absPath)) {
@@ -537,7 +553,7 @@ async function collectEntries(
     }
     children.sort();
     for (const name of children) {
-      await collectEntries(join(absPath, name), parent, topName, out);
+      await collectEntries(join(absPath, name), parent, topName, out, os);
     }
     return;
   }
@@ -552,7 +568,9 @@ async function collectEntries(
       path: archivePath,
       size: stat.size,
       readable: file.readable,
-      options: { mode: stat.mode ?? undefined },
+      options: {
+        mode: os === "windows" ? WINDOWS_FILE_MODE : stat.mode ?? undefined,
+      },
     });
     return;
   }

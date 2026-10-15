@@ -24,7 +24,10 @@ import { getLogger, type Logger } from "@logtape/logtape";
 import { canonicalizePath, realCanonicalPath } from "./canonicalize_path.ts";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import { isPulledExtensionPath } from "../../domain/extensions/extension_precedence.ts";
-import { CATALOG_FAILURE_STATES } from "../../domain/extensions/bundle_freshness.ts";
+import {
+  CATALOG_FAILURE_STATES,
+  MAX_SOURCE_MODULES,
+} from "../../domain/extensions/bundle_freshness.ts";
 import {
   type DeclarationKind,
   declaresExport,
@@ -402,6 +405,12 @@ export class ExtensionCatalogStore {
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS source_modules (
+        source_path   TEXT NOT NULL PRIMARY KEY,
+        modules       TEXT NOT NULL,
+        graph_pending INTEGER NOT NULL DEFAULT 0
+      );
     `);
   }
 
@@ -540,6 +549,19 @@ export class ExtensionCatalogStore {
     if (!hasColumn("last_error")) {
       this.db.exec(
         "ALTER TABLE bundle_types ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    // swamp-club#3487: source_modules, which a catalog written by the
+    // #3385 binary has without this column.
+    const sourceModulesProbe = this.db.prepare(
+      "SELECT COUNT(*) AS cnt FROM pragma_table_info('source_modules') WHERE name = ?",
+    );
+    const graphPending = sourceModulesProbe.get("graph_pending") as
+      | { cnt: number }
+      | undefined;
+    if ((graphPending?.cnt ?? 0) === 0) {
+      this.db.exec(
+        "ALTER TABLE source_modules ADD COLUMN graph_pending INTEGER NOT NULL DEFAULT 0",
       );
     }
   }
@@ -886,6 +908,7 @@ export class ExtensionCatalogStore {
     this.db.exec("BEGIN");
     try {
       this.db.exec("DELETE FROM bundle_types");
+      this.db.exec("DELETE FROM source_modules");
       this.db.exec("DELETE FROM bundle_meta WHERE key LIKE 'populated:%'");
       this.db.exec(
         `DELETE FROM bundle_meta WHERE key LIKE '${TYPELESS_ROW_HEAL_KEY_PREFIX}%'`,
@@ -1597,6 +1620,93 @@ export class ExtensionCatalogStore {
     this.db.prepare(
       "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, ?)",
     ).run(noExportKey(kind, sourcePath), fingerprint);
+  }
+
+  /**
+   * The local modules recorded for `sourcePath` when it was last bundled,
+   * or `undefined` when none are recorded or the stored value is not a list
+   * of at most {@link MAX_SOURCE_MODULES} paths.
+   */
+  findSourceModules(sourcePath: string): readonly string[] | undefined {
+    const row = this.db.prepare(
+      "SELECT modules FROM source_modules WHERE source_path = ?",
+    ).get(canonicalizePath(sourcePath)) as { modules: string } | undefined;
+    if (!row) return undefined;
+    let modules: unknown;
+    try {
+      modules = JSON.parse(row.modules);
+    } catch {
+      return undefined;
+    }
+    if (
+      !Array.isArray(modules) || modules.length > MAX_SOURCE_MODULES ||
+      !modules.every((m) => typeof m === "string")
+    ) {
+      return undefined;
+    }
+    return modules;
+  }
+
+  /**
+   * Records the local modules `sourcePath` was bundled from. `graphPending`
+   * marks a fallback walk recorded because the module graph could not be
+   * read, which the warm scan retries once (swamp-club#3487). Throws a
+   * RangeError for a list over {@link MAX_SOURCE_MODULES}, which
+   * {@link findSourceModules} would not read back.
+   */
+  recordSourceModules(
+    sourcePath: string,
+    modules: readonly string[],
+    options?: { graphPending?: boolean },
+  ): void {
+    if (modules.length > MAX_SOURCE_MODULES) {
+      throw new RangeError(
+        `${modules.length} modules exceed the ${MAX_SOURCE_MODULES} recorded for one source`,
+      );
+    }
+    this.db.prepare(
+      "INSERT OR REPLACE INTO source_modules (source_path, modules, graph_pending) VALUES (?, ?, ?)",
+    ).run(
+      canonicalizePath(sourcePath),
+      JSON.stringify(modules),
+      options?.graphPending ? 1 : 0,
+    );
+  }
+
+  /**
+   * Whether the list recorded for `sourcePath` is marked graph pending by
+   * {@link recordSourceModules}.
+   */
+  isSourceGraphPending(sourcePath: string): boolean {
+    const row = this.db.prepare(
+      "SELECT graph_pending FROM source_modules WHERE source_path = ?",
+    ).get(canonicalizePath(sourcePath)) as
+      | { graph_pending: number }
+      | undefined;
+    return (row?.graph_pending ?? 0) !== 0;
+  }
+
+  /**
+   * Clears the graph-pending mark on `sourcePath`'s recorded list, and
+   * returns whether it was set: the caller is about to use up the one
+   * retry. Writes only when the mark is set, so a warm rebundle of a
+   * source with no mark takes no write lock.
+   */
+  takeSourceGraphPending(sourcePath: string): boolean {
+    if (!this.isSourceGraphPending(sourcePath)) return false;
+    // The update's row count, not the read above, decides who takes the
+    // retry when two processes race.
+    const result = this.db.prepare(
+      "UPDATE source_modules SET graph_pending = 0 WHERE source_path = ? AND graph_pending != 0",
+    ).run(canonicalizePath(sourcePath));
+    return Number(result.changes) > 0;
+  }
+
+  /** Forgets the local modules recorded for `sourcePath`. */
+  deleteSourceModules(sourcePath: string): void {
+    this.db.prepare("DELETE FROM source_modules WHERE source_path = ?").run(
+      canonicalizePath(sourcePath),
+    );
   }
 
   private isDeduplicateNonCanonicalApplied(): boolean {

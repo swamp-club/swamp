@@ -511,6 +511,7 @@ export const extensionPushCommand = new Command()
         includeFilePaths,
         denoConfigPath,
         packageJsonPath: undefined,
+        symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
       };
       const cacheHash = await computePackageCacheHash(cacheHashInput);
       const cached = await cache.get(cacheHash);
@@ -554,6 +555,7 @@ export const extensionPushCommand = new Command()
           sourcePlan: resolved.sourcePlan,
           missingModules: resolved.missingModules,
           entryPointsReachingSymlinks: resolved.entryPointsReachingSymlinks,
+          symlinkedPaths: resolved.symlinkedPaths,
           dryRun: options.dryRun ?? false,
           registryChecks,
           channel: options.channel,
@@ -562,6 +564,7 @@ export const extensionPushCommand = new Command()
           packageJsonDir,
           contentHash: cacheHash,
           cachedArchive: cached?.archiveBytes,
+          cachedArchiveIndex: cached?.metadata.archiveIndex,
         });
       } catch (error) {
         // Handle structured errors from the prepare phase with rich rendering
@@ -709,6 +712,7 @@ export const extensionPushCommand = new Command()
                   missingModules: resolved.missingModules,
                   entryPointsReachingSymlinks:
                     resolved.entryPointsReachingSymlinks,
+                  symlinkedPaths: resolved.symlinkedPaths,
                   dryRun: options.dryRun ?? false,
                   registryChecks,
                   channel: options.channel,
@@ -745,6 +749,7 @@ export const extensionPushCommand = new Command()
             extensionName: prepared.manifest.name,
             extensionVersion: prepared.manifest.version,
             rubricVersion: RUBRIC_VERSION,
+            archiveIndex: prepared.archiveIndex,
           });
         } catch (cacheError) {
           cliCtx.logger

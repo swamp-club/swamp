@@ -74,6 +74,12 @@ export interface PackageCacheHashInput {
   includeFilePaths: string[];
   denoConfigPath: string | undefined;
   packageJsonPath: string | undefined;
+  /**
+   * Files with a symlink on their path (swamp-club#3421). Each is hashed by
+   * its path alone, never read: the safety gate refuses it, and its target
+   * may be outside the repository, a device or a pipe.
+   */
+  symlinkedPaths?: ReadonlySet<string>;
 }
 
 /** Cached per-entry metadata written alongside the tarball. */
@@ -91,6 +97,50 @@ export interface CachedPackageMetadata {
    * Absent on entries written before the field existed.
    */
   swampVersion?: string;
+  /**
+   * The types the archive's sources register when loaded, recorded when the
+   * archive was packaged, so a cache hit need not load every source again
+   * to check their collective (swamp-club#3456). Absent on older entries.
+   */
+  archiveIndex?: StoredArchiveIndex;
+}
+
+/** The loaded types of a cached archive, as stored in its metadata. */
+export interface StoredArchiveIndex {
+  sources: Array<{
+    kindDir: string;
+    fileName: string;
+    kind: string;
+    typeNormalized: string;
+  }>;
+  failures: Array<{ kindDir: string; fileName: string; reason: string }>;
+}
+
+/**
+ * The stored index when `value` has its shape, else undefined. The
+ * metadata file sits in the repository, so it is read as untrusted data: a
+ * malformed index is dropped and the archive's sources are loaded again.
+ */
+export function parseStoredArchiveIndex(
+  value: unknown,
+): StoredArchiveIndex | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { sources, failures } = value as Record<string, unknown>;
+  if (!Array.isArray(sources) || !Array.isArray(failures)) return undefined;
+  const strings = (entry: unknown, keys: string[]) =>
+    typeof entry === "object" && entry !== null &&
+    keys.every((k) =>
+      typeof (entry as Record<string, unknown>)[k] === "string"
+    );
+  if (
+    !sources.every((s) =>
+      strings(s, ["kindDir", "fileName", "kind", "typeNormalized"])
+    ) ||
+    !failures.every((f) => strings(f, ["kindDir", "fileName", "reason"]))
+  ) {
+    return undefined;
+  }
+  return value as StoredArchiveIndex;
 }
 
 /** A cached package retrieved from disk. */
@@ -111,24 +161,62 @@ export async function computePackageCacheHash(
 
   const rootDir = input.rootDir;
 
+  const unread = input.symlinkedPaths ?? new Set<string>();
   parts.push("manifest-v1");
   parts.push(serializeManifestForHash(input.manifest));
 
-  await appendFileGroup("models", input.modelFilePaths, rootDir, parts);
-  await appendFileGroup("vaults", input.vaultFilePaths, rootDir, parts);
-  await appendFileGroup("datastores", input.datastoreFilePaths, rootDir, parts);
-  await appendFileGroup("reports", input.reportFilePaths, rootDir, parts);
-  await appendFileGroup("webhooks", input.webhookFilePaths, rootDir, parts);
-  await appendFileGroup("workflows", input.workflowFilePaths, rootDir, parts);
+  await appendFileGroup("models", input.modelFilePaths, rootDir, parts, unread);
+  await appendFileGroup("vaults", input.vaultFilePaths, rootDir, parts, unread);
+  await appendFileGroup(
+    "datastores",
+    input.datastoreFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup(
+    "reports",
+    input.reportFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup(
+    "webhooks",
+    input.webhookFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup(
+    "workflows",
+    input.workflowFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
   await appendFileGroup(
     "additional",
     input.additionalFilePaths,
     rootDir,
     parts,
+    unread,
   );
-  await appendFileGroup("binaries", input.binaryFilePaths, rootDir, parts);
-  await appendFileGroup("skills", input.skillFilePaths, rootDir, parts);
-  await appendFileGroup("include", input.includeFilePaths, rootDir, parts);
+  await appendFileGroup(
+    "binaries",
+    input.binaryFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup("skills", input.skillFilePaths, rootDir, parts, unread);
+  await appendFileGroup(
+    "include",
+    input.includeFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
 
   if (input.denoConfigPath) {
     parts.push("deno-config");
@@ -191,6 +279,7 @@ async function appendFileGroup(
   paths: string[],
   rootDir: string,
   out: string[],
+  unread: ReadonlySet<string>,
 ): Promise<void> {
   const relPaths = paths.map((p) => ({
     rel: normalizeToForwardSlash(relative(rootDir, p)),
@@ -200,7 +289,7 @@ async function appendFileGroup(
   out.push(`group=${label}`);
   for (const { rel, abs } of relPaths) {
     out.push(`file=${rel}`);
-    out.push(await readFileIfExists(abs));
+    out.push(unread.has(abs) ? "symlink" : await readFileIfExists(abs));
   }
 }
 
@@ -278,6 +367,12 @@ export class ExtensionPackageCache {
       return null;
     }
     if (metadata.swampVersion !== this.swampVersion) return null;
+    const archiveIndex = parseStoredArchiveIndex(metadata.archiveIndex);
+    if (archiveIndex) {
+      metadata.archiveIndex = archiveIndex;
+    } else {
+      delete metadata.archiveIndex;
+    }
 
     return { archiveBytes, metadata };
   }
@@ -290,6 +385,7 @@ export class ExtensionPackageCache {
       extensionName: string;
       extensionVersion: string;
       rubricVersion: number;
+      archiveIndex?: StoredArchiveIndex;
     },
   ): Promise<CachedPackageMetadata> {
     const dir = this.entryDir(hash);
@@ -308,6 +404,7 @@ export class ExtensionPackageCache {
       cachedAt: new Date().toISOString(),
       rubricVersion: extras.rubricVersion,
       swampVersion: this.swampVersion,
+      ...(extras.archiveIndex ? { archiveIndex: extras.archiveIndex } : {}),
     };
     await Deno.writeTextFile(metadataPath, JSON.stringify(metadata, null, 2));
 

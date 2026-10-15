@@ -745,7 +745,8 @@ export interface LostModelLock {
  * this process: someone ran `swamp datastore lock release --force`, or the
  * lock expired and another process took it (swamp-club#3373). Another run of
  * the model may have written the same data version since, and pushing would
- * overwrite it. Nothing is pushed.
+ * overwrite it. Nothing is pushed, and the run's data versions are discarded
+ * from this host's cache (swamp-club#3485).
  *
  * Extends `UserError` so the message renders clean at the CLI error boundary.
  */
@@ -763,10 +764,10 @@ export class ModelLockLostError extends UserError {
     const worded = wordedText((w) =>
       `This run lost its lock on ${names} before pushing: the lock was ` +
       `force-released or taken over by another process, which may have ` +
-      `written the same data version.\nNothing was pushed, and this ` +
-      `host's copy of the ${w.noun}'s data was refreshed from the datastore, ` +
-      `which may replace what this run wrote. Run the method or workflow ` +
-      `again.`
+      `written the same data version.\nNothing was pushed: this run's data ` +
+      `was discarded from this host, and the ${w.noun}'s data is refreshed ` +
+      `from the datastore when it can be reached. Run the method or ` +
+      `workflow again.`
     );
     super(worded.text, "model_lock_lost");
     markModelWording(this, worded.modelText);
@@ -776,8 +777,9 @@ export class ModelLockLostError extends UserError {
 }
 
 /**
- * True for a push error that leaves the run's data versions on this host
- * only: {@link UnpublishedDataVersionError} or {@link ModelLockLostError}.
+ * True for a push error that leaves the run's data versions unpublished:
+ * {@link UnpublishedDataVersionError}, which keeps them on this host only,
+ * or {@link ModelLockLostError}, which discards them.
  * A run that already failed keeps its own error and logs this one.
  */
 export function isUnpublishedDataError(

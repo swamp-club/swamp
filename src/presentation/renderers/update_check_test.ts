@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { UserError } from "../../domain/errors.ts";
 import { cancelled } from "../../libswamp/errors.ts";
 import type { UpdateCheckEvent } from "../../libswamp/update/check.ts";
@@ -39,13 +40,24 @@ function progress(receivedBytes: number, totalBytes: number | null = 100 * MB) {
   };
 }
 
-/** A log renderer with a recording spinner, stderr and a settable clock. */
+const EMPTY_BAR = "\u2500".repeat(30);
+
+/**
+ * A log renderer with a recording spinner, stderr and a settable clock.
+ * Spinner messages are recorded without color; `calls` records the
+ * spinner's stop and finish in order.
+ */
 function logRenderer(options: Partial<UpdateCheckRendererOptions> = {}) {
   const spinnerMessages: string[] = [];
+  const calls: string[] = [];
   const stderr: string[] = [];
   let clock = 0;
   const renderer = createUpdateCheckRenderer("log", {
-    spinner: { update: (message) => spinnerMessages.push(message) },
+    spinner: {
+      update: (message) => spinnerMessages.push(stripAnsiCode(message)),
+      stop: () => calls.push("stop"),
+      finish: (line) => calls.push(`finish ${stripAnsiCode(line)}`),
+    },
     stderrIsTerminal: true,
     writeStderr: (line) => stderr.push(line),
     now: () => clock,
@@ -56,6 +68,7 @@ function logRenderer(options: Partial<UpdateCheckRendererOptions> = {}) {
   return {
     renderer,
     spinnerMessages,
+    calls,
     stderr,
     at: (ms: number) => (clock = ms),
     send: (event: UpdateCheckEvent): void => {
@@ -75,7 +88,7 @@ function logRenderer(options: Partial<UpdateCheckRendererOptions> = {}) {
   };
 }
 
-Deno.test("createUpdateCheckRenderer: on a terminal the spinner shows bytes, total, percent and speed", () => {
+Deno.test("createUpdateCheckRenderer: on a terminal the spinner shows a bar, percent, bytes, speed and time left", () => {
   const r = logRenderer();
 
   r.at(0);
@@ -84,10 +97,50 @@ Deno.test("createUpdateCheckRenderer: on a terminal the spinner shows bytes, tot
   r.send(progress(1 * MB));
 
   assertEquals(r.spinnerMessages, [
-    "Downloading update 0 B / 100.0 MB (0%)",
-    "Downloading update 1.0 MB / 100.0 MB (1%) · 512.0 KB/s",
+    `${EMPTY_BAR} 0% 0 B / 100.0 MB`,
+    `${EMPTY_BAR} 1% 1.0 MB / 100.0 MB · 512.0 KB/s · ETA 3:18`,
   ]);
   assertEquals(r.stderr, []);
+});
+
+Deno.test("createUpdateCheckRenderer: the bar fills in half cells", () => {
+  const r = logRenderer();
+
+  r.send(progress(50 * MB));
+  r.send(progress(52.5 * MB));
+  r.send(progress(100 * MB));
+
+  const bars = r.spinnerMessages.map((m) => m.slice(0, 30));
+  assertEquals(bars, [
+    "\u2501".repeat(15) + "\u2500".repeat(15),
+    "\u2501".repeat(15) + "\u2578" + "\u2500".repeat(14),
+    "\u2501".repeat(30),
+  ]);
+});
+
+Deno.test("createUpdateCheckRenderer: the time left is shown only once a speed is known", () => {
+  const r = logRenderer();
+
+  r.at(0);
+  r.send(progress(0));
+  r.at(500);
+  r.send(progress(1 * MB));
+
+  assertEquals(r.spinnerMessages.some((m) => m.includes("ETA")), false);
+});
+
+Deno.test("createUpdateCheckRenderer: the bar shrinks to fit, then is left out", () => {
+  const widths = [120, 40, 25].map((columns) => {
+    const r = logRenderer({ columns: () => columns });
+    r.send(progress(0));
+    return r.spinnerMessages[0];
+  });
+
+  assertEquals(widths, [
+    `${EMPTY_BAR} 0% 0 B / 100.0 MB`,
+    `${"\u2500".repeat(20)} 0% 0 B / 100.0 MB`,
+    "0% 0 B / 100.0 MB",
+  ]);
 });
 
 Deno.test("createUpdateCheckRenderer: without a total the line shows bytes received", () => {
@@ -112,9 +165,9 @@ Deno.test("createUpdateCheckRenderer: speed is averaged over the last few second
     r.send(progress(50 * MB + (s - 1) * 100 * 1024));
   }
 
-  assertEquals(
-    r.spinnerMessages.at(-1),
-    "Downloading update 50.7 MB / 100.0 MB (50%) · 100.0 KB/s",
+  assertStringIncludes(
+    r.spinnerMessages.at(-1)!,
+    "50% 50.7 MB / 100.0 MB · 100.0 KB/s",
   );
 });
 
@@ -317,5 +370,123 @@ Deno.test("createUpdateCheckRenderer: -q leaves the spinner's live progress on a
 
   r.send(progress(0));
 
-  assertEquals(r.spinnerMessages, ["Downloading update 0 B / 100.0 MB (0%)"]);
+  assertEquals(r.spinnerMessages, [`${EMPTY_BAR} 0% 0 B / 100.0 MB`]);
+});
+
+const UPDATED = {
+  kind: "completed" as const,
+  data: {
+    status: "updated" as const,
+    previousVersion: "20261001.0.0-sha.a",
+    newVersion: "20261015.0.0-sha.b",
+  },
+};
+
+/** Sends `event` and returns the spinner calls and stdout lines in order. */
+function sendRecordingOrder(
+  r: ReturnType<typeof logRenderer>,
+  event: UpdateCheckEvent,
+): string[] {
+  const original = console.log;
+  console.log = (...args: unknown[]) => r.calls.push(`out ${args.join(" ")}`);
+  try {
+    r.send(event);
+  } finally {
+    console.log = original;
+  }
+  return r.calls;
+}
+
+Deno.test("createUpdateCheckRenderer: an installed update finishes the spinner before printing", () => {
+  const r = logRenderer();
+  r.at(0);
+  r.send(progress(0));
+  r.at(12_000);
+  r.send(progress(100 * MB));
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertEquals(
+    order[0],
+    `finish \u2713 ${
+      "\u2501".repeat(30)
+    } swamp 20261015.0.0-sha.b · 100.0 MB in 0:12`,
+  );
+  assertEquals(order[1], "out swamp updated successfully!");
+});
+
+Deno.test("createUpdateCheckRenderer: the final line's time stops at the last progress event", () => {
+  const r = logRenderer();
+  r.at(0);
+  r.send(progress(0));
+  r.at(5000);
+  r.send(progress(100 * MB));
+  // Checksum and install take a while before completed arrives.
+  r.at(65_000);
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertStringIncludes(order[0], "100.0 MB in 0:05");
+});
+
+Deno.test("createUpdateCheckRenderer: -q clears the row after an update instead of leaving a line", () => {
+  const r = logRenderer({ quiet: true });
+  r.send(progress(100 * MB));
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertEquals(order[0], "stop");
+  assertEquals(order.some((c) => c.startsWith("finish")), false);
+});
+
+Deno.test("createUpdateCheckRenderer: without a total the final line has no bar", () => {
+  const r = logRenderer();
+  r.at(0);
+  r.send(progress(0, null));
+  r.at(3000);
+  r.send(progress(2 * MB, null));
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertEquals(
+    order[0],
+    "finish \u2713 swamp 20261015.0.0-sha.b · 2.0 MB in 0:03",
+  );
+});
+
+Deno.test("createUpdateCheckRenderer: without any progress the final line is the check and version", () => {
+  const r = logRenderer();
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertEquals(order[0], "finish \u2713 swamp 20261015.0.0-sha.b");
+});
+
+Deno.test("createUpdateCheckRenderer: a check result stops the spinner before printing", () => {
+  for (
+    const data of [
+      { status: "up_to_date" as const, currentVersion: "1" },
+      {
+        status: "update_available" as const,
+        currentVersion: "1",
+        latestVersion: "2",
+      },
+    ]
+  ) {
+    const r = logRenderer();
+    const order = sendRecordingOrder(r, { kind: "completed", data });
+    assertEquals(order[0], "stop");
+    assertEquals(order[1].startsWith("out "), true);
+  }
+});
+
+Deno.test("createUpdateCheckRenderer: without a terminal an update adds nothing to stderr", () => {
+  const r = logRenderer({ stderrIsTerminal: false });
+  r.send(progress(100 * MB));
+  const before = r.stderr.length;
+
+  const order = sendRecordingOrder(r, UPDATED);
+
+  assertEquals(order.some((c) => c.startsWith("finish")), false);
+  assertEquals(r.stderr.length, before);
 });

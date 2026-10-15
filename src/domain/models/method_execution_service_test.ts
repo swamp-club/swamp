@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import {
   MAX_REMOTE_LOCK_IDS,
   processLockHolderMarker,
@@ -3904,11 +3905,14 @@ Deno.test("executeWorkflow: non-internal model without placement throws in remot
 // ---------------------------------------------------------------------------
 
 /**
- * A logger stand-in that records `warn` calls and swallows everything else.
- * LogTape loggers are tagged-template callables, so each level is returned as a
- * function that reassembles the template.
+ * A logger stand-in that records calls at `level` (`warn` by default) and
+ * swallows everything else. LogTape loggers are tagged-template callables, so
+ * each level is returned as a function that reassembles the template.
  */
-function captureWarnings(sink: string[]): MethodContext["logger"] {
+function captureWarnings(
+  sink: string[],
+  level = "warn",
+): MethodContext["logger"] {
   const tag = (record: (message: string) => void) =>
   (
     strings: TemplateStringsArray | string,
@@ -3929,8 +3933,8 @@ function captureWarnings(sink: string[]): MethodContext["logger"] {
 
   return new Proxy({}, {
     get(_target, property) {
-      if (property === "warn") return tag((message) => sink.push(message));
-      if (property === "getChild") return () => captureWarnings(sink);
+      if (property === level) return tag((message) => sink.push(message));
+      if (property === "getChild") return () => captureWarnings(sink, level);
       return tag(() => {});
     },
   }) as unknown as MethodContext["logger"];
@@ -4744,4 +4748,79 @@ Deno.test("executeWorkflow: check unresolvedMethodArgs filters a bare-token vaul
     assertEquals(captured.length, 1, apiKey);
     assertEquals(captured[0]?.apiKey, undefined, apiKey);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Upgrade write-back logging (swamp-club#3502)
+// ---------------------------------------------------------------------------
+
+/** Runs an upgrading method against a repository whose path moves on save. */
+async function runUpgradeWithPaths(
+  pathBefore: string,
+  pathAfter: string,
+): Promise<string[]> {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    ...createTestModel({}),
+    version: "2026.07.28.1",
+    upgrades: [{
+      toVersion: "2026.07.28.1",
+      description: "No-op upgrade",
+      upgradeAttributes: (old) => old,
+    }],
+  };
+  const definition = Definition.create({
+    name: "upgraded-definition",
+    typeVersion: "2026.06.04.2",
+    globalArguments: { value: "test" },
+  });
+  let path = pathBefore;
+  const definitionRepository: DefinitionRepository = {
+    ...createMockDefinitionRepo(),
+    findById: () => Promise.resolve(definition),
+    getPath: () => path,
+    save: () => {
+      path = pathAfter;
+      return Promise.resolve();
+    },
+  };
+  const infos: string[] = [];
+  const { context } = createTestContext({
+    modelType: model.type,
+    definitionRepository,
+    logger: captureWarnings(infos, "info"),
+  });
+  await service.executeWorkflow(definition, model, "start", context);
+  return infos;
+}
+
+Deno.test("executeWorkflow - logs the upgrade and the file move when an upgraded definition is saved to a new path", async () => {
+  const infos = await runUpgradeWithPaths(
+    join("models", "test", "acd064be-261b-4a64-8142-42335cd04231.yaml"),
+    join("models", "test", "upgraded-definition.yaml"),
+  );
+
+  const upgrade = infos.filter((m) => m.startsWith("Upgraded definition"));
+  assertEquals(upgrade.length, 1);
+  assertStringIncludes(upgrade[0], "upgraded-definition");
+  assertStringIncludes(upgrade[0], "2026.06.04.2");
+  assertStringIncludes(upgrade[0], "2026.07.28.1");
+  const moved = infos.filter((m) => m.startsWith("Moved definition file"));
+  assertEquals(moved, [
+    "Moved definition file acd064be-261b-4a64-8142-42335cd04231.yaml to upgraded-definition.yaml",
+  ]);
+});
+
+Deno.test("executeWorkflow - logs no file move when an upgraded definition is saved in place", async () => {
+  const path = join("models", "test", "upgraded-definition.yaml");
+  const infos = await runUpgradeWithPaths(path, path);
+
+  assertEquals(
+    infos.filter((m) => m.startsWith("Upgraded definition")).length,
+    1,
+  );
+  assertEquals(
+    infos.filter((m) => m.startsWith("Moved definition file")),
+    [],
+  );
 });

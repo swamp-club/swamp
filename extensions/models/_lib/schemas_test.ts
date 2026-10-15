@@ -99,6 +99,10 @@ Deno.test("TRANSITIONS: resolve_findings accepts plan_generated and approved", (
   assertEquals(TRANSITIONS.resolve_findings, ["plan_generated", "approved"]);
 });
 
+Deno.test("TRANSITIONS: iterate accepts plan_generated and approved", () => {
+  assertEquals(TRANSITIONS.iterate, ["plan_generated", "approved"]);
+});
+
 Deno.test("PullRequestSchema: accepts any non-empty URL string", () => {
   // URLs are opaque to the model — GitHub, GitLab, Gitea, Forgejo, etc.
   const samples = [

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -30,6 +30,14 @@ import {
   migrateGrantDefinitions,
   type StoredConfigGrant,
 } from "./admin_materializer.ts";
+
+import { createAdminGrantStore } from "./admin_materializer.ts";
+import { UnreadableAccessRecordsError } from "./unreadable_access_records.ts";
+import { Data } from "../data/data.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import { GRANT_MODEL_TYPE } from "../models/access/grant_model.ts";
+import type { ModelType } from "../models/model_type.ts";
 
 await initializeLogging({});
 
@@ -481,4 +489,62 @@ Deno.test("materializeAdmins: reactivates only the definition-backed copy of sev
   assertEquals(result.reactivated, 1);
   assertEquals(store.writtenByModelId.get("model-b")?.state, "active");
   assertEquals(store.writtenByModelId.has("model-a"), false);
+});
+
+/** A data repository holding two grants, one whose content read fails. */
+function repoWithUnreadableGrant(): UnifiedDataRepository {
+  const data = Data.create({
+    name: "grant-main",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "resource", modelName: "g" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+  });
+  return {
+    findAllForType(type: ModelType) {
+      if (type.normalized !== GRANT_MODEL_TYPE.normalized) {
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(
+        ["ok", "bad"].map((modelId) => ({ data, modelType: type, modelId })),
+      );
+    },
+    getContent(_type: ModelType, modelId: string) {
+      if (modelId === "bad") {
+        return Promise.reject(new Deno.errors.PermissionDenied("raw"));
+      }
+      const grant: Grant = {
+        id: "ok",
+        subject: { kind: "user", name: "adam" },
+        effect: "allow",
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "*" },
+        state: "active",
+        source: "method",
+        createdBy: { kind: "user", id: "admin" },
+        createdAt: "2026-01-01T00:00:00Z",
+      };
+      return Promise.resolve(new TextEncoder().encode(JSON.stringify(grant)));
+    },
+  } as unknown as UnifiedDataRepository;
+}
+
+Deno.test("createAdminGrantStore: a grant whose content cannot be read refuses the query with the error naming it and its fix", async () => {
+  const definitions = {} as DefinitionRepository;
+  const store = createAdminGrantStore(
+    definitions,
+    definitions,
+    repoWithUnreadableGrant(),
+  );
+  const error = await assertRejects(
+    () => store.queryConfigGrants(),
+    UnreadableAccessRecordsError,
+  );
+  assertEquals(error.records.map((r) => [r.modelId, r.cause]), [[
+    "bad",
+    "unreadable",
+  ]]);
+  assertStringIncludes(error.message, "swamp/grant/bad cannot be read");
+  assertStringIncludes(error.message, "read access");
 });

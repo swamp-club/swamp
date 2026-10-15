@@ -34,6 +34,7 @@ import {
 } from "./push.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { resolveExtensionFile } from "../../domain/extensions/extension_file_resolver.ts";
+import { emptyArchiveIndex } from "./extension_tree_index_test_helpers.ts";
 
 function makeManifest(
   overrides?: Partial<ExtensionManifest>,
@@ -93,6 +94,7 @@ function makePrepareDeps(
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
+    indexArchive: emptyArchiveIndex,
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getDenoEnv: () => Deno.env.toObject(),

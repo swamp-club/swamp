@@ -50,6 +50,7 @@ import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_ada
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
 import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
+import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
 /** Subdirectories of a per-extension subtree, paired with their kind. */
 const KIND_DIRS = [
@@ -198,7 +199,7 @@ export class InstallExtensionService {
       let newExtensions: Extension[];
       try {
         // Settled, not raced: a branch still indexing after another failed
-        // would probe again after the release below and leave a worker
+        // would probe again after the release below and leave a probe host
         // running (swamp-club#3374).
         const settled = await Promise.allSettled(
           installedResults.map((r) =>
@@ -218,7 +219,7 @@ export class InstallExtensionService {
             `\`swamp extension pull ${ref.name}\` to reconcile.`,
         );
       } finally {
-        this.bundleProber?.release();
+        await this.bundleProber?.release();
       }
       const tombstones: Extension[] = [];
       for (const newExt of newExtensions) {
@@ -360,6 +361,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "vaults":
         return new ExtensionLoader(
@@ -369,6 +371,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "datastores":
         return new ExtensionLoader(
@@ -378,6 +381,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "reports":
         return new ExtensionLoader(
@@ -387,6 +391,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
       case "webhooks":
         return new ExtensionLoader(
@@ -396,6 +401,7 @@ export class InstallExtensionService {
           undefined,
           this.repository,
           this.bundleProber,
+          createDenoInfoModuleGraphReader,
         );
     }
   }

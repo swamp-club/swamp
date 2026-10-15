@@ -53,6 +53,7 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import { collect } from "../src/libswamp/testing.ts";
@@ -853,5 +854,202 @@ Deno.test("foreign template text: a run warns about step arguments deferred past
     assertEquals(warnings.filter((m) => m.includes("Template syntax")), [
       "Template syntax passed through in workflow deferred, job main, step capture: globalArgs.message holds ${{ self.h + matrix.os }}, which reads a name swamp does not provide. Unless it evaluates when the step runs, the step receives it as literal text",
     ]);
+  });
+});
+
+const REFUSAL = "Refusing to evaluate expression";
+
+Deno.test("foreign template text: literal() output and foreign text in step arguments log no refusal (swamp-club#3402)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = createRepositoryContext({ repoDir: dir });
+    const type = ModelType.create(`test/literal-quiet-${crypto.randomUUID()}`);
+    const received: unknown[] = [];
+    modelRegistry.register({
+      type,
+      version: "2026.10.14.1",
+      globalArguments: z.object({ message: z.string().optional() }),
+      methods: {
+        run: {
+          description: "Record the note argument",
+          arguments: z.object({ note: z.string().optional() }),
+          execute: (args) => {
+            received.push((args as { note?: string }).note);
+            return Promise.resolve({ dataHandles: [] });
+          },
+        },
+      },
+    });
+    try {
+      // The issue's text: literal() of a swamp-shaped and a foreign template.
+      const literalNote =
+        "echo ${{ literal('${{ inputs.version }}') }} ${{ literal('${{ github.sha }}') }}";
+      const expected = "echo ${{ inputs.version }} ${{ github.sha }}";
+      await repo.definitionRepo.save(
+        type,
+        Definition.create({
+          name: "stored-model",
+          type: type.normalized,
+          globalArguments: {},
+          methods: { run: { arguments: {} } },
+        }),
+      );
+      const save = (name: string, steps: Step[], extra = {}) =>
+        repo.workflowRepo.save(
+          Workflow.create({
+            name,
+            ...extra,
+            jobs: [Job.create({ name: "main", steps })],
+          }),
+        );
+      await save("stored", [Step.create({
+        name: "capture",
+        task: StepTask.model("stored-model", "run", { note: literalNote }),
+      })]);
+      await save("direct", [Step.create({
+        name: "capture",
+        task: StepTask.directExecution(
+          type.normalized,
+          "direct-model",
+          "run",
+          { note: literalNote },
+        ),
+      })]);
+      await save("each", [Step.create({
+        name: "capture",
+        forEach: { item: "x", in: "${{ ['a', 'b'] }}" },
+        task: StepTask.model("stored-model", "run", { note: literalNote }),
+      })]);
+      // A nested child hands the parent's literal() output to its own step.
+      await save("child", [Step.create({
+        name: "capture",
+        task: StepTask.model("stored-model", "run", {
+          note: "${{ inputs.note }}",
+        }),
+      })], {
+        inputs: { type: "object", properties: { note: { type: "string" } } },
+      });
+      await save("parent", [
+        Step.create({
+          name: "call",
+          task: StepTask.workflow("child", { note: literalNote }),
+        }),
+        Step.create({
+          name: "stop",
+          dependsOn: [{
+            step: "call",
+            condition: TriggerCondition.succeeded(),
+          }],
+          task: StepTask.assert("false", "always fails"),
+        }),
+      ]);
+      const service = await executionService(repo, dir);
+
+      let parentId = "";
+      const warnings = await capturingRunWarnings(async () => {
+        for (const name of ["stored", "direct", "each"]) {
+          const run = await service.execute(name);
+          assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+        }
+        const parent = await service.execute("parent");
+        assertEquals(parent.status, "failed");
+        parentId = parent.id;
+      });
+      assertEquals(received, [
+        expected,
+        expected,
+        expected,
+        expected,
+        expected,
+      ]);
+      assertEquals(warnings.filter((m) => m.includes(REFUSAL)), []);
+
+      // The child inherits the parent's literal() call, so a resume, which
+      // reruns the child from its recorded authored set, is quiet too.
+      const onResume = await capturingRunWarnings(async () => {
+        await collect(service.resume("parent", parentId, { fromStep: "call" }));
+      });
+      assertEquals(received.at(-1), expected);
+      assertEquals(onResume.filter((m) => m.includes(REFUSAL)), []);
+    } finally {
+      repo.catalogStore.close();
+    }
+  });
+});
+
+Deno.test("foreign template text: data-borne swamp text is refused and reported once per step (swamp-club#3402)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = createRepositoryContext({ repoDir: dir });
+    const type = ModelType.create(`test/refusal-once-${crypto.randomUUID()}`);
+    const received: unknown[] = [];
+    modelRegistry.register({
+      type,
+      version: "2026.10.14.1",
+      globalArguments: z.object({}),
+      methods: {
+        run: {
+          description: "Record the note argument",
+          arguments: z.object({ note: z.string().optional() }),
+          execute: (args) => {
+            received.push((args as { note?: string }).note);
+            return Promise.resolve({ dataHandles: [] });
+          },
+        },
+      },
+    });
+    try {
+      await repo.definitionRepo.save(
+        type,
+        Definition.create({
+          name: "stored-model",
+          type: type.normalized,
+          globalArguments: {},
+          methods: { run: { arguments: {} } },
+        }),
+      );
+      // Two steps that run concurrently and receive the same input text.
+      const capture = (name: string) =>
+        Step.create({
+          name,
+          task: StepTask.model("stored-model", "run", {
+            note: "${{ inputs.note }}",
+          }),
+        });
+      await repo.workflowRepo.save(Workflow.create({
+        name: "pair",
+        inputs: { type: "object", properties: { note: { type: "string" } } },
+        jobs: [Job.create({
+          name: "main",
+          steps: [capture("first"), capture("second")],
+        })],
+      }));
+      const service = await executionService(repo, dir);
+
+      const swampText = await capturingRunWarnings(async () => {
+        const run = await service.execute("pair", {
+          inputs: { note: "${{ env.HOME }}" },
+        });
+        assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+      });
+      assertEquals(received, ["${{ env.HOME }}", "${{ env.HOME }}"]);
+      const refusals = swampText.filter((m) => m.includes(REFUSAL));
+      assertEquals(refusals.length, 2, refusals.join("\n"));
+      for (const message of refusals) {
+        assertEquals(message.endsWith("Raw: ${{ env.HOME }}"), true, message);
+      }
+
+      const foreignText = await capturingRunWarnings(async () => {
+        const run = await service.execute("pair", {
+          inputs: { note: "${{ github.sha }}" },
+        });
+        assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+      });
+      assertEquals(received.slice(2), [
+        "${{ github.sha }}",
+        "${{ github.sha }}",
+      ]);
+      assertEquals(foreignText.filter((m) => m.includes(REFUSAL)), []);
+    } finally {
+      repo.catalogStore.close();
+    }
   });
 });

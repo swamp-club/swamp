@@ -30,7 +30,7 @@
  */
 
 import { join } from "@std/path";
-import type { InMemoryRemote } from "@swamp-club/swamp-testing";
+import type { ConnectOptions, InMemoryRemote } from "@swamp-club/swamp-testing";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import type {
@@ -63,6 +63,8 @@ export interface TestDatastoreTypeOptions {
    * never claims the v3 writer lease contract unless a test asks it to.
    */
   datastoreWideLease?: boolean;
+  /** Passed to `remote.connect`, e.g. to leave out `fetchContent`. */
+  connect?: Omit<ConnectOptions, "instance">;
 }
 
 /**
@@ -117,7 +119,10 @@ export function registerTestDatastoreType(
       // The fake's push manifest is its own opaque type, not core's branded
       // PushManifest; core only hands it back to the same commitPush.
       createSyncService: (_repoDir: string, cachePath: string) =>
-        remote.connect(cachePath) as unknown as DatastoreSyncService,
+        remote.connect(
+          cachePath,
+          options.connect,
+        ) as unknown as DatastoreSyncService,
       ...(options.datastoreWideLease !== undefined
         ? { datastoreWideLease: options.datastoreWideLease }
         : {}),

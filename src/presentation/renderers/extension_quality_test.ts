@@ -107,17 +107,18 @@ Deno.test(
   "createExtensionQualityRenderer: json completed with allPassed=false reports passed",
   () => {
     const renderer = createExtensionQualityRenderer("json");
-    const handlers = renderer.handlers();
-
-    const originalLog = console.log;
-    console.log = () => {};
-    try {
-      handlers.completed(completedEvent(makeScore({ allPassed: false })));
-    } finally {
-      console.log = originalLog;
-    }
+    const logs = capture(() =>
+      renderer.handlers().completed(
+        completedEvent(makeScore({ allPassed: false })),
+      )
+    );
 
     assertEquals(renderer.passed(), true);
+    // A missing factor costs points but fails no check: `status` follows
+    // the exit code, `allPassed` reports the rubric (swamp-club#3464).
+    const doc = JSON.parse(logs[0]);
+    assertEquals(doc.status, "passed");
+    assertEquals(doc.allPassed, false);
   },
 );
 
@@ -482,6 +483,28 @@ Deno.test("createExtensionQualityRenderer: json status is failed when the rubric
   });
   const doc = JSON.parse(logs[0]);
   assertEquals(doc.allPassed, true);
+  assertEquals(doc.status, "failed");
+});
+
+Deno.test("createExtensionQualityRenderer: json status is failed when the rubric passes but a check would block a push", () => {
+  const renderer = createExtensionQualityRenderer("json");
+  let thrown: unknown;
+  const logs = capture(() => {
+    try {
+      renderer.handlers({ manifestDir: resolve("/ext") }).completed(
+        completedEvent(makeScore({ allPassed: true }), {
+          gateFailures: [SAFETY_FAILURE],
+        }),
+      );
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  assert(thrown instanceof UserError);
+  assertEquals(renderer.passed(), false);
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.allPassed, true);
+  assertEquals(doc.registryScorable, true);
   assertEquals(doc.status, "failed");
 });
 

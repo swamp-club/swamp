@@ -219,6 +219,7 @@ async function withStartServer(
   fn: (env: Env) => Promise<void>,
   timeouts: StartServerTimeouts = LONG,
   hub?: WorkspaceHub,
+  startPage?: boolean,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-start-server-" });
   const dist = join(dir, "dist");
@@ -239,6 +240,7 @@ async function withStartServer(
     onWorkspaceOpened: (path, created) => opened.push({ path, created }),
     timeouts,
     hub,
+    startPage,
   });
   let stopped = false;
   const shutdown = async () => {
@@ -743,6 +745,83 @@ Deno.test("startStartServer: serves the dashboard bundle and redirects / to the 
     assertEquals(plain.status, 426);
     await plain.body?.cancel();
   });
+});
+
+Deno.test("startStartServer: with no start page, the start socket answers 404 even for the right token and nothing is imported", async () => {
+  await withStartServer(
+    async ({ handle, fakes, claims, dataDir }) => {
+      const origin = `http://127.0.0.1:${handle.port}`;
+      assertEquals(
+        await rawStatus(
+          handle.port,
+          upgradeHeaders(handle.port, { origin, protocol: "bearer." + TOKEN }),
+        ),
+        404,
+      );
+      // The page's own path: a browser socket with the token never opens, so
+      // no start.workspace.import can reach the server.
+      const folder = join(dataDir, "other-repo");
+      await Deno.mkdir(folder);
+      await Deno.writeTextFile(join(folder, ".swamp.yaml"), "x: 1\n");
+      const ws = new WebSocket(`ws://127.0.0.1:${handle.port}/start/ws`, [
+        "bearer." + TOKEN,
+      ]);
+      let opened = false;
+      ws.onopen = () => {
+        opened = true;
+        ws.send(JSON.stringify({
+          type: "start.workspace.import",
+          id: "1",
+          payload: { path: folder, name: "imported-marsh" },
+        }));
+      };
+      ws.onerror = () => {};
+      await new Promise((resolve) => ws.onclose = resolve);
+      assertEquals(opened, false);
+      assertEquals(await fakes.deps.registry.load(), null);
+      assertEquals(claims.claimed, []);
+      assertEquals(handle.workspacePath(), null);
+    },
+    LONG,
+    undefined,
+    false,
+  );
+});
+
+Deno.test("startStartServer: with no start page, / and the start page answer 404 while the hub and bundle still serve", async () => {
+  const hub: WorkspaceHub = {
+    handle: (req) =>
+      Promise.resolve(
+        new URL(req.url).pathname === "/api/local/workspaces"
+          ? Response.json({ workspaces: [], switchable: false })
+          : null,
+      ),
+    shutdown: () => Promise.resolve(),
+  };
+  await withStartServer(
+    async ({ handle }) => {
+      const base = `http://127.0.0.1:${handle.port}`;
+      for (const path of ["/", "/dashboard/start", "/dashboard/start/"]) {
+        const response = await fetch(base + path, { redirect: "manual" });
+        assertEquals(response.status, 404, path);
+        await response.body?.cancel();
+      }
+      const page = await fetch(base + "/dashboard/w/repo1/");
+      assertEquals(await page.text(), "<html>start</html>");
+      const asset = await fetch(base + "/dashboard/assets/app.js");
+      assertEquals(await asset.text(), "export {};");
+      const list = await fetch(base + "/api/local/workspaces");
+      assertEquals(await list.json(), { workspaces: [], switchable: false });
+      const ping = await fetch(base + "/start/ping", {
+        headers: { [START_PING_TOKEN_HEADER]: TOKEN },
+      });
+      assertEquals(ping.status, 204);
+      await ping.body?.cancel();
+    },
+    LONG,
+    hub,
+    false,
+  );
 });
 
 Deno.test("startStartServer: ends paused when no page connects before launch", async () => {

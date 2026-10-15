@@ -125,11 +125,12 @@ import "../domain/datastore/datastore_types.ts";
 // Import builtin reports to trigger registration
 import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
+import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
 import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
 import { renderAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 import { ReconcileFromDiskService } from "../libswamp/extensions/reconcile_from_disk_service.ts";
-import { WorkerBundleProber } from "../infrastructure/runtime/worker_bundle_prober.ts";
+import { ProcessBundleProber } from "../infrastructure/runtime/process_bundle_prober.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
@@ -775,7 +776,7 @@ export async function configureStartupExtensions(
         repository,
         lockfileRepository,
         repoDir,
-        bundleProber: new WorkerBundleProber(),
+        bundleProber: new ProcessBundleProber(),
         localManifestIdentity,
         scanOnDiskDatastores: extensionBacked,
         additionalInstalledNames: await transitionalInstalledNames(
@@ -1229,7 +1230,8 @@ async function loadUserModels(
       repoDir,
       resolver,
       repository,
-      new WorkerBundleProber(),
+      new ProcessBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const pulledDirs = await enumeratePulledExtensionDirs(
       lockfilePath,
@@ -1295,6 +1297,8 @@ async function loadUserModels(
           repoDir,
           resolver,
           repository,
+          undefined,
+          createDenoInfoModuleGraphReader,
         ),
         absoluteModelsDir,
         [
@@ -1385,7 +1389,8 @@ async function loadUserVaults(
       repoDir,
       resolver,
       repository,
-      new WorkerBundleProber(),
+      new ProcessBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1474,7 +1479,8 @@ async function loadUserDatastores(
       repoDir,
       undefined,
       repository,
-      new WorkerBundleProber(),
+      new ProcessBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1569,7 +1575,8 @@ async function loadUserReports(
       repoDir,
       resolver,
       repository,
-      new WorkerBundleProber(),
+      new ProcessBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(
@@ -1659,7 +1666,8 @@ async function loadUserWebhooks(
       repoDir,
       resolver,
       repository,
-      new WorkerBundleProber(),
+      new ProcessBundleProber(),
+      createDenoInfoModuleGraphReader,
     );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = managedLockfilePath ?? join(

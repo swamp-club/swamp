@@ -22,7 +22,6 @@ import {
   type Grant,
   GRANT_MODEL_TYPE,
   grantModel,
-  GrantSchema,
 } from "../models/access/grant_model.ts";
 import { entryIdentityKey, type GrantFileEntry } from "./grant_file.ts";
 import {
@@ -36,7 +35,7 @@ import type { MaterializeResult } from "./admin_materializer.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
-import { ModelType } from "../models/model_type.ts";
+import { readStoredGrants } from "./stored_grant_reader.ts";
 import { createResourceWriter } from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "grant-file-reconciler"]);
@@ -358,43 +357,17 @@ export function createFileGrantStore(
 ): FileGrantStore {
   return {
     async queryFileGrants() {
-      const [canonical, orphaned] = await Promise.all([
-        dataRepo.findAllForType(GRANT_MODEL_TYPE),
-        dataRepo.findAllForType(
-          ModelType.create(`@${GRANT_MODEL_TYPE.normalized}`),
-        ).catch(() => []),
-      ]);
-      const grantDataItems = [...canonical, ...orphaned];
-
       const fileGrants = new Map<
         string,
         { grant: Grant; modelId: string; instanceName: string }
       >();
-      for (const { data, modelType, modelId } of grantDataItems) {
-        const content = await dataRepo.getContent(
-          modelType,
+      for (const { grant, data, modelId } of await readStoredGrants(dataRepo)) {
+        if (!isFileSource(grant.source)) continue;
+        fileGrants.set(modelId, {
+          grant,
           modelId,
-          data.name,
-        );
-        if (!content) continue;
-        let attrs: Record<string, unknown>;
-        try {
-          attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          continue;
-        }
-        const parsed = GrantSchema.safeParse(attrs);
-        if (parsed.success && isFileSource(parsed.data.source)) {
-          const modelName = data.tags["modelName"] ?? "";
-          fileGrants.set(modelId, {
-            grant: parsed.data,
-            modelId,
-            instanceName: modelName,
-          });
-        }
+          instanceName: data.tags["modelName"] ?? "",
+        });
       }
       return fileGrants;
     },

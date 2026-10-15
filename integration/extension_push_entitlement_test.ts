@@ -43,6 +43,7 @@ import {
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import type { SwampError } from "../src/libswamp/errors.ts";
 import { kindDirectorySourcePlan } from "../src/libswamp/extensions/push_test_helpers.ts";
+import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const REFUSAL =
   "Private publication requires a paid plan or an eligible collective trial";
@@ -152,6 +153,7 @@ async function withScenario(
         }),
       checkReviewRules: () =>
         Promise.resolve({ errors: [], warnings: [], passed: true }),
+      indexArchive: emptyArchiveIndex,
       bundleEntryPoint: () => Promise.resolve("export const model = {};\n"),
       ensureDenoPath: () => Promise.resolve("unused-deno"),
       getDenoEnv: () => ({}),

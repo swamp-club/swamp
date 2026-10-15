@@ -25,7 +25,14 @@
  * - Throwing clear errors when not initialized
  */
 
-import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import { hostname } from "node:os";
 import { isProcessDead } from "../infrastructure/runtime/process.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
@@ -161,6 +168,7 @@ import type {
 import type { ForeignContentFetcher } from "../domain/data/repositories.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import { atomicWriteFile } from "../infrastructure/persistence/atomic_write.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import {
@@ -2728,6 +2736,82 @@ async function stageVersionsForPublish(
   );
 }
 
+/**
+ * How long restoring the datastore's copy of a refused run's versions may
+ * take in all, so an unreachable datastore never holds up the refusal.
+ */
+export const DISCARD_RESTORE_TIMEOUT_MS = 10_000;
+
+/**
+ * Discards the data versions a push refused because a model lock was lost
+ * (swamp-club#3485), so they reach no clone whether or not the refresh pull
+ * after the refusal can run.
+ *
+ * Each version is deleted through the repository, which moves its name's
+ * latest marker back and stages the removal. A removed file stays marked
+ * dirty, and the extensions push a marked file that is gone locally as a
+ * delete of the remote copy: after a breakglass, the new holder's version
+ * of the same number. So each removed file, and the latest marker, is then
+ * put back as the datastore holds it, read with `fetchContent`; a file the
+ * datastore lacks stays removed. The first read that fails ends the
+ * restore. Best effort: the refusal stands whatever this does.
+ */
+async function discardRefusedVersions(
+  refused: readonly WrittenVersion[],
+  repoContext: Pick<
+    RepositoryContext,
+    "markDirty" | "commitLog" | "unifiedDataRepo"
+  >,
+  syncService: DatastoreSyncService,
+  cachePath: string,
+  namespace: string | undefined,
+): Promise<void> {
+  const logger = getSwampLogger(["datastore", "lock"]);
+  const repo = repoContext.unifiedDataRepo;
+  const removed = new Set<string>();
+  try {
+    await runInRootUnitOfWork(repoContext, { flush: undefined }, async () => {
+      for (const w of refused) {
+        const type = ModelType.create(w.modelType);
+        const versionDir = repo.getPath(type, w.modelId, w.dataName, w.version);
+        try {
+          for await (const entry of walk(versionDir, { includeDirs: false })) {
+            const rel = cacheRelativePath(cachePath, entry.path);
+            if (rel !== undefined) removed.add(rel);
+          }
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+        const latestRel = cacheRelativePath(
+          cachePath,
+          join(repo.getDataNameDir(type, w.modelId, w.dataName), "latest"),
+        );
+        if (latestRel !== undefined) removed.add(latestRel);
+        await repo.delete(type, w.modelId, w.dataName, w.version);
+      }
+    });
+  } catch (error) {
+    logger.debug`Discarding the refused data versions failed: ${error}`;
+  }
+  if (!syncService.fetchContent || removed.size === 0) return;
+  const signal = AbortSignal.timeout(DISCARD_RESTORE_TIMEOUT_MS);
+  const pending = [...removed];
+  for (const [i, rel] of pending.entries()) {
+    try {
+      const bytes = await syncService.fetchContent(rel, { namespace, signal });
+      if (bytes === null) continue;
+      const absPath = join(cachePath, ...rel.split("/"));
+      await ensureDir(dirname(absPath));
+      await atomicWriteFile(absPath, bytes);
+    } catch (error) {
+      logger.debug`Restoring ${
+        pending.length - i
+      } file(s) from the datastore after a refused push failed at ${rel}: ${error}`;
+      return;
+    }
+  }
+}
+
 /** Remote reads a publish check runs at once. */
 const PUBLISH_CHECK_CONCURRENCY = 8;
 
@@ -3129,8 +3213,11 @@ export async function acquireModelLocks(
   // written and pushed the same version, and this push would overwrite it.
   // Refuse to push unless every per-model lock still names the holder it
   // named when taken (swamp-club#3373). The check and the upload are not
-  // atomic; Phase 5's model leases close that window.
-  const assertModelLocksHeld = async () => {
+  // atomic; Phase 5's model leases close that window. `refused` are the data
+  // versions the push would publish; a refusal discards them.
+  const assertModelLocksHeld = async (
+    refused: readonly WrittenVersion[],
+  ) => {
     const lost: LostModelLock[] = [];
     for (const [i, lock] of heldLocks.entries()) {
       const taken = heldLockTaken[i];
@@ -3145,30 +3232,49 @@ export async function acquireModelLocks(
       });
     }
     if (lost.length === 0) return;
-    // The refused versions stay marked dirty in the cache, and an unlocked
-    // push later in this command (a workflow's end-of-run push, serve's
-    // sync) would upload them over the other run's. Pull the lost models so
-    // the cache holds the datastore's copy, which such a push then leaves
-    // alone. Best effort: the refusal stands whatever the pull does.
+    // The refused versions stay marked dirty in the cache, and a later push
+    // (a workflow's end-of-run push, serve's sync, a `datastore sync`) would
+    // upload them, over the other run's after a breakglass. Discard them
+    // first, so that holds even when the datastore cannot be reached
+    // (swamp-club#3485), then pull the lost models so the cache holds the
+    // datastore's copy. Best effort: the refusal stands whatever either does.
     if (customSyncService) {
-      for (const { modelType, modelId } of lost) {
-        try {
-          await pullModel(customSyncService, modelType, modelId);
-        } catch (error) {
-          logger
-            .debug`Pull after losing the lock on ${modelType}/${modelId} failed: ${error}`;
+      try {
+        const repoContext = options?.repoContext;
+        if (
+          refused.length > 0 && repoContext !== undefined &&
+          isCustomDatastoreConfig(config) && config.cachePath
+        ) {
+          await discardRefusedVersions(
+            refused,
+            repoContext,
+            customSyncService,
+            config.cachePath,
+            config.namespace,
+          );
         }
+        for (const { modelType, modelId } of lost) {
+          try {
+            await pullModel(customSyncService, modelType, modelId);
+          } catch (error) {
+            logger
+              .debug`Pull after losing the lock on ${modelType}/${modelId} failed: ${error}`;
+          }
+        }
+      } finally {
+        catalogStore?.invalidate();
       }
-      catalogStore?.invalidate();
     }
     throw new ModelLockLostError(lost);
   };
 
   // `beforePush` runs inside the same wrapped call as the push, so in serve
   // no run pull can land between it and the upload (swamp-club#3146).
+  // `versions` are the data versions this push publishes.
   const pushOnce = async (
     beforePush?: () => Promise<void>,
     kind: "push" | "push-alone" = "push",
+    versions: readonly WrittenVersion[] = [],
   ) => {
     // For custom sync-capable datastores: push changes to remote
     if (
@@ -3186,7 +3292,7 @@ export async function acquireModelLocks(
         // merge under global lock. Narrows the critical section from
         // "entire sync" to "index read-modify-write" only.
         await wrapSync(async () => {
-          await assertModelLocksHeld();
+          await assertModelLocksHeld(versions);
           await beforePush?.();
           return await flushTwoPhasePush(
             provider,
@@ -3203,7 +3309,7 @@ export async function acquireModelLocks(
       } else {
         // Single-phase fallback: everything under global lock
         await wrapSync(async () => {
-          await assertModelLocksHeld();
+          await assertModelLocksHeld(versions);
           await beforePush?.();
           return await flushSinglePhasePush(
             provider,
@@ -3257,6 +3363,7 @@ export async function acquireModelLocks(
           );
         },
         attempt === PUBLISH_ATTEMPTS ? "push-alone" : "push",
+        stage,
       );
       if (!syncService.fetchContent || targets.length === 0) return;
       const behind = await unpublishedTargets(

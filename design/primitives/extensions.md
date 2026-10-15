@@ -913,8 +913,8 @@ during `repo init` or in tests), loaders fall back to the local `.swamp/` path.
 Vault, datastore, report and webhook entry points are bundled like behaviors.
 Each gets a compiled `.js` file in its `-bundles/` directory (`vault-bundles/`,
 `datastore-bundles/`, `report-bundles/`, `webhook-bundles/`). Local imports are
-followed recursively within the directory. The install-time `KIND_DIRS` array
-covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
+followed as for behaviors, wherever they live. The install-time `KIND_DIRS`
+array covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
 
 Each bundle's export is validated against a Zod schema:
 
@@ -961,8 +961,10 @@ Push rejects:
 
 - Duplicate entries (case-insensitive, NFC-normalized). Two entries mapping to
   the same archive path fail with an error naming both.
-- Symlinks, to avoid archive bloat and path escapes. Copy the target file into
-  the extension tree instead.
+- Symlinks, to avoid archive bloat and path escapes: an entry that is a symlink,
+  or one reached through a symlinked directory, is refused by the safety gate's
+  symlink rule (see below). Copy the target file into the extension tree
+  instead.
 
 ### Runtime access
 
@@ -1018,9 +1020,22 @@ Each local module goes where its relative imports still resolve:
   specifiers that point at a `_shared/` module are rewritten, and line numbers
   stay the same.
 
+No extension file may have a symlink on its path (swamp-club#3421): not the
+file itself, and not any directory between it and the outermost root that
+holds it, the repository, the extensions root or the manifest's directory. That
+covers entry points, graph modules, `include`, `additionalFiles`, `binaries`,
+workflows and skills, so a symlinked `extensions/`, a symlinked skill directory
+and a symlink inside a skill are refused too. Symlinks above that root, such as
+a repository under macOS `/tmp`, are not the extension's and are allowed. Push
+never follows one: each refused file stays listed, unread, for the safety gate,
+which refuses it by the symlink rule and names the symlinked component, never
+its target. The package cache hashes it by path, not contents. Staging copies
+regular files only, and push checks the staged tree holds no symlink before it
+builds the archive, so an archive never holds one.
+
 Symlinks are taken out of the graph before it is used (swamp-club#3420). An
-entry point that is a symlink is never read: not by the bare-specifier scan,
-`deno info` or the bundler. A symlink `deno info` reaches is removed along with
+entry point with a symlink on its path is never read: not by the bare-specifier scan,
+`deno info` or the bundler. A module `deno info` reaches through a symlink is removed along with
 every module it alone leads to and any error recorded for it, since that error
 quotes the target's source. Each symlink is then listed for the safety gate,
 which refuses it by the symlink rule before anything is bundled; `fmt` leaves
@@ -1030,8 +1045,8 @@ target declares cannot reach the content-collective check, and a symlinked
 `quality.yaml` is refused unread.
 
 Push fails when a local module is missing, when its real path leaves the
-repository and the extensions root (through a symlinked directory), or when two
-different files would share an archive path. Data modules are packaged, hashed
+repository and the extensions root (a relative import that climbs out of them),
+or when two different files would share an archive path. Data modules are packaged, hashed
 and safety-scanned, but not formatted, linted or reviewed as TypeScript.
 
 Pull installs the shared sources at the same path under the extension's install
@@ -1855,13 +1870,21 @@ from `@bixu/wheelshop`:
 
 ### Not audited
 
+OSV is asked about one exact version, resolved from the specifier the way the
+registry's scorecard resolves it: an exact version as-is, a range to the highest
+published version that satisfies it, a dist-tag through the packument's
+`dist-tags`, and no version to `latest`. The audit summary's `version` is that
+resolved version.
+
 A dependency whose npm registry or OSV.dev lookup fails (an error status, no
-network, a timeout) is **not audited**. It is never reported as passed: its
-audit summary has `passed: false`, `cause: "not-audited"` and a `reason` naming
-each failed lookup, and a warning with the same cause joins
-`warnings.dependencyTrust`. When npm fails but the specifier pins a version,
-OSV is still queried, so a HIGH or CRITICAL vulnerability still blocks; an
-unpinned specifier cannot be queried. A failed weekly-downloads lookup alone
+network, a timeout), or whose specifier no published version matches, is **not
+audited**. It is never reported as passed: its audit summary has
+`passed: false`, `cause: "not-audited"` and a `reason` naming each failed lookup
+(or `OSV not queried (no published version matches <spec>)`), and a warning
+with the same cause joins `warnings.dependencyTrust`. When npm fails but the
+specifier is an exact version, OSV is still queried, so a HIGH or CRITICAL
+vulnerability still blocks; a range, dist-tag or missing version cannot be
+resolved without npm and is not queried. A failed weekly-downloads lookup alone
 leaves the dependency audited. Unaudited dependencies join the push warnings
 gate (an interactive push prompts; `--yes` waives them), never block on their
 own, and never change the exit code. `DependencyTrustResult.passed` keeps
@@ -2993,6 +3016,40 @@ pulled-vs-pulled conflicts. Both checks skip `extension`-kind
 Sources: an extension's type is the base type it adds methods to, and one
 package may ship several extension files for the same base type.
 
+**Recorded source modules.** A source's fingerprint covers every local module
+its bundle was built from, wherever it lives and however it is imported: a model
+in `extensions/models/` that imports `../lib/msg.ts`, or side-effect imports
+`./side.ts`, goes stale when either changes (swamp-club#3385). Each time the
+loader bundles a source (`bundleWithCache`), it reads the entry point's module
+graph with `deno info`, the same source of truth push uses, under the same
+project config as the bundle. It records the graph's local modules, its missing
+modules and the deno config in the catalog's `source_modules` table.
+`computeSourceFingerprint` hashes that list, so the warm scan never spawns a
+process. A recorded list stays valid until the source changes: a relative import
+can only reach a new module if a recorded module's content changes or a recorded
+missing module appears, and either changes the fingerprint. A source with no
+recorded list falls back to the relative imports `resolveLocalImports` finds
+within the kind's directory. Pulled sources with no recorded list are not forced
+stale, since their bundles ship pre-built and may be served without a rebuild; a
+pulled source that does rebundle locally gets its graph recorded like any other.
+A local source with no list (a catalog an earlier binary wrote) is stale once,
+so its bundle is rebuilt and its list recorded. A bundle attempt that fails
+records the fallback, so a failing source is not retried on every command. A
+good bundle whose graph cannot be read (a `deno info` timeout under load)
+records the fallback marked graph pending, and the warm scan finds that local
+source stale once more (swamp-club#3487). `rebundleAndUpdateCatalog` clears the
+mark before it can return or throw, so the retry is used up however it ends: it
+records the graph, or keeps the fallback for good when the graph fails again. A
+graph naming more than `MAX_SOURCE_MODULES` (10,000) modules records the
+fallback without a retry, and the catalog refuses longer lists. A catalog row
+whose source no longer declares the kind's export is given the fallback too, so
+it settles.
+Production loaders get the reader from `createDenoInfoModuleGraphReader`;
+`integration/extension_loader_wiring_rules_test.ts` keeps each construction that
+has a catalog passing it. Two changes are not seen: adding a `deno.json` that
+was not discovered at bundle time, and a pulled extension's shared sources
+outside its kind's directory.
+
 **Unreadable dependencies.** `computeSourceFingerprint`
 (`src/domain/extensions/bundle_freshness.ts`) substitutes the internal
 `UNREADABLE_PLACEHOLDER` constant for any dependency it cannot hash, so broken
@@ -3194,15 +3251,20 @@ Indexing has to evaluate a bundle to learn its type whenever source text is
 not enough: a new or edited source on the warm path, the startup reconcile
 (`ReconcileFromDiskService`), the typeless-row heal, and an install's index
 of pulled sources. Those evaluations **probe** the bundle rather than load it
-(swamp-club#3374). A probe imports the bundle in a Deno worker and answers
-with plain data: the exported type, version and description, or why there is
+(swamp-club#3374). A probe imports the bundle in a separate probe host process
+and answers with plain data: the exported type, version and description, or why there is
 none. Loading, which makes a type usable, still imports the bundle into the
 command's isolate, and only happens when the type is used.
 
 `BundleProber` (`src/domain/extensions/bundle_prober.ts`) is the port;
-`WorkerBundleProber` (`src/infrastructure/runtime/worker_bundle_prober.ts`)
-implements it, with `bundle_probe_worker.ts` as the worker entry point, which
-`scripts/compile.ts` includes in the binary by name. The CLI's index loaders,
+`ProcessBundleProber` (`src/infrastructure/runtime/process_bundle_prober.ts`)
+implements it. The host is swamp itself: `main.ts` hands a process started
+with `__swamp_bundle_probe_host` to `bundle_probe_host.ts` before any CLI
+work, as it does for the Litestream supervisor, and from source the prober
+runs that file with `deno run`. The host reads one request per line on stdin
+and answers on stdout, behind a per-host prefix that tells its replies from
+anything a bundle writes there. The probe logic itself is
+`bundle_probe.ts`. The CLI's index loaders,
 its startup reconcile, `swamp doctor extensions` and `swamp extension pull`
 pass one. An `ExtensionLoader` built without a prober imports in-process: the
 full-load path (`load()` without `indexOnly`, serve hot-reload, the
@@ -3213,15 +3275,20 @@ use is attached straight away), and the path unit tests use.
 What a source does at import therefore cannot reach a command that does not
 use it:
 
-- **Exit.** `Deno.exit` in the worker throws, so the import stops there. The
+- **Exit.** `Deno.exit` in the host throws, so the import stops there. The
   source is recorded as `ValidationFailed`.
 - **Hang.** An import that has not settled after 10 seconds
-  (`DEFAULT_PROBE_TIMEOUT_MS`) is abandoned and its worker terminated. The
-  source is recorded as `ValidationFailed`. Only the bundle's own import is
-  timed: the worker reports when it is ready to import, and the timeout
-  starts then, so starting the worker and loading the kind adapter never
-  counts against a source.
-- **Print.** `console` output in the worker is captured and logged at debug.
+  (`DEFAULT_PROBE_TIMEOUT_MS`) is abandoned and its host killed, which also
+  stops a bundle spinning in synchronous code: a Deno worker cannot be
+  stopped there, so the first prober, which used one, left such a bundle
+  running for the life of the process (swamp-club#3494). The source is
+  recorded as `ValidationFailed`. Only the bundle's own import is timed: the
+  host reports when it is ready to import, and the timeout starts then, so
+  starting the host and loading the kind adapter never counts against a
+  source.
+- **Print.** `console` output in the host is captured and logged at debug,
+  and so is anything the bundle writes to the host's stdout or stderr
+  directly.
 - **Throw.** Reported as a failed import and recorded as `BundleBuildFailed`,
   as an in-process import that threw was, so it is retried on the next
   command.
@@ -3233,8 +3300,10 @@ not `Indexed`: `swamp doctor extensions` reconciles on each run, so it pays the
 timeout again for a source that still hangs. The user is warned once, with the
 source's path, the reason and how to retry: edit a local source, upgrade or
 re-pull a pulled one. Anything that is not the bundle's doing is reported as a
-failed import, which is retried, and never pinned to the source: a worker that
-does not start, one that dies, or a prober released under a probe. On the warm
+failed import, which is retried, and never pinned to the source: a host that
+does not start, one that dies, one from another build (a binary `swamp update`
+replaced under a running swamp, which is asked to restart), or a prober
+released under a probe. On the warm
 path a source that no aggregate knows yet gets a `ValidationFailed` catalog row
 directly, since without a row it would be stale, and probed again, on every
 scan.
@@ -3244,23 +3313,37 @@ isolate. A type whose source changed becomes a lazy entry like any other, and
 model add-ons are not attached at index time: a lazy base type attaches them
 when it is loaded, and an already registered one through the registry's
 extension attacher on first use (swamp-club#2846). A source that the same
-command goes on to use is therefore evaluated twice, once in the worker and
+command goes on to use is therefore evaluated twice, once in the host and
 once on load.
 
-The worker is robustness isolation, **not a sandbox**. It shares the
-process's permissions, environment and filesystem, so it does not make
-untrusted extension code safe to index. A bundle that writes to `Deno.stdout`
-directly, bypassing `console`, is not captured.
+The host is robustness isolation, **not a sandbox**. It runs with swamp's
+permissions, environment and filesystem, so it does not make untrusted
+extension code safe to index. The reply prefix is random for each host, so no
+output turns into a reply by accident, but a bundle that reads it could fake
+one on purpose.
 
-One worker serves a pass's probes in turn and is replaced after any probe
-that did not finish cleanly. Work a bundle leaves behind (a timer that throws,
-a rejected promise) is swallowed in the worker so it cannot close the worker
-under the next bundle; a worker that dies anyway is dropped, and Deno may
-print its uncaught error on stderr. Each pass releases its prober, which
-terminates the worker. An install indexes an extension and its dependencies
-concurrently through one prober and releases it once, after all of them. The
-worker is started by the first probe, so a pass with nothing to probe starts
-none.
+One host serves a pass's probes in turn and is replaced after any probe that
+did not finish cleanly. Work a bundle leaves behind (a timer that throws, a
+rejected promise) is swallowed in the host so it cannot end the host under
+the next bundle; a host that dies anyway is dropped. Each pass releases its
+prober, which kills the host and waits for it to end. An install indexes an
+extension and its dependencies concurrently through one prober and releases
+it once, after all of them, and the tree indexer's lanes share one prober.
+The host is started by the first probe, so a pass with nothing to probe
+starts none. A host stays in swamp's process group, so a Ctrl+C reaches it,
+and on Windows runs in a kill-on-close Job Object. On Linux and macOS, a swamp
+that ends without releasing its prober (killed outright, not by Ctrl+C) leaves
+its host to exit when it next reads its closed stdin, which a host spinning in
+a bundle's synchronous code never does. A process a bundle starts ends with
+the host, as it ended with a terminated worker: stopping a host lists its
+children before killing it and kills them too (on Windows the job ends them),
+though not processes they started in turn, nor any once the host has already
+exited. Listing them needs `pgrep`, so where it is missing they are left
+running. Until then such a process holds the
+host's output pipes open, so stopping a host reads its last output for a short
+grace period rather than to the end. Starting one costs a
+process start of the swamp binary (about half a second, as `main.ts` loads
+the CLI before it reads the marker), paid once per pass that probes.
 
 ### Self-Healing
 
