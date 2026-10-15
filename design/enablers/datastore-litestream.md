@@ -997,9 +997,12 @@ derived from the replica setting and a fence (`replicaPathFor`), never read
 from a record; a file replica's path must be a directory directly under the
 root's `_litestream/`, not a symlink. The current lineage and anything started
 after it are never touched. Abandoned lineages under another root are
-forgotten, not deleted. On S3 and GCS the paths stay until 4E collects them
-through `storage/1`; their records stay with them. Collection is best effort
-and never fails a command.
+forgotten, not deleted. On S3 and GCS the paths are removed through the
+provider's `replicaPaths()` (see "Phase 4: replica paths" below), which also
+removes paths below the current lineage that no lineage key names, such as a
+fenced writer's late upload. A provider without it keeps the paths, and
+their records stay with them. Collection is best effort and never fails a
+command.
 
 **Chunk garbage collection** (swamp-club#3491) deletes chunks no commit in
 the copy names. A restore's truncation, and a fenced writer's late head on an
@@ -1013,9 +1016,10 @@ and deletes nothing. Serve's sweep says so at info once per datastore per
 process, naming the lineage that blocks it, and at debug after that, so a
 collection that never runs can be found. A lineage whose start record does
 not parse is never removed by lineage collection; the reason names its
-`_control/lineage/<fence>/` records, which have to be removed by hand. On a file replica, the lineage collection after a first
-confirmation clears the way; on S3 and GCS, old lineages stay until 4E
-collects them, so chunk collection waits until then.
+`_control/lineage/<fence>/` records, which have to be removed by hand. The
+lineage collection after a first confirmation clears the way: on a file
+replica, and on S3 and GCS through the provider's `replicaPaths()`. A bucket
+provider without it keeps old lineages, so chunk collection stays deferred.
 
 **Turning replication on** over a datastore with a shared `commits.db`
 (swamp-club#3491): the first writer, under the lease and `restore.lock`, seeds
@@ -1325,6 +1329,53 @@ path style (`localhost/mybucket`). Path style is forced for an IP-address
 endpoint regardless. Real buckets remain the
 [Real-bucket check](#real-bucket-check)'s job.
 
+## Phase 4: replica paths (swamp-club#3531)
+
+Built and dormant. `storage/1` is chunk-keyed
+(`<prefix>/_blobs/<namespace>/sha256/…`) and cannot list or delete
+Litestream's objects under `<prefix>/_litestream/<fence>/`. Without a way to
+remove them, every takeover on a bucket would leave a full snapshot behind,
+and its lineage records with it, so chunk collection (swamp-club#3491) would
+stay deferred forever.
+
+**The capability.** A provider's optional `replicaPaths()` returns a
+`ReplicaPathStore` (`src/domain/datastore/replica_path_store.ts`), scoped to
+the replica target's `<prefix>/_litestream/`:
+
+- `list(signal)`: the fence directories present, as names without a slash;
+- `removePath(fence, signal)`: deletes every object under
+  `<prefix>/_litestream/<fence>/`, paging through listings, and succeeds when
+  nothing is there.
+
+A fence is exactly the 12 digits `padFence` writes, from `000000000001`;
+`removePath` refuses anything else and deletes nothing. The width constant
+lives beside the port, and `writer_lease.ts` takes it from there.
+`assertReplicaPathConformance` in `packages/testing` checks a store: one
+fence's removal leaves a sibling fence, a directory whose name starts with
+the fence, and `_blobs/` alone; `list` sees what was written; malformed fences
+are refused. Its `objectsPerFence` option runs it above a backend's listing
+page size. One fixture list keeps the testing package's copy of the fence
+rule equal to core's.
+
+**Collection.** `collectV3Lineages` takes the store and applies the file
+replica's rules: only after the new lineage's first confirmation, once the
+lease check passed; never the current lineage or a later one; paths, then
+records; best effort. It then lists the fences present and removes the path
+of each one below the current lineage that no key under
+`_control/lineage/<fence>/` names, whatever that key is. Each path is
+rebuilt with `padFence` from the parsed fence, so a name the provider listed
+never reaches `removePath` as given.
+
+**Without it.** A bucket replica keeps every old lineage's path and records,
+as before, and chunk collection stays deferred while they are registered.
+
+**Dormant.** `resolveV3ReplicaPaths`, beside `resolveV3ReplicaSetting`,
+returns the provider's store, or none when it has none or its
+`replicaPaths()` throws (logged). Nothing in production calls it, and the
+production call of `collectV3Lineages` passes no store, until 4E switches the
+replica source. `datastore_v3_rules_test` pins `replicaPaths()` calls to the
+resolver.
+
 ## Upgrades
 
 The pinned version belongs to the swamp release that pins it. Each version
@@ -1463,8 +1514,9 @@ macOS.
   - restore, refresh and takeover from the published lineage, a
     checkout-local `commits.db` while replicating, and garbage collection of
     replaced lineages on a file replica (built, dormant: swamp-club#3482);
-  - 4E: garbage collection of replaced lineage paths on S3 and GCS, through
-    `storage/1` (D2 keeps their records and paths);
+  - garbage collection of replaced lineage paths on S3 and GCS through the
+    provider's `replicaPaths()` (built, dormant: swamp-club#3531); 4E passes
+    it to lineage collection;
   - 4E: the lineage records move with the lease to the bucket's
     datastore-wide control plane (swamp-club#3364).
 - **Phase 5 (serve leader):**

@@ -91,9 +91,12 @@ A custom datastore implements seven methods; three are required:
 
 A v3-capable datastore also implements `datastoreControlPlaneStore?`,
 `datastoreWideLease`, `storage?` (see
-[v3 chunk storage](#v3-chunk-storage-storage1)) and `replicaTarget?`. The
-last says where its Litestream replica lives: the bucket and the datastore
-root's key prefix, never credentials. See "Phase 4: the replica target" in
+[v3 chunk storage](#v3-chunk-storage-storage1)), `replicaTarget?` and
+`replicaPaths?`. `replicaTarget?` says where its Litestream replica lives: the
+bucket and the datastore root's key prefix, never credentials.
+`replicaPaths?` lists and removes the lineage paths under that prefix's
+`_litestream/`, so a takeover's old lineage can be collected. See "Phase 4:
+the replica target" and "Phase 4: replica paths" in
 `datastore-litestream.md`.
 
 Full interface: `src/domain/datastore/datastore_provider.ts`.

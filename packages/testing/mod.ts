@@ -148,6 +148,7 @@ export type {
   DistributedLock,
   LockInfo,
   LockOptions,
+  ReplicaPathStore,
   StorageCapabilities,
   StoredChunk,
   SyncCapabilities,
@@ -201,6 +202,13 @@ export {
 } from "./replica_target_conformance.ts";
 
 export type { ReplicaTargetConformanceOptions } from "./replica_target_conformance.ts";
+
+export {
+  assertReplicaPathConformance,
+  replicaPathFenceProblem,
+} from "./replica_path_conformance.ts";
+
+export type { ReplicaPathConformanceOptions } from "./replica_path_conformance.ts";
 
 export {
   createInMemoryRemote,

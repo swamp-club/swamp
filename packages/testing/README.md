@@ -286,6 +286,7 @@ breaks the contract; call them from your own `Deno.test`.
 | `assertWritableDatastoreControlPlaneStoreConformance` | A writable `datastoreControlPlaneStore()` at the datastore root |
 | `assertStorageConformance`                            | A `storage()`: the `storage/1` chunk contract                   |
 | `assertReplicaTargetConformance`                      | A `replicaTarget()`: valid, credential-free, at the root        |
+| `assertReplicaPathConformance`                        | A `replicaPaths()`: one fence removed, nothing else touched     |
 
 ### `assertControlPlaneStoreConformance`
 
@@ -416,6 +417,40 @@ Deno.test("replica target conformance", async () => {
 replicaTarget })`
 returns `replicaTarget` as given, unchecked, and provides `objectExists`; it
 writes at the bucket root, so its matching prefix is `""`.
+
+### `assertReplicaPathConformance`
+
+For a provider that implements `replicaPaths()`, which lists and removes the
+Litestream lineage paths under the replica target's `<prefix>/_litestream/`
+(swamp does not call it yet). The suite writes objects under two fences of its
+own, one under a directory whose name starts with the first fence, and one
+`storage/1` chunk. It checks that `list` returns both fences as names without a
+slash; that `removePath` deletes every object under exactly one fence and leaves
+the other fence, the look-alike and the chunk; that removing it again succeeds;
+and that malformed fences (empty, short, long, non-digit, all zeros, with a
+slash or `..`) are refused without deleting anything. It removes what it wrote.
+`writeObject`, `deleteObject` and `objectExists` act on full keys in the bucket
+with the test's own client. Raise `objectsPerFence` (default 3) above the
+backend's listing page size to check that `removePath` pages.
+
+```typescript
+Deno.test("replica path conformance", async () => {
+  await assertReplicaPathConformance({
+    replicaTarget: () => provider.replicaTarget!(),
+    openReplicaPaths: () => provider.replicaPaths!(),
+    openStorage: () => provider.storage!(),
+    writeObject: (key, bytes) => putObject(config.bucket, key, bytes),
+    deleteObject: (key) => deleteObject(config.bucket, key),
+    objectExists: (key) => headObject(config.bucket, key),
+  });
+});
+```
+
+`replicaPathFenceProblem(value)` returns swamp's reason for refusing a fence, or
+`undefined`. `createInMemoryRemote({ replicaPaths: true })` provides a
+conforming `replicaPaths()` over the objects under `_litestream/`, with
+`putReplicaObject` and `deleteReplicaObject` to write and delete one as
+Litestream would; its `removePath` deletes two objects per listing page.
 
 ### `assertSyncServiceRoundTripConformance`
 

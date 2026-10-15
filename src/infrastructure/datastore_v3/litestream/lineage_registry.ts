@@ -35,6 +35,7 @@
  */
 
 import type { WritableDatastoreControlPlaneStore } from "../../../domain/datastore/control_plane_store.ts";
+import { parseReplicaPathFence } from "../../../domain/datastore/replica_path_store.ts";
 import {
   type LineageConfirmed,
   type LineageHead,
@@ -227,6 +228,21 @@ export class LineageRegistry {
       headKeyOf(record.fence, record.writerFence),
       encode(serializeLineageRecord(record)),
     );
+  }
+
+  /**
+   * Every fence with any key under `lineage/<fence>/`, whether or not the
+   * key is a record this registry reads. Lineage collection leaves the
+   * replica path of each alone (swamp-club#3531).
+   */
+  async fences(): Promise<Set<number>> {
+    const fences = new Set<number>();
+    for (const key of await this.store.list(LINEAGE_PREFIX)) {
+      const name = key.slice(LINEAGE_PREFIX.length).split("/")[0];
+      const fence = parseReplicaPathFence(name);
+      if (fence !== undefined) fences.add(fence);
+    }
+    return fences;
   }
 
   /**

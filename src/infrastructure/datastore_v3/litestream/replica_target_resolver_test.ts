@@ -24,8 +24,10 @@ import type { V3ReplicaTarget } from "../../../domain/datastore/replica_target.t
 import { V3_REPLICA_ENV } from "./replica_setting.ts";
 import {
   replicaSettingFromTarget,
+  resolveV3ReplicaPaths,
   resolveV3ReplicaSetting,
 } from "./replica_target_resolver.ts";
+import type { ReplicaPathStore } from "../../../domain/datastore/replica_path_store.ts";
 
 const UNSET = { [V3_REPLICA_ENV]: undefined };
 
@@ -147,4 +149,27 @@ Deno.test("resolveV3ReplicaSetting: refuses a target carrying credentials", () =
     assertStringIncludes(error.message, "secretAccessKey");
     assertEquals(error.message.includes('"x"'), false);
   });
+});
+
+Deno.test("resolveV3ReplicaPaths: returns the provider's store, or undefined without one", () => {
+  const store: ReplicaPathStore = {
+    list: () => Promise.resolve([]),
+    removePath: () => Promise.resolve(),
+  };
+  assertEquals(
+    resolveV3ReplicaPaths({ replicaPaths: () => store }, "s3"),
+    store,
+  );
+  assertEquals(resolveV3ReplicaPaths({}, "s3"), undefined);
+});
+
+Deno.test("resolveV3ReplicaPaths: a provider that throws has no replica paths, and nothing fails", () => {
+  assertEquals(
+    resolveV3ReplicaPaths({
+      replicaPaths: () => {
+        throw new Error("not configured");
+      },
+    }, "s3"),
+    undefined,
+  );
 });

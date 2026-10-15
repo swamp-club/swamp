@@ -23,7 +23,12 @@ import { V3ReplicationError } from "../../../domain/datastore_v3/litestream_repl
 import { replicaPathFor } from "../../../domain/datastore_v3/replication_lineage.ts";
 import { currentLineage } from "../../../domain/datastore_v3/published_lineage.ts";
 import { withMockedEnv } from "../../persistence/path_test_helpers.ts";
-import { V3_REPLICA_ENV } from "./replica_setting.ts";
+import {
+  replicaRootOf,
+  V3_REPLICA_ENV,
+  type V3ReplicaSetting,
+} from "./replica_setting.ts";
+import type { ReplicaPathStore } from "../../../domain/datastore/replica_path_store.ts";
 import {
   ensureSharedDir,
   readCopyState,
@@ -59,7 +64,10 @@ interface Env {
   readonly dir: string;
 }
 
-async function withCopy(fn: (env: Env) => Promise<void>): Promise<void> {
+async function withCopy(
+  fn: (env: Env) => Promise<void>,
+  options: { readonly setting?: V3ReplicaSetting } = {},
+): Promise<void> {
   const dir = await Deno.realPath(
     await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-copy-" }),
   );
@@ -72,9 +80,11 @@ async function withCopy(fn: (env: Env) => Promise<void>): Promise<void> {
     commitsDb: join(dir, "repo", ".swamp", "copies", "commits.db"),
   };
   try {
+    const setting = options.setting ??
+      { type: "file" as const, path: replica };
     await withMockedEnv(
-      { [V3_REPLICA_ENV]: JSON.stringify({ type: "file", path: replica }) },
-      () => fn({ copy, replica, root: `file:${replica}`, dir }),
+      { [V3_REPLICA_ENV]: JSON.stringify(setting) },
+      () => fn({ copy, replica, root: replicaRootOf(setting), dir }),
     );
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -313,6 +323,171 @@ Deno.test({
         await lineageRegistryFor(env.copy.datastorePath).started(1),
         "unreadable",
       );
+    });
+  },
+});
+
+/** A bucket replica, as a provider's replica target would set it. */
+const BUCKET_REPLICA: V3ReplicaSetting = {
+  type: "s3",
+  bucket: "bucket",
+  path: "team/root",
+};
+
+/** A provider's replica paths that records every call. */
+function recordingStore(
+  options: {
+    readonly listed?: string[];
+    readonly failRemove?: ReadonlySet<string>;
+    readonly failList?: boolean;
+  } = {},
+) {
+  const removed: string[] = [];
+  const store: ReplicaPathStore = {
+    list: () =>
+      options.failList === true
+        ? Promise.reject(new Error("listing failed"))
+        : Promise.resolve([...(options.listed ?? [])]),
+    removePath: (fence) => {
+      if (options.failRemove?.has(fence)) {
+        return Promise.reject(new Error("removal failed"));
+      }
+      removed.push(fence);
+      return Promise.resolve();
+    },
+  };
+  return { store, removed };
+}
+
+Deno.test({
+  name:
+    "collectV3Lineages: a bucket replica removes replaced lineages through the provider's store, never another root's",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 1, { confirmed: true });
+      await publish(env, 2, { confirmed: true });
+      await publish(env, 3, { confirmed: true, root: "file:/elsewhere" });
+      await publish(env, 4, { confirmed: true });
+      await writeLineage(await pathsOf(env), {
+        replicaRoot: env.root,
+        lineageFence: 4,
+        lastFence: 4,
+        previousLineages: [{ replicaRoot: env.root, fence: 2 }],
+      });
+      const { store, removed } = recordingStore();
+      await collectV3Lineages(env.copy, 4, { replicaPaths: store });
+      assertEquals(removed, ["000000000001", "000000000002"]);
+      assertEquals(await startOf(env, 1), undefined);
+      assertEquals(await startOf(env, 2), undefined);
+      assertEquals((await startOf(env, 3))?.replicaRoot, "file:/elsewhere");
+      assertEquals((await startOf(env, 4))?.replicaRoot, env.root);
+      assertEquals((await lineageOf(env))?.previousLineages, []);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: a bucket path that cannot be removed keeps its records, and the others are collected",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      for (const fence of [1, 2, 3]) {
+        await publish(env, fence, { confirmed: true });
+      }
+      const { store, removed } = recordingStore({
+        failRemove: new Set(["000000000001"]),
+      });
+      await collectV3Lineages(env.copy, 3, { replicaPaths: store });
+      assertEquals(removed, ["000000000002"]);
+      assertEquals((await startOf(env, 1))?.fence, 1);
+      assertEquals(await startOf(env, 2), undefined);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: a bucket replica without replica paths keeps every path and record",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 1, { confirmed: true });
+      await publish(env, 2, { confirmed: true });
+      await collectV3Lineages(env.copy, 2);
+      assertEquals((await startOf(env, 1))?.fence, 1);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: removes only unrecorded bucket paths below the current lineage, rebuilt from their fence",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, { confirmed: true, root: "file:/elsewhere" });
+      await publish(env, 4, { confirmed: true });
+      // A key the registry does not read still marks fence 2 as recorded.
+      const stray = join(
+        env.copy.datastorePath,
+        "_control",
+        "lineage",
+        "000000000002",
+      );
+      await Deno.mkdir(stray, { recursive: true });
+      await Deno.writeTextFile(join(stray, "stray.json"), "{}");
+      const { store, removed } = recordingStore({
+        listed: [
+          "000000000001",
+          "000000000002",
+          "000000000003",
+          "000000000004",
+          "000000000005",
+          "1",
+          "junk",
+          "000000000000",
+          "000000000001-other",
+          "../_blobs",
+        ],
+      });
+      await collectV3Lineages(env.copy, 4, { replicaPaths: store });
+      assertEquals(removed, ["000000000001"]);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: a failed listing of bucket paths is logged, and the records are still collected",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 1, { confirmed: true });
+      await publish(env, 2, { confirmed: true });
+      const { store, removed } = recordingStore({ failList: true });
+      await collectV3Lineages(env.copy, 2, { replicaPaths: store });
+      assertEquals(removed, ["000000000001"]);
+      assertEquals(await startOf(env, 1), undefined);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: a file replica removes its own paths and never calls the provider's store",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 1, { confirmed: true });
+      await Deno.mkdir(replicaPathFor(env.replica, 1), { recursive: true });
+      await publish(env, 2, { confirmed: true });
+      const { store, removed } = recordingStore({ listed: ["000000000001"] });
+      await collectV3Lineages(env.copy, 2, { replicaPaths: store });
+      assertEquals(await exists(replicaPathFor(env.replica, 1)), false);
+      assertEquals(await startOf(env, 1), undefined);
+      assertEquals(removed, []);
     });
   },
 });

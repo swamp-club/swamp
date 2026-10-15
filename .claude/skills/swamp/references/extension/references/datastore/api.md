@@ -27,6 +27,7 @@ interface DatastoreProvider {
   readonly datastoreWideLease?: boolean;
   storage?(): DatastoreStorage;
   replicaTarget?(): V3ReplicaTarget;
+  replicaPaths?(): ReplicaPathStore;
 
   registerNamespace?(
     datastorePath: string,
@@ -160,6 +161,33 @@ type V3ReplicaTarget =
   else. Swamp shows your message, naming the datastore.
 
 Prove it with `assertReplicaTargetConformance` (see testing.md).
+
+### `replicaPaths()?`
+
+Optional, and not called by swamp yet. Implement it beside `replicaTarget()` so
+swamp can remove the Litestream path of a lineage a takeover replaced:
+`storage()` is chunk-keyed and cannot reach those objects. Without it, old
+lineage paths and records stay on the bucket, and chunk collection waits on
+them.
+
+```typescript
+interface ReplicaPathStore {
+  // Fence directory names under <prefix>/_litestream/, without a slash.
+  list(signal: AbortSignal): Promise<string[]>;
+  // Delete every object under <prefix>/_litestream/<fence>/, paging.
+  removePath(fence: string, signal: AbortSignal): Promise<void>;
+}
+```
+
+- Use the same `prefix` as `replicaTarget()`; touch nothing outside
+  `<prefix>/_litestream/<fence>/`. Match keys with the trailing slash, so
+  `000000000001/` never matches `000000000001-other/`.
+- Refuse, deleting nothing, any `fence` that is not exactly 12 ASCII digits from
+  `000000000001`.
+- `removePath` succeeds when nothing is there, and keeps listing until no object
+  is left.
+
+Prove it with `assertReplicaPathConformance` (see testing.md).
 
 ## DatastoreStorage
 
