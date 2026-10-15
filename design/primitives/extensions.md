@@ -3304,7 +3304,9 @@ once on load.
 
 The host is robustness isolation, **not a sandbox**. It runs with swamp's
 permissions, environment and filesystem, so it does not make untrusted
-extension code safe to index, and a bundle could fake a reply.
+extension code safe to index. The reply prefix is random for each host, so no
+output turns into a reply by accident, but a bundle that reads it could fake
+one on purpose.
 
 One host serves a pass's probes in turn and is replaced after any probe that
 did not finish cleanly. Work a bundle leaves behind (a timer that throws, a
@@ -3315,7 +3317,13 @@ extension and its dependencies concurrently through one prober and releases
 it once, after all of them, and the tree indexer's lanes share one prober.
 The host is started by the first probe, so a pass with nothing to probe
 starts none. A host stays in swamp's process group, so a Ctrl+C reaches it,
-and on Windows runs in a kill-on-close Job Object. Starting one costs a
+and on Windows runs in a kill-on-close Job Object. On Linux and macOS, a swamp
+that ends without releasing its prober (killed outright, not by Ctrl+C) leaves
+its host to exit when it next reads its closed stdin, which a host spinning in
+a bundle's synchronous code never does. A process a bundle starts is not
+stopped with the host, and may keep the host's output pipes open, so stopping
+a host reads its last output for a short grace period rather than to the
+end. Starting one costs a
 process start of the swamp binary (about half a second, as `main.ts` loads
 the CLI before it reads the marker), paid once per pass that probes.
 

@@ -123,9 +123,10 @@ export async function runBundleProbeHost(version?: string): Promise<number> {
     } catch {
       continue;
     }
-    // Not awaited here: `done` is chained behind it and awaited.
     const result = await probeModule(request, () => {
-      send({ type: "started" });
+      // Handled, not dropped: its write is chained into `written`, which
+      // catches its failure, and `done` below is awaited behind it.
+      void send({ type: "started" });
     });
     await send({ type: "done", result, output: isolation.output.splice(0) });
   }

@@ -53,24 +53,34 @@ export interface ProbeHostCommand {
   readonly env?: Readonly<Record<string, string>>;
 }
 
-/** A `deno run` of the host entry, from source. */
-export function sourceProbeHostCommand(): ProbeHostCommand {
+/** A `deno run` of the host entry by the deno at `denoPath`, from source. */
+export function sourceProbeHostCommand(
+  denoPath: string = Deno.execPath(),
+): ProbeHostCommand {
   const entry = fromFileUrl(new URL("./bundle_probe_host.ts", import.meta.url));
   // The repo's import map, found from this file, so the host resolves its
   // imports whatever the parent's working directory.
   const config = join(dirname(entry), "..", "..", "..", "deno.json");
   return {
-    command: Deno.execPath(),
+    command: denoPath,
     args: ["run", "-A", "--config", config, entry],
   };
 }
 
-/** How this process starts a probe host: itself, or `deno run` from source. */
-export function hostProbeHostCommand(): ProbeHostCommand {
-  const execPath = Deno.execPath();
+/**
+ * How a process running as `execPath` starts a probe host: from source,
+ * where `execPath` is deno, a `deno run` of the host entry; otherwise the
+ * swamp binary itself with the host marker.
+ */
+export function probeHostCommandFor(execPath: string): ProbeHostCommand {
   return /[\\/]deno(\.exe)?$/i.test(execPath)
-    ? sourceProbeHostCommand()
+    ? sourceProbeHostCommand(execPath)
     : { command: execPath, args: [BUNDLE_PROBE_HOST_MARKER] };
+}
+
+/** How this process starts a probe host. */
+export function hostProbeHostCommand(): ProbeHostCommand {
+  return probeHostCommandFor(Deno.execPath());
 }
 
 /** What a probe in flight hears from its host. */
@@ -90,6 +100,9 @@ interface ProbeHost {
 
 const encoder = new TextEncoder();
 
+/** How long a host's last output is read for after it ends. */
+const OUTPUT_GRACE_MS = 500;
+
 function startProbeHost(command: ProbeHostCommand): ProbeHost {
   const frame = `@@swamp-probe-${crypto.randomUUID()}@@`;
   // The host stays in this process's group, so a Ctrl+C reaches it as it
@@ -106,38 +119,69 @@ function startProbeHost(command: ProbeHostCommand): ProbeHost {
   let listener: HostListener | undefined;
   let goneMessage: string | undefined;
 
-  // Both pipes are read to the end, so a bundle that prints a lot never
-  // blocks the host on a full pipe and gets blamed for the stall.
-  const lines = (stream: ReadableStream<Uint8Array>) =>
-    stream.pipeThrough(new TextDecoderStream()).pipeThrough(
-      new TextLineStream(),
-    );
+  // Both pipes are read as long as the host lives, so a bundle that prints
+  // a lot never blocks the host on a full pipe and gets blamed for the
+  // stall.
+  const stdout = child.stdout.pipeThrough(new TextDecoderStream())
+    .pipeThrough(new TextLineStream()).getReader();
+  const stderr = child.stderr.pipeThrough(new TextDecoderStream())
+    .pipeThrough(new TextLineStream()).getReader();
   const readStdout = async () => {
-    for await (const line of lines(child.stdout)) {
-      if (line.startsWith(frame)) {
-        let reply: BundleProbeHostReply;
-        try {
-          reply = JSON.parse(line.slice(frame.length)) as BundleProbeHostReply;
-        } catch {
-          continue;
-        }
-        listener?.reply(reply);
-      } else if (line !== "") {
-        logger.debug`Output of the probe host: ${line}`;
+    for (
+      let next = await stdout.read();
+      !next.done;
+      next = await stdout.read()
+    ) {
+      const line = next.value;
+      const at = line.indexOf(frame);
+      // A reply can follow output the bundle left without a newline.
+      const before = at === -1 ? line : line.slice(0, at);
+      if (before !== "") logger.debug`Output of the probe host: ${before}`;
+      if (at === -1) continue;
+      let reply: BundleProbeHostReply;
+      try {
+        reply = JSON.parse(
+          line.slice(at + frame.length),
+        ) as BundleProbeHostReply;
+      } catch {
+        continue;
       }
+      listener?.reply(reply);
     }
   };
   const readStderr = async () => {
-    for await (const line of lines(child.stderr)) {
-      if (line !== "") logger.debug`Output of the probe host: ${line}`;
+    for (
+      let next = await stderr.read();
+      !next.done;
+      next = await stderr.read()
+    ) {
+      if (next.value !== "") {
+        logger.debug`Output of the probe host: ${next.value}`;
+      }
     }
   };
+  const reading = Promise.all([
+    readStdout().catch(() => {}),
+    readStderr().catch(() => {}),
+  ]);
   const finished = (async () => {
-    await Promise.all([
-      readStdout().catch(() => {}),
-      readStderr().catch(() => {}),
-    ]);
     const status = await child.status;
+    // A process a bundle started holds the pipes open after the host ends,
+    // so they may never close: what the host wrote before it ended is read
+    // within a grace period, then reading stops (swamp-club#3494).
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      reading,
+      new Promise<void>((done) => {
+        grace = setTimeout(done, OUTPUT_GRACE_MS);
+      }),
+    ]);
+    clearTimeout(grace);
+    await Promise.all([
+      stdout.cancel().catch(() => {}),
+      stderr.cancel().catch(() => {}),
+    ]);
+    await reading;
     // After the output is read, so an answer written just before the host
     // ended still reaches its probe first.
     goneMessage = `the probe host exited with code ${status.code}`;
@@ -162,7 +206,9 @@ function startProbeHost(command: ProbeHostCommand): ProbeHost {
       } catch {
         // Exited already.
       }
-      await writer.close().catch(() => {});
+      // Aborted, not closed: a close waits for pending writes, which a
+      // process a bundle started may hold up by keeping the pipe open.
+      await writer.abort().catch(() => {});
       await finished;
     },
   };

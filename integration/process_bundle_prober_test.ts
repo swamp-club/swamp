@@ -475,3 +475,76 @@ Deno.test("ProcessBundleProber: a host that dies between probes is replaced by t
     }
   });
 });
+
+/** A bundle that starts `sleep`, which inherits the host's pipes. */
+const SPAWNS_SLEEP = (pidFile: string) =>
+  `const sleeper = new Deno.Command("sleep", { args: ["60"] }).spawn();\n` +
+  `Deno.writeTextFileSync(${JSON.stringify(pidFile)}, String(sleeper.pid));\n`;
+
+async function killSleeper(pidFile: string): Promise<void> {
+  const pid = Number(await Deno.readTextFile(pidFile).catch(() => ""));
+  if (pid > 0) {
+    try {
+      Deno.kill(pid, "SIGKILL");
+    } catch {
+      // Gone already.
+    }
+  }
+  await Deno.remove(pidFile).catch(() => {});
+}
+
+Deno.test({
+  name:
+    "ProcessBundleProber: release ends even when a process a bundle started keeps the host's pipes open (swamp-club#3494)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const pidFile = await Deno.makeTempFile({ prefix: "swamp_3494_sleep_" });
+    try {
+      await withProber({}, async ({ prober, type, bundle }) => {
+        const result = await prober.probe(
+          await bundle("spawns", SPAWNS_SLEEP(pidFile) + VAULT(type("spawns"))),
+        );
+        assertEquals(result.tag, "primary");
+        // withProber releases the reused host, which must not wait on the
+        // pipes the sleeper holds.
+      });
+    } finally {
+      await killSleeper(pidFile);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "ProcessBundleProber: a bundle that starts a process and then hangs is timed-out without waiting on that process",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const pidFile = await Deno.makeTempFile({ prefix: "swamp_3494_sleep_" });
+    try {
+      await withProber({ timeoutMs: 300 }, async ({ prober, bundle }) => {
+        const result = await prober.probe(
+          await bundle(
+            "spawns-hang",
+            SPAWNS_SLEEP(pidFile) + "await new Promise(() => {});\n",
+          ),
+        );
+        assertEquals(result, { tag: "timed-out", timeoutMs: 300 });
+      });
+    } finally {
+      await killSleeper(pidFile);
+    }
+  },
+});
+
+Deno.test("ProcessBundleProber: output a bundle leaves without a newline does not hide the answer after it", async () => {
+  await withProber({}, async ({ prober, type, bundle }) => {
+    const result = await prober.probe(
+      await bundle(
+        "partial",
+        'Deno.stdout.writeSync(new TextEncoder().encode("progress..."));\n' +
+          VAULT(type("partial")),
+      ),
+    );
+    assertEquals(result.tag, "primary");
+  });
+});
