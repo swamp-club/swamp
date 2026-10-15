@@ -414,12 +414,21 @@ Deno.test({
         async () => (await world.lineages()).current !== undefined,
         "serve's head",
       );
+      const fence = await serve.send({ kind: "fence" }) as number;
       const paused = serve.send({ kind: "pause", ms: STALL_MS });
       const other = await world.machine("other");
       await other.send({ kind: "write", commits: 2, close: true });
       await paused;
-      // Serve retakes the lease, restores the other writer's lineage into
-      // its open store, and writes on top of it.
+      // Serve's renewal finds the lease lost and retakes it, restoring the
+      // other writer's lineage into its open store. A write that started
+      // before the renewal noticed is refused, as its copy is behind while
+      // serve still holds its sidecar; on a loaded host that renewal lands
+      // late (swamp-club#3497).
+      await waitFor(
+        async () => (await serve.send({ kind: "fence" }) as number) > fence,
+        "serve's retake",
+      );
+      // Serve writes on top of the restored lineage.
       await serve.send({ kind: "write", commits: 1, close: false });
       await serve.send({ kind: "stopUpkeep" });
       await serve.send({ kind: "close" });

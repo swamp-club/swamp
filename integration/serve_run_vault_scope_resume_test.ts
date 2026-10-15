@@ -150,7 +150,11 @@ async function startRun(
   return run;
 }
 
-/** Waits for `runId` to finish and returns it. */
+/**
+ * Waits for `runId` to finish and returns it. A run's record turns terminal
+ * before its resume has flushed and left the registry, so this also waits
+ * for the registry to empty: the fixture removes the repo right after.
+ */
 async function settled(
   f: VaultScopeFixture,
   workflow: Workflow,
@@ -159,7 +163,8 @@ async function settled(
   let run: WorkflowRun | null = null;
   await waitFor(async () => {
     run = await loadRun(f, workflow, runId);
-    return run?.status === "succeeded" || run?.status === "failed";
+    return (run?.status === "succeeded" || run?.status === "failed") &&
+      (f.ctx.activeRunRegistry?.size ?? 0) === 0;
   }, `run ${runId} to finish`);
   return run!;
 }

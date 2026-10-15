@@ -3237,15 +3237,20 @@ Indexing has to evaluate a bundle to learn its type whenever source text is
 not enough: a new or edited source on the warm path, the startup reconcile
 (`ReconcileFromDiskService`), the typeless-row heal, and an install's index
 of pulled sources. Those evaluations **probe** the bundle rather than load it
-(swamp-club#3374). A probe imports the bundle in a Deno worker and answers
-with plain data: the exported type, version and description, or why there is
+(swamp-club#3374). A probe imports the bundle in a separate probe host process
+and answers with plain data: the exported type, version and description, or why there is
 none. Loading, which makes a type usable, still imports the bundle into the
 command's isolate, and only happens when the type is used.
 
 `BundleProber` (`src/domain/extensions/bundle_prober.ts`) is the port;
-`WorkerBundleProber` (`src/infrastructure/runtime/worker_bundle_prober.ts`)
-implements it, with `bundle_probe_worker.ts` as the worker entry point, which
-`scripts/compile.ts` includes in the binary by name. The CLI's index loaders,
+`ProcessBundleProber` (`src/infrastructure/runtime/process_bundle_prober.ts`)
+implements it. The host is swamp itself: `main.ts` hands a process started
+with `__swamp_bundle_probe_host` to `bundle_probe_host.ts` before any CLI
+work, as it does for the Litestream supervisor, and from source the prober
+runs that file with `deno run`. The host reads one request per line on stdin
+and answers on stdout, behind a per-host prefix that tells its replies from
+anything a bundle writes there. The probe logic itself is
+`bundle_probe.ts`. The CLI's index loaders,
 its startup reconcile, `swamp doctor extensions` and `swamp extension pull`
 pass one. An `ExtensionLoader` built without a prober imports in-process: the
 full-load path (`load()` without `indexOnly`, serve hot-reload, the
@@ -3256,15 +3261,20 @@ use is attached straight away), and the path unit tests use.
 What a source does at import therefore cannot reach a command that does not
 use it:
 
-- **Exit.** `Deno.exit` in the worker throws, so the import stops there. The
+- **Exit.** `Deno.exit` in the host throws, so the import stops there. The
   source is recorded as `ValidationFailed`.
 - **Hang.** An import that has not settled after 10 seconds
-  (`DEFAULT_PROBE_TIMEOUT_MS`) is abandoned and its worker terminated. The
-  source is recorded as `ValidationFailed`. Only the bundle's own import is
-  timed: the worker reports when it is ready to import, and the timeout
-  starts then, so starting the worker and loading the kind adapter never
-  counts against a source.
-- **Print.** `console` output in the worker is captured and logged at debug.
+  (`DEFAULT_PROBE_TIMEOUT_MS`) is abandoned and its host killed, which also
+  stops a bundle spinning in synchronous code: a Deno worker cannot be
+  stopped there, so the first prober, which used one, left such a bundle
+  running for the life of the process (swamp-club#3494). The source is
+  recorded as `ValidationFailed`. Only the bundle's own import is timed: the
+  host reports when it is ready to import, and the timeout starts then, so
+  starting the host and loading the kind adapter never counts against a
+  source.
+- **Print.** `console` output in the host is captured and logged at debug,
+  and so is anything the bundle writes to the host's stdout or stderr
+  directly.
 - **Throw.** Reported as a failed import and recorded as `BundleBuildFailed`,
   as an in-process import that threw was, so it is retried on the next
   command.
@@ -3276,8 +3286,10 @@ not `Indexed`: `swamp doctor extensions` reconciles on each run, so it pays the
 timeout again for a source that still hangs. The user is warned once, with the
 source's path, the reason and how to retry: edit a local source, upgrade or
 re-pull a pulled one. Anything that is not the bundle's doing is reported as a
-failed import, which is retried, and never pinned to the source: a worker that
-does not start, one that dies, or a prober released under a probe. On the warm
+failed import, which is retried, and never pinned to the source: a host that
+does not start, one that dies, one from another build (a binary `swamp update`
+replaced under a running swamp, which is asked to restart), or a prober
+released under a probe. On the warm
 path a source that no aggregate knows yet gets a `ValidationFailed` catalog row
 directly, since without a row it would be stale, and probed again, on every
 scan.
@@ -3287,23 +3299,37 @@ isolate. A type whose source changed becomes a lazy entry like any other, and
 model add-ons are not attached at index time: a lazy base type attaches them
 when it is loaded, and an already registered one through the registry's
 extension attacher on first use (swamp-club#2846). A source that the same
-command goes on to use is therefore evaluated twice, once in the worker and
+command goes on to use is therefore evaluated twice, once in the host and
 once on load.
 
-The worker is robustness isolation, **not a sandbox**. It shares the
-process's permissions, environment and filesystem, so it does not make
-untrusted extension code safe to index. A bundle that writes to `Deno.stdout`
-directly, bypassing `console`, is not captured.
+The host is robustness isolation, **not a sandbox**. It runs with swamp's
+permissions, environment and filesystem, so it does not make untrusted
+extension code safe to index. The reply prefix is random for each host, so no
+output turns into a reply by accident, but a bundle that reads it could fake
+one on purpose.
 
-One worker serves a pass's probes in turn and is replaced after any probe
-that did not finish cleanly. Work a bundle leaves behind (a timer that throws,
-a rejected promise) is swallowed in the worker so it cannot close the worker
-under the next bundle; a worker that dies anyway is dropped, and Deno may
-print its uncaught error on stderr. Each pass releases its prober, which
-terminates the worker. An install indexes an extension and its dependencies
-concurrently through one prober and releases it once, after all of them. The
-worker is started by the first probe, so a pass with nothing to probe starts
-none.
+One host serves a pass's probes in turn and is replaced after any probe that
+did not finish cleanly. Work a bundle leaves behind (a timer that throws, a
+rejected promise) is swallowed in the host so it cannot end the host under
+the next bundle; a host that dies anyway is dropped. Each pass releases its
+prober, which kills the host and waits for it to end. An install indexes an
+extension and its dependencies concurrently through one prober and releases
+it once, after all of them, and the tree indexer's lanes share one prober.
+The host is started by the first probe, so a pass with nothing to probe
+starts none. A host stays in swamp's process group, so a Ctrl+C reaches it,
+and on Windows runs in a kill-on-close Job Object. On Linux and macOS, a swamp
+that ends without releasing its prober (killed outright, not by Ctrl+C) leaves
+its host to exit when it next reads its closed stdin, which a host spinning in
+a bundle's synchronous code never does. A process a bundle starts ends with
+the host, as it ended with a terminated worker: stopping a host lists its
+children before killing it and kills them too (on Windows the job ends them),
+though not processes they started in turn, nor any once the host has already
+exited. Listing them needs `pgrep`, so where it is missing they are left
+running. Until then such a process holds the
+host's output pipes open, so stopping a host reads its last output for a short
+grace period rather than to the end. Starting one costs a
+process start of the swamp binary (about half a second, as `main.ts` loads
+the CLI before it reads the marker), paid once per pass that probes.
 
 ### Self-Healing
 

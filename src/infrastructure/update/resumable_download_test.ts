@@ -54,7 +54,13 @@ async function withServer<T>(
   fn: (url: string, seen: SeenRequest[]) => Promise<T>,
 ): Promise<T> {
   const seen: SeenRequest[] = [];
-  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+  // An IPv4 address, not `localhost`: Windows tries `::1` first, and the
+  // refused connect outlasts a short stall timeout before any byte arrives.
+  const server = Deno.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen: () => {},
+  }, (req) => {
     const index = seen.length;
     seen.push({
       range: req.headers.get("range"),
@@ -64,7 +70,7 @@ async function withServer<T>(
     return handlers[Math.min(index, handlers.length - 1)](req, index);
   });
   try {
-    return await fn(`http://localhost:${server.addr.port}/swamp.tar.gz`, seen);
+    return await fn(`http://127.0.0.1:${server.addr.port}/swamp.tar.gz`, seen);
   } finally {
     await server.shutdown();
   }

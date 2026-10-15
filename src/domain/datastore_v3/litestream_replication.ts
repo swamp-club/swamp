@@ -85,12 +85,16 @@ export const V3_REPLICATION_UNAVAILABLE_CODE =
  * Litestream sidecar. It is thrown before the command writes anything.
  */
 export class V3ReplicationUnavailableError extends UserError {
+  /**
+   * Why, as a clause another message can embed: the message without its
+   * closing "Nothing was changed." (swamp-club#3497).
+   */
+  readonly reason: string;
+
   constructor(detail: string, options: { readonly cause?: unknown } = {}) {
-    super(
-      `swamp cannot replicate this v3 datastore: ${detail}. Nothing was ` +
-        `changed.`,
-      V3_REPLICATION_UNAVAILABLE_CODE,
-    );
+    const reason = `swamp cannot replicate this v3 datastore: ${detail}`;
+    super(`${reason}. Nothing was changed.`, V3_REPLICATION_UNAVAILABLE_CODE);
+    this.reason = reason;
     this.name = "V3ReplicationUnavailableError";
     if (options.cause !== undefined) this.cause = options.cause;
   }

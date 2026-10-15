@@ -19,7 +19,7 @@
 
 // Indexing an extension source must not run its import in the command's
 // isolate (swamp-club#3374). A source that exits, hangs, prints or throws
-// at import is probed in a worker: the pass returns, healthy siblings are
+// at import is probed in a probe host process: the pass returns, healthy siblings are
 // indexed, and a source that never finishes is recorded once instead of
 // being retried by every command.
 
@@ -34,7 +34,7 @@ import type {
   BundleProbeRequest,
   BundleProbeResult,
 } from "../src/domain/extensions/bundle_prober.ts";
-import { WorkerBundleProber } from "../src/infrastructure/runtime/worker_bundle_prober.ts";
+import { ProcessBundleProber } from "../src/infrastructure/runtime/process_bundle_prober.ts";
 import { ReconcileFromDiskService } from "../src/libswamp/extensions/reconcile_from_disk_service.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
@@ -82,14 +82,14 @@ export const vault = {
 }
 
 /**
- * Probes in a real worker and counts probes per bundle. The hanging source
+ * Probes in a real probe host and counts probes per bundle. The hanging source
  * gets its own short timeout, so the others keep a generous one.
  */
 class CountingProber implements BundleProber {
   readonly probed: string[] = [];
   releases = 0;
-  private readonly patient = new WorkerBundleProber();
-  private readonly impatient = new WorkerBundleProber({ timeoutMs: 500 });
+  private readonly patient = new ProcessBundleProber();
+  private readonly impatient = new ProcessBundleProber({ timeoutMs: 500 });
 
   probe(request: BundleProbeRequest): Promise<BundleProbeResult> {
     this.probed.push(request.importUrl);
@@ -98,10 +98,10 @@ class CountingProber implements BundleProber {
       : this.patient.probe(request);
   }
 
-  release(): void {
+  async release(): Promise<void> {
     this.releases++;
-    this.patient.release();
-    this.impatient.release();
+    await this.patient.release();
+    await this.impatient.release();
   }
 
   countFor(name: Behaviour): number {

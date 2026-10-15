@@ -42,7 +42,10 @@ import {
   type V3ReplicationUpkeep,
   v3RepositoryFactoryConfig,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
-import { acquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
+import {
+  acquireV3WriterLock,
+  v3WriterFence,
+} from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { v3CommitsDbPath } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { replicationPathsFor } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
@@ -99,7 +102,9 @@ export type MachineRequest =
   /** The checkout copy's restore lock. */
   | { readonly kind: "restoreLock" }
   /** `swamp datastore namespace list`'s namespaces. */
-  | { readonly kind: "namespaces" };
+  | { readonly kind: "namespaces" }
+  /** The fence this machine's writer lease holds, if any. */
+  | { readonly kind: "fence" };
 
 /** A machine's answer. */
 export type MachineResponse =
@@ -277,6 +282,8 @@ async function handle(request: MachineRequest): Promise<unknown> {
         v3CommitsDbPath(init!.datastorePath, init!.repoDir),
         init!.privateRoot,
       )).restoreLock;
+    case "fence":
+      return v3WriterFence(init!.datastorePath) ?? null;
     case "catchUp":
       await v3DatastoreFor(init!.repoDir, config()).catchUp();
       return undefined;

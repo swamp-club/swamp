@@ -818,7 +818,7 @@ export class ExtensionLoader {
       return await this.buildIndexPass(dir, options);
     } finally {
       // No probe outlives the pass that asked for it.
-      this.bundleProber?.release();
+      await this.bundleProber?.release();
     }
   }
 
@@ -1053,7 +1053,7 @@ export class ExtensionLoader {
       );
     } finally {
       // As for buildIndex: no probe outlives the pass that asked for it.
-      this.bundleProber?.release();
+      await this.bundleProber?.release();
     }
     return changes;
   }

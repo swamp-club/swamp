@@ -31,7 +31,7 @@ import type { RuntimeContentType } from "../../domain/extensions/extension_colle
 import type { StoredArchiveIndex } from "../../domain/extensions/extension_package_cache.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
-import { WorkerBundleProber } from "../../infrastructure/runtime/worker_bundle_prober.ts";
+import { ProcessBundleProber } from "../../infrastructure/runtime/process_bundle_prober.ts";
 
 /** The source directories of an extension tree that a consumer indexes. */
 export const EXTENSION_KIND_DIRS = [
@@ -90,7 +90,7 @@ export type ExtensionTreeIndexer = (
 /**
  * An indexer that loads each source the way install and the loader do:
  * every `.ts` file under the kind directories (skipping `_`-prefixed
- * directories) is bundled and its top level imported in a worker probe,
+ * directories) is bundled and its top level imported in a probe host,
  * never its methods. Bundles are written where the loader keeps them under
  * `repoDir` and imported from file URLs, as the loader imports them: a
  * bundle imported from a `data:` URL breaks modules that resolve paths from
@@ -125,68 +125,73 @@ export function createExtensionTreeIndexer(options: {
         files.push({ kindDir, dir, absolutePath });
       }
     }
-    // Each source loads in its own worker import, which is most of the
-    // cost; several lanes, each with its own worker, load them side by
-    // side. Results keep the files' order whatever order they finish in.
+    // Several lanes bundle sources side by side, and share one probe
+    // host: a host costs a process start and the binary's memory, while
+    // probing a built bundle is quick (swamp-club#3494). Results keep the
+    // files' order whatever order they finish in.
     const outcomes: Array<
       | { ok: true; source: ExtensionTreeSource }
       | { ok: false; failure: ExtensionTreeFailure }
     > = new Array(files.length);
     let next = 0;
+    const prober = new ProcessBundleProber();
     const lane = async () => {
-      const prober = new WorkerBundleProber();
       const loaders = new Map<ExtensionKindDir, ExtensionLoader>();
-      try {
-        while (next < files.length) {
-          const i = next++;
-          const { kindDir, dir, absolutePath } = files[i];
-          let loader = loaders.get(kindDir);
-          if (!loader) {
-            loader = new ExtensionLoader(
-              options.denoRuntime,
-              ADAPTERS[kindDir],
-              options.repoDir,
-              undefined,
-              options.repository,
-              prober,
-              createDenoInfoModuleGraphReader,
-            );
-            loaders.set(kindDir, loader);
-          }
-          const relativePath = relative(dir, absolutePath);
-          const fileName = toForwardSlashes(relativePath);
-          try {
-            const indexed = await loader.bundleAndIndexOne({
-              absolutePath,
-              relativePath,
-              baseDir: dir,
-              trustPulledCache: options.trustShippedBundles,
-            });
-            outcomes[i] = {
-              ok: true,
-              source: { kindDir, absolutePath, fileName, indexed },
-            };
-          } catch (error) {
-            outcomes[i] = {
-              ok: false,
-              failure: {
-                kindDir,
-                absolutePath,
-                fileName,
-                reason: error instanceof Error ? error.message : String(error),
-              },
-            };
-          }
+      while (next < files.length) {
+        const i = next++;
+        const { kindDir, dir, absolutePath } = files[i];
+        let loader = loaders.get(kindDir);
+        if (!loader) {
+          loader = new ExtensionLoader(
+            options.denoRuntime,
+            ADAPTERS[kindDir],
+            options.repoDir,
+            undefined,
+            options.repository,
+            prober,
+            createDenoInfoModuleGraphReader,
+          );
+          loaders.set(kindDir, loader);
         }
-      } finally {
-        prober.release();
+        const relativePath = relative(dir, absolutePath);
+        const fileName = toForwardSlashes(relativePath);
+        try {
+          const indexed = await loader.bundleAndIndexOne({
+            absolutePath,
+            relativePath,
+            baseDir: dir,
+            trustPulledCache: options.trustShippedBundles,
+          });
+          outcomes[i] = {
+            ok: true,
+            source: { kindDir, absolutePath, fileName, indexed },
+          };
+        } catch (error) {
+          outcomes[i] = {
+            ok: false,
+            failure: {
+              kindDir,
+              absolutePath,
+              fileName,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          };
+        }
       }
     };
     const lanes = Math.max(
       1,
       Math.min(options.concurrency ?? defaultConcurrency(), files.length),
     );
-    await Promise.all(Array.from({ length: lanes }, lane));
+    // Settled, not raced: a lane still running after another failed would
+    // start a new host after the release below.
+    const settled = await Promise.allSettled(
+      Array.from({ length: lanes }, lane),
+    );
+    await prober.release();
+    for (const outcome of settled) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
     const sources: ExtensionTreeSource[] = [];
     const failures: ExtensionTreeFailure[] = [];
     for (const outcome of outcomes) {
