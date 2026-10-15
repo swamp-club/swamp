@@ -376,7 +376,9 @@ Deno.test({
         previousLineages: [{ replicaRoot: env.root, fence: 2 }],
       });
       const { store, removed } = recordingStore();
-      await collectV3Lineages(env.copy, 4, { replicaPaths: store });
+      await collectV3Lineages(env.copy, 4, {
+        replicaPaths: { root: env.root, store },
+      });
       assertEquals(removed, ["000000000001", "000000000002"]);
       assertEquals(await startOf(env, 1), undefined);
       assertEquals(await startOf(env, 2), undefined);
@@ -399,7 +401,9 @@ Deno.test({
       const { store, removed } = recordingStore({
         failRemove: new Set(["000000000001"]),
       });
-      await collectV3Lineages(env.copy, 3, { replicaPaths: store });
+      await collectV3Lineages(env.copy, 3, {
+        replicaPaths: { root: env.root, store },
+      });
       assertEquals(removed, ["000000000002"]);
       assertEquals((await startOf(env, 1))?.fence, 1);
       assertEquals(await startOf(env, 2), undefined);
@@ -452,7 +456,9 @@ Deno.test({
           "../_blobs",
         ],
       });
-      await collectV3Lineages(env.copy, 4, { replicaPaths: store });
+      await collectV3Lineages(env.copy, 4, {
+        replicaPaths: { root: env.root, store },
+      });
       assertEquals(removed, ["000000000001"]);
     }, { setting: BUCKET_REPLICA });
   },
@@ -467,9 +473,29 @@ Deno.test({
       await publish(env, 1, { confirmed: true });
       await publish(env, 2, { confirmed: true });
       const { store, removed } = recordingStore({ failList: true });
-      await collectV3Lineages(env.copy, 2, { replicaPaths: store });
+      await collectV3Lineages(env.copy, 2, {
+        replicaPaths: { root: env.root, store },
+      });
       assertEquals(removed, ["000000000001"]);
       assertEquals(await startOf(env, 1), undefined);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: a store bound to another replica root is never used, and every path and record is kept",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 1, { confirmed: true });
+      await publish(env, 2, { confirmed: true });
+      const { store, removed } = recordingStore({ listed: ["000000000001"] });
+      await collectV3Lineages(env.copy, 2, {
+        replicaPaths: { root: "s3::other-bucket:team/root", store },
+      });
+      assertEquals(removed, []);
+      assertEquals((await startOf(env, 1))?.fence, 1);
     }, { setting: BUCKET_REPLICA });
   },
 });
@@ -484,7 +510,9 @@ Deno.test({
       await Deno.mkdir(replicaPathFor(env.replica, 1), { recursive: true });
       await publish(env, 2, { confirmed: true });
       const { store, removed } = recordingStore({ listed: ["000000000001"] });
-      await collectV3Lineages(env.copy, 2, { replicaPaths: store });
+      await collectV3Lineages(env.copy, 2, {
+        replicaPaths: { root: env.root, store },
+      });
       assertEquals(await exists(replicaPathFor(env.replica, 1)), false);
       assertEquals(await startOf(env, 1), undefined);
       assertEquals(removed, []);

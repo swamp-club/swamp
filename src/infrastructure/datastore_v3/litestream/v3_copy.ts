@@ -97,6 +97,7 @@ import {
   v3ReplicaSetting,
 } from "./replica_setting.ts";
 import { resolveV3LitestreamBinary, v3Replicator } from "./v3_replication.ts";
+import type { V3ReplicaPaths } from "./replica_target_resolver.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
@@ -787,19 +788,30 @@ export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
  * first confirmation tries again.
  *
  * A bucket replica's paths are removed through `replicaPaths`, the
- * provider's store (swamp-club#3531); without it they stay, and so do
- * their records. With it, the paths of fences below `current` that no
- * lineage key names (a fenced writer's late upload after its lineage was
- * collected) are removed too.
+ * provider's store (swamp-club#3531), used only when it is bound to this
+ * replica's root; without it they stay, and so do their records. With it,
+ * the paths of fences below `current` that no lineage key names (a fenced
+ * writer's late upload after its lineage was collected) are removed too.
  */
 export async function collectV3Lineages(
   copy: V3Copy,
   current: number,
-  options: { readonly replicaPaths?: ReplicaPathStore } = {},
+  options: { readonly replicaPaths?: V3ReplicaPaths } = {},
 ): Promise<void> {
   const replica = v3ReplicaSetting();
   if (replica === undefined) return;
   const root = replicaRootOf(replica);
+  // A store bound to another root would remove paths this registry never
+  // recorded: the replica was set somewhere other than the provider's
+  // target.
+  const replicaPaths = options.replicaPaths?.root === root
+    ? options.replicaPaths.store
+    : undefined;
+  if (options.replicaPaths !== undefined && replicaPaths === undefined) {
+    logger
+      .debug`The v3 datastore at ${copy.datastorePath} replicates outside its provider's replica target, so its old lineage paths are kept`;
+  }
+  const collected = new Set<number>();
   try {
     const paths = await copyPaths(copy);
     const registry = lineageRegistryFor(copy.datastorePath);
@@ -809,7 +821,6 @@ export async function collectV3Lineages(
     const abandoned = (own?.previousLineages ?? [])
       .filter((old) => old.replicaRoot === root)
       .map((old) => old.fence);
-    const collected: number[] = [];
     for (
       const fence of collectableLineages(lineages, abandoned, root, current)
     ) {
@@ -827,9 +838,9 @@ export async function collectV3Lineages(
       // be writing there) never stops the others; the next first
       // confirmation tries again.
       try {
-        if (await removeReplicaPath(replica, fence, options.replicaPaths)) {
+        if (await removeReplicaPath(replica, fence, replicaPaths)) {
           await registry.remove(fence);
-          collected.push(fence);
+          collected.add(fence);
         }
       } catch (error) {
         logger
@@ -841,23 +852,22 @@ export async function collectV3Lineages(
       await writeLineage(paths, {
         ...own,
         previousLineages: own.previousLineages.filter((old) =>
-          old.replicaRoot === root && !collected.includes(old.fence) &&
+          old.replicaRoot === root && !collected.has(old.fence) &&
           old.fence >= current
         ),
       });
     }
-    if (replica.type !== "file" && options.replicaPaths !== undefined) {
-      await collectUnrecordedPaths(
-        copy,
-        registry,
-        options.replicaPaths,
-        current,
-        collected,
-      );
-    }
   } catch (error) {
     logger
       .warn`Collecting the old replication lineages of the v3 datastore at ${copy.datastorePath} failed; the next new lineage tries again: ${error}`;
+    return;
+  }
+  if (replica.type === "file" || replicaPaths === undefined) return;
+  try {
+    await collectUnrecordedPaths(copy, replicaPaths, current, collected);
+  } catch (error) {
+    logger
+      .warn`Removing unrecorded replication lineage paths of the v3 datastore at ${copy.datastorePath} failed; the next new lineage tries again: ${error}`;
   }
 }
 
@@ -868,12 +878,11 @@ export async function collectV3Lineages(
  */
 async function collectUnrecordedPaths(
   copy: V3Copy,
-  registry: LineageRegistry,
   replicaPaths: ReplicaPathStore,
   current: number,
-  collected: readonly number[],
+  collected: ReadonlySet<number>,
 ): Promise<void> {
-  const recorded = await registry.fences();
+  const recorded = await lineageRegistryFor(copy.datastorePath).fences();
   const listed = await replicaPaths.list(
     AbortSignal.timeout(REPLICA_PATH_TIMEOUT_MS),
   );
@@ -881,7 +890,7 @@ async function collectUnrecordedPaths(
     const fence = parseReplicaPathFence(name);
     if (
       fence === undefined || fence >= current || recorded.has(fence) ||
-      collected.includes(fence)
+      collected.has(fence)
     ) {
       continue;
     }

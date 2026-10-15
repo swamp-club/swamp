@@ -232,8 +232,8 @@ chunk, then checks `list` returns both fences, `removePath` deletes exactly one
 fence's objects (every page of them), and malformed fences are refused without
 deleting anything. It removes what it wrote. `replicaPathFenceProblem(value)`
 returns swamp's reason for refusing a fence.
-`createInMemoryRemote({
-replicaPaths: true })` gives a conforming in-memory
+
+For tests, the in-memory remote's `replicaPaths` option gives a conforming
 `replicaPaths()`, with `putReplicaObject` to seed what Litestream would write.
 
 ## Mocking External Calls

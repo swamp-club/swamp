@@ -155,7 +155,7 @@ import type {
   V3ReplicaTarget,
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
-import { replicaPathFenceProblem } from "./replica_path_conformance.ts";
+import { replicaPathFenceProblem } from "./replica_path_fence.ts";
 
 /**
  * The behaviours that differ between extension releases, or that a later
@@ -1602,16 +1602,16 @@ export function createInMemoryRemote(
   };
 }
 
-/**
- * The `storage/1` model behind {@link InMemoryRemoteOptions.storage}:
- * chunks keyed `<namespace>/<sha256>`, each with its `lastModified`.
- */
 /** Where the in-memory remote keeps replica objects. */
 const REPLICA_ROOT = "_litestream/";
 
 /** Objects `removePath` deletes per listing page. */
 const REPLICA_PAGE_SIZE = 2;
 
+/**
+ * The `storage/1` model behind {@link InMemoryRemoteOptions.storage}:
+ * chunks keyed `<namespace>/<sha256>`, each with its `lastModified`.
+ */
 function createChunkStorage():
   & Required<Pick<InMemoryRemote, "storage" | "setChunkLastModified">>
   & {

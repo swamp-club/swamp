@@ -41,7 +41,11 @@ import {
 } from "../../../domain/datastore/replica_target.ts";
 import { UserError } from "../../../domain/errors.ts";
 import { getSwampLogger } from "../../logging/logger.ts";
-import { type V3ReplicaSetting, v3ReplicaSetting } from "./replica_setting.ts";
+import {
+  replicaRootOf,
+  type V3ReplicaSetting,
+  v3ReplicaSetting,
+} from "./replica_setting.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
@@ -102,22 +106,47 @@ export function resolveV3ReplicaSetting(
 }
 
 /**
+ * A provider's replica paths and the replica root they are under: the root
+ * of the provider's own replica target. Lineage collection uses the store
+ * only for that root, so a replica set elsewhere (the internal setting
+ * tests use) never has paths removed from the provider's bucket.
+ */
+export interface V3ReplicaPaths {
+  /** `replicaRootOf` the provider's replica target. */
+  readonly root: string;
+  readonly store: ReplicaPathStore;
+}
+
+/**
  * The provider's replica paths, which lineage collection removes a
  * replaced lineage's bucket path through, or undefined when the provider
- * has none. A provider that throws is logged and treated as having none:
- * collection then keeps the paths and records, as it does without the
- * capability, and never fails a command.
+ * has none, or no usable replica target to bind them to. A provider that
+ * throws is logged and treated as having none: collection then keeps the
+ * paths and records, as it does without the capability, and never fails
+ * a command.
  */
 export function resolveV3ReplicaPaths(
-  provider: Pick<DatastoreProvider, "replicaPaths">,
+  provider: Pick<DatastoreProvider, "replicaPaths" | "replicaTarget">,
   datastoreType: string,
-): ReplicaPathStore | undefined {
-  if (provider.replicaPaths === undefined) return undefined;
+): V3ReplicaPaths | undefined {
+  if (
+    provider.replicaPaths === undefined ||
+    provider.replicaTarget === undefined
+  ) {
+    return undefined;
+  }
   try {
-    return provider.replicaPaths();
+    const target = parseV3ReplicaTarget(
+      provider.replicaTarget(),
+      datastoreType,
+    );
+    return {
+      root: replicaRootOf(replicaSettingFromTarget(target)),
+      store: provider.replicaPaths(),
+    };
   } catch (error) {
     logger
-      .warn`The ${datastoreType} datastore's replicaPaths() failed, so old replication lineage paths are kept: ${error}`;
+      .warn`The ${datastoreType} datastore's replica paths cannot be used, so old replication lineage paths are kept: ${error}`;
     return undefined;
   }
 }

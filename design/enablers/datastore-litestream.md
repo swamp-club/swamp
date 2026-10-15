@@ -1369,9 +1369,16 @@ never reaches `removePath` as given.
 **Without it.** A bucket replica keeps every old lineage's path and records,
 as before, and chunk collection stays deferred while they are registered.
 
-**Dormant.** `resolveV3ReplicaPaths`, beside `resolveV3ReplicaSetting`,
-returns the provider's store, or none when it has none or its
-`replicaPaths()` throws (logged). Nothing in production calls it, and the
+**Bound to the provider's root.** `resolveV3ReplicaPaths`, beside
+`resolveV3ReplicaSetting`, returns the provider's store together with the
+replica root of the provider's own `replicaTarget()`, or none when the
+provider lacks either, its target is refused, or either call throws (logged).
+`collectV3Lineages` uses the store only when that root is the replica's
+root, so a replica set elsewhere, such as the internal setting tests use,
+never has paths removed from the provider's bucket that its registry never
+recorded.
+
+**Dormant.** Nothing in production calls the resolver, and the
 production call of `collectV3Lineages` passes no store, until 4E switches the
 replica source. `datastore_v3_rules_test` pins `replicaPaths()` calls to the
 resolver.

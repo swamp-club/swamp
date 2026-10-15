@@ -30,12 +30,16 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
-import { createInMemoryRemote } from "../packages/testing/in_memory_remote.ts";
-import type { ReplicaPathStore } from "../src/domain/datastore/replica_path_store.ts";
+import {
+  createInMemoryRemote,
+  type InMemoryRemote,
+} from "../packages/testing/in_memory_remote.ts";
+import type { V3ReplicaPaths } from "../src/infrastructure/datastore_v3/litestream/replica_target_resolver.ts";
 import { V3ChunkCollectionDeferredError } from "../src/domain/datastore_v3/litestream_replication.ts";
 import { replicaPathFor } from "../src/domain/datastore_v3/replication_lineage.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
+  replicaRootOf,
   V3_REPLICA_ENV,
   type V3ReplicaSetting,
 } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
@@ -114,6 +118,11 @@ const bucket = (): V3ReplicaSetting => ({
   path: "root",
 });
 
+/** The remote's replica paths, bound to the bucket replica's root. */
+function bound(remote: InMemoryRemote): V3ReplicaPaths {
+  return { root: replicaRootOf(bucket()), store: remote.replicaPaths!() };
+}
+
 function seededRemote() {
   const remote = createInMemoryRemote({ replicaPaths: true });
   for (const key of ["snapshot", "ltx/0/1", "ltx/0/2"]) {
@@ -146,8 +155,7 @@ Deno.test({
     await withTakeover(bucket, async (copy) => {
       const remote = seededRemote();
       await assertDeferred(copy);
-      const replicaPaths: ReplicaPathStore = remote.replicaPaths!();
-      await collectV3Lineages(copy, 2, { replicaPaths });
+      await collectV3Lineages(copy, 2, { replicaPaths: bound(remote) });
       assertEquals(await exists(remote, `${OLD}snapshot`), false);
       assertEquals(await exists(remote, `${OLD}ltx/0/2`), false);
       assertEquals(await exists(remote, `${NEW}snapshot`), true);
@@ -185,7 +193,7 @@ Deno.test({
   async fn() {
     await withTakeover(bucket, async (copy) => {
       const remote = seededRemote();
-      const replicaPaths = remote.replicaPaths!();
+      const replicaPaths = bound(remote);
       remote.failNext("replicaPaths");
       await collectV3Lineages(copy, 2, { replicaPaths });
       assertEquals(await exists(remote, `${OLD}snapshot`), true);
@@ -210,9 +218,7 @@ Deno.test({
         await Deno.mkdir(old, { recursive: true });
         await Deno.writeTextFile(join(old, "snapshot"), "x");
         const remote = seededRemote();
-        await collectV3Lineages(copy, 2, {
-          replicaPaths: remote.replicaPaths!(),
-        });
+        await collectV3Lineages(copy, 2, { replicaPaths: bound(remote) });
         assertEquals(
           await Deno.lstat(old).then(() => true, () => false),
           false,

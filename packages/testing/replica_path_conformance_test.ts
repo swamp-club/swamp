@@ -154,6 +154,18 @@ Deno.test("assertReplicaPathConformance: catches a store that accepts a malforme
   );
 });
 
+Deno.test("assertReplicaPathConformance: a removePath that always throws is reported, not hidden by the cleanup", async () => {
+  await assertRejects(
+    () =>
+      assertReplicaPathConformance(fakeOptions((objects) => ({
+        list: () => Promise.resolve(listFences(objects)),
+        removePath: () => Promise.reject(new Error("removal broken")),
+      }))),
+    Error,
+    "removal broken",
+  );
+});
+
 Deno.test("assertReplicaPathConformance: catches a store whose list misses a fence", async () => {
   await assertRejects(
     () =>

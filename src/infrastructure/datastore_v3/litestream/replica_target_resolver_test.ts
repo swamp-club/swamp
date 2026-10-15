@@ -151,24 +151,66 @@ Deno.test("resolveV3ReplicaSetting: refuses a target carrying credentials", () =
   });
 });
 
-Deno.test("resolveV3ReplicaPaths: returns the provider's store, or undefined without one", () => {
-  const store: ReplicaPathStore = {
-    list: () => Promise.resolve([]),
-    removePath: () => Promise.resolve(),
-  };
+const STORE: ReplicaPathStore = {
+  list: () => Promise.resolve([]),
+  removePath: () => Promise.resolve(),
+};
+
+Deno.test("resolveV3ReplicaPaths: binds the provider's store to its own replica target's root", () => {
   assertEquals(
-    resolveV3ReplicaPaths({ replicaPaths: () => store }, "s3"),
-    store,
+    resolveV3ReplicaPaths({
+      replicaPaths: () => STORE,
+      replicaTarget: () => ({ type: "s3", bucket: "b", prefix: "team/root" }),
+    }, "s3"),
+    { root: "s3::b:team/root", store: STORE },
   );
-  assertEquals(resolveV3ReplicaPaths({}, "s3"), undefined);
+  assertEquals(
+    resolveV3ReplicaPaths({
+      replicaPaths: () => STORE,
+      replicaTarget: () => ({ type: "gcs", bucket: "g", prefix: "" }),
+    }, "gcs")?.root,
+    "gcs:g:",
+  );
 });
 
-Deno.test("resolveV3ReplicaPaths: a provider that throws has no replica paths, and nothing fails", () => {
+Deno.test("resolveV3ReplicaPaths: none without replica paths or a replica target", () => {
+  assertEquals(resolveV3ReplicaPaths({}, "s3"), undefined);
+  assertEquals(
+    resolveV3ReplicaPaths({ replicaPaths: () => STORE }, "s3"),
+    undefined,
+  );
+  assertEquals(
+    resolveV3ReplicaPaths({
+      replicaTarget: () => ({ type: "s3", bucket: "b", prefix: "" }),
+    }, "s3"),
+    undefined,
+  );
+});
+
+Deno.test("resolveV3ReplicaPaths: a provider that throws, or a target swamp refuses, gives none and fails nothing", () => {
+  const target = () => ({ type: "s3" as const, bucket: "b", prefix: "" });
   assertEquals(
     resolveV3ReplicaPaths({
       replicaPaths: () => {
         throw new Error("not configured");
       },
+      replicaTarget: target,
+    }, "s3"),
+    undefined,
+  );
+  assertEquals(
+    resolveV3ReplicaPaths({
+      replicaPaths: () => STORE,
+      replicaTarget: () => {
+        throw new Error("no endpoint equivalent");
+      },
+    }, "gcs"),
+    undefined,
+  );
+  assertEquals(
+    resolveV3ReplicaPaths({
+      replicaPaths: () => STORE,
+      replicaTarget: () => ({ type: "s3", bucket: "b", prefix: "/bad" }),
     }, "s3"),
     undefined,
   );

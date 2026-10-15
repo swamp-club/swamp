@@ -24,6 +24,7 @@ import type {
   ReplicaPathStore,
   V3ReplicaTarget,
 } from "./datastore_types.ts";
+import { FENCE_DIGITS } from "./replica_path_fence.ts";
 
 /** Options for {@link assertReplicaPathConformance}. */
 export interface ReplicaPathConformanceOptions {
@@ -51,25 +52,7 @@ export interface ReplicaPathConformanceOptions {
   objectsPerFence?: number;
 }
 
-/** Digits a fence is padded to: the same width swamp writes. */
-const FENCE_DIGITS = 12;
-
-/**
- * Why `value` is not a padded fence, or undefined when it is one: exactly
- * 12 ASCII digits, from `000000000001`. The same rule swamp applies
- * (`src/domain/datastore/replica_path_store.ts`), and
- * `replica_path_store_test.ts` there runs both over one fixture list:
- * change them together. A provider's `removePath` refuses what this
- * refuses.
- */
-export function replicaPathFenceProblem(value: unknown): string | undefined {
-  if (typeof value !== "string") return "a fence must be a string";
-  if (value.length !== FENCE_DIGITS || !/^[0-9]+$/.test(value)) {
-    return `a fence must be exactly ${FENCE_DIGITS} digits`;
-  }
-  if (Number(value) < 1) return "a fence must be from 1";
-  return undefined;
-}
+export { replicaPathFenceProblem } from "./replica_path_fence.ts";
 
 function pad(fence: number): string {
   return String(fence).padStart(FENCE_DIGITS, "0");
@@ -151,11 +134,12 @@ export async function assertReplicaPathConformance(
     sha256.slice(0, 2)
   }/${sha256}`;
 
-  for (const key of [...removedKeys, ...keptKeys, lookAlikeKey]) {
-    await options.writeObject(key, bytes);
-  }
-  await storage.put(namespace, sha256, chunk, signal);
   try {
+    for (const key of [...removedKeys, ...keptKeys, lookAlikeKey]) {
+      await options.writeObject(key, bytes);
+    }
+    await storage.put(namespace, sha256, chunk, signal);
+
     const listed = await store.list(signal);
     assert(
       listed.every((name) => typeof name === "string" && !name.includes("/")),
@@ -228,9 +212,11 @@ export async function assertReplicaPathConformance(
       );
     }
   } finally {
-    await store.removePath(removed, signal);
-    await store.removePath(kept, signal);
-    await options.deleteObject(lookAlikeKey);
-    await storage.delete(namespace, sha256, signal);
+    // Best effort: a cleanup that fails must not hide the check that did.
+    const quietly = (cleanup: () => Promise<void>) => cleanup().catch(() => {});
+    await quietly(() => store.removePath(removed, signal));
+    await quietly(() => store.removePath(kept, signal));
+    await quietly(() => options.deleteObject(lookAlikeKey));
+    await quietly(() => storage.delete(namespace, sha256, signal));
   }
 }
