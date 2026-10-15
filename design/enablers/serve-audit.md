@@ -87,7 +87,8 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    date-partitioned JSONL (`events/YYYY-MM-DD/<uuid>.jsonl`) to every
    configured **AuditStore** target. Each target can set its own retention
    (`retention.days`); a target without one takes the repository's
-   `.swamp.yaml` `garbageCollection.audit` (else `retention`), rounded up to
+   `.swamp.yaml` `garbageCollection.audit` (else `retention`) when
+   `automatic` is on, rounded up to
    whole days (swamp-club#3473). Old date partitions are deleted
    automatically. The repository default is read when serve starts, so a
    change to it needs a restart.

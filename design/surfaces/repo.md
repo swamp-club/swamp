@@ -237,10 +237,10 @@ garbageCollection:
   retention: 30d          # default for every kind below
   automatic: true         # enforce it: serve timer, CLI end of command
   workflowRuns: 14d       # run records, run logs, wait records, claims
-  evaluatedSnapshots: 3d  # must not be longer than workflowRuns
+  evaluatedSnapshots: 3d  # must not be longer than workflowRuns; aged from the run's finish
   outputs: 7d             # method outputs and their run logs
   data: 30d               # every data version, the latest included
-  audit: 90d              # .swamp/audit logs; default for serve audit stores
+  audit: 90d              # .swamp/audit logs; default for serve audit stores (with automatic on)
   bookkeeping: 24h        # serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
 ```
 
@@ -288,11 +288,16 @@ garbageCollection:
     after the lock was taken releases it at once.
     Read-only commands, hook mode and `swamp serve` itself never run one. A
     failure is logged at debug and never fails the command.
+- **Without `automatic`**: the keys only set the manual commands' defaults
+  (`swamp run gc`, `swamp data gc`); audit logs keep their 7 days and serve's
+  worker GC its 24-hour grace.
 - **Watermarks**: one record per kind at `_control/retention/watermarks/<kind>`
   in the datastore (below the namespace; the extension's control plane on a
   custom datastore), overwritten on each pass: cutoff, retention, last pass,
-  counts, and whether the pass finished. Lookups of a missing run, output or
-  data item add "items before `<cutoff>` have been reaped by retention".
+  counts, and whether the pass finished. A kind a stopped pass never reached
+  keeps its previous record. Lookups of a missing run, output or data item
+  add "items before `<cutoff>` have been reaped by retention" once that
+  kind's last pass finished, reading the record with a 2-second deadline.
 - **Proof**: `swamp doctor datastores --retention` scans storage for items
   past their cutoff and fails with the list; with `automatic` on it allows
   two hours past the cutoff (one pass interval and slack). Serve health

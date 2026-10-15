@@ -112,6 +112,11 @@ function createMockSnapshotRepo(
   return mock;
 }
 
+/** Finished runs with no recorded completion time. */
+function finishedRuns(...ids: string[]): Map<string, number | undefined> {
+  return new Map(ids.map((id) => [id, undefined]));
+}
+
 Deno.test("gcAll: delegates to both repos with correct cutoffs", async () => {
   const workflowRunRepo = createMockWorkflowRunRepo({
     deleted: 5,
@@ -581,12 +586,12 @@ Deno.test("gcRunSnapshots: with a snapshot retention removes old snapshots of fi
     undefined,
     () =>
       Promise.resolve(
-        new Set([
+        finishedRuns(
           "old-succeeded",
           "old-failed",
           "old-cancelled",
           "young-succeeded",
-        ]),
+        ),
       ),
   );
 
@@ -605,6 +610,32 @@ Deno.test("gcRunSnapshots: with a snapshot retention removes old snapshots of fi
   ]);
 });
 
+Deno.test("gcRunSnapshots: a run that finished recently keeps its old snapshot until the snapshot retention passes its finish", async () => {
+  // Started (and snapshotted) 40 days ago, suspended, finished 2 days ago.
+  const snapshotRepo = createMockSnapshotRepo([snapshot("late-finisher", 40)]);
+  const service = new DefaultRunLifecycleService(
+    createMockWorkflowRunRepo(),
+    createMockOutputRepo(),
+    snapshotRepo,
+    () => Promise.resolve(new Set(["late-finisher"])),
+    undefined,
+    () =>
+      Promise.resolve(
+        new Map([["late-finisher", Date.now() - 2 * 86_400_000]]),
+      ),
+  );
+
+  const result = await service.gcRunSnapshots({
+    retentionDays: 30,
+    deletedRunIds: [],
+    dryRun: false,
+    snapshotRetentionDays: 7,
+  });
+
+  assertEquals(result, { deleted: 0, bytesReclaimed: 0 });
+  assertEquals(snapshotRepo.deletedRunIds, []);
+});
+
 Deno.test("gcRunSnapshots: without a snapshot retention keeps every live run's snapshot and never reads run statuses", async () => {
   const snapshotRepo = createMockSnapshotRepo([
     snapshot("old-succeeded", 40),
@@ -619,7 +650,7 @@ Deno.test("gcRunSnapshots: without a snapshot retention keeps every live run's s
     undefined,
     () => {
       statusReads++;
-      return Promise.resolve(new Set(["old-succeeded"]));
+      return Promise.resolve(finishedRuns("old-succeeded"));
     },
   );
 
@@ -642,7 +673,7 @@ Deno.test("gcAll: passes the snapshot retention to the snapshot pass, and a dry 
     snapshotRepo,
     () => Promise.resolve(new Set(["old-succeeded"])),
     undefined,
-    () => Promise.resolve(new Set(["old-succeeded"])),
+    () => Promise.resolve(finishedRuns("old-succeeded")),
   );
 
   const result = await service.gcAll({

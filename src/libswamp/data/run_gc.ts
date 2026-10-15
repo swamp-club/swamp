@@ -171,8 +171,8 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
  */
 async function listTerminalRunIds(
   workflowRunRepo: YamlWorkflowRunRepository,
-): Promise<ReadonlySet<string>> {
-  const finished = new Set<string>();
+): Promise<ReadonlyMap<string, number | undefined>> {
+  const finished = new Map<string, number | undefined>();
   const unfinished = new Set<string>();
   for (const workflowId of await workflowRunRepo.listWorkflowIds()) {
     for (
@@ -180,8 +180,9 @@ async function listTerminalRunIds(
         workflowId,
       )
     ) {
-      if (TERMINAL_RUN_STATUSES.has(summary.status)) finished.add(summary.id);
-      else unfinished.add(summary.id);
+      if (TERMINAL_RUN_STATUSES.has(summary.status)) {
+        finished.set(summary.id, summary.completedAt?.getTime());
+      } else unfinished.add(summary.id);
     }
   }
   for (const id of unfinished) finished.delete(id);

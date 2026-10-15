@@ -282,9 +282,18 @@ Deno.test("createRunGcDeps: a snapshot retention removes a finished run's old sn
     });
     const runRepo = new YamlWorkflowRunRepository(dir);
     const snapshotRepo = new YamlEvaluatedWorkflowRepository(dir);
-    const finished = WorkflowRun.create(workflow);
-    finished.start();
-    finished.endAsCancelled("test");
+    // Finished ten days ago, as old as its snapshot: a run that finished
+    // recently keeps its snapshot however old (see run_lifecycle_service).
+    const base = WorkflowRun.create(workflow);
+    base.start();
+    const tenDaysAgoIso = new Date(Date.now() - 10 * 86_400_000)
+      .toISOString();
+    const finished = WorkflowRun.fromData({
+      ...base.toData(),
+      status: "cancelled",
+      startedAt: tenDaysAgoIso,
+      completedAt: tenDaysAgoIso,
+    });
     await runRepo.save(workflow.id, finished);
     const running = WorkflowRun.create(workflow);
     running.start();

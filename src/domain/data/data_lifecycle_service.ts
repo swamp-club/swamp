@@ -601,19 +601,19 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
           if (latest && latest.createdAt.getTime() < cutoff.getTime()) {
             const sizes = new Map(group.map((v) => [v.version, v.size]));
             const versions = await repo.listVersions(type, modelId, dataName);
-            let bytes = 0;
-            for (const version of versions) {
-              bytes += sizes.get(version) ??
-                (await repo.findByName(type, modelId, dataName, version))
-                  ?.size ??
-                0;
-            }
             // Version by version, never the name's directory: a writer
             // without the global lock (a serve run) may add a version
             // after this read, and the per-version path keeps whatever
             // was not listed here, re-pointing latest at it.
             const listed = versions.filter((v) => v <= latestVersion)
               .sort((a, b) => a - b);
+            let bytes = 0;
+            for (const version of listed) {
+              bytes += sizes.get(version) ??
+                (await repo.findByName(type, modelId, dataName, version))
+                  ?.size ??
+                0;
+            }
             if (!dryRun) {
               for (const version of listed) {
                 await repo.delete(type, modelId, dataName, version);

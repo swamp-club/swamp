@@ -275,7 +275,7 @@ Deno.test("resolveRepoAuditRetentionDays: audit key rounds up to whole days", as
   await withTempDir(async (root) => {
     const repo = await makeRepoWithMarker(
       join(root, "repo"),
-      "swampVersion: 1\ngarbageCollection:\n  retention: 90d\n  audit: 36h\n",
+      "swampVersion: 1\ngarbageCollection:\n  automatic: true\n  retention: 90d\n  audit: 36h\n",
     );
     assertEquals(await resolveRepoAuditRetentionDays(repo), 2);
   });
@@ -285,9 +285,15 @@ Deno.test("resolveRepoAuditRetentionDays: falls back to the retention key", asyn
   await withTempDir(async (root) => {
     const repo = await makeRepoWithMarker(
       join(root, "repo"),
-      "swampVersion: 1\ngarbageCollection:\n  retention: 90d\n",
+      "swampVersion: 1\ngarbageCollection:\n  automatic: true\n  retention: 90d\n",
     );
     assertEquals(await resolveRepoAuditRetentionDays(repo), 90);
+    // Without automatic, the repo's value is left to manual gc.
+    await Deno.writeTextFile(
+      join(repo, ".swamp.yaml"),
+      "swampVersion: 1\ngarbageCollection:\n  retention: 90d\n",
+    );
+    assertEquals(await resolveRepoAuditRetentionDays(repo), 7);
   });
 });
 
@@ -307,7 +313,7 @@ Deno.test("recordHookEntry: cleanup has removed files older than the repo's audi
   await withTempDir(async (root) => {
     const repo = await makeRepoWithMarker(
       join(root, "repo"),
-      "swampVersion: 1\ngarbageCollection:\n  audit: 2d\n",
+      "swampVersion: 1\ngarbageCollection:\n  automatic: true\n  audit: 2d\n",
     );
     const auditDir = swampPath(repo, SWAMP_SUBDIRS.audit);
     await Deno.mkdir(auditDir, { recursive: true });

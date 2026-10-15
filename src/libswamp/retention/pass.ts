@@ -122,6 +122,7 @@ export async function runRetentionPass(
     complete: true,
   };
 
+  const started = new Set<RetentionKind>();
   const shouldStop = (): RetentionPassResult["stoppedBy"] => {
     if (options.isStopping?.()) return "stopping";
     if (
@@ -150,6 +151,7 @@ export async function runRetentionPass(
         };
         result.kinds.push(kindResult);
         if (result.stoppedBy) continue;
+        started.add(collector.kind);
 
         try {
           while (true) {
@@ -187,6 +189,9 @@ export async function runRetentionPass(
       span.setAttribute("retention.complete", result.complete);
 
       for (const kind of result.kinds) {
+        // A kind the pass never reached keeps its previous watermark: its
+        // cutoff has not been applied yet.
+        if (!started.has(kind.kind)) continue;
         const watermark: RetentionWatermark = {
           kind: kind.kind,
           cutoff: kind.cutoff,

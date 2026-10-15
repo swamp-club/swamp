@@ -109,7 +109,9 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
      * cancelled). Read only when a snapshot retention is given; absent, no
      * snapshot of an existing run is removed before its run.
      */
-    private readonly listTerminalRunIds?: () => Promise<ReadonlySet<string>>,
+    private readonly listTerminalRunIds?: () => Promise<
+      ReadonlyMap<string, number | undefined>
+    >,
   ) {}
 
   async gcWorkflowRuns(options: {
@@ -171,7 +173,7 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
           snapshot.modifiedAt.getTime() < snapshotCutoffMs
         )
       ? await this.listTerminalRunIds()
-      : new Set<string>();
+      : new Map<string, number | undefined>();
 
     let deleted = 0;
     let bytesReclaimed = 0;
@@ -179,9 +181,13 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
       const modifiedMs = snapshot.modifiedAt.getTime();
       const orphaned = !existingRuns.has(snapshot.runId) &&
         modifiedMs < cutoffMs;
+      // A snapshot is written when its run starts; a run suspended for long
+      // finishes much later, so its snapshot is aged from whichever is
+      // later, never before the run itself finished.
+      const finishedAt = finishedRuns.get(snapshot.runId);
       const expired = snapshotCutoffMs !== undefined &&
-        modifiedMs < snapshotCutoffMs && existingRuns.has(snapshot.runId) &&
-        finishedRuns.has(snapshot.runId);
+        existingRuns.has(snapshot.runId) && finishedRuns.has(snapshot.runId) &&
+        Math.max(modifiedMs, finishedAt ?? modifiedMs) < snapshotCutoffMs;
       if (!collectedRuns.has(snapshot.runId) && !orphaned && !expired) {
         continue;
       }

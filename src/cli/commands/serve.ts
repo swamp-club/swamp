@@ -4779,11 +4779,14 @@ export const serveCommand = new Command()
       const auditStores = auditStoresWithConfig.map((s) => s.store);
       if (auditStores.length > 0) {
         // A store without its own retention.days keeps the repo's audit
-        // retention (.swamp.yaml garbageCollection), read once at boot: a
-        // change to it needs a serve restart.
-        const repoAuditRetentionMs = RetentionPolicy.fromConfig(
+        // retention (.swamp.yaml garbageCollection) when `automatic` is on,
+        // read once at boot: a change to it needs a serve restart.
+        const repoAuditPolicy = RetentionPolicy.fromConfig(
           repoMarker?.garbageCollection,
-        ).retentionMs("audit");
+        );
+        const repoAuditRetentionMs = repoAuditPolicy.automatic
+          ? repoAuditPolicy.retentionMs("audit")
+          : undefined;
         const storesWithRetention = auditStoresWithConfig.map(
           ({ store, entry }) => {
             const retentionDays = resolveAuditStoreRetentionDays(

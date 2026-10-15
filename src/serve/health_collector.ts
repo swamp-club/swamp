@@ -173,6 +173,27 @@ export function classifyHealthStatus(
   return "degraded";
 }
 
+/** How long a health snapshot waits for the retention watermarks. */
+export const RETENTION_HEALTH_READ_TIMEOUT_MS = 2_000;
+
+/** Resolves with the read, or null once `ms` pass first. */
+async function raceRetentionRead<T>(
+  read: Promise<T | null>,
+  ms: number,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export class HealthCollector {
   readonly #deps: HealthCollectorDeps;
   #inflight: Promise<HealthSnapshot> | null = null;
@@ -255,8 +276,12 @@ export class HealthCollector {
 
     // Retention is context, never a health verdict: a failed read leaves it
     // out rather than failing the snapshot.
+    // Bounded: a stalled control plane must not hang health probes.
     const retention = this.#deps.retentionProvider
-      ? await this.#deps.retentionProvider.retention().catch(() => null)
+      ? await raceRetentionRead(
+        this.#deps.retentionProvider.retention().catch(() => null),
+        RETENTION_HEALTH_READ_TIMEOUT_MS,
+      )
       : null;
 
     const ready = this.#deps.isReady();

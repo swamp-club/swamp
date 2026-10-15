@@ -114,3 +114,37 @@ Deno.test("withReapedHint: returns the error unchanged when the repository rejec
   const error = notFound("Data", "x");
   assertEquals(await withReapedHint(error, "data", failingWatermarks()), error);
 });
+
+Deno.test("findReapedBefore: null while the kind's last pass has not finished", async () => {
+  const incomplete = {
+    get: () =>
+      Promise.resolve({
+        kind: "workflowRuns" as const,
+        cutoff: "2026-10-01T00:00:00.000Z",
+        retention: "14d",
+        lastPassAt: "2026-10-15T00:00:00.000Z",
+        complete: false,
+        deleted: 0,
+        bytesReclaimed: 0,
+      }),
+    getAll: () => Promise.resolve([]),
+    put: () => Promise.resolve(),
+    claimHourlyPass: () => Promise.resolve(true),
+  };
+  assertEquals(await findReapedBefore(incomplete, "workflowRuns"), null);
+});
+
+Deno.test("findReapedBefore: null when the watermark read outlasts its deadline", async () => {
+  let release!: () => void;
+  const stalled = {
+    get: () =>
+      new Promise<null>((resolve) => {
+        release = () => resolve(null);
+      }),
+    getAll: () => Promise.resolve([]),
+    put: () => Promise.resolve(),
+    claimHourlyPass: () => Promise.resolve(true),
+  };
+  assertEquals(await findReapedBefore(stalled, "workflowRuns", 10), null);
+  release();
+});

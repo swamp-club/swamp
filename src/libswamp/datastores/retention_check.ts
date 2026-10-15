@@ -347,6 +347,9 @@ async function checkSnapshots(
   const statuses = new Map(
     records.map((r) => [r.runId.toLowerCase(), r.status]),
   );
+  const finishedAt = new Map(
+    records.map((r) => [r.runId.toLowerCase(), r.timestampMs]),
+  );
   // Orphans are judged against the run retention; with none, against the
   // snapshot retention, never younger than the orphan age guard.
   const orphanCutoffMs = Math.min(
@@ -364,7 +367,10 @@ async function checkSnapshots(
       if (modifiedMs < orphanCutoffMs) list.add(snapshot.runId, modifiedMs);
       continue;
     }
-    if (modifiedMs >= snapshotCutoffMs) continue;
+    // As retention ages it: from the later of the snapshot and its run's
+    // finish, so a long-suspended run's snapshot is not overdue early.
+    const agedFromMs = Math.max(modifiedMs, finishedAt.get(key) ?? modifiedMs);
+    if (agedFromMs >= snapshotCutoffMs) continue;
     const status = statuses.get(key);
     if (
       status !== null && status !== undefined && TERMINAL_STATUSES.has(status)

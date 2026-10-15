@@ -141,7 +141,7 @@ Deno.test("runRetentionPass: a kind with no retention is left alone", async () =
   assertEquals(watermarks.records.has("audit"), false);
 });
 
-Deno.test("runRetentionPass: stops at a batch boundary when stopping, leaving watermarks incomplete", async () => {
+Deno.test("runRetentionPass: stops at a batch boundary when stopping, leaving the started kind incomplete and unreached kinds untouched", async () => {
   const calls: string[] = [];
   let stopping = false;
   const watermarks = new MemoryWatermarks();
@@ -167,8 +167,8 @@ Deno.test("runRetentionPass: stops at a batch boundary when stopping, leaving wa
   assertEquals(calls.length, 1);
   assertEquals(watermarks.records.get("outputs")?.complete, false);
   assertEquals(watermarks.records.get("outputs")?.deleted, 3);
-  // Kinds not reached are recorded as incomplete too.
-  assertEquals(watermarks.records.get("data")?.complete, false);
+  // A kind the pass never reached keeps its previous watermark (none here).
+  assertEquals(watermarks.records.has("data"), false);
 });
 
 Deno.test("runRetentionPass: backs off when busy before the first batch", async () => {

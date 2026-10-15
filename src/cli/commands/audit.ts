@@ -177,7 +177,11 @@ export async function resolveRepoAuditRetentionDays(
       RepoPath.create(repoDir),
     );
     const policy = RetentionPolicy.fromConfig(marker?.garbageCollection);
-    return auditRetentionDays(policy.retentionMs("audit"));
+    // Like every other kind, the repo's value applies only when retention
+    // is automatic; otherwise the log keeps its own 7 days.
+    return auditRetentionDays(
+      policy.automatic ? policy.retentionMs("audit") : undefined,
+    );
   } catch {
     return DEFAULT_AUDIT_RETENTION_DAYS;
   }

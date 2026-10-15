@@ -44,14 +44,41 @@ export interface ReapedBefore {
  * no repository is given, or it cannot be read. Never throws: the answer only
  * enriches a not-found error or a listing.
  */
+/** How long a not-found answer waits for the retention watermark. */
+export const REAPED_LOOKUP_TIMEOUT_MS = 2_000;
+
+/** Resolves with `promise`, or null once `ms` pass first. */
+async function withDeadline<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function findReapedBefore(
   watermarks: RetentionWatermarkRepository | undefined,
   kind: RetentionKind,
+  timeoutMs: number = REAPED_LOOKUP_TIMEOUT_MS,
 ): Promise<ReapedBefore | null> {
   if (!watermarks) return null;
   try {
-    const watermark = await watermarks.get(kind);
-    if (!watermark) return null;
+    // A hint only: a slow control plane never holds up the answer.
+    const watermark = await withDeadline(
+      watermarks.get(kind),
+      timeoutMs,
+    );
+    // Only a pass that finished has removed everything before its cutoff.
+    if (!watermark || !watermark.complete) return null;
     const cutoff = reapedBefore([watermark], kind);
     if (!cutoff) return null;
     return { cutoff: cutoff.toISOString(), retention: watermark.retention };

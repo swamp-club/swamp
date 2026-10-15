@@ -4005,15 +4005,19 @@ export function handleMessage(
       task = audited(
         confirmed(() =>
           withGcMutex(ctx, () =>
-            withSyncGate(ctx.syncGate, () =>
-              handleDataGc(
-                socket,
-                ctx,
-                request.id,
-                request.payload,
-                controller,
-                principal,
-              )))
+            // A request cancelled while it waited behind a retention pass
+            // does not run once the pass ends.
+            controller.signal.aborted
+              ? Promise.resolve()
+              : withSyncGate(ctx.syncGate, () =>
+                handleDataGc(
+                  socket,
+                  ctx,
+                  request.id,
+                  request.payload,
+                  controller,
+                  principal,
+                )))
         ),
         auditOpts("admin", "data", "*"),
       );
@@ -4038,15 +4042,19 @@ export function handleMessage(
       task = audited(
         confirmed(() =>
           withGcMutex(ctx, () =>
-            withSyncGate(ctx.syncGate, () =>
-              handleRunGc(
-                socket,
-                ctx,
-                request.id,
-                request.payload,
-                controller,
-                principal,
-              )))
+            // A request cancelled while it waited behind a retention pass
+            // does not run once the pass ends.
+            controller.signal.aborted
+              ? Promise.resolve()
+              : withSyncGate(ctx.syncGate, () =>
+                handleRunGc(
+                  socket,
+                  ctx,
+                  request.id,
+                  request.payload,
+                  controller,
+                  principal,
+                )))
         ),
         auditOpts("admin", "run", "*"),
       );

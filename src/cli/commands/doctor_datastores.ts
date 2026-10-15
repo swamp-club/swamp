@@ -533,6 +533,14 @@ export const doctorDatastoresCommand = withRemoteOptions(
   ]);
   cliCtx.logger.debug("Executing doctor datastores command");
 
+  // Refused before the remote branch, so a serve sees the same flags as a
+  // local run.
+  if (options.retention && options.repair) {
+    throw new UserError(
+      "--retention is a check and cannot be combined with --repair.",
+    );
+  }
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(
@@ -565,12 +573,6 @@ export const doctorDatastoresCommand = withRemoteOptions(
   if (options.yes && !options.repair) {
     throw new UserError("The --yes flag requires --repair.");
   }
-  if (options.retention && options.repair) {
-    throw new UserError(
-      "--retention is a check and cannot be combined with --repair.",
-    );
-  }
-
   const repoDir = resolveRepoDir(options.repoDir);
   const { engine } = await resolveDatastoreForRepo(repoDir);
   const libCtx = createLibSwampContext();
