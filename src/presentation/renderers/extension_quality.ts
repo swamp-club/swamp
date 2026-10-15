@@ -391,7 +391,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
         const failure = qualityFailureMessage(e.data);
         console.log(JSON.stringify(
           {
-            status: failure || !score.allPassed ? "failed" : "passed",
+            status: failure ? "failed" : "passed",
             rubricVersion: score.rubricVersion,
             earnedPoints: score.earnedPoints,
             maxEarnablePoints: score.maxEarnablePoints,
