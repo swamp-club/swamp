@@ -429,13 +429,14 @@ end of a writing command at most hourly:
 
 ```yaml
 garbageCollection:
-  retention: 30d # default for every kind
+  retention: 30d # default for every kind except data
   automatic: true # off unless set
-  workflowRuns: 14d # optional per kind: evaluatedSnapshots, outputs, data, audit, bookkeeping
+  workflowRuns: 14d # optional per kind: evaluatedSnapshots, outputs, audit, bookkeeping
 ```
 
-`data` retention also deletes a behavior's latest version once it is older than
-the cutoff. Running and suspended runs, and serve access state (tokens, grants,
+Data retention is opt-in: only an explicit `data: <duration>` key enables it,
+and it also deletes a behavior's latest version once it is older than the
+cutoff. Running and suspended runs, and serve access state (tokens, grants,
 workers), are never removed. Check with `swamp doctor datastores --retention`.
 
 ### Data Versions Not Visible

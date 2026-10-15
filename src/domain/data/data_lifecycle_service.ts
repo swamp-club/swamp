@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { maxOf } from "../array_extrema.ts";
 import { getLogger } from "@logtape/logtape";
 import type { Data } from "./data.ts";
 import type { Lifetime } from "./data_metadata.ts";
@@ -116,6 +117,13 @@ export interface DeleteDataOlderThanOptions {
    * then leaves them out of its candidates. `isExempt` is still checked.
    */
   exemptTypes?: readonly string[];
+  /**
+   * Keep each name's latest version even when it is past the cutoff, so a
+   * name is never emptied. Set where nothing keeps a deleted name's version
+   * numbers from being reused (a v3 datastore, until its partition
+   * high-water mark reaches version allocation).
+   */
+  keepLatestVersion?: boolean;
 }
 
 /** Versions read from the repository per page of retention candidates. */
@@ -604,7 +612,10 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
             latestVersion,
           );
 
-          if (latest && latest.createdAt.getTime() < cutoff.getTime()) {
+          if (
+            !options.keepLatestVersion && latest &&
+            latest.createdAt.getTime() < cutoff.getTime()
+          ) {
             const sizes = new Map(group.map((v) => [v.version, v.size]));
             const versions = await repo.listVersions(type, modelId, dataName);
             // Version by version, never the name's directory: a writer
@@ -621,6 +632,18 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
                 0;
             }
             if (!dryRun) {
+              // Recorded first: a write after the name is emptied continues
+              // above its last number, never reusing one another clone may
+              // still hold.
+              const newest = maxOf(listed);
+              if (newest !== undefined) {
+                await repo.raiseVersionFloor?.(
+                  type,
+                  modelId,
+                  dataName,
+                  newest,
+                );
+              }
               for (const version of listed) {
                 await repo.delete(type, modelId, dataName, version);
               }

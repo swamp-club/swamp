@@ -208,6 +208,8 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       retention: "7d",
       automatic: true,
       evaluatedSnapshots: "2d",
+      // Data retention applies only when set on its own.
+      data: "7d",
       audit: "3d",
     });
     const workflow = fixtureWorkflow();
@@ -386,6 +388,7 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
         RetentionPolicy.fromConfig({
           retention: "7d",
           evaluatedSnapshots: "2d",
+          data: "7d",
           audit: "3d",
         }).durationFor(watermark.kind),
       );

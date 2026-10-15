@@ -42,7 +42,10 @@ const NOW = new Date();
 const OLD = new Date(NOW.getTime() - 40 * DAY_MS);
 const RECENT = new Date(NOW.getTime() - DAY_MS);
 
-const POLICY_30D = RetentionPolicy.fromConfig({ retention: "30d" });
+const POLICY_30D = RetentionPolicy.fromConfig({
+  retention: "30d",
+  data: "30d",
+});
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-retention-check-" });
@@ -278,6 +281,7 @@ Deno.test("scanRetention: lists every kind's items older than the cutoff, and ke
       RetentionPolicy.fromConfig({
         retention: "30d",
         evaluatedSnapshots: "30d",
+        data: "30d",
       }),
       NOW,
     );

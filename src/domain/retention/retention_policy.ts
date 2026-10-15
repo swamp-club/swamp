@@ -36,7 +36,10 @@ export type RetentionKind = typeof RETENTION_KINDS[number];
 
 /** The `.swamp.yaml` `garbageCollection` block. */
 export interface RetentionConfig {
-  /** Default timeframe for every kind without its own value. */
+  /**
+   * Default timeframe for every kind without its own value, except `data`,
+   * which must be set on its own.
+   */
   retention?: string;
   /** Apply retention automatically (serve timer, CLI end of command). */
   automatic?: boolean;
@@ -219,6 +222,10 @@ export class RetentionPolicy {
    * with their runs (and orphans are swept) whenever runs are reaped.
    */
   durationFor(kind: RetentionKind): string | undefined {
+    // Data retention deletes latest versions, a behavior's current state
+    // included: it applies only when `data` is set, never from the shared
+    // default.
+    if (kind === "data") return this.config.data;
     if (kind === "evaluatedSnapshots") {
       return this.config.evaluatedSnapshots ??
         this.durationFor("workflowRuns");

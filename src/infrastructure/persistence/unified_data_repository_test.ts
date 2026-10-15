@@ -31,6 +31,7 @@ import {
   ACCEPTED_SHORT_CONTENT_TTL_MS,
   FileSystemUnifiedDataRepository,
   sortedSubdirectoryNames,
+  VERSION_FLOOR_SUFFIX,
 } from "./unified_data_repository.ts";
 import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
@@ -3276,4 +3277,72 @@ Deno.test("reassertLatestVersion: a version deleted on purpose changes nothing a
     assertEquals(paths, undefined);
     assertEquals(await Deno.readTextFile(latestPath), before);
   });
+});
+
+Deno.test("allocateVersion: never allocates at or below a raised version floor (swamp-club#3473)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: Array<string | undefined> = [];
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      (relPath?: string) => {
+        calls.push(relPath);
+        return Promise.resolve();
+      },
+    );
+    const enc = (s: string) => new TextEncoder().encode(s);
+
+    // Emptied as retention does: floor first, then each version.
+    for (const v of ["a", "b", "c"]) {
+      await repo.save(testType, "m1", makeData("reaped"), enc(v));
+    }
+    calls.length = 0;
+    await repo.raiseVersionFloor(testType, "m1", "reaped", 3);
+    const floorPath = `${
+      repo.getDataNameDir(testType, "m1", "reaped")
+    }${VERSION_FLOOR_SUFFIX}`;
+    // Marked for the push, so other clones get it.
+    assertEquals(calls, [floorPath]);
+    for (const v of [1, 2, 3]) {
+      await repo.delete(testType, "m1", "reaped", v);
+    }
+    assertEquals(await repo.listVersions(testType, "m1", "reaped"), []);
+    const next = await repo.save(testType, "m1", makeData("reaped"), enc("d"));
+    assertEquals(next.version, 4);
+
+    // A lower floor never lowers it.
+    await repo.raiseVersionFloor(testType, "m1", "reaped", 2);
+    assertEquals((await Deno.readTextFile(floorPath)).trim(), "3");
+
+    // A second repository over the same files (another clone after a pull)
+    // continues above the floor too.
+    const other = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      new CatalogStore(join(tmpDir, "_catalog_other.db")),
+    );
+    await repo.raiseVersionFloor(testType, "m1", "reaped", 4);
+    await repo.delete(testType, "m1", "reaped", 4);
+    const fromOther = await other.save(
+      testType,
+      "m1",
+      makeData("reaped"),
+      enc("e"),
+    );
+    assertEquals(fromOther.version, 5);
+    // The floor file is no data name.
+    assertEquals(
+      (await other.findAllForModel(testType, "m1")).map((d) => d.name),
+      ["reaped"],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
 });

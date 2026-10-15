@@ -185,3 +185,15 @@ Deno.test("RetentionPolicy.cutoff: an unrepresentable cutoff means no retention"
   const policy = RetentionPolicy.fromConfig({ retention: "300000y" });
   assertEquals(policy.cutoff("workflowRuns", new Date()), undefined);
 });
+
+Deno.test("RetentionPolicy.durationFor: data never follows the shared default", () => {
+  const policy = RetentionPolicy.fromConfig({ retention: "30d" });
+  assertEquals(policy.durationFor("data"), undefined);
+  assertEquals(policy.durationFor("outputs"), "30d");
+  assertEquals(
+    RetentionPolicy.fromConfig({ retention: "30d", data: "90d" }).durationFor(
+      "data",
+    ),
+    "90d",
+  );
+});

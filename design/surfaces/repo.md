@@ -234,12 +234,12 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
 
 ```yaml
 garbageCollection:
-  retention: 30d          # default for every kind below
+  retention: 30d          # default for every kind below except data
   automatic: true         # enforce it: serve timer, CLI end of command
   workflowRuns: 14d       # run records, run logs, wait records, claims
   evaluatedSnapshots: 3d  # optional; unset, snapshots go with their runs (orphans swept)
   outputs: 7d             # method outputs and their run logs
-  data: 30d               # every data version, the latest included
+  data: 30d               # opt-in only: every data version, the latest included
   audit: 90d              # .swamp/audit logs; default for serve audit stores (with automatic on)
   bookkeeping: 24h        # serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
 ```
@@ -270,13 +270,25 @@ garbageCollection:
   `retention_exemptions.ts`); a data name with a deferred write not yet
   promoted. Definitions, vaults and repo config are configuration, not
   history.
-- **Data**: strict. A name whose latest version is older than the cutoff is
-  deleted, version by version (so a version a serve run writes meanwhile
-  survives and becomes latest), and `data.latest()` for a behavior that has
-  not run within the window finds nothing. `retention` alone applies this
-  too, in manual `swamp data gc` as well. Candidates come from the catalog's
+- **Data**: opt-in and strict. Only an explicit `data` key turns it on; the
+  shared `retention` never does, since it deletes latest versions, a
+  behavior's current state included. A name whose latest version is older
+  than the cutoff is deleted, version by version (so a version a serve run
+  writes meanwhile survives and becomes latest), and `data.latest()` for a
+  behavior that has not run within the window finds nothing. It applies to
+  manual `swamp data gc` too. Candidates come from the catalog's
   `created_at` index, not a scan. Grants and groups are exempt in both their
   stored spellings (`swamp/grant`, `@swamp/grant`).
+- **Version numbers never go back after retention**: before retention
+  empties a name it records the name's newest version in a file beside the
+  name's directory (`<name>..version-floor`; `..` never occurs in a data
+  name), synced like any data file, and the next write continues above it.
+  A clone that pulled the old version 1 never sees a different version 1.
+  `swamp data delete` and the other delete paths do not raise the floor yet.
+  On a v3 datastore the floor is not written (the partition's high-water
+  mark does not reach version allocation yet), so retention keeps each
+  name's latest version there instead of emptying it, and
+  `doctor --retention` counts that version as kept.
 - **Automatic passes** (`runRepoRetention`, `src/libswamp/retention/`): the
   collectors run in order (runs, snapshots, outputs, data, audit), in
   batches of 100. Each batch is traced (`swamp.retention.batch`).
@@ -294,7 +306,9 @@ garbageCollection:
     `src/cli/retention_teardown.ts`): at most hourly per checkout
     (`.swamp/retention-last-attempt.json`) and per datastore (the same hourly
     claim), taking the datastore lock through `requireInitializedRepo` with a
-    2-second wait (`lockWaitMs`), stopping after 10 seconds of batches and
+    2-second wait (`lockWaitMs`; v2 and custom datastores: on v3 the command
+    already holds the writer lease, whose contention is settled when the
+    command starts, so the pass runs as that writer), stopping after 10 seconds of batches and
     capping its v3 compaction and chunk sweep at 10 seconds each. A failure
     after the lock was taken releases it at once.
     Read-only commands, hook mode and `swamp serve` itself never run one. A

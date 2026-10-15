@@ -252,13 +252,16 @@ Post-run GC applies both count and duration caps; its failures warn and never
 fail the run. `swamp data gc` phase 2 collects by count or duration.
 `swamp data delete` confirms unless `--force`/`--yes`; `--dry-run` previews
 `--prefix`/`--all`. `swamp run gc` uses `.swamp.yaml` `garbageCollection`,
-otherwise 30 days each. `.swamp.yaml` `garbageCollection.data` (else
-`retention`) is a repository-wide maximum age on top of each spec's own
+otherwise 30 days each. `.swamp.yaml` `garbageCollection.data` (opt-in: never
+from the shared `retention`) is a repository-wide maximum age on top of each spec's own
 policy: `swamp data gc` applies it first, and with `automatic: true` serve
 and the CLI apply it hourly (see [repo.md](../surfaces/repo.md#retention)).
 It ignores a spec's `lifetime: infinite` and count caps, deletes a name whose
 latest version is older than the cutoff, and skips tombstones only in the
-lifetime phase, not here.
+lifetime phase, not here. Before emptying a name it raises the name's
+version floor (`<name>..version-floor` beside its directory), so a later
+write never reuses its numbers; on v3 retention keeps each name's latest
+version instead (see [repo.md](../surfaces/repo.md#retention)).
 
 Expiry rules (`calculateExpiration`, `isExpired`): duration lifetimes expire
 at `createdAt + duration`; `infinite` never; `workflow` and `job` when the

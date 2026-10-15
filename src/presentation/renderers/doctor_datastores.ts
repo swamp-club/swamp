@@ -105,9 +105,11 @@ export function retentionDetailLines(summary: RetentionCheckSummary): string[] {
     );
     lines.push(
       dim(
-        `    Each retention pass folds commits written before ${history.compactionBound} (the outbox safety window); ` +
-          `removed content leaves history only once its remove is folded, chunks after a further 24h. ` +
-          `Fails before ${history.failBefore}.`,
+        `    Content retention removed stays in v3 history until its removal is folded: ` +
+          `each pass folds only commits written before ${history.compactionBound} ` +
+          `(the 7-day outbox safety window), so removed content leaves history about 7 days ` +
+          `after it was removed, and its chunks about 24h after that. ` +
+          `This check fails only for history older than ${history.failBefore}.`,
       ),
     );
   }

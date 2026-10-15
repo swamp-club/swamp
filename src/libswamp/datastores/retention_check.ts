@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { maxOf } from "../../domain/array_extrema.ts";
 import { join, SEPARATOR } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
@@ -147,6 +148,11 @@ export interface RetentionScanSources {
   watermarks?: RetentionWatermarkRepository;
   /** v3 only: how far back the commit history reaches at `now`. */
   v3History?: (now: Date) => Promise<V3RetentionHistory>;
+  /**
+   * Retention keeps each name's latest version (a v3 datastore), so an old
+   * latest is kept by design rather than overdue.
+   */
+  keepLatestVersion?: boolean;
 }
 
 /**
@@ -173,6 +179,9 @@ export function retentionScanSourcesFor(input: {
         v3History: (now: Date) =>
           v3RetentionHistory(input.repoDir, config, now),
       }
+      : {}),
+    ...(resolverEngine(input.datastoreResolver) === "v3"
+      ? { keepLatestVersion: true }
       : {}),
   };
 }
@@ -485,6 +494,7 @@ async function checkOutputs(
 async function checkData(
   dataRepo: NonNullable<RetentionScanSources["dataRepo"]>,
   cutoffMs: number,
+  keepLatestVersion: boolean,
 ): Promise<OverdueList> {
   const list = new OverdueList();
   for (const { data, modelType, modelId } of await dataRepo.findAllGlobal()) {
@@ -510,7 +520,12 @@ async function checkData(
       list.kept += aged.length;
       continue;
     }
+    const latest = maxOf(versions);
     for (const { version, createdMs } of aged) {
+      if (keepLatestVersion && version === latest) {
+        list.kept++;
+        continue;
+      }
       list.add(`${label}@${version}`, createdMs);
     }
   }
@@ -610,7 +625,11 @@ export async function scanRetention(
         );
       case "data":
         return sources.dataRepo
-          ? await checkData(sources.dataRepo, cutoff.getTime())
+          ? await checkData(
+            sources.dataRepo,
+            cutoff.getTime(),
+            sources.keepLatestVersion === true,
+          )
           : null;
       case "audit":
         return await checkAudit(

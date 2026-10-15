@@ -321,3 +321,41 @@ Deno.test("findVersionsCreatedBefore: pages through the catalog oldest first", a
     assertEquals(second.cursor, undefined);
   });
 });
+
+Deno.test("deleteDataOlderThan: with keepLatestVersion, an old name keeps its latest version", async () => {
+  const repo = inMemory();
+  await save(repo, "kept");
+  const newest = await save(repo, "kept");
+  const cutoff = cutoffAfter(newest);
+
+  const result = await service(repo).deleteDataOlderThan(cutoff, {
+    dryRun: false,
+    isExempt,
+    keepLatestVersion: true,
+  });
+
+  assertEquals(result.entriesDeleted, 0);
+  assertEquals(result.versionsDeleted, 1);
+  assertEquals(await repo.listVersions(TYPE, "model-1", "kept"), [2]);
+  assertEquals(repo.getLatestVersionSync(TYPE, "model-1", "kept"), 2);
+});
+
+Deno.test("deleteDataOlderThan: a name emptied on the filesystem keeps counting up on its next write", async () => {
+  await withFsRepo(async (repo) => {
+    await save(repo, "counted");
+    await save(repo, "counted");
+    const newest = await save(repo, "counted");
+    const cutoff = cutoffAfter(newest);
+
+    const result = await service(repo).deleteDataOlderThan(cutoff, {
+      dryRun: false,
+      isExempt,
+    });
+    assertEquals(result.entriesDeleted, 1);
+    assertEquals(await repo.listVersions(TYPE, "model-1", "counted"), []);
+
+    // Another clone may still hold versions 1-3: never reuse them.
+    const next = await save(repo, "counted");
+    assertEquals(next.version, 4);
+  });
+});

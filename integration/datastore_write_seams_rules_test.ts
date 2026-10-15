@@ -764,7 +764,9 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x11)",
   // Two more from reassertLatestVersion (swamp-club#3146): the version
   // directory and the latest marker, both present after it.
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x10)",
+  // swamp-club#3473: deleting a name's newest version writes its version
+  // floor (v2 only).
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x11)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
   // swamp-club#2980, move B. "write|remove" is a delete whose resolved path
@@ -1587,7 +1589,11 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps",
   // `doctor datastores --retention` reports a v3 datastore's history
   // (swamp-club#3473).
-  "src/libswamp/datastores/retention_check.ts: retentionScanSourcesFor",
+  // swamp-club#3473: on v3 retention keeps each name's latest version, as
+  // nothing there stops a deleted name's version numbers being reused yet.
+  "src/libswamp/datastores/retention_check.ts: retentionScanSourcesFor (x2)",
+  "src/libswamp/data/gc.ts: createDataGcDeps",
+  "src/libswamp/retention/collectors.ts: createRetentionCollectors",
   // Commands v3 refuses choose a read-only open before they open, so the
   // refusal takes no writer lease and changes nothing (swamp-club#3359):
   // `datastore sync` and `datastore migrate-index`.

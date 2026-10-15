@@ -131,7 +131,11 @@ Deno.test("retentionDetailLines: lists overdue items, the rest as a count, water
     text,
     "v3 history oldest commit 2026-10-10T00:00:00.000Z",
   );
-  assertStringIncludes(text, "Fails before 2026-10-07T00:00:00.000Z");
+  assertStringIncludes(
+    text,
+    "This check fails only for history older than 2026-10-07T00:00:00.000Z",
+  );
+  assertStringIncludes(text, "removed content leaves history about 7 days");
 });
 
 Deno.test("retentionDetailLines: says retention is not configured", () => {

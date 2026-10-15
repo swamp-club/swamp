@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
-import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import {
+  type DatastorePathResolver,
+  resolverEngine,
+} from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
 import type { ContinuationClaimStore } from "../../domain/workflows/continuation_claim.ts";
@@ -91,6 +94,7 @@ export function createRetentionCollectors(
       sources.dataRepos.catalogStore,
       sources.dataRepos.unifiedDataRepo,
       sources.dataRepos.workflowRunRepo,
+      { keepLatestVersion: resolverEngine(sources.datastoreResolver) === "v3" },
     )
     : createDataGcDeps(
       sources.repoDir,

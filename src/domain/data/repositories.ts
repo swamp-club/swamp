@@ -666,6 +666,18 @@ export interface UnifiedDataRepository {
    * are never listed. Data retention reads its candidates here. Absent when
    * the repository cannot list by age.
    */
+  /**
+   * Keeps a name's version numbers from going back once retention has
+   * deleted its newest versions (swamp-club#3473): later writes allocate
+   * above `version`. Optional; absent, numbers may be reused.
+   */
+  raiseVersionFloor?(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<void>;
+
   findVersionsCreatedBefore?(
     cutoff: Date,
     options: FindVersionsCreatedBeforeOptions,

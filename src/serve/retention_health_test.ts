@@ -48,7 +48,12 @@ function watermarkRepo(
 Deno.test("createRetentionHealthProvider: reports each kind's retention and last pass", async () => {
   const provider = createRetentionHealthProvider({
     readConfig: () =>
-      Promise.resolve({ retention: "30d", automatic: true, audit: "7d" }),
+      Promise.resolve({
+        retention: "30d",
+        automatic: true,
+        data: "30d",
+        audit: "7d",
+      }),
     watermarks: watermarkRepo(() => Promise.resolve([WATERMARK])),
   });
   const retention = await provider.retention();

@@ -207,6 +207,13 @@ function hasVersionMetadataSync(versionDir: string): boolean {
  *     metadata.yaml
  *   latest             # Text file containing current version (e.g. "2")
  */
+
+/**
+ * Suffix of the file beside a data name's directory that holds its version
+ * floor (swamp-club#3473). `..` never occurs in a data name.
+ */
+export const VERSION_FLOOR_SUFFIX = "..version-floor";
+
 export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   private readonly baseDir: string;
 
@@ -1624,6 +1631,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         modelId,
         dataName,
       );
+
       const newLatest = maxOf(promoted);
       if (newLatest !== undefined) {
         await this.updateLatestMarker(type, modelId, dataName, newLatest);
@@ -2944,6 +2952,64 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * A data name's version floor (swamp-club#3473): the highest version it
+   * had when its newest versions were deleted, so a later write never reuses
+   * a number another clone may still hold for different content. One small
+   * file per name beside the name's directory, named with `..` (which no
+   * data name contains) so it can never be a data name, and holding only
+   * the number, so two clones raising different names' floors never
+   * overwrite each other.
+   */
+  private getVersionFloorPath(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): string {
+    return `${
+      this.getDataNameDir(type, modelId, dataName)
+    }${VERSION_FLOOR_SUFFIX}`;
+  }
+
+  private async readVersionFloor(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<number> {
+    try {
+      const value = Number.parseInt(
+        (await Deno.readTextFile(
+          this.getVersionFloorPath(type, modelId, dataName),
+        )).trim(),
+        10,
+      );
+      return Number.isSafeInteger(value) && value > 0 ? value : 0;
+    } catch {
+      // Absent or unreadable: no floor, as before the record existed.
+      return 0;
+    }
+  }
+
+  /**
+   * Raises a name's version floor to `version`, before retention deletes
+   * its newest versions, so later writes continue above it. v2 only: a v3
+   * partition keeps its own high-water mark, and a plain file is not one of
+   * the changes a v3 unit commits.
+   */
+  async raiseVersionFloor(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<void> {
+    if (typedStagingActive(this.markDirty)) return;
+    if (await this.readVersionFloor(type, modelId, dataName) >= version) return;
+    const path = this.getVersionFloorPath(type, modelId, dataName);
+    await this.stage({ kind: "write", path });
+    await Deno.mkdir(this.getModelDataDir(type, modelId), { recursive: true });
+    await atomicWriteTextFile(path, `${version}\n`);
+  }
+
+  /**
    * Atomically allocates a new version directory using mkdir as a claim mechanism.
    * On collision (AlreadyExists), increments the version and retries.
    */
@@ -2957,7 +3023,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await Deno.mkdir(dataNameDir, { recursive: true });
 
     const versions = await this.listVersions(type, modelId, dataName);
-    let nextVersion = (maxOf(versions) ?? 0) + 1;
+    // Never below the version floor: a number deleted versions used is not
+    // given to new content (swamp-club#3473).
+    const floor = await this.readVersionFloor(type, modelId, dataName);
+    let nextVersion = Math.max(maxOf(versions) ?? 0, floor) + 1;
 
     const maxRetries = 100;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
