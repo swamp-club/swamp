@@ -3323,7 +3323,9 @@ its host to exit when it next reads its closed stdin, which a host spinning in
 a bundle's synchronous code never does. A process a bundle starts ends with
 the host, as it ended with a terminated worker: stopping a host lists its
 children before killing it and kills them too (on Windows the job ends them),
-though not processes they started in turn. Until then such a process holds the
+though not processes they started in turn, nor any once the host has already
+exited. Listing them needs `pgrep`, so where it is missing they are left
+running. Until then such a process holds the
 host's output pipes open, so stopping a host reads its last output for a short
 grace period rather than to the end. Starting one costs a
 process start of the swamp binary (about half a second, as `main.ts` loads

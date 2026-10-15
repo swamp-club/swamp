@@ -596,3 +596,47 @@ Deno.test("ProcessBundleProber: output a bundle leaves without a newline does no
     assertEquals(result.tag, "primary");
   });
 });
+
+Deno.test({
+  name:
+    "ProcessBundleProber: stopping a host that has already exited lists no children under its pid, which may belong to another process by then",
+  // Deno.kill(pid, 0) is no liveness check on Windows, and there the job,
+  // not a child listing, ends what a bundle started.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const listed: number[] = [];
+    const prober = new ProcessBundleProber({
+      listChildren: (pid) => {
+        listed.push(pid);
+        return Promise.resolve([]);
+      },
+    });
+    const dir = await Deno.makeTempDir({ prefix: "swamp_3494_reuse_" });
+    const pidFile = join(dir, "pid");
+    try {
+      const path = join(dir, "pid.js");
+      await Deno.writeTextFile(
+        path,
+        `Deno.writeTextFileSync(${
+          JSON.stringify(pidFile)
+        }, String(Deno.pid));\n` +
+          VAULT(`@test/reuse-${crypto.randomUUID().slice(0, 8)}`),
+      );
+      const result = await prober.probe({
+        importUrl: toFileUrl(path).href,
+        kind: "vault",
+      });
+      assertEquals(result.tag, "primary");
+      const pid = Number(await Deno.readTextFile(pidFile));
+      Deno.kill(pid, "SIGKILL");
+      // Gone from the process table means reaped, after which the pid is
+      // free for the OS to hand out again.
+      await waitFor(() => !isProcessAlive(pid), "the host to be reaped");
+      await prober.release();
+      assertEquals(listed.includes(pid), false);
+    } finally {
+      await prober.release();
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  },
+});

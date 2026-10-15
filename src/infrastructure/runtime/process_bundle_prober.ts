@@ -104,7 +104,13 @@ const encoder = new TextEncoder();
 /** How long a host's last output is read for after it ends. */
 const OUTPUT_GRACE_MS = 500;
 
-function startProbeHost(command: ProbeHostCommand): ProbeHost {
+/** Lists a process's children; {@link findChildPids} by default. */
+export type ChildLister = (pid: number) => Promise<number[]>;
+
+function startProbeHost(
+  command: ProbeHostCommand,
+  listChildren: ChildLister,
+): ProbeHost {
   const frame = `@@swamp-probe-${crypto.randomUUID()}@@`;
   // The host stays in this process's group, so a Ctrl+C reaches it as it
   // reaches swamp; on Windows its job ends it when swamp ends.
@@ -119,6 +125,8 @@ function startProbeHost(command: ProbeHostCommand): ProbeHost {
   const writer = child.stdin.getWriter();
   let listener: HostListener | undefined;
   let goneMessage: string | undefined;
+  /** Set once the host has exited, after which its pid may be reused. */
+  let exited = false;
 
   // Both pipes are read as long as the host lives, so a bundle that prints
   // a lot never blocks the host on a full pipe and gets blamed for the
@@ -167,6 +175,7 @@ function startProbeHost(command: ProbeHostCommand): ProbeHost {
   ]);
   const finished = (async () => {
     const status = await child.status;
+    exited = true;
     // A process a bundle started holds the pipes open after the host ends,
     // so they may never close: what the host wrote before it ended is read
     // within a grace period, then reading stops (swamp-club#3494).
@@ -202,7 +211,9 @@ function startProbeHost(command: ProbeHostCommand): ProbeHost {
       // Processes a bundle started end with the host, as they ended with a
       // terminated worker. Listed before the kill, which reparents them; on
       // Windows the job ends them.
-      const started = job ? [] : await findChildPids(child.pid);
+      // Only while the host runs: once it has exited and been reaped, its
+      // pid may belong to an unrelated process whose children are not ours.
+      const started = job || exited ? [] : await listChildren(child.pid);
       // Killed before stdin is closed: a write to a host that stopped
       // reading would otherwise never finish.
       if (job) job.terminate();
@@ -247,6 +258,7 @@ export class ProcessBundleProber implements BundleProber {
   private readonly timeoutMs: number;
   private readonly startupTimeoutMs: number;
   private readonly command: () => ProbeHostCommand;
+  private readonly listChildren: ChildLister;
   private host: ProbeHost | undefined;
   private queue: Promise<unknown> = Promise.resolve();
   /** Settles the probe in flight, if any, without an answer from it. */
@@ -264,12 +276,14 @@ export class ProcessBundleProber implements BundleProber {
       timeoutMs?: number;
       startupTimeoutMs?: number;
       command?: () => ProbeHostCommand;
+      listChildren?: ChildLister;
     } = {},
   ) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
     this.startupTimeoutMs = options.startupTimeoutMs ??
       DEFAULT_PROBE_STARTUP_TIMEOUT_MS;
     this.command = options.command ?? hostProbeHostCommand;
+    this.listChildren = options.listChildren ?? findChildPids;
   }
 
   /** Probes run one at a time: the host answers a single request. */
@@ -300,7 +314,7 @@ export class ProcessBundleProber implements BundleProber {
     }
     let host: ProbeHost;
     try {
-      host = this.host ??= startProbeHost(this.command());
+      host = this.host ??= startProbeHost(this.command(), this.listChildren);
     } catch (error) {
       // Not the bundle's doing (the binary moved, or no descriptors left),
       // so a retryable failed import, as a host that never starts is.
