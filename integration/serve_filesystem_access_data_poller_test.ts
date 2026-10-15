@@ -459,3 +459,190 @@ Deno.test("AccessDataPoller: a grant another process writes without an event (a 
     await untilDecision(loaderB, "allow", "B applies the CLI's grant");
   });
 });
+
+// --- Records that cannot be read (swamp-club#3386) ---
+
+/** chmod has no effect for root, and Windows has no POSIX modes. */
+const IGNORE_CHMOD = Deno.build.os === "windows" || Deno.uid() === 0;
+
+/** A path inside one grant record of the shared datastore. */
+function grantPath(instance: Instance, modelId: string, ...rest: string[]) {
+  return instance.datastoreResolver.resolvePath(
+    "data",
+    "swamp",
+    "grant",
+    modelId,
+    ...rest,
+  );
+}
+
+/** Runs `fn` with `path` unreadable, restoring its mode afterwards. */
+async function whileUnreadable(
+  path: string,
+  fn: (restore: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  const mode = ((await Deno.stat(path)).mode ?? 0o755) & 0o777;
+  let restored = false;
+  const restore = async () => {
+    if (restored) return;
+    restored = true;
+    await Deno.chmod(path, mode);
+  };
+  await Deno.chmod(path, 0o000);
+  try {
+    await fn(restore);
+  } finally {
+    await restore();
+  }
+}
+
+function decisionFor(loader: PolicySnapshotLoader, id: string): string {
+  const principal: AccessPrincipal = {
+    principal: { kind: "user", id },
+    collectives: [],
+    groups: [],
+  };
+  return loader.decisionService.decide(principal, "read", RESOURCE)?.effect ??
+    "deny";
+}
+
+for (const layout of LAYOUTS) {
+  Deno.test({
+    name:
+      `AccessDataPoller: with an unrelated grant record unreadable, a grant and its revoke through A still reach B (${layout.name})`,
+    ignore: IGNORE_CHMOD,
+    fn: async () => {
+      await withPair(layout, async ({ a, loaderB, pollerB }) => {
+        const unrelated = crypto.randomUUID();
+        await save(
+          a,
+          GRANT_MODEL_TYPE,
+          unrelated,
+          grant(unrelated, "active", { kind: "user", name: "someone-else" }),
+        );
+        await whileUnreadable(
+          grantPath(a, unrelated, "grant-main", "1"),
+          async () => {
+            pollerB.start();
+            const modelId = crypto.randomUUID();
+            const user = { kind: "user" as const, name: GRANTEE.principal.id };
+            await saveAsRun(
+              a,
+              GRANT_MODEL_TYPE,
+              modelId,
+              grant(modelId, "active", user),
+            );
+            await untilDecision(loaderB, "allow", "B enforces A's grant");
+            await saveAsRun(
+              a,
+              GRANT_MODEL_TYPE,
+              modelId,
+              grant(modelId, "revoked", user),
+            );
+            await untilDecision(loaderB, "deny", "B enforces A's revoke");
+          },
+        );
+      });
+    },
+  });
+
+  Deno.test({
+    name:
+      `AccessDataPoller: a deny B loaded stays enforced after its record turns unreadable, while a revoke elsewhere applies (${layout.name})`,
+    ignore: IGNORE_CHMOD,
+    fn: async () => {
+      await withPair(layout, async ({ a, loaderB, pollerB }) => {
+        const user = { kind: "user" as const, name: GRANTEE.principal.id };
+        const other = "fs-peer-other";
+        const allowId = crypto.randomUUID();
+        const denyId = crypto.randomUUID();
+        const otherId = crypto.randomUUID();
+        await save(
+          a,
+          GRANT_MODEL_TYPE,
+          allowId,
+          grant(allowId, "active", user),
+        );
+        await save(a, GRANT_MODEL_TYPE, denyId, {
+          ...grant(denyId, "active", user),
+          effect: "deny",
+        });
+        await save(
+          a,
+          GRANT_MODEL_TYPE,
+          otherId,
+          grant(otherId, "active", { kind: "user", name: other }),
+        );
+        pollerB.start();
+        await waitFor(
+          () => decisionFor(loaderB, other) === "allow",
+          "B loads the grants",
+        );
+        assertEquals(decision(loaderB), "deny", "the deny beats the allow");
+
+        await whileUnreadable(
+          grantPath(a, denyId, "grant-main", "1"),
+          async () => {
+            await saveAsRun(
+              a,
+              GRANT_MODEL_TYPE,
+              otherId,
+              grant(otherId, "revoked", { kind: "user", name: other }),
+            );
+            await waitFor(
+              () => decisionFor(loaderB, other) === "deny",
+              "B applies the revoke elsewhere",
+            );
+            assertEquals(
+              loaderB.unreadable.map((r) => r.outcome),
+              ["kept-last-known-deny"],
+            );
+            assertEquals(decision(loaderB), "deny", "the deny stays enforced");
+          },
+        );
+      });
+    },
+  });
+
+  Deno.test({
+    name:
+      `AccessDataPoller: a grant whose content file turns readable again is applied with no other change (${layout.name})`,
+    ignore: IGNORE_CHMOD,
+    fn: async () => {
+      await withPair(layout, async ({ a, loaderB, pollerB }) => {
+        const modelId = crypto.randomUUID();
+        const user = { kind: "user" as const, name: GRANTEE.principal.id };
+        await saveAsRun(
+          a,
+          GRANT_MODEL_TYPE,
+          modelId,
+          grant(modelId, "active", user),
+        );
+        await whileUnreadable(
+          grantPath(a, modelId, "grant-main", "1", "raw"),
+          async (restore) => {
+            pollerB.start();
+            await waitFor(
+              () => loaderB.unreadable.length === 1,
+              "B finds the grant unreadable",
+            );
+            assertEquals(
+              decision(loaderB),
+              "deny",
+              "an unreadable allow is left out",
+            );
+            // A mode change moves only the file's ctime: the change source
+            // cannot see it, so only the retry of a degraded snapshot can.
+            await restore();
+            await untilDecision(
+              loaderB,
+              "allow",
+              "B applies the grant once readable",
+            );
+            assertEquals(loaderB.unreadable, []);
+          },
+        );
+      });
+    },
+  });
+}

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertExists,
   assertRejects,
@@ -35,7 +36,10 @@ import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import type { RenameForward } from "../../domain/data/repositories.ts";
+import type {
+  RenameForward,
+  UnreadableModelRecord,
+} from "../../domain/data/repositories.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 
 const testType = ModelType.create("test/model");
@@ -717,6 +721,51 @@ Deno.test("findAllForType: returns empty for missing type directory", async () =
       await Deno.remove(tmpDir, { recursive: true });
     }
   }
+});
+
+Deno.test({
+  name:
+    "findAllForType: reports a model it cannot read and still returns the rest",
+  // chmod has no effect for root, and Windows has no POSIX modes.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const tmpDir = await Deno.makeTempDir();
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    const encode = (text: string) => new TextEncoder().encode(text);
+    await repo.save(testType, "model-ok", makeJsonData("item-ok"), encode("1"));
+    await repo.save(
+      testType,
+      "model-bad",
+      makeJsonData("item-bad"),
+      encode("2"),
+    );
+    const versionDir = join(
+      repo.getDataNameDir(testType, "model-bad", "item-bad"),
+      "1",
+    );
+    await Deno.chmod(versionDir, 0o000);
+    try {
+      // Without the option the unreadable model is skipped, as before.
+      const plain = await repo.findAllForType(testType);
+      assertEquals(plain.map((r) => r.modelId), ["model-ok"]);
+
+      const unreadable: UnreadableModelRecord[] = [];
+      const results = await repo.findAllForType(testType, { unreadable });
+      assertEquals(results.map((r) => r.modelId), ["model-ok"]);
+      assertEquals(unreadable.map((r) => r.modelId), ["model-bad"]);
+      assertEquals(unreadable[0].modelType.normalized, testType.normalized);
+      assert(unreadable[0].error instanceof Deno.errors.PermissionDenied);
+    } finally {
+      await Deno.chmod(versionDir, 0o755);
+      catalogStore.close();
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
 });
 
 // Pins the markDirty contract from design/enablers/datastores.md: every public mutation

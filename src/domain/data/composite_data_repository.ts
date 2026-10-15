@@ -25,6 +25,7 @@ import type { Namespace } from "./namespace.ts";
 import type {
   ContentAvailability,
   DeferredWriteReceipt,
+  FindAllForTypeOptions,
   FindAllGlobalOptions,
   ForeignContentFetcher,
   GarbageCollectionResult,
@@ -278,13 +279,14 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
 
   async findAllForType(
     type: ModelTypeInput,
+    options?: FindAllForTypeOptions,
   ): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
     const coerced = coerceModelType(type);
     const [ephResults, persResults] = await Promise.all([
-      this.ephemeral.findAllForType(coerced),
-      this.persistent.findAllForType(coerced),
+      this.ephemeral.findAllForType(coerced, options),
+      this.persistent.findAllForType(coerced, options),
     ]);
 
     const seen = new Set<string>();

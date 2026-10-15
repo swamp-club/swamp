@@ -41,6 +41,13 @@ const logger = getLogger(["swamp", "serve", "access-data-poller"]);
 
 const DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS = 30_000;
 
+/**
+ * Consecutive failed cycles after which each further failure is logged at
+ * error rather than warning: peers' grant and revoke changes have stopped
+ * reaching this instance (swamp-club#3386).
+ */
+export const ACCESS_DATA_POLLER_ESCALATE_AFTER = 3;
+
 export const ACCESS_DATA_SUBDIRS: readonly string[] = [
   "data/swamp/grant",
   "data/swamp/group",
@@ -85,6 +92,7 @@ export class AccessDataPoller {
   #pendingPull: Promise<void> = Promise.resolve();
   #pulling = false;
   #needsReload = false;
+  #consecutiveFailures = 0;
 
   constructor(options: AccessDataPollerOptions) {
     if ("changeSource" in options) {
@@ -155,15 +163,31 @@ export class AccessDataPoller {
         this.#catalogInvalidate();
         this.#needsReload = true;
       }
-      if (this.#needsReload) {
+      // A snapshot missing records it could not read is rebuilt every cycle
+      // until it is whole, whoever built it: the change source cannot see a
+      // file turning readable again (a mode change moves only its ctime),
+      // and a remote datastore's read can fail for one cycle.
+      if (
+        this.#needsReload ||
+        this.#policySnapshotLoader.unreadable.length > 0
+      ) {
         await this.#policySnapshotLoader.load();
         this.#needsReload = false;
       }
+      if (this.#consecutiveFailures >= ACCESS_DATA_POLLER_ESCALATE_AFTER) {
+        logger
+          .info`Access data poller recovered after ${this.#consecutiveFailures} failed cycles`;
+      }
+      this.#consecutiveFailures = 0;
     } catch (error) {
-      logger
-        .warn`Access data poller cycle failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      this.#consecutiveFailures++;
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.#consecutiveFailures >= ACCESS_DATA_POLLER_ESCALATE_AFTER) {
+        logger
+          .error`Access data poller cycle failed ${this.#consecutiveFailures} times in a row, so grant and revoke changes made by other processes are not being applied on this instance: ${message}`;
+      } else {
+        logger.warn`Access data poller cycle failed: ${message}`;
+      }
     } finally {
       this.#pulling = false;
     }

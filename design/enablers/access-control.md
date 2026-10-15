@@ -624,7 +624,8 @@ allow, and turning the setting on can only narrow access.
 
 **Do not store a grant that names `signal` while an older build shares the
 datastore.** A build from before this action cannot parse such a grant, and
-`PolicySnapshotLoader` skips a stored grant it cannot parse without a warning.
+`PolicySnapshotLoader` skips a stored grant that fails schema validation
+without a warning.
 The whole grant is lost to that build, not only its `signal`: an allow for
 `signal, read` no longer grants `read`, and a deny for `run, signal` no longer
 denies `run`, so the older build allows what the grant was written to stop.
@@ -758,6 +759,37 @@ changes.
    write and stays staged in manual mode, as a pull never returns the
    puller's own writes. Anything else, including a local CLI write, is a peer
    change. A v3 datastore has one writer at a time and runs no poller.
+5. **Unreadable records** (swamp-club#3386): a grant or group record that
+   exists but cannot be read (a directory or file this process may not
+   read, such as one a peer wrote with a restrictive umask or another uid)
+   or whose JSON does not parse never fails a build, and never vanishes
+   silently. `findAllForType` reports the model directories it skips, and
+   the loader treats them like a content read that failed:
+   - a grant whose last-known version, read by an earlier build of this
+     process, was an active deny stays in force (fail closed);
+   - any other grant is left out. Leaving out an allow is fail safe. A deny
+     this process never read cannot be enforced, and the error log says so;
+   - a group keeps its last-known members, so deny grants on it still
+     apply, and allow grants to the group are suspended, so a member removed
+     in the version that cannot be read gets no allow through the group.
+     Allow conditions that test membership of the group still see the
+     last-known members. A group never read is left out.
+
+   Each record is logged at error once, at debug while it stays the same,
+   and at info once it reads again. `PolicySnapshotLoader.unreadable` lists
+   the records the last successful build could not read, whoever ran it
+   (the boot load, an auto-mode rebuild, the reload endpoint, the poller).
+   The poller rebuilds every cycle while that list is non-empty, because the
+   filesystem change source cannot see a file turning readable again (a mode
+   change moves only its ctime) and a remote datastore's read can fail for
+   one cycle. The change source fingerprints an unreadable record as its
+   error, so the record counts as changed when it turns unreadable and when
+   it reads again, and every other record is still compared. A build that
+   throws (a grant or group type directory that cannot be listed) keeps the
+   previous snapshot and last-known records. The poller logs a failed cycle
+   at warning, and from the third consecutive failure on at error, saying
+   other processes' grant and revoke changes are not being applied; it logs
+   recovery at info.
 4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
    logged-in user's collectives every `--group-refresh-interval` and closes
    connections whose admission lapsed

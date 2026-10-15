@@ -115,6 +115,25 @@ export interface FindAllGlobalOptions {
 }
 
 /**
+ * A model whose data exists but could not be read: a directory or file the
+ * process may not read, or metadata that does not parse (swamp-club#3386).
+ */
+export interface UnreadableModelRecord {
+  modelType: ModelType;
+  modelId: string;
+  error: unknown;
+}
+
+/** Options for {@link UnifiedDataRepository.findAllForType}. */
+export interface FindAllForTypeOptions {
+  /**
+   * Receives every model the scan skipped because its data could not be
+   * read, so a caller can tell an unreadable record from a missing one.
+   */
+  unreadable?: UnreadableModelRecord[];
+}
+
+/**
  * Repository interface for unified Data storage with versioning.
  */
 export interface UnifiedDataRepository {
@@ -146,10 +165,12 @@ export interface UnifiedDataRepository {
    * Finds all data for a single model type across all models of that type.
    *
    * @param type - The model type to scan
+   * @param options - Optional collector for models that could not be read
    * @returns Array of data with their model type and model ID
    */
   findAllForType(
     type: ModelTypeInput,
+    options?: FindAllForTypeOptions,
   ): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   >;

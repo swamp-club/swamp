@@ -66,6 +66,7 @@ import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
   type ContentAvailability,
   type DeferredWriteReceipt,
+  type FindAllForTypeOptions,
   type FindAllGlobalOptions,
   type ForeignContentFetcher,
   type GarbageCollectionResult,
@@ -578,6 +579,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   /** One type's data, model ids in name order; see {@link findAllGlobal}. */
   async findAllForType(
     type: ModelTypeInput,
+    options?: FindAllForTypeOptions,
   ): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
@@ -594,8 +596,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           for (const data of dataItems) {
             results.push({ data, modelType, modelId });
           }
-        } catch {
-          // Skip invalid model directories
+        } catch (error) {
+          // Skip invalid model directories, telling a caller that asks.
+          options?.unreadable?.push({ modelType, modelId, error });
         }
       }
     } catch (error) {

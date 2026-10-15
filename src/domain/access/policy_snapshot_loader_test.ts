@@ -17,12 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { readConditionTypeLiterals } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { Data } from "../data/data.ts";
-import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type {
+  FindAllForTypeOptions,
+  UnifiedDataRepository,
+} from "../data/repositories.ts";
 import { EventBus } from "../events/event_bus.ts";
 import {
   createDefinitionCreated,
@@ -39,6 +47,8 @@ import {
   conditionReferencesField,
   createConditionEvaluator,
   PolicySnapshotLoader,
+  retainedUnreadableGrant,
+  withoutAllowsToGroups,
 } from "./policy_snapshot_loader.ts";
 import { MissingConditionFieldError } from "./condition_fields.ts";
 import type { PrincipalContext } from "./principal_context.ts";
@@ -1006,4 +1016,315 @@ Deno.test("PolicySnapshotLoader.load: checks a grant again when its selector cha
   const forGrant = warnings.filter((w) => w.includes(first.id));
   assertEquals(forGrant.length, 2);
   assertEquals(forGrant[1].includes("model:acme/*"), true);
+});
+
+// --- Records that cannot be read (swamp-club#3386) ---
+
+type FakeRecord =
+  | { kind: "grant"; attrs: Grant }
+  | { kind: "group"; attrs: Group }
+  | { kind: "grant" | "group"; unreadable: "content" | "listing" | "json" };
+
+/**
+ * A data repository over records a test can change between loads. A record
+ * unreadable at "listing" is reported by findAllForType, as the filesystem
+ * repository reports a directory it cannot read; at "content", getContent
+ * throws; at "json", the content does not parse.
+ */
+function createChangingDataRepo(
+  records: Map<string, FakeRecord>,
+): UnifiedDataRepository & { failListing: boolean } {
+  const repo = {
+    failListing: false,
+    findAllForType(
+      type: ModelType,
+      options?: FindAllForTypeOptions,
+    ) {
+      if (repo.failListing) {
+        return Promise.reject(new Deno.errors.PermissionDenied("type dir"));
+      }
+      const kind = type.normalized === GRANT_MODEL_TYPE.normalized
+        ? "grant"
+        : type.normalized === GROUP_MODEL_TYPE.normalized
+        ? "group"
+        : null;
+      const found = [];
+      for (const [modelId, record] of records) {
+        if (record.kind !== kind) continue;
+        if ("unreadable" in record && record.unreadable === "listing") {
+          options?.unreadable?.push({
+            modelType: type,
+            modelId,
+            error: new Deno.errors.PermissionDenied("listing"),
+          });
+          continue;
+        }
+        found.push({
+          data: makeData(`${kind}-main`),
+          modelType: type,
+          modelId,
+        });
+      }
+      return Promise.resolve(found);
+    },
+    getContent(_type: ModelType, modelId: string) {
+      const record = records.get(modelId);
+      if (!record) return Promise.resolve(null);
+      if ("unreadable" in record) {
+        if (record.unreadable === "content") {
+          return Promise.reject(new Deno.errors.PermissionDenied("raw"));
+        }
+        return Promise.resolve(new TextEncoder().encode("{not json"));
+      }
+      return Promise.resolve(
+        new TextEncoder().encode(JSON.stringify(record.attrs)),
+      );
+    },
+  };
+  return repo as unknown as UnifiedDataRepository & { failListing: boolean };
+}
+
+/** Runs `fn` with the snapshot loader's logs captured, as level and text. */
+async function capturingLoaderLogs(
+  fn: () => Promise<void>,
+): Promise<Array<{ level: string; message: string }>> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "domain", "access", "policy-snapshot"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => ({
+    level: record.level,
+    message: record.message.map(String).join(""),
+  }));
+}
+
+function effectsFor(loader: PolicySnapshotLoader, subject: string): string[] {
+  return loader.snapshot.grantsForSubjects([subject]).map((g) =>
+    `${g.effect}:${g.id}`
+  ).sort();
+}
+
+Deno.test("PolicySnapshotLoader.load: an unreadable deny it read before stays in force, an unreadable allow is left out, and other revokes apply", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const allow = makeGrant({ id: "allow-1" });
+  const other = makeGrant({ id: "allow-2" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+    ["a", { kind: "grant", attrs: allow }],
+    ["o", { kind: "grant", attrs: other }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  assertEquals(effectsFor(loader, "user:adam"), [
+    "allow:allow-1",
+    "allow:allow-2",
+    "deny:deny-1",
+  ]);
+
+  for (const unreadable of ["content", "listing"] as const) {
+    records.set("d", { kind: "grant", unreadable });
+    records.set("a", { kind: "grant", unreadable });
+    records.set("o", { kind: "grant", attrs: { ...other, state: "revoked" } });
+    const result = await loader.loadWithCounts();
+
+    assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
+    assertEquals(
+      result.unreadable.map((r) => [r.record, r.kind, r.outcome]).sort(),
+      [
+        ["swamp/grant/a", "grant", "left-out"],
+        ["swamp/grant/d", "grant", "kept-last-known-deny"],
+      ],
+    );
+    assertEquals(loader.unreadable, result.unreadable);
+  }
+  await loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader.load: an unreadable deny it never read is left out and logged as not enforced", async () => {
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", unreadable: "content" }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  const logs = await capturingLoaderLogs(async () => {
+    await loader.load();
+  });
+  await loader.dispose();
+
+  assertEquals(effectsFor(loader, "user:adam"), []);
+  assertEquals(loader.unreadable.map((r) => r.outcome), ["left-out"]);
+  const errors = logs.filter((l) => l.level === "error");
+  assertEquals(errors.length, 1);
+  assertStringIncludes(errors[0].message, "swamp/grant/d");
+  assertStringIncludes(errors[0].message, "never read by this process");
+});
+
+Deno.test("PolicySnapshotLoader.load: a record whose JSON does not parse keeps its last-known deny", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  records.set("d", { kind: "grant", unreadable: "json" });
+  await loader.load();
+  await loader.dispose();
+
+  assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
+  assertEquals(loader.unreadable.map((r) => r.outcome), [
+    "kept-last-known-deny",
+  ]);
+});
+
+Deno.test("PolicySnapshotLoader.load: an unreadable group keeps its members for denies and suspends allows to it", async () => {
+  const allowToGroup = makeGrant({
+    id: "allow-devs",
+    subject: { kind: "group", name: "devs" },
+  });
+  const denyToGroup = makeGrant({
+    id: "deny-devs",
+    effect: "deny",
+    subject: { kind: "group", name: "devs" },
+    resource: { kind: "model", pattern: "*" },
+  });
+  const records = new Map<string, FakeRecord>([
+    ["ga", { kind: "grant", attrs: allowToGroup }],
+    ["gd", { kind: "grant", attrs: denyToGroup }],
+    ["devs", { kind: "group", attrs: makeGroup("devs", ["adam"]) }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  assertEquals(effectsFor(loader, "group:devs"), [
+    "allow:allow-devs",
+    "deny:deny-devs",
+  ]);
+
+  records.set("devs", { kind: "group", unreadable: "listing" });
+  const logs = await capturingLoaderLogs(async () => {
+    await loader.load();
+  });
+
+  assertEquals([...loader.snapshot.groupsForPrincipal("user:adam")], ["devs"]);
+  assertEquals(effectsFor(loader, "group:devs"), ["deny:deny-devs"]);
+  assertEquals(loader.unreadable.map((r) => r.outcome), [
+    "kept-last-known-members",
+  ]);
+  const errors = logs.filter((l) => l.level === "error");
+  assertEquals(errors.length, 1);
+  assertStringIncludes(errors[0].message, "allow grants to the group");
+
+  // Readable again: the allow comes back.
+  records.set("devs", { kind: "group", attrs: makeGroup("devs", ["adam"]) });
+  await loader.load();
+  await loader.dispose();
+  assertEquals(effectsFor(loader, "group:devs"), [
+    "allow:allow-devs",
+    "deny:deny-devs",
+  ]);
+  assertEquals(loader.unreadable, []);
+});
+
+Deno.test("PolicySnapshotLoader.load: an unreadable record is logged at error once, at debug while it repeats, and at info when it reads again", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  records.set("d", { kind: "grant", unreadable: "content" });
+  const logs = await capturingLoaderLogs(async () => {
+    await loader.load();
+    await loader.load();
+    await loader.load();
+    records.set("d", { kind: "grant", attrs: deny });
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const about = logs.filter((l) => l.message.includes("swamp/grant/d"));
+  assertEquals(about.map((l) => l.level), ["error", "debug", "debug", "info"]);
+  assertStringIncludes(about[0].message, "deny-1");
+  assertStringIncludes(about[0].message, "stays in force");
+});
+
+Deno.test("PolicySnapshotLoader.load: a build that throws keeps the previous snapshot and last-known records", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const repo = createChangingDataRepo(records);
+  const loader = new PolicySnapshotLoader(repo, new EventBus(), "manual");
+  await loader.load();
+  const before = loader.snapshot;
+
+  repo.failListing = true;
+  await assertRejects(() => loader.load(), Deno.errors.PermissionDenied);
+  assertEquals(loader.snapshot, before);
+  assertEquals(loader.unreadable, []);
+
+  // The deny read before the failed build is still the last-known version.
+  repo.failListing = false;
+  records.set("d", { kind: "grant", unreadable: "content" });
+  await loader.load();
+  await loader.dispose();
+  assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
+});
+
+Deno.test("retainedUnreadableGrant: keeps only an active deny", () => {
+  const deny = makeGrant({ effect: "deny" });
+  assertEquals(retainedUnreadableGrant(deny), deny);
+  assertEquals(retainedUnreadableGrant({ ...deny, state: "revoked" }), null);
+  assertEquals(retainedUnreadableGrant(makeGrant()), null);
+  assertEquals(retainedUnreadableGrant(undefined), null);
+});
+
+Deno.test("withoutAllowsToGroups: drops only allows whose subject is a suspended group", () => {
+  const allowToDevs = makeGrant({ subject: { kind: "group", name: "devs" } });
+  const denyToDevs = makeGrant({
+    effect: "deny",
+    subject: { kind: "group", name: "devs" },
+  });
+  const allowToOps = makeGrant({ subject: { kind: "group", name: "ops" } });
+  const allowToUser = makeGrant({ subject: { kind: "user", name: "devs" } });
+  assertEquals(
+    withoutAllowsToGroups(
+      [allowToDevs, denyToDevs, allowToOps, allowToUser],
+      new Set(["devs"]),
+    ),
+    [denyToDevs, allowToOps, allowToUser],
+  );
 });

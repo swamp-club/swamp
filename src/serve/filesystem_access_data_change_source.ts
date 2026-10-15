@@ -68,6 +68,14 @@ export interface FilesystemAccessDataChangeSourceOptions {
  * run publishes the event therefore reloads, which can apply a staged own
  * write one interval early, but a peer's change is never swallowed: a peer's
  * version is never named by this process's events.
+ *
+ * A record that cannot be read (a peer wrote it with a restrictive umask or
+ * as another uid) does not stop the cycle (swamp-club#3386). It gets a
+ * fingerprint naming the error, so it counts as changed when it turns
+ * unreadable and again when it reads, and every other record is still
+ * compared. While it stays unreadable it is not counted again: the policy
+ * loader cannot read it either, and the poller retries a snapshot that is
+ * missing records on its own.
  */
 export class FilesystemAccessDataChangeSource {
   readonly #dirs: readonly string[];
@@ -147,10 +155,22 @@ export class FilesystemAccessDataChangeSource {
   async #fingerprint(): Promise<Fingerprint> {
     const fingerprint: Fingerprint = new Map();
     for (const dir of this.#dirs) {
-      for (const modelId of await listDirectories(dir)) {
+      let modelIds: string[];
+      try {
+        modelIds = await listDirectories(dir);
+      } catch (error) {
+        fingerprint.set(dir, unreadableFingerprint(error));
+        continue;
+      }
+      for (const modelId of modelIds) {
         const entries = new Map<string, string>();
-        for (const dataName of ACCESS_DATA_NAMES) {
-          await walk(join(dir, modelId, dataName), dataName, entries);
+        try {
+          for (const dataName of ACCESS_DATA_NAMES) {
+            await walk(join(dir, modelId, dataName), dataName, entries);
+          }
+        } catch (error) {
+          fingerprint.set(join(dir, modelId), unreadableFingerprint(error));
+          continue;
         }
         const versions = new Set<string>();
         for (const [path, entry] of entries) {
@@ -188,6 +208,21 @@ function isOwnChange(
   if (!added.every((v) => ownVersions.has(v))) return false;
   const oldestAdded = minOf(added.map(versionNumber))!;
   return removed.every((v) => versionNumber(v) < oldestAdded);
+}
+
+/**
+ * The fingerprint of a record or directory that could not be read: one
+ * entry naming the error, and no versions. It differs from any readable
+ * fingerprint, so turning unreadable or readable again counts as a change,
+ * and it never counts as an own change. While the same error persists it
+ * stays equal, so the record is not counted every cycle.
+ */
+function unreadableFingerprint(error: unknown): RecordFingerprint {
+  const name = error instanceof Error ? error.name : "Error";
+  return {
+    entries: new Map([["!unreadable", name]]),
+    versions: new Set(),
+  };
 }
 
 function versionNumber(versionPath: string): number {

@@ -17,9 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertGreater } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertGreater,
+  assertStringIncludes,
+} from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
 import {
+  ACCESS_DATA_POLLER_ESCALATE_AFTER,
   ACCESS_DATA_SUBDIRS,
   AccessDataPoller,
   createAccessDataPoller,
@@ -80,12 +88,14 @@ function createMockSyncService(
 
 interface MockPolicySnapshotLoader {
   loadCalls: number;
+  unreadable: readonly unknown[];
   load(): Promise<void>;
 }
 
 function createMockPolicySnapshotLoader(): MockPolicySnapshotLoader {
   const mock: MockPolicySnapshotLoader = {
     loadCalls: 0,
+    unreadable: [],
     load(): Promise<void> {
       mock.loadCalls++;
       return Promise.resolve();
@@ -336,6 +346,7 @@ Deno.test("AccessDataPoller: retries policy reload on next tick if load fails", 
   const sync = createMockSyncService({ pullResult: 2 });
   const loader: MockPolicySnapshotLoader = {
     loadCalls: 0,
+    unreadable: [],
     load(): Promise<void> {
       loadCallCount++;
       if (shouldFail && loadCallCount === 1) {
@@ -726,4 +737,115 @@ Deno.test("createAccessDataPoller: a custom datastore without a sync service get
     eventBus: new EventBus(),
   });
   assertEquals(poller, null);
+});
+
+// --- Unreadable records and repeated failures (swamp-club#3386) ---
+
+Deno.test("AccessDataPoller: reloads every cycle while the snapshot is missing records it could not read, then stops", async () => {
+  // Nothing changes on the datastore; only the loader's state drives it.
+  const sync = createMockSyncService({ pullResult: 0 });
+  const loader = createMockPolicySnapshotLoader();
+  // A degraded snapshot this poller did not build (serve's boot load).
+  loader.unreadable = [{ record: "swamp/grant/g1" }];
+  const { state, catalogInvalidate } = createCallbackTrackers();
+  const poller = new AccessDataPoller({
+    syncService: sync,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  try {
+    await waitFor(() => loader.loadCalls >= 3, "retries a degraded snapshot");
+    loader.unreadable = [];
+    const whole = sync.pullCalls.length;
+    const loadsWhenWhole = loader.loadCalls;
+    await waitFor(
+      () => sync.pullCalls.length >= whole + 3,
+      "three cycles once whole",
+    );
+    // At most the cycle already running when the snapshot became whole.
+    assert(loader.loadCalls <= loadsWhenWhole + 1);
+  } finally {
+    await poller.stop();
+  }
+  // Retrying a degraded snapshot is not a datastore change.
+  assertEquals(state.catalogInvalidateCalls, 0);
+});
+
+/** Runs `fn` with the access data poller's logs captured. */
+async function capturingPollerLogs(
+  fn: () => Promise<void>,
+): Promise<Array<{ level: string; message: string }>> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "serve", "access-data-poller"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => ({
+    level: record.level,
+    message: record.message.map(String).join(""),
+  }));
+}
+
+Deno.test("AccessDataPoller: repeated cycle failures escalate to error, and recovery is logged", async () => {
+  const sync = createMockSyncService({
+    pullError: new Error("permission denied"),
+  });
+  const loader = createMockPolicySnapshotLoader();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = new AccessDataPoller({
+    syncService: sync,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 10,
+  });
+
+  const logs = await capturingPollerLogs(async () => {
+    poller.start();
+    try {
+      await waitFor(
+        () => sync.pullCalls.length >= ACCESS_DATA_POLLER_ESCALATE_AFTER + 1,
+        "failures past the threshold",
+      );
+      sync.pullError = null;
+      const failed = sync.pullCalls.length;
+      await waitFor(
+        () => sync.pullCalls.length >= failed + 2,
+        "a successful cycle",
+      );
+    } finally {
+      await poller.stop();
+    }
+  });
+
+  const failures = logs.filter((l) => l.message.includes("cycle failed"));
+  const below = ACCESS_DATA_POLLER_ESCALATE_AFTER - 1;
+  assertEquals(
+    failures.slice(0, below).map((l) => l.level),
+    Array(below).fill("warning"),
+  );
+  assert(failures.length > below);
+  for (const escalated of failures.slice(below)) {
+    assertEquals(escalated.level, "error");
+    assertStringIncludes(escalated.message, "not being applied");
+  }
+  const recovered = logs.filter((l) => l.message.includes("recovered after"));
+  assertEquals(recovered.length, 1);
+  assertEquals(recovered[0].level, "info");
 });

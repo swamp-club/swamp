@@ -24,7 +24,10 @@ import {
   type ConditionTypeLiteralReader,
   findGrantSpellingIssues,
 } from "./grant_spelling.ts";
-import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type {
+  UnifiedDataRepository,
+  UnreadableModelRecord,
+} from "../data/repositories.ts";
 import type { EventBus } from "../events/event_bus.ts";
 import type {
   DefinitionCreated,
@@ -184,6 +187,74 @@ function grantsReferencingUnsupplied(grants: readonly Grant[]): Grant[] {
 
 export type PolicyReloadMode = "manual" | "auto";
 
+/**
+ * What a snapshot did with a grant or group record it could not read: kept
+ * the deny or the group members an earlier build read, or left it out.
+ */
+export type UnreadableRecordOutcome =
+  | "kept-last-known-deny"
+  | "kept-last-known-members"
+  | "left-out";
+
+/**
+ * A grant or group record that exists but could not be read or parsed by
+ * the last build (swamp-club#3386).
+ */
+export interface UnreadableAccessRecord {
+  /** `<model type>/<model id>`. */
+  readonly record: string;
+  readonly kind: "grant" | "group";
+  readonly error: string;
+  readonly outcome: UnreadableRecordOutcome;
+}
+
+/**
+ * The grant a snapshot keeps for a grant record it cannot read: the version
+ * an earlier build read if that was an active deny (fail closed), and
+ * nothing otherwise. Leaving out an allow is fail safe; a deny never read
+ * cannot be kept.
+ */
+export function retainedUnreadableGrant(
+  lastKnown: Grant | undefined,
+): Grant | null {
+  if (lastKnown?.effect === "deny" && lastKnown.state === "active") {
+    return lastKnown;
+  }
+  return null;
+}
+
+/**
+ * The grants a snapshot enforces when the groups in `suspendedGroups` could
+ * not be read: their last-known members still meet deny grants on them, but
+ * an allow grant to such a group is suspended, so a member removed in the
+ * version that cannot be read gets no allow through it.
+ */
+export function withoutAllowsToGroups(
+  grants: readonly Grant[],
+  suspendedGroups: ReadonlySet<string>,
+): Grant[] {
+  return grants.filter((grant) =>
+    !(grant.effect === "allow" && grant.subject.kind === "group" &&
+      suspendedGroups.has(grant.subject.name))
+  );
+}
+
+/** The contents of a record, or why they could not be read. */
+type RecordRead =
+  | { attrs: Record<string, unknown> }
+  | { error: unknown }
+  | null;
+
+function describeError(error: unknown): string {
+  return error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : String(error);
+}
+
+function recordKey(modelType: ModelType, modelId: string): string {
+  return `${modelType.normalized}/${modelId}`;
+}
+
 export class PolicySnapshotLoader {
   readonly #dataRepo: UnifiedDataRepository;
   readonly #unsubscribers: (() => void)[] = [];
@@ -193,6 +264,20 @@ export class PolicySnapshotLoader {
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
+  /**
+   * The grants and groups the last successful build parsed, by record, so a
+   * record that later cannot be read keeps a deny or members it had.
+   */
+  #lastKnownGrants = new Map<string, Grant>();
+  #lastKnownGroups = new Map<string, Group>();
+  /** The records the last successful build could not read. */
+  #unreadable: readonly UnreadableAccessRecord[] = [];
+  /**
+   * Each unreadable record already logged at error, with the error and
+   * outcome it was logged as, so a reload that finds it the same logs at
+   * debug instead of repeating the error.
+   */
+  #reportedUnreadable = new Map<string, string>();
   /**
    * Each active grant already checked for spellings, by id, with the effect,
    * selector and condition it was checked as, so a reload neither repeats
@@ -256,6 +341,15 @@ export class PolicySnapshotLoader {
     return this.#snapshot;
   }
 
+  /**
+   * The grant and group records the last successful build could not read.
+   * Empty when the snapshot is whole; otherwise a caller that can reload
+   * (the access data poller) retries until it is.
+   */
+  get unreadable(): readonly UnreadableAccessRecord[] {
+    return this.#unreadable;
+  }
+
   get decisionService(): GrantBasedAccessDecisionService {
     if (
       !this.#cachedDecisionService ||
@@ -280,6 +374,7 @@ export class PolicySnapshotLoader {
     snapshot: PolicySnapshot;
     grantCount: number;
     groupCount: number;
+    unreadable: readonly UnreadableAccessRecord[];
   }> {
     const result = await this.#buildSnapshotWithCounts();
     this.#snapshot = result.snapshot;
@@ -304,37 +399,89 @@ export class PolicySnapshotLoader {
       modelType === GROUP_MODEL_TYPE_STR;
   }
 
+  /**
+   * Builds the snapshot. A record that cannot be read never fails the
+   * build (swamp-club#3386): an active deny or the group members an earlier
+   * build read stay in force, and anything else is left out. The records'
+   * last-known versions and the unreadable list are committed only when the
+   * build succeeds, so a build that throws leaves them as they were.
+   */
   async #buildSnapshotWithCounts(): Promise<{
     snapshot: PolicySnapshot;
     grantCount: number;
     groupCount: number;
+    unreadable: readonly UnreadableAccessRecord[];
   }> {
+    const unreadableGrants: UnreadableModelRecord[] = [];
+    const unreadableGroups: UnreadableModelRecord[] = [];
     const [grantDataItems, groupDataItems] = await Promise.all([
-      this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE),
-      this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE),
+      this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE, unreadableGrants),
+      this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE, unreadableGroups),
     ]);
 
-    const grants: Grant[] = [];
+    const lastKnownGrants = new Map<string, Grant>();
+    const lastKnownGroups = new Map<string, Group>();
+    const unreadable: UnreadableAccessRecord[] = [];
+
+    let grants: Grant[] = [];
     for (const { data, modelType, modelId } of grantDataItems) {
       if (data.name !== "grant-main") continue;
-      const attrs = await this.#readAttributes(modelType, modelId, data.name);
-      if (!attrs) continue;
-      const parsed = GrantSchema.safeParse(attrs);
-      if (parsed.success && parsed.data.state === "active") {
-        grants.push(parsed.data);
+      const read = await this.#readRecord(modelType, modelId, data.name);
+      if (!read) continue;
+      if ("error" in read) {
+        unreadableGrants.push({ modelType, modelId, error: read.error });
+        continue;
       }
+      const parsed = GrantSchema.safeParse(read.attrs);
+      if (!parsed.success) continue;
+      lastKnownGrants.set(recordKey(modelType, modelId), parsed.data);
+      if (parsed.data.state === "active") grants.push(parsed.data);
+    }
+    for (const { modelType, modelId, error } of unreadableGrants) {
+      const record = recordKey(modelType, modelId);
+      const last = this.#lastKnownGrants.get(record);
+      if (last) lastKnownGrants.set(record, last);
+      const kept = retainedUnreadableGrant(last);
+      if (kept) grants.push(kept);
+      unreadable.push({
+        record,
+        kind: "grant",
+        error: describeError(error),
+        outcome: kept ? "kept-last-known-deny" : "left-out",
+      });
     }
 
     const groups: Group[] = [];
+    const suspendedGroups = new Set<string>();
     for (const { data, modelType, modelId } of groupDataItems) {
       if (data.name !== "group-main") continue;
-      const attrs = await this.#readAttributes(modelType, modelId, data.name);
-      if (!attrs) continue;
-      const parsed = GroupSchema.safeParse(attrs);
-      if (parsed.success) {
-        groups.push(parsed.data);
+      const read = await this.#readRecord(modelType, modelId, data.name);
+      if (!read) continue;
+      if ("error" in read) {
+        unreadableGroups.push({ modelType, modelId, error: read.error });
+        continue;
       }
+      const parsed = GroupSchema.safeParse(read.attrs);
+      if (!parsed.success) continue;
+      lastKnownGroups.set(recordKey(modelType, modelId), parsed.data);
+      groups.push(parsed.data);
     }
+    for (const { modelType, modelId, error } of unreadableGroups) {
+      const record = recordKey(modelType, modelId);
+      const last = this.#lastKnownGroups.get(record);
+      if (last) {
+        lastKnownGroups.set(record, last);
+        groups.push(last);
+        suspendedGroups.add(last.name);
+      }
+      unreadable.push({
+        record,
+        kind: "group",
+        error: describeError(error),
+        outcome: last ? "kept-last-known-members" : "left-out",
+      });
+    }
+    grants = withoutAllowsToGroups(grants, suspendedGroups);
 
     logger
       .info`Loaded policy snapshot: ${grants.length} active grant(s), ${groups.length} group(s)`;
@@ -343,11 +490,72 @@ export class PolicySnapshotLoader {
         .warn`Grant ${grant.id} has a condition on collective or owner, which serve does not supply yet: as a deny it refuses every ${grant.resource.kind} request of its subject, and as an allow it never matches (${grant.condition})`;
     }
     this.#reportSpellings(grants);
+    const snapshot = new PolicySnapshot(
+      grants,
+      groups,
+      this.#conditionEvaluator,
+    );
+    this.#reportUnreadable(unreadable, lastKnownGrants, lastKnownGroups);
+    this.#lastKnownGrants = lastKnownGrants;
+    this.#lastKnownGroups = lastKnownGroups;
+    this.#unreadable = unreadable;
     return {
-      snapshot: new PolicySnapshot(grants, groups, this.#conditionEvaluator),
+      snapshot,
       grantCount: grants.length,
       groupCount: groups.length,
+      unreadable,
     };
+  }
+
+  /**
+   * Logs each unreadable record at error the first time it is found with a
+   * given error and outcome, at debug while it stays that way, and at info
+   * once it is no longer found unreadable.
+   */
+  #reportUnreadable(
+    unreadable: readonly UnreadableAccessRecord[],
+    lastKnownGrants: ReadonlyMap<string, Grant>,
+    lastKnownGroups: ReadonlyMap<string, Group>,
+  ): void {
+    const reported = new Map<string, string>();
+    for (const entry of unreadable) {
+      const { record, error, outcome } = entry;
+      const reportedAs = `${outcome}|${error}`;
+      reported.set(record, reportedAs);
+      if (this.#reportedUnreadable.get(record) === reportedAs) {
+        logger
+          .debug`Access record ${record} still cannot be read (${error}): ${outcome}`;
+        continue;
+      }
+      if (entry.kind === "grant") {
+        const last = lastKnownGrants.get(record);
+        if (outcome === "kept-last-known-deny") {
+          logger
+            .error`Grant record ${record} cannot be read (${error}): its last-known deny ${last?.id} stays in force until it can be read again`;
+        } else if (last) {
+          logger
+            .error`Grant record ${record} cannot be read (${error}): its ${last.effect} grant ${last.id} (${last.state}) is left out until it can be read again`;
+        } else {
+          logger
+            .error`Grant record ${record} cannot be read (${error}) and was never read by this process: it is not enforced, so if it is a deny, what it denies is allowed until it can be read`;
+        }
+      } else {
+        const last = lastKnownGroups.get(record);
+        if (last) {
+          logger
+            .error`Group record ${record} cannot be read (${error}): group ${last.name} keeps its last-known members for deny grants, and allow grants to the group are suspended, until it can be read again. Allow conditions that test membership of the group still see those members`;
+        } else {
+          logger
+            .error`Group record ${record} cannot be read (${error}) and was never read by this process: deny grants on its group do not apply until it can be read`;
+        }
+      }
+    }
+    for (const record of this.#reportedUnreadable.keys()) {
+      if (!reported.has(record)) {
+        logger.info`Access record ${record} is no longer unreadable`;
+      }
+    }
+    this.#reportedUnreadable = reported;
   }
 
   /**
@@ -383,35 +591,43 @@ export class PolicySnapshotLoader {
     }
   }
 
-  async #readAttributes(
+  /**
+   * A record's parsed JSON, null when it has no content, or the error that
+   * kept it from being read or parsed.
+   */
+  async #readRecord(
     modelType: ModelType,
     modelId: string,
     dataName: string,
-  ): Promise<Record<string, unknown> | null> {
-    const content = await this.#dataRepo.getContent(
-      modelType,
-      modelId,
-      dataName,
-    );
+  ): Promise<RecordRead> {
+    let content: Uint8Array | null;
+    try {
+      content = await this.#dataRepo.getContent(modelType, modelId, dataName);
+    } catch (error) {
+      return { error };
+    }
     if (!content) return null;
     try {
       const text = new TextDecoder().decode(content);
-      return JSON.parse(text) as Record<string, unknown>;
+      return { attrs: JSON.parse(text) as Record<string, unknown> };
     } catch (error) {
-      logger
-        .warn`Skipping ${modelType.normalized}/${modelId}/${dataName}: failed to parse JSON content: ${error}`;
-      return null;
+      return { error };
     }
   }
 
   async #findAllIncludingOrphaned(
     type: ModelType,
+    unreadable: UnreadableModelRecord[],
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
-    const canonical = await this.#dataRepo.findAllForType(type);
+    const canonical = await this.#dataRepo.findAllForType(type, {
+      unreadable,
+    });
     const orphanedType = ModelType.create(`@${type.normalized}`);
     let orphaned: Array<{ data: Data; modelType: ModelType; modelId: string }>;
     try {
-      orphaned = await this.#dataRepo.findAllForType(orphanedType);
+      orphaned = await this.#dataRepo.findAllForType(orphanedType, {
+        unreadable,
+      });
     } catch {
       orphaned = [];
     }

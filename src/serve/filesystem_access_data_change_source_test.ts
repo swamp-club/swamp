@@ -351,3 +351,91 @@ Deno.test("FilesystemAccessDataChangeSource: a symlinked directory is recorded, 
     }
   });
 });
+
+/** chmod has no effect for root, and Windows has no POSIX modes. */
+const IGNORE_CHMOD = Deno.build.os === "windows" || Deno.uid() === 0;
+
+/** Runs `fn` with `path` unreadable, restoring its mode afterwards. */
+async function whileUnreadable(
+  path: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const mode = (await Deno.stat(path)).mode ?? 0o755;
+  await Deno.chmod(path, 0o000);
+  try {
+    await fn();
+  } finally {
+    await Deno.chmod(path, mode & 0o777);
+  }
+}
+
+for (
+  const [label, unreadablePath] of [
+    ["version directory", ["g-bad", "grant-main", "1"]],
+    ["data directory", ["g-bad", "grant-main"]],
+    ["record directory", ["g-bad"]],
+  ] as const
+) {
+  Deno.test({
+    name:
+      `FilesystemAccessDataChangeSource: an unreadable ${label} counts as changed and does not stop detection of other records`,
+    ignore: IGNORE_CHMOD,
+    fn: async () => {
+      await withSource(async ({ grantDir, source }) => {
+        await writeVersion(grantDir, "g-bad", 1);
+        await writeVersion(grantDir, "g-ok", 1);
+        await source.prime();
+        await whileUnreadable(join(grantDir, ...unreadablePath), async () => {
+          // A peer revokes the readable grant while the other is unreadable.
+          await writeVersion(grantDir, "g-ok", 2, "revoked");
+          assertEquals(await source.detect(), 2);
+          // Still unreadable with the same error: not counted again.
+          assertEquals(await source.detect(), 0);
+          await writeVersion(grantDir, "g-ok", 3, "active");
+          assertEquals(await source.detect(), 1);
+        });
+        // Readable again: a change, so the loader reads it.
+        assertEquals(await source.detect(), 1);
+        assertEquals(await source.detect(), 0);
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "FilesystemAccessDataChangeSource: an unreadable grant directory does not stop detection of groups",
+  ignore: IGNORE_CHMOD,
+  fn: async () => {
+    await withSource(async ({ grantDir, groupDir, source }) => {
+      await writeVersion(grantDir, "g1", 1);
+      await writeVersion(groupDir, "team", 1);
+      await source.prime();
+      await whileUnreadable(grantDir, async () => {
+        await writeVersion(groupDir, "team", 2, "new member");
+        // The group, the grant directory turning unreadable, and its
+        // record no longer seen.
+        assertEquals(await source.detect(), 3);
+        assertEquals(await source.detect(), 0);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "FilesystemAccessDataChangeSource: an unreadable raw file does not stop detection",
+  ignore: IGNORE_CHMOD,
+  fn: async () => {
+    await withSource(async ({ grantDir, source }) => {
+      await writeVersion(grantDir, "g-bad", 1);
+      await writeVersion(grantDir, "g-ok", 1);
+      await source.prime();
+      const raw = join(grantDir, "g-bad", "grant-main", "1", "raw");
+      await whileUnreadable(raw, async () => {
+        await writeVersion(grantDir, "g-ok", 2, "revoked");
+        assertEquals(await source.detect(), 1);
+      });
+    });
+  },
+});
