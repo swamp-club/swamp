@@ -58,6 +58,7 @@ import {
   type ReplicationHandle,
   setV3SyncDeadline,
   v3ReplicationEnabled,
+  v3RequestSyncDeadlineMs,
   v3SyncDeadlineMs,
 } from "./litestream/v3_replication.ts";
 import {
@@ -82,6 +83,7 @@ import {
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
+import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
@@ -701,14 +703,16 @@ export async function closeV3Datastores(): Promise<void> {
  * Syncs the sidecar `use` holds for `datastore` and, between the sync and
  * the lease check, publishes the head it confirmed (swamp-club#3482): the
  * last commit before the sync is the high-water mark. Collects the
- * lineages a first confirmation replaced once the check passed.
+ * lineages a first confirmation replaced once the check passed. Resolves
+ * with the published head's high-water mark, or undefined when the sync
+ * published no head.
  */
 async function syncAndPublish(
   datastore: string,
   use: ReplicationHandle,
   handles: readonly V3Datastore[],
   deadlineMs: number,
-): Promise<void> {
+): Promise<number | undefined> {
   // One at a time per datastore: serve's probe and a drain can both sync,
   // and a head taken earlier must never be published over a later one.
   const previous = publishing.get(datastore) ?? Promise.resolve();
@@ -717,21 +721,21 @@ async function syncAndPublish(
   );
   publishing.set(datastore, run);
   try {
-    await run;
+    return await run;
   } finally {
     if (publishing.get(datastore) === run) publishing.delete(datastore);
   }
 }
 
 /** The sync-and-publish in flight, by datastore. */
-const publishing = new Map<string, Promise<void>>();
+const publishing = new Map<string, Promise<unknown>>();
 
 async function syncAndPublishNow(
   datastore: string,
   use: ReplicationHandle,
   handles: readonly V3Datastore[],
   deadlineMs: number,
-): Promise<void> {
+): Promise<number | undefined> {
   const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
   const copy = handle === undefined
     ? undefined
@@ -743,7 +747,7 @@ async function syncAndPublishNow(
     : v3WriterFence(handle.datastorePath);
   if (handle === undefined || copy === undefined || writerFence === undefined) {
     await use.sync(deadlineMs);
-    return;
+    return undefined;
   }
   // Taken before the sync: what the sync covers. A serve that lost its lease
   // meanwhile still publishes this head on its old lineage before its lease
@@ -766,6 +770,66 @@ async function syncAndPublishNow(
     Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
   );
   if (first) await collectV3Lineages(copy, use.lineageFence);
+  return mark.cursor;
+}
+
+/** Serve's group commits, by datastore (swamp-club#3489). */
+const groupCommits = new Map<string, ReplicationGroupCommit>();
+
+/**
+ * Confirms that every commit this process made to the v3 datastore at
+ * `datastorePath` so far is replicated and its head published, before serve
+ * answers the write request that made them (swamp-club#3489). Concurrent
+ * requests share syncs ({@link ReplicationGroupCommit}); a request whose
+ * commits a published head already covers does not sync. Does nothing
+ * while replication is off.
+ *
+ * @throws V3ReplicationError when the commits were not confirmed: they stay
+ *   in commits.db and ship with the next sync
+ * @throws WriterFencedError when serve lost its writer lease
+ */
+export async function confirmV3Replicated(
+  datastorePath: string,
+): Promise<void> {
+  if (!v3ReplicationEnabled()) return;
+  const datastore = resolve(datastorePath);
+  const handle = [...opened.values()].find((h) =>
+    resolve(h.datastorePath) === datastore
+  );
+  if (handle === undefined) {
+    throw new V3ReplicationError(
+      `the v3 datastore at ${datastorePath} is not open in this process`,
+    );
+  }
+  // Read after the request's commits landed: a later mark only covers more.
+  const mark = handle.commitStore.highWaterMark().cursor;
+  if (mark <= (publishedMarks.get(datastore) ?? -1)) return;
+  let group = groupCommits.get(datastore);
+  if (group === undefined) {
+    group = new ReplicationGroupCommit(() => syncForRequests(datastore));
+    groupCommits.set(datastore, group);
+  }
+  await group.confirm(mark);
+}
+
+/** One group commit's sync: the held sidecar's, at a request's deadline. */
+async function syncForRequests(
+  datastore: string,
+): Promise<number | undefined> {
+  const use = replications.get(datastore)?.[0];
+  if (use === undefined) {
+    // Released for a replacement, never got back, or closed: nothing can
+    // confirm the commits until a sidecar is held again.
+    throw new V3ReplicationError(
+      `no Litestream sidecar is held for the v3 datastore at ${datastore}`,
+    );
+  }
+  return await syncAndPublish(
+    datastore,
+    use,
+    [...opened.values()],
+    v3RequestSyncDeadlineMs(),
+  );
 }
 
 /**

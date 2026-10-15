@@ -51,13 +51,26 @@ export const MIN_SERVE_SYNC_DEADLINE_MS = 10_000;
 /** The longest closing sync: a day, well inside what setTimeout holds. */
 export const MAX_SYNC_DEADLINE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How long the sync confirming a serve write request may take
+ * (swamp-club#3489): a stuck sidecar fails the request rather than holding
+ * its reply for the CLI's minute.
+ */
+export const SERVE_REQUEST_SYNC_DEADLINE_MS = 10_000;
+
 let replicator: LitestreamReplicator | undefined;
 let testDeps: Partial<ReplicatorDeps> | undefined;
 let syncDeadlineMs: number | undefined;
+let requestSyncDeadlineMs: number | undefined;
 
 /** The deadline of the closing sync: serve's budget, or the CLI default. */
 export function v3SyncDeadlineMs(): number {
   return syncDeadlineMs ?? DEFAULT_SYNC_DEADLINE_MS;
+}
+
+/** The deadline of the sync confirming a serve write request. */
+export function v3RequestSyncDeadlineMs(): number {
+  return requestSyncDeadlineMs ?? SERVE_REQUEST_SYNC_DEADLINE_MS;
 }
 
 /**
@@ -75,15 +88,20 @@ export function setV3SyncDeadline(ms: number | undefined): void {
 
 /**
  * Test seam: replaces parts of the replicator's dependencies, or with
- * undefined restores the real ones. Also sets the closing sync's deadline.
+ * undefined restores the real ones. Also sets the closing sync's deadline
+ * and a serve write request's.
  */
 export function setV3ReplicationForTesting(
   deps: Partial<ReplicatorDeps> | undefined,
-  options: { readonly syncDeadlineMs?: number } = {},
+  options: {
+    readonly syncDeadlineMs?: number;
+    readonly requestSyncDeadlineMs?: number;
+  } = {},
 ): void {
   testDeps = deps;
   replicator = undefined;
   syncDeadlineMs = options.syncDeadlineMs;
+  requestSyncDeadlineMs = options.requestSyncDeadlineMs;
 }
 
 /** This process's replicator: one per process, shared by every writer. */

@@ -45,6 +45,7 @@ import {
 import { type BufferTerminal, RunEventBuffer } from "./run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
 import {
+  confirmRunReplicated,
   type ConnectionContext,
   decideSubjectAccess,
   type DecisionSubject,
@@ -462,10 +463,25 @@ export async function startDetachedResume(
               };
             }
           } finally {
-            buffer.finish(terminal);
+            // With replication on, a success waits for the root's commit
+            // and its confirmation below (swamp-club#3489).
+            if (terminal.kind !== "done" || !ctx.confirmReplicated) {
+              buffer.finish(terminal);
+            }
           }
         },
       );
+      if (!buffer.finished) {
+        const unconfirmed = await confirmRunReplicated(
+          ctx,
+          "workflow_resume_failed",
+        );
+        buffer.finish(
+          unconfirmed === undefined
+            ? terminal
+            : { kind: "error", ...unconfirmed },
+        );
+      }
     } catch (error) {
       // The resume answers its own errors, so only a root that could not
       // open lands here before the terminal frame was sent.

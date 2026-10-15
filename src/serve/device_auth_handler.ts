@@ -610,6 +610,7 @@ export function createDeviceAuthDeps(
   instanceId?: string,
   sourceIp?: string,
   resolvedUserNames?: Readonly<Record<string, string>>,
+  confirmReplicated?: () => Promise<void>,
 ): DeviceAuthDeps {
   return {
     authConfig,
@@ -632,7 +633,9 @@ export function createDeviceAuthDeps(
       // The mint writes a definition, a token resource and then pushes — one
       // unit that a poller pull must not interleave with (swamp-club#2247).
       // This HTTP path is never reached from inside a gated WebSocket
-      // handler, so taking the non-reentrant gate here is safe.
+      // handler, so taking the non-reentrant gate here is safe. The token
+      // is handed out only once its commits are replicated, outside the
+      // gate (swamp-club#3489).
       withSyncGate(syncGate, () =>
         mintServerTokenImpl(
           principalId,
@@ -645,7 +648,10 @@ export function createDeviceAuthDeps(
           syncService,
           namespace,
           username,
-        )),
+        )).then(async (minted) => {
+          await confirmReplicated?.();
+          return minted;
+        }),
     storeAccessToken: async (tokenName: string, accessToken: string) => {
       const vaultService = await VaultService.fromRepository(
         repoDir,

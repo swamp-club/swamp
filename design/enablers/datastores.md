@@ -4242,6 +4242,12 @@ published lineage (the highest confirmed one, in `_control/lineage/`), then
 raises the fence in it, so every commit the previous writer acknowledged is
 in what it writes on. See "Phase 4D2" in `datastore-litestream.md`.
 
+D3 (swamp-club#3489) has serve acknowledge the way a CLI write command does.
+Serve holds one fence for its lifetime, so the per-command teardown sync never
+runs for its requests. Instead, each write request syncs, publishes its head
+and checks the lease before serve sends its reply. Concurrent requests share
+those syncs. See "Phase 4D3" in `datastore-litestream.md`.
+
 **Buckets.** The lease runs over any store with `putIfAbsent`
 (`v3WriterLease`), and its tests run against the in-memory remote's control
 planes too. On a datastore that is not a filesystem one, it binds at the

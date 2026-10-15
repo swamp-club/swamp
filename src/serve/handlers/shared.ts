@@ -25,6 +25,9 @@ import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { GrantUsernameResolver } from "../../domain/access/grant_username_resolution.ts";
 import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
+import { WRITER_FENCED_CODE } from "../../domain/datastore_v3/writer_lease.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   createLibSwampContext,
   type LibSwampContext,
@@ -305,6 +308,13 @@ export interface ConnectionContext {
    * race. Not reentrant: see `src/serve/sync_gate.ts`.
    */
   syncGate?: SyncGate;
+  /**
+   * Confirms that the commits serve made so far are replicated, before a
+   * write request answers (swamp-club#3489): set only on a v3 datastore
+   * while replication is on, so without it nothing waits. See
+   * {@link confirmRequest}.
+   */
+  confirmReplicated?: () => Promise<void>;
   /**
    * Remote-execution worker gateway. When present, `rpc.*` frames on this
    * socket are routed to it (worker enrollment and capability verbs); the
@@ -2057,6 +2067,21 @@ export function vaultListingDecider(
 }
 
 export function send(socket: WebSocket, message: ServerMessage): void {
+  if (message.type !== "event") {
+    const id = message.id;
+    const held = heldReplies.get(socket)?.get(id);
+    if (held !== undefined) {
+      held.push(message);
+      return;
+    }
+    // A request a failed confirmation answered: its handler's own reply
+    // would contradict the error the client already has.
+    if (unconfirmedRequests.get(socket)?.has(id)) return;
+  }
+  sendNow(socket, message);
+}
+
+function sendNow(socket: WebSocket, message: ServerMessage): void {
   if (socket.readyState !== WebSocket.OPEN) return;
   const json = JSON.stringify(message);
   if (connectionCompression.get(socket) === "gzip") {
@@ -2072,6 +2097,125 @@ export function send(socket: WebSocket, message: ServerMessage): void {
 
 const MAX_ERRORED_REQUESTS = 10_000;
 const erroredRequests = new WeakMap<WebSocket, Set<string>>();
+
+/**
+ * The replies of write requests waiting for their commits to be confirmed
+ * replicated (swamp-club#3489), by socket and request id. Run events pass;
+ * every other reply waits.
+ */
+const heldReplies = new WeakMap<WebSocket, Map<string, ServerMessage[]>>();
+
+/** Requests a failed confirmation answered with an error, capped per socket. */
+const unconfirmedRequests = new WeakMap<WebSocket, Set<string>>();
+
+/**
+ * Runs a write request's handler and, when `ctx.confirmReplicated` is set,
+ * holds the request's replies until the commits it made are confirmed
+ * replicated (swamp-club#3489). Handlers reply inside their root unit of
+ * work, before it commits, so the replies wait here, around the whole
+ * handler, rather than in a root's flush. Serve's dispatch wraps each write
+ * request in it (`CONFIRMED_WRITE_REQUESTS`); run events pass unheld.
+ *
+ * Once the handler has finished, a success is confirmed and its replies go
+ * out in order. A reply that is already an error goes out without waiting:
+ * the request failed whatever its commits do. When the handler's commit or
+ * the confirmation fails, the held success is dropped and the client gets
+ * the error instead, with the replication codes the CLI uses; any later
+ * reply for the request is dropped too. The commits stay in commits.db and
+ * ship with the next sync.
+ *
+ * Without `confirmReplicated` it runs the handler: nothing is held, and
+ * nothing waits.
+ */
+export async function confirmRequest(
+  ctx: Pick<ConnectionContext, "confirmReplicated">,
+  socket: WebSocket,
+  requestId: string,
+  handler: () => Promise<void>,
+): Promise<void> {
+  const confirm = ctx.confirmReplicated;
+  if (confirm === undefined) return await handler();
+  let held = heldReplies.get(socket);
+  if (held === undefined) {
+    held = new Map();
+    heldReplies.set(socket, held);
+  }
+  // Registered before the handler starts, so no reply can pass it.
+  const replies: ServerMessage[] = [];
+  held.set(requestId, replies);
+  const errored = () => replies.some((reply) => reply.type === "error");
+  let failure: { readonly error: unknown } | undefined;
+  let ended = false;
+  try {
+    await handler();
+    ended = true;
+    if (!errored()) await confirm();
+  } catch (error) {
+    failure = { error };
+  } finally {
+    held.delete(requestId);
+  }
+  if (failure !== undefined && !errored()) {
+    const { code, message } = replicationErrorForClient(
+      failure.error,
+      "internal_error",
+    );
+    sendError(socket, requestId, code, message);
+    // After the error went out: from here on the request's replies drop.
+    let answered = unconfirmedRequests.get(socket);
+    if (answered === undefined) {
+      answered = new Set();
+      unconfirmedRequests.set(socket, answered);
+    }
+    answered.add(requestId);
+    if (answered.size > MAX_ERRORED_REQUESTS) {
+      answered.delete(answered.values().next().value!);
+    }
+  } else {
+    for (const reply of replies) send(socket, reply);
+  }
+  // A handler that threw throws on, as it does without confirmation.
+  if (!ended && failure !== undefined) throw failure.error;
+}
+
+/**
+ * Confirms a run's commits before serve reports the run as finished
+ * (swamp-club#3489): resolves with undefined once they are replicated, or
+ * with the error terminal to report instead. Without
+ * `ctx.confirmReplicated` it resolves at once.
+ */
+export async function confirmRunReplicated(
+  ctx: Pick<ConnectionContext, "confirmReplicated">,
+  errorCode: string,
+): Promise<{ readonly code: string; readonly message: string } | undefined> {
+  if (ctx.confirmReplicated === undefined) return undefined;
+  try {
+    await ctx.confirmReplicated();
+    return undefined;
+  } catch (error) {
+    return replicationErrorForClient(error, errorCode);
+  }
+}
+
+/**
+ * The error reply for a write whose commit or replication failed: the
+ * CLI's codes for an unconfirmed sync and a fenced lease, otherwise
+ * `fallbackCode`.
+ */
+export function replicationErrorForClient(
+  error: unknown,
+  fallbackCode: string,
+): { readonly code: string; readonly message: string } {
+  const message = sanitizeErrorForClient(error);
+  if (
+    error instanceof UserError &&
+    (error.code === V3_REPLICATION_UNCONFIRMED_CODE ||
+      error.code === WRITER_FENCED_CODE)
+  ) {
+    return { code: error.code, message };
+  }
+  return { code: fallbackCode, message };
+}
 
 /**
  * The resolved name a request's response audit event records in place of the

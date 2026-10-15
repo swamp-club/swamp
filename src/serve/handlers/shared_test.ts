@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertInstanceOf, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
+import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
+import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { gunzipSync } from "node:zlib";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -37,6 +44,8 @@ import {
   closeConnectionsForPrincipal,
   closeSession,
   COMPRESSION_THRESHOLD_BYTES,
+  confirmRequest,
+  confirmRunReplicated,
   connectionActorIdentity,
   type ConnectionContext,
   decideSubjectAccess,
@@ -55,10 +64,12 @@ import {
   pushChangedToRemote,
   registerStreamSession,
   removeConnection,
+  replicationErrorForClient,
   resolveConnectionCompression,
   resolveDisplayPrincipal,
   sanitizeErrorForClient,
   send,
+  sendError,
   setConnectionCollectives,
   setConnectionCompression,
   setConnectionLoginIdentity,
@@ -1898,4 +1909,184 @@ Deno.test("sanitizeErrorForClient: logs nothing for a message the client receive
 
   assertEquals(truncated, "x".repeat(512) + "...");
   assertEquals(records, []);
+});
+
+// ── Confirming write requests (swamp-club#3489) ─────────────────────────
+
+/** A socket recording the JSON frames sent to it. */
+function messageSocket(): { socket: WebSocket; sent: ServerMessage[] } {
+  const sent: ServerMessage[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string) => sent.push(JSON.parse(data)),
+  } as unknown as WebSocket;
+  return { socket, sent };
+}
+
+/** A confirmation the test settles by hand, counting calls. */
+function manualConfirm() {
+  const calls: PromiseWithResolvers<void>[] = [];
+  return {
+    calls,
+    confirmReplicated: () => {
+      const call = Promise.withResolvers<void>();
+      calls.push(call);
+      return call.promise;
+    },
+  };
+}
+
+Deno.test("confirmRequest: holds a success reply until the confirmation resolves", async () => {
+  const { socket, sent } = messageSocket();
+  const confirm = manualConfirm();
+  const done = confirmRequest(confirm, socket, "r1", () => {
+    send(socket, { type: "done", id: "r1" });
+    return Promise.resolve();
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(sent, []);
+  assertEquals(confirm.calls.length, 1);
+  confirm.calls[0].resolve();
+  await done;
+  assertEquals(sent, [{ type: "done", id: "r1" }]);
+});
+
+Deno.test("confirmRequest: run events pass while the reply is held", async () => {
+  const { socket, sent } = messageSocket();
+  const confirm = manualConfirm();
+  const event = {
+    type: "event",
+    id: "r1",
+    event: { kind: "x" },
+  } as unknown as ServerMessage;
+  const done = confirmRequest(confirm, socket, "r1", () => {
+    send(socket, event);
+    send(socket, { type: "done", id: "r1" });
+    return Promise.resolve();
+  });
+  assertEquals(sent.length, 1);
+  await Promise.resolve();
+  await Promise.resolve();
+  confirm.calls[0].resolve();
+  await done;
+  assertEquals(sent.map((m) => m.type), ["event", "done"]);
+});
+
+Deno.test("confirmRequest: replaces the held success with the replication error", async () => {
+  const { socket, sent } = messageSocket();
+  const done = confirmRequest(
+    {
+      confirmReplicated: () =>
+        Promise.reject(new V3ReplicationError("the sidecar timed out")),
+    },
+    socket,
+    "r1",
+    () => {
+      send(socket, { type: "done", id: "r1" });
+      return Promise.resolve();
+    },
+  );
+  await done;
+  assertEquals(sent.length, 1);
+  const [reply] = sent;
+  assertEquals(reply.type, "error");
+  assertEquals(
+    (reply as { error: { code: string } }).error.code,
+    "datastore_v3_replication_unconfirmed",
+  );
+  // The handler's later reply for the request is dropped.
+  send(socket, { type: "done", id: "r1" });
+  assertEquals(sent.length, 1);
+});
+
+Deno.test("confirmRequest: a commit that fails after a held success sends exactly one error", async () => {
+  const { socket, sent } = messageSocket();
+  const confirm = manualConfirm();
+  await assertRejects(() =>
+    confirmRequest(confirm, socket, "r1", () => {
+      send(socket, { type: "done", id: "r1" });
+      return Promise.reject(new WriterFencedError(3, 4, "published"));
+    })
+  );
+  assertEquals(confirm.calls.length, 0);
+  assertEquals(sent.length, 1);
+  assertEquals(
+    (sent[0] as { error: { code: string } }).error.code,
+    "datastore_v3_writer_fenced",
+  );
+});
+
+Deno.test("confirmRequest: an error reply goes out without waiting for a confirmation", async () => {
+  const { socket, sent } = messageSocket();
+  const confirm = manualConfirm();
+  await confirmRequest(confirm, socket, "r1", () => {
+    sendError(socket, "r1", "not_found", "Data not found");
+    return Promise.resolve();
+  });
+  assertEquals(confirm.calls.length, 0);
+  assertEquals(sent.map((m) => m.type), ["error"]);
+});
+
+Deno.test("confirmRequest: without confirmReplicated nothing is held and nothing waits", async () => {
+  const { socket, sent } = messageSocket();
+  let ran = false;
+  const done = confirmRequest({}, socket, "r1", () => {
+    send(socket, { type: "done", id: "r1" });
+    ran = true;
+    return Promise.resolve();
+  });
+  // Sent synchronously, as without the wrapper.
+  assertEquals(ran, true);
+  assertEquals(sent, [{ type: "done", id: "r1" }]);
+  await done;
+});
+
+Deno.test("confirmRequest: holds only the request it wraps", async () => {
+  const { socket, sent } = messageSocket();
+  const confirm = manualConfirm();
+  const done = confirmRequest(confirm, socket, "r1", () => {
+    send(socket, { type: "done", id: "r2" });
+    return Promise.resolve();
+  });
+  assertEquals(sent, [{ type: "done", id: "r2" }]);
+  await Promise.resolve();
+  await Promise.resolve();
+  confirm.calls[0].resolve();
+  await done;
+});
+
+Deno.test("confirmRunReplicated: resolves undefined when confirmed or when nothing confirms", async () => {
+  assertEquals(await confirmRunReplicated({}, "x_failed"), undefined);
+  assertEquals(
+    await confirmRunReplicated(
+      { confirmReplicated: () => Promise.resolve() },
+      "x_failed",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("confirmRunReplicated: returns the terminal error a failed confirmation reports", async () => {
+  const result = await confirmRunReplicated(
+    {
+      confirmReplicated: () =>
+        Promise.reject(new V3ReplicationError("the sidecar timed out")),
+    },
+    "workflow_execution_failed",
+  );
+  assertEquals(result?.code, "datastore_v3_replication_unconfirmed");
+});
+
+Deno.test("replicationErrorForClient: keeps the replication codes and falls back otherwise", () => {
+  assertEquals(
+    replicationErrorForClient(new WriterFencedError(1, 2, "published"), "f")
+      .code,
+    "datastore_v3_writer_fenced",
+  );
+  assertEquals(
+    replicationErrorForClient(new V3ReplicationError("x"), "f").code,
+    "datastore_v3_replication_unconfirmed",
+  );
+  assertEquals(replicationErrorForClient(new Error("boom"), "f").code, "f");
 });

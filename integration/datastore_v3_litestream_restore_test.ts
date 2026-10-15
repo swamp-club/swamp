@@ -344,6 +344,29 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "v3 restore: a serve write confirmed before it answers survives a crash and a takeover (swamp-club#3489)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      // Serve's request, under a short lease so the takeover need not wait
+      // long: it commits, confirms, answers, then dies before any probe or
+      // shutdown publishes a head.
+      await a.send({ kind: "lease", ttlMs: 1_500 });
+      await a.send({ kind: "write", commits: 1, close: false });
+      await a.send({ kind: "confirm" });
+      await a.crash();
+      const b = await world.machine("b");
+      await b.send({ kind: "write", commits: 1, close: true });
+      const c = await world.machine("c");
+      assertEquals((await read(c)).commits, 4, "the acknowledged commit kept");
+    });
+  },
+});
+
+Deno.test({
   name: "v3 restore: a lease taken on a stale copy never continues its lineage",
   ignore,
   async fn() {
