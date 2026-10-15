@@ -187,8 +187,10 @@ export interface SinkOutbox {
    * longer holds the writer lease.
    */
   prepare(preparation: OutboxPreparation): Promise<void>;
-  /** Removes entries that landed, or that the unit gave up. */
-  remove(keys: readonly OutboxKey[]): Promise<void>;
+  /** Removes the entries of commits that landed; need not be fsynced. */
+  settle(keys: readonly OutboxKey[]): Promise<void>;
+  /** Removes entries the unit gave up; fsynced, since the failure was reported. */
+  discard(keys: readonly OutboxKey[]): Promise<void>;
   /** The chunk sweep's state now. */
   sweepState(): Promise<SweepState>;
 }
@@ -929,7 +931,7 @@ async function appendGroup(
     // A settle that fails costs a duplicate on the next recovery, never the
     // commit, which has landed.
     if (key !== undefined) {
-      await outbox.remove([key]).catch((error) =>
+      await outbox.settle([key]).catch((error) =>
         logger
           .debug`Settling the outbox entry of a landed commit failed; the next recovery settles it: ${error}`
       );
@@ -976,7 +978,7 @@ async function discardEntries(
   }
   if (keys.length === 0) return;
   try {
-    await outbox.remove(keys);
+    await outbox.discard(keys);
   } catch (error) {
     logger
       .warn`Discarding ${keys.length} outbox entries of failed v3 commits failed; they are discarded again when the datastore closes: ${error}`;

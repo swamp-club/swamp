@@ -4306,6 +4306,15 @@ recovery must not land them. A removal that fails is logged, the original
 outcome stands, and the handle retries it when it closes. So only a process
 that dies leaves entries.
 
+**Durability.** Every outbox write is fsynced (`synchronous=FULL`) except a
+settle (swamp-club#3506). A settle lost to a power cut brings its entry
+back, and the next recovery, finding its txnId landed, settles it again; it
+is most of the per-commit saving. A discard (a refusal, an abandon, a failed
+end, a retried owed removal) and a recovery's drop are fsynced: their
+outcome was reported, and an entry back from a power cut on an unchanged head
+would be landed by the next recovery. SIGKILL and OOM lose no WAL frame
+either way.
+
 **Recovery** (`recoverCommitOutbox`) runs under a writer hold: when a
 writing command or serve first holds the lease (`recoverAndMark`, before
 the interrupted-writer recovery), and again when serve retakes a lost

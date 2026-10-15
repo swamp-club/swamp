@@ -180,7 +180,7 @@ export async function recoverCommitOutbox(
   // An unreadable entry names no writer to judge; under the lease, only this
   // process's own units could still be using one, and theirs parse.
   for (const { key, detail } of listing.unreadable) {
-    await outbox.remove([key]);
+    await outbox.discard([key]);
     logger
       .warn`Dropped an unreadable v3 commit outbox entry for partition ${key.partition}: ${detail}`;
   }
@@ -194,7 +194,9 @@ export async function recoverCommitOutbox(
     reason: OutboxDropReason,
     detail?: string,
   ) => {
-    await outbox.remove([outboxKeyOf(entry.commit)]);
+    // A drop is reported, so it is fsynced: a run entry whose drop a power
+    // cut undid could land after its unit's dropped data commit.
+    await outbox.discard([outboxKeyOf(entry.commit)]);
     const recorded: OutboxDrop = detail === undefined
       ? { entry, reason }
       : { entry, reason, detail };
@@ -217,7 +219,7 @@ export async function recoverCommitOutbox(
     if (outcome.kind !== "dropped") {
       if (outcome.kind === "landed") landed++;
       else settled++;
-      await outbox.remove([outboxKeyOf(commit)]);
+      await outbox.settle([outboxKeyOf(commit)]);
       continue;
     }
     await drop(entry, outcome.reason, outcome.detail);

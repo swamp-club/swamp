@@ -22,10 +22,11 @@
  * random interleavings of staging, flushing, refusals and their
  * acknowledgement, seq gaps, writers killed at any point of a commit,
  * recoveries, takeovers by another copy, compaction with pruning, the clock
- * passing the retry bound, and chunk sweeps landing inside a commit, the
+ * passing the retry bound, chunk sweeps landing inside a commit, and power
+ * cuts (swamp-club#3506) that undo the outbox removals not yet fsynced, the
  * real unit, sink, outbox, commit store and collector keep:
  *
- * - a commit whose failure was reported never lands later;
+ * - a commit whose failure or drop was reported never lands later;
  * - a commit never lands after another copy took the lease since it was
  *   prepared, unless it landed before;
  * - a commit lands only on the head it was prepared on;
@@ -37,6 +38,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import fc from "fast-check";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
 import { ChunkCollector } from "../src/domain/datastore_v3/chunk_collector.ts";
 import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
@@ -48,6 +50,7 @@ import {
   COMPACTED_TXN_RETENTION_MS,
   type HeadIdentity,
   OUTBOX_RETRY_BOUND_MS,
+  type OutboxKey,
 } from "../src/domain/datastore_v3/commit_outbox.ts";
 import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import type { PartitionKey } from "../src/domain/datastore_v3/partition_key.ts";
@@ -118,10 +121,24 @@ type Command =
   | { readonly kind: "commit"; readonly fault: Fault }
   | { readonly kind: "abandon" }
   | { readonly kind: "acknowledge" }
-  | { readonly kind: "restart"; readonly takeover: boolean }
+  /**
+   * A new writer takes the lease and recovers. With `cutAfter`, power is cut
+   * when the recovery reaches that many removals (after landing an entry it
+   * has not settled, at 0), and a further writer recovers.
+   */
+  | {
+    readonly kind: "restart";
+    readonly takeover: boolean;
+    readonly cutAfter?: number;
+  }
   | { readonly kind: "compact" }
   | { readonly kind: "age" }
-  | { readonly kind: "sweep" };
+  | { readonly kind: "sweep" }
+  /**
+   * Power is cut: the outbox removals since its last fsync after the first
+   * `keep` are undone, and a new writer recovers.
+   */
+  | { readonly kind: "power-cut"; readonly keep: number };
 
 const FAULTS: readonly Fault[] = [
   "none",
@@ -169,12 +186,20 @@ const arbCommand: fc.Arbitrary<Command> = fc.oneof(
     arbitrary: fc.record({
       kind: fc.constant("restart" as const),
       takeover: fc.boolean(),
-    }),
+      cutAfter: fc.option(fc.integer({ min: 0, max: 2 }), { nil: undefined }),
+    }, { requiredKeys: ["kind", "takeover"] }),
     weight: 3,
   },
   { arbitrary: fc.constant({ kind: "compact" as const }), weight: 1 },
   { arbitrary: fc.constant({ kind: "age" as const }), weight: 2 },
   { arbitrary: fc.constant({ kind: "sweep" as const }), weight: 1 },
+  {
+    arbitrary: fc.record({
+      kind: fc.constant("power-cut" as const),
+      keep: fc.integer({ min: 0, max: 3 }),
+    }),
+    weight: 2,
+  },
 );
 
 /** The definitions staged into: few, so commits contend for partitions. */
@@ -194,8 +219,36 @@ const coverage = {
   refusals: 0,
   seqGaps: 0,
   sweepDeletes: 0,
+  /** Removals a power cut undid, by kind. */
+  undone: { settle: 0, discard: 0 },
+  /** Recoveries a power cut stopped part way. */
+  recoveryCuts: 0,
   drops: {} as Record<string, number>,
 };
+
+/** SQLite's `PRAGMA synchronous` value for FULL. */
+const SYNCHRONOUS_FULL = 2;
+
+type Row = Record<string, SQLInputValue>;
+
+/** An outbox entry's rows as they were before a removal. */
+interface RemovedEntry {
+  readonly kind: "settle" | "discard";
+  readonly entry: Row;
+  readonly chunks: readonly Row[];
+}
+
+/** Puts `rows` back into `table` as they were. */
+function restoreRows(db: DatabaseSync, table: string, rows: readonly Row[]) {
+  for (const row of rows) {
+    const columns = Object.keys(row);
+    db.prepare(
+      `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${
+        columns.map(() => "?").join(", ")
+      })`,
+    ).run(...columns.map((column) => row[column]));
+  }
+}
 
 interface GroupRecord {
   readonly txnId: string;
@@ -211,9 +264,20 @@ interface GroupRecord {
 async function runModel(commands: readonly Command[]): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-outbox-model-" });
   const store = SqliteCommitStore.open(join(dir, "commits.db"));
-  const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"), {
+  const outboxPath = join(dir, "outbox.db");
+  /** Removals not fsynced yet: a FULL write syncs every WAL frame before it. */
+  let unsynced: RemovedEntry[] = [];
+  let lastSynchronous = SYNCHRONOUS_FULL;
+  const outbox = new SqliteCommitOutbox(outboxPath, {
     clock: () => new Date(now),
+    onWrite: (synchronous) => {
+      lastSynchronous = synchronous;
+      if (synchronous === SYNCHRONOUS_FULL) unsynced = [];
+    },
   });
+  /** A second connection, as a power cut's view of the outbox file. */
+  let disk: DatabaseSync | undefined;
+  const diskDb = () => disk ??= new DatabaseSync(outboxPath);
   const storage = new MemoryStorage({ maxChunkBytes: 16 * 1024 });
   const chunkStore = new ChunkStore(storage);
   let now = Date.parse("2026-10-15T00:00:00.000Z");
@@ -279,6 +343,60 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     await outbox.recordFence(fence);
     processId++;
     writer = { host: "h", pid: processId, instance: `p${processId}` };
+  };
+
+  /** Set while a recovery runs: its discards are reported drops. */
+  let recovering = false;
+  /** Removals a recovery makes before the power is cut; unset for none. */
+  let cutAfterRemovals: number | undefined;
+  const wrapRemoval = (kind: "settle" | "discard") => {
+    const remove = outbox[kind].bind(outbox);
+    outbox[kind] = async (keys: readonly OutboxKey[]) => {
+      if (cutAfterRemovals !== undefined) {
+        if (cutAfterRemovals === 0) throw new Killed();
+        cutAfterRemovals--;
+      }
+      const removed: RemovedEntry[] = [];
+      for (const key of keys) {
+        if (recovering && kind === "discard") {
+          // A recovery's drop is reported: it must never land later.
+          const record = groups.get(key.txnId);
+          if (
+            record !== undefined && record.failedAt === undefined &&
+            await landedSeq(record.txnId, record.run) === undefined
+          ) {
+            record.failedAt = step;
+          }
+        }
+        const entry = diskDb().prepare(
+          "SELECT * FROM outbox_entries WHERE namespace = ? AND partition = ? AND txn_id = ?",
+        ).get(key.namespace, key.partition, key.txnId) as Row | undefined;
+        if (entry === undefined) continue;
+        const chunks = diskDb().prepare(
+          "SELECT * FROM outbox_chunks WHERE sequence = ?",
+        ).all(entry.sequence) as Row[];
+        removed.push({ kind, entry, chunks });
+      }
+      await remove(keys);
+      if (lastSynchronous !== SYNCHRONOUS_FULL) unsynced.push(...removed);
+    };
+  };
+  wrapRemoval("settle");
+  wrapRemoval("discard");
+
+  /**
+   * Cuts the power: the process dies, and the WAL keeps a prefix of the
+   * removals since the last fsync, the first `keep`.
+   */
+  const cutPower = (keep: number) => {
+    for (const lost of unsynced.slice(keep)) {
+      restoreRows(diskDb(), "outbox_entries", [lost.entry]);
+      restoreRows(diskDb(), "outbox_chunks", lost.chunks);
+      coverage.undone[lost.kind]++;
+    }
+    unsynced = [];
+    unit = undefined;
+    writer = undefined;
   };
 
   const base = createOutboxCommitSink({ commitStore: store, outbox });
@@ -419,6 +537,7 @@ async function runModel(commands: readonly Command[]): Promise<void> {
   };
 
   const recover = async () => {
+    recovering = true;
     const report = await recoverCommitOutbox(
       { outbox, commitStore: store, chunkStore },
       {
@@ -427,7 +546,7 @@ async function runModel(commands: readonly Command[]): Promise<void> {
         writerAlive: (w) => w.instance === writer!.instance,
         clock: () => new Date(now),
       },
-    );
+    ).finally(() => recovering = false);
     coverage.landed += report.landed;
     coverage.settled += report.settled;
     for (const drop of report.drops) {
@@ -574,6 +693,20 @@ async function runModel(commands: readonly Command[]): Promise<void> {
             unit = undefined;
           }
           await takeLease(command.takeover);
+          if (command.cutAfter !== undefined) {
+            cutAfterRemovals = command.cutAfter;
+            try {
+              await recover();
+            } catch (error) {
+              if (!(error instanceof Killed)) throw error;
+              coverage.recoveryCuts++;
+              cutPower(0);
+              // A new writer, under a new fence.
+              await takeLease(false);
+            } finally {
+              cutAfterRemovals = undefined;
+            }
+          }
           await recover();
           break;
         }
@@ -596,11 +729,17 @@ async function runModel(commands: readonly Command[]): Promise<void> {
         case "sweep":
           await sweep();
           break;
+        case "power-cut":
+          cutPower(command.keep);
+          await takeLease(false);
+          await recover();
+          break;
       }
       await checkLandings();
       await check();
     }
   } finally {
+    disk?.close();
     await store.close();
     await outbox.close();
     await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -609,18 +748,42 @@ async function runModel(commands: readonly Command[]): Promise<void> {
 
 const arbInterleaving = fc.array(arbCommand, { minLength: 1, maxLength: 40 });
 
+/**
+ * Each a unit's discard after a reported failure, then a power cut before
+ * anything else fsyncs the outbox (swamp-club#3506): rare in random runs.
+ */
+const STAGE: Command = { kind: "stage", target: 0, big: false };
+const CUT: Command = { kind: "power-cut", keep: 0 };
+const DISCARD_THEN_CUT: Command[][] = [
+  [STAGE, { kind: "commit", fault: "fail-append" }, CUT],
+  [
+    STAGE,
+    { kind: "checkpoint", fault: "fail-append" },
+    { kind: "commit", fault: "fail-append" },
+    CUT,
+  ],
+  [
+    STAGE,
+    { kind: "checkpoint", fault: "fail-append" },
+    { kind: "abandon" },
+    CUT,
+  ],
+];
+
 Deno.test("v3 outbox (model): over random interleavings no commit lands after its failure, a takeover or off its head, no run names refused data, and no commit names a missing chunk", async () => {
   await fc.assert(fc.asyncProperty(arbInterleaving, runModel), {
     numRuns: 1000,
+    examples: DISCARD_THEN_CUT.map((commands): [Command[]] => [commands]),
   });
 });
 
 Deno.test("v3 outbox (model): the interleavings take every path the invariants guard", async () => {
   // A fixed seed, so what is reached does not vary between runs.
   for (const key of Object.keys(coverage) as (keyof typeof coverage)[]) {
-    if (key !== "drops") coverage[key] = 0;
+    if (key !== "drops" && key !== "undone") coverage[key] = 0;
   }
   coverage.drops = {};
+  coverage.undone = { settle: 0, discard: 0 };
   await fc.assert(fc.asyncProperty(arbInterleaving, runModel), {
     numRuns: 1000,
     seed: 3490,
@@ -632,6 +795,10 @@ Deno.test("v3 outbox (model): the interleavings take every path the invariants g
   );
   assert(coverage.refusals > 0 && coverage.seqGaps > 0, reached);
   assert(coverage.sweepDeletes > 0, reached);
+  // A power cut undoes settles, and cuts recoveries part way; a discard is
+  // fsynced, so none is ever undone.
+  assert(coverage.undone.settle > 0 && coverage.recoveryCuts > 0, reached);
+  assertEquals(coverage.undone.discard, 0, reached);
   // A unit-dropped run entry needs a failed run commit and a later data
   // commit of one unit both left behind; the recovery unit tests pin it.
   for (const reason of ["stale-fence", "head-moved", "expired"]) {

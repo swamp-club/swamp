@@ -184,6 +184,56 @@ Deno.test("recoverCommitOutbox: drops an entry whose partition moved on, with it
   });
 });
 
+/** Records each settle and discard on `outbox`, as `settle:<txnId>`. */
+function recordRemovals(outbox: SqliteCommitOutbox): string[] {
+  const calls: string[] = [];
+  const settle = outbox.settle.bind(outbox);
+  const discard = outbox.discard.bind(outbox);
+  outbox.settle = (keys) => {
+    for (const key of keys) calls.push(`settle:${key.txnId}`);
+    return settle(keys);
+  };
+  outbox.discard = (keys) => {
+    for (const key of keys) calls.push(`discard:${key.txnId}`);
+    return discard(keys);
+  };
+  return calls;
+}
+
+Deno.test("recoverCommitOutbox: a landed or already-landed entry settles; a dropped one is discarded durably", async () => {
+  await withFixture(async ({ store, outbox, prepare, recover }) => {
+    const calls = recordRemovals(outbox);
+    const before = prepared(1, [await savePut("a", 1)], "landed-before");
+    await prepare(before);
+    await store.append(before);
+    await prepare(prepared(2, [await savePut("a", 2)], "lands"));
+    assertEquals(
+      [(await recover(2)).landed, calls],
+      [1, ["settle:landed-before", "settle:lands"]],
+    );
+    calls.length = 0;
+    // A drop was reported: back after a power cut, a run entry dropped with
+    // its unit could land alone.
+    await prepare(prepared(3, [await savePut("b", 1)], "t1"), { unitId: "u" });
+    await prepare(
+      modelCommit(1, [await runPut("r")], {
+        partition: runPartition(),
+        txnId: "run",
+        writer: DEAD,
+        fence: 2,
+        at: NOW.toISOString(),
+      }),
+      { unitId: "u" },
+    );
+    await store.append(
+      modelCommit(3, [await savePut("c", 1)], { txnId: "newer", fence: 2 }),
+    );
+    const report = await recover(3);
+    assertEquals(report.drops.length, 2);
+    assertEquals(calls, ["discard:t1", "discard:run"]);
+  });
+});
+
 Deno.test("recoverCommitOutbox: drops an entry another copy's lease came after, and lands nothing", async () => {
   await withFixture(async ({ store, outbox, prepare, recover }) => {
     await prepare(prepared(1, [await savePut("a", 1)], "t1"));

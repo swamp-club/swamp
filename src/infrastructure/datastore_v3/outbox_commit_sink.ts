@@ -73,6 +73,18 @@ export function createOutboxCommitSink(
   const owed = new Map<string, OutboxKey>();
   const keyOf = (key: OutboxKey) =>
     JSON.stringify([key.namespace, key.partition, key.txnId]);
+  const removeOwing = async (
+    keys: readonly OutboxKey[],
+    remove: (keys: readonly OutboxKey[]) => Promise<void>,
+  ) => {
+    try {
+      await remove(keys);
+    } catch (error) {
+      for (const key of keys) owed.set(keyOf(key), key);
+      throw error;
+    }
+    for (const key of keys) owed.delete(keyOf(key));
+  };
   return {
     head: (namespace, partition) => commitStore.head(namespace, partition),
     append: (commit: Commit): Promise<CommitStoreAppendResult> => {
@@ -88,21 +100,16 @@ export function createOutboxCommitSink(
         assertWriterCurrent();
         await outbox.prepare(preparation);
       },
-      remove: async (keys) => {
-        try {
-          await outbox.remove(keys);
-        } catch (error) {
-          for (const key of keys) owed.set(keyOf(key), key);
-          throw error;
-        }
-        for (const key of keys) owed.delete(keyOf(key));
-      },
+      settle: (keys) => removeOwing(keys, (owing) => outbox.settle(owing)),
+      discard: (keys) => removeOwing(keys, (owing) => outbox.discard(owing)),
       sweepState: () => outbox.sweepState(clock().getTime()),
     },
     async retryOwedRemovals() {
       if (owed.size === 0) return;
       const keys = [...owed.values()];
-      await outbox.remove(keys);
+      // Most owed removals are discards, whose failure was reported: retried
+      // durably, as a settle may be too.
+      await outbox.discard(keys);
       owed.clear();
     },
   };

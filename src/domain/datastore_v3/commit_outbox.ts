@@ -342,8 +342,18 @@ export interface CommitOutbox {
    * its sequence and creation time.
    */
   prepare(preparation: OutboxPreparation): Promise<void>;
-  /** Removes the entries with these keys, landed or given up. */
-  remove(keys: readonly OutboxKey[]): Promise<void>;
+  /**
+   * Removes the entries of commits that landed. A settle may be lost to a
+   * power cut: the entry comes back, and the next recovery, finding its
+   * txnId landed, settles it again.
+   */
+  settle(keys: readonly OutboxKey[]): Promise<void>;
+  /**
+   * Removes entries given up: refused, abandoned, failed, or dropped by a
+   * recovery. Their outcome was reported, so a discard survives a power cut;
+   * an entry back from one could be landed by the next recovery.
+   */
+  discard(keys: readonly OutboxKey[]): Promise<void>;
   /** Every entry, in preparation order, and those that cannot be read. */
   entries(): Promise<OutboxListing>;
   /** Whether any entry is held. */

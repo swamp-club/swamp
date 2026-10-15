@@ -311,7 +311,7 @@ async function dropSharedOutboxEntries(sharedCommitsDb: string): Promise<void> {
   try {
     if (!await outbox.hasEntries()) return;
     const { entries, unreadable } = await outbox.entries();
-    await outbox.remove([
+    await outbox.discard([
       ...entries.map((entry) => ({
         namespace: entry.commit.namespace,
         partition: entry.commit.partition.toString(),
