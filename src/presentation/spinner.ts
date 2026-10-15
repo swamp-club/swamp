@@ -17,10 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { cyan } from "@std/fmt/colors";
+import { swampColor } from "./swamp_colors.ts";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const INTERVAL_MS = 80;
+
+/** Where the spinner draws; replaced in tests. */
+export interface SpinnerOptions {
+  /** Writes raw text to stderr. */
+  write?: (text: string) => void;
+  /** True when stderr is a terminal; the spinner draws nothing otherwise. */
+  isTerminal?: () => boolean;
+}
 
 /**
  * Animated terminal spinner that writes to stderr.
@@ -32,9 +40,17 @@ export class Spinner {
   #message = "";
   #encoder = new TextEncoder();
   #active = false;
+  #write: (text: string) => void;
+  #isTerminal: () => boolean;
+
+  constructor(options: SpinnerOptions = {}) {
+    this.#write = options.write ??
+      ((text) => Deno.stderr.writeSync(this.#encoder.encode(text)));
+    this.#isTerminal = options.isTerminal ?? (() => Deno.stderr.isTerminal());
+  }
 
   start(message: string): void {
-    if (!Deno.stderr.isTerminal()) return;
+    if (!this.#isTerminal()) return;
     this.#message = message;
     this.#frameIndex = 0;
     this.#active = true;
@@ -49,21 +65,32 @@ export class Spinner {
     this.#message = message;
   }
 
+  /** Stops and clears the spinner's row. */
   stop(): void {
+    this.#settle("");
+  }
+
+  /**
+   * Stops and leaves `line` in place of the spinner, followed by a newline,
+   * so whatever is written next starts on a fresh row.
+   */
+  finish(line: string): void {
+    this.#settle(`${line}\n`);
+  }
+
+  #settle(text: string): void {
     if (this.#intervalId !== undefined) {
       clearInterval(this.#intervalId);
       this.#intervalId = undefined;
     }
     if (this.#active) {
-      Deno.stderr.writeSync(this.#encoder.encode("\r\x1b[K"));
+      this.#write(`\r\x1b[K${text}`);
       this.#active = false;
     }
   }
 
   #render(): void {
-    const frame = cyan(FRAMES[this.#frameIndex % FRAMES.length]);
-    Deno.stderr.writeSync(
-      this.#encoder.encode(`\r\x1b[K${frame} ${this.#message}`),
-    );
+    const frame = swampColor("cyan", FRAMES[this.#frameIndex % FRAMES.length]);
+    this.#write(`\r\x1b[K${frame} ${this.#message}`);
   }
 }

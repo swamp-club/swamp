@@ -658,8 +658,9 @@ export const updateCommand = new Command()
         return;
       }
 
+      // The renderer settled the spinner before printing the result, so
+      // nothing below draws over the progress row.
       if (renderer.updated) {
-        spinner?.update("Syncing global skills...");
         try {
           await syncGlobalSkills(ctx.logger, ctx.outputMode);
         } catch (err) {
@@ -672,7 +673,6 @@ export const updateCommand = new Command()
         // launchd can refuse to start the replaced binary until its
         // autoupdate job is registered again (swamp-club#3007).
         if (renderer.newVersion) {
-          spinner?.update("Re-registering the autoupdate scheduler...");
           const refresh = await refreshAutoupdateSchedulerIfOwed(
             createAutoupdateRefreshDeps(),
             renderer.newVersion,
