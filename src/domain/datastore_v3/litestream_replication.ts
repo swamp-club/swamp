@@ -36,6 +36,28 @@ import { UserError } from "../errors.ts";
 export const V3_REPLICATION_UNCONFIRMED_CODE =
   "datastore_v3_replication_unconfirmed";
 
+/** Error code for a chunk collection a replicated copy defers. */
+export const V3_CHUNK_COLLECTION_DEFERRED_CODE =
+  "datastore_v3_chunk_collection_deferred";
+
+/**
+ * Thrown when chunk garbage collection may not run against a replicated
+ * copy yet (swamp-club#3491): another copy may still restore a lineage
+ * whose commits name chunks this copy does not. Nothing was deleted, and a
+ * later collection runs once only the current lineage is restorable.
+ */
+export class V3ChunkCollectionDeferredError extends UserError {
+  constructor(datastorePath: string, reason: string) {
+    super(
+      `Chunks of the v3 datastore at ${datastorePath} are not collected ` +
+        `yet: ${reason}. Nothing was deleted; collection runs once the ` +
+        `current replication lineage is the only one that can be restored.`,
+      V3_CHUNK_COLLECTION_DEFERRED_CODE,
+    );
+    this.name = "V3ChunkCollectionDeferredError";
+  }
+}
+
 /**
  * Thrown when a write command cannot confirm that its commits reached the
  * replica. They are kept in `commits.db`, and the next write replicates

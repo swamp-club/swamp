@@ -864,7 +864,10 @@ that do not parse, are ignored.
 > (`datastore_v3_writer_fenced`) with a message saying its changes may still
 > appear, because the writer that took over may restore them, and to check
 > before running the command again. Without replication the fenced message
-> still says nothing more was committed.
+> still says nothing more was committed. Only a lease check that found the
+> lease taken over says so (swamp-club#3491): one that could not read the
+> lease, an I/O error, fails as unconfirmed replication, saying the changes
+> were published but the lease could not be checked.
 
 **Behind, cheaply.** `copy.json` beside the copy records which lineage, up
 to which TXID, the copy holds. Before a command's first read or write it
@@ -934,6 +937,18 @@ then raises `writer_fence` in it, then decides the lineage:
   claim that exists refuses), and its sidecar uploads a full first snapshot
   to the new path.
 
+A lineage this hold already began at its own fence is kept: in serve, the
+retake and a writer's hold at the same fence both decide it, so decisions on
+one copy run one at a time in the process (a lease is exclusive, so no other
+process decides at that fence), and the second finds the first's record
+(swamp-club#3491). A claim that already exists is accepted only when this
+copy recorded that lineage and its start names the same replica root; a
+start under another root at the same fence is refused. A fence that went
+back to one where this copy already began a lineage (the lease's records were
+recreated) is refused rather than continued: Litestream must never continue
+a used path over another history, and the copy's `writer_fence` refuses
+commits at that fence anyway.
+
 The old writer's order is unchanged: sync, publish, check the lease,
 acknowledge. The new writer's is lease, then restore, so every commit the
 old writer acknowledged is in what the new one restores. A zombie's later
@@ -960,7 +975,9 @@ acknowledged: a write request publishes its own head before it answers. A retake
 another writer makes the copy current through the same path, restoring into
 serve's open store in place, then prepares its lineage before it holds a
 sidecar again. From the retake until that restore lands, the copy is not
-current: serve's commits are refused as fenced, and chunks are not collected,
+current: serve's commits are refused as fenced (the message says this process
+holds the lease again and its copy is being brought up to date), and chunks
+are not collected,
 so nothing lands on, or is collected from, a copy that lacks the other
 writer's commits.
 
@@ -974,6 +991,37 @@ after it are never touched. Abandoned lineages under another root are
 forgotten, not deleted. On S3 and GCS the paths stay until 4E collects them
 through `storage/1`; their records stay with them. Collection is best effort
 and never fails a command.
+
+**Chunk garbage collection** (swamp-club#3491) deletes chunks no commit in
+the copy names. A restore's truncation, and a fenced writer's late head on an
+older lineage, can leave chunks that only another lineage's head names, which
+another copy may still restore. So while replicating, `swamp datastore gc` and
+serve's sweep collect only when the copy holds the current lineage at or past
+its head and no other lineage under the replica root is registered (a
+lineage whose start was not read, or does not parse, counts as one). Until
+then the collection is deferred (`datastore_v3_chunk_collection_deferred`)
+and deletes nothing. Serve's sweep says so at info once per datastore per
+process, naming the lineage that blocks it, and at debug after that, so a
+collection that never runs can be found. A lineage whose start record does
+not parse is never removed by lineage collection; the reason names its
+`_control/lineage/<fence>/` records, which have to be removed by hand. On a file replica, the lineage collection after a first
+confirmation clears the way; on S3 and GCS, old lineages stay until 4E
+collects them, so chunk collection waits until then.
+
+**Turning replication on** over a datastore with a shared `commits.db`
+(swamp-club#3491): the first writer, under the lease and `restore.lock`, seeds
+its new copy from the shared database when nothing was ever published under
+any replica root and the copy has no lineage, copy record or commits. The never-confirmed
+check is defence in depth: a confirmed lineage under this root is restored
+first and leaves the copy with commits, but one confirmed only under another
+root leaves this root with nothing current and the copy empty, and the shared
+commits are then no longer the state. It then
+restarts its lineage at its fence, so its first sync publishes the shared
+commits as the first lineage and every other copy restores them. Nothing
+writes the shared database once replication is on, so a writer that seeded
+and crashed before confirming leaves the next one the same commits. A
+checkout whose read model applied the shared commits catches up
+incrementally; readers before the first writer still read an empty copy.
 
 **Measured** on macOS arm64 with the pinned 0.5.17
 (`scripts/bench_v3_restore.ts`, median of 5):
@@ -1014,20 +1062,11 @@ nothing unacknowledged but a failed writer's published head.
 
 **Known limits, dormant.**
 
-- `swamp datastore namespace list` reads the checkout's copy as it is,
-  without refreshing it.
 - A fenced writer can publish heads on its old lineage until the new
   writer's lineage is confirmed, so the new writer's next refresh can
   restore commits whose command failed, and they become durable in its
-  lineage. This is the head-first trade-off above. Before chunk garbage
-  collection runs against replicated copies, 4E must account for it:
-  truncation releases chunk references that another copy may still
-  restore.
-- Turning replication on over a datastore that already has a shared
-  `commits.db` starts every checkout from an empty copy, because nothing
-  is published yet. The shared commits are ignored without a warning. 4E
-  needs a migration step (publish the shared database as the first
-  lineage) before the setting is exposed.
+  lineage. This is the head-first trade-off above. Chunk collection waits
+  while such a lineage is registered (swamp-club#3491).
 - Windows stays unavailable while the pin is below 0.5.18.
 
 ## Phase 4D3: serve confirms each write request (swamp-club#3489)

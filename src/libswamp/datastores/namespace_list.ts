@@ -30,6 +30,7 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import { listNamespaceManifests } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { datastoreEngineOf } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import { listV3Namespaces } from "../../infrastructure/datastore_v3/v3_datastore.ts";
+import { ensureV3CopyCurrent } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 export interface NamespaceInfo {
   namespace: string;
@@ -59,7 +60,8 @@ export interface NamespaceListDeps {
  * by the CLI and serve. An extension datastore lists through its provider,
  * a v2 filesystem datastore from its namespace manifests, and a v3 one from
  * the namespaces its commits name (swamp-club#3301), plus the current
- * namespace before its first commit. Entries without a manifest carry an
+ * namespace before its first commit, from a copy made current first while
+ * it replicates. Entries without a manifest carry an
  * empty `repoId` and `registeredAt`.
  */
 export async function createNamespaceListDeps(
@@ -94,13 +96,16 @@ export async function createNamespaceListDeps(
   if (datastoreEngineOf(config) === "v3") {
     return {
       getCurrentNamespace: () => config.namespace,
-      listNamespaces: () => {
+      listNamespaces: async () => {
+        // While replicating, the checkout's copy is brought up to date
+        // first, as every other read does (swamp-club#3491).
+        await ensureV3CopyCurrent(repoDir, config, "read");
         const namespaces = listV3Namespaces(config.path, repoDir);
         if (config.namespace && !namespaces.includes(config.namespace)) {
           namespaces.push(config.namespace);
           namespaces.sort();
         }
-        return Promise.resolve(namespaces.map(unregistered));
+        return namespaces.map(unregistered);
       },
     };
   }

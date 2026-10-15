@@ -195,6 +195,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#3301: `datastore namespace list` reads a v3 datastore's
   // namespaces from its commits.db, read-only, for the CLI and serve.
   "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#3491: and makes a replicated checkout's copy current first.
+  "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3279: run-record artifacts resolve through the resolver on
   // v3, where a removed version can be written again.
   "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",

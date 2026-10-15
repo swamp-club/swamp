@@ -46,6 +46,7 @@ import { acquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_write
 import { v3CommitsDbPath } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { replicationPathsFor } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
+import { createNamespaceListDeps } from "../src/libswamp/datastores/namespace_list.ts";
 import { commitIn, TEST_TIMINGS } from "./datastore_v3_litestream_helpers.ts";
 
 /** What the test asks a machine to do. */
@@ -58,6 +59,8 @@ export type MachineRequest =
     readonly datastorePath: string;
     readonly repoDir: string;
     readonly lockTimeoutMs: number;
+    /** The namespace the machine's datastore config names, if any. */
+    readonly namespace?: string;
   }
   /** Takes the lease with a short TTL, so a pause lets it expire. */
   | {
@@ -94,7 +97,9 @@ export type MachineRequest =
   /** Chunk collection on the open handle; resolves with the refusal, if any. */
   | { readonly kind: "gc" }
   /** The checkout copy's restore lock. */
-  | { readonly kind: "restoreLock" };
+  | { readonly kind: "restoreLock" }
+  /** `swamp datastore namespace list`'s namespaces. */
+  | { readonly kind: "namespaces" };
 
 /** A machine's answer. */
 export type MachineResponse =
@@ -110,7 +115,11 @@ let leaseRelease: (() => Promise<void>) | undefined;
 const launched = new Set<number>();
 
 function config(): FilesystemDatastoreConfig {
-  return { type: "filesystem", path: init!.datastorePath };
+  return {
+    type: "filesystem",
+    path: init!.datastorePath,
+    ...(init!.namespace !== undefined ? { namespace: init!.namespace } : {}),
+  };
 }
 
 /**
@@ -271,6 +280,13 @@ async function handle(request: MachineRequest): Promise<unknown> {
     case "catchUp":
       await v3DatastoreFor(init!.repoDir, config()).catchUp();
       return undefined;
+    case "namespaces":
+      return await inEnv(async () => {
+        const deps = await createNamespaceListDeps(config(), init!.repoDir);
+        const listed = await deps.listNamespaces();
+        await closeV3Datastores();
+        return listed.map((entry) => entry.namespace);
+      });
     case "files": {
       const dir = join(init!.repoDir, ".swamp", "auto-definitions");
       const names: string[] = [];

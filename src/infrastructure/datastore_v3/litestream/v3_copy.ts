@@ -44,11 +44,13 @@ import { dirname, join, resolve } from "@std/path";
 import { markErrorPaths, UserError } from "../../../domain/errors.ts";
 import {
   collectableLineages,
-  compareTxid,
+  copyStateAdvances,
   currentLineage,
+  decideChunkCollection,
   decideLocalCopy,
   type HighWaterMark,
   mayContinueLineage,
+  type PublishedLineage,
   restartLineage,
 } from "../../../domain/datastore_v3/published_lineage.ts";
 import {
@@ -56,13 +58,17 @@ import {
   replicaPathFor,
 } from "../../../domain/datastore_v3/replication_lineage.ts";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
-import { V3ReplicationError } from "../../../domain/datastore_v3/litestream_replication.ts";
+import {
+  V3ChunkCollectionDeferredError,
+  V3ReplicationError,
+} from "../../../domain/datastore_v3/litestream_replication.ts";
 import { FileSystemControlPlaneStore } from "../../persistence/fs_control_plane_store.ts";
 import { getSwampLogger } from "../../logging/logger.ts";
 import { readModelStateDir } from "../record_path_guard.ts";
 import { ReadModelState } from "../read_model_state.ts";
 import { SqliteCommitStore } from "../sqlite_commit_store.ts";
 import { READ_MODEL_STATE_FILE } from "../sqlite_read_model.ts";
+import { v3SharedCommitsDbPath } from "../v3_datastore.ts";
 import { LineageRegistry } from "./lineage_registry.ts";
 import {
   installByLink,
@@ -141,9 +147,13 @@ async function exists(path: string): Promise<boolean> {
 
 /** What {@link makeV3CopyCurrent} did. */
 export interface V3CopyRefresh {
-  /** The restore, when one ran. */
+  /**
+   * The restore, when one ran, or the seed from the datastore's shared
+   * `commits.db` when replication was first turned on (swamp-club#3491).
+   */
   readonly restored?: V3RestoreResult & {
-    readonly lineageFence: number;
+    /** The lineage restored; undefined for a seed. */
+    readonly lineageFence?: number;
     /**
      * The commit at the read model's cursor changed: the checkout must be
      * rebuilt from the commits, removing files no commit owns.
@@ -157,8 +167,8 @@ export interface V3CopyRefresh {
  * current lineage over it when it is missing, behind, or holds another
  * lineage. `openStore` is this process's open store on the copy, which a
  * restore updates in place; without one an existing copy is updated
- * through a store opened for the restore, and a missing one is renamed
- * into place.
+ * through a store opened for the restore, and a missing one is hard-linked
+ * into place, never over a file another process created meanwhile.
  *
  * Restores of one copy are serialized by `restore.lock` beside it, and the
  * copy's sidecar is stopped for the restore. A read-only command whose
@@ -184,7 +194,12 @@ export async function makeV3CopyCurrent(
     await registry.read(root),
     root,
   );
-  if (first.kind === "none" || first.kind === "current") return {};
+  if (first.kind === "none") {
+    return options.mode === "write"
+      ? await seedFromSharedDatabase(copy, paths, registry, options)
+      : {};
+  }
+  if (first.kind === "current") return {};
 
   const lock = await Deno.open(paths.restoreLock, {
     read: true,
@@ -283,6 +298,117 @@ export async function makeV3CopyCurrent(
   }
 }
 
+/**
+ * Seeds a writer's copy from the datastore's shared `commits.db` when
+ * replication is turned on over a datastore that already has commits
+ * (swamp-club#3491): no lineage was ever confirmed, under any replica root,
+ * and the copy is new (no lineage or copy record, no commits). The writer
+ * then restarts its lineage at its fence, so its first sync publishes the
+ * shared commits as the first lineage and every other copy restores them.
+ *
+ * Runs under the writer lease, which the caller holds, and `restore.lock`.
+ * Nothing writes the shared database once replication is on, and lineages
+ * a writer started but never confirmed do not count, so a writer that
+ * seeded and failed before its first confirmation, on any checkout, leaves
+ * the next writer the same commits to seed.
+ */
+async function seedFromSharedDatabase(
+  copy: V3Copy,
+  paths: ReplicationPaths,
+  registry: LineageRegistry,
+  options: {
+    readonly openStore?: SqliteCommitStore;
+    readonly lockWaitMs: number;
+  },
+): Promise<V3CopyRefresh> {
+  const shared = v3SharedCommitsDbPath(resolve(copy.datastorePath));
+  const unseeded = async () =>
+    resolve(shared) !== resolve(paths.commitsDb) &&
+    commitsIn(paths.commitsDb) === 0 &&
+    await readLineage(paths) === undefined &&
+    await readCopyState(paths) === undefined &&
+    !await registry.everConfirmed() && commitsIn(shared) > 0;
+  if (!await unseeded()) return {};
+  const lock = await Deno.open(paths.restoreLock, {
+    read: true,
+    write: true,
+    create: true,
+  });
+  let quiesced: (() => void) | undefined;
+  try {
+    if (!await pollLock(lock, options.lockWaitMs)) {
+      return refuseOrSkip(
+        "write",
+        copy,
+        "another swamp process is restoring this checkout's copy",
+      );
+    }
+    if (!await unseeded()) return {};
+    try {
+      quiesced = await v3Replicator().quiesce(copy.commitsDb);
+    } catch (error) {
+      return refuseOrSkip("write", copy, messageOf(error), error);
+    }
+    await ensurePrivateDir(paths);
+    // The checkout's read model applied the shared commits before
+    // replication: it moved only if the commit at its cursor differs.
+    const cursor = readModelCursor(copy.repoDir);
+    const before = cursor > 0 ? txnAt(shared, cursor) : undefined;
+    if (options.openStore !== undefined) {
+      await options.openStore.replaceContentFrom(shared);
+    } else {
+      const store = SqliteCommitStore.open(paths.commitsDb);
+      try {
+        await store.replaceContentFrom(shared);
+      } finally {
+        await store.close();
+      }
+    }
+    const readModelMoved = cursor > 0 &&
+      (before === undefined || txnAt(paths.commitsDb, cursor) !== before);
+    logger
+      .info`Seeded this checkout's copy of the v3 datastore at ${copy.datastorePath} from its shared commits.db, the first replication lineage`;
+    return { restored: { exactTxid: true, truncated: 0, readModelMoved } };
+  } finally {
+    quiesced?.();
+    lock.close();
+  }
+}
+
+/**
+ * How many commits the database at `path` holds: 0 when it is missing or
+ * has no commits table yet. Any other failure (busy, damaged, unreadable)
+ * is thrown, so a seed is never skipped silently.
+ */
+function commitsIn(path: string): number {
+  try {
+    Deno.statSync(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return 0;
+    throw error;
+  }
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    db.exec("PRAGMA busy_timeout=5000");
+    return (db.prepare("SELECT count(*) AS n FROM commits").get() as {
+      n: number;
+    }).n;
+  } catch (error) {
+    if (/no such table: commits/.test(messageOf(error))) return 0;
+    throw markErrorPaths(
+      new UserError(
+        `The v3 datastore's commits at ${path} could not be read to seed ` +
+          `this checkout's copy: ${messageOf(error)}. Nothing was changed; ` +
+          `run the command again.`,
+      ),
+      [path],
+    );
+  } finally {
+    db?.close();
+  }
+}
+
 function refuseOrSkip(
   mode: "read" | "write",
   copy: V3Copy,
@@ -369,14 +495,38 @@ function holderName(): string {
   return `${user}@${Deno.hostname()}`;
 }
 
+/** Each copy's lineage decisions in this process, one at a time. */
+const lineageQueues = new Map<string, Promise<void>>();
+
+/**
+ * Runs `fn` after every lineage decision this process started on `copy`
+ * (swamp-club#3491). A writer lease is exclusive and each hold takes its own
+ * fence, so the only decisions that can race on one copy are this
+ * process's own: serve's retake beside a writer's hold at the same fence.
+ */
+async function oneAtATime<T>(copy: V3Copy, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(copy.commitsDb);
+  const run = (lineageQueues.get(key) ?? Promise.resolve()).then(fn);
+  const settled = run.then(() => {}, () => {});
+  lineageQueues.set(key, settled);
+  try {
+    return await run;
+  } finally {
+    if (lineageQueues.get(key) === settled) lineageQueues.delete(key);
+  }
+}
+
 /**
  * Decides and records the lineage of the writer that took the lease at
  * `fence` on `copy`, which is current: continues it while no other writer
  * can have written since (its lineage is published and nothing started
  * after it) and nothing was restored, otherwise starts a new lineage at
- * `fence` and claims it.
+ * `fence` and claims it. A lineage this hold already started at `fence` is
+ * kept: another context in this process, or serve's retake beside a hold,
+ * decided it first. Decisions on one copy run one at a time.
  *
- * @throws V3ReplicationError when the lineage cannot be recorded or claimed
+ * @throws V3ReplicationError when the lineage cannot be recorded or claimed,
+ *   or when `fence` went back to one this copy already began a lineage at
  */
 export async function prepareV3WriterLineage(
   copy: V3Copy,
@@ -387,40 +537,70 @@ export async function prepareV3WriterLineage(
   if (replica === undefined) return;
   const root = replicaRootOf(replica);
   try {
-    const paths = await copyPaths(copy);
-    const registry = lineageRegistryFor(copy.datastorePath);
-    const lineages = await registry.read(root);
-    const previous = await readLineage(paths);
-    if (
-      !options.restored && mayContinueLineage(previous, lineages, root)
-    ) {
-      const decided = decideLineage(previous, root, fence);
-      if (decided.kind === "continue") {
-        await writeLineage(paths, decided.lineage);
+    await oneAtATime(copy, async () => {
+      const paths = await copyPaths(copy);
+      const registry = lineageRegistryFor(copy.datastorePath);
+      const previous = await readLineage(paths);
+      const claim = async () => {
+        if (
+          await registry.start({
+            fence,
+            holder: holderName(),
+            replicaRoot: root,
+            startedAt: new Date().toISOString(),
+          })
+        ) {
+          return;
+        }
+        // Claimed before: only this copy's own start, under this root, is
+        // kept. Another root's at the same fence names another replica path.
+        const started = await registry.started(fence);
+        if (
+          previous?.lineageFence !== fence || previous.replicaRoot !== root ||
+          typeof started !== "object" || started.replicaRoot !== root
+        ) {
+          throw new Error(
+            `replication lineage ${padFence(fence)} was already claimed` +
+              (typeof started === "object" && started.replicaRoot !== root
+                ? " under another replica root"
+                : "; the writer lease's records were recreated"),
+          );
+        }
+      };
+      if (
+        previous !== undefined && previous.replicaRoot === root &&
+        previous.lineageFence === fence && previous.lastFence === fence
+      ) {
+        // This hold's own lineage, begun at its fence after any restore: its
+        // start is only read, and claimed again only when it is missing.
+        const started = await registry.started(fence);
+        if (typeof started !== "object" || started.replicaRoot !== root) {
+          await claim();
+        }
         return;
       }
-      if (decided.kind === "conflict") {
-        logger
-          .debug`The writer lease of the v3 datastore at ${copy.datastorePath} went back to fence ${fence}, where this copy's lineage began before; a new lineage starts`;
+      if (
+        !options.restored &&
+        mayContinueLineage(previous, await registry.read(root), root)
+      ) {
+        const decided = decideLineage(previous, root, fence);
+        if (decided.kind === "continue") {
+          await writeLineage(paths, decided.lineage);
+          return;
+        }
       }
-    }
-    const lineage = previous?.lineageFence === fence &&
-        previous.replicaRoot === root
-      ? previous
-      : restartLineage(previous, root, fence);
-    const claimed = await registry.start({
-      fence,
-      holder: holderName(),
-      replicaRoot: root,
-      startedAt: new Date().toISOString(),
+      if (decideLineage(previous, root, fence).kind === "conflict") {
+        // Litestream must never continue a used path over another history.
+        throw new Error(
+          `the writer lease went back to fence ${fence}, where this copy ` +
+            `already began a replication lineage (its last fence is ` +
+            `${previous?.lastFence}): the lease's records were recreated. ` +
+            `Nothing was written`,
+        );
+      }
+      await claim();
+      await writeLineage(paths, restartLineage(previous, root, fence));
     });
-    if (!claimed && previous?.lineageFence !== fence) {
-      throw new Error(
-        `replication lineage ${padFence(fence)} was already claimed; the ` +
-          `writer lease's records were recreated`,
-      );
-    }
-    await writeLineage(paths, lineage);
   } catch (error) {
     throw new V3ReplicationError(
       `the replication lineage of this writer could not be recorded: ${
@@ -445,14 +625,16 @@ export async function recordV3LeaseFence(
   if (replica === undefined) return;
   const root = replicaRootOf(replica);
   try {
-    const paths = await copyPaths(copy);
-    const previous = await readLineage(paths);
-    const lineages = await lineageRegistryFor(copy.datastorePath).read(root);
-    if (!mayContinueLineage(previous, lineages, root)) return;
-    const decided = decideLineage(previous, root, fence);
-    if (decided.kind === "continue") {
-      await writeLineage(paths, decided.lineage);
-    }
+    await oneAtATime(copy, async () => {
+      const paths = await copyPaths(copy);
+      const previous = await readLineage(paths);
+      const lineages = await lineageRegistryFor(copy.datastorePath).read(root);
+      if (!mayContinueLineage(previous, lineages, root)) return;
+      const decided = decideLineage(previous, root, fence);
+      if (decided.kind === "continue") {
+        await writeLineage(paths, decided.lineage);
+      }
+    });
   } catch (error) {
     logger
       .debug`Recording fence ${fence} on the replication lineage of ${copy.datastorePath} failed: ${error}`;
@@ -497,25 +679,63 @@ export async function publishV3Head(
       txid: head.txid,
       confirmedAt: at,
     });
-    // Never backwards: a fenced process in this checkout that publishes late
-    // must not make the copy look behind its own continued lineage.
-    const held = await readCopyState(paths);
-    if (
-      held === undefined || held.replicaRoot !== root ||
-      held.lineageFence !== head.lineageFence ||
-      compareTxid(held.txid, head.txid) < 0
-    ) {
-      await writeCopyState(paths, {
-        replicaRoot: root,
-        lineageFence: head.lineageFence,
-        txid: head.txid,
-      });
+    // Never backwards (copyStateAdvances): a fenced process in this
+    // checkout that publishes late, on its lineage or an older one, must not
+    // make the copy look behind what it holds.
+    const next = {
+      replicaRoot: root,
+      lineageFence: head.lineageFence,
+      txid: head.txid,
+    };
+    if (copyStateAdvances(await readCopyState(paths), next)) {
+      await writeCopyState(paths, next);
     }
     return first;
   } catch (error) {
     throw new V3ReplicationError(
       `the replicated state could not be published: ${messageOf(error)}`,
       { cause: error },
+    );
+  }
+}
+
+/**
+ * Refuses chunk collection on `copy` while another copy may still restore
+ * a lineage whose commits name chunks this one does not (swamp-club#3491):
+ * a restore's truncation, or an older lineage's head, can leave chunks only
+ * another lineage names. Starts the collection rules need but the read did
+ * not fetch are read here. Does nothing while replication is off.
+ *
+ * @throws V3ChunkCollectionDeferredError when collection must wait
+ */
+export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
+  const replica = v3ReplicaSetting();
+  if (replica === undefined) return;
+  const root = replicaRootOf(replica);
+  const paths = await copyPaths(copy);
+  const registry = lineageRegistryFor(copy.datastorePath);
+  const read = await registry.read(root);
+  const current = currentLineage(read, root)?.fence;
+  const lineages: PublishedLineage[] = [];
+  for (const lineage of read) {
+    if (lineage.started !== undefined || lineage.fence === current) {
+      lineages.push(lineage);
+      continue;
+    }
+    const started = await registry.started(lineage.fence);
+    lineages.push(
+      typeof started === "object" ? { ...lineage, started } : lineage,
+    );
+  }
+  const decision = decideChunkCollection(
+    await readCopyState(paths),
+    lineages,
+    root,
+  );
+  if (decision.kind === "defer") {
+    throw new V3ChunkCollectionDeferredError(
+      copy.datastorePath,
+      decision.reason,
     );
   }
 }

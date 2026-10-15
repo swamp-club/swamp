@@ -814,13 +814,22 @@ class SharedHandle {
     try {
       await this.assertLeaseCurrent();
     } catch (error) {
+      if (!(error instanceof WriterFencedError)) {
+        // Not a takeover: the lease could not be checked (swamp-club#3491).
+        throw new V3ReplicationError(
+          (published ? "they were published to the replica, but " : "") +
+            `this process's writer lease could not be checked: ${
+              messageOf(error)
+            }`,
+          { cause: error },
+        );
+      }
       if (published) {
         // The head is out: the writer that took over may restore these
         // commits, so saying nothing landed would not be true.
-        const fenced = error instanceof WriterFencedError ? error : undefined;
         const refused = new WriterFencedError(
-          fenced?.fence,
-          fenced?.currentFence,
+          error.fence,
+          error.currentFence,
           "published",
         );
         refused.cause = error;

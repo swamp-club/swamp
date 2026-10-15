@@ -20,6 +20,8 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { V3ChunkCollectionDeferredError } from "../../domain/datastore_v3/litestream_replication.ts";
 import { UserError } from "../../domain/errors.ts";
 import { swampPath } from "../persistence/paths.ts";
 import {
@@ -314,6 +316,44 @@ Deno.test("collectChunksQuietly: a failing sweep is logged, not thrown", async (
     datastorePath: "/fake",
     collectChunks: () => Promise.reject(new Error("disk gone")),
   } as unknown as V3Datastore);
+});
+
+Deno.test("collectChunksQuietly: a deferred collection is said once at info, then at debug (swamp-club#3491)", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "v3"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    // Unique per run, so --repeats exercises the first sweep again.
+    const datastorePath = `/fake-${crypto.randomUUID()}`;
+    const handle = {
+      datastorePath,
+      collectChunks: () =>
+        Promise.reject(
+          new V3ChunkCollectionDeferredError(
+            datastorePath,
+            "replication lineage 000000000005 may still be restored",
+          ),
+        ),
+    } as unknown as V3Datastore;
+    await collectChunksQuietly(handle);
+    await collectChunksQuietly(handle);
+    const levels = records.filter((record) =>
+      record.message.map(String).join("").includes("000000000005")
+    ).map((record) => record.level);
+    assertEquals(levels, ["info", "debug"]);
+  } finally {
+    await reset();
+  }
 });
 
 Deno.test("V3MaintenanceTimer: a real v3 datastore's chunks are swept by serve's timer", async () => {

@@ -91,6 +91,8 @@ class FakeWorld {
   syncAnswer: () => Promise<Record<string, unknown>> = () =>
     Promise.resolve({ status: "synced", txid: 2, replicated_txid: 2 });
   leaseCurrent = true;
+  /** A lease check that fails for another reason than a takeover. */
+  leaseCheckError: Error | undefined;
   leaseChecks = 0;
 
   constructor(readonly paths: ReplicationPaths) {}
@@ -208,9 +210,13 @@ class FakeWorld {
       fence,
       assertLeaseCurrent: () => {
         this.leaseChecks++;
+        if (this.leaseCheckError !== undefined) {
+          return Promise.reject(this.leaseCheckError);
+        }
+        // A lost lease, as the real hold reports it.
         return this.leaseCurrent
           ? Promise.resolve()
-          : Promise.reject(new Error("fenced"));
+          : Promise.reject(new WriterFencedError(fence, fence + 1));
       },
     };
   }
@@ -1003,6 +1009,33 @@ Deno.test({
         V3ReplicationError,
       );
       assertStringIncludes(unpublished.message, "lost its writer lease");
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator sync: a lease check that fails without a takeover is not reported as fenced (swamp-club#3491)",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      world.leaseCheckError = new Error("control plane unreadable");
+      const published = await assertRejects(
+        () => handle.sync(5_000, { beforeLeaseCheck: () => Promise.resolve() }),
+        V3ReplicationError,
+      );
+      assertStringIncludes(published.message, "published to the replica");
+      assertStringIncludes(published.message, "could not be checked");
+      assertStringIncludes(published.message, "control plane unreadable");
+      const unpublished = await assertRejects(
+        () => handle.sync(5_000),
+        V3ReplicationError,
+      );
+      assertStringIncludes(unpublished.message, "could not be checked");
+      assertEquals(unpublished.message.includes("lost its"), false);
       await handle.release();
     });
   },

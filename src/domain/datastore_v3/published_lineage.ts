@@ -297,6 +297,86 @@ export function collectableLineages(
   return [...fences].sort((a, b) => a - b);
 }
 
+/**
+ * Whether a head this copy published moves its `copy.json` forward from
+ * `held` to `next` (swamp-club#3491). Never backwards: a fenced process in
+ * the checkout that publishes late, on its lineage or an older one, must
+ * not make the copy look behind what it holds. A record under another
+ * replica root is replaced.
+ */
+export function copyStateAdvances(
+  held: LocalCopyState | undefined,
+  next: LocalCopyState,
+): boolean {
+  if (held === undefined || held.replicaRoot !== next.replicaRoot) return true;
+  if (next.lineageFence !== held.lineageFence) {
+    return next.lineageFence > held.lineageFence;
+  }
+  return compareTxid(held.txid, next.txid) < 0;
+}
+
+/** Whether chunks may be collected from a replicated copy. */
+export type ChunkCollectionDecision =
+  | { readonly kind: "collect" }
+  | { readonly kind: "defer"; readonly reason: string };
+
+/**
+ * Decides whether chunk garbage collection may run against a copy that
+ * holds `copy` (swamp-club#3491). A collection's reference set is the
+ * copy's own commits, and a restore's truncation drops commits whose
+ * chunks another copy may still restore from a lineage's head. So it runs
+ * only when nothing but the copy's state is restorable: the copy holds the
+ * current lineage at or past its head, and no other lineage under
+ * `replicaRoot` is registered. A lineage whose start was not read, or does
+ * not parse, counts as one under this root. Lineages under another root
+ * are never restored, so they never defer it.
+ *
+ * Once the current lineage's first confirmation collected the lineages it
+ * replaced, collection resumes. Until then, and on replicas whose old
+ * lineages are not yet collected, it waits.
+ */
+export function decideChunkCollection(
+  copy: LocalCopyState | undefined,
+  lineages: readonly PublishedLineage[],
+  replicaRoot: string,
+): ChunkCollectionDecision {
+  const current = currentLineage(lineages, replicaRoot);
+  if (current === undefined) {
+    return { kind: "defer", reason: "no replication lineage is confirmed yet" };
+  }
+  if (
+    copy === undefined || copy.replicaRoot !== replicaRoot ||
+    copy.lineageFence !== current.fence ||
+    compareTxid(copy.txid, current.head.txid) < 0
+  ) {
+    return {
+      kind: "defer",
+      reason: `this checkout's copy does not hold replication lineage ${
+        padFence(current.fence)
+      } at its head`,
+    };
+  }
+  const other = lineages.find((lineage) =>
+    lineage.fence !== current.fence &&
+    (lineage.started === undefined ||
+      lineage.started.replicaRoot === replicaRoot)
+  );
+  if (other !== undefined) {
+    const fence = padFence(other.fence);
+    return {
+      kind: "defer",
+      // A record that names no root can only be removed by hand: say which.
+      reason: other.started === undefined
+        ? `replication lineage ${fence} has no start record that parses ` +
+          `(_control/lineage/${fence}/), so it may still be restored; ` +
+          `lineage collection never removes it`
+        : `replication lineage ${fence} may still be restored until it is ` +
+          `collected`,
+    };
+  }
+  return { kind: "collect" };
+}
+
 /** Orders two hex TXIDs. */
 export function compareTxid(a: string, b: string): number {
   const x = BigInt(`0x${requireTxid(a)}`);

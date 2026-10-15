@@ -21,7 +21,9 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   collectableLineages,
   compareTxid,
+  copyStateAdvances,
   currentLineage,
+  decideChunkCollection,
   decideLocalCopy,
   type LineageHead,
   mayContinueLineage,
@@ -293,4 +295,58 @@ Deno.test("parse*: records round-trip and malformed ones are dropped", () => {
     undefined,
   );
   assertEquals(parseLocalCopyState([]), undefined);
+});
+
+Deno.test("copyStateAdvances: only a newer lineage, or a newer TXID on the same one", () => {
+  const at = (lineageFence: number, n: number, replicaRoot = ROOT) => ({
+    replicaRoot,
+    lineageFence,
+    txid: txid(n),
+  });
+  assertEquals(copyStateAdvances(undefined, at(3, 1)), true);
+  assertEquals(copyStateAdvances(at(3, 5), at(3, 6)), true);
+  assertEquals(copyStateAdvances(at(3, 5), at(3, 5)), false);
+  assertEquals(copyStateAdvances(at(3, 5), at(3, 4)), false);
+  assertEquals(copyStateAdvances(at(3, 5), at(4, 1)), true);
+  // A fenced process publishing late on an older lineage never moves it back.
+  assertEquals(copyStateAdvances(at(4, 1), at(3, 9)), false);
+  assertEquals(copyStateAdvances(at(4, 9, "file:/other"), at(3, 1)), true);
+});
+
+Deno.test("decideChunkCollection: only from the current lineage's head, with nothing else restorable", () => {
+  const copy = { replicaRoot: ROOT, lineageFence: 7, txid: txid(4) };
+  const current = published(7, { confirmed: 1, head: 4 });
+  assertEquals(decideChunkCollection(copy, [current], ROOT).kind, "collect");
+  // Another root's lineage is never restored here.
+  assertEquals(
+    decideChunkCollection(
+      copy,
+      [published(3, { confirmed: 1, head: 9, root: "file:/other" }), current],
+      ROOT,
+    ).kind,
+    "collect",
+  );
+  const deferred = (
+    held: typeof copy | undefined,
+    lineages: PublishedLineage[],
+  ) => decideChunkCollection(held, lineages, ROOT).kind;
+  assertEquals(deferred(copy, []), "defer");
+  assertEquals(deferred(copy, [published(7)]), "defer");
+  assertEquals(deferred(undefined, [current]), "defer");
+  assertEquals(deferred({ ...copy, txid: txid(3) }, [current]), "defer");
+  assertEquals(deferred({ ...copy, lineageFence: 5 }, [current]), "defer");
+  // An older lineage under the root still restorable, a newer one that may
+  // yet be confirmed, and one whose start was not read.
+  assertEquals(
+    deferred(copy, [published(5, { confirmed: 1, head: 9 }), current]),
+    "defer",
+  );
+  assertEquals(deferred(copy, [current, published(9)]), "defer");
+  assertEquals(deferred(copy, [{ fence: 5 }, current]), "defer");
+  const unreadable = decideChunkCollection(copy, [{ fence: 5 }, current], ROOT);
+  assertEquals(
+    unreadable.kind === "defer" &&
+      unreadable.reason.includes("_control/lineage/000000000005/"),
+    true,
+  );
 });

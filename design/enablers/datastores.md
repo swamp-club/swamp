@@ -3308,9 +3308,12 @@ starts at generation 1, the same as the one the state may have recorded.
 swamp-club#3249 reclaims chunks that no commit names: those an abandoned unit,
 a refused or failed commit, or a crash between storing chunks and committing
 left behind. It also finds damaged chunks and removes the filesystem storage's
-orphaned temp files. It is dormant: nothing in production calls it, and
-`integration/datastore_v3_rules_test.ts` (rule 8) pinned that until `swamp
-datastore gc` wired it in (swamp-club#3279, "v3 opt-in").
+orphaned temp files. `swamp datastore gc` and serve's maintenance sweep run it
+on a v3 datastore (swamp-club#3279, "v3 opt-in"); until then
+`integration/datastore_v3_rules_test.ts` (rule 8) pinned it dormant. On a
+replicated copy it runs only once no lineage but the copy's current one can be
+restored (swamp-club#3491; "Garbage collection" under Phase 4D2 in
+`datastore-litestream.md`).
 
 **Ubiquitous language.**
 
