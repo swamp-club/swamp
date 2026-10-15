@@ -31,8 +31,7 @@ import { redactServeOptions } from "../src/serve/handlers/admin_handlers.ts";
 import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import { serveConfigRows } from "../packages/dashboard/src/views/serve_config_rows.ts";
 
-// Build the payload exactly as handleServeConfig sends it, so a change to the
-// server's serve.config shape fails here rather than in the dashboard.
+// Build the payload exactly as handleServeConfig sends it.
 function serveConfigPayload(opts: Record<string, unknown>): unknown {
   return {
     config: redactServeOptions(opts as unknown as MergedServeOptions),
