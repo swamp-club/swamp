@@ -2863,3 +2863,202 @@ Deno.test("YamlDefinitionRepository.findByName prefers a primary definition over
     assertEquals(found?.id, primaryDef.id);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Upgrade write-back keeps the file's text (swamp-club#3502)
+// ---------------------------------------------------------------------------
+
+/** A hand-written definition with comments in lists, an anchor and quoting. */
+function richDefinitionYaml(id: string, name: string): string {
+  return [
+    "# Hand-written header comment",
+    `type: ${testType.normalized}`,
+    "typeVersion: 2026.06.04.2",
+    `id: ${id}`,
+    `name: ${name}`,
+    "version: 1",
+    "tags: {}",
+    "globalArguments:",
+    "  recipients:",
+    "    # the on-call alias",
+    "    - oncall@example.com",
+    "    - team@example.com",
+    "  notes:",
+    "    - this is a long note that the author",
+    "      wrapped by hand across two lines",
+    "  createTrigger:",
+    "    arguments: &trigger_args",
+    "      threshold: 5",
+    "      window: 10m",
+    "  updateTrigger: { arguments: *trigger_args }",
+    "  filters:",
+    "    - field: status",
+    "      op: '='",
+    "methods: {}",
+    "",
+  ].join("\n");
+}
+
+/** The data `yaml` declares, as independent JSON values (aliases unshared). */
+function jsonDataFromYaml(yaml: string): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(parseYaml(yaml)));
+}
+
+async function writeRichDefinition(
+  dir: string,
+): Promise<{ id: string; typeDir: string; original: string }> {
+  const id = crypto.randomUUID();
+  const typeDir = join(dir, "models", testType.toDirectoryPath());
+  await ensureDir(typeDir);
+  const original = richDefinitionYaml(id, "rich");
+  await Deno.writeTextFile(join(typeDir, `${id}.yaml`), original);
+  return { id, typeDir, original };
+}
+
+Deno.test("YamlDefinitionRepository.save: a typeVersion-only change keeps every other byte of a uuid-named file as it moves", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const { id, typeDir, original } = await writeRichDefinition(dir);
+
+    await repo.save(
+      testType,
+      definitionFromYaml(original, { typeVersion: "2026.07.28.1" }),
+    );
+
+    assertEquals(
+      await Deno.readTextFile(join(typeDir, "rich.yaml")),
+      original.replace(
+        "typeVersion: 2026.06.04.2",
+        "typeVersion: 2026.07.28.1",
+      ),
+    );
+    assertEquals(await fileExists(join(typeDir, `${id}.yaml`)), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a structural change keeps comments in unchanged lists, aliases and quoting", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const { typeDir, original } = await writeRichDefinition(dir);
+    const data = jsonDataFromYaml(original);
+    data.tags = { env: "prod" };
+
+    await repo.save(
+      testType,
+      Definition.fromData(data as Parameters<typeof Definition.fromData>[0]),
+    );
+
+    const saved = await Deno.readTextFile(join(typeDir, "rich.yaml"));
+    assertStringIncludes(saved, "    # the on-call alias\n");
+    assertStringIncludes(
+      saved,
+      "  updateTrigger: { arguments: *trigger_args }",
+    );
+    assertStringIncludes(saved, "      op: '='");
+    assertEquals(jsonDataFromYaml(saved), data);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: changing an anchored map whose alias keeps its value expands the alias and reads back as saved", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const { typeDir, original } = await writeRichDefinition(dir);
+    const data = jsonDataFromYaml(original);
+    const args = data.globalArguments as Record<
+      string,
+      { arguments: Record<string, unknown> }
+    >;
+    args.createTrigger.arguments.threshold = 6;
+
+    await repo.save(
+      testType,
+      Definition.fromData(data as Parameters<typeof Definition.fromData>[0]),
+    );
+
+    const saved = await Deno.readTextFile(join(typeDir, "rich.yaml"));
+    assertEquals(jsonDataFromYaml(saved), data);
+    assertEquals(saved.includes("&trigger_args"), false);
+    assertEquals(saved.includes("*trigger_args"), false);
+    assertStringIncludes(saved, "    # the on-call alias\n");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: changing an anchored map and its alias alike reads back as saved", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const { typeDir, original } = await writeRichDefinition(dir);
+    const data = jsonDataFromYaml(original);
+    const args = data.globalArguments as Record<
+      string,
+      { arguments: Record<string, unknown> }
+    >;
+    args.createTrigger.arguments.threshold = 6;
+    args.updateTrigger.arguments.threshold = 6;
+
+    await repo.save(
+      testType,
+      Definition.fromData(data as Parameters<typeof Definition.fromData>[0]),
+    );
+
+    const saved = await Deno.readTextFile(join(typeDir, "rich.yaml"));
+    assertEquals(jsonDataFromYaml(saved), data);
+    assertStringIncludes(saved, "    # the on-call alias\n");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: a changed string that would read as another type in place is still saved as a string", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const { typeDir, original } = await writeRichDefinition(dir);
+    const data = jsonDataFromYaml(original);
+    const args = data.globalArguments as Record<string, unknown>;
+    (args.recipients as string[])[1] = "true";
+
+    await repo.save(
+      testType,
+      Definition.fromData(data as Parameters<typeof Definition.fromData>[0]),
+    );
+
+    const saved = await Deno.readTextFile(join(typeDir, "rich.yaml"));
+    assertEquals(jsonDataFromYaml(saved), data);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save: changing an anchored list that unchanged aliases still use reads back as saved", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const original = [
+      `type: ${testType.normalized}`,
+      "typeVersion: 2026.06.04.2",
+      `id: ${id}`,
+      "name: shared-list",
+      "version: 1",
+      "tags: {}",
+      "globalArguments:",
+      "  # shared by every use",
+      "  defs: &d",
+      "    - a",
+      "    - b",
+      "  uses:",
+      "    - *d",
+      "    - *d",
+      "methods: {}",
+      "",
+    ].join("\n");
+    await Deno.writeTextFile(join(typeDir, `${id}.yaml`), original);
+    const data = jsonDataFromYaml(original);
+    (data.globalArguments as Record<string, unknown>).defs = ["a", "b", "z"];
+
+    await repo.save(
+      testType,
+      Definition.fromData(data as Parameters<typeof Definition.fromData>[0]),
+    );
+
+    const saved = await Deno.readTextFile(join(typeDir, "shared-list.yaml"));
+    assertEquals(jsonDataFromYaml(saved), data);
+    assertStringIncludes(saved, "  # shared by every use\n");
+  });
+});

@@ -44,10 +44,16 @@ import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { isIoError } from "./io_errors.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
+  Composer,
+  CST,
   type Document as YamlDocument,
   isMap,
+  isNode,
+  isScalar,
   isSeq,
+  type Node as YamlNode,
   parseDocument,
+  Parser,
   Scalar,
   visit,
   type YAMLMap,
@@ -851,7 +857,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // is moving, to avoid destroying YAML comments and producing git noise.
     // When the data HAS changed, use npm:yaml's Document API to merge the
     // new values onto the existing AST so that comments on unchanged nodes
-    // are preserved (swamp-club#1842, swamp-club#3012).
+    // are preserved (swamp-club#1842, swamp-club#3012, swamp-club#3502).
     const source = isNew ? null : await this.readMergeSource(
       definition.id,
       targetPath,
@@ -871,14 +877,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         return;
       }
 
-      let content = source.raw;
-      if (!unchanged) {
-        // Data changed — merge onto existing document to preserve comments
-        const doc = parseDocument(source.raw, { version: "1.1" });
-        const lineWidth = mergeLineWidth(source.raw, doc);
-        mergeIntoDocument(doc, cleanData);
-        content = doc.toString({ lineWidth });
-      }
+      const content = unchanged
+        ? source.raw
+        : renderMerged(source.raw, cleanData, normalizedExisting);
       await atomicWriteTextFile(targetPath, content);
 
       const removed = await this.cleanupOldPaths(
@@ -1406,7 +1407,7 @@ function isWithinDir(path: string, dir: string): boolean {
     (rel !== ".." && !rel.startsWith(`..${SEPARATOR}`) && !isAbsolute(rel));
 }
 
-function canonicalJson(data: Record<string, unknown>): string {
+function canonicalJson(data: unknown): string {
   return JSON.stringify(data, (_key, value) => {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       const sorted: Record<string, unknown> = {};
@@ -1456,16 +1457,168 @@ function mergeLineWidth(raw: string, doc: YamlDocument): number {
   return 80;
 }
 
+/**
+ * Renders `newData` merged onto the YAML text `raw`, whose own parse is
+ * `oldData`. The result always reads back as `newData`.
+ *
+ * When only scalar values changed — a `typeVersion` bump, an edited argument —
+ * they are rewritten in place in the source and every other byte is kept.
+ * Otherwise the new values are merged onto the parsed document, which keeps
+ * comments, aliases and quoting of every unchanged subtree but re-renders the
+ * layout. Merging onto an anchored node also changes every alias of it, and
+ * replacing one leaves its aliases with nothing to refer to, so when the merged
+ * text reads back as anything else, or cannot be rendered, the merge is redone
+ * with the aliases expanded, which keeps the comments but not the aliases. A
+ * fresh rendering is the last resort.
+ */
+function renderMerged(
+  raw: string,
+  newData: Record<string, unknown>,
+  oldData: Record<string, unknown>,
+): string {
+  const expected = canonicalJson(newData);
+  const edited = editScalarsInPlace(raw, newData, oldData);
+  if (edited !== undefined && readsBackAs(edited, expected)) return edited;
+  for (const expand of [false, true]) {
+    const doc = parseDocument(raw, { version: "1.1" });
+    const lineWidth = mergeLineWidth(raw, doc);
+    if (expand) expandAliases(doc);
+    mergeIntoDocument(doc, newData, oldData);
+    let content: string;
+    try {
+      content = doc.toString({ lineWidth });
+    } catch {
+      // A changed anchored node was replaced while an unchanged alias still
+      // refers to it, so the document cannot be rendered with its aliases.
+      continue;
+    }
+    if (readsBackAs(content, expected)) return content;
+  }
+  return stringifyYaml(newData);
+}
+
+/**
+ * Rewrites, in the source text itself, each scalar whose value differs between
+ * `oldData` and `newData`, keeping every other byte. Undefined when the change
+ * is not only to existing scalars (a key added or removed, a list resized, a
+ * value behind an alias), or the file is not a single document.
+ */
+function editScalarsInPlace(
+  raw: string,
+  newData: Record<string, unknown>,
+  oldData: Record<string, unknown>,
+): string | undefined {
+  const tokens = Array.from(new Parser().parse(raw));
+  const docs = Array.from(
+    new Composer({ version: "1.1", keepSourceTokens: true }).compose(tokens),
+  );
+  if (docs.length !== 1 || docs[0].errors.length > 0) return undefined;
+  const edits: { token: CST.Token; value: string }[] = [];
+  if (!collectScalarEdits(docs[0].contents, oldData, newData, edits)) {
+    return undefined;
+  }
+  try {
+    for (const { token, value } of edits) CST.setScalarValue(token, value);
+  } catch {
+    // A token the CST cannot rewrite leaves the change to the document merge.
+    return undefined;
+  }
+  return tokens.map((token) => CST.stringify(token)).join("");
+}
+
+/**
+ * Walks `node` alongside its old and new values, collecting a source edit for
+ * each changed scalar. False when a change is anything other than a new
+ * scalar value for an existing scalar node.
+ */
+function collectScalarEdits(
+  node: YamlNode | null,
+  oldValue: unknown,
+  newValue: unknown,
+  edits: { token: CST.Token; value: string }[],
+): boolean {
+  if (canonicalJson(oldValue) === canonicalJson(newValue)) return true;
+  if (isPlainRecord(oldValue) && isPlainRecord(newValue) && isMap(node)) {
+    const oldKeys = Object.keys(oldValue).sort();
+    const newKeys = Object.keys(newValue).sort();
+    if (canonicalJson(oldKeys) !== canonicalJson(newKeys)) return false;
+    if (node.items.length !== newKeys.length) return false;
+    return newKeys.every((key) =>
+      collectScalarEdits(
+        node.get(key, true) as YamlNode | null,
+        oldValue[key],
+        newValue[key],
+        edits,
+      )
+    );
+  }
+  if (
+    Array.isArray(oldValue) && Array.isArray(newValue) && isSeq(node) &&
+    oldValue.length === newValue.length &&
+    node.items.length === newValue.length
+  ) {
+    return newValue.every((item, i) =>
+      collectScalarEdits(
+        node.items[i] as YamlNode | null,
+        oldValue[i],
+        item,
+        edits,
+      )
+    );
+  }
+  const token = isScalar(node) ? node.srcToken : undefined;
+  if (!token || !isPrimitive(oldValue) || !isPrimitive(newValue)) return false;
+  edits.push({ token, value: String(newValue) });
+  return true;
+}
+
+function isPrimitive(
+  value: unknown,
+): value is string | number | boolean | null {
+  return value === null || ["string", "number", "boolean"].includes(
+    typeof value,
+  );
+}
+
+/** Whether `content` parses to the data whose canonical JSON is `expected`. */
+function readsBackAs(content: string, expected: string): boolean {
+  try {
+    return canonicalJson(JSON.parse(JSON.stringify(parseYaml(content)))) ===
+      expected;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Replaces every alias in `doc` with a copy of the node it refers to, and
+ * removes every anchor, so no anchor is duplicated or left unreferenced.
+ */
+function expandAliases(doc: YamlDocument): void {
+  visit(doc, {
+    Alias(_key, node) {
+      const copy = node.resolve(doc)?.clone();
+      return isNode(copy) ? copy : undefined;
+    },
+  });
+  visit(doc, {
+    Node(_key, node) {
+      if ("anchor" in node) node.anchor = undefined;
+    },
+  });
+}
+
 function mergeIntoDocument(
   doc: YamlDocument,
   newData: Record<string, unknown>,
+  oldData: Record<string, unknown>,
 ): void {
   const root = doc.contents;
   if (!isMap(root)) {
     doc.contents = doc.createNode(newData);
     return;
   }
-  mergeMap(doc, root, newData);
+  mergeMap(doc, root, newData, oldData);
 
   // Remove keys from the document that are no longer in the new data
   for (let i = root.items.length - 1; i >= 0; i--) {
@@ -1476,13 +1629,28 @@ function mergeIntoDocument(
   }
 }
 
+/**
+ * Merges `data` onto `map`, whose value as the file's own parse reads it is
+ * `old`. A key whose value is unchanged keeps its node as written — comments
+ * inside it, an alias, quoting — since that text already reads back as the
+ * new value.
+ */
 function mergeMap(
   doc: YamlDocument,
   map: YAMLMap,
   data: Record<string, unknown>,
+  old: unknown,
 ): void {
+  const oldMap = isPlainRecord(old) ? old : undefined;
   for (const [key, newValue] of Object.entries(data)) {
     const existing = map.get(key, true);
+
+    if (
+      existing !== undefined && oldMap && Object.hasOwn(oldMap, key) &&
+      canonicalJson(oldMap[key]) === canonicalJson(newValue)
+    ) {
+      continue;
+    }
 
     if (
       existing !== undefined && isMap(existing) &&
@@ -1490,7 +1658,12 @@ function mergeMap(
       !Array.isArray(newValue)
     ) {
       // Both sides are objects — recurse to preserve nested comments
-      mergeMap(doc, existing, newValue as Record<string, unknown>);
+      mergeMap(
+        doc,
+        existing,
+        newValue as Record<string, unknown>,
+        oldMap?.[key],
+      );
 
       // Remove keys from the map that are no longer in the new data
       for (let i = existing.items.length - 1; i >= 0; i--) {
@@ -1511,4 +1684,8 @@ function mergeMap(
       }
     }
   }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

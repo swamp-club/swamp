@@ -36,7 +36,10 @@ Upgrades are **lazy** — they run at method execution time, not at load time:
 2. `DefinitionUpgradeService` filters the behavior's `upgrades` array to entries
    with `toVersion > definition.typeVersion`
 3. Applicable upgrades run in order, each transforming `globalArguments`
-4. The upgraded definition is persisted with the new `typeVersion`
+4. The upgraded definition is persisted with the new `typeVersion`. Only the
+   values that changed are rewritten: comments, anchors and formatting elsewhere
+   in the YAML survive. A legacy `<uuid>.yaml` file moves to `<name>.yaml` on
+   this save, and the run logs both the upgrade and the move.
 5. The upgrade only runs once — subsequent method calls skip it
 
 `swamp behavior validate` and the check before each workflow step apply the
