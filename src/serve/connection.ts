@@ -4006,9 +4006,16 @@ export function handleMessage(
         confirmed(() =>
           withGcMutex(ctx, () =>
             // A request cancelled while it waited behind a retention pass
-            // does not run once the pass ends.
+            // is answered as cancelled rather than run once the pass ends.
             controller.signal.aborted
-              ? Promise.resolve()
+              ? Promise.resolve(
+                sendError(
+                  socket,
+                  request.id,
+                  "cancelled",
+                  "Operation was cancelled",
+                ),
+              )
               : withSyncGate(ctx.syncGate, () =>
                 handleDataGc(
                   socket,
@@ -4043,9 +4050,16 @@ export function handleMessage(
         confirmed(() =>
           withGcMutex(ctx, () =>
             // A request cancelled while it waited behind a retention pass
-            // does not run once the pass ends.
+            // is answered as cancelled rather than run once the pass ends.
             controller.signal.aborted
-              ? Promise.resolve()
+              ? Promise.resolve(
+                sendError(
+                  socket,
+                  request.id,
+                  "cancelled",
+                  "Operation was cancelled",
+                ),
+              )
               : withSyncGate(ctx.syncGate, () =>
                 handleRunGc(
                   socket,

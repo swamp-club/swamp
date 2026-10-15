@@ -216,3 +216,23 @@ Deno.test("runRetentionPass: runs afterPass with the result", async () => {
   assertEquals(result.complete, true);
   assertEquals(seen, 4);
 });
+
+Deno.test("runRetentionPass: a kind whose collector skipped failed items is not complete", async () => {
+  const watermarks = new MemoryWatermarks();
+  const skipping: RetentionCollector = {
+    kind: "data",
+    collectBatch: () =>
+      Promise.resolve({
+        deleted: 2,
+        bytesReclaimed: 0,
+        more: false,
+        incomplete: true,
+      }),
+  };
+  const result = await runRetentionPass(deps([skipping], watermarks), {
+    policy: RetentionPolicy.fromConfig({ data: "1d" }),
+  });
+  assertEquals(result.complete, false);
+  assertEquals(watermarks.records.get("data")?.complete, false);
+  assertEquals(watermarks.records.get("data")?.deleted, 2);
+});

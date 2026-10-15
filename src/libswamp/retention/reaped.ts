@@ -39,11 +39,6 @@ export interface ReapedBefore {
   retention: string;
 }
 
-/**
- * The watermark retention last wrote for `kind`, or null when there is none,
- * no repository is given, or it cannot be read. Never throws: the answer only
- * enriches a not-found error or a listing.
- */
 /** How long a not-found answer waits for the retention watermark. */
 export const REAPED_LOOKUP_TIMEOUT_MS = 2_000;
 
@@ -65,6 +60,11 @@ async function withDeadline<T>(
   }
 }
 
+/**
+ * The cutoff of the last finished retention pass for `kind`, or null when there is none,
+ * no repository is given, or it cannot be read. Never throws: the answer only
+ * enriches a not-found error or a listing.
+ */
 export async function findReapedBefore(
   watermarks: RetentionWatermarkRepository | undefined,
   kind: RetentionKind,

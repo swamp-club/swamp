@@ -106,7 +106,11 @@ export function runGcRetentionFromPolicy(
   const retention = RetentionPolicy.fromConfig(policy);
   const toDays = (ms: number | undefined): number | undefined =>
     ms === undefined ? undefined : ms / DAY_MS;
-  const snapshots = toDays(retention.retentionMs("evaluatedSnapshots"));
+  // Only an explicit evaluatedSnapshots removes snapshots ahead of their
+  // runs; otherwise they go with them.
+  const snapshots = retention.isExplicit("evaluatedSnapshots")
+    ? toDays(retention.retentionMs("evaluatedSnapshots"))
+    : undefined;
   return {
     workflowRunRetentionDays: toDays(retention.retentionMs("workflowRuns")),
     outputRetentionDays: toDays(retention.retentionMs("outputs")),

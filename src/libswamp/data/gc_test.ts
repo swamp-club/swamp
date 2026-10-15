@@ -222,6 +222,7 @@ function retentionDeps(calls: Array<{ cutoff: Date; dryRun: boolean }>) {
         versionsDeleted: 7,
         bytesReclaimed: 300,
         more: false,
+        failed: 0,
         dryRun: opts.dryRun,
       });
     },

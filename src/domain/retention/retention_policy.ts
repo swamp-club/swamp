@@ -120,7 +120,9 @@ export function checkRetentionConfig(
     });
   }
 
-  if (errors.length === 0) {
+  // Only an explicit evaluatedSnapshots can be longer than the runs: an
+  // unset one follows the run retention.
+  if (errors.length === 0 && config.evaluatedSnapshots !== undefined) {
     const policy = RetentionPolicy.fromConfig(config as RetentionConfig);
     const snapshots = policy.retentionMs("evaluatedSnapshots");
     const runs = policy.retentionMs("workflowRuns");
@@ -157,9 +159,22 @@ export class RetentionPolicy {
     return this.config.automatic === true;
   }
 
-  /** The configured duration string for a kind, after precedence. */
+  /**
+   * The configured duration string for a kind, after precedence. Evaluated
+   * snapshots without their own value follow the run retention, so they go
+   * with their runs (and orphans are swept) whenever runs are reaped.
+   */
   durationFor(kind: RetentionKind): string | undefined {
+    if (kind === "evaluatedSnapshots") {
+      return this.config.evaluatedSnapshots ??
+        this.durationFor("workflowRuns");
+    }
     return this.config[kind] ?? this.config.retention;
+  }
+
+  /** True when the kind has its own key rather than a default it follows. */
+  isExplicit(kind: RetentionKind): boolean {
+    return this.config[kind] !== undefined;
   }
 
   /** How long a kind is kept, in milliseconds; undefined when unset. */

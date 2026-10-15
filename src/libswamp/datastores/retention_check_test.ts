@@ -272,7 +272,15 @@ Deno.test("scanRetention: lists every kind's items older than the cutoff, and ke
     );
     await saveData(dataRepo, dir, ModelType.create("swamp/grant"), "g", OLD);
 
-    const summary = await scanRetention(repo, POLICY_30D, NOW);
+    const summary = await scanRetention(
+      repo,
+      // Snapshots with their own key can be overdue ahead of their runs.
+      RetentionPolicy.fromConfig({
+        retention: "30d",
+        evaluatedSnapshots: "30d",
+      }),
+      NOW,
+    );
 
     const runs = kind(summary.kinds, "workflowRuns");
     assertEquals(runs.overdue, 1);

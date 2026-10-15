@@ -87,6 +87,11 @@ export interface DataRetentionResult {
   bytesReclaimed: number;
   /** True when the run stopped at its limit with candidates left. */
   more: boolean;
+  /**
+   * Names whose deletion failed and were skipped (logged). Retention left
+   * them in place, so a caller must not report the cutoff as applied.
+   */
+  failed: number;
   /** Whether this was a dry run. */
   dryRun: boolean;
 }
@@ -530,6 +535,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       versionsDeleted: 0,
       bytesReclaimed: 0,
       more: false,
+      failed: 0,
       dryRun,
     };
     const repo = this.dataRepo;
@@ -653,6 +659,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
             },
           );
           settledNames.add(nameKey);
+          result.failed++;
         }
       }
     } while (cursor !== undefined);

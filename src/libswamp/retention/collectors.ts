@@ -115,11 +115,16 @@ export function createRetentionCollectors(
         // Orphans are judged against the run retention; with none, against
         // the snapshot retention itself.
         const runMs = policy.retentionMs("workflowRuns");
+        // Without its own key a snapshot simply goes with its run, so only
+        // orphans are swept: a finished child kept for an unfinished parent
+        // keeps its snapshot as long as its run record.
         const result = await runs.gcRunSnapshots({
           retentionDays: runMs === undefined ? snapshotDays : runMs / DAY_MS,
           deletedRunIds: [],
           dryRun: false,
-          snapshotRetentionDays: snapshotDays,
+          ...(policy.isExplicit("evaluatedSnapshots")
+            ? { snapshotRetentionDays: snapshotDays }
+            : {}),
         });
         return { ...result, more: false };
       },
@@ -155,6 +160,7 @@ export function createRetentionCollectors(
           deleted: result.versionsDeleted,
           bytesReclaimed: result.bytesReclaimed,
           more: result.more,
+          incomplete: result.failed > 0,
         };
       },
     },

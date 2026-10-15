@@ -594,7 +594,11 @@ export async function scanRetention(
           dirFor(SWAMP_SUBDIRS.workflowsEvaluated),
           sources.repoDir,
           runRecords,
-          cutoff.getTime(),
+          // Without its own key a snapshot goes with its run: only orphans
+          // can be overdue, never a kept run's snapshot.
+          policy.isExplicit("evaluatedSnapshots")
+            ? cutoff.getTime()
+            : Number.NEGATIVE_INFINITY,
           runCutoff?.getTime(),
           nowMs,
         );

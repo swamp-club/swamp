@@ -564,6 +564,15 @@ export const doctorDatastoresCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
+    // A serve older than --retention drops the option and answers without
+    // the check, which must not read as a pass.
+    if (
+      options.retention &&
+      !(response.data as Partial<DoctorDatastoresData>).retentionFinding
+    ) {
+      cliCtx.logger
+        .warn`The server did not run the retention check; it may predate --retention. Upgrade the server or run the check locally.`;
+    }
     if (renderer.overallStatus === "fail") {
       Deno.exit(1);
     }

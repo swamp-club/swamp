@@ -125,3 +125,29 @@ Deno.test("checkRetentionConfig: refuses a block that is not a mapping", () => {
   }
   assertEquals(checkRetentionConfig(undefined).errors, []);
 });
+
+Deno.test("checkRetentionConfig: accepts a longer default with shorter runs when snapshots are unset", () => {
+  assertEquals(
+    checkRetentionConfig({ retention: "30d", workflowRuns: "7d" }).errors,
+    [],
+  );
+});
+
+Deno.test("RetentionPolicy.durationFor: unset snapshots follow the run retention", () => {
+  const policy = RetentionPolicy.fromConfig({
+    retention: "30d",
+    workflowRuns: "7d",
+  });
+  assertEquals(policy.durationFor("evaluatedSnapshots"), "7d");
+  assertEquals(
+    RetentionPolicy.fromConfig({ workflowRuns: "7d" }).durationFor(
+      "evaluatedSnapshots",
+    ),
+    "7d",
+  );
+  assertEquals(
+    RetentionPolicy.fromConfig({ workflowRuns: "7d", evaluatedSnapshots: "2d" })
+      .durationFor("evaluatedSnapshots"),
+    "2d",
+  );
+});

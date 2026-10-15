@@ -510,7 +510,9 @@ Deno.test("runRepoRetention: small batches drain every old run; a spent budget s
     const drained = await runRepoRetention(deps, { policy, batchSize: 2 });
     assertEquals(drained.complete, true);
     assertEquals(drained.kinds[0].deleted, 3);
-    assertEquals(batches, 2);
+    // Two run batches, then the one sweep of orphaned snapshots, which
+    // follow the run retention.
+    assertEquals(batches, 3);
     assertEquals(await repo.runs.listRunIds(), new Set([keep.runId]));
     for (const run of oldRuns) {
       assertEquals(await pathExists(run.yamlPath), false);

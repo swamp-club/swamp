@@ -237,7 +237,7 @@ garbageCollection:
   retention: 30d          # default for every kind below
   automatic: true         # enforce it: serve timer, CLI end of command
   workflowRuns: 14d       # run records, run logs, wait records, claims
-  evaluatedSnapshots: 3d  # must not be longer than workflowRuns; aged from the run's finish
+  evaluatedSnapshots: 3d  # optional; unset, snapshots go with their runs (orphans swept)
   outputs: 7d             # method outputs and their run logs
   data: 30d               # every data version, the latest included
   audit: 90d              # .swamp/audit logs; default for serve audit stores (with automatic on)
@@ -249,8 +249,11 @@ garbageCollection:
   with none of these is never reaped automatically; the manual commands keep
   their built-in defaults.
 - **Validation** (`checkRetentionConfig`): positive durations only,
-  `automatic` a boolean, `evaluatedSnapshots` not longer than the run
-  retention. Unknown keys are logged once and ignored, as before.
+  `automatic` a boolean, an explicit `evaluatedSnapshots` not longer than
+  the run retention. An unset `evaluatedSnapshots` follows the run
+  retention rather than `retention`, so `retention: 30d` with
+  `workflowRuns: 7d` is valid; only an explicit value removes a kept run's
+  snapshot early, aged from the later of the snapshot and the run's finish. Unknown keys are logged once and ignored, as before.
 - **What is never removed**: runs that have not finished (running,
   suspended, waiting, interrupted) and their snapshots; a finished nested
   run whose parent has not finished; data of the built-in access and serve

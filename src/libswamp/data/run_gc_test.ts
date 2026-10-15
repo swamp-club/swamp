@@ -172,11 +172,8 @@ Deno.test("runGcInputFromPolicy: uses configured retention unless overridden", (
 Deno.test("runGcRetentionFromPolicy: falls back to retention for kinds without their own key", () => {
   assertEquals(
     runGcRetentionFromPolicy({ retention: "1w", outputs: "1d" }),
-    {
-      workflowRunRetentionDays: 7,
-      outputRetentionDays: 1,
-      evaluatedSnapshotRetentionDays: 7,
-    },
+    // Snapshots without their own key go with their runs.
+    { workflowRunRetentionDays: 7, outputRetentionDays: 1 },
   );
 });
 

@@ -39,6 +39,11 @@ export interface RetentionBatchResult {
   bytesReclaimed: number;
   /** True when the collector stopped at the limit and has more to remove. */
   more: boolean;
+  /**
+   * True when the collector skipped items it failed to remove: the kind's
+   * cutoff is then not fully applied, though the pass moves on.
+   */
+  incomplete?: boolean;
 }
 
 /**
@@ -153,6 +158,7 @@ export async function runRetentionPass(
         if (result.stoppedBy) continue;
         started.add(collector.kind);
 
+        let skipped = false;
         try {
           while (true) {
             const stop = shouldStop();
@@ -173,8 +179,9 @@ export async function runRetentionPass(
             );
             kindResult.deleted += batch.deleted;
             kindResult.bytesReclaimed += batch.bytesReclaimed;
+            if (batch.incomplete) skipped = true;
             if (!batch.more) {
-              kindResult.complete = true;
+              kindResult.complete = !skipped;
               break;
             }
           }
