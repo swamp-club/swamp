@@ -336,6 +336,28 @@ interface FailedRecord {
 }
 
 /**
+ * The skipped records that fail a grant or group: the model as a whole, or
+ * its access data. Other data the model keeps (method-summary reports) is
+ * not access data, so one that fails neither fails the record nor is named
+ * in its fix (swamp-club#3386).
+ */
+function failedAccessData(
+  skipped: readonly UnreadableModelRecord[],
+  accessDataName: string,
+): FailedRecord[] {
+  return skipped
+    .filter(({ dataName }) =>
+      dataName === undefined || dataName === accessDataName
+    )
+    .map(({ modelType, modelId, error }) => ({
+      modelType,
+      modelId,
+      error,
+      cause: causeOfSkippedModel(error),
+    }));
+}
+
+/**
  * Why the repository skipped a model directory. A filesystem error (any
  * `Deno.errors` class, such as PermissionDenied) is a failed read, which a
  * retry can fix; a parse failure (SyntaxError) is corrupt; any other error
@@ -423,6 +445,12 @@ export class PolicySnapshotLoader {
   readonly #conditionEvaluator: ConditionEvaluator;
   #snapshot: PolicySnapshot = PolicySnapshot.empty();
   #pendingRebuild: Promise<void> = Promise.resolve();
+  /**
+   * The builds queued so far, run one at a time: each reads the last-known
+   * records the one before committed, and commits in the order they ran,
+   * so an older build never overwrites a newer one's snapshot or state.
+   */
+  #builds: Promise<void> = Promise.resolve();
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
@@ -530,20 +558,31 @@ export class PolicySnapshotLoader {
   }
 
   async load(): Promise<PolicySnapshot> {
-    const result = await this.#buildSnapshotWithCounts();
-    this.#snapshot = result.snapshot;
-    this.#cachedDecisionService = null;
-    return this.#snapshot;
+    return (await this.#build()).snapshot;
   }
 
-  async loadWithCounts(): Promise<{
+  loadWithCounts(): Promise<{
     snapshot: PolicySnapshot;
     grantCount: number;
     groupCount: number;
   }> {
-    const result = await this.#buildSnapshotWithCounts();
-    this.#snapshot = result.snapshot;
-    this.#cachedDecisionService = null;
+    return this.#build();
+  }
+
+  /** Builds and installs a snapshot, after every build queued before it. */
+  #build(): Promise<{
+    snapshot: PolicySnapshot;
+    grantCount: number;
+    groupCount: number;
+  }> {
+    const build = async () => {
+      const result = await this.#buildSnapshotWithCounts();
+      this.#snapshot = result.snapshot;
+      this.#cachedDecisionService = null;
+      return result;
+    };
+    const result = this.#builds.then(build);
+    this.#builds = result.then(() => {}, () => {});
     return result;
   }
 
@@ -557,6 +596,7 @@ export class PolicySnapshotLoader {
     }
     this.#unsubscribers.length = 0;
     await this.#pendingRebuild;
+    await this.#builds;
   }
 
   #isAccessModel(modelType: string): boolean {
@@ -584,14 +624,8 @@ export class PolicySnapshotLoader {
       this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE, skippedGrants),
       this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE, skippedGroups),
     ]);
-    const failedGrants: FailedRecord[] = skippedGrants.map((skipped) => ({
-      ...skipped,
-      cause: causeOfSkippedModel(skipped.error),
-    }));
-    const failedGroups: FailedRecord[] = skippedGroups.map((skipped) => ({
-      ...skipped,
-      cause: causeOfSkippedModel(skipped.error),
-    }));
+    const failedGrants = failedAccessData(skippedGrants, "grant-main");
+    const failedGroups = failedAccessData(skippedGroups, "group-main");
 
     const lastKnownGrants = new Map<string, Grant>();
     const lastKnownGroups = new Map<string, Group>();
@@ -885,9 +919,7 @@ export class PolicySnapshotLoader {
 
   async #rebuild(): Promise<void> {
     try {
-      const result = await this.#buildSnapshotWithCounts();
-      this.#snapshot = result.snapshot;
-      this.#cachedDecisionService = null;
+      await this.#build();
     } catch (error) {
       logger.error`Failed to rebuild policy snapshot: ${error}`;
     }

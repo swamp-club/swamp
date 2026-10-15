@@ -755,7 +755,10 @@ Deno.test("findAllForType: reports a model whose metadata is empty when asked, a
     const unreadable: UnreadableModelRecord[] = [];
     const results = await repo.findAllForType(testType, { unreadable });
     assertEquals(results.map((r) => r.modelId), ["model-ok"]);
-    assertEquals(unreadable.map((r) => r.modelId), ["model-empty"]);
+    assertEquals(
+      unreadable.map((r) => [r.modelId, r.dataName]),
+      [["model-empty", "item-empty"]],
+    );
     assert(unreadable[0].error instanceof SyntaxError);
   } finally {
     catalogStore.close();
@@ -765,6 +768,89 @@ Deno.test("findAllForType: reports a model whose metadata is empty when asked, a
       await Deno.remove(tmpDir, { recursive: true });
     }
   }
+});
+
+Deno.test("findAllForType: a data name that fails is reported by name, and the model's other data is still returned", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+  const repo = new FileSystemUnifiedDataRepository(
+    tmpDir,
+    undefined,
+    catalogStore,
+  );
+  try {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    await repo.save(testType, "model-1", makeJsonData("good"), encode("1"));
+    await repo.save(testType, "model-1", makeJsonData("report"), encode("2"));
+    await Deno.writeTextFile(
+      join(
+        repo.getDataNameDir(testType, "model-1", "report"),
+        "1",
+        "metadata.yaml",
+      ),
+      "",
+    );
+
+    const unreadable: UnreadableModelRecord[] = [];
+    const results = await repo.findAllForType(testType, { unreadable });
+    assertEquals(results.map((r) => r.data.name), ["good"]);
+    assertEquals(
+      unreadable.map((r) => [r.modelId, r.dataName]),
+      [["model-1", "report"]],
+    );
+
+    // Without the option empty metadata reads as no data, as before.
+    assertEquals(
+      (await repo.findAllForType(testType)).map((r) => r.data.name),
+      ["good"],
+    );
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test({
+  name:
+    "findAllForType: a model directory it cannot list is reported with no data name",
+  // chmod has no effect for root, and Windows has no POSIX modes.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const tmpDir = await Deno.makeTempDir();
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    await repo.save(
+      testType,
+      "model-bad",
+      makeJsonData("item"),
+      new TextEncoder().encode("1"),
+    );
+    const modelDir = dirname(
+      repo.getDataNameDir(testType, "model-bad", "item"),
+    );
+    await Deno.chmod(modelDir, 0o000);
+    try {
+      const unreadable: UnreadableModelRecord[] = [];
+      assertEquals(await repo.findAllForType(testType, { unreadable }), []);
+      assertEquals(
+        unreadable.map((r) => [r.modelId, r.dataName]),
+        [["model-bad", undefined]],
+      );
+      assert(unreadable[0].error instanceof Deno.errors.PermissionDenied);
+    } finally {
+      await Deno.chmod(modelDir, 0o755);
+      catalogStore.close();
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
 });
 
 Deno.test({
@@ -801,7 +887,10 @@ Deno.test({
       const unreadable: UnreadableModelRecord[] = [];
       const results = await repo.findAllForType(testType, { unreadable });
       assertEquals(results.map((r) => r.modelId), ["model-ok"]);
-      assertEquals(unreadable.map((r) => r.modelId), ["model-bad"]);
+      assertEquals(
+        unreadable.map((r) => [r.modelId, r.dataName]),
+        [["model-bad", "item-bad"]],
+      );
       assertEquals(unreadable[0].modelType.normalized, testType.normalized);
       assert(unreadable[0].error instanceof Deno.errors.PermissionDenied);
     } finally {

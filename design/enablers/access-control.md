@@ -770,9 +770,12 @@ changes.
 5. **Unreadable records** (swamp-club#3386): a grant or group record that exists
    but cannot be read (a directory or file this process may not read, such as
    one a peer wrote with a restrictive umask or another uid) or whose JSON does
-   not parse never vanishes silently. `findAllForType` reports the model
-   directories it skips, and the loader treats them like a content read that
-   failed.
+   not parse never vanishes silently. `findAllForType` reports each data name it
+   skips, or the model directory when it cannot list it, and still returns the
+   model's other data. The loader treats a skipped model directory, or its
+   `grant-main` or `group-main`, like a content read that failed. Other data a
+   grant or group model keeps, such as a method-summary report, is not access
+   data: one that fails neither fails the record nor is named in its fix.
 
    The first build of a loader has no earlier version to fall back on, so it
    fails closed: it throws `UnreadableAccessRecordsError`, and serve refuses to
@@ -831,9 +834,10 @@ changes.
    unreadable old version never hides a new version of the record, and every
    other record is still compared. A build that throws (a grant or group type
    directory that cannot be listed) keeps the previous snapshot and last-known
-   records. The poller logs a failed cycle at warning, and from the third
-   consecutive failure on at error, saying other processes' grant and revoke
-   changes are not being applied; it logs recovery at info.
+   records. Builds run one at a time, whoever asks for them, so an older build
+   never commits over a newer one. The poller logs a failed cycle at warning,
+   and from the third consecutive failure on at error, saying other processes'
+   grant and revoke changes are not being applied; it logs recovery at info.
 
 The `GrantBasedAccessDecisionService` picks up a rebuilt snapshot on the next
 request. There is no per-request locking or snapshot versioning.

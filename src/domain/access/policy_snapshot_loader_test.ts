@@ -1678,3 +1678,72 @@ Deno.test("PolicySnapshotLoader.load: a grant that fails the schema is described
   assertEquals(line.includes("[\n"), false);
   assertEquals(error.message.split("\n").length, 2);
 });
+
+Deno.test("PolicySnapshotLoader.load: other data of a grant model that fails, such as a report, neither fails the grant nor is named in a fix", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const inner = createChangingDataRepo(records);
+  const repo = {
+    ...inner,
+    getContent: inner.getContent,
+    findAllForType(type: ModelType, options?: FindAllForTypeOptions) {
+      // The repository returns the grant's access data and reports only a
+      // sibling report that failed, as it does per data name.
+      options?.unreadable?.push({
+        modelType: type,
+        modelId: "d",
+        dataName: "@swamp/method-summary",
+        error: new SyntaxError("report metadata.yaml is empty"),
+      });
+      return inner.findAllForType(type, options);
+    },
+  } as unknown as UnifiedDataRepository;
+  const loader = new PolicySnapshotLoader(repo, new EventBus(), "manual");
+  await loader.load();
+  await loader.dispose();
+
+  assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
+  assertEquals(loader.unreadable, []);
+});
+
+Deno.test("PolicySnapshotLoader.load: builds run one at a time, so an older build never overwrites a newer one", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const inner = createChangingDataRepo(records);
+  let release: () => void = () => {};
+  let gate: Promise<void> | null = null;
+  const repo = {
+    findAllForType: inner.findAllForType,
+    async getContent(type: ModelType, modelId: string, dataName: string) {
+      // Content is read when called; a gated read returns it only later.
+      const content = await inner.getContent(type, modelId, dataName);
+      if (gate) await gate;
+      return content;
+    },
+  } as unknown as UnifiedDataRepository;
+  const loader = new PolicySnapshotLoader(repo, new EventBus(), "manual");
+  await loader.load();
+
+  // Build A reads the active deny, then stalls before it commits. A turn of
+  // the event loop runs every fake read, which resolve as microtasks.
+  gate = new Promise((resolve) => release = resolve);
+  const older = loader.load();
+  await delay(0);
+  // A peer revokes the deny, and build B is asked for after A. Run alongside
+  // A, B would read the revoke and commit within this turn, and A, released
+  // after it, would then commit the stale deny over it.
+  gate = null;
+  records.set("d", { kind: "grant", attrs: { ...deny, state: "revoked" } });
+  const newer = loader.load();
+  await delay(0);
+  release();
+  await Promise.all([older, newer]);
+  await loader.dispose();
+
+  // B ran after A, read the revoke, and committed last.
+  assertEquals(effectsFor(loader, "user:adam"), []);
+});

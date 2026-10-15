@@ -121,6 +121,11 @@ export interface FindAllGlobalOptions {
 export interface UnreadableModelRecord {
   modelType: ModelType;
   modelId: string;
+  /**
+   * The data name that could not be read; absent when the model directory
+   * itself could not be.
+   */
+  dataName?: string;
   error: unknown;
 }
 

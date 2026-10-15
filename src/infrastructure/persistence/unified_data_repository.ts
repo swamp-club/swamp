@@ -592,10 +592,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       for (const modelId of await listSubdirectories(typeDir)) {
         try {
-          // A caller collecting what it skips also learns of empty metadata,
-          // which otherwise reads as the data not being there.
-          const dataItems = options?.unreadable
-            ? await this.collectModelData(modelType, modelId, undefined, true)
+          // A caller collecting what it skips learns of each data name that
+          // failed, empty metadata included, which otherwise reads as the
+          // data not being there, and still gets the model's other data.
+          const unreadable = options?.unreadable;
+          const dataItems = unreadable
+            ? await this.collectModelData(
+              modelType,
+              modelId,
+              undefined,
+              (dataName, error) =>
+                unreadable.push({ modelType, modelId, dataName, error }),
+            )
             : await this.findAllForModel(modelType, modelId);
           for (const data of dataItems) {
             results.push({ data, modelType, modelId });
@@ -946,14 +954,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   /**
    * The latest data of each name under a model, following rename forwards.
-   * Each rename marker followed is pushed to `renames` when given. With
-   * `strict`, empty metadata throws (see {@link findByNameWithDepth}).
+   * Each rename marker followed is pushed to `renames` when given.
+   *
+   * With `skipped`, a data name that cannot be read, or whose metadata is
+   * empty (see {@link findByNameWithDepth}), is passed to it and the other
+   * names are still read; without it, any such name fails the whole model.
    */
   private async collectModelData(
     type: ModelType,
     modelId: string,
     renames?: RenameForward[],
-    strict = false,
+    skipped?: (dataName: string, error: unknown) => void,
   ): Promise<Data[]> {
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
@@ -961,37 +972,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     try {
       for (const dataName of await listSubdirectories(dataDir)) {
-        // Read the name's own latest version, then follow a rename marker
-        // from depth 1: the same reads as an unversioned findByName, with
-        // the marker visible on the way.
-        const latest = await this.getLatestVersion(type, modelId, dataName);
-        let data = latest === null ? null : await this.findByNameWithDepth(
-          type,
-          modelId,
-          dataName,
-          latest,
-          0,
-          strict,
-        );
-        if (data?.isRenamed && data.renamedTo) {
-          renames?.push({
-            modelType: type,
-            modelId,
-            dataName,
-            renamedTo: data.renamedTo,
+        if (!skipped) {
+          await this.collectDataName(type, modelId, dataName, results, seen, {
+            renames,
+            strict: false,
           });
-          data = await this.findByNameWithDepth(
-            type,
-            modelId,
-            data.renamedTo,
-            undefined,
-            1,
-            strict,
-          );
+          continue;
         }
-        if (data && !seen.has(data.name)) {
-          seen.add(data.name);
-          results.push(data);
+        try {
+          await this.collectDataName(type, modelId, dataName, results, seen, {
+            renames,
+            strict: true,
+          });
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          skipped(dataName, error);
         }
       }
     } catch (error) {
@@ -1002,6 +997,51 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     return results;
+  }
+
+  /**
+   * Adds one data name's latest data to `results`, unless `seen` already
+   * holds its name: its own latest version, then a rename marker followed
+   * from depth 1 — the same reads as an unversioned findByName, with the
+   * marker visible on the way.
+   */
+  private async collectDataName(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    results: Data[],
+    seen: Set<string>,
+    { renames, strict }: { renames?: RenameForward[]; strict: boolean },
+  ): Promise<void> {
+    const latest = await this.getLatestVersion(type, modelId, dataName);
+    let data = latest === null ? null : await this.findByNameWithDepth(
+      type,
+      modelId,
+      dataName,
+      latest,
+      0,
+      strict,
+    );
+    if (data?.isRenamed && data.renamedTo) {
+      renames?.push({
+        modelType: type,
+        modelId,
+        dataName,
+        renamedTo: data.renamedTo,
+      });
+      data = await this.findByNameWithDepth(
+        type,
+        modelId,
+        data.renamedTo,
+        undefined,
+        1,
+        strict,
+      );
+    }
+    if (data && !seen.has(data.name)) {
+      seen.add(data.name);
+      results.push(data);
+    }
   }
 
   save(
