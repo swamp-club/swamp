@@ -163,7 +163,10 @@ Deno.test(
     assertEquals(error.constructor, Error);
 
     let leaked = 0;
+    // Count and suppress only this handler's rejections; anything else still
+    // reaches the test runner.
     const onRejection = (event: PromiseRejectionEvent) => {
+      if ((event.reason as Error)?.message !== "vault unavailable") return;
       event.preventDefault();
       leaked++;
     };

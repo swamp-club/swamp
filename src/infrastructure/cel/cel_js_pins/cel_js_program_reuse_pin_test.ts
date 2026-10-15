@@ -79,7 +79,11 @@ function gatedEnvironment(): {
   return { env, started, open };
 }
 
-/** Start every run, wait until all are suspended, then release them in reverse. */
+/**
+ * Start every run, wait until all are suspended, then release them in reverse.
+ * If the wait times out the runs stay pending; that is safe only because the
+ * gates hold no timers or ops, so keep them that way.
+ */
 async function runSuspendedTogether<T>(
   harness: ReturnType<typeof gatedEnvironment>,
   count: number,
@@ -192,6 +196,7 @@ Deno.test(
     const asyncRun = program({ items: ["slow", "b"], run: 0n });
     const syncRun = program({ items: ["c", "e"], run: 1n });
     assertInstanceOf(syncRun, Promise);
+    await waitFor(() => harness.started.has(0n), "the async run at its gate");
     harness.open([0n]);
     assertEquals(await asyncRun, ["slow!", "b"]);
     assertEquals(await syncRun, ["c", "e"]);

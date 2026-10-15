@@ -25,6 +25,9 @@
  * behavior swamp wants. A failure after a dependency change means the
  * typed-secrets design must be re-reviewed against the new behavior, not that
  * the test should be bent to pass.
+ *
+ * Error messages are pinned exactly on purpose: a release that only rewords
+ * one still fails, so a human looks at it.
  */
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
@@ -121,8 +124,16 @@ export function assertPlainError(fn: () => unknown, message: string): void {
 /**
  * Read the evaluator's internal maybe-async flag from a parsed program.
  * `ast.maybeAsync` is not part of cel-js's typed API; this is the one place
- * the pins read it, so a rename shows up as one failure.
+ * the pins read it, so a rename fails here with one clear message.
  */
-export function readMaybeAsync(program: ReturnType<Environment["parse"]>) {
-  return (program.ast as unknown as { maybeAsync: boolean }).maybeAsync;
+export function readMaybeAsync(
+  program: ReturnType<Environment["parse"]>,
+): boolean {
+  const flag = (program.ast as unknown as { maybeAsync?: unknown }).maybeAsync;
+  if (typeof flag !== "boolean") {
+    throw new Error(
+      `cel-js internal ast.maybeAsync is no longer a boolean (got ${typeof flag})`,
+    );
+  }
+  return flag;
 }
