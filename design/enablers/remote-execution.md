@@ -1201,7 +1201,9 @@ semantics and needs almost no new code:
   `src/serve/capability_service.ts`). `queryData` caps predicate length and
   post-filters results, rejecting outright any query that touches access-control
   or infrastructure behavior data. `listVersions` is the one verb with no scope
-  assertion.
+  assertion. The data plane's bytes route (`GET /data/{type}/{id}/{name}/{v}`)
+  does not repeat the behavior-type check: it checks only the credential and
+  the control-plane hidden list (swamp-club#3528).
 
 ## Scheduling, fan-out, and provisioning
 
