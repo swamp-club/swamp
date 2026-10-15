@@ -553,6 +553,9 @@ Deno.test({
         // withProber releases the reused host, which must not wait on the
         // pipes the sleeper holds.
       });
+      // The sleeper ends with its host, as it ended with a worker.
+      const sleeper = Number(await Deno.readTextFile(pidFile));
+      await waitFor(() => !isProcessAlive(sleeper), "the sleeper to end");
     } finally {
       await killSleeper(pidFile);
     }

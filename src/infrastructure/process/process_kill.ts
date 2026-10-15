@@ -46,7 +46,8 @@ async function isSwampProcess(pid: number): Promise<boolean> {
   }
 }
 
-async function findChildPids(ppid: number): Promise<number[]> {
+/** The pids whose parent is `ppid`; empty when they cannot be listed. */
+export async function findChildPids(ppid: number): Promise<number[]> {
   try {
     if (Deno.build.os === "windows") {
       const cmd = new Deno.Command("wmic", {

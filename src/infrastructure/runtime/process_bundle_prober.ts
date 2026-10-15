@@ -27,6 +27,7 @@ import type {
 } from "../../domain/extensions/bundle_prober.ts";
 import { sanitizeDataUrlError } from "../../domain/models/bundle.ts";
 import { attachProcessJob } from "../process/windows_job.ts";
+import { findChildPids } from "../process/process_kill.ts";
 import {
   BUNDLE_PROBE_FRAME_ENV,
   BUNDLE_PROBE_HOST_MARKER,
@@ -198,6 +199,10 @@ function startProbeHost(command: ProbeHostCommand): ProbeHost {
     },
     async stop() {
       listener = undefined;
+      // Processes a bundle started end with the host, as they ended with a
+      // terminated worker. Listed before the kill, which reparents them; on
+      // Windows the job ends them.
+      const started = job ? [] : await findChildPids(child.pid);
       // Killed before stdin is closed: a write to a host that stopped
       // reading would otherwise never finish.
       if (job) job.terminate();
@@ -205,6 +210,13 @@ function startProbeHost(command: ProbeHostCommand): ProbeHost {
         child.kill("SIGKILL");
       } catch {
         // Exited already.
+      }
+      for (const pid of started) {
+        try {
+          Deno.kill(pid, "SIGKILL");
+        } catch {
+          // Exited already.
+        }
       }
       // Aborted, not closed: a close waits for pending writes, which a
       // process a bundle started may hold up by keeping the pipe open.
