@@ -854,6 +854,11 @@ that do not parse, are ignored.
 > check leaves a head over commits nobody acknowledged. Like the commits D1
 > keeps after a failed sync, they stay restorable until a newer lineage is
 > confirmed.
+> The writer is told so: its command fails as fenced
+> (`datastore_v3_writer_fenced`) with a message saying its changes may still
+> appear, because the writer that took over may restore them, and to check
+> before running the command again. Without replication the fenced message
+> still says nothing more was committed.
 
 **Behind, cheaply.** `copy.json` beside the copy records which lineage, up
 to which TXID, the copy holds. Before a command's first read or write it

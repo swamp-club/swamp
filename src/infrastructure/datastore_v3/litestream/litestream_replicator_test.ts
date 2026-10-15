@@ -29,6 +29,10 @@ import {
   V3ReplicationUnavailableError,
 } from "../../../domain/datastore_v3/litestream_replication.ts";
 import {
+  WRITER_FENCED_CODE,
+  WriterFencedError,
+} from "../../../domain/datastore_v3/writer_lease.ts";
+import {
   type LitestreamControl,
   LitestreamControlError,
 } from "./litestream_control_client.ts";
@@ -974,6 +978,32 @@ Deno.test({
       const release = await replicator.quiesce(db);
       release();
       assertEquals(world.killed, [orphan]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator sync: a lease lost after publishing is fenced, saying the changes may still appear",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const handle = await replicator.acquire(world.request(db, 1));
+      world.leaseCurrent = false;
+      const published = await assertRejects(
+        () => handle.sync(5_000, { beforeLeaseCheck: () => Promise.resolve() }),
+        WriterFencedError,
+      );
+      assertEquals(published.code, WRITER_FENCED_CODE);
+      assertStringIncludes(published.message, "They may still appear");
+      // Lost before anything was published: nothing may land.
+      const unpublished = await assertRejects(
+        () => handle.sync(5_000),
+        V3ReplicationError,
+      );
+      assertStringIncludes(unpublished.message, "lost its writer lease");
+      await handle.release();
     });
   },
 });

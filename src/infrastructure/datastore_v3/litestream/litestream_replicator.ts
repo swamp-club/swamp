@@ -38,6 +38,7 @@
 import { dirname, fromFileUrl, join } from "@std/path";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
+import { WriterFencedError } from "../../../domain/datastore_v3/writer_lease.ts";
 import {
   decideLineage,
   replicaPathFor,
@@ -794,9 +795,11 @@ class SharedHandle {
         `Litestream answered ${JSON.stringify(response)}`,
       );
     }
+    let published = false;
     if (options.beforeLeaseCheck !== undefined) {
       try {
         await options.beforeLeaseCheck(txid);
+        published = true;
       } catch (error) {
         throw error instanceof V3ReplicationError
           ? error
@@ -811,6 +814,18 @@ class SharedHandle {
     try {
       await this.assertLeaseCurrent();
     } catch (error) {
+      if (published) {
+        // The head is out: the writer that took over may restore these
+        // commits, so saying nothing landed would not be true.
+        const fenced = error instanceof WriterFencedError ? error : undefined;
+        const refused = new WriterFencedError(
+          fenced?.fence,
+          fenced?.currentFence,
+          "published",
+        );
+        refused.cause = error;
+        throw refused;
+      }
       throw new V3ReplicationError(
         `this process lost its writer lease while the sync ran: ${
           messageOf(error)

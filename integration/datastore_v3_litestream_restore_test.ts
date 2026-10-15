@@ -25,7 +25,12 @@
  * on a bucket. Ignored without `SWAMP_LITESTREAM_PATH`, and on Windows.
  */
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -41,7 +46,7 @@ import {
   newestStartedFence,
 } from "../src/domain/datastore_v3/published_lineage.ts";
 import { replicaPathFor } from "../src/domain/datastore_v3/replication_lineage.ts";
-import { V3_REPLICATION_UNCONFIRMED_CODE } from "../src/domain/datastore_v3/litestream_replication.ts";
+import { WRITER_FENCED_CODE } from "../src/domain/datastore_v3/writer_lease.ts";
 import { SIDECAR_TESTS_IGNORED } from "./datastore_v3_litestream_helpers.ts";
 import type {
   MachineRequest,
@@ -292,11 +297,13 @@ Deno.test({
       assertEquals((await read(b)).commits, 3, "the takeover saw no zombie");
       await paused;
       // The zombie resumes: it syncs and publishes on its old lineage, and
-      // its lease check fails.
+      // its lease check fails. It is told its changes may still appear,
+      // not that nothing was committed.
       const closed = await assertRejects(() => a.send({ kind: "close" }));
-      assertEquals(
-        (closed as MachineError).code,
-        V3_REPLICATION_UNCONFIRMED_CODE,
+      assertEquals((closed as MachineError).code, WRITER_FENCED_CODE);
+      assertStringIncludes(
+        (closed as MachineError).message,
+        "They may still appear",
       );
       const c = await world.machine("c");
       assertEquals((await read(c)).commits, 3);
