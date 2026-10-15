@@ -71,9 +71,11 @@ export function replicaTargetProblem(value: unknown): string | undefined {
     return "it is not an object";
   }
   const record = value as Record<string, unknown>;
-  const allowed = typeof record.type === "string"
-    ? ALLOWED_KEYS[record.type]
-    : undefined;
+  // An own-key check: `type: "constructor"` must not find Object's.
+  const allowed =
+    typeof record.type === "string" && Object.hasOwn(ALLOWED_KEYS, record.type)
+      ? ALLOWED_KEYS[record.type]
+      : undefined;
   if (allowed === undefined) return '"type" must be "s3" or "gcs"';
   for (const key of Object.keys(record)) {
     if (!allowed.includes(key)) {
@@ -145,12 +147,18 @@ export function parseV3ReplicaTarget(
   value: unknown,
   datastoreType: string,
 ): V3ReplicaTarget {
-  const problem = replicaTargetProblem(value);
+  // Validate and return one snapshot of the own fields, so a getter or a
+  // provider that changes the object later cannot swap what was checked.
+  const target = typeof value === "object" && value !== null &&
+      !Array.isArray(value)
+    ? { ...value }
+    : value;
+  const problem = replicaTargetProblem(target);
   if (problem !== undefined) {
     throw new UserError(
       `The ${datastoreType} datastore returned a replica target swamp cannot ` +
         `use: ${problem}. Update the datastore extension.`,
     );
   }
-  return value as V3ReplicaTarget;
+  return target as V3ReplicaTarget;
 }

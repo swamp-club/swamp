@@ -156,3 +156,18 @@ Deno.test("InMemoryRemote.objectExists: answers by bucket key", async () => {
   assertEquals(await remote.objectExists("_control/writer/x"), true);
   assertEquals(await remote.objectExists("_control/writer/y"), false);
 });
+
+Deno.test("assertReplicaTargetConformance: catches an async replicaTarget()", async () => {
+  const remote = remoteWith({ type: "s3", bucket: BUCKET, prefix: "" });
+  await assertRejects(
+    () =>
+      assertReplicaTargetConformance({
+        ...optionsFor(remote),
+        replicaTarget: (() =>
+          Promise.resolve(remote.replicaTarget!())) as unknown as () =>
+            V3ReplicaTarget,
+      }),
+    Error,
+    "not a promise",
+  );
+});

@@ -54,6 +54,10 @@ const REPLICA_TARGET_FIXTURES: readonly [unknown, boolean][] = [
   ["s3", false],
   [{ type: "file", path: "/r" }, false],
   [{ type: "azure", bucket: "b", prefix: "" }, false],
+  [{ type: "constructor", bucket: "b", prefix: "" }, false],
+  [{ type: "toString", bucket: "b", prefix: "" }, false],
+  [{ type: "__proto__", bucket: "b", prefix: "" }, false],
+  [{ type: "hasOwnProperty", bucket: "b", prefix: "" }, false],
   [{ bucket: "b", prefix: "" }, false],
   [{ type: "s3", prefix: "" }, false],
   [{ type: "s3", bucket: "", prefix: "" }, false],
@@ -146,4 +150,26 @@ Deno.test("parseV3ReplicaTarget: an endpoint's credentials are not echoed", () =
     UserError,
   );
   assertEquals(error.message.includes("hunter2"), false);
+});
+
+Deno.test("parseV3ReplicaTarget: returns a snapshot, so later changes to the provider's object do not reach it", () => {
+  const value = { type: "s3", bucket: "b", prefix: "p" };
+  const target = parseV3ReplicaTarget(value, "@test/ds");
+  value.bucket = "other";
+  assertEquals(target, { type: "s3", bucket: "b", prefix: "p" });
+});
+
+Deno.test("parseV3ReplicaTarget: a getter is read once, and what was checked is what is returned", () => {
+  let reads = 0;
+  const value = {
+    type: "s3",
+    get bucket() {
+      reads++;
+      return reads === 1 ? "b" : "other/bucket";
+    },
+    prefix: "",
+  };
+  const target = parseV3ReplicaTarget(value, "@test/ds");
+  assertEquals(target.bucket, "b");
+  assertEquals(reads, 1);
 });

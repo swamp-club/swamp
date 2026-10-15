@@ -27,8 +27,8 @@ import type {
 
 /** Options for {@link assertReplicaTargetConformance}. */
 export interface ReplicaTargetConformanceOptions {
-  /** The provider's `replicaTarget()`. */
-  replicaTarget: () => V3ReplicaTarget | Promise<V3ReplicaTarget>;
+  /** The provider's `replicaTarget()`, which swamp calls synchronously. */
+  replicaTarget: () => V3ReplicaTarget;
   /** The bucket the provider is configured with. */
   bucket: string;
   /** The provider's `storage()`. */
@@ -45,7 +45,12 @@ export interface ReplicaTargetConformanceOptions {
   objectExists: (key: string) => Promise<boolean>;
 }
 
-/** The fields each kind of target may carry; anything else is refused. */
+/**
+ * The fields each kind of target may carry; anything else is refused. These
+ * rules copy swamp's own (`src/domain/datastore/replica_target.ts`), and
+ * `replica_target_test.ts` there runs both over one fixture list: change
+ * them together.
+ */
 const ALLOWED_KEYS: Readonly<Record<string, readonly string[]>> = {
   s3: ["type", "bucket", "prefix", "region", "endpoint", "forcePathStyle"],
   gcs: ["type", "bucket", "prefix"],
@@ -60,9 +65,11 @@ export function replicaTargetProblem(value: unknown): string | undefined {
     return "it is not an object";
   }
   const record = value as Record<string, unknown>;
-  const allowed = typeof record.type === "string"
-    ? ALLOWED_KEYS[record.type]
-    : undefined;
+  // An own-key check: `type: "constructor"` must not find Object's.
+  const allowed =
+    typeof record.type === "string" && Object.hasOwn(ALLOWED_KEYS, record.type)
+      ? ALLOWED_KEYS[record.type]
+      : undefined;
   if (allowed === undefined) return '"type" must be "s3" or "gcs"';
   for (const key of Object.keys(record)) {
     if (!allowed.includes(key)) {
@@ -168,7 +175,12 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export async function assertReplicaTargetConformance(
   options: ReplicaTargetConformanceOptions,
 ): Promise<void> {
-  const target = await options.replicaTarget();
+  const target = options.replicaTarget();
+  assert(
+    typeof (target as { then?: unknown }).then !== "function",
+    "replicaTarget() must return the target itself, not a promise: swamp " +
+      "calls it synchronously",
+  );
   const problem = replicaTargetProblem(target);
   assert(
     problem === undefined,
