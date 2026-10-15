@@ -1290,10 +1290,14 @@ come from anywhere else cannot be replicated. When 4E narrows the
 environment Litestream's supervisor inherits (D1 passes the whole
 environment), it keeps:
 
-| Replica | Inherited                                                      |
-| ------- | -------------------------------------------------------------- |
-| S3      | `AWS_*`, `HOME` (for `~/.aws`), `PATH`                         |
-| GCS     | `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_*`, `HOME`, `PATH` |
+| Replica | Inherited                                                                                                                                                |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S3      | `AWS_*`, `HOME` (for `~/.aws`), `PATH`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (and lowercase), `SSL_CERT_FILE`, `SSL_CERT_DIR`                         |
+| GCS     | `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_*`, `HOME`, `PATH`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (and lowercase), `SSL_CERT_FILE`, `SSL_CERT_DIR` |
+
+The proxy variables keep a proxied network's route, and the CA bundles keep
+trust in a self-hosted store with an internal CA or a corporate TLS proxy.
+S3-compatible stores need them most.
 
 `STORAGE_EMULATOR_HOST` is the only way Litestream reaches a GCS emulator. It
 is for tests and is not on the list.
