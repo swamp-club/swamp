@@ -886,6 +886,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return false;
     };
     const cutoffMs = cutoff.getTime();
+    // An unrepresentable cutoff (a retention too long for a date) is NaN,
+    // against which every age check fails: delete nothing rather than all.
+    if (!Number.isFinite(cutoffMs)) {
+      return { deleted: 0, bytesReclaimed: 0, deletedRunIds: [], more: false };
+    }
     let deleted = 0;
     let bytesReclaimed = 0;
     const deletedRunIds: string[] = [];

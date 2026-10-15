@@ -244,6 +244,9 @@ garbageCollection:
   bookkeeping: 24h        # serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
 ```
 
+- **Units**: as `--older-than`: `m` is minutes and `mo` months, so
+  `data: 6m` keeps six minutes of data, not six months. At most `1000y`;
+  leave a key unset to keep that kind forever.
 - **Precedence** (`RetentionPolicy`, `src/domain/retention/`): a one-off
   override (`--older-than`), then the kind's key, then `retention`. A kind
   with none of these is never reaped automatically; the manual commands keep

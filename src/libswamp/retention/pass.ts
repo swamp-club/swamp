@@ -156,7 +156,6 @@ export async function runRetentionPass(
         };
         result.kinds.push(kindResult);
         if (result.stoppedBy) continue;
-        started.add(collector.kind);
 
         let skipped = false;
         try {
@@ -166,6 +165,8 @@ export async function runRetentionPass(
               result.stoppedBy = stop;
               break;
             }
+            // Only a kind a batch ran for replaces its watermark.
+            started.add(collector.kind);
             const batch = await withSpan(
               "swamp.retention.batch",
               { "retention.kind": collector.kind },

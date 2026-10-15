@@ -45,7 +45,7 @@ export interface RepoRetentionDeps extends RetentionCollectorSources {
   afterPass?(result: RetentionPassResult): Promise<void>;
 }
 
-/** Watermarks kept in memory where the datastore has nowhere to keep them. */
+/** Stands in where the datastore has nowhere to keep watermarks: drops them. */
 class DiscardedWatermarks implements RetentionWatermarkRepository {
   get(_kind: RetentionKind): Promise<RetentionWatermark | null> {
     return Promise.resolve(null);

@@ -498,6 +498,10 @@ export class YamlOutputRepository implements OutputRepository {
     options?: { dryRun?: boolean },
   ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
     const cutoffMs = cutoff.getTime();
+    // An unrepresentable cutoff deletes nothing rather than everything.
+    if (!Number.isFinite(cutoffMs)) {
+      return { deleted: 0, bytesReclaimed: 0, more: false };
+    }
     return await this.deleteExpired(() => cutoffMs, options);
   }
 
@@ -506,6 +510,10 @@ export class YamlOutputRepository implements OutputRepository {
     options?: { dryRun?: boolean; limit?: number },
   ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
     const fallbackCutoffMs = fallbackCutoff.getTime();
+    // An unrepresentable cutoff deletes nothing rather than everything.
+    if (!Number.isFinite(fallbackCutoffMs)) {
+      return { deleted: 0, bytesReclaimed: 0, more: false };
+    }
     const nowMs = Date.now();
 
     const registeredTypes: {

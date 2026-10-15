@@ -64,9 +64,18 @@ export interface RetentionConfigProblem {
   message: string;
 }
 
+/**
+ * The longest retention accepted: far beyond any real need, and far inside
+ * the range a Date can hold, so `now - retention` is always a valid cutoff.
+ * A longer value (say `300000y`, meant as "forever") would give an invalid
+ * date, against which every age check fails.
+ */
+export const MAX_RETENTION_MS = 1000 * 365 * 24 * 60 * 60 * 1000;
+
 function isPositiveDuration(value: string): boolean {
   try {
-    return parseDataDuration(value) > 0;
+    const ms = parseDataDuration(value);
+    return ms > 0 && ms <= MAX_RETENTION_MS;
   } catch {
     return false;
   }
@@ -108,7 +117,7 @@ export function checkRetentionConfig(
       errors.push({
         field,
         message:
-          `garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w`,
+          `garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w, at most 1000y (leave it unset to keep forever)`,
       });
     }
   }
@@ -194,7 +203,10 @@ export class RetentionPolicy {
     overrideMs?: number,
   ): Date | undefined {
     const ms = this.retentionMs(kind, overrideMs);
-    return ms === undefined ? undefined : new Date(now.getTime() - ms);
+    if (ms === undefined) return undefined;
+    // A cutoff no Date can hold means nothing can be that old.
+    const cutoff = new Date(now.getTime() - ms);
+    return Number.isFinite(cutoff.getTime()) ? cutoff : undefined;
   }
 
   /** True when any kind has a retention. */

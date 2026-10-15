@@ -157,7 +157,7 @@ export function retentionFindingMessage(
   return `${parts.join("; ")}. ` +
     (summary.automatic
       ? "Automatic retention has not removed them yet: check that a retention pass runs (serve, or a CLI command that writes)."
-      : "Retention is not automatic: set garbageCollection.automatic: true, or run 'swamp run gc' and 'swamp data gc'.");
+      : "Retention is not automatic: set garbageCollection.automatic: true, or run 'swamp run gc' and 'swamp data gc' (audit logs are pruned only automatically).");
 }
 
 /**

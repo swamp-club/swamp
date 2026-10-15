@@ -1795,3 +1795,29 @@ Deno.test(
     });
   },
 );
+
+Deno.test(
+  "deleteByMethodLifetime: an invalid fallback cutoff deletes nothing",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const old = await makeOutputForMethod(
+        repo,
+        registeredType,
+        "run",
+        twoDaysAgo,
+      );
+      const oldPath = repo.getPath(registeredType, "run", old);
+      await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
+
+      // A retention too long for a date gives an invalid cutoff.
+      const result = await repo.deleteByMethodLifetime(new Date(Number.NaN));
+      assertEquals(result.deleted, 0);
+      assertEquals(
+        (await Deno.stat(oldPath)).isFile,
+        true,
+      );
+    });
+  },
+);

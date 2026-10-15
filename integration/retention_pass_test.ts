@@ -452,7 +452,7 @@ Deno.test("runRetentionAtCommandEnd: runs at most once an hour per checkout, and
   });
 });
 
-Deno.test("runRepoRetention: small batches drain every old run; a spent budget stops before any batch and leaves watermarks incomplete", async () => {
+Deno.test("runRepoRetention: small batches drain every old run; a spent budget stops before any batch and writes no watermark", async () => {
   await withTempDir(async (dir) => {
     const repo = await initRepo(dir);
     const workflow = fixtureWorkflow();
@@ -488,9 +488,8 @@ Deno.test("runRepoRetention: small batches drain every old run; a spent budget s
     assertEquals(stopped.stoppedBy, "budget");
     assertEquals(batches, 0);
     assertEquals((await repo.runs.listRunIds()).size, 8);
-    const incomplete = await watermarks.get("workflowRuns");
-    assertEquals(incomplete?.complete, false);
-    assertEquals(incomplete?.deleted, 0);
+    // No batch ran, so no watermark was written.
+    assertEquals(await watermarks.get("workflowRuns"), null);
 
     // Stopping after two batches leaves the rest for the next pass.
     let checks = 0;

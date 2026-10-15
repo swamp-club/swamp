@@ -3427,3 +3427,21 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: without a limit deletes ev
     assertEquals((await repo.listRunIds()).size, 0);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: an invalid cutoff deletes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.endAsCancelled("test");
+    await repo.save(workflow.id, finished);
+
+    // A retention too long for a date gives an invalid cutoff, against
+    // which every age check fails.
+    const result = await repo.deleteOlderThan(new Date(Number.NaN));
+
+    assertEquals(result.deleted, 0);
+    assertEquals(await repo.listRunIds(), new Set([finished.id]));
+  });
+});

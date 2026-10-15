@@ -151,3 +151,14 @@ Deno.test("RetentionPolicy.durationFor: unset snapshots follow the run retention
     "2d",
   );
 });
+
+Deno.test("checkRetentionConfig: refuses a retention too long for a date", () => {
+  const { errors } = checkRetentionConfig({ retention: "300000y" });
+  assertEquals(errors.map((e) => e.field), ["retention"]);
+  assertEquals(checkRetentionConfig({ retention: "1000y" }).errors, []);
+});
+
+Deno.test("RetentionPolicy.cutoff: an unrepresentable cutoff means no retention", () => {
+  const policy = RetentionPolicy.fromConfig({ retention: "300000y" });
+  assertEquals(policy.cutoff("workflowRuns", new Date()), undefined);
+});

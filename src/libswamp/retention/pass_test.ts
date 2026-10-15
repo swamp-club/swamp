@@ -236,3 +236,26 @@ Deno.test("runRetentionPass: a kind whose collector skipped failed items is not 
   assertEquals(watermarks.records.get("data")?.complete, false);
   assertEquals(watermarks.records.get("data")?.deleted, 2);
 });
+
+Deno.test("runRetentionPass: a pass stopped before a kind's first batch keeps that kind's watermark", async () => {
+  const watermarks = new MemoryWatermarks();
+  const previous = {
+    kind: "workflowRuns" as const,
+    cutoff: "2026-10-01T00:00:00.000Z",
+    retention: "1d",
+    lastPassAt: "2026-10-14T00:00:00.000Z",
+    complete: true,
+    deleted: 9,
+    bytesReclaimed: 0,
+  };
+  await watermarks.put(previous);
+  const result = await runRetentionPass(
+    deps([countingCollector("workflowRuns", 3, [])], watermarks),
+    {
+      policy: RetentionPolicy.fromConfig({ retention: "1d" }),
+      shouldBackOff: () => true,
+    },
+  );
+  assertEquals(result.stoppedBy, "busy");
+  assertEquals(watermarks.records.get("workflowRuns"), previous);
+});

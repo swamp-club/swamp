@@ -380,7 +380,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
             <p>
               {historyReq.errorInfo?.reason === "not_found"
                 ? historyReq.errorInfo.reapedBefore
-                  ? `Runs before ${
+                  ? `It may have been deleted, or the link is wrong. Runs before ${
                     new Date(historyReq.errorInfo.reapedBefore)
                       .toLocaleString()
                   } have been reaped by retention.`
