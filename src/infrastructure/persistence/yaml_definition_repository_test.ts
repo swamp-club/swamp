@@ -3023,3 +3023,42 @@ Deno.test("YamlDefinitionRepository.save: a changed string that would read as an
     assertEquals(jsonDataFromYaml(saved), data);
   });
 });
+
+Deno.test("YamlDefinitionRepository.save: changing an anchored list that unchanged aliases still use reads back as saved", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const id = crypto.randomUUID();
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const original = [
+      `type: ${testType.normalized}`,
+      "typeVersion: 2026.06.04.2",
+      `id: ${id}`,
+      "name: shared-list",
+      "version: 1",
+      "tags: {}",
+      "globalArguments:",
+      "  # shared by every use",
+      "  defs: &d",
+      "    - a",
+      "    - b",
+      "  uses:",
+      "    - *d",
+      "    - *d",
+      "methods: {}",
+      "",
+    ].join("\n");
+    await Deno.writeTextFile(join(typeDir, `${id}.yaml`), original);
+    const data = jsonDataFromYaml(original);
+    (data.globalArguments as Record<string, unknown>).defs = ["a", "b", "z"];
+
+    await repo.save(
+      testType,
+      Definition.fromData(data as Parameters<typeof Definition.fromData>[0]),
+    );
+
+    const saved = await Deno.readTextFile(join(typeDir, "shared-list.yaml"));
+    assertEquals(jsonDataFromYaml(saved), data);
+    assertStringIncludes(saved, "  # shared by every use\n");
+  });
+});

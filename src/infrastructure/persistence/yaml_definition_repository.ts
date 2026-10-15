@@ -1465,10 +1465,11 @@ function mergeLineWidth(raw: string, doc: YamlDocument): number {
  * they are rewritten in place in the source and every other byte is kept.
  * Otherwise the new values are merged onto the parsed document, which keeps
  * comments, aliases and quoting of every unchanged subtree but re-renders the
- * layout. Merging onto an anchored node also changes every alias of it, so when
- * the merged text reads back as anything else the merge is redone with the
- * aliases expanded, which keeps the comments but not the aliases. A fresh
- * rendering is the last resort.
+ * layout. Merging onto an anchored node also changes every alias of it, and
+ * replacing one leaves its aliases with nothing to refer to, so when the merged
+ * text reads back as anything else, or cannot be rendered, the merge is redone
+ * with the aliases expanded, which keeps the comments but not the aliases. A
+ * fresh rendering is the last resort.
  */
 function renderMerged(
   raw: string,
@@ -1483,7 +1484,14 @@ function renderMerged(
     const lineWidth = mergeLineWidth(raw, doc);
     if (expand) expandAliases(doc);
     mergeIntoDocument(doc, newData, oldData);
-    const content = doc.toString({ lineWidth });
+    let content: string;
+    try {
+      content = doc.toString({ lineWidth });
+    } catch {
+      // A changed anchored node was replaced while an unchanged alias still
+      // refers to it, so the document cannot be rendered with its aliases.
+      continue;
+    }
     if (readsBackAs(content, expected)) return content;
   }
   return stringifyYaml(newData);

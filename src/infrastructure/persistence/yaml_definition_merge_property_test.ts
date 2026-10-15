@@ -217,6 +217,11 @@ function anchoredYaml(id: string): string {
     "      threshold: 5",
     "      window: 10m",
     "  updateTrigger: { arguments: *trigger_args }",
+    "  defs: &shared_list",
+    "    - a",
+    "    - b",
+    "  uses:",
+    "    - *shared_list",
     "  filters:",
     "    - field: status",
     "      op: '='",
@@ -237,6 +242,10 @@ Deno.test("YamlDefinitionRepository.save: editing either side of an anchor and i
         updateWindow: arbLeafEdit,
         op: arbLeafEdit,
         recipient: arbLeafEdit,
+        defs: fc.option(fc.array(arbPrimitive, { maxLength: 3 }), {
+          nil: undefined,
+          freq: 2,
+        }),
         extra: fc.option(arbValue, { nil: undefined, freq: 2 }),
       }),
       async (edit) => {
@@ -263,6 +272,7 @@ Deno.test("YamlDefinitionRepository.save: editing either side of an anchor and i
           set(args.updateTrigger.arguments, "window", edit.updateWindow);
           set(args.filters[0], "op", edit.op);
           set(args.recipients, "0", edit.recipient);
+          set(args, "defs", edit.defs);
           set(args, "extra", edit.extra);
 
           await repo.save(
