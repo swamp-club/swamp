@@ -765,59 +765,68 @@ changes.
    (`src/serve/collective_refresh_service.ts`). It applies a userinfo answer
    only when its subject matches the token's principal; otherwise it keeps the
    token's snapshot and logs a warning.
-5. **Unreadable records** (swamp-club#3386): a grant or group record that
-   exists but cannot be read (a directory or file this process may not
-   read, such as one a peer wrote with a restrictive umask or another uid)
-   or whose JSON does not parse never vanishes silently. `findAllForType`
-   reports the model directories it skips, and the loader treats them like
-   a content read that failed.
+5. **Unreadable records** (swamp-club#3386): a grant or group record that exists
+   but cannot be read (a directory or file this process may not read, such as
+   one a peer wrote with a restrictive umask or another uid) or whose JSON does
+   not parse never vanishes silently. `findAllForType` reports the model
+   directories it skips, and the loader treats them like a content read that
+   failed.
 
-   The first build of a loader has no earlier version to fall back on, so
-   it fails closed: it throws `UnreadableAccessRecordsError`, and serve
-   refuses to start, as do `swamp access reload` and `swamp access check`.
-   A record that cannot be loaded may be a deny, and the loader cannot tell.
-   The error lists each record with its fix. A corrupt record (JSON or
-   metadata that does not parse, which throws `SyntaxError`, or metadata
-   that fails its schema, `ZodError`) never loads by itself, so the error names the
-   command that removes it, `swamp data delete <model-id> grant-main -y`
-   (`group-main` for a group). Any other failure, such as `PermissionDenied`,
-   is unreadable: give the process read access and retry. This applies to
-   allows too, so a datastore with one damaged record of any kind stops
-   these commands until it is fixed, where earlier releases skipped it.
+   The first build of a loader has no earlier version to fall back on, so it
+   fails closed: it throws `UnreadableAccessRecordsError`, and serve refuses to
+   start, as do `swamp access reload` and `swamp access check`. A record that
+   cannot be loaded may be a deny, and the loader cannot tell. The error lists
+   each record with its fix:
+   - corrupt (its JSON or metadata does not parse, `SyntaxError`): it never
+     loads by itself, so the error names the command that removes it,
+     `swamp data delete <model-id> grant-main -y` (`group-main` for a group). An
+     orphaned record (`@swamp/grant`, `@swamp/group`) has no definition that
+     command can reach, so the error names its directory,
+     `data/@swamp/grant/<model-id>`, instead;
+   - unrecognised (its metadata fails this build's schema, `ZodError`): a newer
+     swamp may have written it, so the error says to upgrade first and only
+     otherwise to remove it;
+   - unreadable (anything else, such as `PermissionDenied`): give the process
+     read access and retry.
+
+   This applies to allows too, so a datastore with one damaged record of any
+   kind stops these commands until it is fixed, where earlier releases skipped
+   it.
 
    Every later build succeeds:
-   - a grant whose last-known version, read by an earlier build of this
-     process, was an active deny stays in force (fail closed);
-   - any other grant is left out. Leaving out an allow is fail safe. A deny
-     that appeared after the first build and was never read cannot be
-     enforced, and the error log says so;
-   - a group keeps its last-known members, so deny grants on it still
-     apply, and allow grants to the group are suspended, so a member removed
-     in the version that cannot be read gets no allow through the group.
-     Allow conditions that test membership of the group still see the
-     last-known members. A group never read is left out.
+   - a grant whose last-known version, read by an earlier build of this process,
+     was an active deny stays in force (fail closed);
+   - any other grant is left out. Leaving out an allow is fail safe. A deny that
+     appeared after the first build and was never read cannot be enforced, and
+     the error log says so;
+   - a group keeps its last-known members, so deny grants on it still apply, and
+     allow grants to the group are suspended, so a member removed in the version
+     that cannot be read gets no allow through the group. Allow conditions that
+     test membership of the group still see the last-known members. A group
+     never read is left out.
 
-   Each record is logged at error once, with the removal command when it is
-   corrupt, at debug while it stays the same, and at info once it reads
-   again. A record stays the same while its outcome and error class do, so
-   an error message that varies (a remote request id) does not repeat the
-   error line. `PolicySnapshotLoader.unreadable` lists
-   the records the last successful build could not read, whoever ran it
-   (the boot load, an auto-mode rebuild, the reload endpoint, the poller).
-   The poller rebuilds every cycle while that list is non-empty, because the
-   filesystem change source cannot see a file turning readable again (a mode
-   change moves only its ctime) and a remote datastore's read can fail for
-   one cycle. A rebuild that finds the same unreadable records and loads the
-   same grants and groups as the last one logs its snapshot line at debug
-   and skips the unsupplied-field warnings; one that loads a peer's change
-   logs and warns as usual. The change source fingerprints each directory or
-   entry it cannot read as its error and keeps walking everything beside it,
-   so an unreadable old version never hides a new version of the record, and
-   every other record is still compared. A build that throws (a grant or
-   group type directory that cannot be listed) keeps the previous snapshot
-   and last-known records. The poller logs a failed cycle at warning, and
-   from the third consecutive failure on at error, saying other processes'
-   grant and revoke changes are not being applied; it logs recovery at info.
+   Each record is logged at error once, with its fix when it is corrupt or
+   unrecognised, at debug while it stays the same, and at info once it reads
+   again. A record stays the same while its outcome and error class do, so an
+   error message that varies (a remote request id) does not repeat the error
+   line. `PolicySnapshotLoader.unreadable` lists the records the last successful
+   build could not read, whoever ran it (the boot load, an auto-mode rebuild,
+   the reload endpoint, the poller). The poller rebuilds every cycle while that
+   list holds an unreadable record, because the filesystem change source cannot
+   see a file turning readable again (a mode change moves only its ctime) and a
+   remote datastore's read can fail for one cycle. A corrupt or unrecognised
+   record is not retried: it never reads by itself, and the write that fixes it
+   is a change. A rebuild that finds the same unreadable records and loads the
+   same grants and groups as the last one logs its snapshot line at debug and
+   skips the unsupplied-field warnings; one that loads a peer's change logs and
+   warns as usual. The change source fingerprints each directory or entry it
+   cannot read as its error and keeps walking everything beside it, so an
+   unreadable old version never hides a new version of the record, and every
+   other record is still compared. A build that throws (a grant or group type
+   directory that cannot be listed) keeps the previous snapshot and last-known
+   records. The poller logs a failed cycle at warning, and from the third
+   consecutive failure on at error, saying other processes' grant and revoke
+   changes are not being applied; it logs recovery at info.
 
 The `GrantBasedAccessDecisionService` picks up a rebuilt snapshot on the next
 request. There is no per-request locking or snapshot versioning.

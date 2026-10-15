@@ -166,10 +166,14 @@ export class AccessDataPoller {
       // A snapshot missing records it could not read is rebuilt every cycle
       // until it is whole, whoever built it: the change source cannot see a
       // file turning readable again (a mode change moves only its ctime),
-      // and a remote datastore's read can fail for one cycle.
+      // and a remote datastore's read can fail for one cycle. A corrupt
+      // record never reads by itself, and the write that fixes it is a
+      // change, so it is not retried.
       if (
         this.#needsReload ||
-        this.#policySnapshotLoader.unreadable.length > 0
+        this.#policySnapshotLoader.unreadable.some((record) =>
+          record.cause === "unreadable"
+        )
       ) {
         await this.#policySnapshotLoader.load();
         this.#needsReload = false;

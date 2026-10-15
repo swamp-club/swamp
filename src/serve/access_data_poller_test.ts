@@ -88,7 +88,7 @@ function createMockSyncService(
 
 interface MockPolicySnapshotLoader {
   loadCalls: number;
-  unreadable: readonly unknown[];
+  unreadable: readonly { cause: string }[];
   load(): Promise<void>;
 }
 
@@ -746,7 +746,7 @@ Deno.test("AccessDataPoller: reloads every cycle while the snapshot is missing r
   const sync = createMockSyncService({ pullResult: 0 });
   const loader = createMockPolicySnapshotLoader();
   // A degraded snapshot this poller did not build (serve's boot load).
-  loader.unreadable = [{ record: "swamp/grant/g1" }];
+  loader.unreadable = [{ cause: "unreadable" }];
   const { state, catalogInvalidate } = createCallbackTrackers();
   const poller = new AccessDataPoller({
     syncService: sync,
@@ -772,6 +772,28 @@ Deno.test("AccessDataPoller: reloads every cycle while the snapshot is missing r
   }
   // Retrying a degraded snapshot is not a datastore change.
   assertEquals(state.catalogInvalidateCalls, 0);
+});
+
+Deno.test("AccessDataPoller: does not retry a snapshot whose missing records are all corrupt", async () => {
+  const sync = createMockSyncService({ pullResult: 0 });
+  const loader = createMockPolicySnapshotLoader();
+  // Corrupt records never read by themselves; a fixing write is a change.
+  loader.unreadable = [{ cause: "corrupt" }, { cause: "unrecognised" }];
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = new AccessDataPoller({
+    syncService: sync,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 10,
+  });
+
+  poller.start();
+  try {
+    await waitFor(() => sync.pullCalls.length >= 3, "three cycles");
+  } finally {
+    await poller.stop();
+  }
+  assertEquals(loader.loadCalls, 0);
 });
 
 /** Runs `fn` with the access data poller's logs captured. */

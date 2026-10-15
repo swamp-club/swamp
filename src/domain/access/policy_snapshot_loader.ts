@@ -209,11 +209,17 @@ export interface UnreadableAccessRecord {
   /** The access data the record keeps: `grant-main` or `group-main`. */
   readonly dataName: string;
   /**
-   * `corrupt` when its JSON, metadata or schema does not parse, which no
-   * retry can fix; `unreadable` when reading it failed, as for a file this
-   * process may not read.
+   * `corrupt` when its JSON or metadata does not parse; `unrecognised` when
+   * its metadata fails this build's schema, as metadata a newer swamp wrote
+   * may; neither loads again by itself. `unreadable` when reading it
+   * failed, as for a file this process may not read, which a retry can fix.
    */
-  readonly cause: "unreadable" | "corrupt";
+  readonly cause: "unreadable" | "corrupt" | "unrecognised";
+  /**
+   * Whether it has no definition (an `@`-prefixed type), so
+   * `swamp data delete` cannot reach it.
+   */
+  readonly orphaned: boolean;
   /** The error's class, which names the failure across retries. */
   readonly errorName: string;
   /** The error's class and message, for logs. */
@@ -221,18 +227,42 @@ export interface UnreadableAccessRecord {
   readonly outcome: UnreadableRecordOutcome;
 }
 
-/** How to fix a record a build could not load. */
-function remedyFor(record: UnreadableAccessRecord): string {
-  return record.cause === "corrupt"
-    ? `remove it with \`${
-      deleteCommandFor(record)
-    }\`, then create the ${record.kind} again if it is still wanted`
-    : "give this process read access to it (check the owner and mode of its files), then retry";
+/** What a record a build could not load is, for messages. */
+function problemOf(record: UnreadableAccessRecord): string {
+  switch (record.cause) {
+    case "corrupt":
+      return "is corrupt";
+    case "unrecognised":
+      return "has metadata this swamp does not recognise";
+    case "unreadable":
+      return "cannot be read";
+  }
 }
 
-/** The command that removes a corrupt record's access data. */
-function deleteCommandFor(record: UnreadableAccessRecord): string {
-  return `swamp data delete ${record.modelId} ${record.dataName} -y`;
+/** How to fix a record a build could not load. */
+function remedyFor(record: UnreadableAccessRecord): string {
+  switch (record.cause) {
+    case "corrupt":
+      return `${
+        removalFor(record)
+      }, then create the ${record.kind} again if it is still wanted`;
+    case "unrecognised":
+      return `if a newer swamp wrote it, upgrade this one; otherwise it is corrupt: ${
+        removalFor(record)
+      }, then create the ${record.kind} again if it is still wanted`;
+    case "unreadable":
+      return "give this process read access to it (check the owner and mode of its files), then retry";
+  }
+}
+
+/**
+ * How to remove a record's access data: `swamp data delete`, or, for an
+ * orphaned record it cannot reach, its directory.
+ */
+function removalFor(record: UnreadableAccessRecord): string {
+  return record.orphaned
+    ? `remove its directory, data/${record.record}, from the datastore (it has no definition, so \`swamp data delete\` cannot reach it)`
+    : `remove it with \`swamp data delete ${record.modelId} ${record.dataName} -y\``;
 }
 
 /**
@@ -249,9 +279,7 @@ export class UnreadableAccessRecordsError extends UserError {
     super(
       `Cannot build the policy snapshot: ${records.length} grant or group record(s) cannot be loaded. A record that cannot be loaded may be a deny, which would go unenforced, so the snapshot is not built until each is fixed:\n${
         records.map((r) =>
-          `  - ${r.record} ${
-            r.cause === "corrupt" ? "is corrupt" : "cannot be read"
-          } (${r.error}): ${remedyFor(r)}`
+          `  - ${r.record} ${problemOf(r)} (${r.error}): ${remedyFor(r)}`
         ).join("\n")
       }`,
       "access_records_unloadable",
@@ -300,9 +328,9 @@ type RecordRead =
 
 /**
  * The record a build could not load. A parse failure (JSON or YAML, which
- * throw SyntaxError) or a schema failure (ZodError) is corrupt; anything
- * else, such as PermissionDenied or a remote read that failed, is
- * unreadable.
+ * throw SyntaxError) is corrupt; metadata that fails its schema (ZodError)
+ * is unrecognised, since a newer swamp may have written it; anything else,
+ * such as PermissionDenied or a remote read that failed, is unreadable.
  */
 function unreadableRecord(
   kind: "grant" | "group",
@@ -312,13 +340,18 @@ function unreadableRecord(
   outcome: UnreadableRecordOutcome,
 ): UnreadableAccessRecord {
   const errorName = error instanceof Error ? error.name : "Error";
-  const corrupt = error instanceof SyntaxError || errorName === "ZodError";
+  const cause = error instanceof SyntaxError
+    ? "corrupt"
+    : errorName === "ZodError"
+    ? "unrecognised"
+    : "unreadable";
   return {
     record: recordKey(modelType, modelId),
     kind,
     modelId,
     dataName: `${kind}-main`,
-    cause: corrupt ? "corrupt" : "unreadable",
+    cause,
+    orphaned: modelType.normalized.startsWith("@"),
     errorName,
     error: error instanceof Error
       ? `${error.name}: ${error.message}`
@@ -670,11 +703,11 @@ export class PolicySnapshotLoader {
             .error`Group record ${record} cannot be read (${error}) and was never read by this process: deny grants on its group do not apply until it can be read`;
         }
       }
-      if (entry.cause === "corrupt") {
+      if (entry.cause !== "unreadable") {
         logger
-          .error`Access record ${record} is corrupt and will not load again by itself: remove it with ${
-          deleteCommandFor(entry)
-        }, then create the ${entry.kind} again if it is still wanted`;
+          .error`Access record ${record} ${
+          problemOf(entry)
+        } and will not load again by itself: ${remedyFor(entry)}`;
       }
     }
     for (const record of this.#reportedUnreadable.keys()) {

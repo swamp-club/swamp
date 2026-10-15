@@ -1027,14 +1027,17 @@ type FakeRecord =
   | { kind: "group"; attrs: Group }
   | {
     kind: "grant" | "group";
-    unreadable: "content" | "listing" | "metadata" | "json";
+    unreadable: "content" | "listing" | "metadata" | "schema" | "json";
+    /** Listed under the orphaned `@`-prefixed type, with no definition. */
+    orphaned?: boolean;
   };
 
 /**
  * A data repository over records a test can change between loads. A record
  * unreadable at "listing" is reported by findAllForType, as the filesystem
  * repository reports a directory it cannot read, and at "metadata" as it
- * reports metadata that does not parse; at "content", getContent throws,
+ * reports metadata that does not parse, and at "schema" as it reports
+ * metadata that fails its schema; at "content", getContent throws,
  * with a message that differs on every read, as a remote error's may; at
  * "json", the content does not parse.
  */
@@ -1051,24 +1054,35 @@ function createChangingDataRepo(
       if (repo.failListing) {
         return Promise.reject(new Deno.errors.PermissionDenied("type dir"));
       }
-      const kind = type.normalized === GRANT_MODEL_TYPE.normalized
+      const orphaned = type.normalized.startsWith("@");
+      const canonical = orphaned ? type.normalized.slice(1) : type.normalized;
+      const kind = canonical === GRANT_MODEL_TYPE.normalized
         ? "grant"
-        : type.normalized === GROUP_MODEL_TYPE.normalized
+        : canonical === GROUP_MODEL_TYPE.normalized
         ? "group"
         : null;
       const found = [];
       for (const [modelId, record] of records) {
         if (record.kind !== kind) continue;
+        const recordOrphaned = "unreadable" in record &&
+          record.orphaned === true;
+        if (recordOrphaned !== orphaned) continue;
         if (
           "unreadable" in record &&
-          (record.unreadable === "listing" || record.unreadable === "metadata")
+          (record.unreadable === "listing" ||
+            record.unreadable === "metadata" ||
+            record.unreadable === "schema")
         ) {
+          const schemaError = new Error("metadata fails its schema");
+          schemaError.name = "ZodError";
           options?.unreadable?.push({
             modelType: type,
             modelId,
             error: record.unreadable === "listing"
               ? new Deno.errors.PermissionDenied("listing")
-              : new SyntaxError("bad metadata.yaml"),
+              : record.unreadable === "metadata"
+              ? new SyntaxError("bad metadata.yaml")
+              : schemaError,
           });
           continue;
         }
@@ -1175,7 +1189,13 @@ Deno.test("PolicySnapshotLoader.load: an unreadable deny it read before stays in
 
 Deno.test("PolicySnapshotLoader.load: the first build refuses a record it cannot read, so serve does not start without a deny", async () => {
   for (
-    const unreadable of ["content", "listing", "metadata", "json"] as const
+    const unreadable of [
+      "content",
+      "listing",
+      "metadata",
+      "schema",
+      "json",
+    ] as const
   ) {
     const records = new Map<string, FakeRecord>([
       ["d", { kind: "grant", unreadable }],
@@ -1503,5 +1523,36 @@ Deno.test("PolicySnapshotLoader.load: a rebuild that also loads a peer's change 
     logs.filter((l) => l.level === "warning" && l.message.includes("on-owner"))
       .length,
     1,
+  );
+});
+
+Deno.test("PolicySnapshotLoader.load: the first-build error does not tell a record a newer swamp may have written to be deleted outright, and names an orphaned record's directory", async () => {
+  const records = new Map<string, FakeRecord>([
+    ["newer", { kind: "grant", unreadable: "schema" }],
+    ["orphan", { kind: "grant", unreadable: "metadata", orphaned: true }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  const error = await assertRejects(
+    () => loader.load(),
+    UnreadableAccessRecordsError,
+  );
+  await loader.dispose();
+
+  const lines = error.message.split("\n");
+  const newer = lines.find((l) => l.includes("swamp/grant/newer ")) ?? "";
+  assertStringIncludes(newer, "does not recognise");
+  assertStringIncludes(newer, "if a newer swamp wrote it, upgrade this one");
+  assertStringIncludes(newer, "swamp data delete newer grant-main -y");
+  const orphan = lines.find((l) => l.includes("@swamp/grant/orphan ")) ?? "";
+  assertStringIncludes(orphan, "is corrupt");
+  assertStringIncludes(orphan, "data/@swamp/grant/orphan");
+  assertEquals(orphan.includes("swamp data delete orphan"), false);
+  assertEquals(
+    error.records.map((r) => [r.modelId, r.cause, r.orphaned]).sort(),
+    [["newer", "unrecognised", false], ["orphan", "corrupt", true]],
   );
 });
