@@ -94,6 +94,33 @@ Deno.test("workerModel: set_status disconnected stamps disconnectedAt", async ()
   assertEquals(typeof state.disconnectedAt, "string");
 });
 
+Deno.test("workerModel: enroll records the starting status it is given", async () => {
+  const { context, store } = createInMemoryWorkerContext(
+    WORKER_MODEL_TYPE,
+    "ci-runner-3",
+  );
+  await workerModel.methods.enroll.execute(
+    { ...enrollArgs, status: "unverified" },
+    context,
+  );
+  const state = store.get("state-main")!;
+  assertEquals(state.status, "unverified");
+  assertEquals(state.verifyFailureReason, undefined);
+  assertEquals(state.activeDispatchIds, []);
+});
+
+Deno.test("workerModel: enroll accepts only idle or unverified as a starting status", () => {
+  const args = workerModel.methods.enroll.arguments;
+  assertEquals(args.safeParse({ ...enrollArgs, status: "idle" }).success, true);
+  assertEquals(
+    args.safeParse({ ...enrollArgs, status: "unverified" }).success,
+    true,
+  );
+  for (const status of ["busy", "disconnected", "draining"]) {
+    assertEquals(args.safeParse({ ...enrollArgs, status }).success, false);
+  }
+});
+
 Deno.test("workerModel: set_status before enroll fails loudly", async () => {
   const { context } = createInMemoryWorkerContext(
     WORKER_MODEL_TYPE,

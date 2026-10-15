@@ -105,6 +105,7 @@ const EnrollArgsSchema = z.object({
   swampVersion: z.string(),
   protocolVersion: z.number().int(),
   capacity: z.number().int().min(1).default(1),
+  status: z.enum(["idle", "unverified"]).optional(),
 });
 
 async function enroll(
@@ -116,7 +117,7 @@ async function enroll(
     name: args.workerName ?? args.tokenName,
     instanceUuid: args.instanceUuid,
     tokenName: args.tokenName,
-    status: "idle",
+    status: args.status ?? "idle",
     labels: args.labels,
     platform: args.platform,
     arch: args.arch,

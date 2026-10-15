@@ -35,6 +35,11 @@ import {
 } from "../domain/remote/rpc_channel.ts";
 import type { EnrollmentToken } from "../domain/models/worker/enrollment_token_model.ts";
 import {
+  WORKER_MODEL_TYPE,
+  workerModel,
+} from "../domain/models/worker/worker_model.ts";
+import { createInMemoryWorkerContext } from "../domain/models/worker/worker_test_helpers.ts";
+import {
   type DispatchParams,
   type EnrollResult,
   GATE_PASS_UNAVAILABLE,
@@ -1623,6 +1628,174 @@ Deno.test("WorkerGateway: without verifyOnEnroll — worker becomes idle immedia
   assertEquals(workers[0].status, "idle");
   assertEquals(h.idle.length, 1);
   assertEquals(enrolled.length, 1);
+});
+
+/** Status the worker model saves for the gateway's recorded enroll call. */
+async function savedEnrollStatus(h: Harness): Promise<unknown> {
+  const transition = h.transitions.find((t) => t.methodName === "enroll");
+  const { context, store } = createInMemoryWorkerContext(
+    WORKER_MODEL_TYPE,
+    transition!.definitionName,
+  );
+  await workerModel.methods.enroll.execute(
+    workerModel.methods.enroll.arguments.parse(transition!.inputs),
+    context,
+  );
+  return store.get("state-main")!.status;
+}
+
+Deno.test("WorkerGateway: without verifyOnEnroll — the worker record says idle from enrollment", async () => {
+  const h = createHarness({});
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(await savedEnrollStatus(h), "idle");
+  assertEquals(setStatusWrites(h), []);
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — the worker record says unverified until the enrollment probe passes (swamp-club#3501)", async () => {
+  let resolveProbe!: () => void;
+  const probe = new Promise<void>((r) => {
+    resolveProbe = r;
+  });
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: async () => {
+      await probe;
+      return { ok: true };
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(await savedEnrollStatus(h), "unverified");
+  assertEquals(setStatusWrites(h), []);
+
+  resolveProbe();
+  await waitFor(
+    () => setStatusWrites(h).length > 0,
+    "the probe result to be recorded",
+  );
+  assertEquals(setStatusWrites(h), ["idle"]);
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a reconnect records the worker unverified until its probe passes (swamp-club#3501)", async () => {
+  let probe = Promise.resolve();
+  const h = createHarness({
+    graceWindowMs: 200,
+    verifyOnEnroll: true,
+    verifyWorker: async () => {
+      await probe;
+      return { ok: true };
+    },
+  });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be verified",
+  );
+  first.dropSocket();
+  await waitFor(
+    () => setStatusWrites(h).at(-1) === "disconnected",
+    "the disconnect to be recorded",
+  );
+
+  let resolveProbe!: () => void;
+  probe = new Promise<void>((r) => {
+    resolveProbe = r;
+  });
+  const second = connectWorkerSocket(h.gateway);
+  await enroll(second.workerChannel);
+  assertEquals(setStatusWrites(h), ["idle", "disconnected", "unverified"]);
+
+  resolveProbe();
+  await waitFor(
+    () => setStatusWrites(h).length === 4,
+    "the probe result to be recorded",
+  );
+  assertEquals(setStatusWrites(h).at(-1), "idle");
+  second.dropSocket();
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
+});
+
+Deno.test("WorkerGateway: without verifyOnEnroll — a reconnect records the worker idle", async () => {
+  const h = createHarness({ graceWindowMs: 200 });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  first.dropSocket();
+  await waitFor(
+    () => setStatusWrites(h).at(-1) === "disconnected",
+    "the disconnect to be recorded",
+  );
+  const second = connectWorkerSocket(h.gateway);
+  await enroll(second.workerChannel);
+  assertEquals(setStatusWrites(h), ["disconnected", "idle"]);
+  second.dropSocket();
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a reconnect while a step holds a slot records unverified and keeps the step (swamp-club#3501)", async () => {
+  const h = createProbingHarness();
+  const first = connectWorkerSocket(h.gateway);
+  first.workerChannel.register(
+    WorkerMethod.dispatch,
+    (params) =>
+      (params as DispatchParams).probeMarker
+        ? Promise.resolve({
+          status: "success",
+          outputs: [],
+          logs: [],
+          durationMs: 1,
+        })
+        // The step is lost with the socket: it never answers.
+        : new Promise(() => {}),
+  );
+  await enroll(first.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be verified",
+  );
+  const step = h.gateway.dispatch("ci-runner-3", dispatchParams("step-1"));
+  const stepEnded = step.then(() => "resolved", () => "rejected");
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "busy",
+    "the step to be placed",
+  );
+
+  const second = connectWorkerSocket(h.gateway);
+  second.workerChannel.register(WorkerMethod.dispatch, () =>
+    Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    }));
+  const writesBefore = h.transitions.length;
+  await enroll(second.workerChannel);
+  const reconnectWrite = h.transitions
+    .slice(writesBefore)
+    .find((t) => t.methodName === "set_status");
+  assertEquals(reconnectWrite?.inputs, {
+    status: "unverified",
+    activeDispatchIds: ["step-1"],
+  });
+
+  first.dropSocket();
+  assertEquals(await stepEnded, "rejected");
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be probed again and promoted",
+  );
+  second.dropSocket();
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
 });
 
 Deno.test("WorkerGateway: worker.drain sets status to draining", async () => {

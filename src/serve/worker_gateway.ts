@@ -799,6 +799,12 @@ export class WorkerGateway {
       }
 
       const capacity = (params.resourceLimits?.capacity as number) ?? 1;
+      // Under verify-on-enroll the worker is unverified until its probe
+      // passes. The durable record says so too, so `swamp worker list`
+      // matches the pool while the probe is pending (swamp-club#3501).
+      const initialStatus = this.#options.verifyOnEnroll
+        ? "unverified"
+        : "idle";
 
       if (reconnecting) {
         existing.channel = state.channel;
@@ -807,7 +813,12 @@ export class WorkerGateway {
           typeArg: WORKER_MODEL_TYPE.normalized,
           definitionName: workerDefinitionName(workerName),
           methodName: "set_status",
-          inputs: existing.activeDispatchIds.length > 0
+          inputs: initialStatus === "unverified"
+            ? {
+              status: "unverified",
+              activeDispatchIds: [...existing.activeDispatchIds],
+            }
+            : existing.activeDispatchIds.length > 0
             ? {
               status: "busy",
               activeDispatchIds: [...existing.activeDispatchIds],
@@ -829,6 +840,7 @@ export class WorkerGateway {
             swampVersion: params.swampVersion,
             protocolVersion: params.protocolVersion,
             capacity,
+            status: initialStatus,
           },
         });
       }
@@ -836,9 +848,6 @@ export class WorkerGateway {
       // All durable transitions succeeded — only now mutate the pool, wire
       // the capability handlers, and issue the credential, so a failed
       // enrollment leaves no orphaned state behind.
-      const initialStatus = this.#options.verifyOnEnroll
-        ? "unverified"
-        : "idle";
       const entry: WorkerEntry = reconnecting ? existing : {
         name: workerName,
         tokenName: name,
