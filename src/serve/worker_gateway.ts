@@ -185,8 +185,9 @@ interface WorkerEntry {
   /** Another verification was asked for while one was running. */
   verifyAgain?: boolean;
   /**
-   * A probe was refused for want of a slot while the worker was unverified.
-   * The next dispatch to end with no slots held probes it again.
+   * A probe was refused for want of a slot while the unverified worker's
+   * enrollment verification was running. The next dispatch to end with no
+   * slots held probes it again.
    */
   probeRefusedForCapacity?: boolean;
   graceTimer?: ReturnType<typeof setTimeout>;
@@ -512,7 +513,9 @@ export class WorkerGateway {
       throw new WorkerNotDispatchableError(name, "disconnected");
     }
     if (entry.activeDispatchIds.length >= entry.capacity) {
-      if (entry.status === "unverified" && params.probeMarker) {
+      if (
+        entry.status === "unverified" && entry.verifying && params.probeMarker
+      ) {
         entry.probeRefusedForCapacity = true;
       }
       throw new WorkerNotDispatchableError(name, "at_capacity");
@@ -853,6 +856,9 @@ export class WorkerGateway {
       };
       if (reconnecting && this.#options.verifyOnEnroll) {
         entry.status = "unverified";
+        // A refusal from before the reconnect is answered by the probe this
+        // enrollment starts.
+        entry.probeRefusedForCapacity = false;
       }
       entry.channel = state.channel;
       entry.closeSocket = state.closeSocket;

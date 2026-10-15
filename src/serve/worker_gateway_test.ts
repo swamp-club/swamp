@@ -1297,11 +1297,13 @@ Deno.test("WorkerGateway: verifyOnEnroll — a held step ending while the reconn
 /**
  * As in serve, the enrollment probe does asynchronous setup before it takes
  * a slot: it waits on `setup`, which a test replaces with a gate. Every
- * probe that reaches the worker is answered with the result `answer` gives;
- * any other dispatch is held until `release` is called with its id.
+ * probe that reaches the worker is answered with the result `answer` gives,
+ * at once unless `holdProbes` is set; any other dispatch is held until
+ * `release` is called with its id.
  */
 function createSlotRaceHarness(options?: {
   holdUnverifiedWrite?: Promise<void>;
+  readTokenExpiresAt?: WorkerGatewayOptions["readTokenExpiresAt"];
 }) {
   const transitions: RecordedTransition[] = [];
   const state = {
@@ -1309,6 +1311,7 @@ function createSlotRaceHarness(options?: {
     verifications: 0,
     probes: [] as string[],
     answer: "success" as "success" | "error",
+    holdProbes: false,
   };
   const held = new Map<string, () => void>();
   const h: Harness = createHarness({
@@ -1334,8 +1337,11 @@ function createSlotRaceHarness(options?: {
         await options.holdUnverifiedWrite;
       }
     },
+    ...(options?.readTokenExpiresAt
+      ? { readTokenExpiresAt: options.readTokenExpiresAt }
+      : {}),
   });
-  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
   workerChannel.register(WorkerMethod.dispatch, (params) => {
     const p = params as DispatchParams;
     const done = (status: "success" | "error") => ({
@@ -1347,6 +1353,11 @@ function createSlotRaceHarness(options?: {
     });
     if (p.probeMarker === "verify-on-enroll") {
       state.probes.push(p.dispatchId);
+      if (state.holdProbes) {
+        return new Promise((resolve) =>
+          held.set(p.dispatchId, () => resolve(done(state.answer)))
+        );
+      }
       return Promise.resolve(done(state.answer));
     }
     return new Promise((resolve) =>
@@ -1366,6 +1377,7 @@ function createSlotRaceHarness(options?: {
     held,
     release,
     workerChannel,
+    dropSocket,
   };
 }
 
@@ -1499,6 +1511,104 @@ Deno.test("WorkerGateway: verifyOnEnroll — a manual probe ending on a worker w
   assertEquals(h.state.verifications, 1);
   assertEquals(h.state.probes, ["enroll-probe-1"]);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a manual probe refused while no enrollment probe is running sends no probe when the slot frees (swamp-club#3404)", async () => {
+  const h = createSlotRaceHarness();
+  h.state.answer = "error";
+  await enroll(h.workerChannel);
+  await waitFor(
+    () =>
+      h.gateway.worker("ci-runner-3")?.verifyFailureReason ===
+        "probe failed on worker",
+    "the enrollment probe to fail on the worker",
+  );
+
+  const first = h.gateway.dispatch("ci-runner-3", {
+    ...dispatchParams("manual-probe"),
+    probeMarker: "fleet-verify",
+  });
+  await waitFor(
+    () => h.held.has("manual-probe"),
+    "the first manual probe to take the slot",
+  );
+  await assertRejects(
+    () =>
+      h.gateway.dispatch("ci-runner-3", {
+        ...dispatchParams("manual-probe-2"),
+        probeMarker: "fleet-verify",
+      }),
+    WorkerNotDispatchableError,
+    "at capacity",
+  );
+  h.release("manual-probe");
+  await first;
+  assertEquals(h.state.verifications, 1);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a refusal seen before the worker was verified does not probe it early after a reconnect (swamp-club#3404)", async () => {
+  let expiry: Promise<string | null> = Promise.resolve(null);
+  const h = createSlotRaceHarness({ readTokenExpiresAt: () => expiry });
+  h.state.holdProbes = true;
+  await enroll(h.workerChannel);
+  await waitFor(
+    () => h.held.has("enroll-probe-1"),
+    "the enrollment probe to take the slot",
+  );
+  // Refused while the enrollment probe holds the slot; that probe passes.
+  await assertRejects(
+    () =>
+      h.gateway.dispatch("ci-runner-3", {
+        ...dispatchParams("manual-probe"),
+        probeMarker: "fleet-verify",
+      }),
+    WorkerNotDispatchableError,
+    "at capacity",
+  );
+  h.release("enroll-probe-1");
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be verified",
+  );
+  h.state.holdProbes = false;
+
+  const step = h.gateway.dispatch("ci-runner-3", dispatchParams("step-1"));
+  const stepEnded = step.then(() => "resolved", () => "rejected");
+  await waitFor(() => h.held.has("step-1"), "the step to reach the worker");
+
+  // The reconnect turns the worker unverified, then waits on the token
+  // record before it starts its probe.
+  const gate = Promise.withResolvers<string | null>();
+  expiry = gate.promise;
+  const second = connectWorkerSocket(h.gateway);
+  second.workerChannel.register(WorkerMethod.dispatch, (params) => {
+    h.state.probes.push((params as DispatchParams).dispatchId);
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  const enrolled = enroll(second.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "unverified",
+    "the reconnect to turn the worker unverified",
+  );
+
+  h.dropSocket();
+  assertEquals(await stepEnded, "rejected");
+  assertEquals(h.state.verifications, 1);
+
+  gate.resolve(null);
+  await enrolled;
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the reconnect's probe to pass",
+  );
+  assertEquals(h.state.verifications, 2);
+  assertEquals(h.state.probes, ["enroll-probe-1", "enroll-probe-2"]);
 });
 
 Deno.test("WorkerGateway: without verifyOnEnroll — worker becomes idle immediately", async () => {
