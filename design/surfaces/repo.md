@@ -245,18 +245,23 @@ garbageCollection:
 ```
 
 - **Units**: as `--older-than`: `m` is minutes and `mo` months, so
-  `data: 6m` keeps six minutes of data, not six months. At most `1000y`;
-  leave a key unset to keep that kind forever.
+  `data: 6m` keeps six minutes of data, not six months. Leave a key unset
+  to keep that kind forever.
 - **Precedence** (`RetentionPolicy`, `src/domain/retention/`): a one-off
   override (`--older-than`), then the kind's key, then `retention`. A kind
   with none of these is never reaped automatically; the manual commands keep
   their built-in defaults.
-- **Validation** (`checkRetentionConfig`): positive durations only,
-  `automatic` a boolean, an explicit `evaluatedSnapshots` not longer than
-  the run retention. An unset `evaluatedSnapshots` follows the run
+- **Validation** (`checkRetentionConfig`): as before, `.swamp.yaml` is
+  refused only for a `garbageCollection` that is not a mapping, or a
+  `workflowRuns`/`outputs` that is not a positive duration. A bad value in a
+  key recognised since swamp-club#3473 (`retention`, `automatic`,
+  `evaluatedSnapshots`, `data`, `audit`, `bookkeeping`), and an explicit
+  `evaluatedSnapshots` longer than the run retention, is logged once and
+  dropped; a value longer than `1000y` is held at `1000y`. Unknown keys are
+  logged once and ignored. An unset `evaluatedSnapshots` follows the run
   retention rather than `retention`, so `retention: 30d` with
   `workflowRuns: 7d` is valid; only an explicit value removes a kept run's
-  snapshot early, aged from the later of the snapshot and the run's finish. Unknown keys are logged once and ignored, as before.
+  snapshot early, aged from the later of the snapshot and the run's finish.
 - **What is never removed**: runs that have not finished (running,
   suspended, waiting, interrupted) and their snapshots; a finished nested
   run whose parent has not finished; data of the built-in access and serve

@@ -241,7 +241,7 @@ garbageCollection:
   });
 });
 
-Deno.test("RepoMarkerRepository.read rejects snapshots kept longer than runs", async () => {
+Deno.test("RepoMarkerRepository.read drops a bad value in a newly recognised key", async () => {
   await withTempDir(async (dir) => {
     const repo = new RepoMarkerRepository();
     await Deno.writeTextFile(
@@ -251,14 +251,14 @@ initializedAt: "2024-01-15T10:30:00.000Z"
 garbageCollection:
   workflowRuns: 7d
   evaluatedSnapshots: 14d
+  data: forever
 `,
     );
 
-    await assertRejects(
-      () => repo.read(RepoPath.create(dir)),
-      Error,
-      "garbageCollection.evaluatedSnapshots must not be longer than workflowRuns",
-    );
+    const result = await repo.read(RepoPath.create(dir));
+
+    // Both were ignored before swamp-club#3473: dropped, never refused.
+    assertEquals(result?.garbageCollection, { workflowRuns: "7d" });
   });
 });
 

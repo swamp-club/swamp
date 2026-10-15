@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { checkRetentionConfig, RetentionPolicy } from "./retention_policy.ts";
+import {
+  checkRetentionConfig,
+  RetentionPolicy,
+  withoutIgnored,
+} from "./retention_policy.ts";
 
 const DAY = 86_400_000;
 
@@ -76,7 +80,7 @@ Deno.test("checkRetentionConfig: accepts the full block", () => {
     audit: "90d",
     bookkeeping: "24h",
   });
-  assertEquals(result, { errors: [], unknownKeys: [] });
+  assertEquals(result, { errors: [], ignored: [], unknownKeys: [] });
 });
 
 Deno.test("checkRetentionConfig: reports unknown keys without refusing them", () => {
@@ -85,34 +89,46 @@ Deno.test("checkRetentionConfig: reports unknown keys without refusing them", ()
   assertEquals(result.unknownKeys, ["runs"]);
 });
 
-Deno.test("checkRetentionConfig: refuses a non-positive or malformed duration", () => {
+Deno.test("checkRetentionConfig: refuses a bad workflowRuns or outputs, as before", () => {
   for (const value of ["0d", "never", "7", 7]) {
-    const { errors } = checkRetentionConfig({ data: value });
-    assertEquals(errors.length, 1, `value ${String(value)}`);
-    assertEquals(errors[0].field, "data");
+    for (const field of ["workflowRuns", "outputs"]) {
+      const { errors, ignored } = checkRetentionConfig({ [field]: value });
+      assertEquals(errors.map((e) => e.field), [field], String(value));
+      assertEquals(ignored, []);
+    }
   }
 });
 
-Deno.test("checkRetentionConfig: refuses a non-boolean automatic", () => {
-  const { errors } = checkRetentionConfig({ automatic: "yes" });
-  assertEquals(errors.map((e) => e.field), ["automatic"]);
+Deno.test("checkRetentionConfig: ignores a bad value in a newly recognised key", () => {
+  for (const value of ["0d", "never", "7", 7]) {
+    const { errors, ignored } = checkRetentionConfig({ data: value });
+    assertEquals(errors, [], `value ${String(value)}`);
+    assertEquals(ignored.map((e) => e.field), ["data"]);
+  }
 });
 
-Deno.test("checkRetentionConfig: refuses snapshots kept longer than their runs", () => {
+Deno.test("checkRetentionConfig: ignores a non-boolean automatic", () => {
+  const { errors, ignored } = checkRetentionConfig({ automatic: "yes" });
+  assertEquals(errors, []);
+  assertEquals(ignored.map((e) => e.field), ["automatic"]);
+});
+
+Deno.test("checkRetentionConfig: ignores snapshots kept longer than their runs", () => {
   const explicit = checkRetentionConfig({
     workflowRuns: "7d",
     evaluatedSnapshots: "14d",
   });
-  assertEquals(explicit.errors.map((e) => e.field), ["evaluatedSnapshots"]);
+  assertEquals(explicit.errors, []);
+  assertEquals(explicit.ignored.map((e) => e.field), ["evaluatedSnapshots"]);
   // The run retention can come from the default.
   const inherited = checkRetentionConfig({
     retention: "7d",
     evaluatedSnapshots: "14d",
   });
-  assertEquals(inherited.errors.map((e) => e.field), ["evaluatedSnapshots"]);
+  assertEquals(inherited.ignored.map((e) => e.field), ["evaluatedSnapshots"]);
   // With no run retention at all, runs are kept forever.
   assertEquals(
-    checkRetentionConfig({ evaluatedSnapshots: "14d" }).errors,
+    checkRetentionConfig({ evaluatedSnapshots: "14d" }).ignored,
     [],
   );
 });
@@ -152,10 +168,17 @@ Deno.test("RetentionPolicy.durationFor: unset snapshots follow the run retention
   );
 });
 
-Deno.test("checkRetentionConfig: refuses a retention too long for a date", () => {
-  const { errors } = checkRetentionConfig({ retention: "300000y" });
-  assertEquals(errors.map((e) => e.field), ["retention"]);
-  assertEquals(checkRetentionConfig({ retention: "1000y" }).errors, []);
+Deno.test("checkRetentionConfig: holds a retention too long for a date at 1000y, legacy keys included", () => {
+  for (const field of ["retention", "workflowRuns"]) {
+    const config = { [field]: "300000y" };
+    const { errors, ignored } = checkRetentionConfig(config);
+    assertEquals(errors, []);
+    assertEquals(ignored.map((e) => [e.field, e.replacement]), [
+      [field, "1000y"],
+    ]);
+    assertEquals(withoutIgnored(config, ignored), { [field]: "1000y" });
+  }
+  assertEquals(checkRetentionConfig({ retention: "1000y" }).ignored, []);
 });
 
 Deno.test("RetentionPolicy.cutoff: an unrepresentable cutoff means no retention", () => {

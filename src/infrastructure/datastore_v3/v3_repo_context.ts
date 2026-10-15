@@ -1276,6 +1276,22 @@ export class V3MaintenanceTimer {
     });
   }
 
+  /**
+   * Runs `fn` as this timer's maintenance run, once the one in flight ends,
+   * so other work on the same datastore (a retention pass's compaction and
+   * chunk sweep, swamp-club#3473) never overlaps a tick: the sweep marker
+   * is one row, and two sweeps at once hide a sweep from writers.
+   * Ticks while `fn` runs start nothing.
+   */
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    while (this.#running !== undefined) await this.#running;
+    const work = fn();
+    this.#running = work.then(() => {}, () => {}).finally(() => {
+      this.#running = undefined;
+    });
+    return await work;
+  }
+
   async stop(): Promise<void> {
     if (this.#timer !== undefined) clearInterval(this.#timer);
     this.#timer = undefined;

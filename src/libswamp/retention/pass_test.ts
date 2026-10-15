@@ -259,3 +259,21 @@ Deno.test("runRetentionPass: a pass stopped before a kind's first batch keeps th
   assertEquals(result.stoppedBy, "busy");
   assertEquals(watermarks.records.get("workflowRuns"), previous);
 });
+
+Deno.test("runRetentionPass: a pass stopped for shutdown skips afterPass", async () => {
+  let ran = false;
+  await runRetentionPass(
+    {
+      ...deps([countingCollector("data", 4, [])]),
+      afterPass: () => {
+        ran = true;
+        return Promise.resolve();
+      },
+    },
+    {
+      policy: RetentionPolicy.fromConfig({ data: "1d" }),
+      isStopping: () => true,
+    },
+  );
+  assertEquals(ran, false);
+});

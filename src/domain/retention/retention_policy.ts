@@ -62,6 +62,8 @@ export const RETENTION_CONFIG_KEYS: readonly string[] = [
 export interface RetentionConfigProblem {
   field?: string;
   message: string;
+  /** The value used instead; absent, the key is dropped. */
+  replacement?: string;
 }
 
 /**
@@ -72,58 +74,83 @@ export interface RetentionConfigProblem {
  */
 export const MAX_RETENTION_MS = 1000 * 365 * 24 * 60 * 60 * 1000;
 
-function isPositiveDuration(value: string): boolean {
-  try {
-    const ms = parseDataDuration(value);
-    return ms > 0 && ms <= MAX_RETENTION_MS;
-  } catch {
-    return false;
-  }
-}
+/** Keys `garbageCollection` accepted before swamp-club#3473. */
+const LEGACY_KEYS: readonly string[] = ["workflowRuns", "outputs"];
 
 /**
- * Checks a raw `garbageCollection` value. Returns the errors that must
- * refuse the file and the unknown keys, which are only warned about: they
- * were silently ignored before swamp-club#3473, so refusing them now would
- * break repos that already carry one.
+ * Checks a raw `garbageCollection` value.
+ *
+ * - `errors` refuse the file. Only what was refused before swamp-club#3473
+ *   is: a block that is not a mapping, and a `workflowRuns` or `outputs`
+ *   that is not a positive duration.
+ * - `ignored` keys are dropped with a warning: a bad value in a key
+ *   recognised since then (a repo may already carry one, silently ignored
+ *   until now), a legacy key too long for a date, and an `evaluatedSnapshots`
+ *   longer than the run retention.
+ * - `unknownKeys` are warned about and ignored, as before.
  */
 export function checkRetentionConfig(
   raw: unknown,
-): { errors: RetentionConfigProblem[]; unknownKeys: string[] } {
-  if (raw === undefined) return { errors: [], unknownKeys: [] };
+): {
+  errors: RetentionConfigProblem[];
+  ignored: RetentionConfigProblem[];
+  unknownKeys: string[];
+} {
+  if (raw === undefined) return { errors: [], ignored: [], unknownKeys: [] };
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return {
       errors: [{ message: "garbageCollection must be a mapping" }],
+      ignored: [],
       unknownKeys: [],
     };
   }
   const config = raw as Record<string, unknown>;
   const errors: RetentionConfigProblem[] = [];
+  const ignored: RetentionConfigProblem[] = [];
   const unknownKeys = Object.keys(config).filter((key) =>
     !RETENTION_CONFIG_KEYS.includes(key)
   );
+  const problem = (legacy: boolean, entry: RetentionConfigProblem) =>
+    (legacy ? errors : ignored).push(entry);
 
   for (const field of ["retention", ...RETENTION_KINDS] as const) {
     const value = config[field];
     if (value === undefined) continue;
+    const legacy = LEGACY_KEYS.includes(field);
     if (typeof value !== "string") {
-      errors.push({
+      problem(legacy, {
         field,
         message: `garbageCollection.${field} must be a duration string`,
       });
       continue;
     }
-    if (!isPositiveDuration(value)) {
-      errors.push({
+    let ms: number | undefined;
+    try {
+      ms = parseDataDuration(value);
+    } catch {
+      ms = undefined;
+    }
+    if (ms === undefined || ms <= 0) {
+      problem(legacy, {
         field,
         message:
-          `garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w, at most 1000y (leave it unset to keep forever)`,
+          `garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w`,
+      });
+    } else if (ms > MAX_RETENTION_MS) {
+      // Too long for a date: means "forever", so it is held at the longest
+      // retention rather than dropped (a dropped key would fall back to a
+      // shorter default).
+      ignored.push({
+        field,
+        message:
+          `garbageCollection.${field} is longer than 1000y; using 1000y (leave it unset to keep forever)`,
+        replacement: "1000y",
       });
     }
   }
 
   if (config.automatic !== undefined && typeof config.automatic !== "boolean") {
-    errors.push({
+    ignored.push({
       field: "automatic",
       message: "garbageCollection.automatic must be true or false",
     });
@@ -131,14 +158,15 @@ export function checkRetentionConfig(
 
   // Only an explicit evaluatedSnapshots can be longer than the runs: an
   // unset one follows the run retention.
-  if (errors.length === 0 && config.evaluatedSnapshots !== undefined) {
-    const policy = RetentionPolicy.fromConfig(config as RetentionConfig);
+  const valid = withoutIgnored(config as RetentionConfig, ignored);
+  if (errors.length === 0 && valid.evaluatedSnapshots !== undefined) {
+    const policy = RetentionPolicy.fromConfig(valid);
     const snapshots = policy.retentionMs("evaluatedSnapshots");
     const runs = policy.retentionMs("workflowRuns");
     if (
       snapshots !== undefined && runs !== undefined && snapshots > runs
     ) {
-      errors.push({
+      ignored.push({
         field: "evaluatedSnapshots",
         message:
           "garbageCollection.evaluatedSnapshots must not be longer than workflowRuns: a snapshot is removed with its run",
@@ -146,7 +174,24 @@ export function checkRetentionConfig(
     }
   }
 
-  return { errors, unknownKeys };
+  return { errors, ignored, unknownKeys };
+}
+
+/** The config with every ignored key dropped or replaced. */
+export function withoutIgnored(
+  config: RetentionConfig,
+  ignored: readonly RetentionConfigProblem[],
+): RetentionConfig {
+  const result: Record<string, unknown> = { ...config };
+  for (const entry of ignored) {
+    if (entry.field === undefined) continue;
+    if (entry.replacement !== undefined) {
+      result[entry.field] = entry.replacement;
+    } else {
+      delete result[entry.field];
+    }
+  }
+  return result as RetentionConfig;
 }
 
 /**

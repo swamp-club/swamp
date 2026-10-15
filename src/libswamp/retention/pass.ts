@@ -219,7 +219,8 @@ export async function runRetentionPass(
         }
       }
 
-      if (deps.afterPass) {
+      // Shutdown waits for a pass: it starts no compaction or sweep then.
+      if (deps.afterPass && result.stoppedBy !== "stopping") {
         try {
           await deps.afterPass(result);
         } catch (error) {

@@ -28,6 +28,7 @@ import type { DatastoreConfigData } from "../../domain/datastore/datastore_confi
 import {
   checkRetentionConfig,
   type RetentionConfig,
+  withoutIgnored,
 } from "../../domain/retention/retention_policy.ts";
 import type { AiTool } from "../../domain/repo/ai_tool.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
@@ -120,21 +121,39 @@ function validateGarbageCollection(
   data: RepoMarkerData,
   path: string,
 ): void {
-  const { errors, unknownKeys } = checkRetentionConfig(data.garbageCollection);
+  const { errors, ignored, unknownKeys } = checkRetentionConfig(
+    data.garbageCollection,
+  );
   if (errors.length > 0) {
     throw markErrorPaths(
       new UserError(`${path}: ${errors[0].message}`),
       [path],
     );
   }
-  // Unknown keys were silently ignored before retention gained more kinds,
-  // so they are warned about rather than refused.
-  for (const key of unknownKeys) {
-    const warning = `${path}\0${key}`;
-    if (warnedUnknownKeys.has(warning)) continue;
-    warnedUnknownKeys.add(warning);
-    logger.warn`${path}: ignoring unknown key garbageCollection.${key}`;
+  // Keys recognised since swamp-club#3473 were silently ignored before, so a
+  // bad value in one is warned about and dropped rather than refused.
+  if (ignored.length > 0 && data.garbageCollection) {
+    data.garbageCollection = withoutIgnored(data.garbageCollection, ignored);
   }
+  for (const entry of ignored) {
+    warnOnce(
+      path,
+      entry.replacement === undefined
+        ? `${entry.message}; ignoring it`
+        : entry.message,
+    );
+  }
+  for (const key of unknownKeys) {
+    warnOnce(path, `ignoring unknown key garbageCollection.${key}`);
+  }
+}
+
+/** Logs a marker warning once per process, however often the file is read. */
+function warnOnce(path: string, message: string): void {
+  const key = `${path}\0${message}`;
+  if (warnedUnknownKeys.has(key)) return;
+  warnedUnknownKeys.add(key);
+  logger.warn`${path}: ${message}`;
 }
 
 /**

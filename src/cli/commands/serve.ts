@@ -7520,10 +7520,13 @@ export const serveCommand = new Command()
             afterPass: async () => {
               repoContext.catalogStore.checkpoint();
               if (v3Maintenance && !isCustomDatastoreConfig(datastoreConfig)) {
-                // Folds the history that still holds reaped content.
-                await compactRetentionQuietly(
-                  v3DatastoreFor(resolvedRepoDir, datastoreConfig),
-                  new Date(),
+                // Folds the history that still holds reaped content, as the
+                // maintenance timer's run: never beside a tick's own sweep.
+                await v3Maintenance.runExclusive(() =>
+                  compactRetentionQuietly(
+                    v3DatastoreFor(resolvedRepoDir, datastoreConfig),
+                    new Date(),
+                  )
                 );
               }
             },

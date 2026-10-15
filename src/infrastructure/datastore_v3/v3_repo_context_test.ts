@@ -125,6 +125,33 @@ Deno.test("V3MaintenanceTimer: runs never overlap, and stop waits for the one in
   await timer.stop();
 });
 
+Deno.test("V3MaintenanceTimer.runExclusive: waits for a tick in flight, and ticks during it start nothing", async () => {
+  const fake = fakeHandle();
+  const timer = new V3MaintenanceTimer(fake.handle, 60_000);
+  timer.tick();
+  const order: string[] = [];
+  const exclusive = timer.runExclusive(() => {
+    order.push("retention");
+    return Promise.resolve(7);
+  });
+  await Promise.resolve();
+  assertEquals(order, [], "the retention work waits for the tick");
+  fake.finish();
+  assertEquals(await exclusive, 7);
+  assertEquals(order, ["retention"]);
+
+  let release!: () => void;
+  const held = timer.runExclusive(
+    () => new Promise<void>((resolve) => (release = resolve)),
+  );
+  await Promise.resolve();
+  timer.tick();
+  assertEquals(fake.calls(), 1, "a tick during exclusive work starts nothing");
+  release();
+  await held;
+  await timer.stop();
+});
+
 Deno.test("V3MaintenanceTimer: start is idempotent and its timer compacts", async () => {
   const fake = fakeHandle();
   const timer = new V3MaintenanceTimer(fake.handle, 1);
