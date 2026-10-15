@@ -52,6 +52,14 @@
  *   missing chunk. Reads are bounded by a byte budget; a candidate past it
  *   is kept for the next sweep, never deleted unread. See "v3 chunk garbage
  *   collection" in `design/enablers/datastores.md`.
+ * - **A writer that dies after its commit lands** (swamp-club#3490) never
+ *   runs its check. On a v3 datastore the reference set also holds the
+ *   commit outbox's entries, which a writer prepares before it appends, and
+ *   the sweep marks itself in progress ({@link SweepMonitor}) with a
+ *   heartbeat each batch. A writer that sees a sweep may have overlapped
+ *   checks its chunks before appending; otherwise the sweep's re-check sees
+ *   its entry. The writer lease is checked before and after each batch's
+ *   deletes, and a batch deleted by a sweep that lost the lease is put back.
  * - **Damaged chunks** are deleted whatever their age, so the next write of
  *   that content finds it absent and stores it again (writes trust `has`).
  *   A damaged chunk a commit names already fails every read; the report
@@ -131,9 +139,27 @@ export interface ChunkCollectionReport {
   readonly tempFilesRemoved: number;
 }
 
+/**
+ * Marks a sweep in progress where writers look (swamp-club#3490): `begin`
+ * before the listing, `heartbeat` each batch, `end` when it finishes or
+ * fails.
+ */
+export interface SweepMonitor {
+  begin(): Promise<void>;
+  heartbeat(): Promise<void>;
+  end(): Promise<void>;
+}
+
 /** What a {@link ChunkCollector} works over. */
 export interface ChunkCollectorOptions {
   readonly commitStore: Pick<CommitStore, "referencedChunks">;
+  /** Marks the sweep in progress, when writers prepare commits. */
+  readonly sweep?: SweepMonitor;
+  /**
+   * Throws once the sweeper may no longer delete (it lost the writer
+   * lease): checked before and after each batch of deletes.
+   */
+  readonly assertMayDelete?: () => void;
   readonly storage: DatastoreStorage;
   /** Clears the storage's stale temp files, when it has any. */
   readonly tempFiles?: TempFileSweeper;
@@ -164,6 +190,8 @@ export class ChunkCollector {
   readonly #commitStore: Pick<CommitStore, "referencedChunks">;
   readonly #storage: DatastoreStorage;
   readonly #tempFiles: TempFileSweeper | undefined;
+  readonly #sweep: SweepMonitor | undefined;
+  readonly #assertMayDelete: () => void;
   readonly #graceMs: number;
   readonly #clock: () => Date;
 
@@ -174,6 +202,8 @@ export class ChunkCollector {
     this.#commitStore = options.commitStore;
     this.#storage = options.storage;
     this.#tempFiles = options.tempFiles;
+    this.#sweep = options.sweep;
+    this.#assertMayDelete = options.assertMayDelete ?? (() => {});
     this.#graceMs = graceMs;
     this.#clock = options.clock ?? (() => new Date());
   }
@@ -192,6 +222,23 @@ export class ChunkCollector {
     const verifyBytes = options.verifyBytes ?? 0;
     requireNonNegative(verifyBytes, "verifyBytes");
     signal.throwIfAborted();
+    if (this.#sweep === undefined) {
+      return await this.#collect(namespace, options, verifyBytes);
+    }
+    await this.#sweep.begin();
+    try {
+      return await this.#collect(namespace, options, verifyBytes);
+    } finally {
+      await this.#sweep.end();
+    }
+  }
+
+  async #collect(
+    namespace: Namespace,
+    options: CollectOptions,
+    verifyBytes: number,
+  ): Promise<ChunkCollectionReport> {
+    const { signal } = options;
 
     const ns = storageNamespaceOf(namespace);
     // Fixed before any reference is read: see the module doc.
@@ -223,6 +270,7 @@ export class ChunkCollector {
       // when the sweep aborts or a delete throws part-way: a commit may have
       // landed on it since the batch's reference check.
       const started: { sha256: string; bytes: Uint8Array }[] = [];
+      this.#assertMayDelete();
       try {
         for (const chunk of held) {
           signal.throwIfAborted();
@@ -245,6 +293,7 @@ export class ChunkCollector {
 
     const flush = async () => {
       if (batch.length === 0) return;
+      await this.#sweep?.heartbeat();
       const names = await this.#commitStore.referencedChunks(
         namespace,
         batch,
@@ -342,11 +391,21 @@ export class ChunkCollector {
   ): Promise<void> {
     if (deleted.length === 0) return;
     const signal = AbortSignal.timeout(RESTORE_TIMEOUT_MS);
-    const names = await this.#commitStore.referencedChunks(
-      namespace,
-      deleted.map((chunk) => chunk.sha256),
-      cutoff,
-    );
+    // A sweeper that lost the lease mid-batch puts every chunk back: the new
+    // writer's commits, and its outbox, are not in this reference set.
+    let leaseLost: unknown;
+    try {
+      this.#assertMayDelete();
+    } catch (error) {
+      leaseLost = error;
+    }
+    const names = leaseLost !== undefined
+      ? new Set(deleted.map((chunk) => chunk.sha256))
+      : await this.#commitStore.referencedChunks(
+        namespace,
+        deleted.map((chunk) => chunk.sha256),
+        cutoff,
+      );
     let restored = 0;
     try {
       for (const { sha256, bytes } of deleted) {
@@ -357,6 +416,7 @@ export class ChunkCollector {
     } finally {
       count(restored);
     }
+    if (leaseLost !== undefined) throw leaseLost;
   }
 
   /**

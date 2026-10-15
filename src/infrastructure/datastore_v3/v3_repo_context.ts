@@ -82,6 +82,7 @@ import {
   writeWriterMarker,
 } from "./interrupted_writer_recovery.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { recoverCommitOutbox } from "./commit_outbox_recovery.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   V3ChunkCollectionDeferredError,
@@ -179,6 +180,19 @@ export function v3DatastoreFor(
       // no other writer started one since.
       for (const copy of copiesByDatastore.get(resolve(path)) ?? []) {
         await recordV3LeaseFence(copy, fence);
+      }
+      // Serve's retake of a lost hold recovers what a writer between its
+      // two holds left (swamp-club#3490). Its first hold recovers in
+      // recoverAndMark; while replicating, the sidecar upkeep recovers once
+      // the copy is current again; a read-only hold never recovers.
+      if (v3ReplicationEnabled() || !holdsV3WriterLock(path)) return;
+      for (const [key, handle] of opened) {
+        if (
+          resolve(handle.datastorePath) === resolve(path) &&
+          markedCheckouts.has(key)
+        ) {
+          await recoverV3Outbox(handle, fence);
+        }
       }
     });
   }
@@ -298,9 +312,7 @@ export async function ensureV3CopyCurrent(
       const rebuilt = v3DatastoreFor(repoDir, config);
       const release = mode === "write"
         ? undefined
-        : await tryAcquireV3WriterLock(config.path, {
-          fenceStore: rebuilt.commitStore,
-        });
+        : await tryAcquireV3WriterLock(config.path, { fenceStore: rebuilt });
       if (mode === "write" || release !== undefined) {
         try {
           await rebuilt.recoverInterruptedWriter(0);
@@ -355,9 +367,7 @@ export async function holdV3Writer(
           : undefined,
       raiseWriterFence: async (fence: number) => {
         if (!v3ReplicationEnabled() || currentCopies.has(key)) {
-          await v3DatastoreFor(repoDir, config).commitStore.raiseWriterFence(
-            fence,
-          );
+          await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
         }
       },
     },
@@ -370,9 +380,7 @@ export async function holdV3Writer(
       await ensureV3CopyCurrent(repoDir, config, "write");
       const fence = v3WriterFence(config.path);
       if (fence !== undefined) {
-        await v3DatastoreFor(repoDir, config).commitStore.raiseWriterFence(
-          fence,
-        );
+        await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
       }
     } catch (error) {
       await release();
@@ -469,8 +477,14 @@ async function recoverAndMark(
   config: FilesystemDatastoreConfig,
   repoDir: string,
 ): Promise<void> {
+  // What a writer that died left in the outbox lands first, so the
+  // interrupted-writer recovery keeps the files its commits own
+  // (swamp-club#3490). Its failures name the outbox, not the marker.
+  const handle = v3DatastoreFor(repoDir, config);
+  const fence = v3WriterFence(config.path);
+  if (fence !== undefined) await recoverV3Outbox(handle, fence);
   try {
-    await recoverInterruptedWriter(v3DatastoreFor(repoDir, config), repoDir, {
+    await recoverInterruptedWriter(handle, repoDir, {
       holdsWriterLock: true,
       processGone,
     });
@@ -495,6 +509,27 @@ async function recoverAndMark(
   if (await readWriterMarker(repoDir) === undefined) {
     await writeWriterMarker(repoDir);
   }
+}
+
+/**
+ * The fence each commit store's outbox was last recovered at in this
+ * process, by `commits.db` path: a writer recovers once per fence it takes.
+ */
+const outboxRecoveredAt = new Map<string, number>();
+
+/**
+ * Lands, settles or drops what the outbox of `handle`'s commit store holds
+ * (swamp-club#3490), under the writer lease at `fence`. Once per fence per
+ * store: checkouts sharing the datastore's `commits.db` share its outbox.
+ */
+async function recoverV3Outbox(
+  handle: V3Datastore,
+  fence: number,
+): Promise<void> {
+  const store = resolve(handle.commitsDbPath);
+  if (outboxRecoveredAt.get(store) === fence) return;
+  await recoverCommitOutbox(handle, { fence, writer: handle.writer });
+  outboxRecoveredAt.set(store, fence);
 }
 
 function errorMessage(error: unknown): string {
@@ -916,8 +951,10 @@ export function startV3ReplicationUpkeep(
       const refresh = await ensureV3CopyCurrent(repoDir, config, "write");
       const handle = v3DatastoreFor(repoDir, config);
       if (refresh.restored !== undefined) {
-        await handle.commitStore.raiseWriterFence(fence);
+        await handle.raiseWriterFence(fence);
       }
+      // What a writer between serve's two holds left (swamp-club#3490).
+      await recoverV3Outbox(handle, fence);
       await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
         restored: restoredCopies.has(copyKey),
       });

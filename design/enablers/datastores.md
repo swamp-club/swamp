@@ -1938,8 +1938,8 @@ model"), all dormant. The opt-in is a later issue.
   `parts` when it spans more than one chunk.
 - **Chunk**: an immutable piece of content addressed by its SHA-256.
 - **Fence**: a lease's monotonic number. A writer whose fence is stale loses.
-- **txnId**: the outbox entry id a commit carries. A retry carries the same
-  one, so the commit lands once.
+- **txnId**: the id a commit's group keeps from when it forms: its commit
+  outbox entry's key. A retry carries the same one, so the commit lands once.
 - **High-water mark**: the greatest version a data name ever had. It never
   decreases. It is not a floor for new versions: a new version only has to be
   not live (swamp-club#3250).
@@ -2551,8 +2551,10 @@ is released on every outcome and its entry dropped when its queue drains.
   current head with the same txnId, so a commit that had landed is reported
   `duplicate` and lands once. `commit` ends the unit whether or not it
   succeeds (the `UnitOfWork` contract), so what is still pending when the
-  unit's own commit fails is lost with it until the Phase 4 outbox makes it
-  durable; a caller that must retry checkpoints first.
+  unit's own commit fails is reported failed and dropped with it, outbox
+  entries included (**v3 commit outbox**); a caller that must retry
+  checkpoints first. A retry older than `OUTBOX_RETRY_BOUND_MS` is refused
+  (`retry-expired`) before it is appended.
 - **Refusals.** The refused partition's changes are dropped: they can never
   land as they are, and keeping them would block every partition staged
   after them. The flush goes on to the other partitions, then throws one
@@ -2627,8 +2629,10 @@ is released on every outcome and its entry dropped when its queue drains.
   (decision 6).
 
 **The outbox seam.** The unit appends through a `CommitSink`
-(`append` and `head`). Phase 3 passes the local `CommitStore`; Phase 4 passes
-the outbox, which makes pending groups durable across a crash.
+(`append` and `head`). A v3 datastore's sink also carries the commit outbox
+(`outbox`), which makes each commit durable across a crash until it lands;
+a bare `CommitStore` carries none and prepares nothing. See **v3 commit
+outbox**.
 
 **Roots, children and run outcomes.** `runInCommitLogRoot(repoContext,
 options, fn)` mirrors `runInRootUnitOfWork`: it refuses a context without a
@@ -3415,20 +3419,24 @@ One case the two halves do not cover: the writer's process dies after its
 commit lands and before its check runs, while a sweep deletes one of that
 commit's chunks between its reference check and the commit landing. That needs
 a crash between an append returning and one `has` call, at the same time as a
-sweep that holds the chunk as a candidate. Phase 4's outbox, which knows which commits it
-sent, is where a recovery would re-run the check.
+sweep that holds the chunk as a candidate. The commit outbox closes it
+(swamp-club#3490; **v3 commit outbox**): the sweep counts chunks an outbox
+entry names as referenced, and a writer checks its chunks before appending
+whenever a sweep may have overlapped its preparation, so a writer that dies
+after its append needs no check.
 
 **Clock skew.** `lastModified` comes from the storage's clock (a file's mtime,
 an object store's server time), and `now` from the collector's. A skew between
 them shifts the cutoff by the same amount. Against a 24-hour grace normal skew
 does not matter. Only tests should configure a grace near zero.
 
-**The Phase 4 outbox.** A unit's pending retry calls `appendGroup` again, so
+**The commit outbox.** A unit's pending retry calls `appendGroup` again, so
 its content is stored (refreshed) again before each append, and the writer's
-check runs after the append lands. The Phase 4 outbox will make a pending
-commit durable, and could send it days later, after a sweep has removed its
-chunks. An outbox entry must do the same: keep its content sources and run the
-writer's check after it lands, or store its content again before sending.
+check runs after the append lands. An outbox entry a recovery lands days
+later has no content source left. Its chunks are kept instead: every sweep
+counts them as referenced for as long as the entry exists, and a recovery
+checks they are present before it appends, dropping (never landing) an entry
+whose chunk is missing.
 
 **Damaged chunks.** `collect` can read and hash chunks within a byte budget
 (`verifyBytes`, 0 by default), in a listing pass before the sweep. Whether a
@@ -3514,8 +3522,9 @@ production compacted until the opt-in wired it into the writer
      stored seq and the compacted seq.
 
    `compacted_txns` grows by one small row per commit, about 120 bytes in
-   the bench below against about 2.2 KB of commit. The Phase 4 outbox bounds
-   how old a retry can be, and may prune it then.
+   the bench below against about 2.2 KB of commit. The commit outbox bounds
+   how old a retry can be, and compaction prunes rows past that bound
+   (**v3 commit outbox**).
 
    Litestream replicates the deletes as page changes. Freed pages are reused
    and never vacuumed: `VACUUM` rewrites the whole file into the WAL.
@@ -3666,8 +3675,8 @@ costs O(live state), not O(history).
 
 **Done by the opt-in** (swamp-club#3279, "v3 opt-in"): compaction runs on the
 writer by `DEFAULT_COMPACTION_POLICY`; run-record artifacts resolve through
-`resolveRunArtifact`, and new `DataArtifactRef`s record `sha256`. **Still
-open:** prune `compacted_txns` once the Phase 4 outbox bounds retry age.
+`resolveRunArtifact`, and new `DataArtifactRef`s record `sha256`. Pruning
+`compacted_txns` came with the commit outbox (swamp-club#3490).
 
 ### v3 stream directories (datastore rework Phase 3)
 
@@ -4078,8 +4087,11 @@ leave every checkout with the same records.
   its own, since its start already covers that command's writes. Serve keeps
   its marker when its shutdown drain leaves runs past the abort grace
   (`keepV3WriterMarkers`).
-- The Phase 4 outbox makes an interrupted commit durable instead; this is the
-  Phase 3 answer.
+- The commit outbox (swamp-club#3490, **v3 commit outbox**) now makes a
+  commit that was being appended when the process died durable, and lands it
+  before this recovery runs, which then keeps its files. This recovery still
+  removes everything else the dead writer left: changes staged but never
+  flushed, and commits the outbox dropped.
 
 Serve's background writes are pinned on v3 too
 (`integration/serve_v3_background_writes_test.ts`,
@@ -4260,6 +4272,116 @@ refuses a provider that offers none or only a read-only one (swamp-club#3364;
 see "Datastore-wide writes" in the format marker section). It is dormant until
 the Phase 4 bucket opt-in calls it; the S3 and GCS extensions' side is part
 G.
+
+### v3 commit outbox (datastore rework Phase 4)
+
+swamp-club#3490 (Phase 4 F) makes a commit a v3 writer was appending when
+its process died (SIGKILL, OOM, power) durable, and lands it once. Before
+it, a unit's pending commits lived in memory, and the interrupted-writer
+recovery (swamp-club#3299) could only remove what the dead writer left.
+
+**Store.** The outbox is a SQLite file of its own, `commits-outbox.db`,
+beside whichever `commits.db` the checkout uses (`v3OutboxPath`: the
+datastore's, or while replicating the checkout's own copy), never a table in
+it. An unsent commit must not count as a commit; Litestream replicates only
+`commits.db`, so the outbox never reaches another machine; and a D2 restore
+replaces `commits.db`'s content without touching the outbox, whose entries
+the fence chain then judges. The file is created by the first lease taken
+on the copy, never by setup, and with `synchronous=FULL`, like `commits.db`.
+
+**Lifecycle.** For each group a flush appends, under the partition's lock:
+
+1. the head is read with its commit's txnId (`headIdentity`);
+2. the commit is **prepared**: written to the outbox with that head as its
+   **base**, its unit, its fence and writer, and the chunks it names. A
+   seq-gap rebuild prepares again with its new base; the entry keeps its
+   first creation time and its place in the outbox's order;
+3. it is appended, then the post-commit chunk check runs, then the entry is
+   **settled** (removed).
+
+A refusal removes the refused entries, and every run entry of the unit with
+them (decision 7). An abandon, or a unit whose commit ends failing, removes
+the unit's entries: that failure was reported to the caller, so a later
+recovery must not land them. A removal that fails is logged, the original
+outcome stands, and the handle retries it when it closes. So only a process
+that dies leaves entries.
+
+**Recovery** (`recoverCommitOutbox`) runs under a writer hold: when a
+writing command or serve first holds the lease (`recoverAndMark`, before
+the interrupted-writer recovery), and again when serve retakes a lost
+lease. A read-only command never recovers the outbox: it holds no
+Litestream sidecar, and commits nothing. For each entry, in preparation
+order, run entries of a unit last:
+
+- its txnId already landed (the writer died before settling): the chunk
+  check runs, and it settles;
+- the partition head is still its base: its commit is rebuilt at that head
+  under the recovering writer's fence and identity, its chunks are checked
+  present, and it is appended;
+- otherwise it is dropped (`head-moved`): landing it would overwrite what was
+  committed since.
+
+A drop is logged once, naming the dead process and why; the changes are not
+in the datastore, and the interrupted-writer recovery removes their files.
+An entry dropped or refused takes its unit's run entries with it.
+
+**Fences.** Every CLI write takes a new fence, so an entry's fence is always
+below its recoverer's. The copy records each fence it takes as a **chain**
+(`decideFenceChain`, the rule replication lineages follow): one above the
+last fence continues it, anything else restarts it. Every lease take on the
+copy goes through `V3Datastore.raiseWriterFence`, which raises
+`commits.db`'s `writer_fence` and records the chain together. An entry
+whose fence is below the chain's start was prepared before another copy
+took the lease, and is dropped (`stale-fence`). The **floor** is the fence of
+the last completed recovery; an entry below it was prepared by a writer
+that had lost the lease after its successor recovered (`overtaken`). An
+entry whose writer may still be running (this process's units, or a process
+on this host that is not gone) is left for it; a writer on another host
+whose lease expired counts as gone. In shared (non-replicated) mode every
+writer start recovers before it writes, so no writer can come between a
+dead writer and its recovery; the stale-fence drop applies across copies.
+Turning replication on drops and reports what the shared `commits.db`'s
+outbox holds when a copy is first seeded from it.
+
+**Chunks** (gap 2 of the chunk sweep, above). Chunk collection counts the
+chunks an outbox entry names as referenced, in its candidate check and its
+re-check after deleting, and marks itself in progress in the outbox with a
+heartbeat each batch (`OUTBOX_SWEEP_STALE_MS` after the last one, a killed
+sweeper stops counting); its epoch moves when a sweep starts and when it
+ends. A writer reads the sweep state before storing a group's content and
+again after preparing it, and checks its chunks before the append when a
+sweep was in progress at either read or the epoch moved
+(`sweepMayOverlap`), restoring any missing one from its live source.
+Otherwise a sweep that deletes one of its chunks started after the entry was
+prepared, and its re-check sees the entry and puts the chunk back. Either
+way no landed commit names a chunk a sweep deleted, and a writer that dies
+after its append needs no content source. The collector also checks the
+writer lease before and after each batch's deletes, and puts a batch back
+when the lease was lost. A sweep on another copy is fenced by that lease
+check, not by this copy's outbox.
+
+**Retry age.** `OUTBOX_RETRY_BOUND_MS` is 7 days: an outbox entry older than
+it is dropped (`expired`), and no retry, a unit's in-memory one included, is
+appended past it (`retry-expired`). Compaction prunes `compacted_txns` rows
+of commits made more than `COMPACTED_TXN_RETENTION_MS` (8 days: the bound
+plus a day for clock skew) before it, except the compaction point's own,
+which a high-water mark check reads. Each compacted txnId's commit time is
+kept in `compacted_txn_times` (schema 5); txnIds compacted before schema 5
+count from the migration. A retry inside the bound therefore always finds
+its txnId and lands once. The same bound is the retention compaction already
+keeps (`DEFAULT_COMPACTION_POLICY.retainMs`).
+
+**What each mechanism covers.**
+
+| Left by a writer that died | Outbox | Interrupted-writer recovery (#3299) |
+|---|---|---|
+| A commit prepared, not yet landed | Lands it once, or drops and reports it | Keeps its files when it landed, removes them otherwise |
+| A commit landed, not yet settled | Settles it, after the chunk check | Keeps its files |
+| Changes staged but never flushed | Nothing: they were never prepared | Removes their files and catalog rows |
+| A run never committed | Nothing | Removes its leftovers; the run stays as its last landed record shows |
+
+**Phase 5.** Team mode's outbox forwards commits to serve's leader. It fits
+the same `CommitSink` seam; nothing of it is built here.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
@@ -5677,7 +5799,11 @@ exclude patterns.
 | `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log |
 | `src/infrastructure/datastore_v3/sqlite_commit_store.ts` | v3 `SqliteCommitStore`: `commits.db` over `node:sqlite` (dormant) |
 | `src/infrastructure/persistence/unit_of_work_binding.ts` | The unit-of-work binding registry `signalChange` routes by |
-| `src/infrastructure/datastore_v3/commit_log_unit_of_work.ts` | v3 commit-log unit of work and its `CommitSink` outbox seam (dormant) |
+| `src/infrastructure/datastore_v3/commit_log_unit_of_work.ts` | v3 commit-log unit of work and its `CommitSink` outbox seam |
+| `src/domain/datastore_v3/commit_outbox.ts` | The commit outbox's rules: entries, the fence chain, the recovery plan, the retry bound (swamp-club#3490) |
+| `src/infrastructure/datastore_v3/sqlite_commit_outbox.ts` | `SqliteCommitOutbox`: `commits-outbox.db` beside the commit store |
+| `src/infrastructure/datastore_v3/outbox_commit_sink.ts` | A v3 handle's commit sink: the fenced append with the outbox |
+| `src/infrastructure/datastore_v3/commit_outbox_recovery.ts` | `recoverCommitOutbox`: lands, settles or drops a dead writer's entries |
 | `src/infrastructure/datastore_v3/commit_log_root.ts` | `runInCommitLogRoot` and the run-outcome disposition (dormant) |
 | `src/infrastructure/datastore_v3/v3_writer_lock.ts` | The process's hold on a v3 datastore's fenced writer lease: refcount, renewal, busy and fenced errors (swamp-club#3359) |
 

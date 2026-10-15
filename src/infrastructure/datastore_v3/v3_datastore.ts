@@ -62,13 +62,14 @@ import {
   ChunkCollector,
 } from "../../domain/datastore_v3/chunk_collector.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
+import { COMPACTED_TXN_RETENTION_MS } from "../../domain/datastore_v3/commit_outbox.ts";
 import type { CompactionReport } from "../../domain/datastore_v3/commit_store.ts";
 import {
   compactionTarget,
   DEFAULT_COMPACTION_POLICY,
   retentionOf,
 } from "../../domain/datastore_v3/compaction_policy.ts";
-import type { Commit, CommitWriter } from "../../domain/datastore_v3/commit.ts";
+import type { CommitWriter } from "../../domain/datastore_v3/commit.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
@@ -85,6 +86,13 @@ import {
   createCommitLogUnitOfWork,
 } from "./commit_log_unit_of_work.ts";
 import { runInCommitLogRoot } from "./commit_log_root.ts";
+import {
+  createOutboxCommitSink,
+  type OutboxCommitSink,
+} from "./outbox_commit_sink.ts";
+import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
+import { registerOwnCommitWriter } from "./commit_outbox_recovery.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { reconcileRefusedRuns } from "./refused_run_records.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
@@ -113,6 +121,19 @@ export class ReadOnlyV3WriteError extends Error {
 
 /** The commit store's file at the root of a filesystem v3 datastore. */
 export const COMMITS_DB_FILE = "commits.db";
+
+/**
+ * The commit outbox's file (swamp-club#3490), beside whichever `commits.db`
+ * a checkout uses: the datastore's, or while replicating its own copy's.
+ */
+export const COMMIT_OUTBOX_FILE = "commits-outbox.db";
+
+/** The commit outbox beside the `commits.db` at `commitsDbPath`. */
+export function v3OutboxPath(commitsDbPath: string): string {
+  return join(dirname(commitsDbPath), COMMIT_OUTBOX_FILE);
+}
+
+const logger = getSwampLogger(["datastore", "v3"]);
 
 /**
  * The checkout directory that holds its own copies of replicated v3
@@ -250,6 +271,8 @@ export interface V3Datastore {
   /** The `commits.db` this handle opened: {@link v3CommitsDbPath}. */
   readonly commitsDbPath: string;
   readonly commitStore: SqliteCommitStore;
+  /** The commit outbox beside the commit store (swamp-club#3490). */
+  readonly outbox: SqliteCommitOutbox;
   readonly storage: FileSystemStorage;
   readonly chunkStore: ChunkStore;
   readonly readModel: SqliteReadModel;
@@ -259,6 +282,16 @@ export interface V3Datastore {
   readonly writer: CommitWriter;
   /** Applies every commit this checkout has not applied yet. */
   catchUp(signal?: AbortSignal): Promise<void>;
+  /**
+   * Records that this process took the writer lease at `fence`: raises the
+   * commit store's writer fence and records the fence in the outbox's chain
+   * (swamp-club#3490). Every lease taken on this copy goes through it.
+   *
+   * @throws WriterFencedError when the store has seen a higher fence
+   */
+  raiseWriterFence(fence: number): Promise<void>;
+  /** The commit store's writer fence: the floor for the next lease. */
+  writerFence(): number | undefined;
   /**
    * Rebuilds this checkout from the commit log after a writer ended without
    * tearing down, removing the files it wrote since `since` (epoch
@@ -328,10 +361,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const datastorePath = Deno.realPathSync(options.datastorePath);
   const namespace = options.namespace ?? "";
   const writer = options.writer ?? processCommitWriter();
+  // Its outbox entries belong to units of this process (swamp-club#3490).
+  registerOwnCommitWriter(writer);
   const admits = datastoreKeyFilter(options.directories, options.exclude);
   const commitsDbPath = v3CommitsDbPath(datastorePath, repoDir);
   ensureDirSync(dirname(commitsDbPath));
   const commitStore = SqliteCommitStore.open(commitsDbPath);
+  const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath));
   const storage = new FileSystemStorage(datastorePath);
   const chunkStore = new ChunkStore(storage);
   const stateDir = readModelStateDir(repoDir);
@@ -346,15 +382,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   });
   // One sink for every engine on this handle: units serialize appends to a
   // partition per sink, so contexts that share the handle queue behind each
-  // other. It refuses a commit once the process's writer lease is lost.
-  const assertWriterCurrent = options.assertWriterCurrent;
-  const sink = assertWriterCurrent === undefined ? commitStore : {
-    head: commitStore.head.bind(commitStore),
-    append: (commit: Commit) => {
-      assertWriterCurrent();
-      return commitStore.append(commit);
-    },
-  };
+  // other. It refuses a commit, and its preparation, once the process's
+  // writer lease is lost, and keeps each commit in the outbox until it
+  // landed (swamp-club#3490).
+  const sink: OutboxCommitSink = createOutboxCommitSink({
+    commitStore,
+    outbox,
+    ...(options.assertWriterCurrent !== undefined
+      ? { assertWriterCurrent: options.assertWriterCurrent }
+      : {}),
+  });
   // Bounds every commit's content uploads for the process's lifetime; close
   // aborts what is still in flight.
   const lifetime = new AbortController();
@@ -368,6 +405,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     datastorePath: options.datastorePath,
     commitsDbPath,
     commitStore,
+    outbox,
     storage,
     chunkStore,
     readModel,
@@ -376,6 +414,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     writer,
     async catchUp(signal) {
       await readModel.catchUp(signal ?? lifetime.signal);
+    },
+    async raiseWriterFence(fence) {
+      await commitStore.raiseWriterFence(fence);
+      await outbox.recordFence(fence);
+    },
+    writerFence() {
+      return commitStore.writerFence();
     },
     recoverInterruptedWriter(since, signal) {
       return readModel.recover(namespace, {
@@ -435,10 +480,34 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     async collectChunks(signal) {
       options.assertCopyCurrent?.();
       await options.assertCollectable?.();
+      const sweeper = crypto.randomUUID();
       return await new ChunkCollector({
-        commitStore,
+        // A chunk an outbox entry names is about to be committed, or was
+        // by a writer that died before its check (swamp-club#3490).
+        commitStore: {
+          async referencedChunks(ns, hashes, releasedSince) {
+            const names = await commitStore.referencedChunks(
+              ns,
+              hashes,
+              releasedSince,
+            );
+            const rest = hashes.filter((hash) => !names.has(hash));
+            for (const hash of await outbox.referencedChunks(ns, rest)) {
+              names.add(hash);
+            }
+            return names;
+          },
+        },
         storage,
         tempFiles: storage,
+        sweep: {
+          begin: () => outbox.beginSweep(sweeper, Date.now()),
+          heartbeat: () => outbox.heartbeatSweep(sweeper, Date.now()),
+          end: () => outbox.endSweep(sweeper),
+        },
+        ...(options.assertCopyCurrent !== undefined
+          ? { assertMayDelete: options.assertCopyCurrent }
+          : {}),
       }).collect(unitNamespace, { signal });
     },
     async compactIfDue(signal) {
@@ -452,6 +521,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       return await commitStore.compactHistory(through, {
         signal,
         ...(fence !== undefined ? { fence } : {}),
+        // No retry, from a unit or the outbox, is older than the bound.
+        pruneTxnsBefore: new Date(Date.now() - COMPACTED_TXN_RETENTION_MS),
       });
     },
     describe() {
@@ -461,8 +532,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       if (closed) return;
       closed = true;
       lifetime.abort();
+      try {
+        await sink.retryOwedRemovals();
+      } catch (error) {
+        logger
+          .warn`Discarding outbox entries of failed v3 commits failed again; the next writer may land them: ${error}`;
+      }
       await readModel.close();
       await commitStore.close();
+      await outbox.close();
     },
   };
 }
@@ -486,6 +564,10 @@ export async function isFreshV3Skeleton(
     // when replication is on.
     replicationDirName(COMMITS_DB_FILE),
     litestreamStateDirName(COMMITS_DB_FILE),
+    // The commit outbox (swamp-club#3490), while it holds no entries.
+    COMMIT_OUTBOX_FILE,
+    `${COMMIT_OUTBOX_FILE}-wal`,
+    `${COMMIT_OUTBOX_FILE}-shm`,
   ]);
   let hasMarker = false;
   for await (const entry of Deno.readDir(datastorePath)) {
@@ -508,6 +590,16 @@ export async function isFreshV3Skeleton(
     }
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  const outbox = new SqliteCommitOutbox(
+    join(datastorePath, COMMIT_OUTBOX_FILE),
+  );
+  try {
+    if (await outbox.hasEntries()) return false;
+  } catch {
+    return false;
+  } finally {
+    await outbox.close();
   }
   try {
     await Deno.lstat(join(datastorePath, COMMITS_DB_FILE));
