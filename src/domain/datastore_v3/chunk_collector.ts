@@ -20,8 +20,9 @@
 /**
  * Chunk garbage collection (swamp-club#3249): reclaims stored chunks that no
  * commit names, finds damaged ones and clears a filesystem storage's stale
- * temp files. Dormant: nothing in production calls it until a v3
- * `datastore gc` is wired in at the opt-in.
+ * temp files. Run by `swamp datastore gc` and serve's maintenance sweep on a
+ * v3 datastore; while it replicates, only once no lineage but the copy's
+ * current one can be restored (swamp-club#3491).
  *
  * - **The reference set is the commit log**, not a read model. A checkout
  *   catching up from cursor 0 replays every commit and reads every chunk

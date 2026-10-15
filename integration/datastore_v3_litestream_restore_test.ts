@@ -75,7 +75,17 @@ interface World {
   readonly datastorePath: string;
   readonly replicaRoot: string;
   readonly replica: string;
-  machine(name: string): Promise<Machine>;
+  machine(
+    name: string,
+    options?: {
+      /** The namespace its datastore config names. */
+      readonly namespace?: string;
+      /** Its replica setting; "" for a machine that does not replicate. */
+      readonly replica?: string;
+      /** Whose checkout it uses; its own by default. */
+      readonly checkout?: string;
+    },
+  ): Promise<Machine>;
   /** What the published lineages say, as a reader sees them. */
   lineages(): Promise<{ current?: number; newestStarted?: number }>;
 }
@@ -109,7 +119,7 @@ async function withMachines(
     datastorePath,
     replicaRoot,
     replica,
-    async machine(name) {
+    async machine(name, machineOptions = {}) {
       const worker = new Worker(
         new URL("./datastore_v3_litestream_machine_worker.ts", import.meta.url),
         { type: "module" },
@@ -144,11 +154,14 @@ async function withMachines(
       await send({
         kind: "init",
         hostname: `machine-${name}`,
-        replica,
+        replica: machineOptions.replica ?? replica,
         privateRoot,
         datastorePath,
-        repoDir: join(root, name),
+        repoDir: join(root, machineOptions.checkout ?? name),
         lockTimeoutMs: 30_000,
+        ...(machineOptions.namespace !== undefined
+          ? { namespace: machineOptions.namespace }
+          : {}),
       });
       return {
         send,
@@ -448,7 +461,10 @@ Deno.test({
         await waitFor(async () => {
           const refused = await serve.send({ kind: "tryCommit" });
           return typeof refused === "string" &&
-            refused.includes("took over") && !refused.includes("(fence ");
+            refused.includes("took over") && !refused.includes("(fence ") &&
+            // swamp-club#3491: it says serve holds the lease again.
+            refused.includes("still being brought up to date") &&
+            !refused.includes("Another swamp process");
         }, "a commit refused after the retake");
         const gc = await serve.send({ kind: "gc" }) as string | null;
         assert(gc !== null && gc.includes("made current"), `gc: ${gc}`);
@@ -558,6 +574,100 @@ Deno.test({
           endpoint: S3_ENDPOINT,
           region: "us-east-1",
         }),
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: namespace list brings a stale checkout's copy up to date first (swamp-club#3491)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a", { namespace: "alpha" });
+      await a.send({ kind: "write", commits: 1, close: true });
+      const b = await world.machine("b");
+      assertEquals(await b.send({ kind: "namespaces" }), ["alpha"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: turning replication on publishes the shared commits.db as the first lineage (swamp-club#3491)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      // Commits made before replication was turned on, in the datastore's
+      // shared commits.db.
+      const before = await world.machine("before", { replica: "" });
+      await before.send({ kind: "write", commits: 3, close: true });
+      // The first writer once it is on, in the same checkout.
+      const first = await world.machine("first", { checkout: "before" });
+      await first.send({ kind: "write", commits: 1, close: true });
+      assertEquals((await read(first)).commits, 4);
+      // A fresh checkout restores the first lineage: every commit is there.
+      const fresh = await world.machine("fresh");
+      assertEquals((await read(fresh)).commits, 4);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: chunks are not collected while another lineage may still be restored (swamp-club#3491)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      // The next command's hold, on the confirmed lineage.
+      await a.send({ kind: "write", commits: 0, close: false });
+      // Only the current lineage is restorable: collection runs.
+      assertEquals(await a.send({ kind: "gc" }), null);
+      // A lineage another writer started, which it may yet confirm.
+      const current = (await world.lineages()).current!;
+      await withMockedEnv({ [V3_REPLICA_ENV]: world.replica }, async () => {
+        await lineageRegistryFor(world.datastorePath).start({
+          fence: current + 10,
+          holder: "other@host",
+          replicaRoot: `file:${world.replicaRoot}`,
+          startedAt: new Date().toISOString(),
+        });
+      });
+      const deferred = await a.send({ kind: "gc" }) as string | null;
+      assert(
+        deferred !== null && deferred.includes("not collected yet"),
+        `gc: ${deferred}`,
+      );
+      assertStringIncludes(deferred, "may still be restored");
+      await a.send({ kind: "close" });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a seeding writer that fails before confirming leaves the shared commits for the next checkout's writer (swamp-club#3491)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const before = await world.machine("before", { replica: "" });
+      await before.send({ kind: "write", commits: 3, close: true });
+      // The first writer seeds its copy and claims its lineage, then dies
+      // before its first sync is confirmed. Its short lease then expires.
+      const first = await world.machine("first", { checkout: "before" });
+      await first.send({ kind: "lease", ttlMs: 1_500 });
+      await first.send({ kind: "write", commits: 1, close: false });
+      await first.crash();
+      const claimed = await world.lineages();
+      assert(claimed.newestStarted !== undefined, "first claimed a lineage");
+      assertEquals(claimed.current, undefined);
+      // Another checkout's writer seeds from the same shared commits.
+      const other = await world.machine("other");
+      await other.send({ kind: "write", commits: 1, close: true });
+      const fresh = await world.machine("fresh");
+      assertEquals((await read(fresh)).commits, 4);
     });
   },
 });

@@ -170,6 +170,20 @@ export class LineageRegistry {
   }
 
   /**
+   * Whether any lineage, under any replica root, was ever confirmed
+   * (swamp-club#3491): until one is, no copy holds a published state, and
+   * a writer may still seed its copy from the datastore's shared
+   * `commits.db`. A confirmed lineage's records stay until a newer
+   * confirmed one replaces it, so this never goes back to false.
+   */
+  async everConfirmed(): Promise<boolean> {
+    for (const entry of (await this.#list()).values()) {
+      if (entry.confirmed) return true;
+    }
+    return false;
+  }
+
+  /**
    * The start of the lineage at `fence`: undefined when it has none,
    * "unreadable" when its record does not parse.
    */

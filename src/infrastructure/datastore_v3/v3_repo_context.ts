@@ -62,6 +62,7 @@ import {
   v3SyncDeadlineMs,
 } from "./litestream/v3_replication.ts";
 import {
+  assertV3ChunksCollectable,
   collectV3Lineages,
   makeV3CopyCurrent,
   prepareV3WriterLineage,
@@ -82,7 +83,10 @@ import {
 } from "./interrupted_writer_recovery.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
-import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
+import {
+  V3ChunkCollectionDeferredError,
+  V3ReplicationError,
+} from "../../domain/datastore_v3/litestream_replication.ts";
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
@@ -205,7 +209,11 @@ export function v3DatastoreFor(
         // While replicating, nothing commits onto a copy that is not current
         // (swamp-club#3482): after serve's retake, until its restore lands.
         if (v3ReplicationEnabled() && !currentCopies.has(key)) {
-          throw new WriterFencedError(v3WriterFence(config.path), undefined);
+          throw new WriterFencedError(
+            v3WriterFence(config.path),
+            undefined,
+            "copy-restoring",
+          );
         }
       },
       assertCopyCurrent: () => {
@@ -226,6 +234,10 @@ export function v3DatastoreFor(
           );
         }
       },
+      // Nor while another copy may still restore a lineage that names
+      // chunks this copy does not (swamp-club#3491).
+      assertCollectable: () =>
+        assertV3ChunksCollectable(copyOf(repoDir, config)),
     });
     opened.set(key, handle);
   }
@@ -1014,6 +1026,9 @@ export const SERVE_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 /** How long one chunk sweep in serve may run. */
 const SERVE_CHUNK_GC_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** The datastores whose deferred chunk collection was logged at info. */
+const deferredCollections = new Set<string>();
+
 /**
  * Sweeps `handle`'s unreferenced chunks, logging rather than throwing a
  * failure: the next sweep retries.
@@ -1028,6 +1043,21 @@ export async function collectChunksQuietly(handle: V3Datastore): Promise<void> {
         .debug`Deleted ${report.deleted} unreferenced chunks of the v3 datastore at ${handle.datastorePath}`;
     }
   } catch (error) {
+    if (error instanceof V3ChunkCollectionDeferredError) {
+      // Waiting on another lineage is expected, not a failure
+      // (swamp-club#3491), but it can last: said once per datastore at
+      // info, so a collection that never runs can be found.
+      const datastore = resolve(handle.datastorePath);
+      if (deferredCollections.has(datastore)) {
+        logger
+          .debug`Collecting chunks of the v3 datastore at ${handle.datastorePath} still waits: ${error.message}`;
+      } else {
+        deferredCollections.add(datastore);
+        logger
+          .info`Collecting chunks of the v3 datastore at ${handle.datastorePath} waits: ${error.message}`;
+      }
+      return;
+    }
     logger
       .warn`Collecting chunks of the v3 datastore at ${handle.datastorePath} failed; the next sweep retries: ${error}`;
   }

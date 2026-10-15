@@ -157,3 +157,20 @@ Deno.test("LineageRegistry: a fenced writer's late head never moves a continued 
     assertEquals(await registry.read(ROOT), []);
   });
 });
+
+Deno.test("LineageRegistry.everConfirmed: only once a lineage under any root is confirmed (swamp-club#3491)", async () => {
+  await withRegistry(async (registry) => {
+    assertEquals(await registry.everConfirmed(), false);
+    // Started but never confirmed: a writer that failed before its first
+    // sync leaves the shared commits for the next writer to seed.
+    await registry.start(started(4));
+    assertEquals(await registry.everConfirmed(), false);
+    await registry.start(started(5, "file:/other"));
+    await registry.confirm({
+      fence: 5,
+      txid: "0000000000000001",
+      confirmedAt: AT,
+    });
+    assertEquals(await registry.everConfirmed(), true);
+  });
+});

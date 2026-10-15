@@ -134,7 +134,7 @@ export function v3CommitsDbPath(
   repoDir: string,
 ): string {
   if (v3ReplicaSetting() === undefined) {
-    return join(datastorePath, COMMITS_DB_FILE);
+    return v3SharedCommitsDbPath(datastorePath);
   }
   const key = createHash("sha256").update(canonicalPath(datastorePath))
     .digest("hex").slice(0, 16);
@@ -144,6 +144,15 @@ export function v3CommitsDbPath(
     key,
     COMMITS_DB_FILE,
   );
+}
+
+/**
+ * The datastore's own `commits.db`, which every checkout shares while
+ * replication is off. While it is on, only the first writer reads it, to
+ * seed its copy as the first lineage (swamp-club#3491).
+ */
+export function v3SharedCommitsDbPath(datastorePath: string): string {
+  return join(datastorePath, COMMITS_DB_FILE);
 }
 
 /**
@@ -202,6 +211,13 @@ export interface OpenV3DatastoreOptions {
    * names.
    */
   readonly assertCopyCurrent?: () => void;
+  /**
+   * Throws unless chunks may be collected from this checkout's copy
+   * (swamp-club#3491): while replicating, only when no lineage but the
+   * copy's current one can still be restored. Awaited after
+   * `assertCopyCurrent`.
+   */
+  readonly assertCollectable?: () => Promise<void>;
 }
 
 /**
@@ -416,9 +432,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         },
       };
     },
-    collectChunks(signal) {
+    async collectChunks(signal) {
       options.assertCopyCurrent?.();
-      return new ChunkCollector({
+      await options.assertCollectable?.();
+      return await new ChunkCollector({
         commitStore,
         storage,
         tempFiles: storage,

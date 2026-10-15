@@ -31,9 +31,16 @@ import {
   replicationPathsFor,
   writeLineage,
 } from "./replication_files.ts";
+import { BlobRef } from "../../../domain/datastore_v3/blob_ref.ts";
+import {
+  blobPut,
+  modelCommit,
+} from "../../../domain/datastore_v3/v3_test_helpers.ts";
+import { SqliteCommitStore } from "../sqlite_commit_store.ts";
 import {
   collectV3Lineages,
   lineageRegistryFor,
+  makeV3CopyCurrent,
   prepareV3WriterLineage,
   publishV3Head,
   recordV3LeaseFence,
@@ -335,6 +342,141 @@ Deno.test({
         (await readCopyState(await pathsOf(env)))?.txid,
         "0000000000000020",
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "prepareV3WriterLineage: two decisions at one fence in one process both succeed (swamp-club#3491)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      // Serve's retake beside a writer's hold, both at the retaken fence.
+      await Promise.all([
+        prepareV3WriterLineage(env.copy, 3, { restored: true }),
+        prepareV3WriterLineage(env.copy, 3, { restored: true }),
+      ]);
+      const lineage = await lineageOf(env);
+      assertEquals([lineage?.lineageFence, lineage?.lastFence], [3, 3]);
+      assertEquals((await startOf(env, 3))?.replicaRoot, env.root);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "prepareV3WriterLineage: refuses a fence that went back to one this copy began a lineage at (swamp-club#3491)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await prepareV3WriterLineage(env.copy, 3, { restored: false });
+      await prepareV3WriterLineage(env.copy, 4, { restored: false });
+      await assertRejects(
+        () => prepareV3WriterLineage(env.copy, 3, { restored: true }),
+        V3ReplicationError,
+        "went back to fence 3",
+      );
+      const lineage = await lineageOf(env);
+      assertEquals([lineage?.lineageFence, lineage?.lastFence], [3, 4]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "prepareV3WriterLineage: refuses its fence when another replica root claimed it (swamp-club#3491)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await writeLineage(await pathsOf(env), {
+        replicaRoot: env.root,
+        lineageFence: 7,
+        lastFence: 7,
+        previousLineages: [],
+      });
+      await publish(env, 7, { root: "file:/elsewhere" });
+      await assertRejects(
+        () => prepareV3WriterLineage(env.copy, 7, { restored: false }),
+        V3ReplicationError,
+        "under another replica root",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "publishV3Head: a late head on an older lineage never moves copy.json back (swamp-club#3491)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await prepareV3WriterLineage(env.copy, 5, { restored: false });
+      const at = (lineageFence: number, writerFence: number, txid: string) =>
+        publishV3Head(env.copy, {
+          lineageFence,
+          writerFence,
+          txid,
+          mark: { cursor: Number.parseInt(txid, 16) },
+        });
+      await at(5, 5, "0000000000000004");
+      // A fenced process of this checkout, still on lineage 3, publishes late.
+      await publish(env, 3);
+      await at(3, 3, "0000000000000009");
+      const held = await readCopyState(await pathsOf(env));
+      assertEquals([held?.lineageFence, held?.txid], [5, "0000000000000004"]);
+    });
+  },
+});
+
+/** A shared commits.db in the datastore, holding one commit. */
+async function sharedWithOneCommit(env: Env): Promise<void> {
+  const store = SqliteCommitStore.open(
+    join(env.copy.datastorePath, "commits.db"),
+  );
+  try {
+    await store.append(
+      modelCommit(1, [
+        await blobPut(
+          "x",
+          1,
+          BlobRef.create({ sha256: "a".repeat(64), size: 1 }),
+        ),
+      ]),
+    );
+  } finally {
+    await store.close();
+  }
+}
+
+Deno.test({
+  name:
+    "makeV3CopyCurrent: a writer seeds a new copy from the shared commits.db only while no lineage was ever confirmed (swamp-club#3491)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await sharedWithOneCommit(env);
+      // Confirmed under another replica root: nothing is current under this
+      // one, and the copy is still empty, yet the shared commits are no
+      // longer the state, so they are not seeded.
+      await publish(env, 2, { confirmed: true, root: "file:/elsewhere" });
+      assertEquals(
+        await makeV3CopyCurrent(env.copy, { mode: "write", lockWaitMs: 1_000 }),
+        {},
+      );
+      assertEquals(await exists(env.copy.commitsDb), false);
+      await lineageRegistryFor(env.copy.datastorePath).remove(2);
+      const seeded = await makeV3CopyCurrent(env.copy, {
+        mode: "write",
+        lockWaitMs: 1_000,
+      });
+      assertEquals(seeded.restored?.lineageFence, undefined);
+      const copy = SqliteCommitStore.open(env.copy.commitsDb);
+      try {
+        assertEquals((await copy.history()).storedCommits, 1);
+      } finally {
+        await copy.close();
+      }
     });
   },
 });

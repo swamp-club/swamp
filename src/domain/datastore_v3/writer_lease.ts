@@ -244,18 +244,27 @@ export function parseWriterLeaseKey(
   return { kind: match[1] as "fence" | "heartbeat" | "released", fence };
 }
 
+/** Why a writer was fenced: see {@link WriterFencedError}. */
+export type WriterFencedReason =
+  | "taken-over"
+  | "released"
+  | "published"
+  | "copy-restoring";
+
 /**
  * Thrown when a writer's lease was taken over or released while it held it:
  * nothing more it commits lands. With reason `published`, a replicating
  * writer found it out only after it had published its commits' head
  * (swamp-club#3482): the writer that took over may restore them, so they
- * may still land.
+ * may still land. With reason `copy-restoring`, this process holds the
+ * lease again (serve's retake) but its copy is not yet current
+ * (swamp-club#3491).
  */
 export class WriterFencedError extends UserError {
   constructor(
     readonly fence: number | undefined,
     readonly currentFence: number | undefined,
-    reason: "taken-over" | "released" | "published" = "taken-over",
+    reason: WriterFencedReason = "taken-over",
   ) {
     super(fencedMessage(fence, currentFence, reason), WRITER_FENCED_CODE);
     this.name = "WriterFencedError";
@@ -265,8 +274,15 @@ export class WriterFencedError extends UserError {
 function fencedMessage(
   fence: number | undefined,
   currentFence: number | undefined,
-  reason: "taken-over" | "released" | "published",
+  reason: WriterFencedReason,
 ): string {
+  if (reason === "copy-restoring") {
+    return "This swamp process took over the writer lease of the v3 " +
+      "datastore again" + (fence !== undefined ? ` at fence ${fence}` : "") +
+      ", after another writer held it, and its copy of the datastore is " +
+      "still being brought up to date from the replica, so nothing from " +
+      "this command was committed. Run the command again.";
+  }
   const takenOver = "Another swamp process took over the writer lease of " +
     "the v3 datastore" +
     (currentFence !== undefined ? ` (fence ${currentFence})` : "");

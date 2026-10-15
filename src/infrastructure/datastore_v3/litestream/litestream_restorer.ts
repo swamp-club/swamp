@@ -33,8 +33,9 @@
  * 3. every commit past the head's high-water mark is removed, so a zombie
  *    writer's later uploads never land. A restore whose commits past the
  *    mark were compacted is refused;
- * 4. the caller installs it: renamed into place when the copy is missing,
- *    or copied into the open copy in one transaction
+ * 4. the caller installs it: hard-linked into place when the copy is
+ *    missing, never over a file another process created meanwhile, or
+ *    copied into the open copy in one transaction
  *    (`SqliteCommitStore.replaceContentFrom`), so connections that have the
  *    copy open, serve's included, keep working on the restored state.
  *

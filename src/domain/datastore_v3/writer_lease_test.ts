@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   fenceKey,
   type FenceRecord,
@@ -227,4 +227,13 @@ Deno.test("WriterFencedError: a replicating writer fenced after publishing says 
       "writer at a time, so nothing more from this command was committed. " +
       "Run the command again.",
   );
+});
+
+Deno.test("WriterFencedError: a retaken lease on a copy not yet current says this process holds it again (swamp-club#3491)", () => {
+  const error = new WriterFencedError(9, undefined, "copy-restoring");
+  assertEquals(error.code, WRITER_FENCED_CODE);
+  assertStringIncludes(error.message, "This swamp process took over");
+  assertStringIncludes(error.message, "at fence 9");
+  assertStringIncludes(error.message, "still being brought up to date");
+  assertEquals(error.message.includes("Another swamp process"), false);
 });
