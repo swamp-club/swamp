@@ -163,7 +163,12 @@ export async function recoverCommitOutbox(
   let listing: Awaited<ReturnType<CommitOutbox["entries"]>>;
   let chain;
   try {
-    if (!await outbox.hasEntries()) return emptyReport();
+    if (!await outbox.hasEntries()) {
+      // The floor rises with every completed recovery, an empty one too: an
+      // entry a writer that lost the lease prepares after it is overtaken.
+      await outbox.raiseFloor(options.fence);
+      return emptyReport();
+    }
     listing = await outbox.entries();
     chain = await outbox.chain() ?? decideFenceChain(undefined, options.fence);
   } catch (error) {
@@ -172,6 +177,8 @@ export async function recoverCommitOutbox(
     ]);
   }
   const drops: OutboxDrop[] = [];
+  // An unreadable entry names no writer to judge; under the lease, only this
+  // process's own units could still be using one, and theirs parse.
   for (const { key, detail } of listing.unreadable) {
     await outbox.remove([key]);
     logger

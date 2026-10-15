@@ -147,6 +147,7 @@ import {
 } from "../../domain/datastore_v3/op.ts";
 import {
   type HeadIdentity,
+  OUTBOX_RETRY_BOUND_DAYS,
   OUTBOX_RETRY_BOUND_MS,
   type OutboxKey,
   type OutboxPreparation,
@@ -828,7 +829,7 @@ async function appendGroup(
     throw new CommitRejectedError(
       "retry-expired",
       `The commit of partition ${group.partition} has been retried for longer ` +
-        `than ${OUTBOX_RETRY_BOUND_MS / 86_400_000} days; it was dropped`,
+        `than ${OUTBOX_RETRY_BOUND_DAYS} days; it was dropped`,
     );
   }
   const outbox = options.sink.outbox;

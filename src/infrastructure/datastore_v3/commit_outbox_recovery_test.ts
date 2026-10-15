@@ -272,3 +272,15 @@ Deno.test("recoverCommitOutbox: an outbox that cannot be read names its path", a
     await broken.close();
   });
 });
+
+Deno.test("recoverCommitOutbox: an empty recovery raises the floor, so an entry a lease-lost writer prepares after it is overtaken", async () => {
+  await withFixture(async ({ store, prepare, recover }) => {
+    // The successor at fence 2 finds nothing to recover.
+    assertEquals((await recover(2)).drops, []);
+    // The writer at fence 1, whose lease lapsed, prepares and dies.
+    await prepare(prepared(1, [await savePut("a", 1)], "late"));
+    const report = await recover(3);
+    assertEquals(report.drops.map((drop) => drop.reason), ["overtaken"]);
+    assertEquals(await commitsOf(store), []);
+  });
+});

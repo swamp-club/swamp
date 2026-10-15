@@ -596,7 +596,9 @@ export async function isFreshV3Skeleton(
   );
   try {
     if (await outbox.hasEntries()) return false;
-  } catch {
+  } catch (error) {
+    logger
+      .debug`The commit outbox of ${datastorePath} could not be read, so it is not a fresh skeleton: ${error}`;
     return false;
   } finally {
     await outbox.close();

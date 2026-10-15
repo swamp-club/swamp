@@ -559,7 +559,10 @@ Deno.test("ChunkCollector.collect: marks the sweep in progress with a heartbeat 
     end: () => Promise.resolve(void calls.push("end")),
   };
   await collector(storage, refs, { sweep }).collect(ACME, { signal });
-  assertEquals(calls, ["begin", "heartbeat", "heartbeat", "end"]);
+  // Begun first, ended last, and a heartbeat for each of the two batches.
+  assertEquals(calls[0], "begin");
+  assertEquals(calls.at(-1), "end");
+  assertEquals(calls.filter((call) => call === "heartbeat").length >= 2, true);
 
   calls.length = 0;
   storage.seed("acme", "another", OLD);
@@ -571,7 +574,8 @@ Deno.test("ChunkCollector.collect: marks the sweep in progress with a heartbeat 
     Error,
     "store gone",
   );
-  assertEquals(calls, ["begin", "heartbeat", "end"]);
+  assertEquals(calls[0], "begin");
+  assertEquals(calls.at(-1), "end");
 });
 
 Deno.test("ChunkCollector.collect: a sweeper that may not delete deletes nothing, and one that loses the lease mid-batch puts the batch back", async () => {
@@ -607,4 +611,23 @@ Deno.test("ChunkCollector.collect: a sweeper that may not delete deletes nothing
   );
   assertEquals(storage.deleted.length, 2);
   assertEquals(storage.stored("acme"), [...orphans].sort());
+});
+
+Deno.test("ChunkCollector.collect: a sweep monitor that fails to end leaves the sweep's own error to the caller", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  storage.seed("acme", "orphan", OLD);
+  refs.afterLookup = () => {
+    throw new Error("store gone");
+  };
+  const sweep = {
+    begin: () => Promise.resolve(),
+    heartbeat: () => Promise.resolve(),
+    end: () => Promise.reject(new Error("outbox locked")),
+  };
+  await assertRejects(
+    () => collector(storage, refs, { sweep }).collect(ACME, { signal }),
+    Error,
+    "store gone",
+  );
 });

@@ -226,11 +226,17 @@ export class ChunkCollector {
       return await this.#collect(namespace, options, verifyBytes);
     }
     await this.#sweep.begin();
+    let report: ChunkCollectionReport;
     try {
-      return await this.#collect(namespace, options, verifyBytes);
-    } finally {
-      await this.#sweep.end();
+      report = await this.#collect(namespace, options, verifyBytes);
+    } catch (error) {
+      // The sweep's own failure is the one reported; a heartbeat left
+      // behind goes stale on its own.
+      await this.#sweep.end().catch(() => {});
+      throw error;
     }
+    await this.#sweep.end();
+    return report;
   }
 
   async #collect(
@@ -271,6 +277,8 @@ export class ChunkCollector {
       // landed on it since the batch's reference check.
       const started: { sha256: string; bytes: Uint8Array }[] = [];
       this.#assertMayDelete();
+      // Before every batch of deletes, however long the reads before it took.
+      await this.#sweep?.heartbeat();
       try {
         for (const chunk of held) {
           signal.throwIfAborted();
@@ -441,6 +449,9 @@ export class ChunkCollector {
       if (bytes === null) continue;
       budget -= bytes.length;
       verified++;
+      if (verified % CHUNK_COLLECTION_BATCH === 0) {
+        await this.#sweep?.heartbeat();
+      }
       if (sha256Hex(bytes) === chunk.sha256) continue;
       await this.#storage.delete(ns, chunk.sha256, signal);
       rotten.push(chunk.sha256);

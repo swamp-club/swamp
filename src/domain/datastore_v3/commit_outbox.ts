@@ -62,7 +62,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * dropped rather than appended: days, so a machine that was off over a long
  * weekend still lands what it prepared.
  */
-export const OUTBOX_RETRY_BOUND_MS = 7 * DAY_MS;
+export const OUTBOX_RETRY_BOUND_DAYS = 7;
+
+/** {@link OUTBOX_RETRY_BOUND_DAYS} in milliseconds. */
+export const OUTBOX_RETRY_BOUND_MS = OUTBOX_RETRY_BOUND_DAYS * DAY_MS;
 
 /**
  * How long `compacted_txns` keeps a compacted commit's txnId. Longer than
