@@ -18,14 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { type MouseEvent, useEffect, useRef, useState } from "react";
-import type { HealthSnapshot } from "../client/useHealthStream";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
 import type { View } from "../types.ts";
 import { buildPath, isPlainLeftClick } from "../routes.ts";
 import { BEHAVIORS_LABEL } from "../lib/behavior_labels.ts";
 import { formatCompactCount, formatDuration } from "../lib/format.ts";
-import { Logo } from "./Logo";
-import { ThemeToggle } from "./ThemeToggle";
-import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { Logo } from "./Logo.tsx";
+import { ThemeToggle } from "./ThemeToggle.tsx";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher.tsx";
 import { operationsOff, showsLogout } from "./sidebar_state.ts";
 import { PAGE_WORKSPACE } from "../client/workspace_path.ts";
 

@@ -20,7 +20,7 @@
 import { localSocketProtocols, serverPath } from "./workspace_path.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { socketProtocols } from "./connection.ts";
-import { useSwamp } from "./SwampProvider";
+import { useSwamp } from "./SwampProvider.tsx";
 import { requestErrorInfo } from "./stream.ts";
 import {
   type AuditProblem,

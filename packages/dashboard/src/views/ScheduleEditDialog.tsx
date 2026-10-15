@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useEffect, useId, useRef, useState } from "react";
-import { useRequest } from "../client/useRequest";
-import { extractObject } from "../client/extract";
+import { useRequest } from "../client/useRequest.ts";
+import { extractObject } from "../client/extract.ts";
 import type { ScheduleMutations } from "../client/schedule_mutations.ts";
 import { ScheduleEditorForm } from "../components/ScheduleEditorForm.tsx";
 import { Skeleton, SkeletonRegion } from "../components/Skeleton.tsx";

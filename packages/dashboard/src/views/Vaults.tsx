@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useState } from "react";
-import { useRequest } from "../client/useRequest";
-import { extractArray, extractObject } from "../client/extract";
-import { EmptyState } from "../components/EmptyState";
-import { LoadError } from "../components/LoadError";
-import { Skeleton } from "../components/Skeleton";
+import { useRequest } from "../client/useRequest.ts";
+import { extractArray, extractObject } from "../client/extract.ts";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { LoadError } from "../components/LoadError.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { loadState } from "../client/load_state.ts";
 import { pluralize } from "../lib/format.ts";
 import { VaultListSkeleton, VaultSectionSkeleton } from "./PageSkeletons.tsx";

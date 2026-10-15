@@ -17,30 +17,30 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extractArray, extractObject } from "../client/extract";
-import { CodeBlock } from "../components/CodeBlock";
+import { extractArray, extractObject } from "../client/extract.ts";
+import { CodeBlock } from "../components/CodeBlock.tsx";
 import * as yaml from "js-yaml";
-import { useRequest } from "../client/useRequest";
-import { StatusDot } from "../components/StatusDot";
-import { StatusPill } from "../components/StatusPill";
-import { TriggerBadge } from "../components/TriggerBadge";
+import { useRequest } from "../client/useRequest.ts";
+import { StatusDot } from "../components/StatusDot.tsx";
+import { StatusPill } from "../components/StatusPill.tsx";
+import { TriggerBadge } from "../components/TriggerBadge.tsx";
 import "../styles/workflows.css";
-import { RouteLink } from "../components/RouteLink";
-import { FailureLink } from "../components/FailureLink";
-import { RunHistoryBar } from "../components/RunHistoryBar";
-import { EmptyState } from "../components/EmptyState";
+import { RouteLink } from "../components/RouteLink.tsx";
+import { FailureLink } from "../components/FailureLink.tsx";
+import { RunHistoryBar } from "../components/RunHistoryBar.tsx";
+import { EmptyState } from "../components/EmptyState.tsx";
 import {
   SkeletonList,
   SkeletonPanel,
   SkeletonRunHistory,
   SkeletonStats,
-} from "../components/Skeleton";
+} from "../components/Skeleton.tsx";
 import {
   formatAbsoluteTime,
   formatCount,
   formatDuration,
   formatRelativeTime,
-} from "../lib/format";
+} from "../lib/format.ts";
 
 interface WorkflowDetailProps {
   workflowName: string;

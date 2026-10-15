@@ -26,27 +26,27 @@ import {
   useState,
 } from "react";
 import "../styles/run-detail.css";
-import { useRequest } from "../client/useRequest";
-import { useSwamp } from "../client/SwampProvider";
+import { useRequest } from "../client/useRequest.ts";
+import { useSwamp } from "../client/SwampProvider.tsx";
 import { runUnreadableHint } from "./run_load_error.ts";
-import { extractArray, extractObject } from "../client/extract";
+import { extractArray, extractObject } from "../client/extract.ts";
 import {
   activeRunIds,
   type ResumableRun,
   resumeStateFor,
-} from "../client/resume_state";
-import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
-import type { HealthSnapshot } from "../client/useHealthStream";
+} from "../client/resume_state.ts";
+import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch.ts";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
 import {
   nullableParam,
   oneOf,
   useQueryState,
 } from "../client/useQueryState.ts";
 import { type RecentRun, useRunSummary } from "../client/run_summary.ts";
-import { ResumeAction } from "../components/ResumeAction";
-import { RouteLink } from "../components/RouteLink";
+import { ResumeAction } from "../components/ResumeAction.tsx";
+import { RouteLink } from "../components/RouteLink.tsx";
 import { RunHistoryBar } from "../components/RunHistoryBar.tsx";
-import { TriggerBadge } from "../components/TriggerBadge";
+import { TriggerBadge } from "../components/TriggerBadge.tsx";
 import { copyText } from "../components/clipboard.ts";
 import {
   Skeleton,

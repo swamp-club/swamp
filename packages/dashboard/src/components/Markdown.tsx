@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Fragment, type ReactNode, useMemo } from "react";
-import { CodeBlock } from "./CodeBlock";
+import { CodeBlock } from "./CodeBlock.tsx";
 import { type MdBlock, type MdInline, parseMarkdown } from "./markdown_tree.ts";
 
 /**

@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { RouteLink } from "../components/RouteLink";
+import { RouteLink } from "../components/RouteLink.tsx";
 import { copyText } from "../components/clipboard.ts";
-import { DataDetail } from "./DataDetail";
+import { DataDetail } from "./DataDetail.tsx";
 import { type DrawerItem, drawerTitle } from "./run_item_param.ts";
 import { viewForDetail } from "../routes.ts";
 

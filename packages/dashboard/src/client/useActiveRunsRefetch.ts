@@ -22,7 +22,7 @@ import {
   type ActiveRunRef,
   activeRunsKey,
   shouldRefetchRuns,
-} from "./resume_state";
+} from "./resume_state.ts";
 
 /**
  * Refetches a view's runs when the health snapshot shows serve starting or

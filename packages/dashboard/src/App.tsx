@@ -26,47 +26,47 @@ import {
   useRef,
   useState,
 } from "react";
-import { SwampProvider, useSwamp } from "./client/SwampProvider";
-import { useAuditStream } from "./client/useAuditStream";
+import { SwampProvider, useSwamp } from "./client/SwampProvider.tsx";
+import { useAuditStream } from "./client/useAuditStream.ts";
 import { auditEnabled } from "./client/audit_state.ts";
-import { useHealthStream } from "./client/useHealthStream";
-import { useRequest } from "./client/useRequest";
-import { pendingApprovals } from "./client/approvals";
-import { Logo } from "./components/Logo";
+import { useHealthStream } from "./client/useHealthStream.ts";
+import { useRequest } from "./client/useRequest.ts";
+import { pendingApprovals } from "./client/approvals.ts";
+import { Logo } from "./components/Logo.tsx";
 import { localToken, PAGE_WORKSPACE } from "./client/workspace_path.ts";
 import {
   AppShellSkeleton,
   connectingLabel,
 } from "./components/AppShellSkeleton.tsx";
-import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar";
+import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar.tsx";
 import {
   MOBILE_MEDIA_QUERY,
   parseCollapsed,
   resolveEscape,
   SIDEBAR_COLLAPSED_KEY,
 } from "./components/sidebar_state.ts";
-import { useRouter } from "./hooks/useRouter";
+import { useRouter } from "./hooks/useRouter.ts";
 import { TimeRangeProvider } from "./client/time_range.ts";
 import { RunActivityProvider } from "./client/run_activity.ts";
 import { TimeRangePicker } from "./components/TimeRangePicker.tsx";
-import { Login } from "./views/Login";
-import { Overview } from "./views/Overview";
-import { Workflows } from "./views/Workflows";
-import { WorkflowDetail } from "./views/WorkflowDetail";
-import { Executions } from "./views/Executions";
-import { Models } from "./views/Models";
-import { ModelDetail } from "./views/ModelDetail";
-import { System } from "./views/System";
-import { Workers } from "./views/Workers";
-import { Schedules } from "./views/Schedules";
-import { Webhooks } from "./views/Webhooks";
-import { Approvals } from "./views/Approvals";
-import { Data } from "./views/Data";
-import { Vaults } from "./views/Vaults";
-import { Extensions } from "./views/Extensions";
-import { Activity } from "./views/Activity";
-import { RunDetail } from "./views/RunDetail";
-import { DataDetail } from "./views/DataDetail";
+import { Login } from "./views/Login.tsx";
+import { Overview } from "./views/Overview.tsx";
+import { Workflows } from "./views/Workflows.tsx";
+import { WorkflowDetail } from "./views/WorkflowDetail.tsx";
+import { Executions } from "./views/Executions.tsx";
+import { Models } from "./views/Models.tsx";
+import { ModelDetail } from "./views/ModelDetail.tsx";
+import { System } from "./views/System.tsx";
+import { Workers } from "./views/Workers.tsx";
+import { Schedules } from "./views/Schedules.tsx";
+import { Webhooks } from "./views/Webhooks.tsx";
+import { Approvals } from "./views/Approvals.tsx";
+import { Data } from "./views/Data.tsx";
+import { Vaults } from "./views/Vaults.tsx";
+import { Extensions } from "./views/Extensions.tsx";
+import { Activity } from "./views/Activity.tsx";
+import { RunDetail } from "./views/RunDetail.tsx";
+import { DataDetail } from "./views/DataDetail.tsx";
 import { ScheduleDetail } from "./views/ScheduleDetail.tsx";
 import { WebhookDetail } from "./views/WebhookDetail.tsx";
 import {
@@ -95,7 +95,7 @@ const TIMED_DETAILS = new Set(["workflow", "model", "schedule", "webhook"]);
 
 // Only `swamp start` serves the start page, so it loads as its own chunk.
 const Start = lazy(() =>
-  import("./views/start/Start").then((m) => ({ default: m.Start }))
+  import("./views/start/Start.tsx").then((m) => ({ default: m.Start }))
 );
 
 export function App() {

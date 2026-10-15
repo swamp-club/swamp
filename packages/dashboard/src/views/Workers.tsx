@@ -20,7 +20,7 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { HealthSnapshot } from "../client/useHealthStream";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
 import { useFleetData } from "../client/useFleetData.ts";
 import {
   clampTtlMinutes,
@@ -49,9 +49,9 @@ import {
 import { HostMap } from "../components/HostMap.tsx";
 import { RouteLink } from "../components/RouteLink.tsx";
 import type { RouteState } from "../routes.ts";
-import { EmptyState } from "../components/EmptyState";
-import { LoadError } from "../components/LoadError";
-import { Skeleton, SkeletonRegion } from "../components/Skeleton";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { LoadError } from "../components/LoadError.tsx";
+import { Skeleton, SkeletonRegion } from "../components/Skeleton.tsx";
 import "../styles/host-map.css";
 
 const GROUP_KEY = "swamp.fleet.groupBy";

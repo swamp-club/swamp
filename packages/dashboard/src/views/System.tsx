@@ -18,17 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ReactNode } from "react";
-import type { HealthSnapshot } from "../client/useHealthStream";
-import { healthViewState } from "../client/health_state";
-import { HealthUnavailable } from "../components/HealthUnavailable";
-import { useRequest } from "../client/useRequest";
-import { useSwamp } from "../client/SwampProvider";
-import { extractArray, extractObject } from "../client/extract";
-import { StatusPill } from "../components/StatusPill";
-import { serveConfigRows } from "./serve_config_rows";
-import { EmptyState } from "../components/EmptyState";
-import { LoadError } from "../components/LoadError";
-import { Skeleton } from "../components/Skeleton";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
+import { healthViewState } from "../client/health_state.ts";
+import { HealthUnavailable } from "../components/HealthUnavailable.tsx";
+import { useRequest } from "../client/useRequest.ts";
+import { useSwamp } from "../client/SwampProvider.tsx";
+import { extractArray, extractObject } from "../client/extract.ts";
+import { StatusPill } from "../components/StatusPill.tsx";
+import { serveConfigRows } from "./serve_config_rows.ts";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { LoadError } from "../components/LoadError.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { loadState } from "../client/load_state.ts";
 import {
   CLUSTER_COLUMNS,

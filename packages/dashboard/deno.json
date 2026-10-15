@@ -3,5 +3,11 @@
   "version": "0.1.0",
   "license": "AGPL-3.0-only",
   "exports": "./src/main.tsx",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "jsxImportSourceTypes": "@types/react",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "deno.ns"]
+  },
   "exclude": ["node_modules", "dist"]
 }

@@ -18,44 +18,44 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { type MouseEvent, useCallback, useMemo, useState } from "react";
-import { useRequest } from "../client/useRequest";
+import { useRequest } from "../client/useRequest.ts";
 import {
   extractArray,
   extractSearchWindow,
   extractTotal,
-} from "../client/extract";
-import { ageOutDelayMs, useRefetchOnAgeOut } from "../client/run_activity";
-import type { HealthSnapshot } from "../client/useHealthStream";
-import { useWorkflowCatalog } from "../client/useWorkflowCatalog";
-import { useKeepPrevious } from "../client/useKeepPrevious";
+} from "../client/extract.ts";
+import { ageOutDelayMs, useRefetchOnAgeOut } from "../client/run_activity.ts";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
+import { useWorkflowCatalog } from "../client/useWorkflowCatalog.ts";
+import { useKeepPrevious } from "../client/useKeepPrevious.ts";
 import {
   type RunSummaryQuery,
   summariesByName,
   useRunSummary,
-} from "../client/run_summary";
+} from "../client/run_summary.ts";
 import {
   describeTimeRange,
   isRelativeBound,
   type TimeRange,
   useTimeRange,
-} from "../client/time_range";
-import { useQueryList } from "../client/useQueryState";
-import { StatusPill } from "../components/StatusPill";
-import { TriggerBadge } from "../components/TriggerBadge";
-import { Pager } from "../components/Pager";
-import { RouteLink } from "../components/RouteLink";
-import { RunHistoryBar } from "../components/RunHistoryBar";
-import { type Stat, StatPills } from "../components/StatPills";
-import { EmptyState } from "../components/EmptyState";
-import { FilterBar, useWorkflowFilter } from "../components/FilterBar";
-import { FailureLink } from "../components/FailureLink";
+} from "../client/time_range.ts";
+import { useQueryList } from "../client/useQueryState.ts";
+import { StatusPill } from "../components/StatusPill.tsx";
+import { TriggerBadge } from "../components/TriggerBadge.tsx";
+import { Pager } from "../components/Pager.tsx";
+import { RouteLink } from "../components/RouteLink.tsx";
+import { RunHistoryBar } from "../components/RunHistoryBar.tsx";
+import { type Stat, StatPills } from "../components/StatPills.tsx";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { FilterBar, useWorkflowFilter } from "../components/FilterBar.tsx";
+import { FailureLink } from "../components/FailureLink.tsx";
 import {
   type SkeletonColumn,
   SkeletonPills,
   SkeletonRunHistory,
   SkeletonTable,
-} from "../components/Skeleton";
-import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets";
+} from "../components/Skeleton.tsx";
+import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets.ts";
 import {
   isRunSource,
   isRunStatus,
@@ -68,14 +68,14 @@ import {
   statusCounts,
   totalsOfWorkflows,
   workflowNamesForFilter,
-} from "../lib/run_filters";
+} from "../lib/run_filters.ts";
 import {
   formatAbsoluteTime,
   formatCount,
   formatDuration,
   formatRelativeTime,
   formatShortDateTime,
-} from "../lib/format";
+} from "../lib/format.ts";
 import "../styles/executions.css";
 
 interface RunItem {

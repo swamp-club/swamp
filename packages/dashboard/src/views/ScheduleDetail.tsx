@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useCallback, useMemo, useState } from "react";
-import type { HealthSnapshot } from "../client/useHealthStream";
-import { healthViewState } from "../client/health_state";
-import { useRequest } from "../client/useRequest";
-import { extractObject } from "../client/extract";
-import { HealthUnavailable } from "../components/HealthUnavailable";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
+import { healthViewState } from "../client/health_state.ts";
+import { useRequest } from "../client/useRequest.ts";
+import { extractObject } from "../client/extract.ts";
+import { HealthUnavailable } from "../components/HealthUnavailable.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { RouteLink } from "../components/RouteLink.tsx";
 import { RunHistoryBar, RunningBadge } from "../components/RunHistoryBar.tsx";

@@ -17,12 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useRequest } from "../client/useRequest";
-import { extractArray } from "../client/extract";
-import { StatusPill } from "../components/StatusPill";
-import { EmptyState } from "../components/EmptyState";
-import { LoadError } from "../components/LoadError";
-import { Skeleton } from "../components/Skeleton";
+import { useRequest } from "../client/useRequest.ts";
+import { extractArray } from "../client/extract.ts";
+import { StatusPill } from "../components/StatusPill.tsx";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { LoadError } from "../components/LoadError.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { loadState } from "../client/load_state.ts";
 import { formatCount } from "../lib/format.ts";
 import {

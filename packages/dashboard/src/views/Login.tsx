@@ -19,8 +19,8 @@
 
 import { serverPath } from "../client/workspace_path.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSwamp } from "../client/SwampProvider";
-import { Logo } from "../components/Logo";
+import { useSwamp } from "../client/SwampProvider.tsx";
+import { Logo } from "../components/Logo.tsx";
 import { LoginStartingSkeleton } from "./PageSkeletons.tsx";
 
 function providerHost(verificationBaseUri: string | null): string {

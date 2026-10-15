@@ -19,12 +19,12 @@
 
 import { Select } from "../components/Select.tsx";
 import { useState } from "react";
-import { useRequest } from "../client/useRequest";
-import { extractArray } from "../client/extract";
-import { RouteLink } from "../components/RouteLink";
-import { EmptyState } from "../components/EmptyState";
-import { LoadError } from "../components/LoadError";
-import { Skeleton } from "../components/Skeleton";
+import { useRequest } from "../client/useRequest.ts";
+import { extractArray } from "../client/extract.ts";
+import { RouteLink } from "../components/RouteLink.tsx";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { LoadError } from "../components/LoadError.tsx";
+import { Skeleton } from "../components/Skeleton.tsx";
 import { loadState } from "../client/load_state.ts";
 import { formatCount, pluralize } from "../lib/format.ts";
 import { dataRowLink } from "./artifact_links.ts";

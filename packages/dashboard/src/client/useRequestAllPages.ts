@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSwamp } from "./SwampProvider";
-import { createRequestSequence } from "./request_sequence";
+import { useSwamp } from "./SwampProvider.tsx";
+import { createRequestSequence } from "./request_sequence.ts";
 import { fetchAllPages } from "./fetch_all_pages.ts";
 
 /**

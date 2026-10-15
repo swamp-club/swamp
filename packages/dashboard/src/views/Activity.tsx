@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useMemo, useState } from "react";
-import type { AuditEvent, AuditStream } from "../client/useAuditStream";
+import type { AuditEvent, AuditStream } from "../client/useAuditStream.ts";
 import { copyText } from "../components/clipboard.ts";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { formatAbsoluteTime, formatCount, pluralize } from "../lib/format.ts";
