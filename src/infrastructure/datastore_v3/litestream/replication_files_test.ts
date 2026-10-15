@@ -311,7 +311,9 @@ Deno.test("renderLitestreamConfig: forcePathStyle false turns path style off for
     "p/_litestream/000000000001",
   );
   assertStringIncludes(config, 'endpoint: "https://e"');
-  assertEquals(config.includes("force-path-style"), false);
+  // Left out, Litestream would still use path style for an endpoint.
+  assertStringIncludes(config, "force-path-style: false");
+  assertEquals(config.includes("force-path-style: true"), false);
 });
 
 Deno.test("renderLitestreamConfig: forcePathStyle true turns path style on without an endpoint", () => {

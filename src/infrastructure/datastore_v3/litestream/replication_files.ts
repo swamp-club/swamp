@@ -469,7 +469,11 @@ function databaseConfigLines(
     if (replica.endpoint !== undefined) {
       lines.push(`      endpoint: ${q(replica.endpoint)}`);
     }
-    if (replica.forcePathStyle ?? replica.endpoint !== undefined) {
+    // Litestream turns path style on for any endpoint unless told
+    // otherwise, so an explicit false must be written out.
+    if (replica.forcePathStyle !== undefined) {
+      lines.push(`      force-path-style: ${replica.forcePathStyle}`);
+    } else if (replica.endpoint !== undefined) {
       lines.push("      force-path-style: true");
     }
   }

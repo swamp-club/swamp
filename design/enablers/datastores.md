@@ -651,9 +651,10 @@ provider that declares `datastoreWideLease: true`, and refuses any other with
 a message naming the declaration. The declaration promises only that
 `_control/writer/` and `_control/lineage/` are never moved or copied. The
 replication lineages (swamp-club#3482) are published under `lineage/`, and one
-moved into a namespace would hide the head a restore reads (swamp-club#3507). The S3 and GCS extensions declare
-it in the release that carries the skip (swamp-club#3395), whose writable
-conformance test must run the namespaced-push case. The Phase 4 bucket opt-in
+moved into a namespace would hide the head a restore reads (swamp-club#3507).
+The S3 and GCS extensions declare it in the release that carries the skip
+(swamp-club#3395), whose writable conformance test must run the
+namespaced-push case. The Phase 4 bucket opt-in
 binds the lease only through `datastoreWriterLeaseStore`, so it cannot be
 enabled against an extension version that does not declare it.
 

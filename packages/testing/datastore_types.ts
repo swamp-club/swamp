@@ -310,6 +310,8 @@ export interface DatastoreProvider {
    * from anywhere else cannot be replicated. Throw, rather than return a
    * target Litestream cannot reach: a GCS datastore with a custom
    * `apiEndpoint`, for example, which Litestream has no equivalent for.
+   * Swamp shows the thrown message to the user, so keep config values and
+   * secrets out of it.
    *
    * Optional; swamp does not call it yet. Check an implementation with
    * `assertReplicaTargetConformance`.

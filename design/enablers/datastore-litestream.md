@@ -1305,12 +1305,20 @@ across two write bursts and restored all 200 rows, sum included, for each of:
 
 - S3 with an endpoint, path style by default, prefix `team/root`;
 - S3 with an endpoint, `forcePathStyle: true`, empty prefix;
-- S3 with `forcePathStyle: false`, addressed virtual-hosted, prefix `vh`;
+- S3 with `forcePathStyle: false` and a virtual-hosted endpoint, prefix `vh`;
 - GCS, prefix `groot`.
 
 Each replica landed at `<prefix>/_litestream/000000000007/`, or
 `_litestream/…` for the empty prefix. The first GCS run refused `type: gcs`,
-which is why it renders as `gs`. Real buckets remain the
+which is why it renders as `gs`.
+
+ministack also answers path-style requests, so that run did not show which
+style Litestream used. A probe recording the `Host` header did. With an
+endpoint and `force-path-style` left out, Litestream uses path style, so an
+explicit `forcePathStyle: false` has to be written as `force-path-style:
+false`. With it, requests go to `mybucket.localhost`. Unset and `true` stay
+path style (`localhost/mybucket`). Path style is forced for an IP-address
+endpoint regardless. Real buckets remain the
 [Real-bucket check](#real-bucket-check)'s job.
 
 ## Upgrades
