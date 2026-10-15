@@ -94,7 +94,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   triage: ["triaging"],
   fast_forward: ["triaging", "classified"],
   plan: ["classified"],
-  iterate: ["plan_generated"],
+  iterate: ["plan_generated", "approved"],
   approve: ["plan_generated"],
   implement: ["approved", "pr_failed"],
   adversarial_review: ["plan_generated"],

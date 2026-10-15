@@ -368,8 +368,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.10.07.1", () => {
-  assertEquals(model.version, "2026.10.07.1");
+Deno.test("model: version is 2026.10.15.1", () => {
+  assertEquals(model.version, "2026.10.15.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -2248,10 +2248,11 @@ Deno.test("issue_lifecycle: rollbackOnFailure matches the pinned method set", ()
 /**
  * Like `buildTestContext`, but with credentials present and fetch stubbed, so
  * the method builds a real client and the upstream responses are scripted.
+ * `respond` also receives the parsed JSON request body, when there is one.
  */
 async function buildOnlineTestContext(
   issueNumber: number,
-  respond: (url: string, method: string) => Response,
+  respond: (url: string, method: string, body?: unknown) => Response,
 ): Promise<{
   context: Parameters<typeof model.methods.pr_merged.execute>[1];
   writes: RecordedWrite[];
@@ -2272,7 +2273,10 @@ async function buildOnlineTestContext(
     init?: RequestInit,
   ): Promise<Response> => {
     const url = typeof input === "string" ? input : String(input);
-    return Promise.resolve(respond(url, init?.method ?? "GET"));
+    const body = typeof init?.body === "string"
+      ? JSON.parse(init.body)
+      : undefined;
+    return Promise.resolve(respond(url, init?.method ?? "GET", body));
   }) as typeof fetch;
 
   return {
@@ -2329,6 +2333,178 @@ Deno.test("plan: succeeds unchanged when no credentials are configured", async (
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite!.data.phase, "plan_generated");
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// iterate — reopening an approved plan
+// ---------------------------------------------------------------------------
+
+const APPROVED_PLAN_V1 = {
+  version: 1,
+  summary: "s",
+  dddAnalysis: "d",
+  steps: [{ order: 1, description: "x", files: ["a.ts"] }],
+  testingStrategy: "t",
+  potentialChallenges: [],
+  feedbackIncorporated: [],
+  generatedAt: "2026-10-15T00:00:00.000Z",
+};
+
+const REVISED_PLAN_ARGS = {
+  feedback: "the approved plan missed a step",
+  summary: "s2",
+  dddAnalysis: "d2",
+  steps: [
+    { order: 1, description: "x", files: ["a.ts"] },
+    { order: 2, description: "y", files: ["b.ts"] },
+  ],
+  testingStrategy: "t2",
+  potentialChallenges: [],
+};
+
+/** A check context whose data repository answers from `resources`. */
+function checkContextFor(
+  methodName: string,
+  resources: Record<string, unknown>,
+) {
+  return {
+    methodName,
+    dataRepository: {
+      getContent: (_type: string, _modelId: string, dataName: string) =>
+        Promise.resolve(
+          dataName in resources
+            ? new TextEncoder().encode(JSON.stringify(resources[dataName]))
+            : null,
+        ),
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+}
+
+/** Run `iterate` from `phase` with plan v1 in place, offline or online. */
+async function iterateFrom(
+  base: Awaited<ReturnType<typeof buildTestContext>>["context"],
+  phase: string,
+): Promise<void> {
+  await base.writeResource("state", "state-main", { phase, issueNumber: 42 });
+  await base.writeResource("plan", "plan-main", APPROVED_PLAN_V1);
+  await model.methods.iterate.execute(REVISED_PLAN_ARGS, {
+    ...base,
+    dataRepository: {
+      findAllForModel: () => Promise.resolve([]),
+      getContent: () => Promise.resolve(null),
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  });
+}
+
+Deno.test("valid-transition: iterate runs from approved but not once implementing", async () => {
+  const check = model.checks["valid-transition"];
+  const fromApproved = await check.execute(
+    checkContextFor("iterate", { "state-main": { phase: "approved" } }),
+  );
+  assertEquals(fromApproved.pass, true);
+
+  const fromImplementing = await check.execute(
+    checkContextFor("iterate", { "state-main": { phase: "implementing" } }),
+  );
+  assertEquals(fromImplementing.pass, false);
+});
+
+Deno.test("iterate: reopens an approved plan as the next version", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await iterateFrom(context, "approved");
+
+    const plan = writes.findLast((w) => w.instanceName === "plan-main");
+    assertEquals(plan!.data.version, 2);
+    assertEquals(plan!.data.feedbackIncorporated, [REVISED_PLAN_ARGS.feedback]);
+    const feedback = writes.find((w) => w.instanceName === "feedback-main");
+    assertEquals(feedback!.data.planVersionReviewed, 1);
+    const state = writes.findLast((w) => w.instanceName === "state-main");
+    assertEquals(state!.data.phase, "plan_generated");
+  } finally {
+    await restore();
+  }
+});
+
+/** Run `iterate` online from `phase`, returning every request it made. */
+async function iterateOnlineFrom(
+  phase: string,
+): Promise<{ method: string; url: string; body?: unknown }[]> {
+  const requests: { method: string; url: string; body?: unknown }[] = [];
+  const { context, restore } = await buildOnlineTestContext(
+    42,
+    (url, method, body) => {
+      requests.push({ method, url, body });
+      return new Response("{}", { status: 200 });
+    },
+  );
+  try {
+    await iterateFrom(context, phase);
+  } finally {
+    await restore();
+  }
+  return requests;
+}
+
+Deno.test("iterate: a reopened plan's entry targets in_progress and names the reopen", async () => {
+  const requests = await iterateOnlineFrom("approved");
+
+  const entry = requests.find((r) => r.url.endsWith("/lifecycle"))!
+    .body as Record<string, unknown>;
+  assertEquals(entry.step, "plan_revised");
+  assertEquals(entry.targetStatus, "in_progress");
+  assertStringIncludes(String(entry.summary), "Approved plan reopened");
+  assertEquals(
+    (entry.payload as Record<string, unknown>).reopenedFromApproved,
+    true,
+  );
+  assertEquals(
+    requests.some((r) => r.method === "PATCH"),
+    false,
+    "reopening must not try to move the swamp-club status",
+  );
+});
+
+Deno.test("iterate: a plan_generated revision still targets triaged", async () => {
+  const requests = await iterateOnlineFrom("plan_generated");
+
+  const entry = requests.find((r) => r.url.endsWith("/lifecycle"))!
+    .body as Record<string, unknown>;
+  assertEquals(entry.targetStatus, "triaged");
+  assertStringIncludes(String(entry.summary), "Plan revised");
+  assertEquals(
+    "reopenedFromApproved" in (entry.payload as Record<string, unknown>),
+    false,
+  );
+  assertEquals(requests.some((r) => r.method === "PATCH"), false);
+});
+
+Deno.test("adversarial-review-clear: a reopened plan cannot be re-approved on the old review", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await iterateFrom(context, "approved");
+    const plan = writes.findLast((w) => w.instanceName === "plan-main");
+
+    const result = await model.checks["adversarial-review-clear"].execute(
+      checkContextFor("approve", {
+        "plan-main": plan!.data,
+        "adversarialReview-main": {
+          planVersion: 1,
+          findings: [],
+          reviewedAt: "2026-10-15T00:00:00.000Z",
+        },
+      }),
+    );
+    assertEquals(result.pass, false);
+    assertStringIncludes(result.errors![0], "plan v1");
+    assertStringIncludes(result.errors![0], "current plan is v2");
   } finally {
     await restore();
   }

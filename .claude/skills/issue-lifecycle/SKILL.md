@@ -340,7 +340,7 @@ Use this table to determine what to do next:
 | `triaging`       | Read [references/triage.md](references/triage.md); duplicate of a shipped issue → `mark_duplicate` |
 | `classified`     | Read [references/planning.md](references/planning.md)                                              |
 | `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)                          |
-| `approved`       | Read [references/implementation.md](references/implementation.md)                                  |
+| `approved`       | Read [references/implementation.md](references/implementation.md); plan needs changes → `iterate`  |
 | `implementing`   | Run code conformance review, then verify                                                           |
 | `verifying`      | Read [references/verification.md](references/verification.md)                                      |
 | `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed                            |
