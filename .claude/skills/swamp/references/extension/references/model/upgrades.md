@@ -39,7 +39,7 @@ Upgrades are **lazy** — they run at method execution time, not at load time:
 4. The upgraded definition is persisted with the new `typeVersion`. Only the
    values that changed are rewritten: comments, anchors and formatting elsewhere
    in the YAML survive. A legacy `<uuid>.yaml` file moves to `<name>.yaml` on
-   this save, and the run logs both the upgrade and the move
+   this save, and the run logs both the upgrade and the move.
 5. The upgrade only runs once — subsequent method calls skip it
 
 `swamp behavior validate` and the check before each workflow step apply the

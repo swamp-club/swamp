@@ -1509,7 +1509,12 @@ function editScalarsInPlace(
   if (!collectScalarEdits(docs[0].contents, oldData, newData, edits)) {
     return undefined;
   }
-  for (const { token, value } of edits) CST.setScalarValue(token, value);
+  try {
+    for (const { token, value } of edits) CST.setScalarValue(token, value);
+  } catch {
+    // A token the CST cannot rewrite leaves the change to the document merge.
+    return undefined;
+  }
   return tokens.map((token) => CST.stringify(token)).join("");
 }
 
