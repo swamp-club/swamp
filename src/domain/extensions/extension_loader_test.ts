@@ -1511,10 +1511,16 @@ Deno.test("buildIndex: a changed pulled source typed command/shell leaves the bu
 
 // -- Recorded source modules (swamp-club#3385) ---------------------------
 
-/** A catalog whose writes of recorded source modules fail. */
+/** A catalog whose writes of recorded source modules fail once armed. */
 class RecordThrowingCatalogStore extends ExtensionCatalogStore {
-  override recordSourceModules(): void {
-    throw new Error("simulated catalog write failure");
+  armed = false;
+  override recordSourceModules(
+    sourcePath: string,
+    modules: readonly string[],
+    options?: { graphPending?: boolean },
+  ): void {
+    if (this.armed) throw new Error("simulated catalog write failure");
+    super.recordSourceModules(sourcePath, modules, options);
   }
 }
 
@@ -1623,6 +1629,7 @@ async function recordedAfterOneBundle(args: {
         graphPending: args.seedGraphPending,
       });
     }
+    if (catalog instanceof RecordThrowingCatalogStore) catalog.armed = true;
     const { result } = await withMockedCommand(
       (_command, commandArgs) => {
         if (args.bundleFails) {
@@ -1779,6 +1786,15 @@ Deno.test("bundleWithCache: a module graph over the cap records the relative imp
   });
   assertEquals(recorded, [paths.entry]);
   assertEquals(graphPending, false);
+});
+
+Deno.test("bundleWithCache: a catalog write error after a good bundle forgets the earlier list, so the next scan rebuilds it (swamp-club#3487)", async () => {
+  const { recorded, failed } = await recordedAfterOneBundle({
+    recordThrows: true,
+    seed: (p) => [p.entry, p.lib],
+  });
+  assertEquals(failed, 0);
+  assertEquals(recorded, undefined);
 });
 
 Deno.test("bundleWithCache: a catalog write error after a good bundle does not fail the bundle (swamp-club#3487)", async () => {

@@ -330,8 +330,10 @@ export class ExtensionLoader {
    * recorded graph pending, so the next warm scan finds the source stale,
    * unless this bundle was that retry (`graphRetry`), in which case the
    * fallback is kept (swamp-club#3487). A graph over
-   * {@link MAX_SOURCE_MODULES} is not retried. A catalog error is logged,
-   * not thrown: the bundle it follows is good.
+   * {@link MAX_SOURCE_MODULES} is not retried. A catalog error does not
+   * fail the good bundle it follows: the recorded list, which may name
+   * modules the source no longer imports, is forgotten instead, so the
+   * next warm scan rebuilds it. Only a failure to forget it is thrown.
    */
   private async recordSourceModules(
     absolutePath: string,
@@ -382,7 +384,8 @@ export class ExtensionLoader {
       catalog.recordSourceModules(absolutePath, modules, { graphPending });
     } catch (error) {
       this.logger
-        .debug`Could not record the modules of ${absolutePath}: ${error}`;
+        .debug`Could not record the modules of ${absolutePath}, forgetting the recorded ones: ${error}`;
+      catalog.deleteSourceModules(absolutePath);
     }
   }
 
