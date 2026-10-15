@@ -59,6 +59,7 @@ import { initializeTestRepo } from "./test_helpers.ts";
 import {
   type Canary,
   classifyValue,
+  type CountingVault,
   generateCanaries,
   registerCountingVault,
   type ValueKind,
@@ -104,22 +105,23 @@ async function withCanaryRepo(
   fn: (
     repoDir: string,
     canaries: Canary[],
-    vault: ReturnType<typeof registerCountingVault>,
+    vault: CountingVault,
   ) => Promise<void>,
 ): Promise<void> {
   const canaries = generateCanaries();
-  const vault = registerCountingVault(
-    Object.fromEntries(canaries.map((c, i) => [keyOf(i), c.value])),
-  );
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-3511-" });
+  let vault: CountingVault | undefined;
   try {
+    vault = registerCountingVault(
+      Object.fromEntries(canaries.map((c, i) => [keyOf(i), c.value])),
+    );
     await initializeTestRepo(repoDir);
     await new YamlVaultConfigRepository(repoDir).save(
       VaultConfig.create(crypto.randomUUID(), VAULT, vault.type, {}),
     );
     await fn(repoDir, canaries, vault);
   } finally {
-    vault.dispose();
+    vault?.dispose();
     if (Deno.build.os === "windows") {
       await Deno.remove(repoDir, { recursive: true }).catch(() => {});
     } else {
@@ -242,6 +244,20 @@ async function runRecorder(
 ): Promise<Seen> {
   const seen: Seen = {};
   const type = registerRecorder(canaries, seen);
+  try {
+    await runRecorderSteps(repoDir, canaries, type);
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
+  return seen;
+}
+
+/** Runs `create` then `update` on the recorder `type`. */
+async function runRecorderSteps(
+  repoDir: string,
+  canaries: readonly Canary[],
+  type: string,
+): Promise<void> {
   const globals = Object.fromEntries(
     canaries.flatMap((c, i) =>
       NOT_GLOBAL.has(c.class) ? [] : [[`g${i}`, ref(i)]]
@@ -283,7 +299,6 @@ async function runRecorder(
     }),
   );
   assertEquals(status, "succeeded", errors.join("\n"));
-  return seen;
 }
 
 /** The value kind of each canary's entry in `values`, by class. */
@@ -319,7 +334,7 @@ function globalsOf(
 
 /** Vault reads per key; a stored sensitive field is named `stored-s<i>`. */
 function readCounts(
-  vault: ReturnType<typeof registerCountingVault>,
+  vault: CountingVault,
 ): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const { key } of vault.reads) {

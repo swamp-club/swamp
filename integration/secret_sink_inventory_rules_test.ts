@@ -150,23 +150,87 @@ Deno.test("secret sink inventory: entry ids are unique", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Event kinds and protocol verbs (anchors for rules 2 and 4)
+// ---------------------------------------------------------------------------
+
+const EVENTS_FILE = "src/domain/workflows/execution_events.ts";
+const PROTOCOL_FILE = "src/domain/remote/protocol.ts";
+
+/**
+ * The statement that begins at `start`, up to its closing `;`, with comments
+ * removed. Brackets and string literals are tracked, so a `;` or `}` inside
+ * a nested object type, a string or a comment never ends it early.
+ */
+function statementAt(code: string, start: string): string {
+  const from = code.indexOf(start);
+  assert(from >= 0, `missing ${start}`);
+  let depth = 0;
+  let out = "";
+  for (let i = from; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === "/" && code[i + 1] === "*") {
+      i = code.indexOf("*/", i + 2) + 1;
+      continue;
+    }
+    if (ch === "/" && code[i + 1] === "/") {
+      i = code.indexOf("\n", i) - 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      while (j < code.length && code[j] !== ch) j += code[j] === "\\" ? 2 : 1;
+      out += code.slice(i, j + 1);
+      i = j;
+      continue;
+    }
+    if ("{[(".includes(ch)) depth++;
+    if ("}])".includes(ch)) depth--;
+    if (ch === ";" && depth === 0) return out + ch;
+    out += ch;
+  }
+  throw new Error(`no end to the statement at ${start}`);
+}
+
+const EVENTS_CODE = await Deno.readTextFile(join(ROOT, EVENTS_FILE));
+const PROTOCOL_CODE = await Deno.readTextFile(join(ROOT, PROTOCOL_FILE));
+
+/** `<file>: <kind>` for every member of the WorkflowExecutionEvent union. */
+const EVENT_KINDS = new Set(
+  [
+    ...statementAt(EVENTS_CODE, "export type WorkflowExecutionEvent =")
+      .matchAll(/\bkind: "([a-z_]+)"/g),
+  ].map((m) => `${EVENTS_FILE}: ${m[1]}`),
+);
+
+/** `<file>: <verb>` for every RemoteMethod and WorkerMethod value. */
+const PROTOCOL_VERBS = new Set(
+  ["export const RemoteMethod =", "export const WorkerMethod ="].flatMap((
+    start,
+  ) =>
+    [
+      ...statementAt(PROTOCOL_CODE, start).matchAll(
+        /:\s*"((?:worker|capability)\.[\w.]+)"/g,
+      ),
+    ].map((m) => `${PROTOCOL_FILE}: ${m[1]}`)
+  ),
+);
+
+// ---------------------------------------------------------------------------
 // Rule 2: anchors exist
 // ---------------------------------------------------------------------------
 
-/**
- * Whether `name` is a top-level declaration in `code` or a string literal
- * in it (an event kind or protocol verb).
- */
+/** Whether `name` is a top-level declaration in `code`. */
 function declares(code: string, name: string): boolean {
-  for (const line of code.split("\n")) {
-    if (line.match(TOP_LEVEL_DECLARATION)?.[1] === name) return true;
-  }
-  return code.includes(`"${name}"`);
+  return code.split("\n").some((line) =>
+    line.match(TOP_LEVEL_DECLARATION)?.[1] === name
+  );
 }
 
 Deno.test("secret sink inventory: every anchor exists", async () => {
   const gone: string[] = [];
   for (const anchor of ANCHORS) {
+    // An event kind or protocol verb exists while the scan still finds it.
+    if (EVENT_KINDS.has(anchor) || PROTOCOL_VERBS.has(anchor)) continue;
     const [file, name] = anchor.split(": ");
     let code: string;
     try {
@@ -503,31 +567,11 @@ for (const scan of PRIMITIVE_SCANS) {
 // Rule 4: event kinds and protocol verbs
 // ---------------------------------------------------------------------------
 
-/** The text from `start` to the first line after it that matches `end`. */
-function block(code: string, start: string, end: RegExp): string {
-  const from = code.indexOf(start);
-  assert(from >= 0, `missing ${start}`);
-  const rest = code.slice(from);
-  const stop = rest.split("\n").findIndex((l, i) => i > 0 && end.test(l));
-  return rest.split("\n").slice(0, stop + 1).join("\n");
-}
-
-const EVENTS_FILE = "src/domain/workflows/execution_events.ts";
-const PROTOCOL_FILE = "src/domain/remote/protocol.ts";
-
-Deno.test("secret sink inventory: every workflow event kind is inventoried", async () => {
-  const code = await Deno.readTextFile(join(ROOT, EVENTS_FILE));
-  const union = block(
-    code,
-    "export type WorkflowExecutionEvent =",
-    /^\s*};$/,
-  );
-  const kinds = [...union.matchAll(/kind: "([a-z_]+)"/g)].map((m) =>
-    `${EVENTS_FILE}: ${m[1]}`
-  );
-  assertGreater(kinds.length, 15);
+Deno.test("secret sink inventory: every workflow event kind is inventoried", () => {
+  // Proves the union is still parsed whole.
+  assertGreater(EVENT_KINDS.size, 15);
   assertPinnedSet(
-    [...new Set(kinds)].filter((k) => !ANCHORS.has(k)).sort(),
+    [...EVENT_KINDS].filter((k) => !ANCHORS.has(k)).sort(),
     [],
     "Workflow event kinds not in the inventory",
     "Anchor the new kind to the entry whose fields it carries " +
@@ -535,19 +579,10 @@ Deno.test("secret sink inventory: every workflow event kind is inventoried", asy
   );
 });
 
-Deno.test("secret sink inventory: every remote protocol verb is inventoried", async () => {
-  const code = await Deno.readTextFile(join(ROOT, PROTOCOL_FILE));
-  const verbs = [
-    block(code, "export const RemoteMethod = {", /^} as const;/),
-    block(code, "export const WorkerMethod = {", /^} as const;/),
-  ].flatMap((b) =>
-    [...b.matchAll(/:\s*"((?:worker|capability)\.[\w.]+)"/g)].map((m) =>
-      `${PROTOCOL_FILE}: ${m[1]}`
-    )
-  );
-  assertGreater(verbs.length, 10);
+Deno.test("secret sink inventory: every remote protocol verb is inventoried", () => {
+  assertGreater(PROTOCOL_VERBS.size, 10);
   assertPinnedSet(
-    verbs.filter((v) => !ANCHORS.has(v)).sort(),
+    [...PROTOCOL_VERBS].filter((v) => !ANCHORS.has(v)).sort(),
     [],
     "Remote protocol verbs not in the inventory",
     "Anchor the new verb to dispatch-control-frames, or to " +
