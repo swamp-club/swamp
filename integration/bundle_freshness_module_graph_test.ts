@@ -22,7 +22,8 @@
 // `deno info`. Editing either module must make the warm scan find the model
 // stale, which the relative-import walk bounded at extensions/models never
 // did; editing an unrelated file must not, and a scan with no edits must
-// read no module graph.
+// read no module graph. A graph that cannot be read is retried once
+// (swamp-club#3487).
 
 import { assertEquals } from "@std/assert";
 import { basename, join } from "@std/path";
@@ -168,4 +169,139 @@ Deno.test("bundle freshness: editing a module outside the kind directory or a si
       await Deno.remove(repoDir, { recursive: true });
     }
   }
+});
+
+/**
+ * Builds the swamp-club#3385 layout and a loader whose module-graph reader
+ * fails while `failing(readNumber)` is true, then hands both to `body`.
+ */
+async function withFlakyGraphReader(
+  failing: (readNumber: number) => boolean,
+  body: (ctx: {
+    loader: ExtensionLoader;
+    catalog: ExtensionCatalogStore;
+    modelsDir: string;
+    entry: string;
+    lib: string;
+    graphReads: () => number;
+    staleNow: () => Promise<string[]>;
+  }) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_3487_graph_" });
+  const modelsDir = join(repoDir, "extensions", "models");
+  const libDir = join(repoDir, "extensions", "lib");
+  await ensureDir(modelsDir);
+  await ensureDir(libDir);
+  await ensureDir(join(repoDir, ".swamp"));
+  const type = `@test/graph-${crypto.randomUUID().slice(0, 8)}`;
+  const entry = join(modelsDir, "echo.ts");
+  const lib = join(libDir, "msg.ts");
+  await Deno.writeTextFile(entry, modelCode(type));
+  await Deno.writeTextFile(lib, 'export const MSG = "v1";\n');
+  await Deno.writeTextFile(join(modelsDir, "side.ts"), "export {};\n");
+
+  const catalog = new ExtensionCatalogStore(
+    join(repoDir, ".swamp", "_extension_catalog.db"),
+  );
+  let graphReads = 0;
+  const flakyReader: ModuleGraphReaderFactory = (denoPath, env) => {
+    const reader = createDenoInfoModuleGraphReader(denoPath, env);
+    return {
+      read: (entryPoint, project) => {
+        graphReads++;
+        if (failing(graphReads)) {
+          return Promise.reject(new Error("simulated deno info timeout"));
+        }
+        return reader.read(entryPoint, project);
+      },
+    };
+  };
+  try {
+    const loader = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      new ExtensionRepository({
+        catalog,
+        lockfileRepository: new LockfileRepository(
+          join(repoDir, "upstream_extensions.json"),
+        ),
+        repoRoot: repoDir,
+      }),
+      undefined,
+      flakyReader,
+    );
+    await body({
+      loader,
+      catalog,
+      modelsDir,
+      entry,
+      lib,
+      graphReads: () => graphReads,
+      staleNow: async () =>
+        (await findStaleFiles({
+          modelsDir,
+          catalog,
+          discoverFiles: () => Promise.resolve(["echo.ts", "side.ts"]),
+          kinds: ["model"],
+          repoDir,
+        })).map((s) => s.relativePath).filter((p) => p === "echo.ts"),
+    });
+  } finally {
+    catalog.close();
+    modelRegistry.invalidateType(type);
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("bundle freshness: a module graph that fails to read once is read again on the next scan (swamp-club#3487)", async () => {
+  await withFlakyGraphReader(
+    (n) => n === 1,
+    async (
+      { loader, catalog, modelsDir, entry, lib, graphReads, staleNow },
+    ) => {
+      await loader.buildIndex(modelsDir);
+      assertEquals(graphReads(), 1);
+      assertEquals(catalog.isSourceGraphPending(entry), true);
+      assertEquals(await staleNow(), ["echo.ts"], "stale for its one retry");
+
+      await loader.buildIndex(modelsDir);
+      assertEquals(graphReads(), 2, "the retry read the graph");
+      assertEquals(catalog.isSourceGraphPending(entry), false);
+      assertEquals(
+        (catalog.findSourceModules(entry) ?? []).map((p) => basename(p))
+          .sort(),
+        ["echo.ts", "msg.ts", "side.ts"],
+      );
+      assertEquals(await staleNow(), []);
+
+      await Deno.writeTextFile(lib, 'export const MSG = "v2";\n');
+      assertEquals(await staleNow(), ["echo.ts"], "an edit to ../lib/msg.ts");
+    },
+  );
+});
+
+Deno.test("bundle freshness: a module graph that never reads is retried once, then the relative imports are kept (swamp-club#3487)", async () => {
+  await withFlakyGraphReader(
+    () => true,
+    async ({ loader, catalog, modelsDir, entry, graphReads, staleNow }) => {
+      await loader.buildIndex(modelsDir);
+      await loader.buildIndex(modelsDir);
+      assertEquals(graphReads(), 2, "the first read and its one retry");
+      assertEquals(catalog.isSourceGraphPending(entry), false);
+      assertEquals(
+        (catalog.findSourceModules(entry) ?? []).map((p) => basename(p)),
+        ["echo.ts"],
+      );
+      assertEquals(await staleNow(), []);
+
+      await loader.buildIndex(modelsDir);
+      assertEquals(graphReads(), 2, "no further retry with no edits");
+    },
+  );
 });

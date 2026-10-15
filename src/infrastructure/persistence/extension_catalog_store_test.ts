@@ -27,6 +27,7 @@ import {
   ExtensionCatalogStore,
   type ExtensionTypeRow,
 } from "./extension_catalog_store.ts";
+import { MAX_SOURCE_MODULES } from "../../domain/extensions/bundle_freshness.ts";
 
 /**
  * Returns a dbPath at `<tmpRepo>/.swamp/_extension_catalog.db` so the
@@ -3394,5 +3395,90 @@ Deno.test("ExtensionCatalogStore: a malformed recorded module list reads as none
     } finally {
       reopened.close();
     }
+  }
+});
+
+// -- Graph-pending source modules (swamp-club#3487) ----------------------
+
+Deno.test("ExtensionCatalogStore: a graph-pending mark is set by a record, cleared by a re-record, and taken once", () => {
+  const dbPath = makeTempDbPath();
+  const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(store.isSourceGraphPending(entry), false);
+    assertEquals(store.takeSourceGraphPending(entry), false);
+
+    store.recordSourceModules(entry, [entry], { graphPending: true });
+    assertEquals(store.isSourceGraphPending(entry), true);
+    assertEquals(store.findSourceModules(entry), [entry]);
+    store.recordSourceModules(entry, [entry]);
+    assertEquals(store.isSourceGraphPending(entry), false);
+
+    store.recordSourceModules(entry, [entry], { graphPending: true });
+    assertEquals(store.takeSourceGraphPending(entry), true);
+    assertEquals(store.isSourceGraphPending(entry), false);
+    assertEquals(store.takeSourceGraphPending(entry), false);
+    assertEquals(store.findSourceModules(entry), [entry], "the list is kept");
+
+    store.recordSourceModules(entry, [entry], { graphPending: true });
+    store.deleteSourceModules(entry);
+    assertEquals(store.isSourceGraphPending(entry), false);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: a catalog whose source_modules has no graph_pending column gains it on open", () => {
+  const dbPath = makeTempDbPath();
+  const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
+  const store = new ExtensionCatalogStore(dbPath);
+  store.close();
+  // The table as the swamp-club#3385 binary created it.
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("DROP TABLE source_modules");
+    db.exec(
+      "CREATE TABLE source_modules (source_path TEXT NOT NULL PRIMARY KEY, modules TEXT NOT NULL)",
+    );
+    db.prepare("INSERT INTO source_modules VALUES (?, ?)").run(
+      canonicalizePath(entry),
+      JSON.stringify([entry]),
+    );
+  } finally {
+    db.close();
+  }
+  const reopened = new ExtensionCatalogStore(dbPath);
+  try {
+    assertEquals(reopened.findSourceModules(entry), [entry]);
+    assertEquals(reopened.isSourceGraphPending(entry), false);
+    reopened.recordSourceModules(entry, [entry], { graphPending: true });
+    assertEquals(reopened.isSourceGraphPending(entry), true);
+  } finally {
+    reopened.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: a module list over the cap is refused, not stored", () => {
+  const dbPath = makeTempDbPath();
+  const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
+  const store = new ExtensionCatalogStore(dbPath);
+  try {
+    store.recordSourceModules(entry, [entry]);
+    assertThrows(
+      () =>
+        store.recordSourceModules(
+          entry,
+          Array.from({ length: MAX_SOURCE_MODULES + 1 }, () => entry),
+        ),
+      RangeError,
+    );
+    assertEquals(store.findSourceModules(entry), [entry]);
+    store.recordSourceModules(
+      entry,
+      Array.from({ length: MAX_SOURCE_MODULES }, () => entry),
+    );
+    assertEquals(store.findSourceModules(entry)?.length, MAX_SOURCE_MODULES);
+  } finally {
+    store.close();
   }
 });
