@@ -161,19 +161,6 @@ async function runInProcess(bootstrap: RunnerBootstrapParams): Promise<
   return { result: resultFrame.result as DispatchResult, frames };
 }
 
-async function withCacheDir(fn: (dir: string) => Promise<void>) {
-  const dir = await Deno.makeTempDir({ prefix: "swamp-baseline-cache-" });
-  try {
-    await fn(dir);
-  } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(dir, { recursive: true });
-    }
-  }
-}
-
 function stepRequest(
   overrides: Partial<RemoteStepRequest> & {
     methodArgs: Record<string, unknown>;
@@ -207,7 +194,7 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    await withCacheDir(async (cacheDirPath) => {
+    await withTempDir(async (cacheDirPath) => {
       const secret = canary("result-error");
       const { result, frames } = await runInProcess({
         sessionCredential: "unused",
@@ -250,7 +237,7 @@ Deno.test({
           };
           leaseId = params.leaseId;
           let run: RunnerRun | undefined;
-          await withCacheDir(async (cacheDirPath) => {
+          await withTempDir(async (cacheDirPath) => {
             run = await runInProcess({
               sessionCredential: params.dispatchCredential ?? "",
               dataPlaneUrl: o.dataPlaneUrl,
@@ -303,7 +290,7 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    await withCacheDir(async (cacheDirPath) => {
+    await withTempDir(async (cacheDirPath) => {
       const secret = canary("runner-log");
       const logs = await captureLogs(async () => {
         await runInProcess({

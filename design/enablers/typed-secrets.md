@@ -1314,7 +1314,8 @@ characterization of prohibited sinks runs in the swamp-uat acceptance suite,
 where each baseline exception names the phase that removes it. The one
 exception is the remote path: the worker-authorization and control/data-plane
 characterization (`integration/remote_secrets_baseline_*`, swamp-club#3512)
-runs in-process here, because its sinks (dispatch and bootstrap frames, runner
+runs here, in-process apart from one supervisor test that spawns a runner
+fixture (not the CLI), because its sinks (dispatch and bootstrap frames, runner
 stderr, step-lease errors) sit between serve, the worker supervisor and the
 runner, where a black-box scan cannot separate the hops. Those tests pin
 current behavior as a baseline for Phase 5; they are not a zero-plaintext

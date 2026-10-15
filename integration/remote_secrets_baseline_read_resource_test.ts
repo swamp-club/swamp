@@ -138,11 +138,13 @@ function channelPair(): [RpcChannel, RpcChannel] {
  * Registers a dispatch of model A for the worker and builds the runner's
  * remote method context over the production verb path. `allowedSecrets`
  * defaults to what DispatchService derives for a step whose (resolved) args
- * carry no vault expression: an empty allowlist.
+ * carry no vault expression: an empty allowlist. `null` registers no
+ * allowlist at all, which CapabilityService treats as allow-all (`undefined`
+ * would take the default instead).
  */
 async function withFixture(
   fn: (f: Fixture) => Promise<void>,
-  allowedSecrets: VaultExtractionResult | undefined = extractVaultReferences(
+  allowedSecrets: VaultExtractionResult | null = extractVaultReferences(
     {},
     {},
   ),
@@ -167,7 +169,7 @@ async function withFixture(
         methodName: "run",
         definitionName: "baseline-rr",
         definitionTags: {},
-        allowedSecrets,
+        allowedSecrets: allowedSecrets ?? undefined,
       });
       const record = o.gateway.sessions.issueForDispatch(WORKER, dispatchId);
 
@@ -379,7 +381,7 @@ Deno.test({
         password: secret,
         note: "n",
       });
-    }, undefined);
+    }, null);
   },
 });
 
@@ -413,7 +415,7 @@ Deno.test({
           { password: secret, note: "n" },
           malformed,
         );
-      }, undefined);
+      }, null);
     }
   },
 });
