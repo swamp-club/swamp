@@ -773,9 +773,19 @@ changes.
    a content read that failed.
 
    The first build of a loader has no earlier version to fall back on, so
-   it fails closed: it throws `UnreadableAccessRecordsError`, naming the
-   records, and serve refuses to start, as do `swamp access reload` and
-   `swamp access check`. Every later build succeeds:
+   it fails closed: it throws `UnreadableAccessRecordsError`, and serve
+   refuses to start, as do `swamp access reload` and `swamp access check`.
+   A record that cannot be loaded may be a deny, and the loader cannot tell.
+   The error lists each record with its fix. A corrupt record (JSON or
+   metadata that does not parse, which throws `SyntaxError`, or metadata
+   that fails its schema, `ZodError`) never loads by itself, so the error names the
+   command that removes it, `swamp data delete <model-id> grant-main -y`
+   (`group-main` for a group). Any other failure, such as `PermissionDenied`,
+   is unreadable: give the process read access and retry. This applies to
+   allows too, so a datastore with one damaged record of any kind stops
+   these commands until it is fixed, where earlier releases skipped it.
+
+   Every later build succeeds:
    - a grant whose last-known version, read by an earlier build of this
      process, was an active deny stays in force (fail closed);
    - any other grant is left out. Leaving out an allow is fail safe. A deny
@@ -787,15 +797,20 @@ changes.
      Allow conditions that test membership of the group still see the
      last-known members. A group never read is left out.
 
-   Each record is logged at error once, at debug while it stays the same,
-   and at info once it reads again. `PolicySnapshotLoader.unreadable` lists
+   Each record is logged at error once, with the removal command when it is
+   corrupt, at debug while it stays the same, and at info once it reads
+   again. A record stays the same while its outcome and error class do, so
+   an error message that varies (a remote request id) does not repeat the
+   error line. `PolicySnapshotLoader.unreadable` lists
    the records the last successful build could not read, whoever ran it
    (the boot load, an auto-mode rebuild, the reload endpoint, the poller).
    The poller rebuilds every cycle while that list is non-empty, because the
    filesystem change source cannot see a file turning readable again (a mode
    change moves only its ctime) and a remote datastore's read can fail for
-   one cycle. A rebuild that finds the same unreadable records logs its
-   snapshot line at debug. The change source fingerprints each directory or
+   one cycle. A rebuild that finds the same unreadable records and loads the
+   same grants and groups as the last one logs its snapshot line at debug
+   and skips the unsupplied-field warnings; one that loads a peer's change
+   logs and warns as usual. The change source fingerprints each directory or
    entry it cannot read as its error and keeps walking everything beside it,
    so an unreadable old version never hides a new version of the record, and
    every other record is still compared. A build that throws (a grant or

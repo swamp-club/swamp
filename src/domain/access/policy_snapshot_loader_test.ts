@@ -52,6 +52,7 @@ import {
   withoutAllowsToGroups,
 } from "./policy_snapshot_loader.ts";
 import { MissingConditionFieldError } from "./condition_fields.ts";
+import { UserError } from "../errors.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 
 await initializeLogging({});
@@ -1024,17 +1025,23 @@ Deno.test("PolicySnapshotLoader.load: checks a grant again when its selector cha
 type FakeRecord =
   | { kind: "grant"; attrs: Grant }
   | { kind: "group"; attrs: Group }
-  | { kind: "grant" | "group"; unreadable: "content" | "listing" | "json" };
+  | {
+    kind: "grant" | "group";
+    unreadable: "content" | "listing" | "metadata" | "json";
+  };
 
 /**
  * A data repository over records a test can change between loads. A record
  * unreadable at "listing" is reported by findAllForType, as the filesystem
- * repository reports a directory it cannot read; at "content", getContent
- * throws; at "json", the content does not parse.
+ * repository reports a directory it cannot read, and at "metadata" as it
+ * reports metadata that does not parse; at "content", getContent throws,
+ * with a message that differs on every read, as a remote error's may; at
+ * "json", the content does not parse.
  */
 function createChangingDataRepo(
   records: Map<string, FakeRecord>,
 ): UnifiedDataRepository & { failListing: boolean } {
+  let reads = 0;
   const repo = {
     failListing: false,
     findAllForType(
@@ -1052,11 +1059,16 @@ function createChangingDataRepo(
       const found = [];
       for (const [modelId, record] of records) {
         if (record.kind !== kind) continue;
-        if ("unreadable" in record && record.unreadable === "listing") {
+        if (
+          "unreadable" in record &&
+          (record.unreadable === "listing" || record.unreadable === "metadata")
+        ) {
           options?.unreadable?.push({
             modelType: type,
             modelId,
-            error: new Deno.errors.PermissionDenied("listing"),
+            error: record.unreadable === "listing"
+              ? new Deno.errors.PermissionDenied("listing")
+              : new SyntaxError("bad metadata.yaml"),
           });
           continue;
         }
@@ -1073,7 +1085,9 @@ function createChangingDataRepo(
       if (!record) return Promise.resolve(null);
       if ("unreadable" in record) {
         if (record.unreadable === "content") {
-          return Promise.reject(new Deno.errors.PermissionDenied("raw"));
+          return Promise.reject(
+            new Deno.errors.PermissionDenied(`raw, read ${++reads}`),
+          );
         }
         return Promise.resolve(new TextEncoder().encode("{not json"));
       }
@@ -1160,7 +1174,9 @@ Deno.test("PolicySnapshotLoader.load: an unreadable deny it read before stays in
 });
 
 Deno.test("PolicySnapshotLoader.load: the first build refuses a record it cannot read, so serve does not start without a deny", async () => {
-  for (const unreadable of ["content", "listing", "json"] as const) {
+  for (
+    const unreadable of ["content", "listing", "metadata", "json"] as const
+  ) {
     const records = new Map<string, FakeRecord>([
       ["d", { kind: "grant", unreadable }],
       ["a", { kind: "grant", attrs: makeGrant({ id: "allow-1" }) }],
@@ -1384,5 +1400,108 @@ Deno.test("withoutAllowsToGroups: drops only allows whose subject is a suspended
       new Set(["devs"]),
     ),
     [denyToDevs, allowToOps, allowToUser],
+  );
+});
+
+Deno.test("PolicySnapshotLoader.load: the first-build error tells a corrupt record from an unreadable one and names the fix", async () => {
+  const records = new Map<string, FakeRecord>([
+    ["bad-json", { kind: "grant", unreadable: "json" }],
+    ["bad-meta", { kind: "group", unreadable: "metadata" }],
+    ["no-access", { kind: "grant", unreadable: "content" }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  const error = await assertRejects(
+    () => loader.load(),
+    UnreadableAccessRecordsError,
+  );
+  await loader.dispose();
+
+  assertEquals(error instanceof UserError, true);
+  assertEquals(error.code, "access_records_unloadable");
+  const lines = error.message.split("\n");
+  const line = (id: string) => lines.find((l) => l.includes(`/${id} `)) ?? "";
+  assertStringIncludes(line("bad-json"), "is corrupt");
+  assertStringIncludes(
+    line("bad-json"),
+    "swamp data delete bad-json grant-main -y",
+  );
+  assertStringIncludes(line("bad-meta"), "is corrupt");
+  assertStringIncludes(
+    line("bad-meta"),
+    "swamp data delete bad-meta group-main -y",
+  );
+  assertStringIncludes(line("no-access"), "cannot be read");
+  assertStringIncludes(line("no-access"), "read access");
+  assertEquals(line("no-access").includes("swamp data delete"), false);
+  assertEquals(
+    error.records.map((r) => [r.modelId, r.cause]).sort(),
+    [["bad-json", "corrupt"], ["bad-meta", "corrupt"], [
+      "no-access",
+      "unreadable",
+    ]],
+  );
+});
+
+Deno.test("PolicySnapshotLoader.load: a corrupt record found after the first build logs the command that removes it", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  records.set("d", { kind: "grant", unreadable: "json" });
+  const logs = await capturingLoaderLogs(async () => {
+    await loader.load();
+  });
+  await loader.dispose();
+
+  assertEquals(effectsFor(loader, "user:adam"), ["deny:deny-1"]);
+  const errors = logs.filter((l) => l.level === "error");
+  assertEquals(
+    errors.some((l) => l.message.includes("swamp data delete d grant-main -y")),
+    true,
+  );
+});
+
+Deno.test("PolicySnapshotLoader.load: a rebuild that also loads a peer's change logs it and warns as usual while a record stays unreadable", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  records.set("d", { kind: "grant", unreadable: "content" });
+  const onOwner = makeGrant({
+    id: "on-owner",
+    resource: { kind: "data", pattern: "*" },
+    condition: 'owner.kind == "user"',
+  });
+  const logs = await capturingLoaderLogs(async () => {
+    await loader.load();
+    await loader.load();
+    // A peer adds a grant while the other record stays unreadable.
+    records.set("o", { kind: "grant", attrs: onOwner });
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const loaded = logs.filter((l) => l.message.startsWith("Loaded policy"));
+  assertEquals(loaded.map((l) => l.level), ["info", "debug", "info"]);
+  assertEquals(
+    logs.filter((l) => l.level === "warning" && l.message.includes("on-owner"))
+      .length,
+    1,
   );
 });

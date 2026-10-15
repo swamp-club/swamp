@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { UserError } from "../errors.ts";
 import { Environment } from "cel-js";
 import { registerArithmeticOverloads } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
@@ -204,8 +205,34 @@ export interface UnreadableAccessRecord {
   /** `<model type>/<model id>`. */
   readonly record: string;
   readonly kind: "grant" | "group";
+  readonly modelId: string;
+  /** The access data the record keeps: `grant-main` or `group-main`. */
+  readonly dataName: string;
+  /**
+   * `corrupt` when its JSON, metadata or schema does not parse, which no
+   * retry can fix; `unreadable` when reading it failed, as for a file this
+   * process may not read.
+   */
+  readonly cause: "unreadable" | "corrupt";
+  /** The error's class, which names the failure across retries. */
+  readonly errorName: string;
+  /** The error's class and message, for logs. */
   readonly error: string;
   readonly outcome: UnreadableRecordOutcome;
+}
+
+/** How to fix a record a build could not load. */
+function remedyFor(record: UnreadableAccessRecord): string {
+  return record.cause === "corrupt"
+    ? `remove it with \`${
+      deleteCommandFor(record)
+    }\`, then create the ${record.kind} again if it is still wanted`
+    : "give this process read access to it (check the owner and mode of its files), then retry";
+}
+
+/** The command that removes a corrupt record's access data. */
+function deleteCommandFor(record: UnreadableAccessRecord): string {
+  return `swamp data delete ${record.modelId} ${record.dataName} -y`;
 }
 
 /**
@@ -215,14 +242,19 @@ export interface UnreadableAccessRecord {
  * serve's boot load and the one-shot access commands always have for a
  * content file they could not read.
  */
-export class UnreadableAccessRecordsError extends Error {
+export class UnreadableAccessRecordsError extends UserError {
   readonly records: readonly UnreadableAccessRecord[];
 
   constructor(records: readonly UnreadableAccessRecord[]) {
     super(
-      `Cannot build the policy snapshot: ${records.length} grant or group record(s) cannot be read, and a deny among them would not be enforced: ${
-        records.map((r) => `${r.record} (${r.error})`).join(", ")
-      }. Make them readable to this process and retry.`,
+      `Cannot build the policy snapshot: ${records.length} grant or group record(s) cannot be loaded. A record that cannot be loaded may be a deny, which would go unenforced, so the snapshot is not built until each is fixed:\n${
+        records.map((r) =>
+          `  - ${r.record} ${
+            r.cause === "corrupt" ? "is corrupt" : "cannot be read"
+          } (${r.error}): ${remedyFor(r)}`
+        ).join("\n")
+      }`,
+      "access_records_unloadable",
     );
     this.name = "UnreadableAccessRecordsError";
     this.records = records;
@@ -266,14 +298,53 @@ type RecordRead =
   | { error: unknown }
   | null;
 
-function describeError(error: unknown): string {
-  return error instanceof Error
-    ? `${error.name}: ${error.message}`
-    : String(error);
+/**
+ * The record a build could not load. A parse failure (JSON or YAML, which
+ * throw SyntaxError) or a schema failure (ZodError) is corrupt; anything
+ * else, such as PermissionDenied or a remote read that failed, is
+ * unreadable.
+ */
+function unreadableRecord(
+  kind: "grant" | "group",
+  modelType: ModelType,
+  modelId: string,
+  error: unknown,
+  outcome: UnreadableRecordOutcome,
+): UnreadableAccessRecord {
+  const errorName = error instanceof Error ? error.name : "Error";
+  const corrupt = error instanceof SyntaxError || errorName === "ZodError";
+  return {
+    record: recordKey(modelType, modelId),
+    kind,
+    modelId,
+    dataName: `${kind}-main`,
+    cause: corrupt ? "corrupt" : "unreadable",
+    errorName,
+    error: error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : String(error),
+    outcome,
+  };
+}
+
+/** What a build's log and retry check compare a record across builds by. */
+function reportedAs(record: UnreadableAccessRecord): string {
+  return `${record.outcome}|${record.errorName}`;
 }
 
 function recordKey(modelType: ModelType, modelId: string): string {
   return `${modelType.normalized}/${modelId}`;
+}
+
+/** Identifies the grants and groups a build loaded, in any order. */
+function snapshotSignature(
+  grants: readonly Grant[],
+  groups: readonly Group[],
+): string {
+  return JSON.stringify([
+    grants.map((grant) => JSON.stringify(grant)).sort(),
+    groups.map((group) => JSON.stringify(group)).sort(),
+  ]);
 }
 
 export class PolicySnapshotLoader {
@@ -301,6 +372,8 @@ export class PolicySnapshotLoader {
   #reportedUnreadable = new Map<string, string>();
   /** Whether a build has succeeded, so last-known versions exist. */
   #built = false;
+  /** The grants and groups the last successful build loaded. */
+  #loadedSignature = "";
   /**
    * Each active grant already checked for spellings, by id, with the effect,
    * selector and condition it was checked as, so a reload neither repeats
@@ -466,12 +539,15 @@ export class PolicySnapshotLoader {
       if (last) lastKnownGrants.set(record, last);
       const kept = retainedUnreadableGrant(last);
       if (kept) grants.push(kept);
-      unreadable.push({
-        record,
-        kind: "grant",
-        error: describeError(error),
-        outcome: kept ? "kept-last-known-deny" : "left-out",
-      });
+      unreadable.push(
+        unreadableRecord(
+          "grant",
+          modelType,
+          modelId,
+          error,
+          kept ? "kept-last-known-deny" : "left-out",
+        ),
+      );
     }
 
     const groups: Group[] = [];
@@ -497,12 +573,15 @@ export class PolicySnapshotLoader {
         groups.push(last);
         suspendedGroups.add(last.name);
       }
-      unreadable.push({
-        record,
-        kind: "group",
-        error: describeError(error),
-        outcome: last ? "kept-last-known-members" : "left-out",
-      });
+      unreadable.push(
+        unreadableRecord(
+          "group",
+          modelType,
+          modelId,
+          error,
+          last ? "kept-last-known-members" : "left-out",
+        ),
+      );
     }
     grants = withoutAllowsToGroups(grants, suspendedGroups);
     if (!this.#built && unreadable.length > 0) {
@@ -511,10 +590,14 @@ export class PolicySnapshotLoader {
 
     // The poller rebuilds every cycle while records cannot be read; a build
     // that finds them as the last one did is a retry, logged at debug.
+    // It must also load the same grants and groups: a peer's change in the
+    // same cycle is logged, and warned about, as usual.
+    const loaded = snapshotSignature(grants, groups);
     const retry = unreadable.length > 0 &&
+      loaded === this.#loadedSignature &&
       unreadable.length === this.#reportedUnreadable.size &&
       unreadable.every((u) =>
-        this.#reportedUnreadable.get(u.record) === `${u.outcome}|${u.error}`
+        this.#reportedUnreadable.get(u.record) === reportedAs(u)
       );
     if (retry) {
       logger
@@ -537,6 +620,7 @@ export class PolicySnapshotLoader {
     this.#lastKnownGrants = lastKnownGrants;
     this.#lastKnownGroups = lastKnownGroups;
     this.#unreadable = unreadable;
+    this.#loadedSignature = loaded;
     this.#built = true;
     return {
       snapshot,
@@ -558,9 +642,8 @@ export class PolicySnapshotLoader {
     const reported = new Map<string, string>();
     for (const entry of unreadable) {
       const { record, error, outcome } = entry;
-      const reportedAs = `${outcome}|${error}`;
-      reported.set(record, reportedAs);
-      if (this.#reportedUnreadable.get(record) === reportedAs) {
+      reported.set(record, reportedAs(entry));
+      if (this.#reportedUnreadable.get(record) === reported.get(record)) {
         logger
           .debug`Access record ${record} still cannot be read (${error}): ${outcome}`;
         continue;
@@ -586,6 +669,12 @@ export class PolicySnapshotLoader {
           logger
             .error`Group record ${record} cannot be read (${error}) and was never read by this process: deny grants on its group do not apply until it can be read`;
         }
+      }
+      if (entry.cause === "corrupt") {
+        logger
+          .error`Access record ${record} is corrupt and will not load again by itself: remove it with ${
+          deleteCommandFor(entry)
+        }, then create the ${entry.kind} again if it is still wanted`;
       }
     }
     for (const record of this.#reportedUnreadable.keys()) {
