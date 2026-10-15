@@ -30,6 +30,7 @@ import { parseExtensionManifest } from "../../domain/extensions/extension_manife
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { listTarGzEntries } from "../../infrastructure/archive/tar_archive.ts";
 import type { SwampError } from "../errors.ts";
+import { emptyArchiveIndex } from "./extension_tree_index_test_helpers.ts";
 
 function deps(): ExtensionPushPrepareDeps {
   return {
@@ -44,6 +45,7 @@ function deps(): ExtensionPushPrepareDeps {
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
+    indexArchive: emptyArchiveIndex,
     bundleEntryPoint: (entry) => Promise.resolve(`// ${entry}`),
     ensureDenoPath: () => Promise.resolve("/unused/deno"),
     getDenoEnv: () => ({}),

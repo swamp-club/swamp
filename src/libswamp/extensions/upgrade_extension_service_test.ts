@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { emptyTreeIndexer } from "./extension_tree_index_test_helpers.ts";
 import { stubInstallExtension } from "./install_test_helpers.ts";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -133,6 +134,7 @@ function makeInstallContext(
     force: false,
     alreadyPulled: new Set(),
     depth: 0,
+    indexExtensionTree: emptyTreeIndexer,
   };
 }
 

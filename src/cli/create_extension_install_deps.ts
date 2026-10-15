@@ -28,6 +28,8 @@ import type { ExtensionInstallDeps } from "../libswamp/extensions/install.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { resolveServerUrl } from "../libswamp/extensions/pull.ts";
 import { resolveManagedLockfileForWrite } from "./repo_context.ts";
+import { createExtensionTreeIndexer } from "../libswamp/extensions/extension_tree_index.ts";
+import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 
 /**
  * Wires `ExtensionInstallDeps` from a repo directory and a logger.
@@ -98,6 +100,10 @@ export async function createExtensionInstallDeps(
       force: true,
       alreadyPulled: new Set(),
       depth: 0,
+      indexExtensionTree: createExtensionTreeIndexer({
+        denoRuntime: new EmbeddedDenoRuntime(),
+        repoDir: absoluteRepoDir,
+      }),
     }),
   };
 }

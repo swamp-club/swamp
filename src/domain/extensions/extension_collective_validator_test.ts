@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import type { ExtensionContentMetadata } from "./extension_content.ts";
-import { validateContentCollectives } from "./extension_collective_validator.ts";
+import {
+  collectiveMismatchesForTypes,
+  validateContentCollectives,
+} from "./extension_collective_validator.ts";
 
 function makeMetadata(
   overrides: Partial<ExtensionContentMetadata> = {},
@@ -287,4 +290,38 @@ Deno.test("validateContentCollectives — partial mismatches — only wrong ones
   assertEquals(result.mismatches.length, 1);
   assertEquals(result.mismatches[0].identifier, "@swamp/squatted");
   assertEquals(result.mismatches[0].fileName, "bad.ts");
+});
+
+Deno.test("collectiveMismatchesForTypes: a loaded type in the collective passes", () => {
+  assertEquals(
+    collectiveMismatchesForTypes("@stack72/ext", [
+      { kind: "model", typeNormalized: "@stack72/echo", fileName: "echo.ts" },
+      { kind: "vault", typeNormalized: "@stack72/v", fileName: "v.ts" },
+    ]),
+    [],
+  );
+});
+
+Deno.test("collectiveMismatchesForTypes: a loaded type outside the collective is a mismatch", () => {
+  assertEquals(
+    collectiveMismatchesForTypes("@stack72/ext", [
+      { kind: "model", typeNormalized: "@swamp/aws-ec2", fileName: "a/b.ts" },
+      { kind: "webhook", typeNormalized: "@other/hook", fileName: "h.ts" },
+    ]),
+    [
+      { kind: "model", identifier: "@swamp/aws-ec2", fileName: "a/b.ts" },
+      { kind: "webhook", identifier: "@other/hook", fileName: "h.ts" },
+    ],
+  );
+});
+
+Deno.test("collectiveMismatchesForTypes: compares case-insensitively and needs the full collective prefix", () => {
+  assertEquals(
+    collectiveMismatchesForTypes("@stack72/ext", [
+      { kind: "model", typeNormalized: "@STACK72/echo", fileName: "a.ts" },
+      { kind: "model", typeNormalized: "@stack72-evil/x", fileName: "b.ts" },
+      { kind: "model", typeNormalized: "stack72/x", fileName: "c.ts" },
+    ]).map((m) => m.fileName),
+    ["b.ts", "c.ts"],
+  );
 });

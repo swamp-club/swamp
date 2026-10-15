@@ -65,6 +65,7 @@ import {
 import type { SwampError } from "../src/libswamp/errors.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { buildPrepareInput } from "../src/libswamp/extensions/push_test_helpers.ts";
+import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const ctx = createLibSwampContext();
 const DENO = Deno.execPath();
@@ -101,6 +102,7 @@ function prepareDeps(): ExtensionPushPrepareDeps {
     checkDependencyTrust: () =>
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     checkReviewRules,
+    indexArchive: emptyArchiveIndex,
     bundleEntryPoint: () => Promise.resolve("export const model = {};\n"),
     ensureDenoPath: () => Promise.resolve(DENO),
     getDenoEnv: () => Deno.env.toObject(),

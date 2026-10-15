@@ -27,16 +27,39 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
+import {
+  createTarGz,
+  extractTarGz,
+} from "../../infrastructure/archive/tar_archive.ts";
+import {
+  EXTENSION_BUNDLE_KINDS,
+  extensionInstallRoots,
+} from "../../infrastructure/persistence/paths.ts";
 import {
   formatArchiveBytes,
   MAX_EXTENSION_ARCHIVE_BYTES,
+  MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
 import {
   extractBareSpecifierNames,
   importMapTarget,
 } from "../../domain/models/bundle.ts";
-import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
+import {
+  type CollectiveMismatch,
+  collectiveMismatchesForTypes,
+  validateContentCollectives,
+} from "../../domain/extensions/extension_collective_validator.ts";
+import {
+  createExtensionTreeIndexer,
+  defaultConcurrency,
+  type ExtensionKindDir,
+  type ExtensionTreeIndex,
+  type ExtensionTreeIndexer,
+  fromStoredArchiveIndex,
+  runtimeContentTypes,
+  toStoredArchiveIndex,
+} from "./extension_tree_index.ts";
+import type { StoredArchiveIndex } from "../../domain/extensions/extension_package_cache.ts";
 import type {
   ExtensionContentMetadata,
   ExtractedArgument,
@@ -93,14 +116,16 @@ import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 
 /** A model entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedModelEntry {
-  type: string;
+  /** Absent when neither the source text nor loading it gave a type. */
+  type?: string;
   fileName: string;
   globalArguments?: ExtractedArgument[];
 }
 
 /** A vault entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedVaultEntry {
-  type: string;
+  /** Absent when neither the source text nor loading it gave a type. */
+  type?: string;
   fileName: string;
   name?: string;
   hasConfigSchema?: boolean;
@@ -109,7 +134,8 @@ export interface ResolvedVaultEntry {
 
 /** A datastore entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedDatastoreEntry {
-  type: string;
+  /** Absent when neither the source text nor loading it gave a type. */
+  type?: string;
   fileName: string;
   name?: string;
   hasConfigSchema?: boolean;
@@ -118,7 +144,8 @@ export interface ResolvedDatastoreEntry {
 
 /** A report entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedReportEntry {
-  name: string;
+  /** Absent when neither the source text nor loading it gave a name. */
+  name?: string;
   fileName: string;
   description?: string;
   scope?: string;
@@ -127,7 +154,8 @@ export interface ResolvedReportEntry {
 
 /** A webhook entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedWebhookEntry {
-  type: string;
+  /** Absent when neither the source text nor loading it gave a type. */
+  type?: string;
   fileName: string;
   name?: string;
   description?: string;
@@ -288,6 +316,12 @@ export interface ExtensionPushPrepareInput {
    * cache key corresponds to the current source state.
    */
   cachedArchive?: Uint8Array;
+  /**
+   * The loaded types the cache entry recorded for `cachedArchive`. Used only
+   * with that archive, so the collective check does not load every source
+   * of an archive it has already judged (swamp-club#3456).
+   */
+  cachedArchiveIndex?: StoredArchiveIndex;
 }
 
 /** How the prepare phase treats a failed local gate. */
@@ -349,6 +383,11 @@ export interface ExtensionPushPrepared {
   /** The warned lines a comment acceptance can go above, by absolute file (see {@link QualityFindings}). */
   commentSites: Record<string, CommentSites>;
   archiveBytes: Uint8Array;
+  /**
+   * The loaded types of `archiveBytes`, for a package cache entry to keep
+   * beside the archive. Absent when the archive could not be indexed.
+   */
+  archiveIndex: StoredArchiveIndex | undefined;
   manifest: ExtensionManifest;
   contentMetadata: ExtensionContentMetadata | undefined;
   counts: ExtensionPushCounts;
@@ -491,6 +530,16 @@ export interface ExtensionPushPrepareDeps {
   ) => Promise<ReviewRulesResult>;
   ensureDenoPath: () => Promise<string>;
   getDenoEnv: () => Record<string, string>;
+  /**
+   * Loads every source in the archive the way a consumer's install does and
+   * reports the type each registers, so the collective check judges the
+   * type the consumer gets, not only what the static metadata could read
+   * (swamp-club#3456).
+   */
+  indexArchive: (
+    archiveBytes: Uint8Array,
+    extensionName: string,
+  ) => Promise<ExtensionTreeIndex>;
   /**
    * Finds a published version of the extension on any release channel.
    * Resolves null when no channel carries that version.
@@ -711,6 +760,17 @@ export function createExtensionPushPrepareDeps(
       ),
     checkReviewRules: checkReviewRulesImpl,
     bundleEntryPoint: bundleExtension,
+    indexArchive: (archiveBytes, extensionName) =>
+      indexArchiveTree(
+        archiveBytes,
+        extensionName,
+        (tmpRepo) =>
+          createExtensionTreeIndexer({
+            denoRuntime,
+            repoDir: tmpRepo,
+            trustShippedBundles: true,
+          }),
+      ),
     ensureDenoPath: () => denoRuntime.ensureDeno(),
     getDenoEnv: () => denoRuntime.getDenoEnv(),
     findPublishedVersion: async (serverUrl, name, version, apiKey) => {
@@ -1105,8 +1165,7 @@ export async function extensionPushPrepare(
       failGate(
         "content-collectives",
         validationFailed(
-          "Extension content uses collectives that don't match the extension package. " +
-            "All behavior types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.",
+          CONTENT_COLLECTIVES_MESSAGE,
           {
             expectedCollective,
             mismatches: collectiveResult.mismatches,
@@ -1115,9 +1174,6 @@ export async function extensionPushPrepare(
       );
     }
   }
-
-  // 5. Build resolved data
-  const resolvedData = buildResolvedData(input, contentMetadata);
 
   // 6a. Pre-check additionalFiles against the extension allowlist so the
   // error can name the manifest field and suggest `binaries`.
@@ -1349,7 +1405,8 @@ export async function extensionPushPrepare(
   // and may hold them, so collect mode rebuilds without them.
   let totalBundles: number;
   let archiveBytes: Uint8Array;
-  if (usingCachedArchive && rejectedFiles.size === 0) {
+  const archiveFromCache = usingCachedArchive && rejectedFiles.size === 0;
+  if (archiveFromCache) {
     totalBundles = input.modelEntryPoints.length +
       input.vaultEntryPoints.length +
       input.datastoreEntryPoints.length + input.reportEntryPoints.length +
@@ -1379,6 +1436,78 @@ export async function extensionPushPrepare(
       ),
     );
   }
+
+  // 11a. Load the archive's sources the way a consumer's install will, and
+  // check the types they register against the collective too: the static
+  // metadata reads only string-literal types, so a type in a constant, a
+  // spread or a helper file would otherwise go unchecked (swamp-club#3456).
+  let runtimeIndex: ExtensionTreeIndex | undefined =
+    archiveFromCache && input.cachedArchiveIndex
+      ? fromStoredArchiveIndex(input.cachedArchiveIndex)
+      : undefined;
+  if (!runtimeIndex) {
+    try {
+      runtimeIndex = await deps.indexArchive(
+        archiveBytes,
+        input.manifest.name,
+      );
+    } catch (error) {
+      ctx.logger
+        .warn`Could not load the archive's sources to check their collective: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
+  const runtimeMismatches = runtimeIndex
+    ? newRuntimeMismatches(
+      collectiveMismatchesForTypes(
+        input.manifest.name,
+        runtimeContentTypes(runtimeIndex),
+      ),
+      contentMetadata,
+      input.manifest.name,
+    )
+    : [];
+  if (runtimeMismatches.length > 0) {
+    const expectedCollective = input.manifest.name.slice(
+      0,
+      input.manifest.name.indexOf("/") + 1,
+    );
+    // In collect mode a static mismatch has already recorded the gate; the
+    // loaded types join it, so quality reports the gate once.
+    const recorded = gateFailures.find((f) => f.gate === "content-collectives");
+    const recordedDetails = recorded?.details as
+      | { mismatches?: CollectiveMismatch[] }
+      | undefined;
+    if (recordedDetails?.mismatches) {
+      for (const m of runtimeMismatches) recordedDetails.mismatches.push(m);
+    } else {
+      failGate(
+        "content-collectives",
+        validationFailed(CONTENT_COLLECTIVES_MESSAGE, {
+          expectedCollective,
+          mismatches: runtimeMismatches,
+        }),
+      );
+    }
+  }
+  for (
+    const warning of unverifiedCollectiveWarnings(
+      input,
+      contentMetadata,
+      runtimeIndex,
+    )
+  ) {
+    reviewRulesResult.warnings.push(warning);
+  }
+
+  // 5. Build resolved data, with each type the static metadata could not
+  // read taken from the loaded source rather than shown as its file path.
+  const resolvedData = buildResolvedData(
+    input,
+    contentMetadata,
+    runtimeIndex,
+  );
 
   // 12. The version must not be published on any channel. Runs after
   // packaging, as it always has, so the cheaper local gates fire first.
@@ -1452,6 +1581,7 @@ export async function extensionPushPrepare(
     acceptances: findings.acceptances,
     commentSites: findings.commentSites,
     archiveBytes,
+    archiveIndex: runtimeIndex ? toStoredArchiveIndex(runtimeIndex) : undefined,
     manifest: input.manifest,
     contentMetadata,
     counts: {
@@ -2385,12 +2515,204 @@ export async function readQualitySidecar(
   return { path, value: parsed.sidecar };
 }
 
+const CONTENT_COLLECTIVES_MESSAGE =
+  "Extension content uses collectives that don't match the extension package. " +
+  "All behavior types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.";
+
+/**
+ * Installs the archive into a private temp repository, laid out as an
+ * install lays it out (sources under the pulled-extensions root, each
+ * shipped bundle where the loader looks for it), and indexes it there. The
+ * bundles are the ones this push just built, so the indexer loads them
+ * rather than bundling every source a second time. Nothing is written to
+ * the real repository, and everything goes with the temp directory.
+ */
+async function indexArchiveTree(
+  archiveBytes: Uint8Array,
+  extensionName: string,
+  indexerFor: (tmpRepo: string) => ExtensionTreeIndexer,
+): Promise<ExtensionTreeIndex> {
+  const tmpRepo = await Deno.makeTempDir({ prefix: "swamp_ext_index_" });
+  try {
+    const extractDir = join(tmpRepo, "archive");
+    await extractTarGz(
+      ReadableStream.from([archiveBytes]),
+      extractDir,
+      undefined,
+      { maxDecompressedBytes: MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES },
+    );
+    const roots = extensionInstallRoots(tmpRepo, extensionName);
+    await Deno.mkdir(dirname(roots.extensionRoot), { recursive: true });
+    await Deno.rename(join(extractDir, "extension"), roots.extensionRoot);
+    for (const root of roots.bundleRoots) {
+      const shipped = join(roots.extensionRoot, bundleKindOf(root.sourceKind));
+      try {
+        await Deno.mkdir(dirname(root.live), { recursive: true });
+        await Deno.rename(shipped, root.live);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    return await indexerFor(tmpRepo)(roots.extensionRoot);
+  } finally {
+    await Deno.remove(tmpRepo, { recursive: true }).catch(() => {});
+  }
+}
+
+/** The archive directory that holds a source kind's shipped bundles. */
+function bundleKindOf(
+  sourceKind: typeof EXTENSION_BUNDLE_KINDS[number]["sourceKind"],
+): string {
+  return EXTENSION_BUNDLE_KINDS.find((k) => k.sourceKind === sourceKind)!
+    .bundleKind;
+}
+
+function loadedKey(kindDir: ExtensionKindDir, fileName: string): string {
+  return `${kindDir}\0${fileName}`;
+}
+
+/**
+ * The type each loaded source registers, or for an extension source the
+ * type it extends, by kind directory and file.
+ */
+function loadedTypesByFile(
+  runtimeIndex: ExtensionTreeIndex | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const source of runtimeIndex?.sources ?? []) {
+    if (!source.indexed) continue;
+    out.set(
+      loadedKey(source.kindDir, source.fileName),
+      source.indexed.typeNormalized,
+    );
+  }
+  return out;
+}
+
+/**
+ * The loaded-type mismatches the static check has not already reported for
+ * the same file, so a source is listed once.
+ */
+function newRuntimeMismatches(
+  runtimeMismatches: CollectiveMismatch[],
+  contentMetadata: ExtensionContentMetadata | undefined,
+  extensionName: string,
+): CollectiveMismatch[] {
+  if (runtimeMismatches.length === 0) return [];
+  const reported = new Set(
+    contentMetadata
+      ? validateContentCollectives(extensionName, contentMetadata).mismatches
+        .map((m) => `${m.kind}\0${m.fileName}`)
+      : [],
+  );
+  return runtimeMismatches.filter((m) =>
+    !reported.has(`${m.kind}\0${m.fileName}`)
+  );
+}
+
+/**
+ * A source whose type neither the static metadata nor loading it could
+ * give: its collective was not checked, so say so rather than pass it
+ * silently. A source the static metadata reads was checked statically.
+ */
+function unverifiedCollectiveWarnings(
+  input: ExtensionPushPrepareInput,
+  contentMetadata: ExtensionContentMetadata | undefined,
+  runtimeIndex: ExtensionTreeIndex | undefined,
+): ReviewFinding[] {
+  const statically = new Set<string>([
+    ...(contentMetadata?.models ?? []).map((m) =>
+      loadedKey("models", m.fileName)
+    ),
+    ...(contentMetadata?.extensions ?? []).map((e) =>
+      loadedKey("models", e.fileName)
+    ),
+    ...(contentMetadata?.vaults ?? []).map((v) =>
+      loadedKey("vaults", v.fileName)
+    ),
+    ...(contentMetadata?.datastores ?? []).map((d) =>
+      loadedKey("datastores", d.fileName)
+    ),
+    ...(contentMetadata?.reports ?? []).map((r) =>
+      loadedKey("reports", r.fileName)
+    ),
+    ...(contentMetadata?.webhooks ?? []).map((w) =>
+      loadedKey("webhooks", w.fileName)
+    ),
+  ]);
+  const sources = entryPointsByKey(input);
+  const unverified: Array<{ file: string; reason: string }> = [];
+  if (runtimeIndex) {
+    for (const failure of runtimeIndex.failures) {
+      const key = loadedKey(failure.kindDir, failure.fileName);
+      if (statically.has(key)) continue;
+      unverified.push({
+        file: sources.get(key) ?? `${failure.kindDir}/${failure.fileName}`,
+        reason: failure.reason,
+      });
+    }
+  } else {
+    for (const [key, file] of sources) {
+      if (statically.has(key)) continue;
+      unverified.push({ file, reason: "the archive could not be indexed" });
+    }
+  }
+  return unverified.map(({ file, reason }) => ({
+    ruleId: "unverified-collective",
+    dimension: "Registry catalog",
+    severity: "medium",
+    file,
+    message: "Push could not read this source's type from its text or by " +
+      `loading it (${firstLine(reason)}), so its collective was not ` +
+      "checked. Consumers that cannot load it will not register it either.",
+    remediation: remediationFor("unverified-collective"),
+  }));
+}
+
+/** Each entry point by its kind directory and content file name. */
+function entryPointsByKey(
+  input: ExtensionPushPrepareInput,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const f of input.modelEntryPoints) {
+    out.set(
+      loadedKey("models", contentFileName(modelsArchiveBase(input, f), f)),
+      f,
+    );
+  }
+  for (const f of input.vaultEntryPoints) {
+    out.set(loadedKey("vaults", contentFileName(input.vaultsDir, f)), f);
+  }
+  for (const f of input.datastoreEntryPoints) {
+    out.set(
+      loadedKey("datastores", contentFileName(input.datastoresDir, f)),
+      f,
+    );
+  }
+  for (const f of input.reportEntryPoints) {
+    out.set(loadedKey("reports", contentFileName(input.reportsDir, f)), f);
+  }
+  for (const f of input.webhookEntryPoints) {
+    out.set(loadedKey("webhooks", contentFileName(input.webhooksDir, f)), f);
+  }
+  return out;
+}
+
+function firstLine(text: string): string {
+  const line = text.split("\n")[0].trim();
+  return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+}
+
 function buildResolvedData(
   input: ExtensionPushPrepareInput,
   contentMetadata: ExtensionContentMetadata | undefined,
+  runtimeIndex: ExtensionTreeIndex | undefined,
 ): ExtensionPushResolvedData {
   const extractedModelsByFile = new Map(
     (contentMetadata?.models ?? []).map((m) => [m.fileName, m]),
+  );
+  const extractedExtensionsByFile = new Map(
+    (contentMetadata?.extensions ?? []).map((e) => [e.fileName, e]),
   );
   const extractedVaultsByFile = new Map(
     (contentMetadata?.vaults ?? []).map((v) => [v.fileName, v]),
@@ -2404,14 +2726,19 @@ function buildResolvedData(
   const extractedWebhooksByFile = new Map(
     (contentMetadata?.webhooks ?? []).map((w) => [w.fileName, w]),
   );
+  // A type the static metadata could not read is shown as the loaded
+  // source registers it, never as the file's path (swamp-club#3456).
+  const loaded = loadedTypesByFile(runtimeIndex);
 
   const resolvedModels = input.modelEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
-    const extracted = extractedModelsByFile.get(
-      contentFileName(modelsArchiveBase(input, f), f),
-    );
+    const name = contentFileName(modelsArchiveBase(input, f), f);
+    const extracted = extractedModelsByFile.get(name);
+    const type = extracted?.type ??
+      extractedExtensionsByFile.get(name)?.extendsType ??
+      loaded.get(loadedKey("models", name));
     return {
-      type: extracted?.type ?? relPath,
+      ...(type !== undefined ? { type } : {}),
       fileName: relPath,
       globalArguments: extracted?.globalArguments,
     };
@@ -2419,11 +2746,11 @@ function buildResolvedData(
 
   const resolvedVaults = input.vaultEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
-    const extracted = extractedVaultsByFile.get(
-      contentFileName(input.vaultsDir, f),
-    );
+    const name = contentFileName(input.vaultsDir, f);
+    const extracted = extractedVaultsByFile.get(name);
+    const type = extracted?.type ?? loaded.get(loadedKey("vaults", name));
     return {
-      type: extracted?.type ?? relPath,
+      ...(type !== undefined ? { type } : {}),
       fileName: relPath,
       name: extracted?.name,
       hasConfigSchema: extracted?.hasConfigSchema,
@@ -2433,11 +2760,12 @@ function buildResolvedData(
 
   const resolvedDatastores = input.datastoreEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
-    const extracted = extractedDatastoresByFile.get(
-      contentFileName(input.datastoresDir, f),
-    );
+    const name = contentFileName(input.datastoresDir, f);
+    const extracted = extractedDatastoresByFile.get(name);
+    const type = extracted?.type ??
+      loaded.get(loadedKey("datastores", name));
     return {
-      type: extracted?.type ?? relPath,
+      ...(type !== undefined ? { type } : {}),
       fileName: relPath,
       name: extracted?.name,
       hasConfigSchema: extracted?.hasConfigSchema,
@@ -2447,11 +2775,11 @@ function buildResolvedData(
 
   const resolvedReports = input.reportEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
-    const extracted = extractedReportsByFile.get(
-      contentFileName(input.reportsDir, f),
-    );
+    const fileKey = contentFileName(input.reportsDir, f);
+    const extracted = extractedReportsByFile.get(fileKey);
+    const name = extracted?.name ?? loaded.get(loadedKey("reports", fileKey));
     return {
-      name: extracted?.name ?? relPath,
+      ...(name !== undefined ? { name } : {}),
       fileName: relPath,
       description: extracted?.description,
       scope: extracted?.scope,
@@ -2461,11 +2789,11 @@ function buildResolvedData(
 
   const resolvedWebhooks = input.webhookEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
-    const extracted = extractedWebhooksByFile.get(
-      contentFileName(input.webhooksDir, f),
-    );
+    const name = contentFileName(input.webhooksDir, f);
+    const extracted = extractedWebhooksByFile.get(name);
+    const type = extracted?.type ?? loaded.get(loadedKey("webhooks", name));
     return {
-      type: extracted?.type ?? relPath,
+      ...(type !== undefined ? { type } : {}),
       fileName: relPath,
       name: extracted?.name,
       description: extracted?.description,
@@ -2623,20 +2951,49 @@ async function bundleEntryPoints(
   ctx: LibSwampContext,
   label: string,
 ): Promise<void> {
-  for (const entryPoint of entryPoints) {
-    const base = typeof baseDir === "string" ? baseDir : baseDir(entryPoint);
-    const entryName = relative(base, entryPoint).replace(/\.ts$/, "");
-    try {
-      const js = await deps.bundleEntryPoint(
-        entryPoint,
-        denoPath,
-        { ...bundleOptions, env: deps.getDenoEnv() },
-      );
-      bundles.set(entryName, js);
-      ctx.logger.debug`Bundled ${label} ${entryName} (${js.length} bytes)`;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      compilationErrors.push({ file: entryPoint, error: msg });
+  // Each bundle is its own `deno bundle` run, so several run side by side.
+  // Results are recorded in entry point order whatever order they finish
+  // in: the archive, and so its hash, depends on that order.
+  const outcomes: Array<
+    | { entryName: string; js: string }
+    | { entryPoint: string; error: string }
+  > = new Array(entryPoints.length);
+  let next = 0;
+  const lane = async () => {
+    while (next < entryPoints.length) {
+      const i = next++;
+      const entryPoint = entryPoints[i];
+      const base = typeof baseDir === "string" ? baseDir : baseDir(entryPoint);
+      const entryName = relative(base, entryPoint).replace(/\.ts$/, "");
+      try {
+        const js = await deps.bundleEntryPoint(
+          entryPoint,
+          denoPath,
+          { ...bundleOptions, env: deps.getDenoEnv() },
+        );
+        outcomes[i] = { entryName, js };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        outcomes[i] = { entryPoint, error: msg };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(defaultConcurrency(), entryPoints.length) },
+      lane,
+    ),
+  );
+  for (const outcome of outcomes) {
+    if ("js" in outcome) {
+      bundles.set(outcome.entryName, outcome.js);
+      ctx.logger
+        .debug`Bundled ${label} ${outcome.entryName} (${outcome.js.length} bytes)`;
+    } else {
+      compilationErrors.push({
+        file: outcome.entryPoint,
+        error: outcome.error,
+      });
     }
   }
 }

@@ -91,6 +91,50 @@ export interface CachedPackageMetadata {
    * Absent on entries written before the field existed.
    */
   swampVersion?: string;
+  /**
+   * The types the archive's sources register when loaded, recorded when the
+   * archive was packaged, so a cache hit need not load every source again
+   * to check their collective (swamp-club#3456). Absent on older entries.
+   */
+  archiveIndex?: StoredArchiveIndex;
+}
+
+/** The loaded types of a cached archive, as stored in its metadata. */
+export interface StoredArchiveIndex {
+  sources: Array<{
+    kindDir: string;
+    fileName: string;
+    kind: string;
+    typeNormalized: string;
+  }>;
+  failures: Array<{ kindDir: string; fileName: string; reason: string }>;
+}
+
+/**
+ * The stored index when `value` has its shape, else undefined. The
+ * metadata file sits in the repository, so it is read as untrusted data: a
+ * malformed index is dropped and the archive's sources are loaded again.
+ */
+export function parseStoredArchiveIndex(
+  value: unknown,
+): StoredArchiveIndex | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { sources, failures } = value as Record<string, unknown>;
+  if (!Array.isArray(sources) || !Array.isArray(failures)) return undefined;
+  const strings = (entry: unknown, keys: string[]) =>
+    typeof entry === "object" && entry !== null &&
+    keys.every((k) =>
+      typeof (entry as Record<string, unknown>)[k] === "string"
+    );
+  if (
+    !sources.every((s) =>
+      strings(s, ["kindDir", "fileName", "kind", "typeNormalized"])
+    ) ||
+    !failures.every((f) => strings(f, ["kindDir", "fileName", "reason"]))
+  ) {
+    return undefined;
+  }
+  return value as StoredArchiveIndex;
 }
 
 /** A cached package retrieved from disk. */
@@ -278,6 +322,12 @@ export class ExtensionPackageCache {
       return null;
     }
     if (metadata.swampVersion !== this.swampVersion) return null;
+    const archiveIndex = parseStoredArchiveIndex(metadata.archiveIndex);
+    if (archiveIndex) {
+      metadata.archiveIndex = archiveIndex;
+    } else {
+      delete metadata.archiveIndex;
+    }
 
     return { archiveBytes, metadata };
   }
@@ -290,6 +340,7 @@ export class ExtensionPackageCache {
       extensionName: string;
       extensionVersion: string;
       rubricVersion: number;
+      archiveIndex?: StoredArchiveIndex;
     },
   ): Promise<CachedPackageMetadata> {
     const dir = this.entryDir(hash);
@@ -308,6 +359,7 @@ export class ExtensionPackageCache {
       cachedAt: new Date().toISOString(),
       rubricVersion: extras.rubricVersion,
       swampVersion: this.swampVersion,
+      ...(extras.archiveIndex ? { archiveIndex: extras.archiveIndex } : {}),
     };
     await Deno.writeTextFile(metadataPath, JSON.stringify(metadata, null, 2));
 

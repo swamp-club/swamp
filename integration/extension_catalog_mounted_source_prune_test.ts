@@ -44,6 +44,7 @@ import { resolveMountedSourceDirs } from "../src/infrastructure/persistence/swam
 import { InstallExtensionService } from "../src/libswamp/extensions/install_extension_service.ts";
 import type { InstallContext } from "../src/libswamp/extensions/pull.ts";
 import { RemoveExtensionService } from "../src/libswamp/extensions/remove_extension_service.ts";
+import { emptyTreeIndexer } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -162,6 +163,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     force: true,
     alreadyPulled: new Set(),
     depth: 0,
+    indexExtensionTree: emptyTreeIndexer,
   });
 
   try {

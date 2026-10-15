@@ -53,6 +53,9 @@ import {
   type PrivateSourceLookupDeps,
   resolvePrivateSourceStanding,
 } from "./quality.ts";
+import { emptyArchiveIndex } from "./extension_tree_index_test_helpers.ts";
+import { walk } from "@std/fs";
+import type { ExtensionTreeIndex } from "./extension_tree_index.ts";
 
 const ctx = createLibSwampContext();
 
@@ -183,6 +186,7 @@ function makePushPrepareDeps(
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
+    indexArchive: emptyArchiveIndex,
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/fake/deno"),
     getDenoEnv: () => ({}),
@@ -935,6 +939,97 @@ Deno.test("extensionQuality: a cache hit runs the gates the old cache-hit path s
     assertEquals(
       second.gateFailures.map((f) => f.gate),
       ["content-collectives", "dependency-trust"],
+    );
+  });
+});
+
+/** An archive index whose one model registers `type`. */
+function loadedModel(type: string): Promise<ExtensionTreeIndex> {
+  return Promise.resolve({
+    sources: [{
+      kindDir: "models" as const,
+      absolutePath: "/archive/models/echo.ts",
+      fileName: "echo.ts",
+      indexed: {
+        kind: "model" as const,
+        typeNormalized: type,
+        bundlePath: "",
+        fingerprint: "f",
+        fromCache: false,
+      },
+    }],
+    failures: [],
+  });
+}
+
+Deno.test("extensionQuality: a cache hit judges the loaded types stored with the archive instead of loading it again (swamp-club#3456)", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot);
+    const first = completedData(
+      await collect(extensionQuality(ctx, {
+        ...deps,
+        pushPrepareDeps: makePushPrepareDeps({
+          indexArchive: () => loadedModel("@testuser/echo"),
+        }),
+      }, input)),
+    );
+    assertEquals(first.cacheHit, false);
+
+    let indexed = 0;
+    const second = completedData(
+      await collect(extensionQuality(ctx, {
+        ...deps,
+        pushPrepareDeps: makePushPrepareDeps({
+          indexArchive: () => {
+            indexed++;
+            return loadedModel("@someoneelse/echo");
+          },
+        }),
+      }, input)),
+    );
+    assertEquals(second.cacheHit, true);
+    assertEquals(indexed, 0);
+    assertEquals(second.gateFailures, []);
+  });
+});
+
+Deno.test("extensionQuality: a cache hit on an entry with no stored types loads the archive and checks its collective (swamp-club#3456)", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot);
+    assertEquals(
+      completedData(await collect(extensionQuality(ctx, deps, input)))
+        .cacheHit,
+      false,
+    );
+    // An entry written before the field existed, or one whose stored index
+    // was tampered with, carries no usable types.
+    for await (const entry of walk(cacheRoot, { match: [/metadata\.json$/] })) {
+      const metadata = JSON.parse(await Deno.readTextFile(entry.path));
+      metadata.archiveIndex = { sources: "not a list", failures: [] };
+      await Deno.writeTextFile(entry.path, JSON.stringify(metadata));
+    }
+
+    let indexed = 0;
+    const second = completedData(
+      await collect(extensionQuality(ctx, {
+        ...deps,
+        pushPrepareDeps: makePushPrepareDeps({
+          indexArchive: () => {
+            indexed++;
+            return loadedModel("@someoneelse/echo");
+          },
+        }),
+      }, input)),
+    );
+    assertEquals(second.cacheHit, true);
+    assertEquals(indexed, 1);
+    assertEquals(
+      second.gateFailures.map((f) => f.gate),
+      ["content-collectives"],
     );
   });
 });

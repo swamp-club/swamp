@@ -46,6 +46,7 @@ import {
 import { analyzeExtensionSafety } from "../src/domain/extensions/extension_safety_analyzer.ts";
 import { extractContentMetadata } from "../src/domain/extensions/extension_content_extractor.ts";
 import { bundleExtension } from "../src/domain/models/bundle.ts";
+import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 const logger = getLogger(["test"]);
@@ -73,6 +74,7 @@ const stubDeps: ExtensionPushPrepareDeps = {
     Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
   checkReviewRules: () =>
     Promise.resolve({ errors: [], warnings: [], passed: true }),
+  indexArchive: emptyArchiveIndex,
   bundleEntryPoint: () => Promise.resolve("export {};\n"),
   ensureDenoPath: () => Promise.resolve("unused-deno"),
   getDenoEnv: () => ({}),

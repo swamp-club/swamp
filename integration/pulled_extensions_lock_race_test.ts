@@ -37,6 +37,7 @@ import {
   installExtension,
 } from "../src/libswamp/extensions/pull.ts";
 import { RemoveExtensionService } from "../src/libswamp/extensions/remove_extension_service.ts";
+import { emptyTreeIndexer } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 // swamp-club#2709: installs and removals racing on one checkout. Each
 // "process" gets its own catalog connection and lockfile repository, as
@@ -176,6 +177,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
           force: true,
           alreadyPulled: new Set(),
           depth: 0,
+          indexExtensionTree: emptyTreeIndexer,
         };
         return new InstallExtensionService({
           denoRuntime: testDenoRuntime,

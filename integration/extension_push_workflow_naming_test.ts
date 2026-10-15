@@ -36,6 +36,7 @@ import {
   type ExtensionPushPrepareInput,
 } from "../src/libswamp/extensions/push.ts";
 import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
+import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 
 const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 
@@ -68,6 +69,7 @@ const prepareDeps: ExtensionPushPrepareDeps = {
     Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
   checkReviewRules: () =>
     Promise.resolve({ errors: [], warnings: [], passed: true }),
+  indexArchive: emptyArchiveIndex,
   bundleEntryPoint: () => Promise.resolve("export const model = {};\n"),
   ensureDenoPath: () => Promise.resolve("unused-deno"),
   getDenoEnv: () => ({}),

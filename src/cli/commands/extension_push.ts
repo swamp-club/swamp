@@ -562,6 +562,7 @@ export const extensionPushCommand = new Command()
           packageJsonDir,
           contentHash: cacheHash,
           cachedArchive: cached?.archiveBytes,
+          cachedArchiveIndex: cached?.metadata.archiveIndex,
         });
       } catch (error) {
         // Handle structured errors from the prepare phase with rich rendering
@@ -745,6 +746,7 @@ export const extensionPushCommand = new Command()
             extensionName: prepared.manifest.name,
             extensionVersion: prepared.manifest.version,
             rubricVersion: RUBRIC_VERSION,
+            archiveIndex: prepared.archiveIndex,
           });
         } catch (cacheError) {
           cliCtx.logger

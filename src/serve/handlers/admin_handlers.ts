@@ -1028,6 +1028,7 @@ export async function handleExtensionPull(
       depth: 0,
       denoRuntime,
       repository,
+      indexExtensionTree: deps.indexExtensionTree,
     };
 
     let result: Record<string, unknown> | undefined;
