@@ -92,9 +92,10 @@ export function symlinkIssue(file: string, link: string): SafetyIssue {
   return issue(
     "symlink",
     file,
-    link === file
+    (link === file
       ? "Symlinks are not allowed in extensions."
-      : `Symlinks are not allowed in extensions: ${link} is a symlink.`,
+      : `Symlinks are not allowed in extensions: ${link} is a symlink.`) +
+      " Copy the file into the extension tree instead.",
   );
 }
 

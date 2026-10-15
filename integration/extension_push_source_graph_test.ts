@@ -367,7 +367,7 @@ Deno.test({
           [
             join(linkDir, "x.ts"),
             "symlink",
-            `Symlinks are not allowed in extensions: ${linkDir} is a symlink.`,
+            `Symlinks are not allowed in extensions: ${linkDir} is a symlink. Copy the file into the extension tree instead.`,
           ],
         ]);
       });

@@ -918,6 +918,9 @@ export async function resolveExtensionFiles(
 
     // Validate workflow files exist and resolve symlinks
     const wfEntries: WorkflowManifestEntry[] = [];
+    // Real paths of the manifest's workflows, so the dependency resolver
+    // cannot add a symlinked one's target as a second entry.
+    const manifestWfReal = new Set<string>();
     for (const wfRef of manifest.workflows) {
       let realPath: string | null = null;
       let foundIn = "";
@@ -926,6 +929,7 @@ export async function resolveExtensionFiles(
         const candidate = resolve(candidateDir, wfRef);
         try {
           realPath = await Deno.realPath(candidate);
+          manifestWfReal.add(realPath);
           foundIn = candidateDir;
           // A symlinked workflow is listed by its own path, never parsed.
           if (await probe.check(candidate) !== undefined) realPath = candidate;
@@ -1010,6 +1014,7 @@ export async function resolveExtensionFiles(
       } catch {
         continue; // Skip if the file doesn't exist
       }
+      if (manifestWfReal.has(realWf)) continue;
       if (await probe.check(wf) !== undefined) realWf = resolve(wf);
       if (!wfSet.has(realWf)) {
         const archiveName = basename(realWf);
@@ -1084,7 +1089,7 @@ export async function resolveExtensionFiles(
   // 14. Resolve skill directories from manifest
   const skillDirs: Array<{ name: string; absolutePath: string }> = [];
   const allSkillFiles: string[] = [];
-  const refusedSkillPaths: string[] = [];
+  const refusedSkillPaths = new Set<string>();
   if (manifest.skills.length > 0) {
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
 
@@ -1169,7 +1174,7 @@ export async function resolveExtensionFiles(
       );
       // A symlinked skill directory is refused unread.
       if (await probe.check(skillPath) !== undefined) {
-        refusedSkillPaths.push(skillPath);
+        refusedSkillPaths.add(skillPath);
         continue;
       }
 
@@ -1182,7 +1187,7 @@ export async function resolveExtensionFiles(
           if (entry.isSymlink) {
             // Refused by the safety gate, never followed or copied.
             await probe.check(fullPath);
-            refusedSkillPaths.push(fullPath);
+            refusedSkillPaths.add(fullPath);
           } else if (entry.isDirectory) {
             await collectSkillFiles(fullPath);
           } else if (entry.isFile) {
@@ -1449,7 +1454,7 @@ export async function resolveExtensionFiles(
     // reading the target, so it is never named (swamp-club#3420).
     symlinkedPaths: new Map(
       [...probe.found].filter(([path]) =>
-        listed.has(path) || refusedSkillPaths.includes(path)
+        listed.has(path) || refusedSkillPaths.has(path)
       ),
     ),
     ...(denoConfigPath ? { denoConfigPath } : {}),

@@ -822,7 +822,7 @@ Deno.test("symlinkIssue: names the symlinked directory above a file, never a tar
   assertEquals(issue.file, file);
   assertEquals(
     issue.message,
-    `Symlinks are not allowed in extensions: ${link} is a symlink.`,
+    `Symlinks are not allowed in extensions: ${link} is a symlink. Copy the file into the extension tree instead.`,
   );
 });
 
@@ -830,6 +830,6 @@ Deno.test("symlinkIssue: a file that is itself a symlink keeps the rule's messag
   const file = join("repo", "evil.ts");
   assertEquals(
     symlinkIssue(file, file).message,
-    "Symlinks are not allowed in extensions.",
+    "Symlinks are not allowed in extensions. Copy the file into the extension tree instead.",
   );
 });
