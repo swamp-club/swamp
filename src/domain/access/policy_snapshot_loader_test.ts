@@ -48,9 +48,9 @@ import {
   createConditionEvaluator,
   PolicySnapshotLoader,
   retainedUnreadableGrant,
-  UnreadableAccessRecordsError,
   withoutAllowsToGroups,
 } from "./policy_snapshot_loader.ts";
+import { UnreadableAccessRecordsError } from "./unreadable_access_records.ts";
 import { MissingConditionFieldError } from "./condition_fields.ts";
 import { UserError } from "../errors.ts";
 import type { PrincipalContext } from "./principal_context.ts";
@@ -1796,5 +1796,39 @@ Deno.test("PolicySnapshotLoader.load: a record whose metadata goes missing keeps
   assertEquals(
     loader.unreadable.map((r) => [r.modelId, r.cause, r.outcome]),
     [["d", "unreadable", "kept-last-known-deny"]],
+  );
+});
+
+Deno.test("PolicySnapshotLoader.load: a record whose cause changes under the same error class is logged at error again, with its fix", async () => {
+  const deny = makeGrant({ id: "deny-1", effect: "deny" });
+  const records = new Map<string, FakeRecord>([
+    ["d", { kind: "grant", attrs: deny }],
+  ]);
+  const loader = new PolicySnapshotLoader(
+    createChangingDataRepo(records),
+    new EventBus(),
+    "manual",
+  );
+  await loader.load();
+  const logs = await capturingLoaderLogs(async () => {
+    // A remote read failing with a SyntaxError is unreadable...
+    records.set("d", { kind: "grant", unreadable: "content-syntax" });
+    await loader.load();
+    // ...and then the content is corrupt: SyntaxError again, another cause.
+    records.set("d", { kind: "grant", unreadable: "json" });
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const errors = logs.filter((l) =>
+    l.level === "error" && l.message.includes("swamp/grant/d")
+  );
+  assertEquals(
+    errors.some((l) => l.message.includes("swamp data delete d grant-main -y")),
+    true,
+  );
+  assertEquals(
+    loader.unreadable.map((r) => [r.cause, r.errorName]),
+    [["corrupt", "SyntaxError"]],
   );
 });

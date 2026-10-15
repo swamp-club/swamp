@@ -780,11 +780,14 @@ changes.
    The first build of a loader has no earlier version to fall back on, so it
    fails closed: it throws `UnreadableAccessRecordsError`, and serve refuses to
    start, as do `swamp access reload` and `swamp access check`. Serve's boot
-   reconcilers of file and admin grants read every stored grant before that
-   build, and a grant whose content they cannot read makes them throw the same
-   error, since reconciling without it could duplicate or orphan it. A record
-   that cannot be loaded may be a deny, and the loader cannot tell. The error
-   lists each record with its fix:
+   reconcilers of file and admin grants run before that build and read every
+   stored grant's `grant-main` (`readStoredGrants`,
+   `src/domain/access/stored_grant_reader.ts`), never the other data a grant
+   model keeps. Reconciling without a grant they cannot load could duplicate or
+   orphan it, so one that cannot be read, is corrupt or fails validation, or
+   whose model directory cannot be listed, makes them throw the same error
+   before they write anything. A record that cannot be loaded may be a deny, and
+   the loader cannot tell. The error lists each record with its fix:
    - corrupt (its JSON or metadata does not parse, or its `metadata.yaml` is
      empty): it never loads by itself, so the error names the command that
      removes it, `swamp data delete <model-id> grant-main -y` (`group-main` for

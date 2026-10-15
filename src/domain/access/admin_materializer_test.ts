@@ -32,7 +32,7 @@ import {
 } from "./admin_materializer.ts";
 
 import { createAdminGrantStore } from "./admin_materializer.ts";
-import { UnreadableAccessRecordsError } from "./policy_snapshot_loader.ts";
+import { UnreadableAccessRecordsError } from "./unreadable_access_records.ts";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -514,7 +514,18 @@ function repoWithUnreadableGrant(): UnifiedDataRepository {
       if (modelId === "bad") {
         return Promise.reject(new Deno.errors.PermissionDenied("raw"));
       }
-      return Promise.resolve(new TextEncoder().encode("{}"));
+      const grant: Grant = {
+        id: "ok",
+        subject: { kind: "user", name: "adam" },
+        effect: "allow",
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "*" },
+        state: "active",
+        source: "method",
+        createdBy: { kind: "user", id: "admin" },
+        createdAt: "2026-01-01T00:00:00Z",
+      };
+      return Promise.resolve(new TextEncoder().encode(JSON.stringify(grant)));
     },
   } as unknown as UnifiedDataRepository;
 }
