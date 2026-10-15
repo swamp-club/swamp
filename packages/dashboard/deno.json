@@ -3,5 +3,13 @@
   "version": "0.1.0",
   "license": "AGPL-3.0-only",
   "exports": "./src/main.tsx",
+  // Mirrors the JSX and lib settings in tsconfig.json, which tsc -b and Vite
+  // use. Change both together, or deno check and the build disagree.
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "jsxImportSourceTypes": "@types/react",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "deno.ns"]
+  },
   "exclude": ["node_modules", "dist"]
 }

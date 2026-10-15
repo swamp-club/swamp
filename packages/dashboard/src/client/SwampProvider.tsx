@@ -43,7 +43,7 @@ import {
   settleDetached,
   settleRequest,
   type WireFrame,
-} from "./stream";
+} from "./stream.ts";
 
 interface SwampContextValue {
   connected: boolean;
@@ -96,7 +96,8 @@ function getWsUrl(): string {
 }
 
 const timers = {
-  setTimer: (fn: () => void, ms: number) => globalThis.setTimeout(fn, ms),
+  setTimer: (fn: () => void, ms: number) =>
+    Number(globalThis.setTimeout(fn, ms)),
   clearTimer: (id: number) => globalThis.clearTimeout(id),
 };
 

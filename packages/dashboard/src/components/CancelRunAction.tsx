@@ -18,13 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useState } from "react";
-import { useSwamp } from "../client/SwampProvider";
+import { useSwamp } from "../client/SwampProvider.tsx";
 import {
   type CancelOutcome,
   cancelOutcome,
   type CancelStep,
   nextCancelStep,
-} from "./cancel_confirm";
+} from "./cancel_confirm.ts";
 
 interface CancelRunActionProps {
   runId: string;

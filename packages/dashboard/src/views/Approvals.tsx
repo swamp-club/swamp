@@ -25,50 +25,53 @@ import {
   useMemo,
   useState,
 } from "react";
-import { useSwamp } from "../client/SwampProvider";
-import { useRequest } from "../client/useRequest";
-import { extractObject } from "../client/extract";
+import { useSwamp } from "../client/SwampProvider.tsx";
+import { useRequest } from "../client/useRequest.ts";
+import { extractObject } from "../client/extract.ts";
 import {
   activeRunIds,
   type ResumableRun,
   resumeStateFor,
-} from "../client/resume_state";
-import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
-import type { HealthSnapshot } from "../client/useHealthStream";
-import { useRequestAllPages } from "../client/useRequestAllPages";
-import { useWorkflowCatalog } from "../client/useWorkflowCatalog";
-import { summariesByName, useRunSummary } from "../client/run_summary";
-import { ResumeAction } from "../components/ResumeAction";
-import { CancelRunAction } from "../components/CancelRunAction";
-import type { CancelOutcome } from "../components/cancel_confirm";
+} from "../client/resume_state.ts";
+import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch.ts";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
+import { useRequestAllPages } from "../client/useRequestAllPages.ts";
+import { useWorkflowCatalog } from "../client/useWorkflowCatalog.ts";
+import { summariesByName, useRunSummary } from "../client/run_summary.ts";
+import { ResumeAction } from "../components/ResumeAction.tsx";
+import { CancelRunAction } from "../components/CancelRunAction.tsx";
+import type { CancelOutcome } from "../components/cancel_confirm.ts";
 import {
   type ApprovalInfo,
   expiredApprovals,
   type ExpiredGate,
   pendingApprovals,
-} from "../client/approvals";
-import { SignalWaitsPanel } from "../components/SignalWaitsPanel";
-import { signalWaitRows } from "../client/signal_wait_state";
-import { RouteLink } from "../components/RouteLink";
-import { RunHistoryBar } from "../components/RunHistoryBar";
-import { type Stat, StatPills } from "../components/StatPills";
-import { EmptyState } from "../components/EmptyState";
-import { FilterBar, useWorkflowFilter } from "../components/FilterBar";
-import { GateDetails } from "../components/GateDetails";
+} from "../client/approvals.ts";
+import { SignalWaitsPanel } from "../components/SignalWaitsPanel.tsx";
+import { signalWaitRows } from "../client/signal_wait_state.ts";
+import { RouteLink } from "../components/RouteLink.tsx";
+import { RunHistoryBar } from "../components/RunHistoryBar.tsx";
+import { type Stat, StatPills } from "../components/StatPills.tsx";
+import { EmptyState } from "../components/EmptyState.tsx";
+import { FilterBar, useWorkflowFilter } from "../components/FilterBar.tsx";
+import { GateDetails } from "../components/GateDetails.tsx";
 import {
   SkeletonList,
   SkeletonPills,
   SkeletonRunHistory,
-} from "../components/Skeleton";
-import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets";
-import { filterRowsByWorkflow, MAX_WORKFLOW_NAMES } from "../lib/run_filters";
-import { formatWait, oldestFirst } from "../lib/wait_order";
-import type { WorkflowJobDef } from "../lib/gate_dag";
+} from "../components/Skeleton.tsx";
+import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets.ts";
+import {
+  filterRowsByWorkflow,
+  MAX_WORKFLOW_NAMES,
+} from "../lib/run_filters.ts";
+import { formatWait, oldestFirst } from "../lib/wait_order.ts";
+import type { WorkflowJobDef } from "../lib/gate_dag.ts";
 import {
   formatAbsoluteTime,
   formatCount,
   formatRelativeTime,
-} from "../lib/format";
+} from "../lib/format.ts";
 import "../styles/approvals.css";
 import "../styles/mini-dag.css";
 

@@ -18,13 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { type ReactNode, useState } from "react";
-import { useRequest } from "../client/useRequest";
-import { extractObject } from "../client/extract";
-import { CodeBlock } from "../components/CodeBlock";
-import { Markdown } from "../components/Markdown";
-import { RouteLink } from "../components/RouteLink";
-import { ShareBar } from "../components/ShareBar";
-import { Skeleton, SkeletonRegion, SkeletonText } from "../components/Skeleton";
+import { useRequest } from "../client/useRequest.ts";
+import { extractObject } from "../client/extract.ts";
+import { CodeBlock } from "../components/CodeBlock.tsx";
+import { Markdown } from "../components/Markdown.tsx";
+import { RouteLink } from "../components/RouteLink.tsx";
+import { ShareBar } from "../components/ShareBar.tsx";
+import {
+  Skeleton,
+  SkeletonRegion,
+  SkeletonText,
+} from "../components/Skeleton.tsx";
 import { useDocumentTitle } from "../hooks/useDocumentTitle.ts";
 import type { DetailView, RouteState } from "../routes.ts";
 import {

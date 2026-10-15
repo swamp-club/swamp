@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSwamp } from "./SwampProvider";
-import { createRequestSequence } from "./request_sequence";
-import { type RequestErrorInfo, requestErrorInfo } from "./stream";
+import { useSwamp } from "./SwampProvider.tsx";
+import { createRequestSequence } from "./request_sequence.ts";
+import { type RequestErrorInfo, requestErrorInfo } from "./stream.ts";
 
 interface UseRequestResult<T> {
   data: T | null;

@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// These tests are the only automated coverage this script has: `scripts/` is
-// excluded from `deno fmt` and `deno lint` in deno.json, and `deno task check`
-// only type-checks the main.ts graph.
+// These tests are the only automated behaviour coverage this script has:
+// `scripts/` is excluded from `deno fmt` and `deno lint` in deno.json, and
+// `deno task check` only type-checks it.
 
 import {
   assertEquals,

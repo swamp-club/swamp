@@ -19,12 +19,12 @@
 
 import { serverPath, withLocalToken } from "./workspace_path.ts";
 import { useEffect, useState } from "react";
-import { useSwamp } from "./SwampProvider";
+import { useSwamp } from "./SwampProvider.tsx";
 import {
   HEALTH_RETRY_MS,
   healthRetryDelayMs,
   healthStreamOutcome,
-} from "./health_state";
+} from "./health_state.ts";
 
 interface ActiveRun {
   runId: string;

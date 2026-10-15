@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { type MouseEvent, useState } from "react";
-import { useSwamp } from "../client/SwampProvider";
-import { type ResumableRun, resumeStateFor } from "../client/resume_state";
+import { useSwamp } from "../client/SwampProvider.tsx";
+import { type ResumableRun, resumeStateFor } from "../client/resume_state.ts";
 
 interface ResumeActionProps {
   run: ResumableRun;

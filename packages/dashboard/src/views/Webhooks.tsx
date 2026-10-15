@@ -21,9 +21,9 @@ import { applyRowFacets, type RowFacetSpec } from "../lib/row_facets.ts";
 import { workflowPrefix } from "../lib/workflow_facets.ts";
 
 import { useMemo } from "react";
-import type { HealthSnapshot } from "../client/useHealthStream";
-import { healthViewState } from "../client/health_state";
-import { HealthUnavailable } from "../components/HealthUnavailable";
+import type { HealthSnapshot } from "../client/useHealthStream.ts";
+import { healthViewState } from "../client/health_state.ts";
+import { HealthUnavailable } from "../components/HealthUnavailable.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { SkeletonPills, SkeletonTable } from "../components/Skeleton.tsx";
 import { type Stat, StatPills } from "../components/StatPills.tsx";
@@ -44,8 +44,8 @@ import {
   useQueryState,
 } from "../client/useQueryState.ts";
 import { useTriggerRunSummaries } from "../client/trigger_runs.ts";
-import { useRequest } from "../client/useRequest";
-import { extractArray } from "../client/extract";
+import { useRequest } from "../client/useRequest.ts";
+import { extractArray } from "../client/extract.ts";
 import { describeTimeRange, useTimeRange } from "../client/time_range.ts";
 import {
   filterWebhooks,
