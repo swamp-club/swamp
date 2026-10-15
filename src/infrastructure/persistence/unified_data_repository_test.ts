@@ -1052,21 +1052,29 @@ Deno.test("mutations call markDirty before writing", async () => {
     }
     const afterRename = calls.length;
 
-    // delete with specific version → version directory
+    // delete with specific version → version directory; it is the name's
+    // last version, so its latest marker goes too (swamp-club#3473)
     await repo.delete(testType, "model-1", "mark-dirty-ren", 1);
-    assertEquals(calls.length, afterRename + 1);
+    assertEquals(calls.length, afterRename + 2);
     assertEquals(
       calls[afterRename],
       repo.getPath(testType, "model-1", "mark-dirty-ren", 1),
+    );
+    assertEquals(
+      calls[afterRename + 1],
+      join(
+        repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
+        "latest",
+      ),
     );
 
     // delete without version → latest marker file (data-name dir already
     // removed by the prior specific-version delete that left no versions;
     // listVersions returns [] so only the latest marker signal fires).
     await repo.delete(testType, "model-1", "mark-dirty-ren");
-    assertEquals(calls.length, afterRename + 2);
+    assertEquals(calls.length, afterRename + 3);
     assertEquals(
-      calls[afterRename + 1],
+      calls[afterRename + 2],
       join(
         repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
         "latest",
@@ -1077,7 +1085,7 @@ Deno.test("mutations call markDirty before writing", async () => {
     await repo.collectGarbage(testType, "model-1");
     assertEquals(
       calls.length,
-      afterRename + 2,
+      afterRename + 3,
       "collectGarbage with no excess versions must not call markDirty",
     );
 
@@ -1136,6 +1144,46 @@ Deno.test("delete: full delete emits per-version markDirty signals", async () =>
       );
     }
     assertEquals(calls[3], expectedLatest);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("delete: deleting the last version also signals the latest marker's removal", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
+      return Promise.resolve();
+    };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      markDirty,
+    );
+    const data = makeData("last-ver");
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v1"));
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v2"));
+    calls.length = 0;
+
+    await repo.delete(testType, "m1", "last-ver", 1);
+    // An older version leaves the marker in place.
+    const latest = join(
+      repo.getDataNameDir(testType, "m1", "last-ver"),
+      "latest",
+    );
+    assertEquals(calls.includes(latest), false);
+
+    await repo.delete(testType, "m1", "last-ver", 2);
+    // The last one removes it, and a synced datastore must hear of it.
+    assertEquals(calls.includes(latest), true);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

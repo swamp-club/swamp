@@ -1659,8 +1659,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           NO_PROMOTED_VERSION,
         );
       } else {
-        // No versions left, remove the data name directory
+        // No versions left, remove the data name directory. The latest
+        // marker goes with it, so its removal is staged too: unstaged, a
+        // synced datastore kept a remote `latest` naming a version no
+        // longer there (swamp-club#3473).
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+        await this.stage({ kind: "remove", path: join(dataNameDir, "latest") });
         await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
         this.catalogRemove(type, modelId, dataName);
       }

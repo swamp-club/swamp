@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { getLogger } from "@logtape/logtape";
+import { getConfig, getLogger } from "@logtape/logtape";
 import { parse as parseYaml } from "@std/yaml";
 import { stringify as stringifyYaml } from "@std/yaml/unstable-stringify";
 import { atomicWriteTextFile } from "./atomic_write.ts";
@@ -148,10 +148,16 @@ function validateGarbageCollection(
   }
 }
 
-/** Logs a marker warning once per process, however often the file is read. */
+/**
+ * Logs a marker warning once per process, however often the file is read.
+ * The CLI reads the marker before logging is configured (to find the log
+ * level), and a warning logged then reaches no sink: it only counts as
+ * shown once logging is configured, so a later read logs it.
+ */
 function warnOnce(path: string, message: string): void {
   const key = `${path}\0${message}`;
   if (warnedUnknownKeys.has(key)) return;
+  if (getConfig() === null) return;
   warnedUnknownKeys.add(key);
   logger.warn`${path}: ${message}`;
 }
