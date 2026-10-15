@@ -52,6 +52,7 @@ import {
   mergeSourceGraphs,
   withoutSymlinkedModules,
 } from "../domain/extensions/extension_source_graph.ts";
+import { firstSymlinkedComponent } from "../domain/extensions/extension_path_symlinks.ts";
 import {
   planSourceArchive,
   type SourceArchiveKind,
@@ -165,6 +166,14 @@ export interface ResolvedExtensionFiles {
    * bundled (swamp-club#3420).
    */
   entryPointsReachingSymlinks: string[];
+  /**
+   * Extension files with a symlink on their path below the repository, the
+   * extensions root or the manifest directory, each mapped to the first
+   * symlinked component. They stay in their lists, unread, so the safety
+   * gate refuses each by the symlink rule (swamp-club#3421). A symlinked
+   * skill directory, or a symlink inside one, is listed here only.
+   */
+  symlinkedPaths: Map<string, string>;
   /** The project deno.json push bundles, formats and lints under. */
   denoConfigPath?: string;
   /** The package.json project push bundles under, when the extension uses bare specifiers. */
@@ -190,7 +199,10 @@ function normalizeAdditionalFileEntry(entry: string): string {
 export interface WorkflowManifestEntry {
   /** The entry as written in the manifest. */
   ref: string;
-  /** The resolved, symlink-free path of the workflow file. */
+  /**
+   * The resolved path of the workflow file, or its own path when a symlink
+   * on it refuses it, so the link is never followed.
+   */
   realPath: string;
 }
 
@@ -814,6 +826,9 @@ export async function resolveExtensionFiles(
     typedDirs,
     useManifestBase,
   };
+  // Every file push collects is checked for a symlink on its path before
+  // anything reads it (swamp-club#3421).
+  const probe = createSymlinkProbe([repoDir, extensionsRoot, manifestDir]);
 
   // 2b. When paths.base=manifest, reject entries that start with their own
   // archive directory prefix — the archive places each typed-key file under
@@ -908,9 +923,12 @@ export async function resolveExtensionFiles(
       let foundIn = "";
 
       for (const candidateDir of wfCandidateDirs) {
+        const candidate = resolve(candidateDir, wfRef);
         try {
-          realPath = await Deno.realPath(resolve(candidateDir, wfRef));
+          realPath = await Deno.realPath(candidate);
           foundIn = candidateDir;
+          // A symlinked workflow is listed by its own path, never parsed.
+          if (await probe.check(candidate) !== undefined) realPath = candidate;
           break;
         } catch { /* not found here */ }
       }
@@ -992,6 +1010,7 @@ export async function resolveExtensionFiles(
       } catch {
         continue; // Skip if the file doesn't exist
       }
+      if (await probe.check(wf) !== undefined) realWf = resolve(wf);
       if (!wfSet.has(realWf)) {
         const archiveName = basename(realWf);
         const archiveKey = normalizeAdditionalFileEntry(archiveName);
@@ -1065,6 +1084,7 @@ export async function resolveExtensionFiles(
   // 14. Resolve skill directories from manifest
   const skillDirs: Array<{ name: string; absolutePath: string }> = [];
   const allSkillFiles: string[] = [];
+  const refusedSkillPaths: string[] = [];
   if (manifest.skills.length > 0) {
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
 
@@ -1147,6 +1167,11 @@ export async function resolveExtensionFiles(
         repoSkillDirs.map((d) => join(d, skillName)),
         true,
       );
+      // A symlinked skill directory is refused unread.
+      if (await probe.check(skillPath) !== undefined) {
+        refusedSkillPaths.push(skillPath);
+        continue;
+      }
 
       skillDirs.push({ name: skillName, absolutePath: skillPath });
 
@@ -1154,7 +1179,11 @@ export async function resolveExtensionFiles(
       const collectSkillFiles = async (dir: string): Promise<void> => {
         for (const entry of await readDirSorted(dir)) {
           const fullPath = join(dir, entry.name);
-          if (entry.isDirectory) {
+          if (entry.isSymlink) {
+            // Refused by the safety gate, never followed or copied.
+            await probe.check(fullPath);
+            refusedSkillPaths.push(fullPath);
+          } else if (entry.isDirectory) {
             await collectSkillFiles(fullPath);
           } else if (entry.isFile) {
             allSkillFiles.push(fullPath);
@@ -1174,7 +1203,10 @@ export async function resolveExtensionFiles(
       typedBase("include"),
       inc,
     );
-    // stat, not lstat: findTypedEntry follows symlinks for include entries.
+    if (await probe.check(incPath) !== undefined) {
+      if (!ctx.lenientSources) includeFilePaths.push(incPath);
+      continue;
+    }
     assertRegularFile(
       "Include file",
       "include",
@@ -1215,16 +1247,11 @@ export async function resolveExtensionFiles(
         [af, afPath],
       );
     }
-    if (info.isSymlink) {
-      throw markErrorPaths(
-        new UserError(
-          `Additional file is a symlink: ${af} (at ${afPath}). ` +
-            `Symlinks in additionalFiles are rejected to prevent archive ` +
-            `bloat and path escapes — copy the target file into the ` +
-            `extension tree instead.`,
-        ),
-        [af, afPath],
-      );
+    // Listed unread for the safety gate, which refuses it by the symlink
+    // rule; fmt (lenient) leaves it out so it never writes through it.
+    if (await probe.check(afPath) !== undefined) {
+      if (!ctx.lenientSources) additionalFilePaths.push(afPath);
+      continue;
     }
     assertRegularFile(
       "Additional file",
@@ -1278,16 +1305,9 @@ export async function resolveExtensionFiles(
         [bf, bfPath],
       );
     }
-    if (info.isSymlink) {
-      throw markErrorPaths(
-        new UserError(
-          `Binary file is a symlink: ${bf} (at ${bfPath}). ` +
-            `Symlinks in binaries are rejected to prevent archive ` +
-            `bloat and path escapes — copy the target file into the ` +
-            `extension tree instead.`,
-        ),
-        [bf, bfPath],
-      );
+    if (await probe.check(bfPath) !== undefined) {
+      if (!ctx.lenientSources) binaryFilePaths.push(bfPath);
+      continue;
     }
     assertRegularFile("Binary file", "binaries", bf, bfPath, info);
     binaryFilePaths.push(bfPath);
@@ -1296,13 +1316,18 @@ export async function resolveExtensionFiles(
   // 16a. Symlinked entry points, found before anything reads them: neither
   // the bare-specifier scan nor the module graph reader nor the bundler
   // follows one to its target (swamp-club#3420).
-  const symlinkedRoots = await symlinksAmong([
-    ...modelRoots,
-    ...vaultEntryPoints,
-    ...datastoreEntryPoints,
-    ...reportEntryPoints,
-    ...webhookEntryPoints,
-  ]);
+  const symlinkedRoots = new Set<string>();
+  for (
+    const ep of new Set([
+      ...modelRoots,
+      ...vaultEntryPoints,
+      ...datastoreEntryPoints,
+      ...reportEntryPoints,
+      ...webhookEntryPoints,
+    ])
+  ) {
+    if (await probe.check(ep) !== undefined) symlinkedRoots.add(ep);
+  }
 
   // 17. Project config: the deno.json, or the package.json project when the
   // extension uses bare specifiers, that push bundles under. The module
@@ -1352,6 +1377,7 @@ export async function resolveExtensionFiles(
   const sources = await resolveSourceModules({
     reader: ctx.moduleGraphReader,
     symlinkedRoots,
+    probe,
     lenient: ctx.lenientSources ?? false,
     logger,
     project: { denoConfigPath, packageJsonDir },
@@ -1375,6 +1401,19 @@ export async function resolveExtensionFiles(
   const allDatastoreFiles = sources.codeFilesByKind.datastores;
   const allReportFiles = sources.codeFilesByKind.reports;
   const allWebhookFiles = sources.codeFilesByKind.webhooks;
+  const listed = new Set([
+    ...modelEntryPoints,
+    ...vaultEntryPoints,
+    ...datastoreEntryPoints,
+    ...reportEntryPoints,
+    ...webhookEntryPoints,
+    ...Object.values(sources.codeFilesByKind).flat(),
+    ...Object.values(sources.dataFilesByKind).flat(),
+    ...workflowFiles.map((wf) => wf.sourcePath),
+    ...includeFilePaths,
+    ...additionalFilePaths,
+    ...binaryFilePaths,
+  ]);
 
   return {
     manifest,
@@ -1406,6 +1445,13 @@ export async function resolveExtensionFiles(
     sourcePlan: sources.plan,
     missingModules: sources.missing,
     entryPointsReachingSymlinks: sources.entryPointsReachingSymlinks,
+    // Only paths push lists: a module only a symlink reaches was found by
+    // reading the target, so it is never named (swamp-club#3420).
+    symlinkedPaths: new Map(
+      [...probe.found].filter(([path]) =>
+        listed.has(path) || refusedSkillPaths.includes(path)
+      ),
+    ),
     ...(denoConfigPath ? { denoConfigPath } : {}),
     ...(packageJsonDir ? { packageJsonDir } : {}),
   };
@@ -1485,17 +1531,41 @@ async function realPathThroughAncestors(path: string): Promise<string> {
   }
 }
 
-/** The paths in `paths` that are symlinks; one that cannot be read is not. */
-async function symlinksAmong(paths: Iterable<string>): Promise<Set<string>> {
-  const symlinks = new Set<string>();
-  for (const path of new Set(paths)) {
-    try {
-      if ((await Deno.lstat(path)).isSymlink) symlinks.add(path);
-    } catch {
-      // Reported by the step that needs the file.
+/** Finds extension files with a symlink on their path (swamp-club#3421). */
+interface SymlinkProbe {
+  /**
+   * The first symlinked component of `path` below its root, or undefined.
+   * A path with one is recorded in {@link found}.
+   */
+  check(path: string): Promise<string | undefined>;
+  /** Each path checked that has a symlink on it, to that symlink. */
+  found: Map<string, string>;
+}
+
+/**
+ * A probe over `roots` that lstats each path component once, never
+ * following a link; a component that cannot be read is not a symlink, and
+ * is reported by the step that needs the file.
+ */
+function createSymlinkProbe(roots: readonly string[]): SymlinkProbe {
+  const known = new Map<string, Promise<boolean>>();
+  const isSymlink = (component: string): Promise<boolean> => {
+    let answer = known.get(component);
+    if (answer === undefined) {
+      answer = Deno.lstat(component).then((s) => s.isSymlink, () => false);
+      known.set(component, answer);
     }
-  }
-  return symlinks;
+    return answer;
+  };
+  const found = new Map<string, string>();
+  return {
+    found,
+    async check(path) {
+      const link = await firstSymlinkedComponent(path, roots, isSymlink);
+      if (link !== undefined) found.set(path, link);
+      return link;
+    },
+  };
 }
 
 /**
@@ -1509,6 +1579,7 @@ async function symlinksAmong(paths: Iterable<string>): Promise<Set<string>> {
 async function resolveSourceModules(options: {
   reader: ModuleGraphReader;
   symlinkedRoots: ReadonlySet<string>;
+  probe: SymlinkProbe;
   project: ModuleGraphProject;
   repoDir: string;
   extensionsRoot: string;
@@ -1679,6 +1750,7 @@ async function readSymlinkFreeGraph(
   options: {
     reader: ModuleGraphReader;
     symlinkedRoots: ReadonlySet<string>;
+    probe: SymlinkProbe;
     project: ModuleGraphProject;
     lenient: boolean;
     logger: Logger;
@@ -1697,9 +1769,16 @@ async function readSymlinkFreeGraph(
       .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
     graph = { ...empty, modules: [{ path: root, kind: "code" }] };
   }
-  const symlinks = await symlinksAmong([
-    ...graph.modules.map((m) => m.path),
-    ...graph.missing.map((m) => m.path),
-  ]);
+  // A module behind a symlinked directory counts as a symlink too: deno info
+  // followed it, so its target was read (swamp-club#3421).
+  const symlinks = new Set<string>();
+  for (
+    const path of new Set([
+      ...graph.modules.map((m) => m.path),
+      ...graph.missing.map((m) => m.path),
+    ])
+  ) {
+    if (await options.probe.check(path) !== undefined) symlinks.add(path);
+  }
   return withoutSymlinkedModules(graph, root, symlinks);
 }

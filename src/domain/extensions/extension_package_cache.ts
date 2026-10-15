@@ -74,6 +74,12 @@ export interface PackageCacheHashInput {
   includeFilePaths: string[];
   denoConfigPath: string | undefined;
   packageJsonPath: string | undefined;
+  /**
+   * Files with a symlink on their path (swamp-club#3421). Each is hashed by
+   * its path alone, never read: the safety gate refuses it, and its target
+   * may be outside the repository, a device or a pipe.
+   */
+  symlinkedPaths?: ReadonlySet<string>;
 }
 
 /** Cached per-entry metadata written alongside the tarball. */
@@ -155,24 +161,62 @@ export async function computePackageCacheHash(
 
   const rootDir = input.rootDir;
 
+  const unread = input.symlinkedPaths ?? new Set<string>();
   parts.push("manifest-v1");
   parts.push(serializeManifestForHash(input.manifest));
 
-  await appendFileGroup("models", input.modelFilePaths, rootDir, parts);
-  await appendFileGroup("vaults", input.vaultFilePaths, rootDir, parts);
-  await appendFileGroup("datastores", input.datastoreFilePaths, rootDir, parts);
-  await appendFileGroup("reports", input.reportFilePaths, rootDir, parts);
-  await appendFileGroup("webhooks", input.webhookFilePaths, rootDir, parts);
-  await appendFileGroup("workflows", input.workflowFilePaths, rootDir, parts);
+  await appendFileGroup("models", input.modelFilePaths, rootDir, parts, unread);
+  await appendFileGroup("vaults", input.vaultFilePaths, rootDir, parts, unread);
+  await appendFileGroup(
+    "datastores",
+    input.datastoreFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup(
+    "reports",
+    input.reportFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup(
+    "webhooks",
+    input.webhookFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup(
+    "workflows",
+    input.workflowFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
   await appendFileGroup(
     "additional",
     input.additionalFilePaths,
     rootDir,
     parts,
+    unread,
   );
-  await appendFileGroup("binaries", input.binaryFilePaths, rootDir, parts);
-  await appendFileGroup("skills", input.skillFilePaths, rootDir, parts);
-  await appendFileGroup("include", input.includeFilePaths, rootDir, parts);
+  await appendFileGroup(
+    "binaries",
+    input.binaryFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
+  await appendFileGroup("skills", input.skillFilePaths, rootDir, parts, unread);
+  await appendFileGroup(
+    "include",
+    input.includeFilePaths,
+    rootDir,
+    parts,
+    unread,
+  );
 
   if (input.denoConfigPath) {
     parts.push("deno-config");
@@ -235,6 +279,7 @@ async function appendFileGroup(
   paths: string[],
   rootDir: string,
   out: string[],
+  unread: ReadonlySet<string>,
 ): Promise<void> {
   const relPaths = paths.map((p) => ({
     rel: normalizeToForwardSlash(relative(rootDir, p)),
@@ -244,7 +289,7 @@ async function appendFileGroup(
   out.push(`group=${label}`);
   for (const { rel, abs } of relPaths) {
     out.push(`file=${rel}`);
-    out.push(await readFileIfExists(abs));
+    out.push(unread.has(abs) ? "symlink" : await readFileIfExists(abs));
   }
 }
 

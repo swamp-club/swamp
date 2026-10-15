@@ -26,6 +26,7 @@ import {
 import {
   analyzeExtensionSafety,
   type ContentRule,
+  symlinkIssue,
 } from "./extension_safety_analyzer.ts";
 
 async function withTempFiles(
@@ -810,5 +811,25 @@ Deno.test("analyzeExtensionSafety: a directive shown inside a fenced Markdown bl
         2,
       ]]);
     },
+  );
+});
+
+Deno.test("symlinkIssue: names the symlinked directory above a file, never a target (swamp-club#3421)", () => {
+  const file = join("repo", "extensions", "models", "foo", "foo.ts");
+  const link = join("repo", "extensions", "models", "foo");
+  const issue = symlinkIssue(file, link);
+  assertEquals(issue.ruleId, "symlink");
+  assertEquals(issue.file, file);
+  assertEquals(
+    issue.message,
+    `Symlinks are not allowed in extensions: ${link} is a symlink.`,
+  );
+});
+
+Deno.test("symlinkIssue: a file that is itself a symlink keeps the rule's message", () => {
+  const file = join("repo", "evil.ts");
+  assertEquals(
+    symlinkIssue(file, file).message,
+    "Symlinks are not allowed in extensions.",
   );
 });

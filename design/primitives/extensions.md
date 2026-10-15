@@ -947,8 +947,10 @@ Push rejects:
 
 - Duplicate entries (case-insensitive, NFC-normalized). Two entries mapping to
   the same archive path fail with an error naming both.
-- Symlinks, to avoid archive bloat and path escapes. Copy the target file into
-  the extension tree instead.
+- Symlinks, to avoid archive bloat and path escapes: an entry that is a symlink,
+  or one reached through a symlinked directory, is refused by the safety gate's
+  symlink rule (see below). Copy the target file into the extension tree
+  instead.
 
 ### Runtime access
 
@@ -1004,9 +1006,22 @@ Each local module goes where its relative imports still resolve:
   specifiers that point at a `_shared/` module are rewritten, and line numbers
   stay the same.
 
+No extension file may have a symlink on its path (swamp-club#3421): not the
+file itself, and not any directory between it and the outermost root that
+holds it, the repository, the extensions root or the manifest's directory. That
+covers entry points, graph modules, `include`, `additionalFiles`, `binaries`,
+workflows and skills, so a symlinked `extensions/`, a symlinked skill directory
+and a symlink inside a skill are refused too. Symlinks above that root, such as
+a repository under macOS `/tmp`, are not the extension's and are allowed. Push
+never follows one: each refused file stays listed, unread, for the safety gate,
+which refuses it by the symlink rule and names the symlinked component, never
+its target. The package cache hashes it by path, not contents. Staging copies
+regular files only, and push checks the staged tree holds no symlink before it
+builds the archive, so an archive never holds one.
+
 Symlinks are taken out of the graph before it is used (swamp-club#3420). An
-entry point that is a symlink is never read: not by the bare-specifier scan,
-`deno info` or the bundler. A symlink `deno info` reaches is removed along with
+entry point with a symlink on its path is never read: not by the bare-specifier scan,
+`deno info` or the bundler. A module `deno info` reaches through a symlink is removed along with
 every module it alone leads to and any error recorded for it, since that error
 quotes the target's source. Each symlink is then listed for the safety gate,
 which refuses it by the symlink rule before anything is bundled; `fmt` leaves
@@ -1016,8 +1031,8 @@ target declares cannot reach the content-collective check, and a symlinked
 `quality.yaml` is refused unread.
 
 Push fails when a local module is missing, when its real path leaves the
-repository and the extensions root (through a symlinked directory), or when two
-different files would share an archive path. Data modules are packaged, hashed
+repository and the extensions root (a relative import that climbs out of them),
+or when two different files would share an archive path. Data modules are packaged, hashed
 and safety-scanned, but not formatted, linted or reviewed as TypeScript.
 
 Pull installs the shared sources at the same path under the extension's install
