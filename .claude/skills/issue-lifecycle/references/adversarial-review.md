@@ -158,6 +158,15 @@ When the human gives feedback OR adversarial findings need addressing:
 if the adversarial review is stale (wrong plan version). This is enforced by the
 `adversarial-review-clear` pre-flight check.
 
+## Reopening an Approved Plan
+
+When an approved plan turns out to be wrong before `implement` runs, call
+`iterate` from `approved` exactly as above — never `start`, which resets to
+triage. The phase returns to `plan_generated`, and the plan, feedback and
+reviews are kept. The swamp-club issue stays `in_progress` (it never moves
+backwards). Then follow the loop as usual: adversarial review of the new
+version, resolve findings, show the human, `approve`.
+
 ## Next Phase
 
 Plan is approved. Read [implementation.md](implementation.md) when the human

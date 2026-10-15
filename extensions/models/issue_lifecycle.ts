@@ -270,7 +270,7 @@ async function warnIfCarriedElsewhere(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.10.07.1",
+  version: "2026.10.15.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -486,6 +486,16 @@ export const model = {
         "CLI commands a change can affect. post_attestation validates it " +
         "when present and posts it with the rest of the document. No " +
         "globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.10.15.1",
+      description:
+        "iterate is now also allowed from approved, reopening an approved " +
+        "plan: the phase returns to plan_generated and the plan_revised " +
+        "entry targets in_progress, the status swamp-club already holds. " +
+        "Re-approval needs a fresh adversarial review of the revised plan. " +
+        "No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -1412,7 +1422,8 @@ export const model = {
     iterate: {
       rollbackOnFailure: true,
       description:
-        "Submit feedback and a revised plan incorporating all prior feedback",
+        "Submit feedback and a revised plan incorporating all prior feedback. " +
+        "Also reopens an approved plan, returning it to plan_generated.",
       arguments: z.object({
         feedback: z.string().describe("Human feedback on the current plan"),
         summary: z.string(),
@@ -1468,6 +1479,16 @@ export const model = {
       ) => {
         const { issueNumber } = context.globalArgs;
         const handles = [];
+
+        // Iterating on an approved plan reopens it. approve already moved
+        // the swamp-club issue to in_progress, and swamp-club never moves an
+        // issue backwards, so the entry targets the status the issue holds —
+        // the issue page groups entries by targetStatus, and a triaged entry
+        // would hide the reopen above the approval.
+        const state = await context.readResource("state-main") as
+          | StateData
+          | null;
+        const reopened = state?.phase === "approved";
 
         const currentPlan = await context.readResource!("plan-main") as
           | PlanData
@@ -1540,13 +1561,15 @@ export const model = {
         );
         await recordLifecycle(sc, {
           step: "plan_revised",
-          targetStatus: "triaged",
-          summary:
-            `Plan revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`,
+          targetStatus: reopened ? "in_progress" : "triaged",
+          summary: reopened
+            ? `Approved plan reopened and revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`
+            : `Plan revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`,
           emoji: "\u{1F504}",
           payload: {
             version: newVersion,
             feedbackRound,
+            ...(reopened ? { reopenedFromApproved: true } : {}),
             feedback: args.feedback,
             summary: args.summary,
             steps: args.steps,

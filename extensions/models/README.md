@@ -21,6 +21,7 @@ triaging ──[triage]──> classified
 classified ──[plan]──> plan_generated
 plan_generated ──[iterate]──> plan_generated  (feedback loop)
 plan_generated ──[approve]──> approved
+approved ──[iterate]──> plan_generated  (reopen an approved plan)
 approved ──[implement]──> implementing
 implementing ──[complete]──> done
 ```
@@ -28,6 +29,12 @@ implementing ──[complete]──> done
 Pre-flight checks enforce valid transitions. You cannot approve without a plan.
 You cannot approve with unresolved critical/high adversarial findings. You
 cannot implement without approval.
+
+An approved plan that turns out to be wrong goes back to planning with
+`iterate`. The plan, its version history and its feedback rounds are kept. The
+swamp-club issue stays `in_progress`, because swamp-club never moves an issue
+backwards, and the reopen entry is recorded under `in_progress` too. The revised
+plan needs a fresh `adversarial_review` before it can be approved again.
 
 ## Using with Claude Code (recommended)
 
@@ -128,21 +135,21 @@ swamp model output search issue-42 --json
 
 ## Methods
 
-| Method               | Description                                     | State Transition                 |
-| -------------------- | ----------------------------------------------- | -------------------------------- |
-| `start`              | Fetch issue from swamp-club, auto-assign to you | \* -> triaging                   |
-| `triage`             | Classify as bug/feature/security                | triaging -> classified           |
-| `plan`               | Generate implementation plan                    | classified -> plan_generated     |
-| `review`             | Display current plan (read-only)                | no change                        |
-| `iterate`            | Revise plan with feedback                       | plan_generated -> plan_generated |
-| `adversarial_review` | Record adversarial review findings for the plan | no change                        |
-| `resolve_findings`   | Mark adversarial findings as resolved           | no change                        |
-| `approve`            | Lock the plan and transition to in_progress     | plan_generated -> approved       |
-| `implement`          | Signal implementation started                   | approved -> implementing         |
-| `complete`           | Mark lifecycle done                             | implementing -> done             |
-| `link_issue`         | Carry another issue with this lifecycle         | no change                        |
-| `unlink_issue`       | Stop carrying a linked issue                    | no change                        |
-| `mark_duplicate`     | Ship as a duplicate of a shipped issue          | triaging/classified -> notify    |
+| Method               | Description                                     | State Transition                          |
+| -------------------- | ----------------------------------------------- | ----------------------------------------- |
+| `start`              | Fetch issue from swamp-club, auto-assign to you | \* -> triaging                            |
+| `triage`             | Classify as bug/feature/security                | triaging -> classified                    |
+| `plan`               | Generate implementation plan                    | classified -> plan_generated              |
+| `review`             | Display current plan (read-only)                | no change                                 |
+| `iterate`            | Revise plan with feedback, or reopen approval   | plan_generated/approved -> plan_generated |
+| `adversarial_review` | Record adversarial review findings for the plan | no change                                 |
+| `resolve_findings`   | Mark adversarial findings as resolved           | no change                                 |
+| `approve`            | Lock the plan and transition to in_progress     | plan_generated -> approved                |
+| `implement`          | Signal implementation started                   | approved -> implementing                  |
+| `complete`           | Mark lifecycle done                             | implementing -> done                      |
+| `link_issue`         | Carry another issue with this lifecycle         | no change                                 |
+| `unlink_issue`       | Stop carrying a linked issue                    | no change                                 |
+| `mark_duplicate`     | Ship as a duplicate of a shipped issue          | triaging/classified -> notify             |
 
 ## Data stored
 
