@@ -197,11 +197,18 @@ not upgraded in validation: the run upgrades their evaluated values, and the
 schema check skips them until then (swamp-club#3196).
 
 That save happens on whichever method runs first, including one that only reads.
-It changes the definition file and nothing else about it:
-`YamlDefinitionRepository.save()` merges the new values onto the file's existing
-YAML document, so comments and line layout survive. The same holds when the save
-also moves the file — a legacy `<id>.yaml` migrating to `<name>.yaml`, or a
-rename — and a file that moves with no change to its data is carried over
+It changes the definition file and nothing else about it, and the run logs it.
+`YamlDefinitionRepository.save()` keeps the file's own text wherever its value
+is unchanged (swamp-club#3502). When only scalar values changed — the usual case
+for an upgrade, which bumps `typeVersion` — they are rewritten in place and
+every other byte of the file is kept. Any other change is merged onto the file's
+parsed YAML document: an unchanged subtree, list or alias keeps its comments,
+anchors and quoting, while a list whose value changed is rewritten without the
+comments inside it. Merging onto an anchored map that one of its aliases no
+longer shares expands that alias. Whatever the path, the written file always
+reads back as the saved data. The same holds when the save also moves the file —
+a legacy `<id>.yaml` migrating to `<name>.yaml`, which the run logs, or a rename
+— and a file that moves with no change to its data is carried over
 byte-for-byte. A save whose data matches the file already at its path writes
 nothing.
 

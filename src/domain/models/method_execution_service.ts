@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { basename } from "@std/path";
 import type { z } from "zod";
 import {
   type DataHandle,
@@ -670,10 +671,27 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             originalDefinition,
             modelDef,
           );
+          const fromPath = context.definitionRepository.getPath(
+            context.modelType,
+            definition.id,
+          );
           await context.definitionRepository.save(
             context.modelType,
             diskUpgrade.definition,
           );
+          context.logger
+            .info`Upgraded definition ${definition.name} from typeVersion ${diskUpgrade.fromVersion} to ${diskUpgrade.toVersion}`;
+          // Saving also moves a legacy uuid-named file to its name-based path
+          // (swamp-club#3502).
+          const toPath = context.definitionRepository.getPath(
+            context.modelType,
+            definition.id,
+          );
+          if (toPath !== fromPath) {
+            context.logger.info`Moved definition file ${
+              basename(fromPath)
+            } to ${basename(toPath)}`;
+          }
         }
       }
 
