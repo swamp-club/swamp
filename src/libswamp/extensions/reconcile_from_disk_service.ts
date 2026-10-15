@@ -240,7 +240,7 @@ export class ReconcileFromDiskService {
     try {
       return await this.executePass(options);
     } finally {
-      this.bundleProber?.release();
+      await this.bundleProber?.release();
     }
   }
 

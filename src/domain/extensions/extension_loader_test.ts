@@ -1316,7 +1316,7 @@ async function indexWithProbeResult(result: BundleProbeResult): Promise<{
       requests.push(request);
       return Promise.resolve(result);
     },
-    release() {},
+    release: () => Promise.resolve(),
   };
   const loader = new ExtensionLoader(
     stubDenoRuntime,

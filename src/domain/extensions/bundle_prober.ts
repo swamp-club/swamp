@@ -55,10 +55,11 @@ export interface BundleProbeRequest {
 export interface BundleProber {
   probe(request: BundleProbeRequest): Promise<BundleProbeResult>;
   /**
-   * Frees whatever the prober holds. A later probe starts over, so the
-   * owner of a pass calls this once the pass is finished.
+   * Frees whatever the prober holds, and resolves once it is freed. A
+   * later probe starts over, so the owner of a pass calls this once the
+   * pass is finished.
    */
-  release(): void;
+  release(): Promise<void>;
 }
 
 /**

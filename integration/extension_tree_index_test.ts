@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // The collective check at push and install loads every source of an
-// extension tree with the real loader, bundler and worker probe
+// extension tree with the real loader, bundler and probe host
 // (swamp-club#3456). These tests run that wiring end to end over a tree on
 // disk and over a push archive, with no fakes in between.
 

@@ -37,7 +37,7 @@ import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
-import { WorkerBundleProber } from "../../infrastructure/runtime/worker_bundle_prober.ts";
+import { probeModule } from "../../infrastructure/runtime/bundle_probe.ts";
 
 // Required so the model loader's test bootstrap finds command/shell
 // (preserved from the loader test files' pattern).
@@ -803,18 +803,19 @@ Deno.test(
         root.dependencyResults = [dep];
 
         // The root and its dependency are indexed concurrently. A release
-        // while either still has probes to run would fail them.
-        const worker = new WorkerBundleProber();
+        // while either still has probes to run would fail them. Probes run
+        // in this isolate, as these bundles are well behaved; the probe
+        // host's own cases live in integration/process_bundle_prober_test.
         let probes = 0;
         const probesAtRelease: number[] = [];
         const prober: BundleProber = {
           probe: (request) => {
             probes++;
-            return worker.probe(request);
+            return probeModule(request);
           },
           release: () => {
             probesAtRelease.push(probes);
-            worker.release();
+            return Promise.resolve();
           },
         };
         const service = new InstallExtensionService({

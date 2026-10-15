@@ -61,6 +61,7 @@ import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import {
   V3ChunkCollectionDeferredError,
   V3ReplicationError,
+  V3ReplicationUnavailableError,
 } from "../../../domain/datastore_v3/litestream_replication.ts";
 import { FileSystemControlPlaneStore } from "../../persistence/fs_control_plane_store.ts";
 import { getSwampLogger } from "../../logging/logger.ts";
@@ -225,7 +226,7 @@ export async function makeV3CopyCurrent(
     try {
       quiesced = await v3Replicator().quiesce(copy.commitsDb);
     } catch (error) {
-      return refuseOrSkip(options.mode, copy, messageOf(error), error);
+      return refuseOrSkip(options.mode, copy, reasonOf(error), error);
     }
     await ensurePrivateDir(paths);
     const cursor = readModelCursor(copy.repoDir);
@@ -347,7 +348,7 @@ async function seedFromSharedDatabase(
     try {
       quiesced = await v3Replicator().quiesce(copy.commitsDb);
     } catch (error) {
-      return refuseOrSkip("write", copy, messageOf(error), error);
+      return refuseOrSkip("write", copy, reasonOf(error), error);
     }
     await ensurePrivateDir(paths);
     // The checkout's read model applied the shared commits before
@@ -849,4 +850,11 @@ async function removeReplicaPath(
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Why `error` refused, as a clause {@link refuseOrSkip} embeds. */
+function reasonOf(error: unknown): string {
+  return error instanceof V3ReplicationUnavailableError
+    ? error.reason
+    : messageOf(error);
 }

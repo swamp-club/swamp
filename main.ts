@@ -46,12 +46,22 @@ import {
   isSupervisorInvocation,
   runSupervisorMain,
 } from "./src/infrastructure/datastore_v3/litestream/replication_supervisor_entry.ts";
+import {
+  isBundleProbeHostInvocation,
+  runBundleProbeHost,
+} from "./src/infrastructure/runtime/bundle_probe_host.ts";
 
 if (import.meta.main) {
   // A v3 writer's Litestream supervisor (swamp-club#3416) runs none of the
   // CLI: no environment, tracing, auth gate or telemetry.
   if (isSupervisorInvocation(Deno.args)) {
     Deno.exit(await runSupervisorMain(Deno.args));
+  }
+  // A probe host imports extension bundles for a parent swamp, so nothing
+  // a bundle does at import runs in the parent (swamp-club#3494). It reads
+  // the parent's SWAMP_BUILD_VERSION, so it runs before that is set below.
+  if (isBundleProbeHostInvocation(Deno.args)) {
+    Deno.exit(await runBundleProbeHost(VERSION));
   }
   Deno.env.set("SWAMP_BUILD_VERSION", VERSION);
   // The dispatch runner's stdout is an RPC frame stream; nothing, including

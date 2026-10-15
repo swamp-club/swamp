@@ -199,7 +199,7 @@ export class InstallExtensionService {
       let newExtensions: Extension[];
       try {
         // Settled, not raced: a branch still indexing after another failed
-        // would probe again after the release below and leave a worker
+        // would probe again after the release below and leave a probe host
         // running (swamp-club#3374).
         const settled = await Promise.allSettled(
           installedResults.map((r) =>
@@ -219,7 +219,7 @@ export class InstallExtensionService {
             `\`swamp extension pull ${ref.name}\` to reconcile.`,
         );
       } finally {
-        this.bundleProber?.release();
+        await this.bundleProber?.release();
       }
       const tombstones: Extension[] = [];
       for (const newExt of newExtensions) {

@@ -27,6 +27,7 @@ import {
   type SidecarObservation,
   V3_REPLICATION_UNCONFIRMED_CODE,
   V3ReplicationError,
+  V3ReplicationUnavailableError,
 } from "./litestream_replication.ts";
 
 Deno.test("isReplicated: synced or no_change with the replica caught up confirms", () => {
@@ -200,4 +201,13 @@ Deno.test("decideSidecarAction: an unverified Litestream pid is left out of a re
     ),
     { kind: "replace", reason: "marked", supervisorPid: 100 },
   );
+});
+
+Deno.test('V3ReplicationUnavailableError: its reason embeds without a second "Nothing was changed" (swamp-club#3497)', () => {
+  const error = new V3ReplicationUnavailableError("the sidecar is busy");
+  assertEquals(
+    error.reason,
+    "swamp cannot replicate this v3 datastore: the sidecar is busy",
+  );
+  assertEquals(error.message, `${error.reason}. Nothing was changed.`);
 });
