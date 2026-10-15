@@ -492,8 +492,10 @@ export const model = {
       toVersion: "2026.10.15.1",
       description:
         "iterate is now also allowed from approved, reopening an approved " +
-        "plan: the phase returns to plan_generated and the plan_revised " +
-        "entry targets in_progress, the status swamp-club already holds. " +
+        "plan: the phase returns to plan_generated and, only when reopening " +
+        "from approved, the plan_revised entry targets in_progress, the " +
+        "status swamp-club already holds; ordinary revisions still target " +
+        "triaged. " +
         "Re-approval needs a fresh adversarial review of the revised plan. " +
         "No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
@@ -1561,7 +1563,9 @@ export const model = {
         );
         await recordLifecycle(sc, {
           step: "plan_revised",
-          targetStatus: reopened ? "in_progress" : "triaged",
+          targetStatus: upstreamStatusForPhase(
+            state?.phase ?? "plan_generated",
+          ),
           summary: reopened
             ? `Approved plan reopened and revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`
             : `Plan revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`,
