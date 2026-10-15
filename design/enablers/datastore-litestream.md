@@ -627,6 +627,11 @@ at 1 GB. p50.
 > request's commits before it answers, with concurrent requests sharing
 > syncs. See
 > [Phase 4D3](#phase-4d3-serve-confirms-each-write-request-swamp-club3489).
+>
+> **Built, dormant (swamp-club#3507):** the datastore names its own replica
+> through the provider's `replicaTarget()`, ready for 4E to replace the
+> internal setting. See
+> [Phase 4: the replica target](#phase-4-the-replica-target-swamp-club3507).
 
 
 - **4D: an idle sidecar for solo mode,** behind a pidfile and a short socket
@@ -1225,6 +1230,100 @@ its round trips, which Phase 4A modelled at 24–283 ms.
   answers survives a crash and a takeover.
 - `integration/serve_write_confirmation_rules_test.ts` pins the dispatch, and
   that only serve, with replication on, sets the confirmation.
+
+## Phase 4: the replica target (swamp-club#3507)
+
+Built and dormant. Phase 4E replicates to the datastore's own bucket. Only
+the extension knows how its config maps to a bucket location, so the provider
+says where, and core never parses a provider's config.
+
+**The descriptor.** A provider's optional `replicaTarget()` returns a
+`V3ReplicaTarget` (`src/domain/datastore/replica_target.ts`):
+
+- S3 or S3-compatible: `{ type: "s3", bucket, prefix, region?, endpoint?,
+  forcePathStyle? }`;
+- GCS: `{ type: "gcs", bucket, prefix }`.
+
+`prefix` is the key prefix of the datastore root that `storage()` and
+`datastoreControlPlaneStore()` write under: no leading or trailing slash, or
+empty. Core appends `_litestream/<fence>/` (`replicaPathFor`), so a provider
+never builds replica paths.
+
+**Checked at the boundary.** `parseV3ReplicaTarget` refuses any field outside
+its type's list, so a target can never carry credentials. It also refuses a
+prefix with an empty, `.` or `..` segment, and an endpoint that is not an
+http or https URL or that carries userinfo, a query or a fragment. The
+refusal names the field, never its value. `assertReplicaTargetConformance` in
+`packages/testing` applies the same rules, and one fixture list keeps the two
+copies equal. It also checks that the target names the provider's bucket and
+that a record and a chunk the suite writes land under `prefix`.
+
+**Refusals.** Without `replicaTarget()` a datastore cannot host v3, and the
+resolver says so. A provider whose datastore Litestream cannot reach throws
+from `replicaTarget()` rather than return a target that silently replicates
+somewhere else. GCS with a custom `apiEndpoint` is the known case. Extensions
+cannot throw core's `UserError`, so the resolver turns whatever they throw
+into one that names the datastore. Phase 4E refuses `--format 3` setup on
+these messages.
+
+**Resolution.** `resolveV3ReplicaSetting`
+(`src/infrastructure/datastore_v3/litestream/replica_target_resolver.ts`)
+returns the internal `SWAMP_V3_REPLICA` setting when it is set, and otherwise
+maps the provider's target to a `V3ReplicaSetting`. That setting now has a
+`gcs` kind, rendered as Litestream's `type: gs` with its bucket. Litestream
+0.5.17 refuses `type: gcs`. S3's `forcePathStyle`
+turns path-style requests on or off. Unset, path style is on whenever an
+endpoint is set, as before, so every existing setting renders byte for byte
+the same. Addressing style is not part of `replicaRootOf`, and the `file` and
+`s3` roots are unchanged, so recorded lineages continue.
+
+**Dormant.** Nothing in production calls the resolver: the sidecar still
+takes its replica from `v3ReplicaSetting()` alone. `datastore_v3_rules_test`
+pins `replicaTarget()` calls to the resolver and the resolver's production
+users to none, until 4E switches the source.
+
+**Credentials and the sidecar's environment.** Both first-party extensions
+resolve credentials from the default chains, and Litestream resolves them
+the same way: the AWS SDK chain (environment, shared config and SSO,
+container or instance identity) and Google ADC. A provider whose credentials
+come from anywhere else cannot be replicated. When 4E narrows the
+environment Litestream's supervisor inherits (D1 passes the whole
+environment), it keeps:
+
+| Replica | Inherited                                                                                                                                                |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S3      | `AWS_*`, `HOME` (for `~/.aws`), `PATH`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (and lowercase), `SSL_CERT_FILE`, `SSL_CERT_DIR`                         |
+| GCS     | `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_*`, `HOME`, `PATH`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (and lowercase), `SSL_CERT_FILE`, `SSL_CERT_DIR` |
+
+The proxy variables keep a proxied network's route, and the CA bundles keep
+trust in a self-hosted store with an internal CA or a corporate TLS proxy.
+S3-compatible stores need them most.
+
+`STORAGE_EMULATOR_HOST` is the only way Litestream reaches a GCS emulator. It
+is for tests and is not on the list.
+
+**Checked against the pinned binary.** Configs rendered from resolved
+targets, one-off and on emulators (ministack, and fake-gcs-server 1.56.1
+through `STORAGE_EMULATOR_HOST`). Litestream 0.5.17 replicated a WAL database
+across two write bursts and restored all 200 rows, sum included, for each of:
+
+- S3 with an endpoint, path style by default, prefix `team/root`;
+- S3 with an endpoint, `forcePathStyle: true`, empty prefix;
+- S3 with `forcePathStyle: false` and a virtual-hosted endpoint, prefix `vh`;
+- GCS, prefix `groot`.
+
+Each replica landed at `<prefix>/_litestream/000000000007/`, or
+`_litestream/…` for the empty prefix. The first GCS run refused `type: gcs`,
+which is why it renders as `gs`.
+
+ministack also answers path-style requests, so that run did not show which
+style Litestream used. A probe recording the `Host` header did. With an
+endpoint and `force-path-style` left out, Litestream uses path style, so an
+explicit `forcePathStyle: false` has to be written as `force-path-style:
+false`. With it, requests go to `mybucket.localhost`. Unset and `true` stay
+path style (`localhost/mybucket`). Path style is forced for an IP-address
+endpoint regardless. Real buckets remain the
+[Real-bucket check](#real-bucket-check)'s job.
 
 ## Upgrades
 

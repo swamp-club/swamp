@@ -708,6 +708,56 @@ Deno.test("datastore v3: only replica_setting.ts reads the internal replica sett
   );
 });
 
+/** Production files that call a provider's `replicaTarget()`. */
+const PINNED_REPLICA_TARGET_CALLERS: readonly string[] = [
+  `${LITESTREAM_DIR}/replica_target_resolver.ts`,
+];
+
+Deno.test("datastore v3: only the replica target resolver calls replicaTarget()", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if (/\.replicaTarget\s*\(/.test(await Deno.readTextFile(filePath))) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_REPLICA_TARGET_CALLERS,
+    "Production callers of replicaTarget()",
+    "A provider's replica target reaches Litestream only through\n" +
+      "resolveV3ReplicaSetting, which checks it (swamp-club#3507).",
+  );
+});
+
+/**
+ * Production files outside the resolver that use it. Dormant until Phase 4E
+ * switches the sidecar's replica from `v3ReplicaSetting()` to the
+ * datastore's own target.
+ */
+const PINNED_REPLICA_TARGET_RESOLVER_USERS: readonly string[] = [];
+
+Deno.test("datastore v3: nothing uses the replica target resolver yet", async () => {
+  const resolver = `${LITESTREAM_DIR}/replica_target_resolver.ts`;
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if (repoRelative(filePath) === resolver) continue;
+    if (
+      /\b(resolveV3ReplicaSetting|replicaSettingFromTarget)\b/.test(
+        await Deno.readTextFile(filePath),
+      )
+    ) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_REPLICA_TARGET_RESOLVER_USERS,
+    "Production users of the replica target resolver",
+    "Replication from a datastore's own replica target is dormant until\n" +
+      "Phase 4E (swamp-club#3507). Switch the source there, not here.",
+  );
+});
+
 /**
  * Production files that name `commits.db` (swamp-club#3482): only
  * `v3CommitsDbPath` decides which one a checkout opens, the datastore's or,

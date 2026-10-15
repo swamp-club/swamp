@@ -418,9 +418,9 @@ export interface WritableDatastoreControlPlaneStoreConformanceResult {
  * - a namespaced service's record under the same key is not read, listed
  *   or counted by `putIfAbsent` through it, and writing through it binds no
  *   namespace;
- * - a record under `writer/` stays at the root, unchanged, and is not
- *   copied into the namespace, after a namespaced push into a namespace
- *   `markNamespaceUpgradedFromSolo` prepared. That is when the S3 and GCS
+ * - a record under `writer/`, and one under `lineage/`, stays at the root,
+ *   unchanged, and is not copied into the namespace, after a namespaced
+ *   push into a namespace `markNamespaceUpgradedFromSolo` prepared. That is when the S3 and GCS
  *   extensions move root `_control/` records into the namespace; a
  *   datastore-wide record must never move. Skipped without
  *   `openNamespacedSyncFixture` and `markNamespaceUpgradedFromSolo`, and
@@ -481,7 +481,7 @@ export async function assertWritableDatastoreControlPlaneStoreConformance(
       namespacedPushSkipped: "no markNamespaceUpgradedFromSolo was given",
     };
   }
-  const skipped = await assertWriterRecordSurvivesNamespacedPush(
+  const skipped = await assertDatastoreWideRecordsSurviveNamespacedPush(
     options.openDatastoreStore,
     options.openNamespacedSyncFixture,
     options.markNamespaceUpgradedFromSolo,
@@ -564,15 +564,21 @@ async function assertWritesStayAtRoot(
   }
 }
 
-async function assertWriterRecordSurvivesNamespacedPush(
+async function assertDatastoreWideRecordsSurviveNamespacedPush(
   openDatastoreStore:
     WritableDatastoreControlPlaneStoreConformanceOptions["openDatastoreStore"],
   openFixture: () => Promise<NamespacedSyncFixture>,
   markNamespaceUpgradedFromSolo: (namespace: string) => Promise<void>,
 ): Promise<string | undefined> {
   const id = crypto.randomUUID();
-  // Under `writer/` but not a lease key, so a live lease never reads it.
+  // Under `writer/` but not a lease key, so a live lease never reads it;
+  // under `lineage/` but no lineage's fence, so no restore reads it.
   const writerKey = `writer/conformance-${id}`;
+  const lineageKey = `lineage/conformance-${id}/started.json`;
+  const datastoreWide = [
+    { key: writerKey, dir: "writer/" },
+    { key: lineageKey, dir: "lineage/" },
+  ];
   // A namespace of its own: it stays marked upgraded from solo, so every
   // later push into it would move root records again.
   const namespace = `conformance-upgraded-${id.slice(0, 8)}`;
@@ -589,7 +595,9 @@ async function assertWriterRecordSurvivesNamespacedPush(
 
   const fixture = await openFixture();
   try {
-    await store.put(writerKey, encode("datastore-wide"));
+    for (const { key } of datastoreWide) {
+      await store.put(key, encode("datastore-wide"));
+    }
     await markNamespaceUpgradedFromSolo(namespace);
 
     // A namespaced push into a namespace upgraded from solo is when root
@@ -599,30 +607,34 @@ async function assertWriterRecordSurvivesNamespacedPush(
     await writeLocal(fixture.cacheDir, relPath, encode("conformance"));
     await fixture.service.pushChanged({ namespace });
 
-    assertEquals(
-      await text(store, writerKey),
-      "datastore-wide",
-      "a record under writer/ must stay at the datastore-wide root after a namespaced push",
-    );
-    assert(
-      (await store.list("writer/")).includes(writerKey),
-      "a record under writer/ must still be listed at the root after a namespaced push",
-    );
-    if (fixture.service.controlPlaneStore) {
+    for (const { key, dir } of datastoreWide) {
       assertEquals(
-        await fixture.service.controlPlaneStore().get(writerKey),
-        null,
-        "a record under writer/ must never be copied into a namespace",
+        await text(store, key),
+        "datastore-wide",
+        `a record under ${dir} must stay at the datastore-wide root after a namespaced push`,
       );
+      assert(
+        (await store.list(dir)).includes(key),
+        `a record under ${dir} must still be listed at the root after a namespaced push`,
+      );
+      if (fixture.service.controlPlaneStore) {
+        assertEquals(
+          await fixture.service.controlPlaneStore().get(key),
+          null,
+          `a record under ${dir} must never be copied into a namespace`,
+        );
+      }
     }
   } finally {
-    try {
-      await store.delete(writerKey);
-    } catch { /* best-effort cleanup */ }
-    // A store that moved the record left it under the namespace.
-    try {
-      await fixture.service.controlPlaneStore?.().delete(writerKey);
-    } catch { /* best-effort cleanup */ }
+    for (const { key } of datastoreWide) {
+      try {
+        await store.delete(key);
+      } catch { /* best-effort cleanup */ }
+      // A store that moved the record left it under the namespace.
+      try {
+        await fixture.service.controlPlaneStore?.().delete(key);
+      } catch { /* best-effort cleanup */ }
+    }
     try {
       await fixture.service.markDirty({ relPath, namespace });
       await Deno.remove(join(fixture.cacheDir, ...relPath.split("/")));

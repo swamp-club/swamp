@@ -89,6 +89,13 @@ A custom datastore implements seven methods; three are required:
 - **`listNamespaces?`** (optional): returns the slugs in namespace manifests
   (see [Namespace manifests](#namespace-manifests)).
 
+A v3-capable datastore also implements `datastoreControlPlaneStore?`,
+`datastoreWideLease`, `storage?` (see
+[v3 chunk storage](#v3-chunk-storage-storage1)) and `replicaTarget?`. The
+last says where its Litestream replica lives: the bucket and the datastore
+root's key prefix, never credentials. See "Phase 4: the replica target" in
+`datastore-litestream.md`.
+
 Full interface: `src/domain/datastore/datastore_provider.ts`.
 
 ### Loading & Bundling
@@ -633,7 +640,8 @@ case is skipped without it. Datastore-wide records must
 never move into a namespace: serve's own boot copy takes only the prefixes in
 `ROOT_CONTROL_PLANE_IMPORT_PREFIXES`, which exclude `writer/` and
 `datastore-format`, and the S3 and GCS extensions must skip `_control/writer/`
-in their move before a bucket can be v3.
+and `_control/lineage/` in their move before a bucket can be v3. The
+namespaced-push case checks a record under each.
 
 **Declared, not inferred** (swamp-club#3414). A writable store shows only that
 the lease's records can be written at the root, not that a namespaced push
@@ -641,9 +649,12 @@ leaves them there: an extension could return its existing store before its
 move skips `writer/`. So `datastoreWriterLeaseStore` binds the lease only for a
 provider that declares `datastoreWideLease: true`, and refuses any other with
 a message naming the declaration. The declaration promises only that
-`_control/writer/` is never moved or copied. The S3 and GCS extensions declare
-it in the release that carries the skip (swamp-club#3395), whose writable
-conformance test must run the namespaced-push case. The Phase 4 bucket opt-in
+`_control/writer/` and `_control/lineage/` are never moved or copied. The
+replication lineages (swamp-club#3482) are published under `lineage/`, and one
+moved into a namespace would hide the head a restore reads (swamp-club#3507).
+The S3 and GCS extensions declare it in the release that carries the skip
+(swamp-club#3395), whose writable conformance test must run the
+namespaced-push case. The Phase 4 bucket opt-in
 binds the lease only through `datastoreWriterLeaseStore`, so it cannot be
 enabled against an extension version that does not declare it.
 

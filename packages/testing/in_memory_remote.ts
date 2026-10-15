@@ -151,6 +151,7 @@ import type {
   DatastoreSyncService,
   StoredChunk,
   SyncCapabilities,
+  V3ReplicaTarget,
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
@@ -241,6 +242,12 @@ export interface InMemoryRemoteOptions {
    * `setChunkLastModified` to backdate one. Default false.
    */
   storage?: boolean;
+  /**
+   * Gives the remote a `replicaTarget()` returning this target as given,
+   * unchecked, so a test can hand swamp a bad one. The remote has no key
+   * prefix, so a target that matches where it writes has prefix `""`.
+   */
+  replicaTarget?: V3ReplicaTarget;
 }
 
 /** A remote operation a failure can be injected into. */
@@ -368,6 +375,16 @@ export interface InMemoryRemote {
    * `storage`.
    */
   storage?(): DatastoreStorage;
+  /** A provider's replica target. Present only with `replicaTarget`. */
+  replicaTarget?(): V3ReplicaTarget;
+  /**
+   * Whether the remote holds an object at `key`, as a bucket would key it:
+   * a committed file, a control-plane record at `_control/<key>` or
+   * `<namespace>/_control/<key>`, or a chunk at
+   * `_blobs/<namespace>/sha256/<first two hex>/<sha256>`. What
+   * `assertReplicaTargetConformance`'s `objectExists` option expects.
+   */
+  objectExists(key: string): Promise<boolean>;
   /**
    * Sets a stored chunk's `lastModified`, as `assertStorageConformance`'s
    * `setLastModified` option expects. Present only with `storage`.
@@ -664,6 +681,8 @@ export function createInMemoryRemote(
   const controlRecords = new Map<string, Uint8Array>();
   const controlKey = (namespace: string | undefined, key: string) =>
     namespace ? `${namespace}/_control/${key}` : `_control/${key}`;
+  const chunkStorage = options?.storage ? createChunkStorage() : undefined;
+  const replicaTarget = options?.replicaTarget;
 
   // Stored objects, written at once by prepare and push.
   const objects = new Map<string, Uint8Array>();
@@ -1441,7 +1460,20 @@ export function createInMemoryRemote(
     controlPlaneRecords: () =>
       new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
     ...(controlPlane ? { datastoreControlPlaneStore } : {}),
-    ...(options?.storage ? createChunkStorage() : {}),
+    ...(chunkStorage
+      ? {
+        storage: chunkStorage.storage,
+        setChunkLastModified: chunkStorage.setChunkLastModified,
+      }
+      : {}),
+    ...(replicaTarget !== undefined
+      ? { replicaTarget: () => replicaTarget }
+      : {}),
+    objectExists: (key) =>
+      Promise.resolve(
+        committed.has(key) || controlRecords.has(key) ||
+          (chunkStorage?.hasObject(key) ?? false),
+      ),
     connections: () => instanceCount,
     controlPlaneReads: () => reads.map((read) => ({ ...read })),
     ops: () =>
@@ -1487,9 +1519,12 @@ export function createInMemoryRemote(
  * The `storage/1` model behind {@link InMemoryRemoteOptions.storage}:
  * chunks keyed `<namespace>/<sha256>`, each with its `lastModified`.
  */
-function createChunkStorage(): Required<
-  Pick<InMemoryRemote, "storage" | "setChunkLastModified">
-> {
+function createChunkStorage():
+  & Required<Pick<InMemoryRemote, "storage" | "setChunkLastModified">>
+  & {
+    /** Whether a chunk is stored at its bucket key. */
+    hasObject(objectKey: string): boolean;
+  } {
   const chunks = new Map<string, { bytes: Uint8Array; lastModified: Date }>();
   const key = (namespace: string, sha256: string) => `${namespace}/${sha256}`;
   // Runs `fn` as a promise, so a throw (an aborted signal) rejects.
@@ -1546,6 +1581,12 @@ function createChunkStorage(): Required<
   };
   return {
     storage: () => storage,
+    hasObject(objectKey) {
+      const match = /^_blobs\/(.+)\/sha256\/([0-9a-f]{2})\/([0-9a-f]{64})$/
+        .exec(objectKey);
+      return match !== null && match[3].startsWith(match[2]) &&
+        chunks.has(key(match[1], match[3]));
+    },
     setChunkLastModified: (namespace, sha256, date) =>
       settle(() => {
         const chunk = chunks.get(key(namespace, sha256));

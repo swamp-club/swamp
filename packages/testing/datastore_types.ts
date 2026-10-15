@@ -283,8 +283,8 @@ export interface DatastoreProvider {
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
   /**
    * `true` declares that no namespaced pull or push moves or copies
-   * `_control/writer/`, so the v3 writer lease's records stay at the
-   * datastore root, and that `datastoreControlPlaneStore()` returns a
+   * `_control/writer/` or `_control/lineage/`, so the v3 writer lease's and
+   * replication lineages' records stay at the datastore root, and that `datastoreControlPlaneStore()` returns a
    * {@link WritableDatastoreControlPlaneStore}. Only the literal `true`
    * counts; without it swamp refuses to bind the lease. Check it with
    * `assertWritableDatastoreControlPlaneStoreConformance`, namespaced-push
@@ -297,7 +297,49 @@ export interface DatastoreProvider {
    * implementation with `assertStorageConformance`.
    */
   storage?(): DatastoreStorage;
+  /**
+   * Where this datastore's v3 Litestream replica lives: the bucket, and the
+   * key prefix of the datastore root that `storage()` and
+   * `datastoreControlPlaneStore()` write under. Swamp appends
+   * `_litestream/<fence>/` to the prefix; the provider never builds replica
+   * paths.
+   *
+   * The target never carries credentials. Litestream resolves them from the
+   * AWS SDK default chain (environment, shared config and SSO, container or
+   * instance identity) or Google ADC, so a datastore whose credentials come
+   * from anywhere else cannot be replicated. Throw, rather than return a
+   * target Litestream cannot reach: a GCS datastore with a custom
+   * `apiEndpoint`, for example, which Litestream has no equivalent for.
+   * Swamp shows the thrown message to the user, so keep config values and
+   * secrets out of it.
+   *
+   * Optional; swamp does not call it yet. Check an implementation with
+   * `assertReplicaTargetConformance`.
+   */
+  replicaTarget?(): V3ReplicaTarget;
 }
+
+/**
+ * A datastore's Litestream replica, as `DatastoreProvider.replicaTarget()`
+ * returns it. `prefix` is the datastore root's key prefix: no leading or
+ * trailing slash, or empty.
+ */
+export type V3ReplicaTarget =
+  | {
+    readonly type: "s3";
+    readonly bucket: string;
+    readonly prefix: string;
+    readonly region?: string;
+    /** An S3-compatible endpoint, as an http or https URL. */
+    readonly endpoint?: string;
+    /** Path-style addressing. Unset, it is on whenever `endpoint` is set. */
+    readonly forcePathStyle?: boolean;
+  }
+  | {
+    readonly type: "gcs";
+    readonly bucket: string;
+    readonly prefix: string;
+  };
 
 /** What a {@link DatastoreStorage} supports. */
 export interface StorageCapabilities {
