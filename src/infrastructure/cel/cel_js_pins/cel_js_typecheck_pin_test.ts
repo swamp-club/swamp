@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins for static checking and receiver types (design/enablers/
-// typed-secrets.md Section 4.2: "`cel.bind(v, vault, v.get(...))` can call a
-// registered receiver through an alias. Receiver typing does not enforce
-// scope/effect restrictions.").
+// typed-secrets.md Section 4.2, fact 6: "`cel.bind(v, vault, v.get(...))` can
+// call a registered receiver through an alias. Receiver typing does not
+// enforce scope or effect restrictions.").
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import {

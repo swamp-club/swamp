@@ -18,9 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins for custom type registration and macro ranges over custom-typed
-// values (design/enablers/typed-secrets.md Section 4.2: "fields: {} hides
-// secret fields, but comprehension can use Object.keys and return an empty
-// range. An opaque class alone is insufficient for refusal.").
+// values (design/enablers/typed-secrets.md Section 4.2, fact 5: "cel-js decides
+// a value's type by exact constructor identity. `fields: {}` hides fields from
+// selection, indexing, `has()` and `.?`. Comprehension macros fall back to
+// `Object.keys`, so a dyn value whose state is private yields an empty range
+// instead of an error. A statically typed custom variable is not a
+// comprehension range.").
 
 import {
   assertEquals,

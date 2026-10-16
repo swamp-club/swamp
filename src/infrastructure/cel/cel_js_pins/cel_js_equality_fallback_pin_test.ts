@@ -18,12 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins for equality fallback and container shortcuts
-// (design/enablers/typed-secrets.md Section 4.2: "Container equality has
-// identity/type shortcuts. It does not reliably call a `Secret == string`
-// overload for secret/string leaves, and the same unloaded object can compare
-// equal by identity. Membership has the same issue." and "Direct unmatched dyn
-// equality falls back to identity ... An evaluation frame populated only by
-// custom operator handlers cannot see a handler never called.").
+// (design/enablers/typed-secrets.md Section 4.2, fact 2: "Container equality
+// and membership short-circuit on identity and type, and never call a
+// `Secret == string` overload for their elements. Direct dyn equality with no
+// matching overload falls back to identity without calling any handler. A
+// fault that only handlers record cannot see either case.").
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import {

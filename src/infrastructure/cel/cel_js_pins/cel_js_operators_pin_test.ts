@@ -18,11 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins for custom operator registration (design/enablers/typed-secrets.md
-// Section 4.2: "`==` creates derived `!=` and mirrored mixed-type equality.
-// Register `==` only. Addition needs both operand orders. The `map` type alias
-// is valid in custom signatures; spelling a parameterized type with a comma is
-// a different signature-parser limitation. Overlapping built-in list/map
-// registrations do not supply a reliable override mechanism.").
+// Section 4.2, fact 4: "`==` creates derived `!=` and mirrored mixed-type
+// equality, so register `==` only. A `Secret == dyn` overload overlaps its own
+// mirror when both operands are secrets. Addition is not mirrored, so each
+// operand order needs its own registration. The `map` type alias is valid in
+// custom signatures, but a parameterized type spelled with a comma is not.
+// Overlapping built-in list and map registrations are not a reliable override.
+// A custom binary overload marks every use of its operator maybe-async, and so
+// does a function registered without `{ async: false }`.").
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { type Environment, EvaluationError } from "cel-js";
