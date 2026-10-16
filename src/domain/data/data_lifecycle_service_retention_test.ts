@@ -322,24 +322,6 @@ Deno.test("findVersionsCreatedBefore: pages through the catalog oldest first", a
   });
 });
 
-Deno.test("deleteDataOlderThan: with keepLatestVersion, an old name keeps its latest version", async () => {
-  const repo = inMemory();
-  await save(repo, "kept");
-  const newest = await save(repo, "kept");
-  const cutoff = cutoffAfter(newest);
-
-  const result = await service(repo).deleteDataOlderThan(cutoff, {
-    dryRun: false,
-    isExempt,
-    keepLatestVersion: true,
-  });
-
-  assertEquals(result.entriesDeleted, 0);
-  assertEquals(result.versionsDeleted, 1);
-  assertEquals(await repo.listVersions(TYPE, "model-1", "kept"), [2]);
-  assertEquals(repo.getLatestVersionSync(TYPE, "model-1", "kept"), 2);
-});
-
 Deno.test("deleteDataOlderThan: a name emptied on the filesystem keeps counting up on its next write", async () => {
   await withFsRepo(async (repo) => {
     await save(repo, "counted");
@@ -362,12 +344,14 @@ Deno.test("deleteDataOlderThan: a name emptied on the filesystem keeps counting 
 
 Deno.test("deleteDataOlderThan: a scan kept across batches reads each kept name once per pass", async () => {
   const repo = inMemory();
-  // Names retention keeps (on v3 every unchanged name's latest) ...
+  // Names whose old version retention trims while keeping a newer latest
+  // ...
   for (const name of ["k1", "k2", "k3", "k4"]) await save(repo, name);
-  // ... and one with old versions to trim behind them.
+  // ... and one with more old versions to trim behind them.
   for (let i = 0; i < 5; i++) await save(repo, "trim");
   const oldest = await repo.findByName(TYPE, "model-1", "trim", 5);
   const cutoff = cutoffAfter(oldest!);
+  for (const name of ["k1", "k2", "k3", "k4"]) await save(repo, name);
   await save(repo, "trim");
 
   const pendingChecks = new Map<string, number>();
@@ -398,7 +382,6 @@ Deno.test("deleteDataOlderThan: a scan kept across batches reads each kept name 
     const result = await service(counting).deleteDataOlderThan(cutoff, {
       dryRun: false,
       isExempt,
-      keepLatestVersion: true,
       limit: 1,
       scan,
     });
@@ -406,7 +389,7 @@ Deno.test("deleteDataOlderThan: a scan kept across batches reads each kept name 
     if (!result.more) break;
   }
 
-  assertEquals(deleted, 5);
+  assertEquals(deleted, 9);
   assertEquals(await repo.listVersions(TYPE, "model-1", "trim"), [6]);
   // Each kept name is read once, though the pass took several batches; only
   // the name still being trimmed is read again by each batch.

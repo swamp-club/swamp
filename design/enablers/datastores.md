@@ -1955,8 +1955,10 @@ model"), all dormant. The opt-in is a later issue.
 - **txnId**: the id a commit's group keeps from when it forms: its commit
   outbox entry's key. A retry carries the same one, so the commit lands once.
 - **High-water mark**: the greatest version a data name ever had. It never
-  decreases. It is not a floor for new versions: a new version only has to be
-  not live (swamp-club#3250).
+  decreases, and it is the floor for new versions: a v3 write allocates above
+  it (swamp-club#3532).
+- **Removed versions**: the versions a data name recorded and then removed,
+  kept per name as merged ranges. None is ever recorded again.
 
 **Partitions are aggregates.** A partition key is built only by
 `partitionOf()` (`partition_key.ts`) from the identity of the aggregate it
@@ -2016,15 +2018,27 @@ It is synchronous, and a refused commit leaves the partition unchanged:
   - `put` with `expect: { sha256 }` edits the version it was loaded from.
   - `tombstone` with `expect: "present"` removes only a record that exists.
   - Ops in one commit see each other's effects in order.
-- **A live data version is recorded once** (swamp-club#3250; it replaced "data
-  versions only grow" from swamp-club#3233).
+- **A data version is recorded once** (swamp-club#3250 and swamp-club#3532;
+  they replaced "data versions only grow" from swamp-club#3233).
   - A `data-version` op's version must not be live for its name, or the
-    commit is refused with `version-live`. A version removed earlier may be
-    recorded again, and versions may arrive out of order. This is v2 parity:
-    the filesystem allocates `max(existing) + 1`, so a save after deleting a
-    whole name or its top version reuses the number. Parallel writers of one
-    name, and deferred promotions, also finish out of order. Two writers
-    claiming the same live version are still refused.
+    commit is refused with `version-live`: two writers claiming the same
+    live version are refused.
+  - Nor may it be a version the name recorded and then removed, or the
+    commit is refused with `version-reused`, so one version number never
+    names two contents, even on a clone that pulled the old one. A versioned
+    `data.delete` or `data.gc` tombstone of a live version adds it to the
+    name's removed versions, which snapshots keep (as `removed` ranges, absent
+    when none, so older snapshots still restore). The field came with
+    `commits.db` schema 6: a swamp at schema 5 would reject it as unknown
+    and call the store corrupt, so it refuses the store as newer instead
+    (`datastore_v3_schema_newer`). Every checkout of a v3 datastore upgrades
+    together.
+  - Versions may still arrive out of order: parallel writers of one name,
+    and a deferred version promoted after a higher one committed, record a
+    version below the high-water mark that was never recorded.
+  - A rebuild replays stored commits without the `version-reused` check: a
+    store written before it may hold a reused version, and its commits were
+    accepted under the rules of their time. Every other rule still applies.
   - The one exception is an append: a `data-version` op may re-record a live
     version when a `data.append` put for that name and version comes earlier
     in the same commit. Each such put lets one op through, so a save of a
@@ -2119,17 +2133,20 @@ these.
   data id schemas require a UUID. A partition orders its commits by seq, so
   ids need not sort by time. `WorkflowRunFactory`, `DefinitionFactory` and
   `ModelOutputFactory` (`identity_factories.ts`) reuse that generator.
-- **Version numbers follow v2's allocation** (swamp-club#3250). swamp-club#3233
-  decided versions are never reused and called that harmless for a new, empty
-  v3 datastore. It is not: within one datastore a save after
-  `delete(name)` (and `data prune`) or after a top-version delete reuses the
-  number, a rename marker can too, and a deferred version promoted after a
-  higher one committed arrives below it. Each would have been refused and
-  dropped its partition's whole group. v3 therefore accepts any version not
-  live. The cost is v2's: a run record that names `name@version` can point
-  at the content of a later save that reused the number, and in team mode a
-  writer behind on catch-up can re-create a deleted version number. The
-  high-water mark stays the greatest version seen.
+- **Version numbers never go back** (swamp-club#3532). swamp-club#3250 let v3
+  follow v2's allocation, `max(existing) + 1` on disk, which reused a number
+  after `delete(name)`, `data prune`, retention or a top-version delete, and
+  let a writer behind on catch-up re-create a deleted version. Allocation now
+  reads the floor from the commit store, which is current under the writer
+  lease: `max(versions on disk, the name's high-water mark, the greatest
+  version this process handed out) + 1`, with the `mkdir` claim as before.
+  The in-process part covers versions staged but not committed yet (in the
+  same unit, a sibling unit or a deferred write). The seam is the unit's
+  version-floor source (`versionFloorSource`), found the way `stageTyped`
+  finds its stager, so hookless repositories reach it too, and
+  `CommitSink.dataHighWater` reads the mark, rebuilding a partition another
+  process changed. Out-of-order arrival stays legal, and `version-reused`
+  backs the allocation up.
 - **Aggregate-specific rules stay with their aggregate.**
   - A partition sees op content as opaque bytes.
   - `WorkflowRun` keeps its own status-transition and step-ownership rules

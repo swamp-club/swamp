@@ -260,8 +260,8 @@ It ignores a spec's `lifetime: infinite` and count caps, deletes a name whose
 latest version is older than the cutoff, and skips tombstones only in the
 lifetime phase, not here. Before emptying a name it raises the name's
 version floor (`<name>..version-floor` beside its directory), so a later
-write never reuses its numbers; on v3 retention keeps each name's latest
-version instead (see [repo.md](../surfaces/repo.md#retention)).
+write never reuses its numbers; on v3 the partition's high-water mark does
+that (see [repo.md](../surfaces/repo.md#retention)).
 
 Expiry rules (`calculateExpiration`, `isExpired`): duration lifetimes expire
 at `createdAt + duration`; `infinite` never; `workflow` and `job` when the
@@ -378,7 +378,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   changed; new content is a new version. `raw` and `metadata.yaml` are written
   via atomic rename.
 - Version numbers are allocated by `mkdir`, so two concurrent writers to one
-  name get different versions.
+  name get different versions. On v3 allocation starts above the name's
+  partition high-water mark, so a number is never given to new content once
+  a version used it, even after the name was emptied (swamp-club#3532).
 - Exactly one `latest` per name on disk, and exactly one `is_latest=1` row per
   `(namespace, type, modelId, name)` in the catalog. Every mutating path
   restores both before returning: `save`, `append`, `rename`, `delete`,

@@ -37,8 +37,10 @@ import {
   type PartitionKey,
   partitionOf,
 } from "../../domain/datastore_v3/partition_key.ts";
+import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import {
   blobPut,
+  deleteVersion,
   MODEL_TYPE,
   modelCommit,
   modelPartition,
@@ -395,10 +397,15 @@ Deno.test("SqliteCommitStore.truncateAfter: later appends continue each partitio
     await store.append(await save(4));
     // The cached partition is at seq 4; truncation drops it.
     await store.truncateAfter(mark);
-    assertEquals(await store.append(await save(3)), {
-      kind: "appended",
-      seq: 3,
-    });
+    // Seq 3 again, with a version the removed commits never used.
+    assertEquals(
+      await store.append(
+        modelCommit(3, [await savePut("a", 5), versionOp("a", 5)], {
+          fence: 1,
+        }),
+      ),
+      { kind: "appended", seq: 3 },
+    );
     const changes = await store.changesSince(0, 100);
     assertEquals(changes.map((c) => c.cursor), [1, 2, 5]);
     assertGreater(store.highWaterMark().cursor, 4);
@@ -499,7 +506,8 @@ Deno.test("SqliteCommitStore.truncateAfter: puts back the snapshot an append wou
     try {
       for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
       const mark = store.highWaterMark();
-      await store.append(await save(4));
+      // No data version, so nothing outlives the truncation.
+      await store.append(await unversioned(4));
       assertEquals(rawRows(truncated, "SELECT seq FROM partition_snapshots"), [
         { seq: 4 },
       ]);
@@ -525,7 +533,7 @@ Deno.test("SqliteCommitStore.truncateAfter: leaves no snapshot when the new head
   await withStore(async (store, path) => {
     await store.append(await save(1));
     const mark = store.highWaterMark();
-    await store.append(await save(2));
+    await store.append(await unversioned(2));
     assertEquals(rawRows(path, "SELECT seq FROM partition_snapshots"), [
       { seq: 2 },
     ]);
@@ -537,6 +545,181 @@ Deno.test("SqliteCommitStore.truncateAfter: leaves no snapshot when the new head
     });
   }, { snapshotInterval: 2 });
 });
+
+Deno.test("SqliteCommitStore.truncateAfter: keeps the versions it removes from being recorded again (swamp-club#3532)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    try {
+      await store.append(await save(1));
+      await store.append(await save(2));
+      const mark = store.highWaterMark();
+      await store.append(await save(3));
+      await store.append(await save(4));
+      await store.truncateAfter(mark);
+
+      // A writer that lost its lease may have shared versions 3 and 4.
+      assertEquals(
+        await store.dataHighWater("", modelPartition(), "a"),
+        4,
+      );
+      assertEquals(rawRows(path, "SELECT seq FROM partition_snapshots"), [
+        { seq: 2 },
+      ]);
+      const error = await assertRejects(
+        async () => store.append(await save(3)),
+        CommitRejectedError,
+      );
+      assertEquals(error.reason, "version-reused");
+    } finally {
+      await store.close();
+    }
+
+    // A rebuild from the file keeps them too.
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      assertEquals(
+        await reopened.dataHighWater("", modelPartition(), "a"),
+        4,
+      );
+      const error = await assertRejects(
+        async () => reopened.append(await save(3)),
+        CommitRejectedError,
+      );
+      assertEquals(error.reason, "version-reused");
+      assertEquals(
+        await reopened.append(
+          modelCommit(3, [await savePut("a", 5), versionOp("a", 5)], {
+            fence: 1,
+          }),
+        ),
+        { kind: "appended", seq: 3 },
+      );
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore.truncateAfter: a second truncation below the first's head keeps the versions the first retained", async () => {
+  await withStore(async (store) => {
+    const versioned = async (seq: number, version: number) =>
+      modelCommit(seq, [await savePut("a", version), versionOp("a", version)], {
+        fence: 1,
+      });
+    await store.append(await save(1));
+    await store.append(await save(2));
+    const first = store.highWaterMark();
+    await store.append(await save(3));
+    await store.append(await save(4));
+    // Versions 3 and 4 survive only in the snapshot at seq 2.
+    await store.truncateAfter(first);
+
+    await store.append(await versioned(3, 5));
+    const second = store.highWaterMark();
+    // Seq 4 replaces the snapshot at seq 2 with one past the next mark.
+    await store.append(await versioned(4, 6));
+    await store.truncateAfter(second);
+
+    assertEquals(await store.dataHighWater("", modelPartition(), "a"), 6);
+    for (const version of [3, 4, 6]) {
+      const error = await assertRejects(
+        async () => store.append(await versioned(4, version)),
+        CommitRejectedError,
+      );
+      assertEquals(error.reason, "version-reused", `version ${version}`);
+    }
+    assertEquals(await store.append(await versioned(4, 7)), {
+      kind: "appended",
+      seq: 4,
+    });
+  }, { snapshotInterval: 2 });
+});
+
+Deno.test("SqliteCommitStore.truncateAfter: keeps the versions of a partition it removes whole", async () => {
+  await withStore(async (store) => {
+    await store.append(await save(1));
+    await store.append(await save(2));
+    assertEquals(await store.truncateAfter({ cursor: 0 }), { removed: 2 });
+    assertEquals((await store.head("", modelPartition())).seq, 0);
+    assertEquals(await store.dataHighWater("", modelPartition(), "a"), 2);
+    const error = await assertRejects(
+      async () => store.append(await save(1)),
+      CommitRejectedError,
+    );
+    assertEquals(error.reason, "version-reused");
+  });
+});
+
+Deno.test("SqliteCommitStore.dataHighWater: reads a partition another connection wrote", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const reader = SqliteCommitStore.open(path);
+    const writer = SqliteCommitStore.open(path);
+    try {
+      await reader.append(await save(1));
+      assertEquals(await reader.dataHighWater("", modelPartition(), "a"), 1);
+      await writer.append(await save(2));
+      await writer.append(await save(3));
+      // The reader's cached partition is at seq 1; the file is at seq 3.
+      assertEquals(await reader.dataHighWater("", modelPartition(), "a"), 3);
+      assertEquals(await reader.dataHighWater("", modelPartition(), "b"), 0);
+    } finally {
+      await writer.close();
+      await reader.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore: a stored reuse from before version-reused still rebuilds (swamp-club#3532)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    try {
+      await store.append(await save(1));
+      await store.append(modelCommit(2, [deleteVersion("a", 1)], { fence: 1 }));
+      await store.append(await save(3));
+    } finally {
+      await store.close();
+    }
+    // Write the reuse a store accepted before swamp-club#3532: seq 3
+    // re-records the removed version 1.
+    const reuse = modelCommit(3, [await savePut("a", 1), versionOp("a", 1)], {
+      fence: 1,
+    });
+    const db = new DatabaseSync(path);
+    try {
+      db.prepare("UPDATE commits SET body = ? WHERE seq = 3").run(
+        JSON.stringify(reuse.toJSON()),
+      );
+    } finally {
+      db.close();
+    }
+
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      assertEquals(
+        await reopened.dataHighWater("", modelPartition(), "a"),
+        1,
+      );
+      assertEquals(
+        await reopened.append(
+          modelCommit(4, [await savePut("a", 2), versionOp("a", 2)], {
+            fence: 1,
+          }),
+        ),
+        { kind: "appended", seq: 4 },
+      );
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+/** A commit at `seq` that writes a record but records no data version. */
+async function unversioned(seq: number): Promise<Commit> {
+  return modelCommit(seq, [await savePut("a", seq)], { fence: 1 });
+}
 
 /** Every table's rows, for comparing two stores' files. */
 function allTables(path: string): Record<string, unknown> {

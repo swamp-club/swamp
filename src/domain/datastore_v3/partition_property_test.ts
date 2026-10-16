@@ -30,7 +30,7 @@ import type { Commit } from "./commit.ts";
 import type { Op } from "./op.ts";
 import { CommitRejectedError, Partition } from "./partition.ts";
 import {
-  arbCommand,
+  arbCommands,
   buildOp,
   type Command,
   emptyModel,
@@ -42,6 +42,9 @@ import {
   observe,
 } from "./v3_test_helpers.ts";
 import { modelCommit, modelPartition } from "./v3_test_helpers.ts";
+
+/** How often each refusal came up, over every run of a property. */
+const refusals = new Map<string, number>();
 
 async function run(commands: readonly Command[]): Promise<void> {
   const partition = Partition.empty(modelPartition());
@@ -65,6 +68,7 @@ async function run(commands: readonly Command[]): Promise<void> {
     } catch (error) {
       if (!(error instanceof CommitRejectedError)) throw error;
       actual = { kind: "rejected", reason: error.reason };
+      refusals.set(error.reason, (refusals.get(error.reason) ?? 0) + 1);
     }
     const reference = await modelAppend(model, commit, command.ops);
     model = reference.model;
@@ -97,17 +101,22 @@ async function run(commands: readonly Command[]): Promise<void> {
 Deno.test("Partition.append: agrees with the reference model over random command sequences", async () => {
   await fc.assert(
     fc.asyncProperty(
-      fc.array(arbCommand, { minLength: 1, maxLength: 25 }),
+      arbCommands(25),
       run,
     ),
     { numRuns: 200 },
+  );
+  // The reuse rule was really exercised (swamp-club#3532).
+  assert(
+    (refusals.get("version-reused") ?? 0) > 20,
+    `version-reused came up ${refusals.get("version-reused") ?? 0} times`,
   );
 });
 
 Deno.test("Partition.append: a replayed commit never changes the partition", async () => {
   await fc.assert(
     fc.asyncProperty(
-      fc.array(arbCommand, { minLength: 1, maxLength: 10 }),
+      arbCommands(10),
       async (commands) => {
         const partition = Partition.empty(modelPartition());
         const landed: Commit[] = [];
@@ -149,8 +158,8 @@ function tryAppend(partition: Partition, commit: Commit): ModelResult {
 Deno.test("Partition.restore: a restored snapshot behaves exactly like the partition it came from", async () => {
   await fc.assert(
     fc.asyncProperty(
-      fc.array(arbCommand, { minLength: 0, maxLength: 15 }),
-      fc.array(arbCommand, { minLength: 1, maxLength: 15 }),
+      arbCommands(15).map((commands) => commands.slice(0, 15)),
+      arbCommands(15),
       async (before, after) => {
         const original = Partition.empty(modelPartition());
         const used: string[] = [];

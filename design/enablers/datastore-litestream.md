@@ -901,7 +901,15 @@ file beside the copy, with `-txid` set to the head:
 3. Every commit past the high-water mark is removed
    (`SqliteCommitStore.truncateAfter`): what a zombie writer uploaded after
    its last acknowledgement never lands. Removed commits release their chunk
-   references as compaction does, and later commits get higher cursors.
+   references as compaction does, and later commits get higher cursors. The
+   data versions they recorded are not forgotten (swamp-club#3532): the
+   zombie may have shared them, so each touched partition keeps them in its
+   names' high-water marks and removed versions, in a snapshot at its new
+   head, and no later write gives one of those numbers to other content. A
+   later truncation below that head carries them over from the snapshot it
+   replaces, since no kept commit records them.
+   Apart from that the store is the one that appended only the commits up
+   to the mark; the truncation property test holds it to both.
 4. The temp file is installed. A missing copy is hard-linked into place, never over a file a reader
    created meanwhile, which is then updated in place instead. An
    existing one is updated **in place** (`replaceContentFrom`): every table

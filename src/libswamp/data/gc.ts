@@ -37,10 +37,7 @@ import {
   createCatalogStore,
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
-import {
-  type DatastorePathResolver,
-  resolverEngine,
-} from "../../domain/datastore/datastore_path_resolver.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -167,9 +164,7 @@ export function createDataGcDeps(
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
   );
-  return createDataGcDepsFrom(catalogStore, unifiedDataRepo, workflowRunRepo, {
-    keepLatestVersion: resolverEngine(datastoreResolver) === "v3",
-  });
+  return createDataGcDepsFrom(catalogStore, unifiedDataRepo, workflowRunRepo);
 }
 
 /**
@@ -181,14 +176,6 @@ export function createDataGcDepsFrom(
   catalogStore: CatalogStore,
   unifiedDataRepo: FileSystemUnifiedDataRepository,
   workflowRunRepo: YamlWorkflowRunRepository,
-  options: {
-    /**
-     * Data retention keeps each name's latest version: a v3 datastore does
-     * not yet keep a deleted name's version numbers from being reused
-     * (swamp-club#3473).
-     */
-    keepLatestVersion?: boolean;
-  } = {},
 ): DataGcDeps {
   const service = new DefaultDataLifecycleService(
     unifiedDataRepo,
@@ -207,7 +194,6 @@ export function createDataGcDepsFrom(
         ...opts,
         isExempt: isRetentionExempt,
         exemptTypes: [...RETENTION_EXEMPT_MODEL_TYPES],
-        ...(options.keepLatestVersion ? { keepLatestVersion: true } : {}),
       });
     },
     compactCatalog: () => catalogStore.checkpoint(),

@@ -42,7 +42,7 @@ import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 export interface OutboxCommitSinkOptions {
   readonly commitStore: Pick<
     SqliteCommitStore,
-    "append" | "head" | "headIdentity"
+    "append" | "head" | "headIdentity" | "dataHighWater"
   >;
   readonly outbox: CommitOutbox;
   /**
@@ -87,6 +87,8 @@ export function createOutboxCommitSink(
   };
   return {
     head: (namespace, partition) => commitStore.head(namespace, partition),
+    dataHighWater: (namespace, partition, name) =>
+      commitStore.dataHighWater(namespace, partition, name),
     append: (commit: Commit): Promise<CommitStoreAppendResult> => {
       assertWriterCurrent();
       return commitStore.append(commit);

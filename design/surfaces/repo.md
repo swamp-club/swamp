@@ -287,10 +287,9 @@ garbageCollection:
   name), synced like any data file, and the next write continues above it.
   A clone that pulled the old version 1 never sees a different version 1.
   `swamp data delete` and the other delete paths do not raise the floor yet.
-  On a v3 datastore the floor is not written (the partition's high-water
-  mark does not reach version allocation yet), so retention keeps each
-  name's latest version there instead of emptying it, and
-  `doctor --retention` counts that version as kept.
+  On a v3 datastore the floor is not written: allocation starts above the
+  partition's high-water mark, so retention empties a name there too, and
+  `swamp data delete` cannot reuse a number either (swamp-club#3532).
 - **Automatic passes** (`runRepoRetention`, `src/libswamp/retention/`): the
   collectors run in order (runs, snapshots, outputs, data, audit), in
   batches of 100. Data batches share one scan per pass, resuming where the
