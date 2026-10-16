@@ -369,3 +369,44 @@ Deno.test("pullExtension: a dependency's conflict states each replacement once a
   assertEquals(out.split("@test/dep: installed unknown").length - 1, 1);
   assertEquals(out.split("is a beta release").length - 1, 1);
 });
+
+Deno.test("pullExtension: the forced retry after a dependency's conflict starts from the extensions marked before the pull (swamp-club#3313)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_pull_retry_" });
+  const retrySeen: string[][] = [];
+  try {
+    await pullExtension({ name: "@test/ext", version: null }, {
+      getExtension: () => Promise.resolve(null),
+      downloadArchive: () => Promise.reject(new Error("unused")),
+      getChecksum: () => Promise.resolve(null),
+      logger: getSwampLogger(["extension", "pull"]),
+      lockfileRepository: await LockfileRepository.create(
+        join(dir, "upstream_extensions.json"),
+      ),
+      skillsDirs: [],
+      repoDir: dir,
+      force: false,
+      outputMode: "log",
+      alreadyPulled: new Set(["@test/before"]),
+      depth: 0,
+      confirm: () => Promise.resolve(true),
+      // The parent and its dependency are both reached before the
+      // dependency's files conflict.
+      installExtensionFn: (_ref, c: InstallContext) => {
+        if (!c.force) {
+          c.alreadyPulled.add("@test/ext");
+          c.alreadyPulled.add("@test/dep");
+          return Promise.reject(new ConflictError(["d.ts"], []));
+        }
+        retrySeen.push([...c.alreadyPulled].sort());
+        return Promise.resolve(stubResult());
+      },
+    });
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+  assertEquals(retrySeen, [["@test/before"]]);
+});
