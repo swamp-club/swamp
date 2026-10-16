@@ -483,6 +483,7 @@ import {
   InstanceHeartbeatService,
 } from "../../serve/instance_heartbeat.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
+import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
 import {
@@ -5378,6 +5379,9 @@ export const serveCommand = new Command()
             },
           }
           : undefined,
+        schedulePauses: new ControlPlaneSchedulePauseRepository(
+          controlPlaneStore,
+        ),
         cronFireDedup: controlPlaneStore?.putIfAbsent
           ? async (workflowId, fireTime) => {
             const key = `fire-records/${workflowId}/${
@@ -5420,7 +5424,21 @@ export const serveCommand = new Command()
               );
               break;
             case "schedule_skipped":
-              if (event.dedupSkip) {
+              if (event.paused) {
+                // A deliberate skip (swamp-club#3522): the journal says why
+                // the run is missing.
+                if (event.paused.reason === undefined) {
+                  logger.info(
+                    "Skipped scheduled workflow {name}: paused",
+                    { name: event.workflowName },
+                  );
+                } else {
+                  logger.info(
+                    "Skipped scheduled workflow {name}: paused ({reason})",
+                    { name: event.workflowName, reason: event.paused.reason },
+                  );
+                }
+              } else if (event.dedupSkip) {
                 logger.info(
                   "Skipped scheduled workflow {name}: {reason}",
                   { name: event.workflowName, reason: event.reason },

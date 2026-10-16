@@ -167,3 +167,27 @@ export function canonicalFireTime(cron: Cron, now?: Date): Date {
   }
   return ref;
 }
+
+/**
+ * The cron expression a workflow is scheduled on: a serve.yaml trigger
+ * override's schedule when it sets one, otherwise the workflow's own
+ * trigger schedule. Null when neither schedules it.
+ */
+export function effectiveSchedule(
+  builtInSchedule: string | null,
+  overrideSchedule: string | undefined,
+): string | null {
+  return overrideSchedule ?? builtInSchedule;
+}
+
+/**
+ * The next time `cronExpression` fires after `from`, or null when it never
+ * fires again or does not parse. Arms no timer.
+ */
+export function nextFireTime(cronExpression: string, from: Date): Date | null {
+  try {
+    return new Cron(cronExpression).nextRun(from);
+  } catch {
+    return null;
+  }
+}

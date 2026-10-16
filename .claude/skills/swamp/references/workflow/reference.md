@@ -169,6 +169,32 @@ override entry (not a merge). To keep existing inputs, re-specify them.
 Override schedule wins over built-in; override inputs are merged on top of
 built-in inputs.
 
+### Pausing a schedule
+
+To stop a workflow's cron fires temporarily (an incident, a maintenance window),
+pause the schedule instead of editing the workflow or its trigger override. The
+definition is untouched; manual and webhook runs still run.
+
+```bash
+# Pause, optionally with a reason and an automatic resume time
+swamp workflow schedule pause nightly-gc --reason "stalling serve" --until 2h
+
+# Every schedule with its cron, next fire and pause state
+swamp workflow schedule list
+
+# Resume (not `swamp workflow resume`, which continues a suspended run)
+swamp workflow schedule resume nightly-gc
+```
+
+`--until` takes a duration (`30m`, `2h`, `1d`, `1w`) or an ISO-8601 time with
+`Z` or an offset (a time without one is refused, since it would be read in the
+server's zone). The pause is kept in the datastore's control-plane store by
+workflow id, so it survives `workflow edit`, `serve reload` and restarts, and
+serve logs each skipped fire with the reason. With `--server` the caller needs
+`write` on the workflow. Without it, the commands work on a filesystem datastore
+and serve picks up the pause at its next fire; for a custom datastore, use
+`--server`.
+
 The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`
 is `github` (default), `jira`, `linear`, `stripe`, `slack`, `generic` (requires

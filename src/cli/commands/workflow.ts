@@ -38,6 +38,7 @@ import { workflowWaitsCommand } from "./workflow_waits.ts";
 import { workflowCancelCommand } from "./workflow_cancel.ts";
 import { workflowRecoverCommand } from "./workflow_recover.ts";
 import { workflowTriggerCommand } from "./workflow_trigger.ts";
+import { workflowScheduleCommand } from "./workflow_schedule.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const workflowCommand = new Command()
@@ -63,4 +64,5 @@ export const workflowCommand = new Command()
   .command("signal", workflowSignalCommand)
   .command("waits", workflowWaitsCommand)
   .command("schema", workflowSchemaCommand)
-  .command("trigger", workflowTriggerCommand);
+  .command("trigger", workflowTriggerCommand)
+  .command("schedule", workflowScheduleCommand);

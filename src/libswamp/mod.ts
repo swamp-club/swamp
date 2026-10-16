@@ -1339,6 +1339,29 @@ export {
   workflowDeletePreview,
 } from "./workflows/delete.ts";
 
+// Workflow schedule pause operations (swamp-club#3522)
+export {
+  createWorkflowScheduleDeps,
+  type LiveSchedule,
+  overrideSchedulesOf,
+  parsePauseUntil,
+  type ScheduleListEntry,
+  type ScheduleSource,
+  type WorkflowScheduleDeps,
+  workflowScheduleList,
+  type WorkflowScheduleListData,
+  type WorkflowScheduleListEvent,
+  workflowSchedulePause,
+  type WorkflowSchedulePauseData,
+  type WorkflowSchedulePauseEvent,
+  type WorkflowSchedulePauseInput,
+  workflowScheduleResume,
+  type WorkflowScheduleResumeData,
+  type WorkflowScheduleResumeEvent,
+  type WorkflowScheduleResumeInput,
+  type WorkflowScheduleTarget,
+} from "./workflows/schedule.ts";
+
 // Vault put operations
 export {
   createVaultPutDeps,

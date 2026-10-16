@@ -150,7 +150,8 @@ export function emitTriggerDenial(
  * Maps scheduler events to audit events: a run that starts is a
  * `workflow.schedule.fire`, a fire that does not run is a
  * `workflow.schedule.skipped`. An overlap skip is a failure (the fire was
- * lost); a dedup skip is a success (another instance ran it). Refusals are
+ * lost); a dedup skip is a success (another instance ran it), and so is a
+ * paused skip (the schedule was paused on purpose). Refusals are
  * audited by the authorizer, which holds the decision.
  */
 export function auditScheduledEvent(
@@ -176,12 +177,22 @@ export function auditScheduledEvent(
       emitTriggerAuditEvent(ctx, {
         principal: SCHEDULER_PRINCIPAL,
         action: "workflow.schedule.skipped",
-        outcome: event.dedupSkip ? "success" : "failure",
+        outcome: event.dedupSkip || event.paused ? "success" : "failure",
         workflowName: event.workflowName,
         sourceIp: LOCAL_SOURCE_IP,
         detail: {
           fireTime: event.fireTime,
-          reason: event.dedupSkip ? "dedup" : "overlap",
+          replayed: event.replayed || undefined,
+          reason: event.paused
+            ? "paused"
+            : event.dedupSkip
+            ? "dedup"
+            : "overlap",
+          // Quoted: the reason is free text and detail is space-separated.
+          pauseReason: event.paused?.reason === undefined
+            ? undefined
+            : JSON.stringify(event.paused.reason),
+          pausedBy: event.paused?.pausedBy,
         },
       });
       return;

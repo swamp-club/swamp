@@ -188,6 +188,38 @@ Deno.test("auditScheduledEvent: skips record overlap as failure and dedup as suc
   ]);
 });
 
+Deno.test("auditScheduledEvent: a paused skip is a success with the quoted reason and who paused", () => {
+  const { events, emitter } = recorder();
+  auditScheduledEvent({ auditEmitter: emitter }, {
+    kind: "schedule_skipped",
+    workflowId: WF_ID,
+    workflowName: "nightly",
+    reason: "paused (stalling serve)",
+    paused: { reason: "stalling serve", pausedBy: "user:ops" },
+    fireTime: "2026-09-29T00:00:00.000Z",
+  });
+  auditScheduledEvent({ auditEmitter: emitter }, {
+    kind: "schedule_skipped",
+    workflowId: WF_ID,
+    workflowName: "nightly",
+    reason: "paused",
+    paused: { pausedBy: "user:ops" },
+    replayed: true,
+  });
+  assertEquals(events.map((e) => [e.action, e.outcome, e.detail]), [
+    [
+      "workflow.schedule.skipped",
+      "success",
+      'fireTime=2026-09-29T00:00:00.000Z reason=paused pauseReason="stalling serve" pausedBy=user:ops',
+    ],
+    [
+      "workflow.schedule.skipped",
+      "success",
+      "replayed=true reason=paused pausedBy=user:ops",
+    ],
+  ]);
+});
+
 Deno.test("auditScheduledEvent: other scheduler events are not audited", () => {
   const { events, emitter } = recorder();
   auditScheduledEvent({ auditEmitter: emitter }, {

@@ -47,6 +47,7 @@ import {
   SIGNAL_KEY_MAX_LENGTH,
   SIGNAL_WORKFLOW_MAX_LENGTH,
 } from "../domain/workflows/signal_wait.ts";
+import { SCHEDULE_PAUSE_REASON_MAX_LENGTH } from "../domain/workflows/schedule_pause.ts";
 import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
@@ -110,6 +111,9 @@ import {
   handleWorkflowRun,
   handleWorkflowRunSearch,
   handleWorkflowRunSummary,
+  handleWorkflowScheduleList,
+  handleWorkflowSchedulePause,
+  handleWorkflowScheduleResume,
   handleWorkflowSchema,
   handleWorkflowSearch,
   handleWorkflowSignal,
@@ -1320,6 +1324,31 @@ const WorkflowTriggerRemoveRequestSchema = z.object({
   }),
 });
 
+const WorkflowSchedulePauseRequestSchema = z.object({
+  type: z.literal("workflow.schedule.pause"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowIdOrName: z.string().min(1),
+    // Bounded here too; the pause schema checks its content.
+    reason: z.string().max(SCHEDULE_PAUSE_REASON_MAX_LENGTH).optional(),
+    until: z.string().min(1).max(64).optional(),
+  }),
+});
+
+const WorkflowScheduleResumeRequestSchema = z.object({
+  type: z.literal("workflow.schedule.resume"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workflowIdOrName: z.string().min(1),
+  }),
+});
+
+const WorkflowScheduleListRequestSchema = z.object({
+  type: z.literal("workflow.schedule.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
 const VaultCreateRequestSchema = z.object({
   type: z.literal("vault.create"),
   id: z.string().min(1).max(256),
@@ -1565,6 +1594,9 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowTriggerSetRequestSchema,
   WorkflowTriggerGetRequestSchema,
   WorkflowTriggerRemoveRequestSchema,
+  WorkflowSchedulePauseRequestSchema,
+  WorkflowScheduleResumeRequestSchema,
+  WorkflowScheduleListRequestSchema,
   VaultCreateRequestSchema,
   VaultEditRequestSchema,
   VaultAuditTrailRequestSchema,
@@ -3884,6 +3916,52 @@ export function handleMessage(
           "workflow",
           request.payload?.workflowName ?? "*",
         ),
+      );
+      break;
+    case "workflow.schedule.pause":
+      task = audited(
+        handleWorkflowSchedulePause(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts(
+          "admin",
+          "workflow",
+          request.payload?.workflowIdOrName ?? "*",
+        ),
+      );
+      break;
+    case "workflow.schedule.resume":
+      task = audited(
+        handleWorkflowScheduleResume(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts(
+          "admin",
+          "workflow",
+          request.payload?.workflowIdOrName ?? "*",
+        ),
+      );
+      break;
+    case "workflow.schedule.list":
+      task = audited(
+        handleWorkflowScheduleList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "vault.create":

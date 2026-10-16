@@ -30,6 +30,12 @@
 import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
+  isSchedulePauseActiveAt,
+  type SchedulePause,
+  type SchedulePauseRepository,
+} from "../../domain/workflows/schedule_pause.ts";
+import {
+  effectiveSchedule,
   type ScheduleEntry,
   WorkflowScheduler,
 } from "../../domain/workflows/workflow_scheduler.ts";
@@ -99,8 +105,15 @@ export type ScheduledExecutionEvent =
     workflowName: string;
     reason: string;
     dedupSkip?: boolean;
-    /** ISO-8601 cron fire time. */
-    fireTime: string;
+    /** Set when the workflow's schedule is paused (swamp-club#3522). */
+    paused?: {
+      readonly reason?: string;
+      readonly pausedBy: string;
+      readonly until?: string;
+    };
+    /** ISO-8601 cron fire time; unset for a run replayed after a restart. */
+    fireTime?: string;
+    replayed?: boolean;
   }
   | {
     /** A run began executing; runId is known from here on. */
@@ -233,6 +246,12 @@ export interface ScheduledExecutionDeps {
   initiatedBy?: string;
   authorizeRun?: ScheduledRunAuthorizer;
   /**
+   * The schedule pauses checked before each fire, and before each replayed
+   * cron run starts; a paused workflow's fire is skipped. When absent no
+   * schedule is ever paused.
+   */
+  schedulePauses?: SchedulePauseRepository;
+  /**
    * How many scheduled runs may be in flight at once. Different workflows run
    * together up to this limit; a workflow never overlaps itself. Defaults to
    * 1: one scheduled run at a time, in fire order.
@@ -286,6 +305,12 @@ export class ScheduledExecutionService {
   private readonly inFlightFires = new Set<Promise<void>>();
   private eventHandler: ScheduledExecutionEventHandler | null = null;
   private triggerOverrides: ReadonlyMap<string, TriggerOverride>;
+  /**
+   * The pause each workflow had at its last successful read, used when the
+   * pause store cannot be read, so a flaky store neither runs a paused
+   * workflow nor skips an unpaused one.
+   */
+  private readonly lastPauseRead = new Map<WorkflowId, SchedulePause | null>();
 
   constructor(private readonly deps: ScheduledExecutionDeps) {
     this.triggerOverrides = deps.triggerOverrides ?? new Map();
@@ -423,6 +448,11 @@ export class ScheduledExecutionService {
     return this.triggerOverrides.get(workflowName);
   }
 
+  /** Returns every trigger override this service currently applies. */
+  getTriggerOverrides(): ReadonlyMap<string, TriggerOverride> {
+    return this.triggerOverrides;
+  }
+
   /**
    * Returns all registered schedules and their next fire times.
    */
@@ -528,11 +558,10 @@ export class ScheduledExecutionService {
     workflowName: string,
     builtInSchedule: string | null,
   ): string | null {
-    const override = this.triggerOverrides.get(workflowName);
-    if (override?.schedule !== undefined) {
-      return override.schedule;
-    }
-    return builtInSchedule;
+    return effectiveSchedule(
+      builtInSchedule,
+      this.triggerOverrides.get(workflowName)?.schedule,
+    );
   }
 
   private handleScheduleChange(
@@ -685,6 +714,16 @@ export class ScheduledExecutionService {
   ): Promise<void> {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
 
+    if (this.deps.schedulePauses) {
+      const pause = await this.pauseInForce(workflowId, workflowName, fireTime);
+      if (pause) {
+        this.emitPausedSkip(workflowId, workflowName, pause, {
+          fireTime: fireTime.toISOString(),
+        });
+        return;
+      }
+    }
+
     // Overlap prevention — skip if this specific workflow is already running.
     // Replayed runs are keyed by name (not UUID), so check both.
     if (
@@ -780,6 +819,64 @@ export class ScheduledExecutionService {
     this.processQueue();
   }
 
+  /**
+   * The pause in force for a workflow at `at`, or null. When the pause store
+   * cannot be read, the pause last read for the workflow decides; with none
+   * read yet the fire proceeds, since failing closed would stop every
+   * schedule during a datastore outage.
+   */
+  private async pauseInForce(
+    workflowId: WorkflowId,
+    workflowName: string,
+    at: Date,
+  ): Promise<SchedulePause | null> {
+    const repo = this.deps.schedulePauses;
+    if (!repo) return null;
+    let pause: SchedulePause | null;
+    try {
+      pause = await repo.get(workflowId);
+      this.lastPauseRead.set(workflowId, pause);
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      if (this.lastPauseRead.has(workflowId)) {
+        pause = this.lastPauseRead.get(workflowId) ?? null;
+        logger.warn(
+          "Cannot read the schedule pause of workflow {name}; using the state last read ({state}): {error}",
+          { name: workflowName, state: pause ? "paused" : "not paused", error },
+        );
+      } else {
+        logger.warn(
+          "Cannot read the schedule pause of workflow {name} and none was read before; firing as not paused: {error}",
+          { name: workflowName, error },
+        );
+        return null;
+      }
+    }
+    return pause && isSchedulePauseActiveAt(pause, at) ? pause : null;
+  }
+
+  private emitPausedSkip(
+    workflowId: WorkflowId,
+    workflowName: string,
+    pause: SchedulePause,
+    when: { fireTime?: string; replayed?: true },
+  ): void {
+    this.emit({
+      kind: "schedule_skipped",
+      workflowId,
+      workflowName,
+      reason: pause.reason === undefined
+        ? "paused"
+        : `paused (${pause.reason})`,
+      paused: {
+        reason: pause.reason,
+        pausedBy: pause.pausedBy,
+        until: pause.until,
+      },
+      ...when,
+    });
+  }
+
   private async recordForReplay(workflowName: string): Promise<void> {
     if (!this.deps.pendingRunHook) return;
     try {
@@ -855,6 +952,23 @@ export class ScheduledExecutionService {
       if (this.draining) return;
       if (pendingRunId && this.deps.pendingRunHook) {
         await this.deps.pendingRunHook.delete(pendingRunId);
+      }
+      // A replayed fire was recorded before a restart; the schedule may have
+      // been paused since. Its pending entry is consumed either way.
+      if (entry.replayed && this.deps.schedulePauses) {
+        const workflowId = this.findWorkflowIdByName(entry.workflowName) ??
+          entry.workflowId;
+        const pause = await this.pauseInForce(
+          workflowId,
+          entry.workflowName,
+          new Date(this.now()),
+        );
+        if (pause) {
+          this.emitPausedSkip(workflowId, entry.workflowName, pause, {
+            replayed: true,
+          });
+          return;
+        }
       }
       // Each entry starts outside any vault scope: the run enters its own
       // principal's scope, and the queue's inherited context never carries
