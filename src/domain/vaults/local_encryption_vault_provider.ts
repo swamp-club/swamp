@@ -190,10 +190,11 @@ export class LocalEncryptionVaultProvider
 
   /**
    * Answers whether {@link get} would succeed, without reading or decrypting
-   * the value. One file holds one secret, so a stat on that file answers
-   * presence, and loading the cached key material confirms the credential
-   * `get` needs: a missing or unreadable key source rejects here with the
-   * same wrapping `get` uses. The file's contents are never read, so a file
+   * the value. One file holds one secret, so opening that file read-only and
+   * closing it unread answers presence and read permission together, and
+   * loading the cached key material confirms the credential `get` needs: a
+   * missing or unreadable key source rejects here with the same wrapping
+   * `get` uses. The file's contents are never read, so a file
    * that exists but cannot be parsed or decrypted (corrupt, or written under
    * another key) answers `true`; that is an integrity fault only a read can
    * detect, which the `VaultExistenceProvider` contract forbids, so `get`
@@ -209,9 +210,17 @@ export class LocalEncryptionVaultProvider
     const encryptedFilePath = join(this.vaultDir, `${secretKey}.enc`);
     await assertSafePath(encryptedFilePath, this.secretsBoundary);
 
+    // Open read-only and stat the handle, then close it without reading a
+    // byte. A bare stat needs only search permission on the directory and
+    // would say yes to a file the process cannot read, where `get` fails.
     let info: Deno.FileInfo;
     try {
-      info = await Deno.stat(encryptedFilePath);
+      const file = await Deno.open(encryptedFilePath, { read: true });
+      try {
+        info = await file.stat();
+      } finally {
+        file.close();
+      }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) return false;
       throw this.retrieveError(secretKey, error);

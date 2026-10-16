@@ -414,7 +414,9 @@ export class VaultService {
    * the value. Held to the run vault access scope as a read, so a principal
    * that cannot read the key cannot learn whether it exists. Runs no refresh
    * hook (a hook runs a command, and presence does not depend on freshness)
-   * and records no audit entry (no value is read).
+   * and records no audit entry (no value is read). A stale hook that would
+   * mint a value on {@link get} for a key with no stored value therefore
+   * leaves `has` answering `false`: `has` reports what is stored now.
    *
    * Only a provider that implements `VaultExistenceProvider` can answer;
    * check {@link supportsExistenceCheck} first. For any other provider the

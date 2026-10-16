@@ -74,6 +74,9 @@ interface VaultExistenceProvider {
   a key the credentials can list but not read is not `true`
 - Implement it only when the backing API answers without reading the value (a
   describe or head call that also enforces read access); otherwise leave it out
+- Detection is by method name: any `has` on the provider opts it in, so an
+  existing `has` with another meaning must be brought to this contract or
+  renamed
 
 Hold an implementation to the contract with `assertVaultExistenceConformance`
 (see [testing.md](testing.md)).

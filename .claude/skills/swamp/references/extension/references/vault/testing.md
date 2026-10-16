@@ -166,6 +166,7 @@ import { assertVaultExistenceConformance } from "@swamp-club/swamp-testing";
 Deno.test("vault existence contract", async () => {
   const provider = vault.createProvider("test", { region: "us-east-1" });
   await assertVaultExistenceConformance(provider, {
+    // client is your mocked SDK client; count its value reads
     getValueReadCount: () => client.getSecretValueCalls,
     unauthorizedKey: "swamp-conformance-denied",
   });

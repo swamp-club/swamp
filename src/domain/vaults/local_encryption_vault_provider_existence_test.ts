@@ -133,6 +133,52 @@ Deno.test("LocalEncryptionVaultProvider.has: rejects when the key source is unav
   });
 });
 
+Deno.test({
+  name:
+    "LocalEncryptionVaultProvider.has: rejects a secret file the process cannot read, as get does",
+  // chmod has no effect on Windows, and root reads any file.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const vault = autoProvider(dir);
+      await vault.put("locked", "v");
+      const path = join(localEncryptionSecretsDir(dir, VAULT), "locked.enc");
+      await Deno.chmod(path, 0o000);
+      try {
+        const fromHas = await assertRejects(() => vault.has("locked"), Error);
+        const fromGet = await assertRejects(() => vault.get("locked"), Error);
+        assertStringIncludes(
+          fromHas.message,
+          "Failed to retrieve secret 'locked'",
+        );
+        assertStringIncludes(
+          fromGet.message,
+          "Failed to retrieve secret 'locked'",
+        );
+        assertStringIncludes(fromHas.message, "ermission denied");
+      } finally {
+        await Deno.chmod(path, 0o600);
+      }
+    });
+  },
+});
+
+Deno.test("LocalEncryptionVaultProvider.has: with auto_generate and no key file, loads key material as get would, which writes a new .key", async () => {
+  await withTempDir(async (dir) => {
+    await autoProvider(dir).put("k", "v");
+    const keyFile = join(localEncryptionSecretsDir(dir, VAULT), ".key");
+    await Deno.remove(keyFile);
+
+    // A fresh instance holds no cached key material, so has() loads it.
+    const fresh = autoProvider(dir);
+    assertEquals(await fresh.has("k"), true);
+    await Deno.stat(keyFile); // regenerated, exactly as get would do
+    // The old file no longer decrypts under the new key: the integrity
+    // fault has() cannot see without reading, which get reports at load.
+    await assertRejects(() => fresh.get("k"), Error);
+  });
+});
+
 Deno.test("LocalEncryptionVaultProvider.has: a directory in place of the secret file rejects as get does", async () => {
   await withTempDir(async (dir) => {
     const vault = autoProvider(dir);

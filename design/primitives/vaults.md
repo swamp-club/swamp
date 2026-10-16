@@ -313,15 +313,19 @@ the value does not implement it; the typed-secrets existence check
 (`design/enablers/typed-secrets.md` Section 3.4) then falls back to one probe
 read per reference per run.
 
-Detection uses a runtime type guard (`isVaultExistenceProvider()`), as above.
-`VaultService.supportsExistenceCheck()` reports it, so a caller can tell a `has`
+Detection uses a runtime type guard (`isVaultExistenceProvider()`), as above,
+so any `has` method opts a provider in; one that means something else must be
+renamed or brought to the contract. `VaultService.supportsExistenceCheck()`
+reports it, so a caller can tell a `has`
 answer from a probe read, and `VaultService.has()` authorizes `read` under the
 run vault access scope before delegating. It runs no refresh hook and writes no
-audit entry, because no value is read. Nothing surfaces the capability in
-`vault inspect` or serve.
+audit entry, because no value is read; a stale hook that would mint a value on
+`get` therefore does not make `has` true, which reports what is stored now.
+Nothing surfaces the capability in `vault inspect` or serve.
 
-Built-in providers: `local_encryption` answers `has` with a stat on the secret's
-file plus its cached key material, so it never reads or decrypts the value. A
+Built-in providers: `local_encryption` answers `has` by opening the secret's
+file read-only and closing it unread (presence and read permission in one),
+plus its cached key material, so it never reads or decrypts the value. A
 present file that cannot be decrypted therefore answers `true`; `get` reports
 that integrity fault at load. The `mock` provider answers from its map. The
 `_token-secrets` control-plane provider does not implement `has`: its store has

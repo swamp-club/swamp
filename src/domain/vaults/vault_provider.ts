@@ -105,7 +105,10 @@ export function isVaultDeleteProvider(
  *   (design/enablers/typed-secrets.md Section 3.4).
  *
  * `assertVaultExistenceConformance` in `@swamp-club/swamp-testing` holds a
- * provider to this contract.
+ * provider to this contract. Detection is by method name, as for the other
+ * optional interfaces: any provider with a `has` method opts in, so one whose
+ * `has` means something else (answering from a listing, say) must honor this
+ * contract or rename the method.
  */
 export interface VaultExistenceProvider {
   has(secretKey: string): Promise<boolean>;
