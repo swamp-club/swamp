@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { V3ReplicationError } from "../../../domain/datastore_v3/litestream_replication.ts";
 import { replicaPathFor } from "../../../domain/datastore_v3/replication_lineage.ts";
@@ -50,6 +50,7 @@ import {
   publishV3Head,
   recordV3LeaseFence,
   type V3Copy,
+  V3LineageOutrankedError,
 } from "./v3_copy.ts";
 
 const AT = "2026-10-14T00:00:00.000Z";
@@ -200,6 +201,33 @@ Deno.test({
         V3ReplicationError,
         "already claimed",
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "prepareV3WriterLineage: refuses to start a lineage below one a newer writer started (swamp-club#3565)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 4, { confirmed: true });
+      for (const restored of [true, false]) {
+        const error = await assertRejects(
+          () => prepareV3WriterLineage(env.copy, 3, { restored }),
+          V3ReplicationError,
+          "was started by a newer writer than this one, at fence 3",
+        );
+        assert(error.cause instanceof V3LineageOutrankedError);
+      }
+      assertEquals(await startOf(env, 3), undefined, "nothing was started");
+      // Another root's newer lineage outranks nothing here.
+      await publish(env, 9, { root: "file:/elsewhere" });
+      await prepareV3WriterLineage(env.copy, 5, { restored: true });
+      assertEquals((await lineageOf(env))?.lineageFence, 5);
+      // Its own lineage, at its fence, is kept as before.
+      await prepareV3WriterLineage(env.copy, 5, { restored: false });
+      assertEquals((await lineageOf(env))?.lineageFence, 5);
     });
   },
 });

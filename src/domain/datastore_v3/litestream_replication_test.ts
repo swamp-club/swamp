@@ -79,6 +79,15 @@ Deno.test("V3ReplicationError: carries its code and says the commits are kept", 
   assertStringIncludes(error.message, "kept in commits.db");
 });
 
+Deno.test("V3ReplicationError: says another checkout's write first loses the commits (swamp-club#3565)", () => {
+  const error = new V3ReplicationError("the sync timed out after 60s");
+  assertStringIncludes(error.message, "in this checkout");
+  assertStringIncludes(
+    error.message,
+    "if another checkout writes to the datastore first, they are lost",
+  );
+});
+
 const OURS: PresenceObservation = {
   kind: "found",
   otherOwner: false,

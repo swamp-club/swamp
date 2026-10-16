@@ -86,6 +86,7 @@ import {
   recordV3LeaseFence,
   type V3Copy,
   type V3CopyRefresh,
+  V3LineageOutrankedError,
 } from "./litestream/v3_copy.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { isProcessGone } from "../runtime/process.ts";
@@ -397,12 +398,18 @@ function copyOf(repoDir: string, config: { readonly path: string }): V3Copy {
  * published lineage when it is missing, behind or holds another lineage.
  * Once per process for a reader; a writer's hold and serve's retake make it
  * current again. Does nothing while replication is off.
+ *
+ * `stillCurrent` is asked just before the copy is marked current: serve's
+ * replacement passes it, since a retake while the restore ran may follow
+ * commits the restored lineage lacks (swamp-club#3565). When it answers
+ * false the copy is left not current and the result says `stale`.
  */
 export async function ensureV3CopyCurrent(
   repoDir: string,
   config: V3DatastoreConfig,
   mode: "read" | "write",
-): Promise<V3CopyRefresh> {
+  options: { readonly stillCurrent?: () => boolean } = {},
+): Promise<V3CopyRefresh & { readonly stale?: true }> {
   const key = handleKey(repoDir, config);
   if (!v3ReplicatesAt(config.path)) {
     currentCopies.add(key);
@@ -418,14 +425,18 @@ export async function ensureV3CopyCurrent(
     ...(handle !== undefined ? { openStore: handle.commitStore } : {}),
     lockWaitMs: resolveLockTimeoutMs(),
   });
-  currentCopies.add(key);
   const datastore = resolve(config.path);
   const copies = copiesByDatastore.get(datastore) ?? [];
   if (!copies.some((known) => known.key === key)) {
     copiesByDatastore.set(datastore, [...copies, { ...copy, key }]);
   }
+  if (refresh.restored !== undefined) restoredCopies.add(key);
+  // A stale restore is not marked current, but its read model is still
+  // rebuilt below: the copy state already names what it restored, so a
+  // later refresh may find the copy current and restore nothing.
+  const stale = options.stillCurrent?.() === false;
+  if (!stale) currentCopies.add(key);
   if (refresh.restored !== undefined) {
-    restoredCopies.add(key);
     if (refresh.restored.readModelMoved) {
       // The checkout applied commits the restore dropped or replaced: it
       // is rebuilt from the restored commits, and the files no commit owns
@@ -433,7 +444,7 @@ export async function ensureV3CopyCurrent(
       // so no writer materialises files meanwhile. A reader that cannot
       // take it replays the commits instead, leaving the dropped commits'
       // files until a rebuild.
-      const rebuilt = v3DatastoreFor(repoDir, config);
+      const rebuilt = handle ?? v3DatastoreFor(repoDir, config);
       const release = mode === "write"
         ? undefined
         : await tryAcquireV3WriterLock(config.path, { fenceStore: rebuilt });
@@ -454,7 +465,7 @@ export async function ensureV3CopyCurrent(
       await handle.catchUp();
     }
   }
-  return refresh;
+  return stale ? { ...refresh, stale: true } : refresh;
 }
 
 /**
@@ -1167,6 +1178,17 @@ const publishedMarks = new Map<string, number>();
 /** How often serve checks that its Litestream sidecar still answers. */
 export const SERVE_REPLICATION_PROBE_INTERVAL_MS = 30_000;
 
+/** Whether this process's writer lease on `datastorePath` was taken over. */
+function leaseLost(datastorePath: string): boolean {
+  try {
+    assertV3WriterCurrent(datastorePath);
+    return false;
+  } catch (error) {
+    if (error instanceof WriterFencedError) return true;
+    throw error;
+  }
+}
+
 /** Serve's upkeep of its Litestream sidecar; see {@link startV3ReplicationUpkeep}. */
 export interface V3ReplicationUpkeep {
   /** Stops the triggers and waits for a replacement in flight. */
@@ -1194,8 +1216,21 @@ export function startV3ReplicationUpkeep(
   let stopped = false;
   let replacing: Promise<void> | undefined;
   let probing: Promise<void> | undefined;
+  // Each retake counts, so a replacement knows one came while it ran; the
+  // fence it announced is the retake's even before the lease records it.
+  let retakes = 0;
+  let announced = 0;
+  // A replacement asked for while one runs (swamp-club#3565): it runs again
+  // once the running one settles, instead of being dropped.
+  let again = false;
   const replace = (): void => {
-    if (stopped || replacing !== undefined) return;
+    if (stopped) return;
+    if (replacing !== undefined) {
+      again = true;
+      return;
+    }
+    const startedAt = retakes;
+    const stale = () => retakes !== startedAt;
     replacing = (async () => {
       const uses = replications.get(key) ?? [];
       replications.delete(key);
@@ -1205,23 +1240,37 @@ export function startV3ReplicationUpkeep(
       // Owed until a sidecar is held again, even while serve has no lease:
       // a shutdown before then must not pass serve's commits as replicated.
       owedReplications.add(key);
-      const fence = v3WriterFence(datastorePath);
-      if (fence === undefined || stopped) return;
+      const held = v3WriterFence(datastorePath);
+      if (held === undefined || stopped || stale()) return;
+      // A retake's listeners run before its lease is recorded, when the
+      // lease still names the lost fence.
+      const fence = Math.max(held, announced);
+      // A lost lease that no retake replaced yet: nothing commits on this
+      // copy, and the retake asks for a replacement of its own, so none
+      // restores at the lost fence meanwhile.
+      if (fence === held && leaseLost(datastorePath)) return;
       // A retake may follow another writer's commits: the copy is made
       // current and the lineage prepared before the sidecar is held again,
       // as a writer's hold does (swamp-club#3482). The restore updates
-      // serve's open store in place.
-      const refresh = await ensureV3CopyCurrent(repoDir, config, "write");
+      // serve's open store in place. A retake meanwhile makes what it
+      // restored stale: it is not marked current, and nothing more runs
+      // at this fence (swamp-club#3565).
+      const refresh = await ensureV3CopyCurrent(repoDir, config, "write", {
+        stillCurrent: () => !stale(),
+      });
+      if (refresh.stale === true || stale()) return;
       const handle = v3DatastoreFor(repoDir, config);
       if (refresh.restored !== undefined) {
         await handle.raiseWriterFence(fence);
       }
       // What a writer between serve's two holds left (swamp-club#3490).
       await recoverV3Outbox(handle, fence);
+      if (stale()) return;
       await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
         restored: restoredCopies.has(copyKey),
       });
       restoredCopies.delete(copyKey);
+      if (stale()) return;
       const next = await acquireV3Replication(
         handle.commitsDbPath,
         datastorePath,
@@ -1234,10 +1283,22 @@ export function startV3ReplicationUpkeep(
         owedReplications.delete(key);
       }
     })().catch((error) => {
+      // A newer writer started a lineage: this copy is behind it, so
+      // nothing commits onto it until a replacement restores it.
+      if (
+        error instanceof V3ReplicationError &&
+        error.cause instanceof V3LineageOutrankedError
+      ) {
+        currentCopies.delete(copyKey);
+      }
       logger
         .warn`Replacing the Litestream sidecar of the v3 datastore at ${datastorePath} failed; the next probe retries: ${error}`;
     }).finally(() => {
       replacing = undefined;
+      if (again) {
+        again = false;
+        replace();
+      }
     });
   };
   // Runs inside the lease's renewal: it only starts the replacement. A
@@ -1245,8 +1306,10 @@ export function startV3ReplicationUpkeep(
   // current at once, before the retaken lease admits a commit: nothing
   // commits onto it, nor collects its chunks, until the replacement has
   // made it current again (swamp-club#3482).
-  const unsubscribe = onV3LeaseTaken((path) => {
+  const unsubscribe = onV3LeaseTaken((path, fence) => {
     if (resolve(path) !== key) return;
+    retakes++;
+    announced = Math.max(announced, fence);
     currentCopies.delete(copyKey);
     replace();
   });
@@ -1254,7 +1317,12 @@ export function startV3ReplicationUpkeep(
     if (stopped || probing !== undefined || replacing !== undefined) return;
     probing = (async () => {
       const current = replications.get(key)?.[0];
-      if (current === undefined || !await current.probe()) {
+      // A copy left not current (a replacement that failed after a retake)
+      // is replaced as a dead sidecar is.
+      if (
+        current === undefined || !currentCopies.has(copyKey) ||
+        !await current.probe()
+      ) {
         replace();
         return;
       }
@@ -1292,7 +1360,8 @@ export function startV3ReplicationUpkeep(
       clearInterval(timer);
       unsubscribe();
       await probing;
-      await replacing;
+      // A rerun the settling replacement started before stopping was seen.
+      while (replacing !== undefined) await replacing;
     },
   };
 }

@@ -217,31 +217,36 @@ export class LitestreamReplicator {
       this.deps.privateRoot ?? defaultPrivateRoot(),
     );
     const key = paths.commitsDb;
-    let entry = this.#held.get(key);
-    // A held sidecar that stopped answering is not handed out again: the
-    // entry is retired (its callers release it as they finish) and the
-    // sidecar is found or made afresh.
-    if (entry !== undefined && !await entry.handle.probe()) {
-      if (this.#held.get(key) === entry) this.#held.delete(key);
-      entry = undefined;
-    }
-    if (entry === undefined) {
-      let acquiring = this.#acquiring.get(key);
-      if (acquiring === undefined) {
-        acquiring = this.#acquireNew(paths, request).then((handle) => {
-          const made: HeldEntry = { handle, refs: 0 };
-          this.#held.set(key, made);
-          return made;
-        }).finally(() => {
-          this.#acquiring.delete(key);
-        });
-        this.#acquiring.set(key, acquiring);
+    for (;;) {
+      let entry = this.#held.get(key);
+      // A held sidecar that stopped answering is not handed out again: the
+      // entry is retired (its callers release it as they finish) and the
+      // sidecar is found or made afresh.
+      if (entry !== undefined && !await entry.handle.probe()) {
+        if (this.#held.get(key) === entry) this.#held.delete(key);
+        entry = undefined;
       }
-      entry = await acquiring;
+      if (entry === undefined) {
+        let acquiring = this.#acquiring.get(key);
+        if (acquiring === undefined) {
+          acquiring = this.#acquireNew(paths, request).then((handle) => {
+            const made: HeldEntry = { handle, refs: 0 };
+            this.#held.set(key, made);
+            return made;
+          }).finally(() => {
+            this.#acquiring.delete(key);
+          });
+          this.#acquiring.set(key, acquiring);
+        }
+        entry = await acquiring;
+      }
+      // The last release may have retired the entry while this acquire
+      // waited (swamp-club#3565): its handle is released, so it starts over.
+      if (this.#held.get(key) !== entry) continue;
+      const held = entry;
+      held.refs++;
+      return held.handle.view(() => this.#releaseShared(key, held));
     }
-    const held = entry;
-    held.refs++;
-    return held.handle.view(() => this.#releaseShared(key, held));
   }
 
   /** Drops one caller's hold on `entry`, releasing it with the last one. */

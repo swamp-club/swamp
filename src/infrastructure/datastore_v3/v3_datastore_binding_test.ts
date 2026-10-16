@@ -171,6 +171,24 @@ Deno.test("bindV3BucketDatastore: the internal replica setting wins for replicat
   });
 });
 
+Deno.test("bindV3BucketDatastore: with the replica setting empty a bucket datastore still replicates to its own target (swamp-club#3565)", async () => {
+  await withRepo(async (repoDir) => {
+    // A filesystem v3 writer with the setting empty does not replicate; a
+    // bucket's writer always does, so no writer of it skips replication.
+    await withMockedEnv({ [V3_REPLICA_ENV]: "" }, () => {
+      const location = bindV3BucketDatastore(
+        repoDir,
+        bucketConfig(),
+        bucketProvider().provider,
+        { platform: LINUX },
+      );
+      assert(v3ReplicatesAt(location.path), "a bucket datastore replicates");
+      assertEquals(v3ReplicaFor(location.path)?.type, "s3");
+      return Promise.resolve();
+    });
+  });
+});
+
 Deno.test("bindV3BucketDatastore: a different bucket gets a different local root", async () => {
   await withRepo((repoDir) => {
     const a = bindV3BucketDatastore(

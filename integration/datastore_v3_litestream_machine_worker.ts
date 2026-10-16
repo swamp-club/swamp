@@ -27,7 +27,8 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { join } from "@std/path";
+import { configure } from "@logtape/logtape";
+import { dirname, join } from "@std/path";
 import { LOCK_TIMEOUT_ENV_VAR } from "../src/domain/datastore/datastore_config.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
 import { setV3ReplicationForTesting } from "../src/infrastructure/datastore_v3/litestream/v3_replication.ts";
@@ -64,6 +65,15 @@ export type MachineRequest =
     readonly lockTimeoutMs: number;
     /** The namespace the machine's datastore config names, if any. */
     readonly namespace?: string;
+    /**
+     * Stalls the Litestream binary's lookup while a gate file beside the
+     * datastore exists: `<hostname>-gate-restore` for a restore,
+     * `<hostname>-gate-sidecar` for a sidecar start. Each writes
+     * `<gate>.entered` once it waits.
+     */
+    readonly gated?: boolean;
+    /** Keeps the datastore's warnings for `warnings`. */
+    readonly captureWarnings?: boolean;
   }
   /** Takes the lease with a short TTL, so a pause lets it expire. */
   | {
@@ -104,7 +114,11 @@ export type MachineRequest =
   /** `swamp datastore namespace list`'s namespaces. */
   | { readonly kind: "namespaces" }
   /** The fence this machine's writer lease holds, if any. */
-  | { readonly kind: "fence" };
+  | { readonly kind: "fence" }
+  /** The commits in this checkout's commits.db. */
+  | { readonly kind: "count" }
+  /** The warnings logged since the last call, with `captureWarnings`. */
+  | { readonly kind: "warnings" };
 
 /** A machine's answer. */
 export type MachineResponse =
@@ -118,6 +132,7 @@ let upkeep: V3ReplicationUpkeep | undefined;
 /** The short lease a `lease` request took, released when the machine closes. */
 let leaseRelease: (() => Promise<void>) | undefined;
 const launched = new Set<number>();
+const warnings: string[] = [];
 
 function config(): FilesystemDatastoreConfig {
   return {
@@ -154,6 +169,38 @@ function inEnv<T>(fn: () => Promise<T>): Promise<T> {
   return fn();
 }
 
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+/** The binary lookup behind `gated`: waits while the step's gate exists. */
+async function gatedBinary(
+  request: Extract<MachineRequest, { kind: "init" }>,
+): Promise<string> {
+  const step = /v3_copy\.ts/.test(new Error().stack ?? "")
+    ? "restore"
+    : "sidecar";
+  const gate = join(
+    dirname(request.datastorePath),
+    `${request.hostname}-gate-${step}`,
+  );
+  let entered = false;
+  while (await exists(gate)) {
+    if (!entered) {
+      entered = true;
+      await Deno.writeTextFile(`${gate}.entered`, "");
+    }
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  return Deno.env.get("SWAMP_LITESTREAM_PATH")!;
+}
+
 function count(path: string): number {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
@@ -186,6 +233,26 @@ async function handle(request: MachineRequest): Promise<unknown> {
             ? hostname
             : realHostname(),
       });
+      if (request.captureWarnings === true) {
+        await configure({
+          reset: true,
+          sinks: {
+            kept: (record) => {
+              warnings.push(
+                record.message.map((part) => String(part)).join(""),
+              );
+            },
+          },
+          loggers: [
+            {
+              category: ["datastore"],
+              sinks: ["kept"],
+              lowestLevel: "warning",
+            },
+            { category: ["logtape", "meta"], sinks: [], lowestLevel: "fatal" },
+          ],
+        });
+      }
       setV3ReplicationForTesting({
         processes: {
           ...hostLitestreamProcesses,
@@ -197,6 +264,9 @@ async function handle(request: MachineRequest): Promise<unknown> {
         },
         privateRoot: request.privateRoot,
         timings: TEST_TIMINGS,
+        ...(request.gated === true
+          ? { resolveBinary: () => gatedBinary(request) }
+          : {}),
       });
       return undefined;
     }
@@ -284,6 +354,10 @@ async function handle(request: MachineRequest): Promise<unknown> {
       )).restoreLock;
     case "fence":
       return v3WriterFence(init!.datastorePath) ?? null;
+    case "count":
+      return count(v3CommitsDbPath(init!.datastorePath, init!.repoDir));
+    case "warnings":
+      return warnings.splice(0);
     case "catchUp":
       await v3DatastoreFor(init!.repoDir, config()).catchUp();
       return undefined;

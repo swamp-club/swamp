@@ -65,15 +65,18 @@ export class V3ChunkCollectionDeferredError extends UserError {
 
 /**
  * Thrown when a write command cannot confirm that its commits reached the
- * replica. They are kept in `commits.db`, and the next write replicates
- * them, so the failure is temporary.
+ * replica. They are kept in `commits.db` and replicate when this checkout
+ * writes next; another checkout's write first replaces them
+ * (swamp-club#3565).
  */
 export class V3ReplicationError extends UserError {
   constructor(detail: string, options: { readonly cause?: unknown } = {}) {
     super(
       `This command's changes are saved locally, but swamp could not confirm ` +
         `that they reached the datastore's replica: ${detail}. They are ` +
-        `kept in commits.db, and the next write command replicates them.`,
+        `kept in commits.db and replicate when the next write command runs ` +
+        `in this checkout; if another checkout writes to the datastore ` +
+        `first, they are lost.`,
       V3_REPLICATION_UNCONFIRMED_CODE,
     );
     this.name = "V3ReplicationError";
