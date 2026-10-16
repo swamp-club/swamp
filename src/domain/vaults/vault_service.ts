@@ -320,6 +320,15 @@ export class VaultService {
     }
   }
 
+  /**
+   * The configured type of a registered vault. Capability errors name it
+   * from here, not from `provider.getName()`, which built-in providers answer
+   * with the vault's instance name.
+   */
+  private vaultTypeOf(vaultName: string): string {
+    return this.vaultTypes.get(vaultName) ?? "unknown";
+  }
+
   private requireProvider(vaultName: string): VaultProvider {
     const provider = this.providers.get(vaultName);
     if (!provider) {
@@ -403,7 +412,9 @@ export class VaultService {
     }
     if (!isVaultDeleteProvider(provider)) {
       throw new Error(
-        `Vault '${vaultName}' (type: ${provider.getName()}) does not support deleting secrets`,
+        `Vault '${vaultName}' (type: ${
+          this.vaultTypeOf(vaultName)
+        }) does not support deleting secrets`,
       );
     }
     return provider;
@@ -543,7 +554,9 @@ export class VaultService {
     }
     if (!isVaultAnnotationProvider(provider)) {
       throw new Error(
-        `Vault '${vaultName}' (type: ${provider.getName()}) does not support annotations`,
+        `Vault '${vaultName}' (type: ${
+          this.vaultTypeOf(vaultName)
+        }) does not support annotations`,
       );
     }
     return provider;
@@ -594,7 +607,9 @@ export class VaultService {
     }
     if (!isVaultRefreshHookProvider(provider)) {
       throw new Error(
-        `Vault '${vaultName}' (type: ${provider.getName()}) does not support refresh hooks`,
+        `Vault '${vaultName}' (type: ${
+          this.vaultTypeOf(vaultName)
+        }) does not support refresh hooks`,
       );
     }
     return provider;

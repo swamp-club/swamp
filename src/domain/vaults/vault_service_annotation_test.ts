@@ -158,21 +158,21 @@ Deno.test("requireAnnotationProvider: throws when vault not found with other vau
   );
 });
 
-Deno.test("requireAnnotationProvider: throws when provider does not support annotations", async () => {
+Deno.test("requireAnnotationProvider: names the vault's configured type, not its instance name, when the provider does not support annotations", async () => {
   const service = new VaultService();
   service.registerVault({
-    name: "mock-vault",
+    name: "erp",
     type: "mock",
     config: {},
   });
 
   const error = await assertRejects(
-    () => service.getAnnotation("mock-vault", "some-key"),
+    () => service.getAnnotation("erp", "some-key"),
     Error,
   );
 
-  assertStringIncludes(
+  assertEquals(
     error.message,
-    "does not support annotations",
+    "Vault 'erp' (type: mock) does not support annotations",
   );
 });
