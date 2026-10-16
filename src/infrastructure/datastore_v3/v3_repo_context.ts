@@ -32,11 +32,23 @@
  * @module
  */
 
-import { join, resolve } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import {
+  type DatastoreConfig,
   type FilesystemDatastoreConfig,
+  isCustomDatastoreConfig,
   resolveLockTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
+import {
+  bindV3BucketDatastore,
+  boundV3BucketLocation,
+  v3BucketBindingAt,
+  v3BucketNamespacedStore,
+  type V3DatastoreLocation,
+  v3ReplicatesAt,
+} from "./v3_datastore_binding.ts";
+import type { WritableDatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
+import { resolveCustomProvider } from "../persistence/datastore_global_lock.ts";
 import {
   datastoreKeyFilter,
   openV3Datastore,
@@ -62,7 +74,6 @@ import {
   acquireV3Replication,
   type ReplicationHandle,
   setV3SyncDeadline,
-  v3ReplicationEnabled,
   v3RequestSyncDeadlineMs,
   v3SyncDeadlineMs,
 } from "./litestream/v3_replication.ts";
@@ -99,6 +110,47 @@ import { getSwampLogger } from "../logging/logger.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
+export { v3ReplicatesAt };
+
+/**
+ * The v3 datastore a context opens: a filesystem datastore's config, or a
+ * bucket datastore's location (`bindV3BucketDatastore`, swamp-club#3534).
+ * Only its path, namespace and layout are read.
+ */
+export type V3DatastoreConfig = V3DatastoreLocation | FilesystemDatastoreConfig;
+
+/**
+ * What the v3 helpers open for the v3 datastore `config` names: a
+ * filesystem datastore's config as it is, or a bucket datastore's location,
+ * bound once per config object (swamp-club#3534). Call it only for a config
+ * the format guard opened as v3.
+ *
+ * @throws V3HostingUnsupportedError, or UserError when replication is
+ *   unavailable here or the provider refuses its replica target
+ */
+export async function v3DatastoreConfigOf(
+  repoDir: string,
+  config: DatastoreConfig,
+): Promise<V3DatastoreConfig> {
+  if (!isCustomDatastoreConfig(config)) return config;
+  return boundV3BucketLocation(config) ??
+    bindV3BucketDatastore(repoDir, config, await resolveCustomProvider(config));
+}
+
+/**
+ * The control plane the namespaced records of the bucket datastore at
+ * `location` live in (signal waits, retention watermarks), or undefined for
+ * a filesystem datastore, which keeps them under its own path.
+ */
+export function v3BucketNamespacedStoreAt(
+  location: V3DatastoreConfig,
+): WritableDatastoreControlPlaneStore | undefined {
+  const binding = v3BucketBindingAt(location.path);
+  return binding === undefined
+    ? undefined
+    : v3BucketNamespacedStore(binding, location.namespace);
+}
+
 const opened = new Map<string, V3Datastore>();
 
 /**
@@ -114,6 +166,14 @@ const replications = new Map<string, ReplicationHandle[]>();
  * silently.
  */
 const owedReplications = new Set<string>();
+
+/**
+ * Whether the command's own commits were confirmed replicated after its
+ * action returned ({@link confirmV3CommandReplicated}). A closing sync that
+ * fails after that covers only commits made since (the end-of-command
+ * retention pass's), which never fail the command (swamp-club#3534).
+ */
+let commandConfirmed = false;
 
 /** Whether the lease listener that records replication lineages is set. */
 let lineageListening = false;
@@ -171,7 +231,7 @@ export function keepV3WriterMarkers(): void {
   keepMarkers = true;
 }
 
-function handleKey(repoDir: string, config: FilesystemDatastoreConfig): string {
+function handleKey(repoDir: string, config: V3DatastoreConfig): string {
   return [resolve(repoDir), resolve(config.path), config.namespace ?? ""]
     .join("\0");
 }
@@ -179,7 +239,7 @@ function handleKey(repoDir: string, config: FilesystemDatastoreConfig): string {
 /** This process's handle on the v3 datastore `config` names for `repoDir`. */
 export function v3DatastoreFor(
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
 ): V3Datastore {
   if (!lineageListening) {
     // A fence this process takes outside a writer's hold (the read-only
@@ -197,7 +257,7 @@ export function v3DatastoreFor(
       // two holds left (swamp-club#3490). Its first hold recovers in
       // recoverAndMark; while replicating, the sidecar upkeep recovers once
       // the copy is current again; a read-only hold never recovers.
-      if (v3ReplicationEnabled() || !holdsV3WriterLock(path)) return;
+      if (v3ReplicatesAt(path) || !holdsV3WriterLock(path)) return;
       for (const [key, handle] of opened) {
         if (
           resolve(handle.datastorePath) === resolve(path) &&
@@ -211,7 +271,7 @@ export function v3DatastoreFor(
   const key = handleKey(repoDir, config);
   let handle = opened.get(key);
   if (handle === undefined) {
-    if (v3ReplicationEnabled() && !currentCopies.has(key)) {
+    if (v3ReplicatesAt(config.path) && !currentCopies.has(key)) {
       throw markErrorPaths(
         new Error(
           `Internal error: the copy of the v3 datastore at ${config.path} ` +
@@ -234,7 +294,7 @@ export function v3DatastoreFor(
         assertV3WriterCurrent(config.path);
         // While replicating, nothing commits onto a copy that is not current
         // (swamp-club#3482): after serve's retake, until its restore lands.
-        if (v3ReplicationEnabled() && !currentCopies.has(key)) {
+        if (v3ReplicatesAt(config.path) && !currentCopies.has(key)) {
           throw new WriterFencedError(
             v3WriterFence(config.path),
             undefined,
@@ -247,7 +307,7 @@ export function v3DatastoreFor(
         // commits, whose chunks a collection would delete.
         assertV3WriterCurrent(config.path);
         if (
-          v3ReplicationEnabled() &&
+          v3ReplicatesAt(config.path) &&
           (!currentCopies.has(key) || !holdsV3WriterLock(config.path))
         ) {
           throw markErrorPaths(
@@ -261,13 +321,65 @@ export function v3DatastoreFor(
         }
       },
       // Nor while another copy may still restore a lineage that names
-      // chunks this copy does not (swamp-club#3491).
-      assertCollectable: () =>
-        assertV3ChunksCollectable(copyOf(repoDir, config)),
+      // chunks this copy does not (swamp-club#3491), nor before what this
+      // copy holds is replicated (swamp-club#3534).
+      assertCollectable: async () => {
+        await assertV3ChunksCollectable(copyOf(repoDir, config));
+        if (v3ReplicatesAt(config.path)) {
+          await assertSweepReplicated(config.path, opened.get(key));
+        }
+      },
     });
     opened.set(key, handle);
   }
   return handle;
+}
+
+/**
+ * Refuses a chunk sweep on a replicating datastore until everything the
+ * copy holds is replicated (swamp-club#3534): a sweep deletes the chunks the
+ * copy's commits released, compaction's included, and a restore of the
+ * replica must never name one it deleted. So the sweep runs only after a
+ * sync that resolves after the pass's compaction, and only while no commit
+ * landed since: the high-water mark is read before the sync and again after
+ * it. Compaction comes before the sweep in every pass, so a pass whose sync
+ * failed sweeps nothing.
+ *
+ * @throws V3ChunkCollectionDeferredError when the sweep must wait
+ */
+async function assertSweepReplicated(
+  datastorePath: string,
+  handle: V3Datastore | undefined,
+): Promise<void> {
+  const datastore = resolve(datastorePath);
+  const until = "after the next sync that confirms this copy's commits";
+  const use = replications.get(datastore)?.[0];
+  if (handle === undefined || use === undefined) {
+    throw new V3ChunkCollectionDeferredError(
+      datastorePath,
+      "no Litestream sidecar is held to confirm this copy's commits",
+      until,
+    );
+  }
+  const before = handle.commitStore.highWaterMark().cursor;
+  try {
+    await syncAndPublish(datastore, use, [handle], v3SyncDeadlineMs());
+  } catch (error) {
+    throw new V3ChunkCollectionDeferredError(
+      datastorePath,
+      `this copy's commits are not confirmed replicated (${
+        errorMessage(error)
+      })`,
+      until,
+    );
+  }
+  if (handle.commitStore.highWaterMark().cursor !== before) {
+    throw new V3ChunkCollectionDeferredError(
+      datastorePath,
+      "a commit landed while this copy's commits were being confirmed",
+      until,
+    );
+  }
 }
 
 /** The checkout's copy of the datastore `config` names. */
@@ -288,11 +400,11 @@ function copyOf(repoDir: string, config: { readonly path: string }): V3Copy {
  */
 export async function ensureV3CopyCurrent(
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   mode: "read" | "write",
 ): Promise<V3CopyRefresh> {
   const key = handleKey(repoDir, config);
-  if (!v3ReplicationEnabled()) {
+  if (!v3ReplicatesAt(config.path)) {
     currentCopies.add(key);
     return {};
   }
@@ -355,7 +467,7 @@ export async function ensureV3CopyCurrent(
  * @throws V3WriterBusyError when another process is writing
  */
 export async function holdV3Writer(
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   repoDir: string,
   options: {
     /** Take the lease again once it is lost: serve's lifetime hold. */
@@ -374,18 +486,18 @@ export async function holdV3Writer(
     // raised then (swamp-club#3482); a retake raises it here.
     fenceStore: {
       writerFence: () =>
-        !v3ReplicationEnabled() || currentCopies.has(key)
+        !v3ReplicatesAt(config.path) || currentCopies.has(key)
           ? v3DatastoreFor(repoDir, config).commitStore.writerFence()
           : undefined,
       raiseWriterFence: async (fence: number) => {
-        if (!v3ReplicationEnabled() || currentCopies.has(key)) {
+        if (!v3ReplicatesAt(config.path) || currentCopies.has(key)) {
           await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
         }
       },
     },
     ...(options.retakeLost === true ? { retakeLost: true } : {}),
   });
-  if (v3ReplicationEnabled()) {
+  if (v3ReplicatesAt(config.path)) {
     try {
       // The lease first, then the restore: every commit the previous writer
       // acknowledged is in what this one restores (swamp-club#3482).
@@ -414,6 +526,9 @@ export async function holdV3Writer(
     markedCheckouts.set(checkout, marking);
   }
   try {
+    // A bucket datastore's local root has no _control/ of its own until
+    // this first write (swamp-club#3534).
+    await Deno.mkdir(dirname(sidecar), { recursive: true });
     await atomicWriteTextFile(
       sidecar,
       JSON.stringify({
@@ -426,7 +541,7 @@ export async function holdV3Writer(
     // Once the checkout is recovered and marked: a sidecar for this hold's
     // fence, when replication is on (swamp-club#3416).
     const fence = v3WriterFence(config.path);
-    if (fence !== undefined && v3ReplicationEnabled()) {
+    if (fence !== undefined && v3ReplicatesAt(config.path)) {
       await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
         restored: restoredCopies.has(key),
       });
@@ -486,7 +601,7 @@ export async function holdV3Writer(
  * failure persists.
  */
 async function recoverAndMark(
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   repoDir: string,
 ): Promise<void> {
   // What a writer that died left in the outbox lands first, so the
@@ -621,7 +736,7 @@ async function anotherProcessWritesCheckout(
  */
 export async function v3RepositoryFactoryConfig(
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   options: {
     /** The repo keeps its definitions in the datastore's config tier. */
     readonly managedConfig?: boolean;
@@ -649,7 +764,7 @@ export async function v3RepositoryFactoryConfig(
   // A reader's copy is made current first (swamp-club#3482), unless another
   // process writes this checkout: that writer keeps it current.
   if (
-    !writer && v3ReplicationEnabled() &&
+    !writer && v3ReplicatesAt(config.path) &&
     await anotherProcessWritesCheckout(repoDir, config.path)
   ) {
     currentCopies.add(handleKey(repoDir, config));
@@ -715,7 +830,7 @@ function writesCurrentCopy(key: string, handle: V3Datastore): boolean {
   if (stored !== undefined && (fence === undefined || stored > fence)) {
     return false;
   }
-  return !v3ReplicationEnabled() || currentCopies.has(key);
+  return !v3ReplicatesAt(handle.datastorePath) || currentCopies.has(key);
 }
 
 /**
@@ -815,6 +930,22 @@ export async function closeV3Datastores(): Promise<void> {
   for (const { key, handle, current } of dropped) {
     await recoverDroppedWork(key, handle, current);
   }
+  // Once the command's own commits were confirmed, a closing sync that
+  // fails covers only what was committed since: kept in commits.db, it
+  // replicates with the next write and does not fail the command.
+  const confirmedEarlier = commandConfirmed;
+  commandConfirmed = false;
+  const closing = synced.map((result) => {
+    if (
+      confirmedEarlier && result.status === "rejected" &&
+      result.reason instanceof V3ReplicationError
+    ) {
+      logger
+        .warn`Commits made after this command's own (retention, housekeeping) are not replicated yet; they are kept and replicate with the next write: ${result.reason.message}`;
+      return { status: "fulfilled", value: undefined } as const;
+    }
+    return result;
+  });
   currentCopies.clear();
   restoredCopies.clear();
   // Close before releasing, so no other writer starts while this process
@@ -832,7 +963,7 @@ export async function closeV3Datastores(): Promise<void> {
   keepMarkers = false;
   keptMarkers.clear();
   // A replication failure comes first: it is what the command reports.
-  const failed = [...synced, ...closed, ...unheld, ...released].find((
+  const failed = [...closing, ...closed, ...unheld, ...released].find((
     result,
   ) => result.status === "rejected");
   if (failed !== undefined && failed.status === "rejected") {
@@ -910,8 +1041,46 @@ async function syncAndPublishNow(
     datastore,
     Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
   );
-  if (first) await collectV3Lineages(copy, use.lineageFence);
+  if (first) {
+    // A bucket datastore's old lineage paths go through its provider's
+    // replica paths (swamp-club#3531, #3534).
+    const replicaPaths = v3BucketBindingAt(datastore)?.replicaPaths;
+    await collectV3Lineages(
+      copy,
+      use.lineageFence,
+      replicaPaths !== undefined ? { replicaPaths } : {},
+    );
+  }
   return mark.cursor;
+}
+
+/**
+ * Confirms that every commit this process made so far to each v3 datastore
+ * it writes is replicated and its head published, at the CLI's closing
+ * deadline (swamp-club#3534). The end-of-command retention pass calls it
+ * once the command's action has returned, so every commit the command made
+ * has landed: once it succeeded, the closing sync's failure covers only the
+ * pass's own commits, which never fail the command. A datastore whose
+ * published head already covers its commits is not synced again. Does
+ * nothing for a datastore that does not replicate.
+ *
+ * @throws V3ReplicationError when the commits were not confirmed
+ * @throws WriterFencedError when this process lost its writer lease
+ */
+export async function confirmV3CommandReplicated(): Promise<void> {
+  const handles = [...opened.values()];
+  for (const [datastore, uses] of [...replications.entries()]) {
+    const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
+    if (
+      handle !== undefined &&
+      handle.commitStore.highWaterMark().cursor <=
+        (publishedMarks.get(datastore) ?? -1)
+    ) {
+      continue;
+    }
+    await syncAndPublish(datastore, uses[0], handles, v3SyncDeadlineMs());
+  }
+  commandConfirmed = true;
 }
 
 /** Serve's group commits, by datastore (swamp-club#3489). */
@@ -932,7 +1101,7 @@ const groupCommits = new Map<string, ReplicationGroupCommit>();
 export async function confirmV3Replicated(
   datastorePath: string,
 ): Promise<void> {
-  if (!v3ReplicationEnabled()) return;
+  if (!v3ReplicatesAt(datastorePath)) return;
   const datastore = resolve(datastorePath);
   const handle = [...opened.values()].find((h) =>
     resolve(h.datastorePath) === datastore
@@ -1015,10 +1184,10 @@ export interface V3ReplicationUpkeep {
  */
 export function startV3ReplicationUpkeep(
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   options: { readonly probeIntervalMs?: number } = {},
 ): V3ReplicationUpkeep {
-  if (!v3ReplicationEnabled()) return { stop: () => Promise.resolve() };
+  if (!v3ReplicatesAt(config.path)) return { stop: () => Promise.resolve() };
   const datastorePath = config.path;
   const key = resolve(datastorePath);
   const copyKey = handleKey(repoDir, config);
@@ -1298,7 +1467,7 @@ export interface V3RetentionHistory {
  */
 export async function v3RetentionHistory(
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   now: Date,
 ): Promise<V3RetentionHistory> {
   const handle = v3DatastoreFor(repoDir, config);

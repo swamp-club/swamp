@@ -43,6 +43,8 @@ import {
 } from "../../libswamp/datastores/lock.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { v3WriterLockHandle } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
+import { v3DatastoreConfigOf } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import { lockingConfigOf } from "../../infrastructure/persistence/datastore_lock_target.ts";
 import {
   createDatastoreLockReleaseRenderer,
   createDatastoreLockStatusRenderer,
@@ -74,15 +76,20 @@ const datastoreLockStatusCommand = new Command()
     );
 
     // A v3 datastore's lock that matters across processes is its writer
-    // lock (swamp-club#3279).
-    const lock = engine === "v3" && !isCustomDatastoreConfig(config)
-      ? v3WriterLockHandle(config.path)
+    // lock (swamp-club#3279); a bucket datastore's is in its control plane,
+    // found through its local root (swamp-club#3534).
+    const v3 = engine === "v3"
+      ? await v3DatastoreConfigOf(repoDir, config)
+      : undefined;
+    const lock = v3 !== undefined
+      ? v3WriterLockHandle(v3.path)
       : await createDatastoreLock(config);
 
     // A bucket has no lock files to walk, so each model's lock is built the
-    // way acquireModelLocks builds it and inspected (swamp-club#3372).
+    // way acquireModelLocks builds it and inspected (swamp-club#3372). A v3
+    // bucket datastore's model locks are file locks under its local root.
     let customModelLocks: CustomModelLockSource | undefined;
-    if (isCustomDatastoreConfig(config)) {
+    if (isCustomDatastoreConfig(config) && v3 === undefined) {
       const provider = await resolveCustomProvider(config);
       // Under managedConfig the definitions live in the datastore; pull them
       // so a model another clone created since the last sync is listed.
@@ -103,7 +110,11 @@ const datastoreLockStatusCommand = new Command()
           provider.createLock(config.datastorePath, { lockKey }),
       };
     }
-    const deps = createDatastoreLockStatusDeps(lock, config, customModelLocks);
+    const deps = createDatastoreLockStatusDeps(
+      lock,
+      lockingConfigOf(config),
+      customModelLocks,
+    );
 
     const isFilesystem = !isCustomDatastoreConfig(config) &&
       config.type === "filesystem";
@@ -156,9 +167,13 @@ const datastoreLockReleaseCommand = new Command()
       );
     }
 
+    const repoDir = resolveRepoDir(options.repoDir);
     const { datastoreConfig: config, engine } = await resolveDatastoreForRepo(
-      resolveRepoDir(options.repoDir),
+      repoDir,
     );
+    const v3 = engine === "v3"
+      ? await v3DatastoreConfigOf(repoDir, config)
+      : undefined;
 
     const modelSpec = options.behavior as string | undefined;
 
@@ -172,8 +187,8 @@ const datastoreLockReleaseCommand = new Command()
         );
       }
       lock = await createModelLock(config, parsed.modelType, parsed.modelId);
-    } else if (engine === "v3" && !isCustomDatastoreConfig(config)) {
-      lock = v3WriterLockHandle(config.path);
+    } else if (v3 !== undefined) {
+      lock = v3WriterLockHandle(v3.path);
     } else {
       lock = await createDatastoreLock(config);
     }

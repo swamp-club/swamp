@@ -1578,6 +1578,11 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   // The engine of the datastore a .swamp.yaml block names, which setup (to
   // refuse moving off v3) and the CLI's managed lockfile transaction read.
   "src/infrastructure/persistence/datastore_format_guard.ts: datastoreBlockEngine",
+  // swamp-club#3534: whether an extension datastore syncs the v2 way.
+  "src/infrastructure/persistence/datastore_format_guard.ts: isV2CustomDatastore",
+  // swamp-club#3534: a lock asked of a v3 bucket datastore no binding has
+  // seen is refused, never taken the v2 way in its bucket.
+  "src/infrastructure/persistence/datastore_lock_target.ts: lockingConfigOf",
   // A resolver resolves records into the checkout on v3.
   "src/infrastructure/persistence/default_datastore_path_resolver.ts: DefaultDatastorePathResolver",
   // The catalog is the read model's on v3; no shared-datastore write
@@ -1589,20 +1594,22 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/cli/commands/datastore_gc.ts: datastoreGcCommand",
   "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
   "src/cli/commands/serve.ts: serveCommand",
-  // swamp-club#3473: the end-of-command retention pass compacts v3 history.
-  "src/cli/retention_teardown.ts: runRetentionAtCommandEnd",
   "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
   // `datastore namespace list`, CLI and serve: a v3 datastore has no
   // namespace manifests, so its commits.db names the namespaces
-  // (swamp-club#3301).
-  "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps",
+  // (swamp-club#3301). It also sends a v2 extension datastore to its
+  // provider and a v3 one to its commits (swamp-club#3534).
+  "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps (x2)",
   // `doctor datastores --retention` reports a v3 datastore's history
   // (swamp-club#3473).
   "src/libswamp/datastores/retention_check.ts: retentionScanSourcesFor",
   // Commands v3 refuses choose a read-only open before they open, so the
   // refusal takes no writer lease and changes nothing (swamp-club#3359):
-  // `datastore sync` and `datastore migrate-index`.
+  // `datastore sync` and `datastore migrate-index`. Their deps refuse a v3
+  // datastore on a bucket too (swamp-club#3534).
   "src/cli/repo_context.ts: peekRepoDatastoreEngine",
+  "src/libswamp/datastores/migrate_index.ts: createMigrateIndexDeps",
+  "src/libswamp/datastores/sync.ts: createDatastoreSyncDeps (x2)",
   // Run-record artifacts resolve through resolveRunArtifact on v3.
   "src/libswamp/data/run_artifact_check.ts: v3RunArtifactCheck",
   "src/libswamp/models/output_data.ts: createModelOutputDataDeps",

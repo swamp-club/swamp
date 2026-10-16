@@ -127,10 +127,16 @@ const GUARDED_PINNED = [
   "src/cli/commands/datastore_gc.ts:datastoreGcCommand",
   "src/cli/commands/datastore_status.ts:datastoreStatusCommand",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:anotherProcessWritesCheckout",
-  // swamp-club#3364: the v3 writer lease's datastore-wide store. Dormant;
-  // the Phase 4 bucket opt-in calls it with the provider of a config it has
+  // swamp-club#3364: the v3 writer lease's datastore-wide store. The bucket
+  // binding (swamp-club#3534) calls it with the provider of a config it has
   // already checked, as holdV3Writer does on filesystem.
   "src/infrastructure/datastore_v3/datastore_writer_lease_store.ts:datastoreWriterLeaseStore",
+  // swamp-club#3534, v3 on buckets: binding a bucket datastore resolves the
+  // provider of a config the format guard already opened as v3, and setup's
+  // target check builds a sync service on a scratch cache only to read two
+  // root keys (fetchContent), after setup's own format check.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreConfigOf",
+  "src/infrastructure/datastore_v3/v3_bucket_setup.ts:holdsV2RootData",
   // swamp-club#3359: holdV3Writer also opens the handle, to record its
   // writer lease's fence in commits.db. swamp-club#3482: while replicating
   // it opens it once the copy is current, raises the fence there, and

@@ -21,14 +21,14 @@ import { getLogger } from "@logtape/logtape";
 import { dirname } from "@std/path";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RetentionPolicy } from "../domain/retention/retention_policy.ts";
-import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
-import { resolverEngine } from "../domain/datastore/datastore_path_resolver.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { hourStartOf } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
 import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
 import {
   compactRetentionQuietly,
+  confirmV3CommandReplicated,
+  v3DatastoreConfigOf,
   v3DatastoreFor,
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { runRepoRetention } from "../libswamp/retention/run.ts";
@@ -119,7 +119,23 @@ export async function runRetentionAtCommandEnd(
     if (!policy.automatic || !policy.hasAnyRetention) return undefined;
     if (!(await takeLocalGate(repoDir, now))) return undefined;
 
-    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    // The command's own v3 commits are confirmed first (swamp-club#3534):
+    // a sync failing for the pass's commits afterwards never fails the
+    // command. Commits not confirmed now are the command's own, and the
+    // closing sync reports them as it always has, so the pass waits.
+    try {
+      await confirmV3CommandReplicated();
+    } catch (error) {
+      logger
+        .debug`Skipped the retention pass: this command's v3 commits are not confirmed replicated: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      return undefined;
+    }
+
+    const { datastoreConfig, engine } = await resolveDatastoreForRepo(
+      repoDir,
+    );
     const repo = await requireInitializedRepo({
       repoDir,
       outputMode: "log",
@@ -139,9 +155,11 @@ export async function runRetentionAtCommandEnd(
       ) {
         return undefined;
       }
-      const v3 = resolverEngine(repo.datastoreResolver) === "v3" &&
-          !isCustomDatastoreConfig(datastoreConfig)
-        ? v3DatastoreFor(repo.repoDir, datastoreConfig)
+      const v3 = engine === "v3"
+        ? v3DatastoreFor(
+          repo.repoDir,
+          await v3DatastoreConfigOf(repo.repoDir, datastoreConfig),
+        )
         : undefined;
       return await runRepoRetention(
         {

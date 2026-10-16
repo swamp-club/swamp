@@ -26,8 +26,10 @@
  * took over) lands nothing.
  *
  * The lease's records are files under `<datastore>/_control/writer/`,
- * created exclusively through {@link FileSystemControlPlaneStore}; see
- * `writer_lease.ts` for the scheme. Taking it also raises the store-wide
+ * created exclusively through `FileSystemControlPlaneStore`, or on a bucket
+ * datastore (swamp-club#3534) the records under `_control/writer/` in its
+ * provider's datastore-wide control plane; see `writer_lease.ts` for the
+ * scheme. Taking it also raises the store-wide
  * writer fence in `commits.db`, which refuses any commit naming a lower
  * fence, inside the commit's own transaction.
  *
@@ -61,7 +63,7 @@ import {
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_LOCK_TTL_MS, FileLock } from "../persistence/file_lock.ts";
-import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
+import { v3BucketBindingAt, v3ControlPlaneAt } from "./v3_datastore_binding.ts";
 import { isProcessDead } from "../runtime/process.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
@@ -372,21 +374,24 @@ export type V3WriterLockHandle = Pick<
  */
 export function v3WriterLockHandle(datastorePath: string): V3WriterLockHandle {
   const lease = writerLease(datastorePath, DEFAULT_LOCK_TTL_MS);
-  const legacy = legacyLock(datastorePath);
+  // A bucket datastore never had a Phase 3 writer lock.
+  const legacy = v3BucketBindingAt(datastorePath) === undefined
+    ? legacyLock(datastorePath)
+    : undefined;
   return {
     async inspect(): Promise<LockInfo | null> {
       const inspection = await lease.inspect();
       if (inspection !== null && inspection.state !== "released") {
         return lockInfoOf(inspection);
       }
-      return await legacy.inspect();
+      return await legacy?.inspect() ?? null;
     },
     async forceRelease(nonce: string): Promise<boolean> {
       const inspection = await lease.inspect();
       if (inspection !== null && inspection.state !== "released") {
         return await lease.forceRelease(nonce);
       }
-      return await legacy.forceRelease(nonce);
+      return await legacy?.forceRelease(nonce) ?? false;
     },
   };
 }
@@ -399,6 +404,9 @@ async function takeLease(
     readonly fenceStore?: V3WriterFenceStore;
   },
 ): Promise<WriterLeaseHold> {
+  // A bucket datastore is known to be v3 before its lease is written
+  // (swamp-club#3534): every lease taker comes through here.
+  await v3BucketBindingAt(datastorePath)?.confirmMarker();
   await refuseLiveV3LegacyWriter(datastorePath);
   let hold: WriterLeaseHold;
   try {
@@ -506,10 +514,7 @@ function startRenewal(
 }
 
 function writerLease(datastorePath: string, ttlMs: number): WriterLease {
-  return v3WriterLease(
-    new FileSystemControlPlaneStore(resolve(datastorePath)),
-    ttlMs,
-  );
+  return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs);
 }
 
 /**
@@ -578,6 +583,8 @@ function legacyLock(datastorePath: string): FileLock {
 export async function refuseLiveV3LegacyWriter(
   datastorePath: string,
 ): Promise<void> {
+  // v3 on a bucket postdates the lease: no Phase 3 swamp writes one.
+  if (v3BucketBindingAt(datastorePath) !== undefined) return;
   const holder = await legacyLock(datastorePath).inspect();
   if (holder === null) return;
   const fresh = Date.parse(holder.acquiredAt) + holder.ttlMs >= Date.now();

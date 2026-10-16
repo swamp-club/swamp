@@ -33,8 +33,9 @@
  *   lineage's first confirmation, its head, and the garbage collection of
  *   the lineages it replaced.
  *
- * Dormant: nothing here runs unless the internal replica setting names a
- * replica.
+ * Nothing here runs unless the datastore replicates: a v3 datastore on a
+ * bucket always does (swamp-club#3534), a filesystem one only while the
+ * internal replica setting names a replica.
  *
  * @module
  */
@@ -67,7 +68,6 @@ import {
   V3ReplicationError,
   V3ReplicationUnavailableError,
 } from "../../../domain/datastore_v3/litestream_replication.ts";
-import { FileSystemControlPlaneStore } from "../../persistence/fs_control_plane_store.ts";
 import { getSwampLogger } from "../../logging/logger.ts";
 import { readModelStateDir } from "../record_path_guard.ts";
 import { ReadModelState } from "../read_model_state.ts";
@@ -91,11 +91,12 @@ import {
   writeCopyState,
   writeLineage,
 } from "./replication_files.ts";
+import { replicaRootOf, type V3ReplicaSetting } from "./replica_setting.ts";
 import {
-  replicaRootOf,
-  type V3ReplicaSetting,
-  v3ReplicaSetting,
-} from "./replica_setting.ts";
+  v3BucketBindingAt,
+  v3ControlPlaneAt,
+  v3ReplicaFor,
+} from "../v3_datastore_binding.ts";
 import { resolveV3LitestreamBinary, v3Replicator } from "./v3_replication.ts";
 import type { V3ReplicaPaths } from "./replica_target_resolver.ts";
 
@@ -122,11 +123,13 @@ export interface V3Copy {
   readonly commitsDb: string;
 }
 
-/** The registry of the datastore's published lineages. */
+/**
+ * The registry of the datastore's published lineages, in its datastore-wide
+ * control plane: the filesystem datastore's own `_control/`, or a bucket
+ * datastore's provider's (swamp-club#3534).
+ */
 export function lineageRegistryFor(datastorePath: string): LineageRegistry {
-  return new LineageRegistry(
-    new FileSystemControlPlaneStore(resolve(datastorePath)),
-  );
+  return new LineageRegistry(v3ControlPlaneAt(datastorePath));
 }
 
 /** The paths beside the copy, created and trusted only when this user's. */
@@ -193,8 +196,11 @@ export async function makeV3CopyCurrent(
     readonly lockWaitMs: number;
   },
 ): Promise<V3CopyRefresh> {
-  const replica = v3ReplicaSetting();
+  const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return {};
+  // Before the copy's first read of the bucket: the datastore is known to
+  // be v3 (swamp-club#3534).
+  await v3BucketBindingAt(copy.datastorePath)?.confirmMarker();
   const root = replicaRootOf(replica);
   const paths = await copyPaths(copy);
   const registry = lineageRegistryFor(copy.datastorePath);
@@ -205,7 +211,9 @@ export async function makeV3CopyCurrent(
     root,
   );
   if (first.kind === "none") {
-    return options.mode === "write"
+    // A bucket datastore has no shared commits.db to seed from.
+    return options.mode === "write" &&
+        v3BucketBindingAt(copy.datastorePath) === undefined
       ? await seedFromSharedDatabase(copy, paths, registry, options)
       : {};
   }
@@ -258,6 +266,13 @@ export async function makeV3CopyCurrent(
       : async (temp: string) => {
         if (!await installByLink(temp, target)) await intoExisting(temp);
       };
+    // The first-clone cost, visible (swamp-club#3534): a restore downloads
+    // the whole lineage before the command runs.
+    logger
+      .info`Restoring this checkout's copy of the v3 datastore at ${copy.datastorePath} from replication lineage ${
+      padFence(decision.lineage.fence)
+    }`;
+    const restoreStarted = Date.now();
     let restored: V3RestoreResult;
     try {
       restored = await restoreV3Copy({
@@ -291,10 +306,11 @@ export async function makeV3CopyCurrent(
       lineageFence: decision.lineage.fence,
       txid: decision.lineage.head.txid,
     });
+    const restoreMs = Date.now() - restoreStarted;
     logger
       .info`Restored this checkout's copy of the v3 datastore at ${copy.datastorePath} from replication lineage ${
       padFence(decision.lineage.fence)
-    } (${decision.kind})`;
+    } (${decision.kind}) in ${restoreMs} ms`;
     return {
       restored: {
         ...restored,
@@ -573,7 +589,7 @@ export async function prepareV3WriterLineage(
   fence: number,
   options: { readonly restored: boolean },
 ): Promise<void> {
-  const replica = v3ReplicaSetting();
+  const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return;
   const root = replicaRootOf(replica);
   try {
@@ -661,7 +677,7 @@ export async function recordV3LeaseFence(
   copy: V3Copy,
   fence: number,
 ): Promise<void> {
-  const replica = v3ReplicaSetting();
+  const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return;
   const root = replicaRootOf(replica);
   try {
@@ -699,7 +715,7 @@ export async function publishV3Head(
     readonly mark: HighWaterMark;
   },
 ): Promise<boolean> {
-  const replica = v3ReplicaSetting();
+  const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return false;
   const root = replicaRootOf(replica);
   const at = new Date().toISOString();
@@ -749,7 +765,7 @@ export async function publishV3Head(
  * @throws V3ChunkCollectionDeferredError when collection must wait
  */
 export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
-  const replica = v3ReplicaSetting();
+  const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return;
   const root = replicaRootOf(replica);
   const paths = await copyPaths(copy);
@@ -798,7 +814,7 @@ export async function collectV3Lineages(
   current: number,
   options: { readonly replicaPaths?: V3ReplicaPaths } = {},
 ): Promise<void> {
-  const replica = v3ReplicaSetting();
+  const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return;
   const root = replicaRootOf(replica);
   // A store bound to another root would remove paths this registry never

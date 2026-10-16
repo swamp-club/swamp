@@ -216,20 +216,21 @@ Deno.test("v3 opt-in: setup refuses a non-empty path, a symlinked path and a rep
   });
 });
 
-Deno.test("v3 opt-in: format 3 is refused for S3, GCS and extension datastores", () => {
+Deno.test("v3 opt-in: format 3 is read for S3, GCS and extension datastores, whose providers are checked where they are built (swamp-club#3534)", () => {
   for (const type of ["s3", "@swamp/s3-datastore", "@swamp/gcs-datastore"]) {
-    const error = (() => {
-      try {
-        readDatastoreFormatKey(type, 3);
-      } catch (error) {
-        return error;
-      }
-    })();
-    assertInstanceOf(error, UserError);
-    assertStringIncludes(error.message, "not supported yet");
+    assertEquals(readDatastoreFormatKey(type, 3), 3);
     assertEquals(readDatastoreFormatKey(type, 2), undefined);
   }
   assertEquals(readDatastoreFormatKey("filesystem", 3), 3);
+  const error = (() => {
+    try {
+      readDatastoreFormatKey("@swamp/s3-datastore", 4);
+    } catch (error) {
+      return error;
+    }
+  })();
+  assertInstanceOf(error, UserError);
+  assertStringIncludes(error.message, "must be 2 or 3");
 });
 
 Deno.test("v3 opt-in: a crash before the marker leaves no v3 files", async () => {

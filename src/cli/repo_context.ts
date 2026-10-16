@@ -143,7 +143,6 @@ import {
 import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
-  type FilesystemDatastoreConfig,
   isCustomDatastoreConfig,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
@@ -227,10 +226,15 @@ import { withSpan } from "../infrastructure/tracing/mod.ts";
 import {
   datastoreEngineOf,
   ensureSupportedDatastoreFormat,
+  isV2CustomDatastore,
 } from "../infrastructure/persistence/datastore_format_guard.ts";
+import { lockingConfigOf } from "../infrastructure/persistence/datastore_lock_target.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import {
   holdV3Writer,
+  v3BucketNamespacedStoreAt,
+  type V3DatastoreConfig,
+  v3DatastoreConfigOf,
   v3RepositoryFactoryConfig,
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
@@ -941,6 +945,11 @@ export async function requireInitializedRepoReadOnly(
     await resolveDatastoreForRepo(
       options.repoDir,
     );
+  // A v3 datastore's location: the filesystem datastore, or a bucket
+  // datastore's local root (swamp-club#3534).
+  const v3 = engine === "v3"
+    ? await v3DatastoreConfigOf(repoDir, datastoreConfig)
+    : undefined;
 
   const repoPath = RepoPath.create(repoDir);
 
@@ -964,8 +973,9 @@ export async function requireInitializedRepoReadOnly(
     >
     | undefined;
 
-  // Verify datastore is accessible
-  if (isCustomDatastoreConfig(datastoreConfig)) {
+  // Verify datastore is accessible. A v3 bucket datastore syncs nothing
+  // (swamp-club#3534).
+  if (isCustomDatastoreConfig(datastoreConfig) && v3 === undefined) {
     // Ensure cache/datastore dir exists — no health check or lock on read-only path
     if (datastoreConfig.cachePath) {
       await ensureDir(datastoreConfig.cachePath);
@@ -989,7 +999,10 @@ export async function requireInitializedRepoReadOnly(
         );
       }
     }
-  } else if (datastoreConfig.type === "filesystem") {
+  } else if (
+    !isCustomDatastoreConfig(datastoreConfig) &&
+    datastoreConfig.type === "filesystem"
+  ) {
     try {
       const stat = await Deno.stat(datastoreConfig.path);
       if (!stat.isDirectory) {
@@ -1072,8 +1085,8 @@ export async function requireInitializedRepoReadOnly(
   // Create repository context with the validated directory and datastore resolver
   // A v3 datastore's context commits through the commit log and reads the
   // read model's catalog (swamp-club#3279).
-  const v3Factory = engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)
-    ? await v3RepositoryFactoryConfig(repoPath.value, datastoreConfig, {
+  const v3Factory = v3 !== undefined
+    ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
       managedConfig: marker?.datastore?.managedConfig === true,
       readOnly: true,
     })
@@ -1097,31 +1110,35 @@ export async function requireInitializedRepoReadOnly(
     hydrateFile: hydrateFileHook,
     fetchForeignContent: buildForeignContentFetcher(readOnlySyncService),
     autoGc: marker?.autoGc === true,
-    filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
+    filterStaleRows: !isCustomDatastoreConfig(datastoreConfig) ||
+      v3 !== undefined,
     ...v3Factory,
     ...factoryConfig,
   });
 
   // A read shows what a wait record says of a step, such as the receipt of
   // a signal no resume has applied yet (swamp-club#3110). Only a filesystem
-  // datastore's records are read here: a custom datastore's store pulls its
-  // namespace when it opens, and this path neither syncs nor holds the lock.
-  // The store is given without the save hook `attachSignalWaits` installs,
-  // so the context writes no wait record.
-  if (!isCustomDatastoreConfig(datastoreConfig)) {
-    repoContext.signalWaits = resolveSignalWaitSupport(datastoreConfig);
+  // or v3 datastore's records are read here: a v2 custom datastore's store
+  // pulls its namespace when it opens, and this path neither syncs nor holds
+  // the lock. The store is given without the save hook `attachSignalWaits`
+  // installs, so the context writes no wait record.
+  if (!isCustomDatastoreConfig(datastoreConfig) || v3 !== undefined) {
+    repoContext.signalWaits = resolveSignalWaitSupport(
+      datastoreConfig,
+      undefined,
+      { v3 },
+    );
     repoContext.retentionWatermarks = resolveRetentionWatermarks(
       datastoreConfig,
+      undefined,
+      { v3 },
     );
   }
 
-  if (
-    engine === "v3" && !isCustomDatastoreConfig(datastoreConfig) &&
-    managedActive
-  ) {
+  if (v3 !== undefined && managedActive) {
     await warnUnadoptedManagedConfig(
       repoPath.value,
-      datastoreConfig,
+      v3,
       configBase,
       marker,
     );
@@ -1151,7 +1168,7 @@ export async function requireInitializedRepoReadOnly(
 async function adoptManagedConfigOnV3(
   repoContext: RepositoryContext,
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   configBase: string,
   marker: RepoMarkerData | null,
 ): Promise<void> {
@@ -1195,7 +1212,7 @@ async function adoptManagedConfigOnV3(
  */
 async function warnUnadoptedManagedConfig(
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   configBase: string,
   marker: RepoMarkerData | null,
 ): Promise<void> {
@@ -1255,9 +1272,13 @@ export function requireInitializedRepo(
     // (swamp-club#3473).
     noteRetentionCandidate(repoDir);
     // A v3 datastore takes one writing process at a time; join this
-    // process's hold before any other lock (swamp-club#3279).
-    if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
-      await holdV3Writer(datastoreConfig, repoDir);
+    // process's hold before any other lock (swamp-club#3279). A bucket
+    // datastore's is at its local root (swamp-club#3534).
+    const v3 = engine === "v3"
+      ? await v3DatastoreConfigOf(repoDir, datastoreConfig)
+      : undefined;
+    if (v3 !== undefined) {
+      await holdV3Writer(v3, repoDir);
     }
 
     const repoPath = RepoPath.create(repoDir);
@@ -1284,27 +1305,30 @@ export function requireInitializedRepo(
       >
       | undefined;
 
-    // Verify datastore is accessible
-    if (isCustomDatastoreConfig(datastoreConfig)) {
-      const provider = await resolveCustomProvider(datastoreConfig);
+    // Verify datastore is accessible. A v3 bucket datastore syncs nothing:
+    // it locks and commits as a filesystem v3 datastore does, at its local
+    // root (swamp-club#3534).
+    const lockConfig = lockingConfigOf(datastoreConfig);
+    if (isCustomDatastoreConfig(lockConfig)) {
+      const provider = await resolveCustomProvider(lockConfig);
       const lock = provider.createLock(
-        datastoreConfig.datastorePath,
+        lockConfig.datastorePath,
         {
-          ...datastoreGlobalLockOptions(datastoreConfig),
+          ...datastoreGlobalLockOptions(lockConfig),
           maxWaitMs: resolveLockTimeoutMs(options.lockWaitMs),
         },
       );
 
       // If the custom provider supports sync, register sync service too
-      syncService = datastoreConfig.cachePath
+      syncService = lockConfig.cachePath
         ? provider.createSyncService?.(
           repoPath.value,
-          datastoreConfig.cachePath,
+          lockConfig.cachePath,
         )
         : undefined;
 
-      if (datastoreConfig.cachePath) {
-        await ensureDir(datastoreConfig.cachePath);
+      if (lockConfig.cachePath) {
+        await ensureDir(lockConfig.cachePath);
       }
 
       // See `RequireRepoOptions.skipImplicitSync` JSDoc. When set, the
@@ -1318,25 +1342,25 @@ export function requireInitializedRepo(
       await registerDatastoreSync({
         service: registerService,
         lock,
-        label: datastoreConfig.type,
-        syncTimeoutMs: resolveSyncTimeoutMs(datastoreConfig),
-        metadataOnly: datastoreConfig.hydrationStrategy === "lazy",
-        namespace: datastoreConfig.namespace,
+        label: lockConfig.type,
+        syncTimeoutMs: resolveSyncTimeoutMs(lockConfig),
+        metadataOnly: lockConfig.hydrationStrategy === "lazy",
+        namespace: lockConfig.namespace,
         slowLockScope: { scope: { kind: "global" }, shareable: true },
       });
       // Invalidate catalog after pull so next query backfills from fresh data
       if (registerService) {
         needsCatalogInvalidation = true;
       }
-    } else if (datastoreConfig.type === "filesystem") {
+    } else if (lockConfig.type === "filesystem") {
       try {
-        const stat = await Deno.stat(datastoreConfig.path);
+        const stat = await Deno.stat(lockConfig.path);
         if (!stat.isDirectory) {
           throw markErrorPaths(
             new UserError(
-              `Datastore path is not a directory: ${datastoreConfig.path}`,
+              `Datastore path is not a directory: ${lockConfig.path}`,
             ),
-            [datastoreConfig.path],
+            [lockConfig.path],
           );
         }
       } catch (error) {
@@ -1347,11 +1371,11 @@ export function requireInitializedRepo(
         } else {
           throw markErrorPaths(
             new UserError(
-              `Cannot access datastore at ${datastoreConfig.path}: ${
+              `Cannot access datastore at ${lockConfig.path}: ${
                 error instanceof Error ? error.message : String(error)
               }`,
             ),
-            [datastoreConfig.path, ...errorPaths(error)],
+            [lockConfig.path, ...errorPaths(error)],
           );
         }
       }
@@ -1363,8 +1387,8 @@ export function requireInitializedRepo(
       // lock and passed its TOCTOU recheck (acquireModelLocks, this file)
       // is committed to writing data; we must let it finish.
       await waitForPerModelLocks(
-        datastoreConfig.path,
-        datastoreConfig.namespace,
+        lockConfig.path,
+        lockConfig.namespace,
         { maxWaitMs: options.lockWaitMs },
       );
 
@@ -1374,18 +1398,18 @@ export function requireInitializedRepo(
       // ending and this acquisition, so its in-flight write would still
       // race our structural work.
       const lock = new FileLock(
-        datastoreConfig.path,
+        lockConfig.path,
         {
-          ...datastoreGlobalLockOptions(datastoreConfig),
+          ...datastoreGlobalLockOptions(lockConfig),
           maxWaitMs: resolveLockTimeoutMs(options.lockWaitMs),
         },
       );
       await registerDatastoreSync({
         lock,
-        namespace: datastoreConfig.namespace,
+        namespace: lockConfig.namespace,
         slowLockScope: {
           scope: { kind: "global" },
-          shareable: isShareableDatastore(datastoreConfig, repoPath.value),
+          shareable: isShareableDatastore(lockConfig, repoPath.value),
         },
       });
 
@@ -1402,15 +1426,15 @@ export function requireInitializedRepo(
       // ends, so a holder taking one back from a hop that has ended waits
       // for this command instead of writing under it.
       await waitForPerModelLocks(
-        datastoreConfig.path,
-        datastoreConfig.namespace,
+        lockConfig.path,
+        lockConfig.namespace,
         {
           publishSkipping: (lockIds) => lock.publishSkipping(lockIds),
           maxWaitMs: options.lockWaitMs,
         },
       );
 
-      if (datastoreConfig.namespace) {
+      if (lockConfig.namespace) {
         needsCatalogInvalidation = true;
       }
     }
@@ -1440,12 +1464,11 @@ export function requireInitializedRepo(
     // Create repository context with the validated directory and datastore resolver
     // A v3 datastore's context commits through the commit log and reads the
     // read model's catalog (swamp-club#3279).
-    const v3Factory =
-      engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)
-        ? await v3RepositoryFactoryConfig(repoPath.value, datastoreConfig, {
-          managedConfig: marker?.datastore?.managedConfig === true,
-        })
-        : {};
+    const v3Factory = v3 !== undefined
+      ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
+        managedConfig: marker?.datastore?.managedConfig === true,
+      })
+      : {};
     const repoContext = createRepositoryContext({
       repoDir: repoPath.value,
       workflowsDir,
@@ -1481,7 +1504,8 @@ export function requireInitializedRepo(
       fetchForeignContent: buildForeignContentFetcher(syncService),
       namespace: datastoreConfig.namespace,
       autoGc: marker?.autoGc === true,
-      filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
+      filterStaleRows: !isCustomDatastoreConfig(datastoreConfig) ||
+        v3 !== undefined,
       ...v3Factory,
       ...factoryConfig,
     });
@@ -1489,11 +1513,13 @@ export function requireInitializedRepo(
       repoContext,
       resolveSignalWaitSupport(datastoreConfig, syncService, {
         runsInDatastore: runsLiveInDatastore(datastoreResolver),
+        v3,
       }),
     );
     repoContext.retentionWatermarks = resolveRetentionWatermarks(
       datastoreConfig,
       syncService,
+      { v3 },
     );
     repoContext.continuationClaims = resolveContinuationClaims(
       datastoreConfig,
@@ -1507,14 +1533,11 @@ export function requireInitializedRepo(
       repoContext.catalogStore.invalidate();
     }
 
-    if (
-      engine === "v3" && !isCustomDatastoreConfig(datastoreConfig) &&
-      managedActive
-    ) {
+    if (v3 !== undefined && managedActive) {
       await adoptManagedConfigOnV3(
         repoContext,
         repoPath.value,
-        datastoreConfig,
+        v3,
         configBase,
         marker,
       );
@@ -1570,9 +1593,13 @@ export async function requireInitializedRepoUnlocked(
   // (swamp-club#3473).
   noteRetentionCandidate(repoDir);
   // A v3 datastore takes one writing process at a time; join this process's
-  // hold before any model lock (swamp-club#3279).
-  if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
-    await holdV3Writer(datastoreConfig, repoDir, {
+  // hold before any model lock (swamp-club#3279). A bucket datastore's is
+  // at its local root (swamp-club#3534).
+  const v3 = engine === "v3"
+    ? await v3DatastoreConfigOf(repoDir, datastoreConfig)
+    : undefined;
+  if (v3 !== undefined) {
+    await holdV3Writer(v3, repoDir, {
       ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
     });
   }
@@ -1591,8 +1618,9 @@ export async function requireInitializedRepoUnlocked(
 
   let syncService: DatastoreSyncService | undefined;
 
-  // Verify datastore is accessible (same checks as requireInitializedRepo)
-  if (isCustomDatastoreConfig(datastoreConfig)) {
+  // Verify datastore is accessible (same checks as requireInitializedRepo).
+  // A v3 bucket datastore syncs nothing (swamp-club#3534).
+  if (isCustomDatastoreConfig(datastoreConfig) && v3 === undefined) {
     if (datastoreConfig.cachePath) {
       await ensureDir(datastoreConfig.cachePath);
       const provider = await resolveCustomProvider(datastoreConfig);
@@ -1601,7 +1629,10 @@ export async function requireInitializedRepoUnlocked(
         datastoreConfig.cachePath,
       );
     }
-  } else if (datastoreConfig.type === "filesystem") {
+  } else if (
+    !isCustomDatastoreConfig(datastoreConfig) &&
+    datastoreConfig.type === "filesystem"
+  ) {
     try {
       const stat = await Deno.stat(datastoreConfig.path);
       if (!stat.isDirectory) {
@@ -1655,8 +1686,8 @@ export async function requireInitializedRepoUnlocked(
   // Create repository context with the validated directory and datastore resolver
   // A v3 datastore's context commits through the commit log and reads the
   // read model's catalog (swamp-club#3279).
-  const v3Factory = engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)
-    ? await v3RepositoryFactoryConfig(repoPath.value, datastoreConfig, {
+  const v3Factory = v3 !== undefined
+    ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
       managedConfig: marker?.datastore?.managedConfig === true,
     })
     : {};
@@ -1695,7 +1726,8 @@ export async function requireInitializedRepoUnlocked(
     fetchForeignContent: buildForeignContentFetcher(syncService),
     namespace: datastoreConfig.namespace,
     autoGc: marker?.autoGc === true,
-    filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
+    filterStaleRows: !isCustomDatastoreConfig(datastoreConfig) ||
+      v3 !== undefined,
     ...v3Factory,
     ...factoryConfig,
   });
@@ -1703,11 +1735,13 @@ export async function requireInitializedRepoUnlocked(
     repoContext,
     resolveSignalWaitSupport(datastoreConfig, syncService, {
       runsInDatastore: runsLiveInDatastore(datastoreResolver),
+      v3,
     }),
   );
   repoContext.retentionWatermarks = resolveRetentionWatermarks(
     datastoreConfig,
     syncService,
+    { v3 },
   );
   repoContext.continuationClaims = resolveContinuationClaims(
     datastoreConfig,
@@ -1715,14 +1749,11 @@ export async function requireInitializedRepoUnlocked(
     syncService,
   );
 
-  if (
-    engine === "v3" && !isCustomDatastoreConfig(datastoreConfig) &&
-    managedActive
-  ) {
+  if (v3 !== undefined && managedActive) {
     await adoptManagedConfigOnV3(
       repoContext,
       repoPath.value,
-      datastoreConfig,
+      v3,
       configBase,
       marker,
     );
@@ -1767,10 +1798,12 @@ export const MODEL_LOCK_MAX_BACKOFF_MS = 250;
  * Lock key: `data/{modelType}/{modelId}/.lock`
  */
 export async function createModelLock(
-  config: DatastoreConfig,
+  datastoreConfig: DatastoreConfig,
   modelType: string,
   modelId: string,
 ): Promise<DistributedLock> {
+  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
+  const config = lockingConfigOf(datastoreConfig);
   const lockKey = modelLockKey(config.namespace, modelType, modelId);
   const maxWaitMs = resolveLockTimeoutMs();
   if (isCustomDatastoreConfig(config)) {
@@ -1793,13 +1826,15 @@ export async function createModelLock(
  * restores the run's sensitive values under it, which can read a vault.
  */
 export async function createWorkflowRunLock(
-  config: DatastoreConfig,
+  datastoreConfig: DatastoreConfig,
   runId: string,
 ): Promise<DistributedLock> {
   // The id becomes part of the lock's path. A run id is always a UUID.
   if (!isUuid(runId)) {
     throw new UserError(`Not a workflow run id: ${runId}`);
   }
+  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
+  const config = lockingConfigOf(datastoreConfig);
   const lockKey = workflowRunLockKey(config.namespace, runId);
   const maxWaitMs = resolveLockTimeoutMs();
   if (isCustomDatastoreConfig(config)) {
@@ -1859,8 +1894,24 @@ export function resolveSignalWaitSupport(
      * run record.
      */
     runsInDatastore?: boolean;
+    /**
+     * The datastore's v3 location, when it is a v3 one: a bucket
+     * datastore's wait records live in its datastore-wide control plane,
+     * under its namespace's reserved prefix (swamp-club#3534).
+     */
+    v3?: V3DatastoreConfig;
   },
 ): SignalWaitSupport {
+  const bucket = options?.v3 === undefined
+    ? undefined
+    : v3BucketNamespacedStoreAt(options.v3);
+  if (bucket !== undefined) {
+    return {
+      supported: true,
+      localRunAbsenceIsAuthoritative: options?.runsInDatastore === true,
+      store: new ControlPlaneSignalWaitStore(bucket),
+    };
+  }
   if (!isCustomDatastoreConfig(config)) {
     return {
       supported: true,
@@ -1986,7 +2037,9 @@ export function resolveContinuationClaims(
   repoDir: string,
   syncService?: DatastoreSyncService,
 ): ContinuationClaims | undefined {
-  if (!isCustomDatastoreConfig(config)) {
+  // A v3 bucket datastore keeps them under the repository as a filesystem
+  // one does: serve's heartbeats are there too (swamp-club#3534).
+  if (!isCustomDatastoreConfig(config) || !isV2CustomDatastore(config)) {
     return continuationClaimsOver(
       new FileSystemControlPlaneStore(swampPath(repoDir)),
       localHolder(),
@@ -2044,8 +2097,22 @@ export function runsLiveInDatastore(resolver: DatastorePathResolver): boolean {
 export function resolveRetentionWatermarks(
   config: DatastoreConfig,
   syncService?: DatastoreSyncService,
-  options?: { namespaceBound?: boolean },
+  options?: {
+    namespaceBound?: boolean;
+    /**
+     * The datastore's v3 location, when it is a v3 one: a bucket
+     * datastore's watermarks live in its datastore-wide control plane,
+     * under its namespace's reserved prefix (swamp-club#3534).
+     */
+    v3?: V3DatastoreConfig;
+  },
 ): RetentionWatermarkRepository | undefined {
+  const bucket = options?.v3 === undefined
+    ? undefined
+    : v3BucketNamespacedStoreAt(options.v3);
+  if (bucket !== undefined) {
+    return new ControlPlaneRetentionWatermarkRepository(bucket);
+  }
   if (!isCustomDatastoreConfig(config)) {
     return new ControlPlaneRetentionWatermarkRepository(
       new FileSystemControlPlaneStore(
@@ -3013,7 +3080,8 @@ export async function acquireModelLocks(
   // For custom datastores, resolve the provider once and reuse it everywhere
   let customProvider: DatastoreProvider | undefined;
   let customSyncService = syncService;
-  if (isCustomDatastoreConfig(config)) {
+  // A v3 bucket datastore takes file locks and syncs nothing (swamp-club#3534).
+  if (isCustomDatastoreConfig(config) && isV2CustomDatastore(config)) {
     customProvider = await resolveCustomProvider(config);
     if (!customSyncService && config.cachePath) {
       customSyncService = customProvider.createSyncService?.(

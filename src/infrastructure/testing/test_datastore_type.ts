@@ -65,19 +65,33 @@ export interface TestDatastoreTypeOptions {
   datastoreWideLease?: boolean;
   /** Passed to `remote.connect`, e.g. to leave out `fetchContent`. */
   connect?: Omit<ConnectOptions, "instance">;
+  /**
+   * The provider's `listNamespaces`, which a v3 setup needs to tell the
+   * bucket holds no v2 namespace (swamp-club#3534). Absent by default.
+   */
+  listNamespaces?: () => Promise<string[]>;
 }
 
 /**
  * Registers a per-run `@test/remote-<uuid>` datastore type whose sync
  * service is `remote.connect(cachePath)`. The cache lives at
  * `<repoDir>/.test-cache`. Point a repo at it with
- * {@link configureTestDatastore}. When `remote` has a
- * `datastoreControlPlaneStore`, the provider offers it too.
+ * {@link configureTestDatastore}. Each of `datastoreControlPlaneStore`,
+ * `storage`, `replicaTarget` and `replicaPaths` the remote has, the
+ * provider offers too (swamp-club#3534).
  */
 export function registerTestDatastoreType(
   remote:
     & Pick<InMemoryRemote, "connect">
-    & Partial<Pick<InMemoryRemote, "datastoreControlPlaneStore">>,
+    & Partial<
+      Pick<
+        InMemoryRemote,
+        | "datastoreControlPlaneStore"
+        | "storage"
+        | "replicaTarget"
+        | "replicaPaths"
+      >
+    >,
   options: TestDatastoreTypeOptions = {},
 ): TestDatastoreType {
   const released = (): void => options.onLockRelease?.();
@@ -130,6 +144,18 @@ export function registerTestDatastoreType(
         ? {
           datastoreControlPlaneStore: () =>
             remote.datastoreControlPlaneStore!(),
+        }
+        : {}),
+      ...(remote.storage ? { storage: () => remote.storage!() } : {}),
+      ...(remote.replicaTarget
+        ? { replicaTarget: () => remote.replicaTarget!() }
+        : {}),
+      ...(remote.replicaPaths
+        ? { replicaPaths: () => remote.replicaPaths!() }
+        : {}),
+      ...(options.listNamespaces
+        ? {
+          listNamespaces: (_datastorePath: string) => options.listNamespaces!(),
         }
         : {}),
     }),

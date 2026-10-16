@@ -30,6 +30,7 @@ import type {
   LockOptions,
 } from "../../domain/datastore/distributed_lock.ts";
 import { UserError } from "../../domain/errors.ts";
+import { lockingConfigOf } from "./datastore_lock_target.ts";
 import { FileLock } from "./file_lock.ts";
 
 // The datastore global lock, shared by the CLI and `swamp serve`.
@@ -86,8 +87,10 @@ export function datastoreGlobalLockOptions(
  * transactions, in the CLI and in `swamp serve` (swamp-club#2838).
  */
 export async function createDatastoreLock(
-  config: DatastoreConfig,
+  datastoreConfig: DatastoreConfig,
 ): Promise<DistributedLock> {
+  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
+  const config = lockingConfigOf(datastoreConfig);
   const maxWaitMs = resolveLockTimeoutMs();
   const options = datastoreGlobalLockOptions(config);
   const merged = { ...options, maxWaitMs };

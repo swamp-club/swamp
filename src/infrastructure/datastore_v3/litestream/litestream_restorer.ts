@@ -45,6 +45,10 @@
  * @module
  */
 
+import {
+  litestreamChildEnv,
+  type LitestreamReplicaType,
+} from "./sidecar_env.ts";
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join } from "@std/path";
 import { markErrorPaths, UserError } from "../../../domain/errors.ts";
@@ -141,10 +145,14 @@ export async function restoreV3Copy(
       { mode: 0o600 },
     );
     let exactTxid = true;
-    const exact = await runRestore(request.binary, config, temp, signal, [
-      "-txid",
-      request.head.txid,
-    ]);
+    const exact = await runRestore(
+      request.binary,
+      config,
+      temp,
+      signal,
+      ["-txid", request.head.txid],
+      request.replica.type,
+    );
     if (exact.kind === "unavailable") {
       exactTxid = false;
       await removeDatabase(temp);
@@ -154,6 +162,7 @@ export async function restoreV3Copy(
         temp,
         signal,
         [],
+        request.replica.type,
       );
       if (latest.kind !== "ok") {
         throw new V3RestoreError(
@@ -248,6 +257,7 @@ async function runRestore(
   temp: string,
   signal: AbortSignal,
   extra: readonly string[],
+  replicaType: LitestreamReplicaType,
 ): Promise<RestoreOutcome> {
   const result = await new Deno.Command(binary, {
     args: [
@@ -264,6 +274,9 @@ async function runRestore(
     stdout: "null",
     stderr: "piped",
     signal,
+    // Only what its replica needs (swamp-club#3534).
+    env: litestreamChildEnv(replicaType, Deno.env.toObject()),
+    clearEnv: true,
   }).output();
   if (result.success) return { kind: "ok" };
   // Killed at the deadline: the caller reports the deadline.

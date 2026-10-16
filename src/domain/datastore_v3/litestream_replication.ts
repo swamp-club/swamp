@@ -47,11 +47,16 @@ export const V3_CHUNK_COLLECTION_DEFERRED_CODE =
  * later collection runs once only the current lineage is restorable.
  */
 export class V3ChunkCollectionDeferredError extends UserError {
-  constructor(datastorePath: string, reason: string) {
+  constructor(
+    datastorePath: string,
+    reason: string,
+    /** When collection runs instead; the lineage rule's by default. */
+    until: string =
+      "once the current replication lineage is the only one that can be restored",
+  ) {
     super(
       `Chunks of the v3 datastore at ${datastorePath} are not collected ` +
-        `yet: ${reason}. Nothing was deleted; collection runs once the ` +
-        `current replication lineage is the only one that can be restored.`,
+        `yet: ${reason}. Nothing was deleted; collection runs ${until}.`,
       V3_CHUNK_COLLECTION_DEFERRED_CODE,
     );
     this.name = "V3ChunkCollectionDeferredError";

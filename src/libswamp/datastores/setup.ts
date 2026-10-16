@@ -74,6 +74,11 @@ import {
   initializeV3Datastore,
   isFreshV3Skeleton,
 } from "../../infrastructure/datastore_v3/v3_datastore.ts";
+import { assertV3BucketHost } from "../../infrastructure/datastore_v3/v3_datastore_binding.ts";
+import {
+  initializeV3BucketDatastore,
+  inspectV3BucketTarget,
+} from "../../infrastructure/datastore_v3/v3_bucket_setup.ts";
 import {
   getSwampDataDir,
   swampPath,
@@ -205,6 +210,12 @@ export interface DatastoreSetupFilesystemInput {
   format?: 2 | 3;
 }
 
+/** What a bucket holds, for a v3 setup (swamp-club#3534). */
+export type V3BucketTarget =
+  | { readonly kind: "new" }
+  | { readonly kind: "resumable" }
+  | { readonly kind: "refused"; readonly reason: string };
+
 /** What a filesystem datastore path holds, for a v3 setup. */
 export type V3TargetState =
   | { readonly kind: "absent" }
@@ -323,6 +334,31 @@ export interface DatastoreSetupDeps {
    * a marker.
    */
   createV3Datastore: (path: string) => Promise<void>;
+  /**
+   * Refuses an extension datastore that cannot host v3 here
+   * (swamp-club#3534): a provider without every v3 capability (naming the
+   * minimum extension version), a platform Litestream cannot replicate on,
+   * or a replica target the provider refuses.
+   */
+  assertV3BucketHost: (provider: DatastoreProvider, type: string) => void;
+  /**
+   * Whether a v3 datastore may be created on the bucket `provider` names:
+   * new, holding only a format-3 marker (a setup to resume), or refused.
+   */
+  inspectV3BucketTarget: (
+    provider: DatastoreProvider,
+    type: string,
+    repoDir: string,
+    namespace: string | undefined,
+  ) => Promise<V3BucketTarget>;
+  /**
+   * Creates a v3 datastore on the bucket `provider` names: writes its format
+   * marker through the datastore-wide control plane, only if none is there.
+   */
+  createV3BucketDatastore: (
+    provider: DatastoreProvider,
+    type: string,
+  ) => Promise<void>;
   /**
    * The datastore the repo uses now (swamp-club#3279): its engine, since
    * setup refuses to move a repo off a v3 datastore, and its namespace,
@@ -751,6 +787,124 @@ async function* setupV3Filesystem(
   };
 }
 
+/**
+ * Sets up a v3 datastore on a bucket (swamp-club#3534). Refuses, writing
+ * nothing, a datastore that cannot host v3 here, a bucket prefix that is
+ * not new and empty, and a repository that holds records, as a v3
+ * filesystem setup does. Then writes the format marker, which a setup that
+ * stopped after it resumes, and records `format: 3`. Nothing is migrated,
+ * pushed or pulled, and no v2 namespace manifest is registered: the
+ * datastore starts empty, and its first writer starts its lineage.
+ */
+async function* setupV3Extension(
+  ctx: LibSwampContext,
+  deps: DatastoreSetupDeps,
+  input: DatastoreSetupExtensionInput,
+  provider: DatastoreProvider,
+): AsyncIterable<DatastoreSetupEvent> {
+  const refuse = (message: string): DatastoreSetupEvent => ({
+    kind: "error",
+    error: { code: "validation_failed", message },
+  });
+
+  try {
+    deps.assertV3BucketHost(provider, input.type);
+  } catch (err) {
+    if (!(err instanceof UserError)) throw err;
+    yield {
+      kind: "error",
+      error: {
+        code: err.code ?? "validation_failed",
+        message: err.message,
+        cause: err,
+      },
+    };
+    return;
+  }
+
+  const target = await deps.inspectV3BucketTarget(
+    provider,
+    input.type,
+    input.repoDir,
+    input.namespace,
+  );
+  if (target.kind === "refused") {
+    yield refuse(
+      `A v3 datastore needs a new, empty bucket prefix, but ${target.reason}. ` +
+        "Migrating an existing datastore to v3 is not supported yet. " +
+        "Nothing was changed.",
+    );
+    return;
+  }
+
+  // Records the repo uses now would be left behind, as on a v3 filesystem
+  // setup: the checkout's own .swamp is where the v3 datastore materialises
+  // records, so it is always checked.
+  const subdirs = deps.getDatastoreDirectories({ type: "filesystem" })
+    .filter((subdir) =>
+      !(REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(subdir)
+    );
+  const dirs = [
+    swampPath(input.repoDir),
+    ...(input.namespace ? [swampPath(input.repoDir, input.namespace)] : []),
+    ...(!input.skipMigration && input.outgoingDatastorePath
+      ? [input.outgoingDatastorePath]
+      : []),
+    ...(!input.skipMigration && input.outgoingCachePath
+      ? [
+        input.namespace
+          ? join(input.outgoingCachePath, input.namespace)
+          : input.outgoingCachePath,
+      ]
+      : []),
+  ];
+  for (const dir of dirs) {
+    if (await deps.hasDatastoreRecords(dir, subdirs, CATALOG_FILES)) {
+      yield refuse(
+        `${dir} holds records. A v3 datastore starts empty, and migrating ` +
+          "existing records to v3 is not supported yet. Set up v3 in a " +
+          "repository with no data.",
+      );
+      return;
+    }
+  }
+
+  if (target.kind === "resumable") {
+    ctx.logger
+      .info`Resuming the v3 setup of this ${input.type} datastore: it holds only its format marker`;
+  }
+  try {
+    await deps.createV3BucketDatastore(provider, input.type);
+  } catch (err) {
+    yield formatRefusal(err);
+    return;
+  }
+  await deps.updateRepoConfig(input.repoDir, {
+    type: input.type,
+    config: input.config,
+    // A namespace set before setup is the datastore's namespace: setup owns
+    // the key, so leaving it out would drop it.
+    ...(input.namespace ? { namespace: input.namespace } : {}),
+    format: 3,
+  });
+  // The v2 catalog indexes the old datastore; the v3 one is the read model's.
+  await deps.invalidateCatalog(input.repoDir);
+
+  yield {
+    kind: "completed",
+    data: {
+      type: input.type,
+      format: 3,
+      filesCopied: 0,
+      filesPulled: 0,
+      bytesCopied: 0,
+      directoriesMigrated: [],
+      errors: [],
+      ...(input.namespace ? { namespace: input.namespace } : {}),
+    },
+  };
+}
+
 /** Input for extension datastore setup. */
 export interface DatastoreSetupExtensionInput {
   type: string;
@@ -769,6 +923,18 @@ export interface DatastoreSetupExtensionInput {
   syncTimeoutMsOverride?: number;
   /** See {@link DatastoreSetupFilesystemInput.outgoingDatastorePath}. */
   outgoingDatastorePath?: string;
+  /**
+   * The current extension datastore's local cache, which a v3 setup checks
+   * for records, as it checks the checkout (swamp-club#3534).
+   */
+  outgoingCachePath?: string;
+  /**
+   * The format to create the datastore in: 2 (the default) or 3, the v3
+   * commit log replicated through Litestream (swamp-club#3534). Format 3
+   * needs a provider that can host it, a new and empty bucket prefix and a
+   * repository with no records.
+   */
+  format?: 2 | 3;
 }
 
 /** Sets up an extension-provided datastore. */
@@ -838,16 +1004,34 @@ export async function* datastoreSetupExtension(
       const cachePath = provider.resolveCachePath?.(input.repoDir) ??
         join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
 
+      let targetEngine: DatastoreEngine | void;
       try {
-        await deps.assertDatastoreFormat(input.repoDir, {
+        targetEngine = await deps.assertDatastoreFormat(input.repoDir, {
           type: input.type,
           config: input.config,
           datastorePath: provider.resolveDatastorePath(input.repoDir),
           cachePath,
           ...(input.namespace ? { namespace: input.namespace } : {}),
+          // Not persisted yet: its marker says what it is (swamp-club#3534).
+          override: true,
         }, provider);
       } catch (err) {
         yield formatRefusal(err);
+        return;
+      }
+      // A bucket that is already a v3 datastore takes no v2 setup: v2's
+      // sync would write v2 files beside it (swamp-club#3534).
+      if (targetEngine === "v3" && input.format !== 3) {
+        yield {
+          kind: "error",
+          error: {
+            code: "validation_failed",
+            message: `This ${input.type} datastore is a v3 datastore. Set ` +
+              "it up with `swamp datastore setup extension " +
+              `${input.type} --config '...' --format 3\` (a v3 datastore ` +
+              "takes a repository with no records). Nothing was changed.",
+          },
+        };
         return;
       }
 
@@ -951,6 +1135,11 @@ export async function* datastoreSetupExtension(
           };
           return;
         }
+      }
+
+      if (input.format === 3) {
+        yield* setupV3Extension(ctx, deps, input, provider);
+        return;
       }
 
       let migrationResult:
@@ -1829,6 +2018,17 @@ export function createDatastoreSetupDeps(
     currentDatastore,
     createV3Datastore: (path) =>
       initializeV3Datastore(path, options.swampVersion ?? "unknown"),
+    assertV3BucketHost: (provider, type) => {
+      assertV3BucketHost(provider, type);
+    },
+    inspectV3BucketTarget: (provider, type, repoDir, namespace) =>
+      inspectV3BucketTarget(provider, type, repoDir, namespace),
+    createV3BucketDatastore: (provider, type) =>
+      initializeV3BucketDatastore(
+        provider,
+        type,
+        options.swampVersion ?? "unknown",
+      ),
     assertDatastoreFormat: (repoDir, config, provider) =>
       ensureSupportedDatastoreFormat(
         repoDir,

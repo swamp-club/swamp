@@ -257,7 +257,7 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
 
 - The path must be new or an empty directory, and the repo must hold no data
   yet: existing data is not migrated to v3.
-- Filesystem only: `--format 3` on S3, GCS or extension datastores is refused.
+- For v3 on S3 or GCS, see "Setting Up a v3 Datastore on S3 or GCS" below.
 - One writing process at a time. A write command fails while another process
   (e.g. `swamp serve`) writes the datastore; run it through serve instead.
 - `swamp datastore gc --json` deletes content chunks no commit names; on a v2
@@ -267,6 +267,27 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
   outputs it wrote. After a hard kill, a crash or a second Ctrl+C, the next
   command in that checkout removes the run's uncommitted files and logs a
   warning; there is nothing to clean up by hand.
+
+### Setting Up a v3 Datastore on S3 or GCS
+
+`--format 3` on `datastore setup extension` creates a v3 datastore on a bucket.
+Each checkout keeps its own copy of the commit log, which Litestream replicates
+to the bucket; one machine writes at a time.
+
+```bash
+swamp extension pull @swamp/s3-datastore   # the latest release first
+swamp datastore setup extension @swamp/s3-datastore --format 3 \
+  --config '{"bucket":"my-bucket","prefix":"swamp","region":"us-east-1"}' --json
+```
+
+- Needs `@swamp/s3-datastore` or `@swamp/gcs-datastore` 2026.10.16.5 or later;
+  an older extension is refused with the version to pull.
+- The bucket prefix must be new and empty (no v2 data, namespaces, chunks or
+  control-plane records), and the repo must hold no data yet.
+- Not on Windows yet, and not through `--server`.
+- Another machine joins by cloning the repo with its `.swamp.yaml`: its first
+  command restores the commit log from the bucket.
+- `swamp datastore sync` is refused: v3 replicates as it commits.
 
 ### Setting Up an Extension Datastore (e.g., S3)
 

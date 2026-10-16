@@ -69,6 +69,11 @@ export interface ReadDatastoreFormatMarkerOptions {
   readonly timeoutMs?: number;
   /** Overrides {@link DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS} (tests). */
   readonly fallbackTimeoutMs?: number;
+  /**
+   * Overrides the format guard's uncapped second read
+   * (`DATASTORE_FORMAT_UNCAPPED_READ_TIMEOUT_MS`, tests).
+   */
+  readonly uncappedTimeoutMs?: number;
   /** Overrides provider resolution (tests). */
   readonly resolveProvider?: (
     config: CustomDatastoreConfig,

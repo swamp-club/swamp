@@ -30,7 +30,10 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import { listNamespaceManifests } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { datastoreEngineOf } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import { listV3Namespaces } from "../../infrastructure/datastore_v3/v3_datastore.ts";
-import { ensureV3CopyCurrent } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  ensureV3CopyCurrent,
+  v3DatastoreConfigOf,
+} from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 export interface NamespaceInfo {
   namespace: string;
@@ -74,7 +77,7 @@ export async function createNamespaceListDeps(
     registeredAt: "",
   });
 
-  if (isCustomDatastoreConfig(config)) {
+  if (isCustomDatastoreConfig(config) && datastoreEngineOf(config) !== "v3") {
     await datastoreTypeRegistry.ensureLoaded();
     await datastoreTypeRegistry.ensureTypeLoaded(config.type);
     const provider: DatastoreProvider | undefined = datastoreTypeRegistry
@@ -97,10 +100,13 @@ export async function createNamespaceListDeps(
     return {
       getCurrentNamespace: () => config.namespace,
       listNamespaces: async () => {
+        // A bucket datastore's commits are in its local root's copy
+        // (swamp-club#3534).
+        const v3 = await v3DatastoreConfigOf(repoDir, config);
         // While replicating, the checkout's copy is brought up to date
         // first, as every other read does (swamp-club#3491).
-        await ensureV3CopyCurrent(repoDir, config, "read");
-        const namespaces = listV3Namespaces(config.path, repoDir);
+        await ensureV3CopyCurrent(repoDir, v3, "read");
+        const namespaces = listV3Namespaces(v3.path, repoDir);
         if (config.namespace && !namespaces.includes(config.namespace)) {
           namespaces.push(config.namespace);
           namespaces.sort();
@@ -110,9 +116,13 @@ export async function createNamespaceListDeps(
     };
   }
 
+  // A v2 filesystem datastore: every extension datastore returned above.
+  const path = isCustomDatastoreConfig(config)
+    ? config.datastorePath
+    : config.path;
   return {
     getCurrentNamespace: () => config.namespace,
-    listNamespaces: () => listNamespaceManifests(config.path),
+    listNamespaces: () => listNamespaceManifests(path),
   };
 }
 

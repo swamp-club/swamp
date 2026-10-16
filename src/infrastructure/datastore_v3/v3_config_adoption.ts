@@ -47,7 +47,6 @@
 import { ensureDir } from "@std/fs";
 import { dirname, extname, join, relative, SEPARATOR } from "@std/path";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
-import type { FilesystemDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { copyPulledExtensions } from "../../domain/datastore/managed_config_migration.ts";
 import {
   type DefinitionKind,
@@ -70,7 +69,7 @@ import { assertContainedPath } from "../persistence/safe_path.ts";
 import type { RepositoryContext } from "../persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../persistence/repo_unit_of_work.ts";
 import { stageTyped } from "../persistence/unit_of_work_scope.ts";
-import { v3DatastoreFor } from "./v3_repo_context.ts";
+import { type V3DatastoreConfig, v3DatastoreFor } from "./v3_repo_context.ts";
 
 /** Where each kind of config lives, in the repo and in the config tier. */
 const ADOPTED_TREES: readonly {
@@ -383,7 +382,7 @@ export async function stageConfigAdoption(
  */
 export async function planV3ConfigAdoption(
   repoDir: string,
-  config: FilesystemDatastoreConfig,
+  config: V3DatastoreConfig,
   configBase: string,
   options: Pick<
     PlanConfigAdoptionOptions,
@@ -423,7 +422,7 @@ export interface AdoptV3ConfigOptions {
   /** The v3 context to commit through. */
   readonly repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">;
   readonly repoDir: string;
-  readonly config: FilesystemDatastoreConfig;
+  readonly config: V3DatastoreConfig;
   /** The checkout's managed config base, `.swamp[/<namespace>]/config`. */
   readonly configBase: string;
   /** See {@link PlanConfigAdoptionOptions.lockfileSource}. */

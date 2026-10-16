@@ -122,7 +122,17 @@ export const datastoreCatalogPullCommand = new Command()
       );
     }
 
-    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
+
+    // A v3 checkout reads every namespace from its commit log
+    // (swamp-club#3534).
+    if (isCustomDatastoreConfig(datastoreConfig) && engine === "v3") {
+      throw new UserError(
+        "Catalog pull is only for format 2 datastores. This is a format 3 " +
+          "(v3) datastore, whose checkouts read their data from its commit " +
+          "log, so there is no catalog to pull.",
+      );
+    }
 
     if (!isCustomDatastoreConfig(datastoreConfig)) {
       throw new UserError(

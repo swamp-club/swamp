@@ -56,6 +56,7 @@ import {
   UnsupportedDatastoreFormatError,
 } from "../../domain/datastore/datastore_format.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { UserError } from "../../domain/errors.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -89,6 +90,9 @@ function makeDeps(
     inspectV3Target: () => Promise.resolve({ kind: "absent" }),
     hasDatastoreRecords: () => Promise.resolve(false),
     createV3Datastore: () => Promise.resolve(),
+    assertV3BucketHost: () => {},
+    inspectV3BucketTarget: () => Promise.resolve({ kind: "new" }),
+    createV3BucketDatastore: () => Promise.resolve(),
     currentDatastore: () => Promise.resolve({ engine: "v2" }),
     ...overrides,
   };
@@ -4414,4 +4418,186 @@ Deno.test("datastoreSetupExtension: setup after namespace set refuses while .swa
     assertEquals(await pathExists(remoteDir), false);
     assertEquals((await readDatastoreBlock(repoDir))?.type, "filesystem");
   });
+});
+
+/** The calls a v3 extension setup makes into its deps, in order. */
+function recordingV3Deps(overrides: Partial<DatastoreSetupDeps> = {}) {
+  const calls: string[] = [];
+  const configs: Record<string, unknown>[] = [];
+  const deps = makeDeps({
+    migrateData: () => {
+      calls.push("migrateData");
+      return Promise.resolve({
+        filesCopied: 0,
+        bytesCopied: 0,
+        directoriesMigrated: [],
+        errors: [],
+      });
+    },
+    assertV3BucketHost: () => {
+      calls.push("assertV3BucketHost");
+    },
+    inspectV3BucketTarget: () => {
+      calls.push("inspectV3BucketTarget");
+      return Promise.resolve({ kind: "new" });
+    },
+    hasDatastoreRecords: (dir) => {
+      calls.push(`hasDatastoreRecords ${dir}`);
+      return Promise.resolve(false);
+    },
+    createV3BucketDatastore: () => {
+      calls.push("createV3BucketDatastore");
+      return Promise.resolve();
+    },
+    updateRepoConfig: (_repoDir, config) => {
+      calls.push("updateRepoConfig");
+      configs.push(config);
+      return Promise.resolve();
+    },
+    invalidateCatalog: () => {
+      calls.push("invalidateCatalog");
+      return Promise.resolve();
+    },
+    ...overrides,
+  });
+  return { deps, calls, configs };
+}
+
+Deno.test("datastoreSetupExtension: --format 3 checks the host, the bucket and the repo, writes the marker, and records format 3 without syncing (swamp-club#3534)", async () => {
+  ensureTestExtensionType("test-ext-v3-setup");
+  const { deps, calls, configs } = recordingV3Deps();
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({
+        type: "test-ext-v3-setup",
+        format: 3,
+        namespace: "team-a",
+        outgoingCachePath: "/tmp/cache",
+      }),
+    ),
+  );
+  assertEquals(events.map((e) => e.kind), ["validating", "completed"]);
+  const completed = events[1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.format, 3);
+  assertEquals(completed.data.namespace, "team-a");
+  assertEquals(calls.slice(0, 2), [
+    "assertV3BucketHost",
+    "inspectV3BucketTarget",
+  ]);
+  assertEquals(calls.slice(-3), [
+    "createV3BucketDatastore",
+    "updateRepoConfig",
+    "invalidateCatalog",
+  ]);
+  assertEquals(calls.includes("migrateData"), false);
+  // The checkout, its namespace and the outgoing cache are each checked.
+  assertEquals(
+    calls.filter((call) => call.startsWith("hasDatastoreRecords")).length,
+    3,
+  );
+  assertEquals(configs, [{
+    type: "test-ext-v3-setup",
+    config: { bucket: "my-bucket" },
+    namespace: "team-a",
+    format: 3,
+  }]);
+});
+
+Deno.test("datastoreSetupExtension: --format 3 refusals write nothing (swamp-club#3534)", async () => {
+  ensureTestExtensionType("test-ext-v3-refuse");
+  const cases: Array<
+    [string, Partial<DatastoreSetupDeps>, string]
+  > = [
+    [
+      "host",
+      {
+        assertV3BucketHost: () => {
+          throw new UserError("not available on Windows yet");
+        },
+      },
+      "not available on Windows yet",
+    ],
+    [
+      "target",
+      {
+        inspectV3BucketTarget: () =>
+          Promise.resolve({ kind: "refused", reason: "it holds v2 data" }),
+      },
+      "it holds v2 data",
+    ],
+    [
+      "records",
+      { hasDatastoreRecords: () => Promise.resolve(true) },
+      "holds records",
+    ],
+  ];
+  for (const [name, overrides, message] of cases) {
+    const { deps, calls } = recordingV3Deps(overrides);
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        deps,
+        makeExtensionInput({ type: "test-ext-v3-refuse", format: 3 }),
+      ),
+    );
+    const error = events.at(-1);
+    assertEquals(error?.kind, "error", name);
+    if (error?.kind === "error") {
+      assertStringIncludes(error.error.message, message, name);
+    }
+    for (const write of ["createV3BucketDatastore", "updateRepoConfig"]) {
+      assertEquals(calls.includes(write), false, `${name} called ${write}`);
+    }
+  }
+});
+
+Deno.test("datastoreSetupExtension: a resumable bucket completes, and a v3 bucket is refused a v2 setup (swamp-club#3534)", async () => {
+  ensureTestExtensionType("test-ext-v3-resume");
+  const { deps, calls } = recordingV3Deps({
+    inspectV3BucketTarget: () => Promise.resolve({ kind: "resumable" }),
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-v3-resume", format: 3 }),
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  assert(calls.includes("createV3BucketDatastore"));
+
+  const v2 = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      makeDeps({ assertDatastoreFormat: () => Promise.resolve("v3") }),
+      makeExtensionInput({ type: "test-ext-v3-resume" }),
+    ),
+  );
+  const error = v2.at(-1);
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertStringIncludes(error.error.message, "is a v3 datastore");
+    assertStringIncludes(error.error.message, "--format 3");
+  }
+});
+
+Deno.test("datastoreSetupExtension: a repo already on v3 is refused before any bucket check (swamp-club#3534)", async () => {
+  ensureTestExtensionType("test-ext-v3-move-off");
+  const { deps, calls } = recordingV3Deps({
+    currentDatastore: () => Promise.resolve({ engine: "v3" }),
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-v3-move-off", format: 3 }),
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(calls, []);
 });

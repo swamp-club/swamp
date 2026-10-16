@@ -632,6 +632,12 @@ at 1 GB. p50.
 > through the provider's `replicaTarget()`, ready for 4E to replace the
 > internal setting. See
 > [Phase 4: the replica target](#phase-4-the-replica-target-swamp-club3507).
+>
+> **Live (swamp-club#3534, Phase 4E):** D1, D2 and D3 run for every v3
+> datastore on S3 or GCS, which replicates to its provider's own target:
+> setup, the binding, the narrowed Litestream environment and the retention
+> rule are in `datastores.md`, **v3 on S3 and GCS**. A filesystem v3
+> datastore still replicates only behind the internal setting.
 
 
 - **4D: an idle sidecar for solo mode,** behind a pidfile and a short socket
@@ -714,10 +720,11 @@ Before Phase 4E ships, on a test account and never on production data:
 
 ### Phase 4D1: the idle sidecar (swamp-club#3416)
 
-Built and dormant. Nothing replicates unless the internal, undocumented
-`SWAMP_V3_REPLICA` variable names a file or S3 replica, which only tests set;
-Phase 4E replaces it with the datastore's own bucket. On a filesystem-v3
-datastore with it unset, a write command starts nothing and creates nothing.
+Live on S3 and GCS since Phase 4E (swamp-club#3534): a v3 datastore there
+replicates to its provider's own target. On a filesystem-v3 datastore nothing
+replicates unless the internal, undocumented `SWAMP_V3_REPLICA` variable
+names a file or S3 replica, which only tests set, and which wins on a bucket
+too; with it unset, a write command starts nothing there and creates nothing.
 
 **What runs.** A write command's `holdV3Writer` acquires the sidecar once the
 checkout's recovery has run. The sidecar is a supervisor, a detached swamp
@@ -774,12 +781,16 @@ deadline is 60 s.
 
 > **Decision:** in D1 the sync runs at teardown, after the command has printed
 > its result, so `--json` stdout can hold a success document while stderr holds
-> the error and the exit code is 75. Phase 4E moves the confirmation before the
-> command's output, once users can turn replication on. The rethrow also ends
-> the CLI's teardown before its auth-gate refresh and telemetry; 4E finishes the
-> teardown and then rethrows. The supervisor also inherits the launching
-> command's whole environment for its lifetime; 4E narrows it to what
-> Litestream needs (its credentials, `PATH`, `HOME`).
+> the error and the exit code is 75. Phase 4E meant to move the confirmation
+> before the command's output. It kept it at teardown (swamp-club#3534): a
+> command renders inside its root unit of work, and a v3 root commits when it
+> ends, so a check before the output would run before the command's own
+> commits landed. Moving it needs each command to render after its root ends.
+> The rethrow already finishes the teardown: the CLI's error path runs the
+> auth-gate refresh and records the failure in telemetry before it exits. The
+> supervisor keeps the launching command's environment, which it needs to
+> find the binary; since 4E, Litestream itself runs with only what its replica
+> needs (`litestreamChildEnv`, [the replica target](#phase-4-the-replica-target-swamp-club3507)).
 
 **Lineage.** A listener on the writer lease (`onV3LeaseTaken`) records every
 fence this process takes in `lineage.json`, including serve's retake and a
@@ -826,8 +837,9 @@ runs only with `SWAMP_TEST_LITESTREAM_S3_ENDPOINT`.
 
 ### Phase 4D2: restore, refresh and takeover (swamp-club#3482)
 
-Built and dormant, behind the same internal `SWAMP_V3_REPLICA` setting as
-D1. With it unset nothing changes: the datastore's own `commits.db`, and
+Live on S3 and GCS since Phase 4E (swamp-club#3534). On a filesystem
+datastore it stays behind the same internal `SWAMP_V3_REPLICA` setting as D1;
+with it unset nothing changes there: the datastore's own `commits.db`, and
 nothing written under `_control/lineage/`.
 
 **A copy per checkout.** While replicating, each checkout keeps its own
@@ -1064,7 +1076,9 @@ trips, half Phase 4A's modelled 32 for a cold restore with credentials. The
 64 KB chunk (about 6 MB/s), not by Litestream; the real-bucket check before
 4E measures bandwidth. **The first-clone budget:** a fresh machine pays one
 check and one full restore before its first command; afterwards a command
-whose copy is current pays only the check.
+whose copy is current pays only the check. Since 4E the restore logs a line
+naming the lineage before it starts and one with its time after, so the cost
+is visible; the restore deadline is 30 minutes (about 4.5 s per GB).
 
 **Tests.** `integration/datastore_v3_litestream_restore_test.ts` runs real
 Litestream with a file replica, each "machine" a worker with its own module
@@ -1081,7 +1095,7 @@ or three writers with crashes at every step, zombies, late heads and
 recovery holds, checking that the restore keeps every acknowledged commit and
 nothing unacknowledged but a failed writer's published head.
 
-**Known limits, dormant.**
+**Known limits.**
 
 - A fenced writer can publish heads on its old lineage until the new
   writer's lineage is confirmed, so the new writer's next refresh can
@@ -1116,8 +1130,9 @@ replication:
 
 ## Phase 4D3: serve confirms each write request (swamp-club#3489)
 
-Dormant like D1 and D2. With replication off, serve sets no confirmation, and
-no request waits.
+Live on S3 and GCS since Phase 4E, behind the internal setting on a
+filesystem datastore, like D1 and D2. With replication off, serve sets no
+confirmation, and no request waits.
 
 **The gap.** D2 restores to the published head's high-water mark. Serve
 answered write requests before their commits were replicated, and published a
@@ -1245,9 +1260,10 @@ its round trips, which Phase 4A modelled at 24–283 ms.
 
 ## Phase 4: the replica target (swamp-club#3507)
 
-Built and dormant. Phase 4E replicates to the datastore's own bucket. Only
-the extension knows how its config maps to a bucket location, so the provider
-says where, and core never parses a provider's config.
+Live since Phase 4E (swamp-club#3534): a v3 datastore on a bucket replicates
+to its own bucket. Only the extension knows how its config maps to a bucket
+location, so the provider says where, and core never parses a provider's
+config.
 
 **The descriptor.** A provider's optional `replicaTarget()` returns a
 `V3ReplicaTarget` (`src/domain/datastore/replica_target.ts`):
@@ -1275,8 +1291,8 @@ resolver says so. A provider whose datastore Litestream cannot reach throws
 from `replicaTarget()` rather than return a target that silently replicates
 somewhere else. GCS with a custom `apiEndpoint` is the known case. Extensions
 cannot throw core's `UserError`, so the resolver turns whatever they throw
-into one that names the datastore. Phase 4E refuses `--format 3` setup on
-these messages.
+into one that names the datastore. Setup refuses `--format 3` on these
+messages, as they are (`assertV3BucketHost`).
 
 **Resolution.** `resolveV3ReplicaSetting`
 (`src/infrastructure/datastore_v3/litestream/replica_target_resolver.ts`)
@@ -1289,30 +1305,38 @@ endpoint is set, as before, so every existing setting renders byte for byte
 the same. Addressing style is not part of `replicaRootOf`, and the `file` and
 `s3` roots are unchanged, so recorded lineages continue.
 
-**Dormant.** Nothing in production calls the resolver: the sidecar still
-takes its replica from `v3ReplicaSetting()` alone. `datastore_v3_rules_test`
-pins `replicaTarget()` calls to the resolver and the resolver's production
-users to none, until 4E switches the source.
+**Wired (swamp-club#3534).** The v3 binding (`v3_datastore_binding.ts`) is
+the resolver's one production user: a bucket datastore's replica is
+`resolveV3ReplicaSetting` over its provider, and its local root is keyed by
+`resolveV3ProviderReplica`, the provider's own target whatever the internal
+setting says. `datastore_v3_rules_test` pins `replicaTarget()` calls to the
+resolver and the resolver's production users to the binding.
 
 **Credentials and the sidecar's environment.** Both first-party extensions
 resolve credentials from the default chains, and Litestream resolves them
 the same way: the AWS SDK chain (environment, shared config and SSO,
 container or instance identity) and Google ADC. A provider whose credentials
-come from anywhere else cannot be replicated. When 4E narrows the
-environment Litestream's supervisor inherits (D1 passes the whole
-environment), it keeps:
+come from anywhere else cannot be replicated. Since 4E, Litestream itself
+runs with only what its replica needs (`litestreamChildEnv`, applied with
+`clearEnv` by the supervisor, which learns the replica's kind from
+`--replica-type`, and by the restorer). The swamp supervisor keeps the
+launching command's environment, which it needs to resolve the binary. A
+file replica keeps `HOME` and `PATH`; a bucket replica keeps:
 
 | Replica | Inherited                                                                                                                                                |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | S3      | `AWS_*`, `HOME` (for `~/.aws`), `PATH`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (and lowercase), `SSL_CERT_FILE`, `SSL_CERT_DIR`                         |
-| GCS     | `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_*`, `HOME`, `PATH`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (and lowercase), `SSL_CERT_FILE`, `SSL_CERT_DIR` |
+| GCS     | `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_*`, `STORAGE_EMULATOR_HOST`, `HOME`, `PATH`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` (and lowercase), `SSL_CERT_FILE`, `SSL_CERT_DIR` |
 
 The proxy variables keep a proxied network's route, and the CA bundles keep
 trust in a self-hosted store with an internal CA or a corporate TLS proxy.
 S3-compatible stores need them most.
 
-`STORAGE_EMULATOR_HOST` is the only way Litestream reaches a GCS emulator. It
-is for tests and is not on the list.
+A GCS replica also keeps `STORAGE_EMULATOR_HOST`: it is the only way
+Litestream reaches a GCS emulator, and the GCS extension refuses an
+`apiEndpoint` it does not name, so without it Litestream would replicate to
+real GCS while `storage()` writes to the emulator. On Windows the variables a
+child process needs to start are kept too, and names match case-insensitively.
 
 **Checked against the pinned binary.** Configs rendered from resolved
 targets, one-off and on emulators (ministack, and fake-gcs-server 1.56.1
@@ -1339,7 +1363,7 @@ endpoint regardless. Real buckets remain the
 
 ## Phase 4: replica paths (swamp-club#3531)
 
-Built and dormant. `storage/1` is chunk-keyed
+Wired since Phase 4E (swamp-club#3534). `storage/1` is chunk-keyed
 (`<prefix>/_blobs/<namespace>/sha256/…`) and cannot list or delete
 Litestream's objects under `<prefix>/_litestream/<fence>/`. Without a way to
 remove them, every takeover on a bucket would leave a full snapshot behind,
@@ -1386,10 +1410,10 @@ root, so a replica set elsewhere, such as the internal setting tests use,
 never has paths removed from the provider's bucket that its registry never
 recorded.
 
-**Dormant.** Nothing in production calls the resolver, and the
-production call of `collectV3Lineages` passes no store, until 4E switches the
-replica source. `datastore_v3_rules_test` pins `replicaPaths()` calls to the
-resolver.
+**Wired (swamp-club#3534).** A bucket datastore's binding resolves its
+replica paths, and `syncAndPublishNow` passes them to `collectV3Lineages` on
+a lineage's first confirmation. `datastore_v3_rules_test` pins
+`replicaPaths()` calls to the resolver.
 
 ## Upgrades
 
@@ -1528,12 +1552,12 @@ macOS.
   - Read-only commands don't start a sidecar.
   - restore, refresh and takeover from the published lineage, a
     checkout-local `commits.db` while replicating, and garbage collection of
-    replaced lineages on a file replica (built, dormant: swamp-club#3482);
+    replaced lineages on a file replica (swamp-club#3482);
   - garbage collection of replaced lineage paths on S3 and GCS through the
-    provider's `replicaPaths()` (built, dormant: swamp-club#3531); 4E passes
-    it to lineage collection;
-  - 4E: the lineage records move with the lease to the bucket's
-    datastore-wide control plane (swamp-club#3364).
+    provider's `replicaPaths()` (swamp-club#3531), which 4E passes to lineage
+    collection (swamp-club#3534);
+  - the lineage records live with the lease in the bucket's datastore-wide
+    control plane (swamp-club#3364, wired by swamp-club#3534).
 - **Phase 5 (serve leader):**
   - a replica path per fence, not a generation;
   - the leader checks its fence before acknowledging outbox entries;

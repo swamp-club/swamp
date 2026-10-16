@@ -105,7 +105,14 @@ import {
   litestreamStateDirName,
   replicationDirName,
 } from "./litestream/replication_files.ts";
-import { v3ReplicaSetting } from "./litestream/replica_setting.ts";
+import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
+import {
+  V3_LOCAL_COPIES_DIR,
+  v3BucketBindingAt,
+  v3ReplicaFor,
+} from "./v3_datastore_binding.ts";
+
+export { V3_LOCAL_COPIES_DIR };
 
 /**
  * Thrown when a read-only command stages a change on a v3 datastore
@@ -139,25 +146,23 @@ export function v3OutboxPath(commitsDbPath: string): string {
 const logger = getSwampLogger(["datastore", "v3"]);
 
 /**
- * The checkout directory that holds its own copies of replicated v3
- * datastores' `commits.db` (swamp-club#3482), one subdirectory per
- * datastore.
- */
-export const V3_LOCAL_COPIES_DIR = "_datastore_v3_copies";
-
-/**
  * The `commits.db` the checkout at `repoDir` uses for the v3 datastore at
  * `datastorePath`. Without replication, the datastore's own, shared by
  * every checkout. While the internal replica setting names a replica
  * (swamp-club#3482), the checkout's own copy under `.swamp/`, keyed by the
  * datastore's canonical path: each copy is restored from the replica and
- * its writer replicates it, as each machine's copy is on a bucket.
+ * its writer replicates it, as each machine's copy is on a bucket. A v3
+ * datastore on a bucket (swamp-club#3534) has only copies: its local root
+ * is the copy's directory.
  */
 export function v3CommitsDbPath(
   datastorePath: string,
   repoDir: string,
 ): string {
-  if (v3ReplicaSetting() === undefined) {
+  if (v3BucketBindingAt(datastorePath) !== undefined) {
+    return join(resolve(datastorePath), COMMITS_DB_FILE);
+  }
+  if (v3ReplicaFor(datastorePath) === undefined) {
     return v3SharedCommitsDbPath(datastorePath);
   }
   const key = createHash("sha256").update(canonicalPath(datastorePath))
@@ -294,7 +299,11 @@ export interface V3Datastore {
   readonly commitStore: SqliteCommitStore;
   /** The commit outbox beside the commit store (swamp-club#3490). */
   readonly outbox: SqliteCommitOutbox;
-  readonly storage: FileSystemStorage;
+  /**
+   * The chunk storage: the datastore's own `_blobs/` on a filesystem, the
+   * provider's `storage()` on a bucket (swamp-club#3534).
+   */
+  readonly storage: DatastoreStorage;
   readonly chunkStore: ChunkStore;
   readonly readModel: SqliteReadModel;
   /** The checkout's v3 catalog, shared by the read model and the repositories. */
@@ -447,7 +456,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   ensureDirSync(dirname(commitsDbPath));
   const commitStore = SqliteCommitStore.open(commitsDbPath);
   const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath));
-  const storage = new FileSystemStorage(datastorePath);
+  const bucket = v3BucketBindingAt(datastorePath);
+  // A filesystem datastore's storage also sweeps its stale temp files; a
+  // provider's storage has none to sweep.
+  const fsStorage = bucket === undefined
+    ? new FileSystemStorage(datastorePath)
+    : undefined;
+  const storage: DatastoreStorage = bucket?.storage ?? fsStorage!;
   const chunkStore = new ChunkStore(storage);
   const stateDir = readModelStateDir(repoDir);
   ensureDirSync(stateDir);
@@ -655,7 +670,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           },
         },
         storage,
-        tempFiles: storage,
+        ...(fsStorage !== undefined ? { tempFiles: fsStorage } : {}),
         sweep: {
           begin: () => outbox.beginSweep(sweeper, Date.now()),
           heartbeat: () => outbox.heartbeatSweep(sweeper, Date.now()),
@@ -834,7 +849,7 @@ export async function initializeV3Datastore(
   }
   // While replicating, each checkout keeps its own copy (swamp-club#3482):
   // the datastore holds no commits.db.
-  if (v3ReplicaSetting() === undefined) {
+  if (v3ReplicaFor(datastorePath) === undefined) {
     const store = SqliteCommitStore.open(
       join(datastorePath, COMMITS_DB_FILE),
     );

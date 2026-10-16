@@ -21,7 +21,9 @@
  * Replication for a v3 datastore's writer (swamp-club#3416, Phase 4 D1): the
  * one place the writer path reaches the Litestream sidecar.
  *
- * Dormant: every function here does nothing unless the internal replica
+ * Every function here does nothing unless the datastore replicates
+ * (`v3ReplicatesAt`): a v3 datastore on a bucket always does
+ * (swamp-club#3534), a filesystem one only while the internal replica
  * setting (`replica_setting.ts`) names a replica.
  *
  * @module
@@ -38,7 +40,7 @@ import {
   type ReplicationHandle,
   type ReplicatorDeps,
 } from "./litestream_replicator.ts";
-import { v3ReplicaSetting } from "./replica_setting.ts";
+import { v3ReplicaFor } from "../v3_datastore_binding.ts";
 
 export type { ReplicationHandle } from "./litestream_replicator.ts";
 
@@ -132,11 +134,6 @@ function theReplicator(): LitestreamReplicator {
   return replicator;
 }
 
-/** Whether replication is on: only when the internal replica setting names one. */
-export function v3ReplicationEnabled(): boolean {
-  return v3ReplicaSetting() !== undefined;
-}
-
 /**
  * Holds the sidecar for this process's writer of the copy `commitsDb` of
  * the datastore at `datastorePath`, at lease `fence`, or resolves with
@@ -150,7 +147,7 @@ export async function acquireV3Replication(
   datastorePath: string,
   fence: number,
 ): Promise<ReplicationHandle | undefined> {
-  const replica = v3ReplicaSetting();
+  const replica = v3ReplicaFor(datastorePath);
   if (replica === undefined) return undefined;
   return await theReplicator().acquire({
     commitsDb,
