@@ -97,6 +97,7 @@ import {
   type GlobalOptions,
   hasExplicitRepoDir,
   isStdinTty,
+  rebaseOntoRepoDir,
 } from "./context.ts";
 import { registerCompletionTypes } from "./completion_types.ts";
 import { isTransientError } from "../infrastructure/persistence/io_errors.ts";
@@ -529,7 +530,9 @@ export async function configureStartupExtensions(
     deferCatalog = false,
     readDatastoreEnv,
   } = options;
-  const effectiveExtDir = extensionsDir ?? repoDir;
+  const effectiveExtDir = extensionsDir === undefined
+    ? repoDir
+    : rebaseOntoRepoDir(extensionsDir, repoDir);
 
   // Every extension — including already-pulled repo bundles — is loaded
   // through an embedded runtime that lives under the user's home directory
@@ -570,7 +573,9 @@ export async function configureStartupExtensions(
     resolveDir: (m: RepoMarkerData | null) => string,
   ): string => {
     const dir = resolveDir(marker);
-    return isAbsolute(dir) ? dir : resolve(effectiveExtDir, dir);
+    return isAbsolute(dir)
+      ? rebaseOntoRepoDir(dir, repoDir)
+      : resolve(effectiveExtDir, dir);
   };
 
   const behaviorsDir = resolveBehaviorsDir(marker);

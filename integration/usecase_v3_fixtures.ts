@@ -138,7 +138,11 @@ export async function withV3RowRepos(
       },
     },
   });
-  const dir = await Deno.makeTempDir({ prefix: "swamp-usecase-v3-" });
+  // The CLI resolves a --repo-dir through a symlink (swamp-club#3552), and
+  // the macOS temp dir is one, so the fixture spells its repos that way too.
+  const dir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp-usecase-v3-" }),
+  );
   try {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");

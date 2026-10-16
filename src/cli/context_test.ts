@@ -33,6 +33,7 @@ import {
   isQuietFromArgs,
   logicalCwdFrom,
   postCommandNoticesAllowed,
+  rebaseOntoRepoDir,
   repoDirAsGivenFrom,
   resolveColorEnabled,
   resolveExtensionsDir,
@@ -290,6 +291,151 @@ Deno.test("resolveRepoDir treats empty SWAMP_REPO_DIR as unset", () => {
   withMockedEnv({ SWAMP_REPO_DIR: "" }, () => {
     assertCwdDerivedRepoDir(resolveRepoDir(undefined));
   });
+});
+
+/**
+ * Runs `fn` with a temp dir holding a directory `real` and a symlink `link`
+ * to it. `node:sqlite` refuses a database path through `link`, so every
+ * explicit repo dir must come back as `real` (swamp-club#3552).
+ */
+async function withSymlinkedRepoDir(
+  fn: (paths: { dir: string; link: string; real: string }) => void,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const real = join(dir, "real");
+    await Deno.mkdir(real);
+    const link = join(dir, "link");
+    await Deno.symlink(real, link, { type: "dir" });
+    fn({ dir, link, real: Deno.realPathSync(real) });
+  });
+}
+
+Deno.test({
+  name: "getRepoDirFromArgs: a --repo-dir through a symlink is resolved",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ link, real }) => {
+      withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
+        assertPathEquals(getRepoDirFromArgs(["--repo-dir", link]), real);
+        assertPathEquals(getRepoDirFromArgs([`--repo-dir=${link}`]), real);
+      });
+    }),
+});
+
+Deno.test({
+  name: "getRepoDirFromArgs: a SWAMP_REPO_DIR through a symlink is resolved",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ link, real }) => {
+      withMockedEnv({ SWAMP_REPO_DIR: link }, () => {
+        assertPathEquals(getRepoDirFromArgs([]), real);
+      });
+    }),
+});
+
+Deno.test({
+  name:
+    "resolveRepoDir: a --repo-dir or SWAMP_REPO_DIR through a symlink is resolved",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ link, real }) => {
+      withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
+        assertPathEquals(resolveRepoDir(link), real);
+      });
+      withMockedEnv({ SWAMP_REPO_DIR: link }, () => {
+        assertPathEquals(resolveRepoDir(undefined), real);
+      });
+    }),
+});
+
+Deno.test({
+  name:
+    "rebaseOntoRepoDir: a path under a symlink to the repo is spelled under the resolved repo dir",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ link, real }) => {
+      const repoDir = resolveRepoDir(link);
+      assertPathEquals(rebaseOntoRepoDir(link, repoDir), real);
+      assertPathEquals(
+        rebaseOntoRepoDir(join(link, "extensions", "models"), repoDir),
+        join(real, "extensions", "models"),
+      );
+    }),
+});
+
+Deno.test({
+  name: "rebaseOntoRepoDir: a symlink below the repo dir stays unresolved",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ dir, link, real }) => {
+      const outside = join(dir, "shared-ext");
+      Deno.mkdirSync(outside);
+      Deno.symlinkSync(outside, join(real, "ext-link"), { type: "dir" });
+      const repoDir = resolveRepoDir(link);
+      assertPathEquals(
+        rebaseOntoRepoDir(join(link, "ext-link"), repoDir),
+        join(real, "ext-link"),
+      );
+      assertPathEquals(
+        rebaseOntoRepoDir(join(real, "ext-link"), repoDir),
+        join(real, "ext-link"),
+      );
+      Deno.symlinkSync(real, join(real, "loop"), { type: "dir" });
+      assertPathEquals(
+        rebaseOntoRepoDir(join(link, "loop", "extensions"), repoDir),
+        join(real, "loop", "extensions"),
+      );
+    }),
+});
+
+Deno.test({
+  name: "rebaseOntoRepoDir: a path outside the repo is kept as given",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ dir, link }) => {
+      const outside = join(dir, "elsewhere", "ext");
+      assertPathEquals(
+        rebaseOntoRepoDir(outside, resolveRepoDir(link)),
+        outside,
+      );
+    }),
+});
+
+Deno.test({
+  name: "resolveRepoDir: a repo dir that does not exist yet is made absolute",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ link }) => {
+      const missing = join(link, "new-repo");
+      withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
+        assertPathEquals(resolveRepoDir(missing), resolve(missing));
+        assertPathEquals(
+          getRepoDirFromArgs(["--repo-dir", missing]),
+          resolve(missing),
+        );
+      });
+    }),
+});
+
+Deno.test({
+  name:
+    "repoDirAsGivenFrom: a resolved --repo-dir keeps the symlinked spelling",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withSymlinkedRepoDir(({ dir, link }) => {
+      withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
+        assertPathEquals(
+          repoDirAsGivenFrom({
+            cliValue: link,
+            envValue: undefined,
+            cwd: dir,
+            repoDir: resolveRepoDir(link),
+            realPath: (path) => Deno.realPathSync(path),
+          }),
+          link,
+        );
+      });
+    }),
 });
 
 // ============================================================================

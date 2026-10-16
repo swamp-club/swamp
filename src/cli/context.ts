@@ -24,6 +24,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  relative,
   resolve,
   SEPARATOR,
 } from "@std/path";
@@ -375,10 +376,23 @@ export function findAncestorRepoDir(startDir: string): string | null {
 }
 
 /**
+ * A `--repo-dir` or `SWAMP_REPO_DIR` value as the directory storage opens:
+ * symlinks resolved, since `node:sqlite` refuses a database path through a
+ * symlink (swamp-club#3552). Windows keeps the path as given, matching
+ * {@link repoDirAsGiven}, which does not restore a spelling there.
+ */
+function explicitRepoDir(path: string): string {
+  return Deno.build.os === "windows" ? resolve(path) : canonicalize(path);
+}
+
+/**
  * Pre-parses --repo-dir from raw CLI arguments before Cliffy option parsing.
  *
  * Supports both `--repo-dir <value>` and `--repo-dir=<value>` forms.
- * Returns the resolved absolute path.
+ * Returns the absolute path with symlinks resolved (see
+ * {@link explicitRepoDir}); a path that does not exist yet is only made
+ * absolute. Paths swamp reports use {@link repoDirAsGiven} for the spelling
+ * the user gave.
  *
  * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd (with ancestor
  * traversal).
@@ -387,18 +401,56 @@ export function getRepoDirFromArgs(args: string[]): string {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--repo-dir" && i + 1 < args.length) {
-      return resolve(args[i + 1]);
+      return explicitRepoDir(args[i + 1]);
     }
     if (arg.startsWith("--repo-dir=")) {
-      return resolve(arg.slice("--repo-dir=".length));
+      return explicitRepoDir(arg.slice("--repo-dir=".length));
     }
   }
   const envDir = Deno.env.get("SWAMP_REPO_DIR");
   if (envDir && envDir.length > 0) {
-    return resolve(envDir);
+    return explicitRepoDir(envDir);
   }
   const cwd = Deno.cwd();
   return findAncestorRepoDir(cwd) ?? cwd;
+}
+
+/**
+ * `path` spelled under `repoDir` when it names a place inside the repository
+ * through another spelling of the repository's directory, such as a symlink
+ * to it. A path already under `repoDir`, or outside the repository, comes
+ * back made absolute and otherwise as given. As in `respellUnderRepoDir`,
+ * only the shallowest ancestor naming the repository is swapped, so a
+ * symlink inside it, even one back to its root, is never resolved away
+ * (swamp-club#3421). Extension loading stops its
+ * walks up from extension files at `repoDir` by string comparison, so the
+ * extensions dir has to share its spelling once {@link getRepoDirFromArgs}
+ * resolves the repo dir (swamp-club#3552).
+ */
+export function rebaseOntoRepoDir(path: string, repoDir: string): string {
+  const target = resolve(path);
+  const rel = relative(repoDir, target);
+  const escapes = rel === ".." || rel.startsWith(".." + SEPARATOR) ||
+    isAbsolute(rel);
+  if (Deno.build.os === "windows" || !escapes) return target;
+  let realRepoDir: string;
+  try {
+    realRepoDir = Deno.realPathSync(repoDir);
+  } catch {
+    return target;
+  }
+  let repoRoot: string | undefined;
+  for (let ancestor = target;; ancestor = dirname(ancestor)) {
+    try {
+      if (Deno.realPathSync(ancestor) === realRepoDir) repoRoot = ancestor;
+    } catch {
+      // Not there yet, or unreadable — keep walking up
+    }
+    if (dirname(ancestor) === ancestor) break;
+  }
+  return repoRoot === undefined
+    ? target
+    : join(repoDir, relative(repoRoot, target));
 }
 
 /**
@@ -417,7 +469,8 @@ export function hasExplicitRepoDir(args: string[]): boolean {
 
 /**
  * Resolves the repository directory for a command action, given the Cliffy
- * parsed `--repo-dir` option value.
+ * parsed `--repo-dir` option value. Symlinks are resolved as in
+ * {@link getRepoDirFromArgs}.
  *
  * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd (with ancestor
  * traversal).
@@ -427,11 +480,11 @@ export function hasExplicitRepoDir(args: string[]): boolean {
  */
 export function resolveRepoDir(cliValue: string | undefined): string {
   if (cliValue !== undefined) {
-    return resolve(cliValue);
+    return explicitRepoDir(cliValue);
   }
   const envDir = Deno.env.get("SWAMP_REPO_DIR");
   if (envDir && envDir.length > 0) {
-    return resolve(envDir);
+    return explicitRepoDir(envDir);
   }
   const cwd = Deno.cwd();
   return findAncestorRepoDir(cwd) ?? cwd;
