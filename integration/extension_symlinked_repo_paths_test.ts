@@ -127,7 +127,10 @@ async function withLinkedRepo(
     );
     await fn({ real, link, tmp });
   } finally {
-    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+    await Deno.remove(tmp, { recursive: true }).catch((err) => {
+      // Windows: V8 may not have released native handles yet (EBUSY).
+      if (Deno.build.os !== "windows") throw err;
+    });
   }
 }
 

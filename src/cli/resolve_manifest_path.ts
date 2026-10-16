@@ -168,10 +168,11 @@ async function statOrNull(path: string): Promise<Deno.FileInfo | null> {
  * `path` spelled under `repoDir` when it reaches the same repository through
  * another spelling, such as the real path of a repo the user entered through
  * a symlink (swamp-club#3536). Only the prefix naming the repository is
- * swapped: the deepest ancestor of `path` whose real path is the repo dir's
- * is replaced by `repoDir`, and every component below it is kept as written,
- * so a symlink inside the repository is never resolved away and the symlink
- * check still sees it (swamp-club#3421). A path already under `repoDir`, or
+ * swapped: the shallowest ancestor of `path` whose real path is the repo
+ * dir's is replaced by `repoDir`, and every component below it is kept as
+ * written, so a symlink inside the repository, even one back to its root,
+ * is never resolved away and the symlink check still sees it
+ * (swamp-club#3421). A path already under `repoDir`, or
  * outside the repository, is returned unchanged.
  */
 export async function respellUnderRepoDir(
@@ -182,12 +183,14 @@ export async function respellUnderRepoDir(
   if (!escapes(relative(repoDir, target))) return path;
   const realRepoDir = await realPathOrNull(repoDir);
   if (realRepoDir === null) return path;
+  let repoRoot: string | undefined;
   for (let ancestor = target;; ancestor = dirname(ancestor)) {
-    if (await realPathOrNull(ancestor) === realRepoDir) {
-      return join(repoDir, relative(ancestor, target));
-    }
-    if (dirname(ancestor) === ancestor) return path;
+    if (await realPathOrNull(ancestor) === realRepoDir) repoRoot = ancestor;
+    if (dirname(ancestor) === ancestor) break;
   }
+  return repoRoot === undefined
+    ? path
+    : join(repoDir, relative(repoRoot, target));
 }
 
 function escapes(rel: string): boolean {

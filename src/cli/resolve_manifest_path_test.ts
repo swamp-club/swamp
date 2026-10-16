@@ -283,3 +283,20 @@ Deno.test("respellUnderRepoDir: only the repository prefix is swapped, so a syml
     );
   });
 });
+
+Deno.test("respellUnderRepoDir: a symlink inside the repo back to its root stays on the path", async () => {
+  await withLinkedRepo(async ({ real, link }) => {
+    await writeManifest(real);
+    await Deno.mkdir(join(real, "extensions"), { recursive: true });
+    await Deno.symlink(real, join(real, "extensions", "self"), {
+      type: "dir",
+    });
+    assertEquals(
+      await respellUnderRepoDir(
+        join(real, "extensions", "self", "manifest.yaml"),
+        link,
+      ),
+      join(link, "extensions", "self", "manifest.yaml"),
+    );
+  });
+});
