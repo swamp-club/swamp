@@ -203,10 +203,10 @@ turning it into `{}` or text. Every trap and function that throws records a
 fault first (Section 4.3).
 
 Only module-owned factories create instances. Nothing recognizes a `Secret` by
-its shape. If Phase 1 shows that cel-js cannot use the Proxy, the fallback is a
-plain class with private fields. A macro range over a dyn secret is then empty
-instead of an error, so the container rule in Section 4.3 adds comprehension
-macros to the operations it covers.
+its shape. `Deno.inspect` prints the class name and reads nothing, unless it is
+asked to show the proxy. Phase 1.2 showed that cel-js uses the Proxy (Section
+11), so the fallback, a plain class with private fields with the container rule
+extended to comprehension macros, was not needed.
 
 ### 3.2 Sentinels outside CEL
 
@@ -363,7 +363,7 @@ set.
 | `size`, conversions such as `int` and `string`, string functions, `matches` on `S` | Refused                                               |
 | `S` as a map key, a macro range, a `data.query` predicate or a regex pattern       | Refused                                               |
 | A container that holds `S`, interpolated into text                                 | Refused. Pass the container as a structured argument. |
-| `type(S)`                                                                          | Refused                                               |
+| `type(S)`                                                                          | `Type<Secret>`, which reveals nothing                 |
 | `has(S.x)`, `S.?x`                                                                 | No field is exposed                                   |
 | `S in list`, list or map equality with a secret element                            | Refused (Section 4.3, item 5)                         |
 
@@ -380,7 +380,10 @@ cannot change what is loaded.
 ### 4.2 Dependency facts that determine the design
 
 The Phase 1.1 suite pins these facts about cel-js 7.6.1
-(`src/infrastructure/cel/cel_js_pins/`). A dependency upgrade must pass it.
+(`src/infrastructure/cel/cel_js_pins/`). The Phase 1.2 suite beside it
+(`cel_js_secret_*_pin_test.ts`) pins how cel-js treats the `Secret` of Section
+3.1 and the refusal inventory of Section 4.3; its observations are listed under
+Phase 1.2 in Section 11. A dependency upgrade must pass both.
 
 1. Async custom function inputs are awaited. Derived `!=`, container `isEqual`,
    and `listIncludes` consume equality-handler returns synchronously, and a
@@ -422,7 +425,9 @@ How they shape the design:
 - A refusal records a fault, so absorption cannot hide it (fact 3).
 - Overloads follow the registration rules, and synchronous entry points must
   stay synchronous with them in place (fact 4).
-- The Proxy turns a macro range over a secret into an error (fact 5).
+- The Proxy turns a macro range over a secret into a recorded fault (fact 5).
+  cel-js absorbs the range error like a handler error, so the fault is what
+  fails the evaluation (Phase 1.2).
 - `vault` stays usable only as the receiver of a direct `vault.get(...)` call,
   so every reference is a call the existence check finds (fact 6, Section 4.4).
 - The design adds no state to shared programs (fact 7).
@@ -433,10 +438,32 @@ How they shape the design:
 Refusal uses registrations. It does not rewrite expressions.
 
 1. **Run time.** The internal environment registers a refusing overload for
-   `Secret` on every built-in operator, function and conversion that accepts a
-   string or a dyn value. Every overload is synchronous, and functions use
-   `{ async: false }`. Equality is one refusing `Secret == T` overload for each
-   type cel-js can name in a signature, `Secret` among them, and a
+   `Secret` wherever a `Secret` can reach a built-in operator, function or
+   conversion, or one of swamp's own registrations. The refusal inventory
+   (`cel_js_secret_refusal_inventory.ts`, Phase 1.2) classifies every
+   secret-capable position, a receiver or a parameter typed `string`, `dyn`,
+   a type variable, or a list, map or optional of anything, as one of five
+   dispositions: a refusal, a named delivery (`dyn(dyn)`, `cel.bind`, the
+   optional accessors `of`, `value` and `orValue`, and `model.method` inputs,
+   Section 4.5), an argument walk (the vary list, below), a container (`size`
+   and `type` of a list or map, the `join` receiver, the comprehension macros
+   over a list, and `hasValue` and `or` on an optional, which reveal nothing),
+   or a type name (`type(S)`, which cel-js registers itself and which answers
+   `Type<Secret>`). The
+   refusals are the full cross product over a signature's refusal positions,
+   because one overload per position leaves a call with two secrets to a
+   missing-overload error that records no fault. Every operator is covered
+   against every type cel-js or swamp can name, `null` included, so arithmetic
+   or a comparison on a secret records a fault whatever the other operand is.
+   Two built-ins have no registrable refusal. `in` overlaps the built-in at
+   evaluation (`Secret in list`, `Secret in map`); item 5 covers it. `join` on
+   a list that holds a secret fails with cel-js's own
+   `invalid_list_element_type` before any handler runs, and a `list<dyn>.join`
+   overload never intercepts it; it records no fault and reveals nothing, and
+   stays a known unrecorded failure. Every
+   overload is synchronous, and functions use `{ async: false }`. Equality is
+   one refusing `Secret == T` overload for each type cel-js can name in a
+   signature, `Secret` and swamp's own namespace types among them, and a
    `Secret == null` overload that answers `false`. `!=` and the mirrored operand
    order come from each (fact 4). A single `Secret == dyn` cannot serve, because
    it overlaps its own mirror when both operands are secrets (fact 4).
@@ -446,14 +473,23 @@ Refusal uses registrations. It does not rewrite expressions.
    `RunVaultAccess` does. A recorded fault fails the evaluation even when `||`,
    `&&`, `exists` or `all` absorbed the error.
 3. **Macros.** Building a macro range over a `Secret` calls its `ownKeys` trap,
-   which throws. cel-js does not absorb range errors.
+   which records a fault and throws. cel-js absorbs that error under `||`,
+   `&&`, `exists` and `all` like a handler error, so the recorded fault is what
+   fails the evaluation (item 2). Fact 3 is about an error while evaluating the
+   range expression, such as a list literal, which is not absorbed; iterating a
+   range value whose `ownKeys` throws is.
 4. **Before a run.** `vault.get` has the static return type `Secret`.
    `swamp behavior validate` and `swamp workflow validate` type-check
    expressions in the same environment, with the allowed set's overloads
    (Section 4.1) in place of the refusing ones. The allowed set passes there,
-   and any other operation on a `vault.get` result is a check-time error.
-   Secrets from records are dyn values, so their misuse shows up only at run
-   time.
+   and any other operation on a `vault.get` result is a check-time error, with
+   three escapes: a dyn operand (an unlisted variable, or `dyn(...)`) and a
+   map literal keyed by the result check as valid and are refused only at run
+   time, and `type()` checks as valid and answers the type name at run time,
+   which reveals nothing. `has()` on a call result fails the check for a
+   reason of its own, `invalid_macro_argument`, although `has()` is in the
+   allowed set. Secrets from records are dyn values, so their misuse shows up
+   only at run time.
 5. **Containers.** cel-js answers `in` and list or map equality without calling
    any handler (fact 2). They cannot reveal a value, because a `Secret` holds
    none, but they would answer by identity: a guard
@@ -467,8 +503,11 @@ Refusal uses registrations. It does not rewrite expressions.
      from `vault.get`, from a binding, or when CEL reads it out of a record,
      list or map. The accessor adapter (Section 6.1) and the boundary conversion
      put each secret-valued property and element behind a getter that records
-     it. Selecting another field records nothing, and neither does map key
-     membership, which never reads values.
+     it. Selecting another field records nothing. Map key membership on a plain
+     object does record: cel-js reads the value to tell an absent key from an
+     undefined one, and deep type inference reads a container's first entry,
+     so `'z' in attrs` records a secret that is the first attribute. `has()`
+     and `.?` on a field read the value and record it too.
    - An evaluation that has a container comparison and records a `Secret` fails
      with `secret_operation_unsupported`, after any absorption. Recording stops
      when evaluation ends. The boundary conversion of the result reads getters
@@ -477,27 +516,34 @@ Refusal uses registrations. It does not rewrite expressions.
 
    The rule over-refuses. `vault.get('v', 'k') != null && self.item in ['a']`
    fails, although the secret never reaches `in`, and so does
-   `vault.get('v', 'k') != null && inputs.a == self.item` with two strings. The
-   refusal is loud and names the expression. Moving the comparison into its own
-   expression, such as an input, avoids it. A later change can narrow the rule
-   if cel-js gains a container-equality hook.
+   `vault.get('v', 'k') != null && inputs.a == self.item` with two strings, and
+   `'z' in attrs && self.item in ['a']` when the first attribute is a secret.
+   The refusal is loud and names the expression. Moving the comparison into its
+   own expression, such as an input, avoids it. A later change can narrow the
+   rule if cel-js gains a container-equality hook.
 
-A fitness test lists the internal environment's built-in operators, functions
-and conversions. It fails when one that accepts a string or a dyn value has no
-`Secret` refusal, so a built-in that a dependency upgrade adds needs a decision.
-Phase 1 decides whether the list comes from cel-js or from a maintained list
-pinned against the dependency. For `==`, the type list is maintained, because
-cel-js does not export its type table.
+A fitness test (`integration/cel_secret_refusal_coverage_rules_test.ts`)
+lists every place a `Secret` can reach and fails when a position has no
+disposition in the inventory, so a built-in that a dependency upgrade adds
+needs a decision. The built-in functions come from cel-js itself, through
+`Environment.getDefinitions()`. The built-in operators and the `==` type list
+are maintained tables pinned against the dependency, because the registry
+keeps its operator list private and the package does not export its type
+table.
 
 The same test covers swamp's own registrations in the internal environment and
-the query view, such as the `data`, `file` and `model` namespaces. Each string,
-dyn or `list<dyn>` parameter either has a `Secret` refusal that records a fault,
-or is a named delivery (`model.method` inputs, Section 4.5). Without that, a
-`Secret` argument would meet a missing-overload error that records no fault, and
-`||` could absorb it. A `Secret` in the vary list of `data.latest`,
-`data.version` or `data.listVersions` is refused with
+the query view, such as the `data`, `file` and `model` namespaces, through a
+maintained list it keeps equal to the source. Each string, dyn or `list<dyn>`
+parameter either has a `Secret` refusal that records a fault, or is a named
+delivery (`model.method` inputs, Section 4.5), or is an argument walk. Without
+that, a `Secret` argument would meet a missing-overload error that records no
+fault, and `||` could absorb it. A `Secret` in the vary list of `data.latest`,
+`data.version` or `data.listVersions` is the argument walk: no signature can
+refuse a list element, so the handler walks the list and refuses with
 `secret_destination_refused`, because a lookup key cannot use the stand-in that
-a data-name suffix gets.
+a data-name suffix gets. The test proves the inventory is complete; Phase 3
+adds the production half, that `getDefinitions()` on the internal environment
+and the query view contains every refusal signature the inventory yields.
 
 ### 4.4 `vault.get`
 
@@ -863,36 +909,47 @@ proceed alongside Phases 3 and 4.
 
 Phase 1.1 (swamp-club#3510, shipped) pins the facts in Section 4.2.
 
-Phase 1.2 pins what this design relies on:
+Phase 1.2 (swamp-club#3551, shipped) pins what this design relies on, in
+`cel_js_secret_*_pin_test.ts` beside the Phase 1.1 suite, with the `Secret`
+fixture in `cel_js_secret_test_helpers.ts`, the refusal inventory in
+`cel_js_secret_refusal_inventory.ts` and the coverage fitness test in
+`integration/cel_secret_refusal_coverage_rules_test.ts`. Each claim, as
+observed on cel-js 7.6.1:
 
 - cel-js recognizes the Proxy-based `Secret` by its constructor. Building a
-  macro range over it fails, and the failure is not absorbed.
+  macro range over it records a fault and throws; cel-js absorbs the error like
+  a handler error, so the fault is what fails the evaluation.
 - A custom function sees, at its start, every fault recorded earlier in the same
   evaluation, across asynchronous evaluation, so the effect gate in Section 4.5
   holds.
-- `{S: 1}` and `m[S]` record a fault through a Proxy trap, so a map-key refusal
-  is visible under `||` even though a map literal calls no overload.
+- `{S: 1}`, `m[S]` and `S in m` record a fault through a Proxy trap, so a
+  map-key refusal is visible under `||` even though a map literal calls no
+  overload.
 - An async custom function can return a `Secret`, and awaiting it reads `then`
   without a fault.
-- The refusing overload set covers every built-in that accepts a string or a dyn
-  value, including `==` between two secrets. The `==` overloads name every type
-  cel-js accepts in a signature and answer a comparison with `null` in both
+- The refusing overload set covers every built-in and every swamp registration
+  a `Secret` can reach, including `==` between two secrets, as the full cross
+  product over each signature's refusal positions. The `==` overloads name every
+  type cel-js accepts in a signature and answer a comparison with `null` in both
   operand orders. Adding `Secret == Secret` beside `Secret == dyn` does not
-  remove the overlap, so the enumerated set is the only shape.
+  remove the overlap, so the enumerated set is the only shape. `in`, `join`
+  on a list holding a secret, and `type(S)` have no registrable refusal.
 - A fault recorded in the ambient context survives absorption by `||`, `&&`,
   `exists` and `all`, across asynchronous evaluation.
 - Synchronous entry points still return synchronous results with the `Secret`
-  registrations in place.
+  registrations in place, although every operator use is marked maybe-async.
 - `vault.get`, with the static return type `Secret`, gives check-time errors in
-  the validation environment, except for the allowed set in Section 4.1.
+  the validation environment, except for the allowed set in Section 4.1 and
+  three escapes: a dyn operand, a map literal keyed by the result and `type()`
+  check as valid; `has()` on a call result fails as `invalid_macro_argument`.
 - The container rule in Section 4.3 refuses every case the fact 2 pins answer by
   identity. cel-js reads a record field, a list element and a map value through
   ordinary property access, so a getter records the secret on selection and on
-  container traversal, and not on map key membership or on selecting another
-  field.
+  container traversal. Selecting another field records nothing. Map key
+  membership, `has()` and `.?` read the value and record it.
 
-**Exit:** each refusal is observed, or the fallback in Section 3.1 is recorded
-with the container rule covering macros.
+**Exit:** every refusal is observed. The Proxy stays, and the fallback in
+Section 3.1 was not needed.
 
 ### Phase 2: sentinels hold references
 
@@ -933,8 +990,9 @@ diagnostics carry no value. Existing suites pass unchanged.
 
 Behind the internal option:
 
-- The `Secret` type, the boundary conversion, the refusals, the container rule
-  and the fault context.
+- The `Secret` type, the boundary conversion, the refusals from the inventory
+  (which moves to `src/infrastructure/cel/`), the container rule and the fault
+  context.
 - The existence check with up-front argument evaluation for `vault.get` as a CEL
   function, and the authorization check for sensitive-field references.
 - `vault.get` as a CEL function, with bare-token rewriting. It replaces the
@@ -946,8 +1004,8 @@ Behind the internal option:
 - `swamp behavior evaluate` writes its cache through the boundary conversion.
 - The `validate` diagnostics.
 - `context.runModel` as an entry point and delivery (Section 5).
-- The `model.method` rules in Section 4.5, and the refusal coverage of swamp's
-  own registrations in Section 4.3.
+- The `model.method` rules in Section 4.5, and the production half of the
+  refusal coverage test in Section 4.3.
 
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any
@@ -1044,7 +1102,7 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Concern                              | Current implementation                                                                                                                                                                                                           |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | CEL environments and coercion        | `src/infrastructure/cel/cel_evaluator.ts`, `src/domain/expressions/cel_grammar.ts`, `cel_runtime.ts`                                                                                                                             |
-| Pinned cel-js behavior (Section 4.2) | `src/infrastructure/cel/cel_js_pins/`                                                                                                                                                                                            |
+| Pinned cel-js behavior (Section 4.2) | `src/infrastructure/cel/cel_js_pins/`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                   |
 | Expression passes and templates      | `src/domain/expressions/expression_evaluation_service.ts`, `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts` |
 | Vault rewrite and dynamic arguments  | `src/domain/expressions/model_resolver.ts` (`resolveVaultExpressions`), `vault_reference_extractor.ts`                                                                                                                           |
 | Sentinels and shell placement        | `src/domain/vaults/vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                                            |
