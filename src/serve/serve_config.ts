@@ -58,6 +58,37 @@ function stringTypeMessage(name: string, path: string, value: unknown): string {
     : message;
 }
 
+/** The type of a serve.yaml value as an error names it: `array`, not `object`. */
+function yamlTypeName(value: unknown): string {
+  return Array.isArray(value) ? "array" : typeof value;
+}
+
+/**
+ * Throws unless a serve.yaml field that must be a list of strings is one. A
+ * missing or empty key (YAML `null`) is unset.
+ */
+function validateStringList(name: string, value: unknown, path: string): void {
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (!Array.isArray(value)) {
+    throw configError(
+      path,
+      `Invalid ${name} in ${path}: expected array of strings, got ${
+        yamlTypeName(value)
+      }`,
+    );
+  }
+  value.forEach((entry, index) => {
+    if (typeof entry !== "string") {
+      throw configError(
+        path,
+        stringTypeMessage(`${name}[${index}]`, path, entry),
+      );
+    }
+  });
+}
+
 const logger = getSwampLogger(["serve", "config"]);
 
 // ── Env Var Map ───────────────────────────────────────────────────────
@@ -575,8 +606,34 @@ function validateConfigValues(
     }
   }
 
+  for (const name of ["auth", "tls"]) {
+    const value = raw[name];
+    if (
+      value !== undefined && value !== null &&
+      (typeof value !== "object" || Array.isArray(value))
+    ) {
+      throw configError(
+        path,
+        `Invalid ${name} in ${path}: expected mapping, got ${
+          yamlTypeName(value)
+        }`,
+      );
+    }
+  }
+
   if (raw.auth && typeof raw.auth === "object" && !Array.isArray(raw.auth)) {
     const authObj = raw.auth as Record<string, unknown>;
+    for (
+      const name of [
+        "admins",
+        "allowed-collectives",
+        "allowed-users",
+        "restricted-model-types",
+        "restricted-commands",
+      ]
+    ) {
+      validateStringList(`auth.${name}`, authObj[name], path);
+    }
     const authStringFields: [string, unknown][] = [
       ["auth.mode", authObj.mode],
       ["auth.oauth-provider", authObj["oauth-provider"]],
@@ -654,16 +711,7 @@ function validateConfigValues(
     }
   }
 
-  if (raw["trusted-hosts"] !== undefined) {
-    if (!Array.isArray(raw["trusted-hosts"])) {
-      throw configError(
-        path,
-        `Invalid trusted-hosts in ${path}: expected array of strings, got ${typeof raw[
-          "trusted-hosts"
-        ]}`,
-      );
-    }
-  }
+  validateStringList("trusted-hosts", raw["trusted-hosts"], path);
 
   if (raw["dispatch-env-allow"] !== undefined) {
     const allow = raw["dispatch-env-allow"];
