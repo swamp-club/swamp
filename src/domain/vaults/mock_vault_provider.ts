@@ -48,8 +48,10 @@ export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
   get(secretKey: string): Promise<string> {
     const secret = this.secrets.get(secretKey);
     if (secret === undefined) {
-      throw new Error(
-        `Secret '${secretKey}' not found in mock vault '${this.name}'`,
+      return Promise.reject(
+        new Error(
+          `Secret '${secretKey}' not found in mock vault '${this.name}'`,
+        ),
       );
     }
     return Promise.resolve(secret);
@@ -74,8 +76,10 @@ export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
 
   delete(secretKey: string): Promise<void> {
     if (!this.secrets.has(secretKey)) {
-      throw new Error(
-        `Secret '${secretKey}' not found in mock vault '${this.name}'`,
+      return Promise.reject(
+        new Error(
+          `Secret '${secretKey}' not found in mock vault '${this.name}'`,
+        ),
       );
     }
     this.secrets.delete(secretKey);
