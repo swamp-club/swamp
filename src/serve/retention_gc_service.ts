@@ -136,6 +136,7 @@ export class RetentionGcService {
         const claimed = await this.#deps.watermarks.claimHourlyPass(
           hourStartOf(now),
           this.#deps.instanceId,
+          "serve",
         );
         if (!claimed) return "claimed-elsewhere" as const;
       }

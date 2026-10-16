@@ -303,12 +303,13 @@ garbageCollection:
     mutex, and writes one
     `retention.pass` system audit event per pass. Of several serves on one
     datastore, the one that claims the hour (`putIfAbsent` on
-    `_control/retention/claims/<hour>`) runs it.
+    `_control/retention/claims/serve/<hour>`) runs it.
   - A CLI command that opened the repository to write runs a pass in
     teardown, after its own locks are released (`runRetentionAtCommandEnd`,
     `src/cli/retention_teardown.ts`): at most hourly per checkout
-    (`.swamp/retention-last-attempt.json`) and per datastore (the same hourly
-    claim), taking the datastore lock through `requireInitializedRepo` with a
+    (`.swamp/retention-last-attempt.json`) and per datastore (an hourly
+    claim of its own, `claims/cli/<hour>`: a CLI pass is capped by its
+    budget, so it never uses up the hour of serve's unbudgeted pass), taking the datastore lock through `requireInitializedRepo` with a
     2-second wait (`lockWaitMs`; v2 and custom datastores: on v3 the command
     already holds the writer lease, whose contention is settled when the
     command starts, so the pass runs as that writer), stopping after 10 seconds of batches and

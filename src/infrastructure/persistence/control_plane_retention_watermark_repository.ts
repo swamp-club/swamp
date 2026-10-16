@@ -24,6 +24,7 @@ import {
   type RetentionKind,
 } from "../../domain/retention/retention_policy.ts";
 import {
+  type RetentionTrigger,
   type RetentionWatermark,
   type RetentionWatermarkRepository,
   RetentionWatermarkSchema,
@@ -75,9 +76,13 @@ export class ControlPlaneRetentionWatermarkRepository
     );
   }
 
-  async claimHourlyPass(hourStart: Date, owner: string): Promise<boolean> {
+  async claimHourlyPass(
+    hourStart: Date,
+    owner: string,
+    trigger: RetentionTrigger,
+  ): Promise<boolean> {
     if (!this.store.putIfAbsent) return true;
-    const key = `${CLAIM_PREFIX}/${hourStart.getTime()}`;
+    const key = `${CLAIM_PREFIX}/${trigger}/${hourStart.getTime()}`;
     const claimed = await this.store.putIfAbsent(
       key,
       encoder.encode(

@@ -134,6 +134,7 @@ export async function runRetentionAtCommandEnd(
         !(await watermarks.claimHourlyPass(
           hourStartOf(now),
           `cli:${Deno.hostname()}:${Deno.pid}`,
+          "cli",
         ))
       ) {
         return undefined;

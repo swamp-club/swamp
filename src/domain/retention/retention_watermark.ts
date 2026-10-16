@@ -40,6 +40,9 @@ export const RetentionWatermarkSchema = z.object({
 
 export type RetentionWatermark = z.infer<typeof RetentionWatermarkSchema>;
 
+/** What started a retention pass; each claims its own hour. */
+export type RetentionTrigger = "serve" | "cli";
+
 /** Reads and writes the per-kind watermarks of one datastore. */
 export interface RetentionWatermarkRepository {
   get(kind: RetentionKind): Promise<RetentionWatermark | null>;
@@ -47,11 +50,17 @@ export interface RetentionWatermarkRepository {
   put(watermark: RetentionWatermark): Promise<void>;
   /**
    * Claims the pass for the hour starting at `hourStart` so only one of
-   * several processes sharing the datastore runs it. Returns false when
-   * another process already claimed it. Stores without an atomic
-   * create-if-absent always return true.
+   * several processes of the same `trigger` sharing the datastore runs it.
+   * Returns false when another process already claimed it. Serve and the
+   * CLI claim separately: a CLI pass is capped by its time budget, so it
+   * must never use up the hour of serve's pass, which has none. Stores
+   * without an atomic create-if-absent always return true.
    */
-  claimHourlyPass(hourStart: Date, owner: string): Promise<boolean>;
+  claimHourlyPass(
+    hourStart: Date,
+    owner: string,
+    trigger: RetentionTrigger,
+  ): Promise<boolean>;
 }
 
 /**

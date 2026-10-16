@@ -91,12 +91,12 @@ Deno.test("ControlPlaneRetentionWatermarkRepository.claimHourlyPass: one claim p
     const b = new ControlPlaneRetentionWatermarkRepository(store);
     const hour = hourStartOf(new Date("2026-10-15T10:42:00.000Z"));
     const results = await Promise.all([
-      a.claimHourlyPass(hour, "a"),
-      b.claimHourlyPass(hour, "b"),
+      a.claimHourlyPass(hour, "a", "serve"),
+      b.claimHourlyPass(hour, "b", "serve"),
     ]);
     assertEquals(results.filter(Boolean).length, 1);
     const next = new Date(hour.getTime() + 3_600_000);
-    assertEquals(await a.claimHourlyPass(next, "a"), true);
+    assertEquals(await a.claimHourlyPass(next, "a", "serve"), true);
   });
 });
 
@@ -105,12 +105,27 @@ Deno.test("ControlPlaneRetentionWatermarkRepository.claimHourlyPass: claims olde
     const store = new FileSystemControlPlaneStore(dir);
     const repo = new ControlPlaneRetentionWatermarkRepository(store);
     const first = hourStartOf(new Date("2026-10-13T10:00:00.000Z"));
-    await repo.claimHourlyPass(first, "a");
+    await repo.claimHourlyPass(first, "a", "serve");
     const later = new Date(first.getTime() + 2 * 86_400_000);
-    await repo.claimHourlyPass(later, "a");
+    await repo.claimHourlyPass(later, "a", "serve");
     assertEquals(await store.list("retention/claims"), [
-      `retention/claims/${later.getTime()}`,
+      `retention/claims/serve/${later.getTime()}`,
     ]);
+  });
+});
+
+Deno.test("ControlPlaneRetentionWatermarkRepository.claimHourlyPass: a CLI claim never takes serve's hour", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new ControlPlaneRetentionWatermarkRepository(
+      new FileSystemControlPlaneStore(dir),
+    );
+    const hour = hourStartOf(new Date("2026-10-15T10:42:00.000Z"));
+    // A CLI pass, capped by its budget, claims the hour first ...
+    assertEquals(await repo.claimHourlyPass(hour, "cli:a", "cli"), true);
+    assertEquals(await repo.claimHourlyPass(hour, "cli:b", "cli"), false);
+    // ... and serve's pass, which has no budget, still gets it.
+    assertEquals(await repo.claimHourlyPass(hour, "serve-1", "serve"), true);
+    assertEquals(await repo.claimHourlyPass(hour, "serve-2", "serve"), false);
   });
 });
 
