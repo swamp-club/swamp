@@ -30,6 +30,7 @@ import {
 import { createIssueEditRenderer } from "../../presentation/renderers/issue_edit.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { requireNonBlank } from "./issue_submit.ts";
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
@@ -164,14 +165,14 @@ export const issueEditCommand = new Command()
       );
     }
 
-    if (options.title && options.body) {
-      title = options.title;
-      body = options.body;
+    if (options.title !== undefined && options.body !== undefined) {
+      title = requireNonBlank("--title", options.title);
+      body = requireNonBlank("--body", options.body);
       type = options.type;
-    } else if (options.body && !options.title) {
+    } else if (options.body !== undefined) {
       throw new UserError("--body requires --title to be specified.");
-    } else if (options.title && !options.body) {
-      title = options.title;
+    } else if (options.title !== undefined) {
+      title = requireNonBlank("--title", options.title);
       body = current.body;
       type = options.type;
     } else if (options.type && !options.title) {

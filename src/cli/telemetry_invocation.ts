@@ -361,8 +361,11 @@ function hasNoArguments(command: AnyCommand): boolean {
  * An option the tree does not know consumes the next token when it does not
  * look like an option: it may be a mistyped `--input secret=x`, and sending
  * the value as a positional would leak it.
+ *
+ * Shared with the empty option value check (empty_option_value.ts), which
+ * walks argv the same way — a change here changes what that check skips.
  */
-function optionConsumesNext(
+export function optionConsumesNext(
   command: AnyCommand,
   key: string,
   next: string | undefined,
@@ -414,7 +417,13 @@ function isCombinedShortFlags(command: AnyCommand, key: string): boolean {
   });
 }
 
-function findOption(command: AnyCommand, key: string) {
+/**
+ * The option spelled `key` (`--repo-dir`, `-v`, `--no-color`) on `command`,
+ * including global options inherited from its parents.
+ *
+ * Shared with the empty option value check (empty_option_value.ts).
+ */
+export function findOption(command: AnyCommand, key: string) {
   const name = key.replace(/^--?/, "");
   return command.getOption(name, true) ??
     (name.startsWith("no-")
