@@ -3814,17 +3814,16 @@ as before.
 
 swamp-club#3279 makes v3 usable: a new, empty filesystem datastore can be
 created in the commit-log format, and every command and serve handler works on
-it. Nothing changes for v2 datastores. S3, GCS and extension datastores stay
-on v2 until Phase 4; multi-writer and team mode are Phase 5; migrating v2 data
-is Phase 6.
+it. Nothing changes for v2 datastores. S3, GCS and extension datastores take
+v3 from Phase 4E (see **v3 on S3 and GCS**); multi-writer and team mode are
+Phase 5; migrating v2 data is Phase 6.
 
 **Setting it up.** `swamp datastore setup filesystem --path <dir> --format 3`.
 
-- The `.swamp.yaml` key is `format` (2 or 3) on the `datastore:` block, and it
-  is accepted only on a filesystem datastore. `format: 3` on S3, GCS or an
-  extension datastore, in `.swamp.yaml` or as `--format 3` on `datastore setup
-  extension`, is refused with a message naming Phase 4. Format 2 there is the
-  default and is read as no key.
+- The `.swamp.yaml` key is `format` (2 or 3) on the `datastore:` block. On an
+  extension datastore, `format: 3` needs a provider that can host v3, which is
+  checked where the provider is built (**v3 on S3 and GCS**); format 2 there is
+  the default and is read as no key.
 - The target must be absent or an empty directory, checked with `lstat`, so a
   symlinked target is refused too. The repository's current datastore must
   hold no records under its datastore directories (the stream directories and
@@ -3852,10 +3851,10 @@ is Phase 6.
 
 **The marker decides the engine.** `ensureSupportedDatastoreFormat` returns
 the engine (`DatastoreEngine`, `v2` or `v3`) and caches it per config object
-(`checkedDatastoreEngine`). This binary reads formats 2 and 3 on a filesystem
-datastore and only 2 elsewhere (`supportedDatastoreFormatsFor`), so a format-3
-marker on S3 or GCS is still refused, and a binary that reads only format 2
-refuses a v3 datastore. The `format` key records what setup chose; a config
+(`checkedDatastoreEngine`). This binary reads formats 2 and 3 on every
+datastore (`supportedDatastoreFormatsFor`); an extension datastore whose
+marker says 3 also needs a provider that can host v3 (`assertV3Hosting`), and
+a binary that reads only format 2 refuses a v3 datastore. The `format` key records what setup chose; a config
 whose key disagrees with the marker (or asks for 3 where no marker can be
 read) is refused with `DatastoreFormatMismatchError`. A filesystem marker
 that exists but cannot be read is refused
@@ -3952,7 +3951,7 @@ model, catalog), catches the read model up whenever a context opens, and
 v2's sync machinery runs: no pull or push at the locks, no sync gate, no access,
 runtime or config pull in serve, no lazy hydration. `datastore sync`,
 `datastore catalog pull` and `datastore migrate-index` refuse a filesystem
-datastore already. On v3, `datastore namespace set|unset|migrate` refuse
+datastore already, and every v3 datastore on a bucket too. On v3, `datastore namespace set|unset|migrate` refuse
 too: moving existing records, or a checkout, between namespaces is Phase 6.
 A namespace is chosen by running `namespace set` before `setup filesystem
 --format 3`, which needs no `--skip-migration` (swamp-club#3301).
@@ -4199,6 +4198,158 @@ that throw, read-your-writes, dry-run GC and run-artifact digests. Every v2 suit
 unchanged, apart from tests that used format 3 to stand for "a newer format",
 which now use 4.
 
+### v3 on S3 and GCS (datastore rework Phase 4E)
+
+swamp-club#3534 creates v3 datastores on buckets in solo mode: one writer at
+a time across every machine (the fenced lease), with Litestream replicating
+each checkout's own `commits.db` to the bucket. It is still opt-in: v2 stays
+the default, and v2 datastores are untouched.
+
+**Setting it up.** `swamp extension pull @swamp/s3-datastore` (or
+`@swamp/gcs-datastore`) for the latest release, then `swamp datastore setup
+extension @swamp/s3-datastore --config '{...}' --format 3`. The minimum
+version is named in the refusal of an extension without the v3 capabilities,
+not checked against the repo's lockfile: a repo pinned to 2026.10.16.1–.4 can
+set up v3 without swamp-club#3549's guard, so pull the latest first. Setup
+refuses, writing nothing, in this order:
+
+- a provider without every v3 capability: `datastoreWideLease`,
+  `datastoreControlPlaneStore()`, `storage()`, `replicaTarget()` and
+  `replicaPaths()` (`assertV3Hosting`, `src/domain/datastore/v3_hosting.ts`).
+  The message names the minimum extension version,
+  `V3_BUCKET_MIN_EXTENSION_VERSION` (2026.10.16.5, the first release whose v2
+  sync also refuses a v3 bucket, swamp-club#3549; 2026.10.16.1 first declared
+  the capabilities);
+- a platform Litestream cannot replicate on: Windows while the pin is below
+  0.5.18 (`litestreamAvailability`);
+- a replica target the provider refuses, as it refuses it (GCS with a
+  custom `apiEndpoint` the emulator variable does not name);
+- a bucket prefix that is not new and empty (`inspectV3BucketTarget`): a
+  format marker that is not format 3, any record in the datastore-wide
+  control plane besides the marker and the verifier's
+  `conditional-write-probe-` keys, any chunk in `storage()` for the solo or
+  the chosen namespace, any v2 namespace (`listNamespaces`, which the provider
+  must have), or v2 data at the root: `.datastore-index.json` or
+  `_index/_meta.json`, read through `fetchContent` on a sync service built on
+  a scratch cache, which the provider must also have. A check that cannot be
+  made refuses. Known limit: v2 data that has lost both root index keys is not
+  seen;
+- a repository that holds records, as a v3 filesystem setup checks: the
+  checkout's `.swamp/`, its namespace's, an external filesystem datastore's
+  root and the current extension datastore's cache.
+
+It then writes the marker `{format: 3, minReaderFormat: 3, writtenBy}` with
+`putIfAbsent` at `_control/datastore-format`, so of two concurrent setups one
+writes it and the other accepts it when it says format 3. A prefix holding
+only a format-3 marker is a setup that stopped after it, and a re-run
+completes it. Setup records `format: 3` in `.swamp.yaml` and migrates, pushes,
+pulls and registers nothing. `--format 3` through `--server` is refused for
+now. A v2 setup of a bucket whose marker says 3 is refused.
+
+**The format guard on buckets.** An extension datastore opens as v3 only
+when its provider can host it, and never as the other format:
+
+- config 3 and marker 3: v3; config 3 and no marker, or another format:
+  refused (`DatastoreFormatMismatchError`);
+- config 3 and a marker read that fails or misses the 3 s deadline: v3,
+  provisionally. Every lease taken (`takeLease`, so the writer's, the
+  recovery's and serve's retake) and every copy made current
+  (`makeV3CopyCurrent`) first confirms the marker through the binding, once
+  per process, with no tight deadline. A hand-edited `format: 3` over a v2
+  prefix is therefore refused before a lease, lineage, chunk or replica is
+  written there;
+- an override (`SWAMP_DATASTORE`, `--datastore`, or setup's own target)
+  and marker 3: v3; a `.swamp.yaml` config with no format and marker 3:
+  refused (`DatastoreFormatMismatchError`), since a v3 bucket's repos always
+  record `format: 3`, so a v2 repo never opens a v3 bucket;
+- an override (`SWAMP_DATASTORE`, `--datastore`: the config carries
+  `override: true` and no format) on a provider that could host v3, with a
+  failed read: read again without the 3 s cap (60 s), and refused if that
+  fails too (`UnreachableDatastoreFormatMarkerError`), never opened as v2;
+- otherwise a failed read is skipped as v2, as before, with one read. A
+  `.swamp.yaml` config with no format is v2: setup writes `format: 3` for
+  every v3 datastore, clones carry it, and a v2 setup onto a v3 bucket is
+  refused. So an offline v2 repo keeps reading from its cache.
+
+**The binding.** `v3_datastore_binding.ts` says where a v3 datastore lives
+and whether it replicates. Every v3 helper is keyed by a local datastore
+path; a bucket datastore gets one, its local root, the checkout's copy
+directory `.swamp/_datastore_v3_copies/<key>/`, keyed by the provider's own
+replica root, so the internal setting tests use never moves it.
+`v3DatastoreConfigOf` binds it, once per config object. The binding gives:
+
+- chunks: the provider's `storage()`, with the default 24-hour grace;
+- the lease and the lineages: `datastoreWriterLeaseStore`, at the datastore
+  root;
+- the replica: `resolveV3ReplicaSetting`, the provider's target (the
+  internal setting still wins in tests); a bucket datastore always
+  replicates, and every checkout keeps its own copy, with no shared
+  `commits.db`, so no seed, no shared outbox and no Phase 3 legacy lock;
+- lineage paths: `resolveV3ReplicaPaths`, which `syncAndPublishNow` passes
+  to `collectV3Lineages`;
+- namespaced records (signal waits, retention watermarks): the control
+  plane under `ns/<namespace>/`, or `ns/_/` solo, which no namespace slug can
+  reach, so a namespace named `writer` or `lineage` never meets the lease's or
+  the lineages' records. Continuation claims stay checkout-local, beside
+  serve's heartbeats, as on a filesystem datastore.
+
+A filesystem v3 datastore has no binding; its helpers behave as before.
+Replication is asked per datastore (`v3ReplicatesAt`), not of the process.
+
+**Locks.** A v3 bucket datastore's global and per-behavior locks are file
+locks under its local root (`lockingConfigOf`): the writer lease already
+admits one writing process across every machine, so they only order the
+work in that process and checkout. Two checkouts on one machine are two
+local roots, so they serialise through the lease, not through these locks.
+The provider's remote v2 lock is never taken: `lockingConfigOf` refuses a
+v3 extension config no binding has seen. A second bind of the same root by
+another config object keeps the first binding; two datastores on one root
+are refused.
+
+**Every v3 path.** Every check that opened v3 only for a filesystem datastore
+now opens it for both: the repository contexts, `datastore lock`, `gc` and
+`status`, `doctor datastores --retention`, `datastore config migrate`, the
+end-of-command retention pass, and serve. `integration/datastore_v3_rules_test.ts`
+fails on any v3 engine check joined to `!isCustomDatastoreConfig`.
+
+**No v2 sync.** A v3 bucket context creates no sync service: no pull or push
+at the locks, no hydration, no sync gate, no config, access or runtime poller
+in serve. `datastore sync`, `catalog pull` and `migrate-index` are refused
+with messages that say a format 3 datastore has nothing of v2's to sync,
+pull or migrate (a filesystem v3 datastore keeps its own `datastore sync`
+text, which swamp-uat pins), and the namespace contamination check and
+repair are skipped or refused.
+
+**Second machines.** A clone joins through `.swamp.yaml`: its first command
+reads the lineage registry once and restores the current lineage (D2), with
+an info line before the restore and one with its time after. Serve's own
+control plane (heartbeats, pending runs) stays in the checkout, so serve
+reports a `local` deployment mode on a v3 bucket datastore.
+
+**Known limits.**
+
+- A write command's replication is still confirmed at teardown, after it
+  printed its result, so `--json` can print success and then exit 75 (D1's
+  trade-off, `datastore-litestream.md`). Confirming before the output needs
+  commands to render after their root unit of work ends: planned for Phase
+  4 I, before v3 on buckets is announced.
+- Serve's control plane (heartbeats, pending runs, continuation claims)
+  stays in its checkout, so a v3 bucket datastore's serve is not durable
+  across instance replacement and reports `local`. That is solo mode's
+  shape; moving it to the bucket's `ns/` store belongs with Phase 5's leader
+  and failover.
+- `--format 3` through `--server` is refused.
+
+**Retention and sweeps.** The end-of-command retention pass confirms the
+command's own commits first (`confirmV3CommandReplicated`), after the
+command's action returned, so they have all landed. If that fails, the pass
+does not run and the closing sync reports the command's commits as before.
+Once it succeeded, a closing sync that fails covers only the pass's commits:
+it is logged, and they replicate with the next write. A chunk sweep on a
+replicating datastore runs only after a sync that resolves after the pass's
+compaction, with no commit since (the high-water mark read before the sync
+and again after), so a restore never names a chunk it deleted.
+
 ### v3 writer lease (datastore rework Phase 4)
 
 swamp-club#3359 replaced Phase 3's writer lock with a fenced writer lease.
@@ -4355,9 +4506,9 @@ planes too. On a datastore that is not a filesystem one, it binds at the
 datastore root, outside every namespace, through the provider's writable
 datastore-wide control plane: `datastoreWriterLeaseStore` returns it, and
 refuses a provider that offers none or only a read-only one (swamp-club#3364;
-see "Datastore-wide writes" in the format marker section). It is dormant until
-the Phase 4 bucket opt-in calls it; the S3 and GCS extensions' side is part
-G.
+see "Datastore-wide writes" in the format marker section). A v3 datastore on
+a bucket binds it there (**v3 on S3 and GCS**, swamp-club#3534); the S3 and
+GCS extensions' side was part G.
 
 ### v3 commit outbox (datastore rework Phase 4)
 

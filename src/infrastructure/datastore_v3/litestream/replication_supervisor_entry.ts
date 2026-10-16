@@ -28,6 +28,7 @@
  */
 
 import { defaultLitestreamBinaryProvider } from "./litestream_binary_provider.ts";
+import { litestreamChildEnv } from "./sidecar_env.ts";
 import {
   type LitestreamChild,
   parseSupervisorArgs,
@@ -45,13 +46,21 @@ export function hostSupervisorDeps(
     async resolveBinary() {
       return (await defaultLitestreamBinaryProvider().resolve()).path;
     },
-    startLitestream(binary, configPath): LitestreamChild {
+    startLitestream(binary, configPath, replicaType): LitestreamChild {
       const child = new Deno.Command(binary, {
         // Paths in the config are taken literally, never expanded.
         args: ["replicate", "-config", configPath, "-no-expand-env"],
         stdin: "null",
         stdout: "null",
         stderr: "null",
+        // Only what its replica needs (swamp-club#3534); the supervisor
+        // keeps its own environment.
+        ...(replicaType !== undefined
+          ? {
+            env: litestreamChildEnv(replicaType, Deno.env.toObject()),
+            clearEnv: true,
+          }
+          : {}),
       }).spawn();
       return {
         pid: child.pid,

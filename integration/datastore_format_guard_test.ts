@@ -39,6 +39,7 @@ import {
   DATASTORE_FORMAT_MARKER_FILE,
   DATASTORE_FORMAT_MARKER_INVALID_CODE,
   DATASTORE_FORMAT_MARKER_KEY,
+  DATASTORE_FORMAT_MISMATCH_CODE,
   DATASTORE_FORMAT_UNSUPPORTED_CODE,
 } from "../src/domain/datastore/datastore_format.ts";
 import { errorPaths, UserError } from "../src/domain/errors.ts";
@@ -184,11 +185,18 @@ function assertUnchanged(
 
 for (
   const [name, marker, code] of [
-    ["format 3", FORMAT_3, DATASTORE_FORMAT_UNSUPPORTED_CODE],
+    ["format 4", FORMAT_4, DATASTORE_FORMAT_UNSUPPORTED_CODE],
     [
-      "minReaderFormat 3",
-      { format: 2, minReaderFormat: 3 },
+      "minReaderFormat 4",
+      { format: 2, minReaderFormat: 4 },
       DATASTORE_FORMAT_UNSUPPORTED_CODE,
+    ],
+    // A v2 repo's .swamp.yaml (no format) on a format-3 datastore: never
+    // opened as v3 (swamp-club#3534).
+    [
+      "format 3 under a v2 repo's config",
+      FORMAT_3,
+      DATASTORE_FORMAT_MISMATCH_CODE,
     ],
     ["a garbled marker", "{not json", DATASTORE_FORMAT_MARKER_INVALID_CODE],
   ] as const
@@ -263,7 +271,7 @@ Deno.test("datastore format guard: setup onto a remote datastore with a newer fo
     try {
       repos.remote.seedControlPlane(
         DATASTORE_FORMAT_MARKER_KEY,
-        encode(FORMAT_3),
+        encode(FORMAT_4),
       );
       const before = await fingerprint(repos);
       // In-process through libswamp: the CLI's account gate for external
@@ -304,7 +312,7 @@ Deno.test("datastore format guard: a namespaced repo sees the datastore-wide mar
     await appendToDatastoreBlock(repos.repoA, "  namespace: team");
     repos.remote.seedControlPlane(
       DATASTORE_FORMAT_MARKER_KEY,
-      encode(FORMAT_3),
+      encode(FORMAT_4),
     );
     const before = await fingerprint(repos);
     for (
@@ -371,7 +379,7 @@ Deno.test("datastore format guard: a namespaced repo sees the datastore-wide mar
       await appendToDatastoreBlock(repos.repoA, "  namespace: team");
       repos.remote.seedControlPlane(
         DATASTORE_FORMAT_MARKER_KEY,
-        encode(FORMAT_3),
+        encode(FORMAT_4),
       );
       const before = await fingerprint(repos);
       for (
@@ -423,7 +431,7 @@ Deno.test("datastore format guard: one resolved config is checked once; a newly 
     const { datastoreConfig } = await resolveDatastoreForRepo(repos.repoA);
     repos.remote.seedControlPlane(
       DATASTORE_FORMAT_MARKER_KEY,
-      encode(FORMAT_3),
+      encode(FORMAT_4),
     );
     // The config passed the check before the marker existed; the same
     // object is not read again within this process.

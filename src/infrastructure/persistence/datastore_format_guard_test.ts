@@ -17,20 +17,31 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   DATASTORE_FORMAT_MARKER_FILE,
   DatastoreFormatMismatchError,
   InvalidDatastoreFormatMarkerError,
+  UnreachableDatastoreFormatMarkerError,
   UnreadableDatastoreFormatMarkerError,
   UnsupportedDatastoreFormatError,
 } from "../../domain/datastore/datastore_format.ts";
-import type { FilesystemDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import type {
+  CustomDatastoreConfig,
+  FilesystemDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
+import {
+  V3_BUCKET_MIN_EXTENSION_VERSION,
+  V3HostingUnsupportedError,
+} from "../../domain/datastore/v3_hosting.ts";
 import { errorPaths } from "../../domain/errors.ts";
 import {
   checkedDatastoreEngine,
+  datastoreBlockEngine,
+  datastoreEngineOf,
   ensureSupportedDatastoreFormat,
+  isV2CustomDatastore,
 } from "./datastore_format_guard.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -192,4 +203,249 @@ Deno.test("ensureSupportedDatastoreFormat: a filesystem marker that exists but c
       await Deno.chmod(path, 0o644);
     }
   });
+});
+
+/**
+ * A custom datastore config and its fake provider (swamp-club#3534): `read`
+ * answers each marker read, in order; the provider declares every v3
+ * capability unless `capable` is false.
+ */
+function customDatastore(
+  read: Array<() => Promise<Uint8Array | null>>,
+  options: { capable?: boolean; format?: 3; override?: true } = {},
+) {
+  let reads = 0;
+  const provider = {
+    createLock: () => {
+      throw new Error("not used");
+    },
+    createVerifier: () => {
+      throw new Error("not used");
+    },
+    resolveDatastorePath: () => "/ds",
+    datastoreControlPlaneStore: () => ({
+      get: () => (read[reads++] ?? read[read.length - 1])(),
+      put: () => Promise.resolve(),
+      putIfAbsent: () => Promise.resolve(true),
+      delete: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+    }),
+    ...(options.capable === false ? {} : {
+      datastoreWideLease: true as const,
+      storage: () => {
+        throw new Error("not used");
+      },
+      replicaTarget: () => ({ type: "gcs" as const, bucket: "b", prefix: "" }),
+      replicaPaths: () => {
+        throw new Error("not used");
+      },
+    }),
+  };
+  const config: CustomDatastoreConfig = {
+    type: "@test/bucket",
+    config: {},
+    datastorePath: "/ds",
+    cachePath: "/cache",
+    ...(options.format !== undefined ? { format: options.format } : {}),
+    ...(options.override !== undefined ? { override: options.override } : {}),
+  };
+  return {
+    config,
+    reads: () => reads,
+    options: {
+      resolveProvider: () => Promise.resolve(provider),
+      timeoutMs: 50,
+      uncappedTimeoutMs: 200,
+    },
+  };
+}
+
+const bytes = (text: string) => () =>
+  Promise.resolve(new TextEncoder().encode(text));
+const absent = () => Promise.resolve(null);
+const failing = () => Promise.reject(new Error("connection reset"));
+const never = () => new Promise<Uint8Array | null>(() => {});
+
+Deno.test("ensureSupportedDatastoreFormat: an extension datastore whose config and marker say 3 opens v3 (swamp-club#3534)", async () => {
+  const { config, options } = customDatastore([bytes(V3_MARKER)], {
+    format: 3,
+  });
+  assertEquals(
+    await ensureSupportedDatastoreFormat("/repo", config, options),
+    "v3",
+  );
+});
+
+Deno.test("ensureSupportedDatastoreFormat: format 3 in the config with no marker is refused (swamp-club#3534)", async () => {
+  const { config, options } = customDatastore([absent], { format: 3 });
+  await assertRejects(
+    () => ensureSupportedDatastoreFormat("/repo", config, options),
+    DatastoreFormatMismatchError,
+    "no readable format marker",
+  );
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a format-3 marker opens v3 for an override, and is refused under a .swamp.yaml config with no format (swamp-club#3534)", async () => {
+  const override = customDatastore([bytes(V3_MARKER)], { override: true });
+  assertEquals(
+    await ensureSupportedDatastoreFormat(
+      "/repo",
+      override.config,
+      override.options,
+    ),
+    "v3",
+  );
+  // A v2 repo's .swamp.yaml pointed at a v3 bucket: never opened as v3.
+  const persisted = customDatastore([bytes(V3_MARKER)]);
+  await assertRejects(
+    () =>
+      ensureSupportedDatastoreFormat(
+        "/repo",
+        persisted.config,
+        persisted.options,
+      ),
+    DatastoreFormatMismatchError,
+    "says format 2, but the datastore's format marker says format 3",
+  );
+});
+
+Deno.test("ensureSupportedDatastoreFormat: format 3 in the config with an unreadable marker opens v3 provisionally (swamp-club#3534)", async () => {
+  for (const read of [failing, never]) {
+    const { config, options } = customDatastore([read], { format: 3 });
+    assertEquals(
+      await ensureSupportedDatastoreFormat("/repo", config, options),
+      "v3",
+    );
+  }
+});
+
+Deno.test("ensureSupportedDatastoreFormat: an override on a v3-capable datastore whose marker read is slow is read again, never opened as v2 (swamp-club#3534)", async () => {
+  const slowThenV3 = customDatastore([never, bytes(V3_MARKER)], {
+    override: true,
+  });
+  assertEquals(
+    await ensureSupportedDatastoreFormat(
+      "/repo",
+      slowThenV3.config,
+      slowThenV3.options,
+    ),
+    "v3",
+  );
+  assertEquals(slowThenV3.reads(), 2);
+
+  const slowThenAbsent = customDatastore([never, absent], { override: true });
+  assertEquals(
+    await ensureSupportedDatastoreFormat(
+      "/repo",
+      slowThenAbsent.config,
+      slowThenAbsent.options,
+    ),
+    "v2",
+  );
+
+  const unreachable = customDatastore([failing], { override: true });
+  await assertRejects(
+    () =>
+      ensureSupportedDatastoreFormat(
+        "/repo",
+        unreachable.config,
+        unreachable.options,
+      ),
+    UnreachableDatastoreFormatMarkerError,
+    "may say format 3",
+  );
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a .swamp.yaml config with no format keeps v2's skip on an unreadable marker, with one read, though its extension could host v3 (swamp-club#3534)", async () => {
+  // Every v2 S3 and GCS repo: offline, it keeps reading from its cache.
+  for (const read of [failing, never]) {
+    const persisted = customDatastore([read, bytes(V3_MARKER)]);
+    assertEquals(
+      await ensureSupportedDatastoreFormat(
+        "/repo",
+        persisted.config,
+        persisted.options,
+      ),
+      "v2",
+    );
+    assertEquals(persisted.reads(), 1);
+  }
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a datastore whose extension cannot host v3 keeps v2's skip on an unreadable marker, with one read (swamp-club#3534)", async () => {
+  const v2 = customDatastore([failing], { capable: false, override: true });
+  assertEquals(
+    await ensureSupportedDatastoreFormat("/repo", v2.config, v2.options),
+    "v2",
+  );
+  assertEquals(v2.reads(), 1);
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a v3 extension datastore whose extension can no longer host v3 is refused naming the minimum version (swamp-club#3534)", async () => {
+  const downgraded = customDatastore([bytes(V3_MARKER)], {
+    format: 3,
+    capable: false,
+  });
+  const error = await assertRejects(
+    () =>
+      ensureSupportedDatastoreFormat(
+        "/repo",
+        downgraded.config,
+        downgraded.options,
+      ),
+    V3HostingUnsupportedError,
+  );
+  assertStringIncludes(error.message, V3_BUCKET_MIN_EXTENSION_VERSION);
+});
+
+Deno.test("datastoreEngineOf: an unchecked extension config is v3 only when it says format 3 (swamp-club#3534)", () => {
+  assertEquals(
+    datastoreEngineOf({
+      type: "@test/bucket",
+      config: {},
+      datastorePath: "/ds",
+      format: 3,
+    }),
+    "v3",
+  );
+  assertEquals(
+    datastoreEngineOf({
+      type: "@test/bucket",
+      config: {},
+      datastorePath: "/ds",
+    }),
+    "v2",
+  );
+});
+
+Deno.test("datastoreBlockEngine: a format-3 extension block is v3 (swamp-club#3534)", () => {
+  assertEquals(
+    datastoreBlockEngine("/repo", { type: "@swamp/s3-datastore", format: 3 }),
+    "v3",
+  );
+  assertEquals(
+    datastoreBlockEngine("/repo", { type: "@swamp/s3-datastore" }),
+    "v2",
+  );
+});
+
+Deno.test("isV2CustomDatastore: an extension datastore is v2 unless it opened as v3 (swamp-club#3534)", () => {
+  assertEquals(
+    isV2CustomDatastore({
+      type: "@test/bucket",
+      config: {},
+      datastorePath: "/ds",
+    }),
+    true,
+  );
+  assertEquals(
+    isV2CustomDatastore({
+      type: "@test/bucket",
+      config: {},
+      datastorePath: "/ds",
+      format: 3,
+    }),
+    false,
+  );
+  assertEquals(isV2CustomDatastore({ type: "filesystem", path: "/ds" }), false);
 });

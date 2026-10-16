@@ -417,6 +417,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/libswamp/extensions/fmt.ts: createExtensionFmtDeps": TOOLING,
   },
   "temp": {
+    "src/infrastructure/datastore_v3/v3_bucket_setup.ts: holdsV2RootData":
+      "A scratch sync-service cache for v3 setup's v2 probe (swamp-club#3534): fetchContent writes nothing locally, and the directory is removed after.",
     "src/cli/commands/issue_bug.ts: issueBugCommand": UNEVALUATED_TEMP,
     "src/cli/commands/issue_edit.ts: issueEditCommand": UNEVALUATED_TEMP,
     "src/cli/commands/issue_feature.ts: issueFeatureCommand": UNEVALUATED_TEMP,

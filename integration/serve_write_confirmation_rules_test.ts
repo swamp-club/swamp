@@ -68,7 +68,7 @@ Deno.test("write confirmation: every request gated for its push waits for replic
   }
 });
 
-Deno.test("write confirmation: only serve sets confirmReplicated, from replication being on", async () => {
+Deno.test("write confirmation: only serve sets confirmReplicated, from the datastore replicating", async () => {
   const serve = await Deno.readTextFile(
     join(ROOT, "src", "cli", "commands", "serve.ts"),
   );
@@ -76,7 +76,7 @@ Deno.test("write confirmation: only serve sets confirmReplicated, from replicati
   assert(assignment > 0, "serve no longer builds confirmReplicated");
   const guard = serve.slice(assignment, serve.indexOf("?", assignment));
   assert(
-    guard.includes("v3ReplicationEnabled()"),
-    "confirmReplicated must stay undefined while replication is off",
+    guard.includes("v3ReplicatesAt("),
+    "confirmReplicated must stay undefined while the datastore does not replicate",
   );
 });

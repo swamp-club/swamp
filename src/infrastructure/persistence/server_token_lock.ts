@@ -30,6 +30,7 @@ import type { DefinitionRepository } from "../../domain/definitions/repositories
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import { resolveCustomProvider } from "./datastore_global_lock.ts";
+import { lockingConfigOf } from "./datastore_lock_target.ts";
 import { FileLock } from "./file_lock.ts";
 
 // The lock that serialises the writers of one server token, shared by the CLI
@@ -78,9 +79,11 @@ export async function serverTokenLockKey(
  * definition yet. Take it before any per-model lock.
  */
 export async function createServerTokenLock(
-  config: DatastoreConfig,
+  datastoreConfig: DatastoreConfig,
   tokenName: string,
 ): Promise<DistributedLock> {
+  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
+  const config = lockingConfigOf(datastoreConfig);
   const lockKey = await serverTokenLockKey(config.namespace, tokenName);
   const maxWaitMs = resolveLockTimeoutMs();
   if (isCustomDatastoreConfig(config)) {

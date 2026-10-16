@@ -25,17 +25,17 @@ import { UserError } from "../errors.ts";
  * an `_index/` sharded index, `_meta.json` and `.datastore.lock` on S3/GCS,
  * plain files on a filesystem datastore. A datastore without a format marker
  * is format 2. Format 3 is the v3 commit log (`commits.db` and content
- * chunks), which this binary reads only on a filesystem datastore; see
- * {@link supportedDatastoreFormatsFor}.
+ * chunks); see {@link supportedDatastoreFormatsFor}.
  */
 export const SUPPORTED_DATASTORE_FORMATS: readonly number[] = [2, 3];
 
 /**
  * The formats this binary reads on S3, GCS and extension datastores. v3
- * there needs Litestream and the extensions' `storage/1` (Phase 4), so a
- * format-3 marker on one is refused like any newer format.
+ * there (swamp-club#3534) also needs a provider that can host it
+ * (`assertV3Hosting`), which the format guard checks once it reads a
+ * format-3 marker.
  */
-export const SUPPORTED_CUSTOM_DATASTORE_FORMATS: readonly number[] = [2];
+export const SUPPORTED_CUSTOM_DATASTORE_FORMATS: readonly number[] = [2, 3];
 
 /** The format assumed for a datastore that carries no format marker. */
 export const UNMARKED_DATASTORE_FORMAT = 2;
@@ -60,8 +60,8 @@ export function engineForFormat(format: number): DatastoreEngine {
 }
 
 /**
- * The formats this binary reads on a datastore of the given kind: v3 only on
- * a filesystem datastore until Phase 4.
+ * The formats this binary reads on a datastore of the given kind. Both
+ * kinds read v3; an extension datastore also needs a v3-capable provider.
  */
 export function supportedDatastoreFormatsFor(
   kind: "filesystem" | "custom",
@@ -242,6 +242,28 @@ export class UnreadableDatastoreFormatMarkerError extends UserError {
       DATASTORE_FORMAT_MARKER_UNREADABLE_CODE,
     );
     this.name = "UnreadableDatastoreFormatMarkerError";
+    this.source = source;
+  }
+}
+
+/**
+ * Thrown when an extension datastore's format marker cannot be read, and
+ * its provider could host v3 (swamp-club#3534): it may say v3, and opening a
+ * v3 datastore as v2 would write v2 files into it, so swamp refuses rather
+ * than guess.
+ */
+export class UnreachableDatastoreFormatMarkerError extends UserError {
+  readonly source: string;
+
+  constructor(source: string, reason: string) {
+    super(
+      `The datastore format marker ${source} could not be read (${reason}). ` +
+        "It may say format 3, so swamp will not open this datastore as " +
+        "format 2. Check the datastore's connectivity and credentials, and " +
+        "run the command again. Nothing was changed.",
+      DATASTORE_FORMAT_MARKER_UNREADABLE_CODE,
+    );
+    this.name = "UnreachableDatastoreFormatMarkerError";
     this.source = source;
   }
 }

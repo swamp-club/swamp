@@ -85,20 +85,31 @@
  *    names is pinned. A writer that needs one of them synced must first give
  *    it a v3 home ("v3 stream directories" in
  *    `design/enablers/datastores.md`).
- * 11. **The Litestream sidecar is dormant** (swamp-club#3358,
- *    swamp-club#3416). The pinned release (`litestream_pin.ts`) and the
- *    provider that downloads, verifies and caches it live in
- *    `src/infrastructure/datastore_v3/litestream/`, with the sidecar that
- *    runs it. Only the provider, the sidecar's wiring and the supervisor's
- *    entry import the provider; only the provider reads
- *    `SWAMP_LITESTREAM_PATH`; and only `replica_setting.ts` reads the
- *    internal replica setting that turns the sidecar on, which no user sets
- *    until Phase 4E replaces it with the datastore's own bucket.
+ * 11. **The Litestream sidecar runs only through the v3 binding**
+ *    (swamp-club#3358, swamp-club#3416, swamp-club#3534). The pinned release
+ *    (`litestream_pin.ts`) and the provider that downloads, verifies and
+ *    caches it live in `src/infrastructure/datastore_v3/litestream/`, with
+ *    the sidecar that runs it. Only the provider, the sidecar's wiring, the
+ *    supervisor's entry and the binding's platform check import them; only
+ *    the provider reads `SWAMP_LITESTREAM_PATH`; and only
+ *    `replica_setting.ts` reads the internal replica setting tests use. A
+ *    v3 datastore on a bucket replicates to its provider's own target,
+ *    which reaches Litestream only through the resolver and the binding
+ *    (`v3_datastore_binding.ts`); Litestream itself runs with only what its
+ *    replica needs (`litestreamChildEnv`).
+ * 12. **Every v3 path takes the bucket datastore too** (swamp-club#3534).
+ *    No production code pairs a v3 engine check with
+ *    `!isCustomDatastoreConfig`: a v3 extension datastore is opened through
+ *    its binding, never as v2. A bucket datastore's namespaced records live
+ *    under `ns/` in its control plane, built only by the binding, and its
+ *    format marker is confirmed before every lease taken and every copy
+ *    made current.
  *
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
+import { join } from "@std/path";
 import {
   ALWAYS_LOCAL_SUBDIRS,
   DEFAULT_DATASTORE_SUBDIRS,
@@ -192,6 +203,14 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/record_path_guard.ts",
   // swamp-club#3279: `datastore setup --format 3` creates the datastore.
   "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#3534: and on a bucket, after checking the provider can host
+  // v3 here and the target is new and empty.
+  "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/v3_bucket_setup.ts",
+  "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/v3_datastore_binding.ts",
+  // swamp-club#3534: lock status and release, and config migrate, open a
+  // bucket datastore through its binding (v3DatastoreConfigOf).
+  "src/cli/commands/datastore_config_migrate.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/commands/datastore_lock.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3301: `datastore namespace list` reads a v3 datastore's
   // namespaces from its commits.db, read-only, for the CLI and serve.
   "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
@@ -325,6 +344,8 @@ const FS_STORAGE = "src/infrastructure/persistence/fs_datastore_storage.ts";
 
 /** Production imports of the filesystem storage. */
 const PINNED_FS_STORAGE_IMPORTERS: readonly string[] = [
+  // A bucket v3 datastore's chunks go through its provider's storage()
+  // (swamp-club#3534); the binding never builds a filesystem storage.
   // swamp-club#3279: a filesystem v3 datastore stores its chunks in the
   // filesystem storage.
   "src/infrastructure/datastore_v3/v3_datastore.ts -> src/infrastructure/persistence/fs_datastore_storage.ts",
@@ -343,9 +364,9 @@ Deno.test("datastore v3: no production code imports the filesystem storage", asy
   assertPinnedSet(
     edges,
     PINNED_FS_STORAGE_IMPORTERS,
-    "Production imports of the dormant filesystem storage",
-    "Chunk storage is dormant until the v3 opt-in wires it in. Do not\n" +
-      "import it from production code before then.",
+    "Production imports of the filesystem storage",
+    "Only a filesystem v3 datastore stores chunks in the filesystem\n" +
+      "storage. Do not import it from anywhere else.",
   );
 });
 
@@ -353,7 +374,12 @@ Deno.test("datastore v3: no production code imports the filesystem storage", asy
 const STORAGE_CALL = /\.storage\??\.?\(/;
 
 /** Production calls of a provider's `storage()`, as `file:line`. */
-const PINNED_STORAGE_CALLS: readonly string[] = [];
+const PINNED_STORAGE_CALLS: readonly string[] = [
+  // swamp-club#3534: setup checks a bucket holds no chunk, and the binding
+  // gives a bucket v3 datastore its chunk storage.
+  "src/infrastructure/datastore_v3/v3_bucket_setup.ts:125",
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:345",
+];
 
 Deno.test("datastore v3: no production code calls a provider's storage()", async () => {
   const found: string[] = [];
@@ -369,8 +395,8 @@ Deno.test("datastore v3: no production code calls a provider's storage()", async
     found.sort(),
     PINNED_STORAGE_CALLS,
     "Production calls of DatastoreProvider.storage()",
-    "Chunk storage is dormant until the v3 opt-in wires it in. Do not\n" +
-      "reach an extension's storage from production code before then.",
+    "A provider's chunk storage is reached only by the v3 binding and\n" +
+      "setup's target check (swamp-club#3534).",
   );
 });
 
@@ -655,6 +681,9 @@ const PINNED_LITESTREAM_IMPORTERS: readonly string[] = [
   // the hash is checked before every start.
   "src/infrastructure/datastore_v3/litestream/replication_supervisor_entry.ts -> src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts",
   "src/infrastructure/datastore_v3/litestream/v3_replication.ts -> src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts",
+  // swamp-club#3534: binding a bucket datastore checks the pinned release
+  // can replicate on this platform (Windows below the pin cannot).
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts -> src/infrastructure/datastore_v3/litestream/litestream_pin.ts",
 ];
 
 Deno.test("datastore v3: no production code imports the Litestream binary provider", async () => {
@@ -668,9 +697,9 @@ Deno.test("datastore v3: no production code imports the Litestream binary provid
   assertPinnedSet(
     edges,
     PINNED_LITESTREAM_IMPORTERS,
-    "Production imports of the dormant Litestream binary provider",
+    "Production imports of the Litestream binary provider",
     "Downloading and running Litestream happens only through the sidecar\n" +
-      "(swamp-club#3416), which is dormant until Phase 4E turns it on.",
+      "(swamp-club#3416), started for a datastore that replicates.",
   );
 });
 
@@ -712,8 +741,9 @@ Deno.test("datastore v3: only replica_setting.ts reads the internal replica sett
     found.sort(),
     PINNED_V3_REPLICA_READERS,
     "Production readers of SWAMP_V3_REPLICA",
-    "The Litestream sidecar is dormant: only replica_setting.ts may read the\n" +
-      "internal setting that turns it on (swamp-club#3416).",
+    "Only replica_setting.ts may read the internal replica setting tests\n" +
+      "use (swamp-club#3416); a bucket datastore replicates to its own\n" +
+      "target (swamp-club#3534).",
   );
 });
 
@@ -760,19 +790,20 @@ Deno.test("datastore v3: only the replica target resolver calls replicaPaths()",
 });
 
 /**
- * Production files outside the resolver that use it. Dormant until Phase 4E
- * switches the sidecar's replica from `v3ReplicaSetting()` to the
- * datastore's own target.
+ * Production files outside the resolver that use it: the v3 binding, which
+ * gives a bucket datastore its replica (swamp-club#3534).
  */
-const PINNED_REPLICA_TARGET_RESOLVER_USERS: readonly string[] = [];
+const PINNED_REPLICA_TARGET_RESOLVER_USERS: readonly string[] = [
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts",
+];
 
-Deno.test("datastore v3: nothing uses the replica target resolver yet", async () => {
+Deno.test("datastore v3: only the v3 binding uses the replica target resolver", async () => {
   const resolver = `${LITESTREAM_DIR}/replica_target_resolver.ts`;
   const found: string[] = [];
   for await (const filePath of productionSourceFiles(SRC_DIR)) {
     if (repoRelative(filePath) === resolver) continue;
     if (
-      /\b(resolveV3ReplicaSetting|replicaSettingFromTarget|resolveV3ReplicaPaths)\b/
+      /\b(resolveV3ReplicaSetting|resolveV3ProviderReplica|replicaSettingFromTarget|resolveV3ReplicaPaths)\b/
         .test(
           await Deno.readTextFile(filePath),
         )
@@ -784,8 +815,8 @@ Deno.test("datastore v3: nothing uses the replica target resolver yet", async ()
     found.sort(),
     PINNED_REPLICA_TARGET_RESOLVER_USERS,
     "Production users of the replica target resolver",
-    "Replication from a datastore's own replica target is dormant until\n" +
-      "Phase 4E (swamp-club#3507). Switch the source there, not here.",
+    "A datastore's own replica target reaches Litestream only through the\n" +
+      "v3 binding (swamp-club#3534), which every v3 helper reads.",
   );
 });
 
@@ -845,5 +876,128 @@ Deno.test("datastore v3: v3DatastoreFor's callers are pinned", async () => {
     "Production callers of v3DatastoreFor",
     "Make the checkout's copy current first (a repository context, a writer\n" +
       "hold, or ensureV3CopyCurrent), then pin the caller here.",
+  );
+});
+
+/**
+ * A v3 engine check joined by `&&` to `!isCustomDatastoreConfig`, either
+ * way round, across a statement's lines: the gate that kept a v3 extension
+ * datastore on the v2 path before swamp-club#3534.
+ */
+const V3_NOT_CUSTOM_PAIRING =
+  /"v3"\s*&&\s*!isCustomDatastoreConfig\(|!isCustomDatastoreConfig\([^()]*\)\s*&&[^;{]{0,120}"v3"/;
+
+/** Production statements still pairing them, as `file:line`. */
+const PINNED_V3_NOT_CUSTOM_PAIRINGS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code keeps a v3 extension datastore off the v3 path", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    const lines = (await Deno.readTextFile(filePath)).split("\n");
+    lines.forEach((line, index) => {
+      if (!line.includes("isCustomDatastoreConfig(")) return;
+      // Most pairings break across two or three lines.
+      const window = lines.slice(Math.max(0, index - 3), index + 4).join(" ");
+      if (V3_NOT_CUSTOM_PAIRING.test(window)) found.push(`${rel}:${index + 1}`);
+    });
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_V3_NOT_CUSTOM_PAIRINGS,
+    "Production v3 checks that leave out extension datastores",
+    "A v3 extension datastore opens through its binding (swamp-club#3534):\n" +
+      "check the engine alone and pass v3DatastoreConfigOf(repoDir, config)\n" +
+      "to the v3 helpers.",
+  );
+});
+
+/** Production files that build a bucket datastore's namespaced store. */
+const PINNED_BUCKET_NAMESPACED_STORE_USERS: readonly string[] = [
+  // Signal waits and retention watermarks, through v3BucketNamespacedStoreAt.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts",
+];
+
+Deno.test("datastore v3: a bucket datastore's namespaced records live only under ns/", async () => {
+  const binding = "src/infrastructure/datastore_v3/v3_datastore_binding.ts";
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if (rel === binding) continue;
+    const source = await Deno.readTextFile(filePath);
+    if (
+      /\bv3BucketNamespacedStore\b|\bV3_BUCKET_NAMESPACED_PREFIX\b/.test(source)
+    ) {
+      found.push(rel);
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_BUCKET_NAMESPACED_STORE_USERS,
+    "Production users of the bucket namespaced store",
+    "A bucket datastore's namespaced records go under ns/<namespace>/ of\n" +
+      "its control plane, which only the v3 binding builds, so they never\n" +
+      "meet the lease's writer/ or the lineages' lineage/ (swamp-club#3534).",
+  );
+  const source = await Deno.readTextFile(join(SRC_DIR, "..", binding));
+  assert(
+    /export const V3_BUCKET_NAMESPACED_PREFIX = "ns";/.test(source),
+    "the bucket namespaced prefix moved off ns",
+  );
+});
+
+Deno.test("datastore v3: a bucket datastore's marker is confirmed before every lease and copy", async () => {
+  const lock = await Deno.readTextFile(
+    join(SRC_DIR, "infrastructure", "datastore_v3", "v3_writer_lock.ts"),
+  );
+  const takeLease = lock.slice(
+    lock.indexOf("async function takeLease("),
+    lock.indexOf("/** Called whenever this process takes"),
+  );
+  assert(
+    takeLease.indexOf("confirmMarker()") >= 0 &&
+      takeLease.indexOf("confirmMarker()") < takeLease.indexOf(".acquire("),
+    "takeLease must confirm a bucket datastore's marker before the lease",
+  );
+  // Every lease is taken through takeLease.
+  assertEquals(
+    [...lock.matchAll(/writerLease\([^)]*\)\.acquire\(/g)].length,
+    1,
+    "a lease is acquired outside takeLease",
+  );
+  const copy = await Deno.readTextFile(
+    join(SRC_DIR, "infrastructure", "datastore_v3", "litestream", "v3_copy.ts"),
+  );
+  const current = copy.slice(
+    copy.indexOf("export async function makeV3CopyCurrent("),
+    copy.indexOf("async function dropSharedOutboxEntries("),
+  );
+  assert(
+    current.indexOf("confirmMarker()") >= 0 &&
+      current.indexOf("confirmMarker()") < current.indexOf("registry.read("),
+    "makeV3CopyCurrent must confirm a bucket datastore's marker first",
+  );
+});
+
+/** Litestream runs (`new Deno.Command(binary`) in the sidecar's files. */
+const LITESTREAM_RUNS = /new Deno\.Command\(binary\b/;
+
+Deno.test("datastore v3: Litestream runs only with its replica's environment", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if (!isUnder(rel, LITESTREAM_DIR)) continue;
+    const source = await Deno.readTextFile(filePath);
+    const runs = source.split("\n").filter((line) =>
+      LITESTREAM_RUNS.test(line)
+    );
+    const narrowed = (source.match(/litestreamChildEnv\(/g) ?? []).length;
+    if (runs.length > narrowed) found.push(rel);
+  }
+  assertEquals(
+    found,
+    [],
+    "Each Litestream run gets litestreamChildEnv(...) with clearEnv: only\n" +
+      "what its replica needs (swamp-club#3534).",
   );
 });

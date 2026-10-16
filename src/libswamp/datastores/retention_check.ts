@@ -44,12 +44,10 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
-import {
-  type DatastoreConfig,
-  isCustomDatastoreConfig,
-} from "../../domain/datastore/datastore_config.ts";
+import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import {
+  v3DatastoreConfigOf,
   type V3RetentionHistory,
   v3RetentionHistory,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -167,11 +165,14 @@ export function retentionScanSourcesFor(input: {
     datastoreResolver: input.datastoreResolver,
     dataRepo: input.dataRepo,
     ...(input.watermarks ? { watermarks: input.watermarks } : {}),
-    ...(!isCustomDatastoreConfig(config) &&
-        resolverEngine(input.datastoreResolver) === "v3"
+    ...(resolverEngine(input.datastoreResolver) === "v3"
       ? {
-        v3History: (now: Date) =>
-          v3RetentionHistory(input.repoDir, config, now),
+        v3History: async (now: Date) =>
+          v3RetentionHistory(
+            input.repoDir,
+            await v3DatastoreConfigOf(input.repoDir, config),
+            now,
+          ),
       }
       : {}),
   };

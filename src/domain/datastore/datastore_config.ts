@@ -137,6 +137,20 @@ export interface FilesystemDatastoreConfig {
 export interface CustomDatastoreConfig {
   readonly type: string; // anything other than "filesystem"
   readonly config: Record<string, unknown>;
+  /**
+   * 3 when setup created the datastore as v3 (swamp-club#3534); absent for
+   * v2. The datastore's format marker decides the engine: a config that
+   * disagrees with it is refused.
+   */
+  readonly format?: 3;
+  /**
+   * True when the config came from `SWAMP_DATASTORE` or `--datastore`, not
+   * from `.swamp.yaml`: nothing persisted says its format, so the format
+   * guard never opens it as v2 while its marker cannot be read
+   * (swamp-club#3534). A `.swamp.yaml` config of a v3 datastore always says
+   * `format: 3`.
+   */
+  readonly override?: true;
   readonly datastorePath: string;
   readonly cachePath?: string;
   readonly directories?: string[];
@@ -197,7 +211,10 @@ export interface DatastoreConfigData {
   exclude?: string[];
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
-  /** Filesystem only: the format setup created the datastore in (2 or 3). */
+  /**
+   * The format setup created the datastore in: 2 or 3 on a filesystem
+   * datastore, 3 only on an extension datastore (absent means 2).
+   */
   format?: number;
   /**
    * When `true`, model definitions, workflow definitions, vault configs and
@@ -212,12 +229,13 @@ export interface DatastoreConfigData {
 
 /**
  * Reads the `format` key of a `.swamp.yaml` datastore block, or the
- * `--format` flag of `swamp datastore setup`. It must be 2 or 3, and 3 only
- * on a filesystem datastore: v3 for S3, GCS and extension datastores arrives
- * with Phase 4 (swamp-club#3279). Format 2 on another type is the default
- * and is read as no key.
+ * `--format` flag of `swamp datastore setup`. It must be 2 or 3. Format 3
+ * on an extension datastore needs a provider that can host v3
+ * (swamp-club#3534), which is checked where the provider is known: setup,
+ * and the format guard when a command opens the datastore. Format 2 on an
+ * extension datastore is the default and is read as no key.
  *
- * @throws UserError for any other value, or format 3 on another type
+ * @throws UserError for any other value
  */
 export function readDatastoreFormatKey(
   type: string,
@@ -229,14 +247,7 @@ export function readDatastoreFormatKey(
       `The datastore format must be 2 or 3, got ${JSON.stringify(value)}.`,
     );
   }
-  if (type === "filesystem") return value;
-  if (value === 3) {
-    throw new UserError(
-      `Datastore format 3 is only supported on filesystem datastores; it ` +
-        `is not supported yet for S3, GCS or extension datastores. The ` +
-        `"${type}" datastore stays on format 2.`,
-    );
-  }
+  if (type === "filesystem" || value === 3) return value;
   return undefined;
 }
 

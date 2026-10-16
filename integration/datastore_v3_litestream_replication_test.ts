@@ -35,7 +35,10 @@ import {
   assertNotEquals,
   assertRejects,
 } from "@std/assert";
-import { V3ReplicationError } from "../src/domain/datastore_v3/litestream_replication.ts";
+import {
+  V3ChunkCollectionDeferredError,
+  V3ReplicationError,
+} from "../src/domain/datastore_v3/litestream_replication.ts";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
@@ -54,6 +57,7 @@ import { replicaPathFor } from "../src/domain/datastore_v3/replication_lineage.t
 import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import {
   closeV3Datastores,
+  confirmV3CommandReplicated,
   ensureV3CopyCurrent,
   holdV3Writer,
   startV3ReplicationUpkeep,
@@ -681,4 +685,67 @@ Deno.test("v3 replication: with the setting unset a write command starts nothing
     await closeV3Datastores().catch(() => {});
     await Deno.remove(root, { recursive: true }).catch(() => {});
   }
+});
+
+/** Stops a sidecar answering, as a stuck network does: SIGSTOP both. */
+function freeze(presence: { supervisorPid: number; litestreamPid?: number }) {
+  hostLitestreamProcesses.signal(presence.litestreamPid!, "SIGSTOP");
+  hostLitestreamProcesses.signal(presence.supervisorPid, "SIGSTOP");
+}
+
+Deno.test({
+  name:
+    "v3 replication: once a command's own commits are confirmed, a closing sync that fails for later commits does not fail it (swamp-club#3534)",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir);
+      await commitIn(env, 1);
+      await confirmV3CommandReplicated();
+      freeze((await presenceOf(env))!);
+      // Retention's commit, after the command's own.
+      await commitIn(env, 1);
+      await closeV3Datastores();
+    }, { syncDeadlineMs: 1_000 });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replication: without that confirmation, the command's own unconfirmed commits still fail it (swamp-club#3534)",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir);
+      await commitIn(env, 1);
+      freeze((await presenceOf(env))!);
+      await commitIn(env, 1);
+      await assertRejects(() => closeV3Datastores(), V3ReplicationError);
+    }, { syncDeadlineMs: 1_000 });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replication: a chunk sweep waits while the copy's commits cannot be confirmed, and runs once they are (swamp-club#3534)",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir);
+      await commitIn(env, 1);
+      // The first lineage is confirmed, so the lineage rule lets it run.
+      await confirmV3CommandReplicated();
+      const handle = v3DatastoreFor(env.repoDir, env.config);
+      const report = await handle.collectChunks(AbortSignal.timeout(30_000));
+      assertEquals(report.deleted, 0);
+      freeze((await presenceOf(env))!);
+      await commitIn(env, 1);
+      await assertRejects(
+        () => handle.collectChunks(AbortSignal.timeout(30_000)),
+        V3ChunkCollectionDeferredError,
+        "not confirmed replicated",
+      );
+      await closeV3Datastores().catch(() => {});
+    }, { syncDeadlineMs: 1_000 });
+  },
 });

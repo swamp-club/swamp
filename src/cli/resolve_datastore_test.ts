@@ -1096,18 +1096,43 @@ Deno.test("resolveDatastoreConfig: a filesystem datastore without a format key r
   assertEquals("format" in config, false);
 });
 
-Deno.test("resolveDatastoreConfig: format 3 on an extension or legacy s3 datastore is refused", async () => {
-  for (const type of ["s3", "@test/v3-refused"]) {
-    const marker = {
-      swampVersion: "0.0.0",
-      initializedAt: "2026-01-01T00:00:00.000Z",
-      datastore: { type, config: {}, bucket: "b", format: 3 },
-    } as RepoMarkerData;
-    await assertRejects(
-      () => resolveDatastoreConfig(marker, undefined, "/repo"),
-      Error,
-      "not supported yet",
-    );
+Deno.test("resolveDatastoreConfig: an extension datastore carries format 3, and leaves out format 2 (swamp-club#3534)", async () => {
+  ensureTestType("@test/v3-carried");
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    for (const [format, expected] of [[3, 3], [2, undefined]] as const) {
+      const marker = {
+        swampVersion: "0.0.0",
+        initializedAt: "2026-01-01T00:00:00.000Z",
+        datastore: { type: "@test/v3-carried", config: {}, format },
+      } as RepoMarkerData;
+      const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+      assertEquals(isCustomDatastoreConfig(config), true);
+      assertEquals((config as CustomDatastoreConfig).format, expected);
+    }
+  });
+});
+
+Deno.test("resolveDatastoreConfig: the legacy s3 type carries format 3 to @swamp/s3-datastore (swamp-club#3534)", async () => {
+  datastoreTypeRegistry.register({
+    type: "@swamp/s3-datastore",
+    name: "Test S3",
+    description: "Test stand-in for the S3 extension",
+    isBuiltIn: false,
+    createProvider: () => createStubProvider(),
+  });
+  try {
+    await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+      const marker = {
+        swampVersion: "0.0.0",
+        initializedAt: "2026-01-01T00:00:00.000Z",
+        datastore: { type: "s3", bucket: "b", format: 3 },
+      } as RepoMarkerData;
+      const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+      assertEquals(config.type, "@swamp/s3-datastore");
+      assertEquals((config as CustomDatastoreConfig).format, 3);
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType("@swamp/s3-datastore");
   }
 });
 

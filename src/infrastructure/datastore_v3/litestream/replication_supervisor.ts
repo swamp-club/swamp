@@ -48,6 +48,10 @@ import {
   writePresence,
 } from "./replication_files.ts";
 import { SUPERVISOR_MARKER } from "./litestream_processes.ts";
+import {
+  type LitestreamReplicaType,
+  parseLitestreamReplicaType,
+} from "./sidecar_env.ts";
 
 /** What a supervisor is started with. */
 export interface SupervisorOptions {
@@ -58,6 +62,12 @@ export interface SupervisorOptions {
   /** The lineage the config replicates, recorded in `presence.json`. */
   readonly lineageFence: number;
   readonly replicaPath: string;
+  /**
+   * The kind of replica, which narrows the environment Litestream runs
+   * with (swamp-club#3534). Without it Litestream inherits the
+   * supervisor's whole environment.
+   */
+  readonly replicaType?: LitestreamReplicaType;
   /** How long the sidecar stays up unused. */
   readonly idleMs: number;
   /** How long Litestream gets to stop before it is killed. */
@@ -77,7 +87,11 @@ export interface LitestreamChild {
 export interface SupervisorDeps {
   /** Resolves the hash-checked binary, right before each start. */
   resolveBinary(): Promise<string>;
-  startLitestream(binary: string, configPath: string): LitestreamChild;
+  startLitestream(
+    binary: string,
+    configPath: string,
+    replicaType?: LitestreamReplicaType,
+  ): LitestreamChild;
   now(): number;
   sleep(ms: number): Promise<void>;
   /** Resolves once the supervisor is asked to stop (SIGTERM, SIGINT). */
@@ -111,6 +125,9 @@ export function supervisorArgs(options: SupervisorOptions): string[] {
     String(options.lineageFence),
     "--replica-path",
     options.replicaPath,
+    ...(options.replicaType !== undefined
+      ? ["--replica-type", options.replicaType]
+      : []),
     "--idle-ms",
     String(options.idleMs),
     "--stop-wait-ms",
@@ -135,6 +152,7 @@ export function parseSupervisorArgs(
   const commitsDb = text("--db");
   const privateRoot = text("--private-root");
   const replicaPath = text("--replica-path");
+  const replicaType = parseLitestreamReplicaType(text("--replica-type"));
   const lineageFence = count("--lineage");
   const idleMs = count("--idle-ms");
   const stopWaitMs = count("--stop-wait-ms");
@@ -151,6 +169,7 @@ export function parseSupervisorArgs(
     privateRoot,
     lineageFence,
     replicaPath,
+    ...(replicaType !== undefined ? { replicaType } : {}),
     idleMs,
     stopWaitMs,
     tickMs,
@@ -221,7 +240,11 @@ async function superviseHeld(
     // A socket a killed sidecar left behind would make Litestream fail to
     // bind.
     await Deno.remove(paths.socket).catch(() => {});
-    child = deps.startLitestream(await deps.resolveBinary(), paths.config);
+    child = deps.startLitestream(
+      await deps.resolveBinary(),
+      paths.config,
+      options.replicaType,
+    );
   } catch (error) {
     // No record of a supervisor that never ran Litestream.
     await cleanUp(paths);

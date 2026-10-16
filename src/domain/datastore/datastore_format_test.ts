@@ -248,15 +248,22 @@ Deno.test("assertSupportedDatastoreFormat: this binary reads format 3 on a files
   );
 });
 
-Deno.test("assertSupportedDatastoreFormat: S3, GCS and extension datastores still refuse format 3", () => {
+Deno.test("assertSupportedDatastoreFormat: S3, GCS and extension datastores read format 3 (swamp-club#3534)", () => {
+  assertEquals(
+    assertSupportedDatastoreFormat(
+      present({ format: 3, minReaderFormat: 3 }),
+      supportedDatastoreFormatsFor("custom"),
+    ),
+    { kind: "supported", format: 3 },
+  );
   assertThrows(
     () =>
       assertSupportedDatastoreFormat(
-        present({ format: 3, minReaderFormat: 3 }),
+        present({ format: 4, minReaderFormat: 4 }),
         supportedDatastoreFormatsFor("custom"),
       ),
     UnsupportedDatastoreFormatError,
-    "supports format 2 only",
+    "supports formats 2, 3 only",
   );
 });
 

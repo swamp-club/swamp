@@ -22,7 +22,6 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { datastoreGc } from "../../libswamp/datastores/gc.ts";
 import { createDatastoreGcRenderer } from "../../presentation/renderers/datastore_gc.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -30,7 +29,10 @@ import {
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
-import { v3DatastoreFor } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  v3DatastoreConfigOf,
+  v3DatastoreFor,
+} from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -61,9 +63,8 @@ export const datastoreGcCommand = new Command()
         outputMode: cliCtx.outputMode,
       });
     const config = datastoreResolver.config();
-    const v3 = !isCustomDatastoreConfig(config) &&
-        resolverEngine(datastoreResolver) === "v3"
-      ? v3DatastoreFor(repoDir, config)
+    const v3 = resolverEngine(datastoreResolver) === "v3"
+      ? v3DatastoreFor(repoDir, await v3DatastoreConfigOf(repoDir, config))
       : undefined;
 
     await runInCoordinatorRoot(repoContext, async () => {

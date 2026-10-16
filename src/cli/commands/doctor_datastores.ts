@@ -207,8 +207,11 @@ async function createDoctorDatastoresDeps(
       return { unmigrated: found.length > 0, directories: found };
     },
     checkNamespaceContamination: async (config) => {
+      // A v3 datastore has no v2 namespace prefixes to contaminate
+      // (swamp-club#3534).
       if (
-        !config.namespace || !isCustomDatastoreConfig(config)
+        !config.namespace || !isCustomDatastoreConfig(config) ||
+        config.format === 3
       ) {
         return null;
       }
@@ -344,6 +347,12 @@ async function createRepairDeps(
   if (!isCustomDatastoreConfig(config) || !config.namespace) {
     throw new UserError(
       "Repair is only available for custom datastores with a namespace configured.",
+    );
+  }
+  if (config.format === 3) {
+    throw new UserError(
+      "Repair is only available for format 2 datastores: a format 3 (v3) " +
+        "datastore has no v2 namespace prefixes to repair.",
     );
   }
 

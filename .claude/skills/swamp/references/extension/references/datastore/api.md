@@ -128,15 +128,15 @@ case running (see testing.md).
 
 ### `storage()?`
 
-Optional, and not called by swamp yet: it is the content storage of the coming
-v3 datastore. Returns a [`DatastoreStorage`](#datastorestorage) scoped to the
-datastore root, like `datastoreControlPlaneStore()`.
+Optional; a v3 datastore needs it. It holds a v3 datastore's content chunks.
+Returns a [`DatastoreStorage`](#datastorestorage) scoped to the datastore root,
+like `datastoreControlPlaneStore()`.
 
 ### `replicaTarget()?`
 
-Optional, and not called by swamp yet. It says where the coming v3 datastore's
-Litestream replica lives. Swamp appends `_litestream/<fence>/` to `prefix`, so
-never build replica paths yourself.
+Optional; a v3 datastore needs it. It says where a v3 datastore's Litestream
+replica lives. Swamp appends `_litestream/<fence>/` to `prefix`, so never build
+replica paths yourself.
 
 ```typescript
 type V3ReplicaTarget =
@@ -164,7 +164,7 @@ Prove it with `assertReplicaTargetConformance` (see testing.md).
 
 ### `replicaPaths()?`
 
-Optional, and not called by swamp yet. Implement it beside `replicaTarget()` so
+Optional; a v3 datastore needs it. Implement it beside `replicaTarget()` so
 swamp can remove the Litestream path of a lineage a takeover replaced:
 `storage()` is chunk-keyed and cannot reach those objects. Without it, old
 lineage paths and records stay on the bucket, and chunk collection waits on

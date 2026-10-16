@@ -23,7 +23,10 @@ import {
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import {
+  type DatastorePathResolver,
+  resolverEngine,
+} from "../../domain/datastore/datastore_path_resolver.ts";
 import type { PushPreviewSummary } from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { dirHasFiles } from "../../infrastructure/persistence/directory_merge.ts";
@@ -103,7 +106,23 @@ export async function createDatastoreSyncDeps(
   await datastoreTypeRegistry.ensureLoaded();
   const config = datastoreResolver.config();
 
-  if (isCustomDatastoreConfig(config)) {
+  // A v3 datastore on a bucket replicates as it commits: nothing to sync
+  // (swamp-club#3534). A filesystem v3 datastore keeps its own refusal below.
+  if (
+    isCustomDatastoreConfig(config) &&
+    resolverEngine(datastoreResolver) === "v3"
+  ) {
+    return makeUnsupportedDeps(
+      config.type,
+      "Datastore sync is only for format 2 datastores. This is a format 3 " +
+        "(v3) datastore, which replicates to its bucket as it commits, so " +
+        "there is nothing to sync.",
+    );
+  }
+  if (
+    isCustomDatastoreConfig(config) &&
+    resolverEngine(datastoreResolver) !== "v3"
+  ) {
     await datastoreTypeRegistry.ensureTypeLoaded(config.type);
     const typeInfo = datastoreTypeRegistry.get(config.type);
     if (!typeInfo?.createProvider) {

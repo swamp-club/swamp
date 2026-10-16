@@ -82,6 +82,23 @@ export function resolveV3ReplicaSetting(
 ): V3ReplicaSetting {
   const setting = v3ReplicaSetting();
   if (setting !== undefined) return setting;
+  return resolveV3ProviderReplica(provider, datastoreType);
+}
+
+/**
+ * The replica the provider's own replica target names, whatever the
+ * internal replica setting says: what a v3 bucket datastore replicates to
+ * in production, and the root its local copy is keyed by
+ * (swamp-club#3534). Setup calls it so the provider's refusals surface as
+ * they are, in tests too.
+ *
+ * @throws UserError when the provider has no `replicaTarget()`, refuses
+ * in it, or returns a target swamp cannot use
+ */
+export function resolveV3ProviderReplica(
+  provider: Pick<DatastoreProvider, "replicaTarget">,
+  datastoreType: string,
+): V3ReplicaSetting {
   if (provider.replicaTarget === undefined) {
     throw new UserError(
       `The ${datastoreType} datastore does not declare replicaTarget(), so it ` +

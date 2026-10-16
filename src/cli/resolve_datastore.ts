@@ -214,6 +214,7 @@ export async function parseDatastoreEnvVar(
             | "full"
             | "lazy"
             | undefined,
+          override: true,
         };
       }
 
@@ -290,6 +291,9 @@ export async function parseDatastoreEnvVar(
       | "full"
       | "lazy"
       | undefined,
+    // Not persisted in the repo: no `format` key says what it is
+    // (swamp-club#3534).
+    override: true,
   };
 }
 
@@ -406,6 +410,7 @@ export async function resolveDatastoreConfig(
           exclude: dsFields.exclude ?? ds.exclude,
           hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
           namespace: dsFields.namespace ?? ds.namespace,
+          ...(format === 3 ? { format: 3 as const } : {}),
         };
       }
 
@@ -504,6 +509,7 @@ export async function resolveDatastoreConfig(
       exclude: dsFields.exclude ?? ds.exclude,
       hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
       namespace: dsFields.namespace ?? ds.namespace,
+      ...(format === 3 ? { format: 3 as const } : {}),
     };
   }
 

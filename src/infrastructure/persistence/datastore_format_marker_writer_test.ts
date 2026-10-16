@@ -19,7 +19,11 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
-import { writeDatastoreFormatMarker } from "./datastore_format_marker_writer.ts";
+import {
+  datastoreFormatMarkerText,
+  writeControlPlaneFormatMarker,
+  writeDatastoreFormatMarker,
+} from "./datastore_format_marker_writer.ts";
 import { readDatastoreFormatMarker } from "./datastore_format_marker_reader.ts";
 import { ensureSupportedDatastoreFormat } from "./datastore_format_guard.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -120,4 +124,24 @@ Deno.test("writeDatastoreFormatMarker: without hard links it creates the marker 
       "already exists",
     );
   });
+});
+
+Deno.test("writeControlPlaneFormatMarker: writes the marker once, as the filesystem marker reads, and reports a second write (swamp-club#3534)", async () => {
+  const records = new Map<string, Uint8Array>();
+  const store = {
+    putIfAbsent(key: string, data: Uint8Array): Promise<boolean> {
+      if (records.has(key)) return Promise.resolve(false);
+      records.set(key, data);
+      return Promise.resolve(true);
+    },
+  };
+  const marker = { format: 3, minReaderFormat: 3, writtenBy: "1.2.3" };
+  assertEquals(await writeControlPlaneFormatMarker(store, marker), true);
+  assertEquals(
+    await writeControlPlaneFormatMarker(store, { ...marker, format: 4 }),
+    false,
+  );
+  const written = new TextDecoder().decode(records.get("datastore-format"));
+  assertEquals(written, datastoreFormatMarkerText(marker));
+  assertEquals(JSON.parse(written), marker);
 });

@@ -540,6 +540,7 @@ export class LitestreamReplicator {
           privateRoot: dirname(paths.privateDir),
           lineageFence,
           replicaPath,
+          replicaType: replica.type,
           idleMs: timings.idleMs,
           stopWaitMs: timings.stopWaitMs,
           tickMs: timings.tickMs,

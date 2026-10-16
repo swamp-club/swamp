@@ -53,6 +53,7 @@ import {
   type ConfigAdoptionPlan,
   type ConfigAdoptionSkipReason,
 } from "../../infrastructure/datastore_v3/v3_config_adoption.ts";
+import { v3DatastoreConfigOf } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 /**
  * Pulls the datastore's config tier into the cache, so the migration
@@ -230,16 +231,14 @@ export const datastoreConfigMigrateCommand = new Command()
 
     // A v3 config tier is what its commits say, so the repo's existing
     // config is committed rather than copied (swamp-club#3300).
-    if (
-      repoContext.commitLog !== undefined &&
-      !isCustomDatastoreConfig(datastoreConfig)
-    ) {
+    if (repoContext.commitLog !== undefined) {
       const configBase = datastoreResolver.resolvePath("config");
       const v3ModelsDir = resolveModelsDir(marker);
       const plan = await adoptV3Config({
         repoContext,
         repoDir,
-        config: datastoreConfig,
+        // A bucket datastore's location (swamp-club#3534).
+        config: await v3DatastoreConfigOf(repoDir, datastoreConfig),
         configBase,
         lockfileSource: join(
           isAbsolute(v3ModelsDir) ? v3ModelsDir : resolve(repoDir, v3ModelsDir),

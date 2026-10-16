@@ -20,9 +20,36 @@
 import { join } from "@std/path";
 import {
   DATASTORE_FORMAT_MARKER_FILE,
+  DATASTORE_FORMAT_MARKER_KEY,
   type DatastoreFormatMarker,
 } from "../../domain/datastore/datastore_format.ts";
+import type { WritableDatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+
+/** A format marker as it is written, on a filesystem or a control plane. */
+export function datastoreFormatMarkerText(
+  marker: DatastoreFormatMarker,
+): string {
+  return JSON.stringify(marker, null, 2) + "\n";
+}
+
+/**
+ * Writes an extension datastore's format marker as the control-plane
+ * record `datastore-format` at its datastore-wide root (swamp-club#3534),
+ * only if no marker is there: of two concurrent setups exactly one writes
+ * it. Resolves true when this call created it, false when a marker was
+ * already there, which the caller reads to tell a lost race from another
+ * datastore.
+ */
+export async function writeControlPlaneFormatMarker(
+  store: Pick<WritableDatastoreControlPlaneStore, "putIfAbsent">,
+  marker: DatastoreFormatMarker,
+): Promise<boolean> {
+  return await store.putIfAbsent(
+    DATASTORE_FORMAT_MARKER_KEY,
+    new TextEncoder().encode(datastoreFormatMarkerText(marker)),
+  );
+}
 
 /**
  * Writes a filesystem datastore's format marker at
@@ -44,7 +71,7 @@ export async function writeDatastoreFormatMarker(
   } = {},
 ): Promise<string> {
   const path = join(datastorePath, DATASTORE_FORMAT_MARKER_FILE);
-  const text = JSON.stringify(marker, null, 2) + "\n";
+  const text = datastoreFormatMarkerText(marker);
   const link = options.link ?? Deno.link;
   const exists = () =>
     markErrorPaths(

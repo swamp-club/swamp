@@ -523,8 +523,10 @@ import {
   keepV3WriterMarkers,
   startV3ReplicationUpkeep,
   v3CommitMark,
+  v3DatastoreConfigOf,
   v3DatastoreFor,
   V3MaintenanceTimer,
+  v3ReplicatesAt,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import { pushChangedToRemote } from "../../serve/handlers/shared.ts";
 import {
@@ -538,7 +540,6 @@ import { GcMutex } from "../../serve/gc_mutex.ts";
 import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
   setV3SyncDeadline,
-  v3ReplicationEnabled,
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
 
 const DISPATCH_ENV_ALLOW_HELP =
@@ -2983,30 +2984,32 @@ export const serveCommand = new Command()
 
     const datastoreEngine = resolverEngine(repoDatastoreResolver);
 
+    // A v3 datastore's location: the filesystem datastore, or a bucket
+    // datastore's local root (swamp-club#3534).
+    const v3Location = datastoreEngine === "v3"
+      ? await v3DatastoreConfigOf(resolvedRepoDir, datastoreConfig)
+      : undefined;
     // A v3 datastore is maintained by its writer: serve compacts history and
     // sweeps chunks while it runs (swamp-club#3279).
-    const v3Maintenance = !isCustomDatastoreConfig(datastoreConfig) &&
-        datastoreEngine === "v3"
-      ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, datastoreConfig))
+    const v3Maintenance = v3Location !== undefined
+      ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, v3Location))
       : undefined;
     v3Maintenance?.start();
     // Its Litestream sidecar, kept while serve holds the lease; nothing
-    // while replication is off (swamp-club#3416).
-    const v3Replication = v3Maintenance !== undefined &&
-        !isCustomDatastoreConfig(datastoreConfig)
-      ? startV3ReplicationUpkeep(resolvedRepoDir, datastoreConfig)
-      : undefined;
+    // while the datastore does not replicate (swamp-club#3416).
+    const v3Replication =
+      v3Maintenance !== undefined && v3Location !== undefined
+        ? startV3ReplicationUpkeep(resolvedRepoDir, v3Location)
+        : undefined;
     // A write request answers once its commits are replicated; nothing waits
-    // while replication is off (swamp-club#3489).
+    // while the datastore does not replicate (swamp-club#3489).
     const confirmReplicated = v3Replication !== undefined &&
-        !isCustomDatastoreConfig(datastoreConfig) && v3ReplicationEnabled()
-      ? ((path: string) => () => confirmV3Replicated(path))(
-        datastoreConfig.path,
-      )
+        v3Location !== undefined && v3ReplicatesAt(v3Location.path)
+      ? ((path: string) => () => confirmV3Replicated(path))(v3Location.path)
       : undefined;
     const replicationMark = confirmReplicated !== undefined &&
-        !isCustomDatastoreConfig(datastoreConfig)
-      ? ((path: string) => () => v3CommitMark(path))(datastoreConfig.path)
+        v3Location !== undefined
+      ? ((path: string) => () => v3CommitMark(path))(v3Location.path)
       : undefined;
 
     let configPoller: ConfigPoller | null = null;
@@ -3220,8 +3223,11 @@ export const serveCommand = new Command()
     }
 
     // Probe deployment stack and resolve durability mode.
+    // A v3 datastore's serve keeps its control plane in the checkout, as a
+    // filesystem one does, whatever the datastore replicates to
+    // (swamp-club#3534).
     const datastoreClass: DatastoreClassification =
-      isCustomDatastoreConfig(datastoreConfig)
+      isCustomDatastoreConfig(datastoreConfig) && v3Location === undefined
         ? {
           kind: "remote",
           type: datastoreConfig.type,
@@ -3393,7 +3399,9 @@ export const serveCommand = new Command()
     // Whether the run records this instance reads are current as it boots:
     // always on a filesystem datastore, and on a synced one only when the
     // boot hydration below pulled without failing (swamp-club#3108).
-    let runRecordsCurrentAtBoot = !isCustomDatastoreConfig(datastoreConfig);
+    // A v3 datastore's context caught up from its commit log at open.
+    let runRecordsCurrentAtBoot = !isCustomDatastoreConfig(datastoreConfig) ||
+      v3Location !== undefined;
     const MIGRATION_SENTINEL = "migration/root-import-complete";
     if (hasRemoteControlPlane && syncService) {
       // Migration: if a namespace is configured, read root control-plane
@@ -3586,12 +3594,13 @@ export const serveCommand = new Command()
         runsInDatastore: runsLiveInDatastore(
           new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
         ),
+        v3: v3Location,
       },
     );
     repoContext.retentionWatermarks = resolveRetentionWatermarks(
       datastoreConfig,
       syncService,
-      { namespaceBound: true },
+      { namespaceBound: true, v3: v3Location },
     );
     attachSignalWaits(
       repoContext,
@@ -4406,7 +4415,8 @@ export const serveCommand = new Command()
     // fallback store is this host's own disk, where no peer would look.
     repoContext.continuationClaims =
       isAtomicControlPlaneStore(controlPlaneStore) &&
-        (hasRemoteControlPlane || !isCustomDatastoreConfig(datastoreConfig))
+        (hasRemoteControlPlane || !isCustomDatastoreConfig(datastoreConfig) ||
+          v3Location !== undefined)
         ? continuationClaimsOver(controlPlaneStore, serveHolder(instanceId), {
           staleMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
         })
@@ -4417,6 +4427,7 @@ export const serveCommand = new Command()
     // A repository that keeps its run records out of the datastore has one
     // copy of each, and nothing to compare.
     const runRecordsSynced = isCustomDatastoreConfig(datastoreConfig) &&
+      v3Location === undefined &&
       runsLiveInDatastore(
         new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
       );
@@ -7571,12 +7582,12 @@ export const serveCommand = new Command()
               ),
             afterPass: async () => {
               repoContext.catalogStore.checkpoint();
-              if (v3Maintenance && !isCustomDatastoreConfig(datastoreConfig)) {
+              if (v3Maintenance && v3Location !== undefined) {
                 // Folds the history that still holds reaped content, as the
                 // maintenance timer's run: never beside a tick's own sweep.
                 await v3Maintenance.runExclusive(() =>
                   compactRetentionQuietly(
-                    v3DatastoreFor(resolvedRepoDir, datastoreConfig),
+                    v3DatastoreFor(resolvedRepoDir, v3Location),
                     new Date(),
                   )
                 );
@@ -7668,7 +7679,8 @@ export const serveCommand = new Command()
     // left running.
     const sweepStart = decideContinuationSweepStart({
       intervalMs: continuationSweepIntervalMs,
-      syncedDatastore: isCustomDatastoreConfig(datastoreConfig),
+      syncedDatastore: isCustomDatastoreConfig(datastoreConfig) &&
+        v3Location === undefined,
       sharedClaims: hasRemoteControlPlane &&
         repoContext.continuationClaims !== undefined,
       runRecordsCurrentAtBoot,
@@ -7686,7 +7698,8 @@ export const serveCommand = new Command()
         "Continuation sweep not started: the boot hydration did not complete, so this instance's run records may be out of date. Runs are still continued when a signal arrives here; restart to enable the sweep",
       );
     } else {
-      const synced = isCustomDatastoreConfig(datastoreConfig);
+      const synced = isCustomDatastoreConfig(datastoreConfig) &&
+        v3Location === undefined;
       // After boot this instance's run records fall behind a synced
       // datastore, and nothing in a record says so. Later passes run only
       // where each run can be compared with the remote before it resumes.

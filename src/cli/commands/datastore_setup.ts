@@ -74,6 +74,7 @@ import {
   promptLineWithDefault,
 } from "../prompt_helpers.ts";
 import { VERSION } from "./version.ts";
+import { V3_BUCKET_MIN_EXTENSION_VERSION } from "../../domain/datastore/v3_hosting.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -164,9 +165,10 @@ async function nudgeVaultMigration(repoDir: string): Promise<void> {
 }
 
 /**
- * Reads `--format` for setup (swamp-club#3279): 2 or 3 on a filesystem
- * datastore, 2 on any other type. The same rule `.swamp.yaml` follows
- * (`readDatastoreFormatKey`), so the flag and the file refuse alike.
+ * Reads `--format` for setup (swamp-club#3279): 2 or 3. The same rule
+ * `.swamp.yaml` follows (`readDatastoreFormatKey`), so the flag and the
+ * file refuse alike. Whether an extension datastore can host format 3 is
+ * checked once its provider is built (swamp-club#3534).
  */
 function parseSetupFormat(
   value: unknown,
@@ -264,6 +266,10 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
       "Set up with namespace (shared prefix)",
       `swamp datastore setup extension @swamp/s3-datastore --namespace my-project --config '{"bucket":"shared","prefix":"swamp","region":"us-east-1"}'`,
     )
+    .example(
+      "Set up a v3 datastore on a new, empty bucket prefix",
+      `swamp datastore setup extension @swamp/s3-datastore --format 3 --config '{"bucket":"my-bucket","prefix":"swamp","region":"us-east-1"}'`,
+    )
     .arguments("<type:string>")
     .option(
       "--repo-dir <dir:string>",
@@ -294,8 +300,12 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
     )
     .option(
       "--format <format:integer>",
-      "Datastore format: 2 only; format 3 is not supported yet for " +
-        "extension datastores",
+      "Datastore format: 2 (the default) or 3, the v3 commit log, replicated " +
+        "to the bucket through Litestream. Format 3 needs " +
+        "@swamp/s3-datastore or @swamp/gcs-datastore " +
+        `${V3_BUCKET_MIN_EXTENSION_VERSION} or later (run \`swamp extension ` +
+        "pull <type>` first for the latest), a new, empty bucket prefix and a " +
+        "repository with no records",
     ),
 ).action(async function (options: AnyOptions, type: string) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -303,9 +313,15 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
     "setup",
     "extension",
   ]);
-  parseSetupFormat(options.format, type);
+  const format = parseSetupFormat(options.format, type);
 
   const server = resolveServeUrl(options.server as string | undefined);
+  if (server && format === 3) {
+    throw new UserError(
+      "--format 3 cannot be set up through --server yet: run the setup in " +
+        "the repository, without --server. Nothing was changed.",
+    );
+  }
   if (server) {
     let config: Record<string, unknown>;
     try {
@@ -398,7 +414,9 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
     await resolveDatastoreForRepo(resolveRepoDir(options.repoDir));
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
+  const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath, {
+    swampVersion: VERSION,
+  });
   const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
   const hydrationStrategy = options.hydrationStrategy as
@@ -443,6 +461,10 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
         currentConfig,
         swampPath(repoDir),
       ),
+      ...(isCustomDatastoreConfig(currentConfig) && currentConfig.cachePath
+        ? { outgoingCachePath: currentConfig.cachePath }
+        : {}),
+      ...(format !== undefined ? { format } : {}),
     }),
     renderer.handlers(),
   );

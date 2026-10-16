@@ -22,7 +22,10 @@ import {
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import {
+  type DatastorePathResolver,
+  resolverEngine,
+} from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MigrateIndexResult } from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -64,6 +67,17 @@ export async function createMigrateIndexDeps(
   await datastoreTypeRegistry.ensureLoaded();
   const config = datastoreResolver.config();
 
+  // A v3 datastore on a bucket has no v2 index (swamp-club#3534).
+  if (
+    isCustomDatastoreConfig(config) &&
+    resolverEngine(datastoreResolver) === "v3"
+  ) {
+    return makeUnsupportedDeps(
+      config.type,
+      "Index migration is only for format 2 datastores. This is a format 3 " +
+        "(v3) datastore, which has no v2 index to migrate.",
+    );
+  }
   if (!isCustomDatastoreConfig(config)) {
     return makeUnsupportedDeps(
       config.type,
