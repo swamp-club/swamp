@@ -293,6 +293,51 @@ scope.
 }
 ```
 
+## Vault Existence Provider Interface
+
+A provider that can tell whether a secret exists without reading its value
+opts in via `VaultExistenceProvider` alongside `VaultProvider`.
+
+```typescript
+interface VaultExistenceProvider {
+  has(secretKey: string): Promise<boolean>;
+}
+```
+
+The contract of `has(secretKey)` is that `get(secretKey)` would succeed under
+the same provider credentials: `true` exactly when `get` would resolve, `false`
+for a key that does not exist, and the same error `get` raises when the caller
+is not authorized. Presence in a listing or a describe call is not enough, and
+`has` never reads the value. A provider whose API cannot answer without reading
+the value does not implement it; the typed-secrets existence check
+(`design/enablers/typed-secrets.md` Section 3.4) then falls back to one probe
+read per reference per run.
+
+Detection uses a runtime type guard (`isVaultExistenceProvider()`), as above,
+so any `has` method opts a provider in; one that means something else must be
+renamed or brought to the contract. `VaultService.supportsExistenceCheck()`
+reports it, so a caller can tell a `has`
+answer from a probe read, and `VaultService.has()` authorizes `read` under the
+run vault access scope before delegating. It runs no refresh hook and writes no
+audit entry, because no value is read; a stale hook that would mint a value on
+`get` therefore does not make `has` true, which reports what is stored now.
+Nothing surfaces the capability in `vault inspect` or serve.
+
+Built-in providers: `local_encryption` answers `has` by opening the secret's
+file read-only and closing it unread (presence and read permission in one),
+plus its cached key material, so it never reads or decrypts the value. A
+present file that cannot be decrypted therefore answers `true`; `get` reports
+that integrity fault at load. The `mock` provider answers from its map. The
+`_token-secrets` control-plane provider does not implement `has`: its store has
+no presence primitive other than a listing, and the existence check authorizes
+each reference as a load would (Section 3.4) while a load refuses that reserved
+vault (Section 3.3), so nothing is expected to ask.
+
+`assertVaultExistenceConformance` in `packages/testing/` holds a provider to the
+contract, including a counting proof that `has` reads no value, and
+`createVaultTestContext({ withExistence: true })` counts `get` and `has` calls
+separately.
+
 ## Expression Syntax
 
 Expressions read vaults with `vault.get()`:

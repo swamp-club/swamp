@@ -19,6 +19,7 @@
 
 import type {
   VaultDeleteProvider,
+  VaultExistenceProvider,
   VaultProvider,
   VaultPutOptions,
 } from "./vault_provider.ts";
@@ -27,7 +28,8 @@ import type {
  * Mock vault provider for testing and demonstrations.
  * Returns predefined values for known secret keys.
  */
-export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
+export class MockVaultProvider
+  implements VaultProvider, VaultDeleteProvider, VaultExistenceProvider {
   private readonly secrets = new Map<string, string>();
   private readonly name: string;
 
@@ -84,6 +86,15 @@ export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
     }
     this.secrets.delete(secretKey);
     return Promise.resolve();
+  }
+
+  /**
+   * Answers presence from the in-memory map. The map lookup never touches the
+   * value, so the {@link VaultExistenceProvider} contract holds by
+   * construction: `has` is true exactly when {@link get} would resolve.
+   */
+  has(secretKey: string): Promise<boolean> {
+    return Promise.resolve(this.secrets.has(secretKey));
   }
 
   /**

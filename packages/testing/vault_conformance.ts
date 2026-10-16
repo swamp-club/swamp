@@ -22,6 +22,7 @@ import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
 import {
   VaultAnnotation,
   type VaultAnnotationProvider,
+  type VaultExistenceProvider,
   type VaultProvider,
 } from "./vault_types.ts";
 
@@ -593,6 +594,288 @@ export async function assertVaultAnnotationConformance(
       for (const key of annotatedKeys) {
         try {
           await provider.deleteAnnotation(key);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The vault export shape for vaults that support existence checks.
+ * Extends the base VaultExport with the VaultExistenceProvider method.
+ */
+export interface VaultExistenceExport {
+  type: string;
+  name: string;
+  description: string;
+  configSchema: { safeParse: (v: unknown) => { success: boolean } };
+  createProvider: (
+    name: string,
+    config: Record<string, unknown>,
+  ) => VaultProvider & VaultExistenceProvider;
+}
+
+/** Options for vault existence export conformance. */
+export interface VaultExistenceExportConformanceOptions {
+  /** Configs that should pass schema validation. At least one required. */
+  validConfigs: Record<string, unknown>[];
+}
+
+/**
+ * Asserts that a vault export's createProvider returns an object that
+ * implements VaultExistenceProvider.
+ *
+ * Call this **after** `assertVaultExportConformance`. It is a separate call
+ * because existence checks are opt-in — a provider implements `has()` only
+ * where its API can answer without reading the value.
+ *
+ * ```typescript
+ * import {
+ *   assertVaultExistenceExportConformance,
+ *   assertVaultExportConformance,
+ * } from "@swamp-club/swamp-testing";
+ * import { vault } from "./my_vault.ts";
+ *
+ * Deno.test("vault export conforms with existence checks", () => {
+ *   assertVaultExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ *   assertVaultExistenceExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ * });
+ * ```
+ */
+export function assertVaultExistenceExportConformance(
+  vaultExport: VaultExistenceExport,
+  options: VaultExistenceExportConformanceOptions,
+): void {
+  assertEquals(
+    options.validConfigs.length > 0,
+    true,
+    "At least one valid config must be provided",
+  );
+
+  const provider = vaultExport.createProvider(
+    "existence-conformance-test",
+    options.validConfigs[0],
+  );
+  assertExists(provider, "createProvider must return a provider");
+  assertEquals(
+    typeof provider.has,
+    "function",
+    "provider must have has()",
+  );
+}
+
+/** Options for vault existence behavioral conformance. */
+export interface VaultExistenceConformanceOptions {
+  /** Prefix for test keys to avoid collisions (default: "swamp-conformance-test-"). */
+  keyPrefix?: string;
+  /** Remove test keys after the test (default: true). */
+  cleanup?: boolean;
+  /**
+   * Returns how many secret values the provider has read so far. When
+   * supplied, the suite reads it immediately before and after every has()
+   * call and asserts it did not change, which proves a has() answer never
+   * reads a value. Wire it to the provider's own counter; for
+   * createVaultTestContext({ withExistence: true }) that is
+   * getOperationsByMethod("get").length.
+   */
+  getValueReadCount?: () => number;
+  /**
+   * A key the provider's credentials may not read. When supplied, the suite
+   * asserts has() and get() both reject for it with the same error name and
+   * message. The key is never written.
+   */
+  unauthorizedKey?: string;
+}
+
+/**
+ * Asserts that a VaultExistenceProvider implementation satisfies the
+ * behavioral contract: has() is true exactly when get() succeeds, false for
+ * a missing key, rejects an unauthorized key with the same error get()
+ * raises, and never reads a value.
+ *
+ * Tests: has(missing) is false and get(missing) rejects; after put(), has()
+ * is true and get() resolves; writing a second key leaves the first answer
+ * unchanged; after delete() (when the provider has one), has() is false and
+ * get() rejects; every answer is a boolean. With `getValueReadCount`, no
+ * has() call changes the count. With `unauthorizedKey`, has() and get()
+ * reject alike.
+ *
+ * **Warning**: This hits real infrastructure. Test keys are prefixed and
+ * cleaned up by default.
+ *
+ * ```typescript
+ * import { assertVaultExistenceConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("vault existence contract", async () => {
+ *   const provider = vault.createProvider("test", { region: "us-east-1" });
+ *   await assertVaultExistenceConformance(provider);
+ * });
+ * ```
+ */
+export async function assertVaultExistenceConformance(
+  provider: VaultProvider & VaultExistenceProvider,
+  options?: VaultExistenceConformanceOptions,
+): Promise<void> {
+  const prefix = options?.keyPrefix ?? "swamp-conformance-test-";
+  const cleanup = options?.cleanup ?? true;
+  const readCount = options?.getValueReadCount;
+  const createdKeys: string[] = [];
+
+  const deleteFn = (provider as Partial<{ delete: unknown }>).delete;
+  const canDelete = typeof deleteFn === "function";
+  const remove = (key: string) =>
+    (provider as unknown as { delete(k: string): Promise<void> }).delete(key);
+
+  // has() bracketed by the read count, so the suite's own get() calls
+  // between has() calls never hide or fake a read inside has().
+  async function has(key: string): Promise<boolean> {
+    const before = readCount?.();
+    const answer = await provider.has(key);
+    if (readCount) {
+      assertEquals(
+        readCount(),
+        before,
+        `has("${key}") must not read a value`,
+      );
+    }
+    assertEquals(
+      typeof answer,
+      "boolean",
+      `has("${key}") must resolve a boolean`,
+    );
+    return answer;
+  }
+
+  async function getSucceeds(key: string): Promise<boolean> {
+    try {
+      await provider.get(key);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function rejection(fn: () => Promise<unknown>): Promise<Error | null> {
+    try {
+      await fn();
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  try {
+    // missing key: has() false, get() rejects
+    const missingKey = `${prefix}nonexistent-${
+      crypto.randomUUID().slice(0, 8)
+    }`;
+    assertEquals(
+      await has(missingKey),
+      false,
+      "has() must resolve false for a key that was never put()",
+    );
+    assertEquals(
+      await getSucceeds(missingKey),
+      false,
+      "get() must reject for a key has() answers false",
+    );
+
+    // present key: has() true, get() resolves
+    const testKey1 = `${prefix}${crypto.randomUUID().slice(0, 8)}`;
+    await provider.put(testKey1, "existence-value-1");
+    createdKeys.push(testKey1);
+    assertEquals(
+      await has(testKey1),
+      true,
+      "has() must resolve true for a key that was put()",
+    );
+    assertEquals(
+      await getSucceeds(testKey1),
+      true,
+      "get() must succeed for a key has() answers true",
+    );
+
+    // a second key leaves the first answer unchanged
+    const testKey2 = `${prefix}${crypto.randomUUID().slice(0, 8)}`;
+    await provider.put(testKey2, "existence-value-2");
+    createdKeys.push(testKey2);
+    assertEquals(
+      await has(testKey2),
+      true,
+      "has() must resolve true for a second key that was put()",
+    );
+    assertEquals(
+      await has(testKey1),
+      true,
+      "has(key1) must still be true after writing key2",
+    );
+
+    // delete, when the provider supports it
+    if (canDelete) {
+      await remove(testKey2);
+      createdKeys.splice(createdKeys.indexOf(testKey2), 1);
+      assertEquals(
+        await has(testKey2),
+        false,
+        "has() must resolve false after delete()",
+      );
+      assertEquals(
+        await getSucceeds(testKey2),
+        false,
+        "get() must reject after delete()",
+      );
+    }
+
+    // unauthorized key: has() and get() reject alike
+    if (options?.unauthorizedKey !== undefined) {
+      const key = options.unauthorizedKey;
+      const before = readCount?.();
+      const hasError = await rejection(() => provider.has(key));
+      if (readCount) {
+        assertEquals(
+          readCount(),
+          before,
+          `has("${key}") must not read a value for an unauthorized key`,
+        );
+      }
+      assertExists(
+        hasError,
+        "has() must reject for a key the credentials cannot read",
+      );
+      const getError = await rejection(() => provider.get(key));
+      assertExists(
+        getError,
+        "get() must reject for a key the credentials cannot read",
+      );
+      assertEquals(
+        hasError.name,
+        getError.name,
+        "has() must reject with the same error get() raises for an unauthorized key",
+      );
+      assertEquals(
+        hasError.message,
+        getError.message,
+        "has() must reject with the same error get() raises for an unauthorized key",
+      );
+    }
+  } finally {
+    if (cleanup) {
+      // Best-effort cleanup — don't fail the test if cleanup fails. Delete
+      // when the provider can; otherwise overwrite with an empty value, as
+      // assertVaultConformance does.
+      for (const key of createdKeys) {
+        try {
+          if (canDelete) {
+            await remove(key);
+          } else {
+            await provider.put(key, "");
+          }
         } catch {
           // Ignore cleanup errors
         }

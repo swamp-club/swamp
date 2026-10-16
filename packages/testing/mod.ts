@@ -79,6 +79,7 @@ export type {
 export { createVaultTestContext } from "./vault_test_context.ts";
 
 export type {
+  VaultExistenceTestContextResult,
   VaultOperation,
   VaultTestContextOptions,
   VaultTestContextResult,
@@ -88,6 +89,7 @@ export {
   VaultAnnotation,
   type VaultAnnotationData,
   type VaultAnnotationProvider,
+  type VaultExistenceProvider,
   type VaultProvider,
   type VaultPutOptions,
 } from "./vault_types.ts";
@@ -96,6 +98,8 @@ export {
   assertVaultAnnotationConformance,
   assertVaultAnnotationExportConformance,
   assertVaultConformance,
+  assertVaultExistenceConformance,
+  assertVaultExistenceExportConformance,
   assertVaultExportConformance,
 } from "./vault_conformance.ts";
 
@@ -104,6 +108,9 @@ export type {
   VaultAnnotationExport,
   VaultAnnotationExportConformanceOptions,
   VaultConformanceOptions,
+  VaultExistenceConformanceOptions,
+  VaultExistenceExport,
+  VaultExistenceExportConformanceOptions,
   VaultExport,
   VaultExportConformanceOptions,
 } from "./vault_conformance.ts";

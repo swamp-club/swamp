@@ -17,15 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   assertVaultAnnotationConformance,
   assertVaultAnnotationExportConformance,
   assertVaultConformance,
+  assertVaultExistenceConformance,
+  assertVaultExistenceExportConformance,
   assertVaultExportConformance,
 } from "./vault_conformance.ts";
 import { createVaultTestContext } from "./vault_test_context.ts";
-import { VaultAnnotation } from "./vault_types.ts";
+import {
+  VaultAnnotation,
+  type VaultExistenceProvider,
+  type VaultProvider,
+} from "./vault_types.ts";
 
 // --- assertVaultExportConformance ---
 
@@ -320,4 +326,147 @@ Deno.test("assertVaultAnnotationConformance: VaultAnnotation value object behavi
   // empty annotation
   const empty = VaultAnnotation.create({});
   assertEquals(empty.isEmpty(), true);
+});
+
+// --- Existence conformance ---
+
+function existenceExport(provider: VaultProvider & VaultExistenceProvider) {
+  return {
+    type: "@test/my-vault",
+    name: "Test Vault",
+    description: "A test vault provider with existence checks",
+    configSchema: { safeParse: () => ({ success: true }) },
+    createProvider: (_name: string, _config: Record<string, unknown>) =>
+      provider,
+  };
+}
+
+Deno.test("assertVaultExistenceExportConformance: passes when createProvider returns a has()", () => {
+  const { vault } = createVaultTestContext({ withExistence: true });
+  assertVaultExistenceExportConformance(existenceExport(vault), {
+    validConfigs: [{}],
+  });
+});
+
+Deno.test("assertVaultExistenceExportConformance: fails when has is missing", () => {
+  const { vault } = createVaultTestContext();
+  assertThrows(
+    () =>
+      assertVaultExistenceExportConformance(
+        existenceExport(vault as VaultProvider & VaultExistenceProvider),
+        { validConfigs: [{}] },
+      ),
+    Error,
+    "has()",
+  );
+});
+
+Deno.test("assertVaultExistenceConformance: passes for the counting test vault and reads no value", async () => {
+  const { vault, getOperationsByMethod } = createVaultTestContext({
+    withExistence: true,
+    unauthorizedKeys: ["denied"],
+  });
+  await assertVaultExistenceConformance(vault, {
+    cleanup: false,
+    getValueReadCount: () => getOperationsByMethod("get").length,
+    unauthorizedKey: "denied",
+  });
+  // Every has() the suite made is counted apart from the get() calls.
+  assertEquals(getOperationsByMethod("has").length > 0, true);
+});
+
+Deno.test("assertVaultExistenceConformance: passes for a provider without delete", async () => {
+  const { vault } = createVaultTestContext({ withExistence: true });
+  await assertVaultExistenceConformance(vault, { cleanup: false });
+});
+
+Deno.test("assertVaultExistenceConformance: fails for a has() that reads the value", async () => {
+  const { vault, getOperationsByMethod } = createVaultTestContext({
+    withExistence: true,
+  });
+  const reading: VaultProvider & VaultExistenceProvider = {
+    ...vault,
+    async has(key: string) {
+      try {
+        await vault.get(key);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+  await assertRejects(
+    () =>
+      assertVaultExistenceConformance(reading, {
+        cleanup: false,
+        getValueReadCount: () => getOperationsByMethod("get").length,
+      }),
+    Error,
+    "must not read a value",
+  );
+});
+
+Deno.test("assertVaultExistenceConformance: fails for a has() that is true for a missing key", async () => {
+  const { vault } = createVaultTestContext({ withExistence: true });
+  const lying = { ...vault, has: () => Promise.resolve(true) };
+  await assertRejects(
+    () => assertVaultExistenceConformance(lying, { cleanup: false }),
+    Error,
+    "must resolve false",
+  );
+});
+
+Deno.test("assertVaultExistenceConformance: fails for a has() that resolves a non-boolean", async () => {
+  const { vault } = createVaultTestContext({ withExistence: true });
+  const truthy = {
+    ...vault,
+    has: () => Promise.resolve("yes" as unknown as boolean),
+  };
+  await assertRejects(
+    () => assertVaultExistenceConformance(truthy, { cleanup: false }),
+    Error,
+    "must resolve a boolean",
+  );
+});
+
+Deno.test("assertVaultExistenceConformance: fails when has() resolves for an unauthorized key", async () => {
+  const { vault } = createVaultTestContext({
+    withExistence: true,
+    unauthorizedKeys: ["denied"],
+  });
+  const listing = {
+    ...vault,
+    has: (key: string) =>
+      key === "denied" ? Promise.resolve(false) : vault.has(key),
+  };
+  await assertRejects(
+    () =>
+      assertVaultExistenceConformance(listing, {
+        cleanup: false,
+        unauthorizedKey: "denied",
+      }),
+    Error,
+    "must reject for a key the credentials cannot read",
+  );
+});
+
+Deno.test("assertVaultExistenceConformance: fails when has() rejects an unauthorized key differently from get()", async () => {
+  const { vault } = createVaultTestContext({
+    withExistence: true,
+    unauthorizedKeys: ["denied"],
+  });
+  const differing = {
+    ...vault,
+    has: (key: string) =>
+      key === "denied" ? Promise.reject(new Error("nope")) : vault.has(key),
+  };
+  await assertRejects(
+    () =>
+      assertVaultExistenceConformance(differing, {
+        cleanup: false,
+        unauthorizedKey: "denied",
+      }),
+    Error,
+    "same error get() raises",
+  );
 });

@@ -36,6 +36,7 @@
 import {
   assertVaultAnnotationConformance,
   assertVaultConformance,
+  assertVaultExistenceConformance,
 } from "@swamp-club/swamp-testing";
 import { LocalEncryptionVaultProvider } from "./local_encryption_vault_provider.ts";
 
@@ -67,5 +68,15 @@ Deno.test("LocalEncryptionVaultProvider: satisfies vault annotation conformance 
       base_dir: dir,
     });
     await assertVaultAnnotationConformance(provider);
+  });
+});
+
+Deno.test("LocalEncryptionVaultProvider: satisfies vault existence conformance contract", async () => {
+  await withTempDir(async (dir) => {
+    const provider = new LocalEncryptionVaultProvider("conformance", {
+      auto_generate: true,
+      base_dir: dir,
+    });
+    await assertVaultExistenceConformance(provider);
   });
 });

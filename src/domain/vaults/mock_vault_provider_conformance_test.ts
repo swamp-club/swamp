@@ -24,10 +24,18 @@
  * extension vault authors are held to.
  */
 
-import { assertVaultConformance } from "@swamp-club/swamp-testing";
+import {
+  assertVaultConformance,
+  assertVaultExistenceConformance,
+} from "@swamp-club/swamp-testing";
 import { MockVaultProvider } from "./mock_vault_provider.ts";
 
 Deno.test("MockVaultProvider: satisfies vault provider conformance contract", async () => {
   const provider = new MockVaultProvider("conformance-mock");
   await assertVaultConformance(provider);
+});
+
+Deno.test("MockVaultProvider: satisfies vault existence conformance contract", async () => {
+  const provider = new MockVaultProvider("conformance-mock");
+  await assertVaultExistenceConformance(provider);
 });

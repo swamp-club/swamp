@@ -1202,6 +1202,7 @@ function serviceWithSpyVault(
       },
       getName: () => "spy",
       delete: record("delete"),
+      has: record("has"),
       getAnnotation: record("getAnnotation"),
       putAnnotation: record("putAnnotation"),
       deleteAnnotation: record("deleteAnnotation"),
@@ -1222,6 +1223,7 @@ const PER_VAULT_METHODS: {
   call: (s: VaultService, vault: string) => Promise<unknown>;
 }[] = [
   { method: "get", action: "read", call: (s, v) => s.get(v, "k") },
+  { method: "has", action: "read", call: (s, v) => s.has(v, "k") },
   { method: "list", action: "read", call: (s, v) => s.list(v) },
   {
     method: "getAnnotation",
