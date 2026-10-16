@@ -4051,10 +4051,12 @@ is reported as no longer available. v2 records and outputs carry no `sha256`.
 
 - A use case that throws, and a success-only root whose operation threw,
   commit nothing, but their repositories already wrote the writer's files and
-  catalog rows. That checkout keeps them until a later write replaces them;
-  no other checkout ever sees them. A process that then ends without tearing
-  down has them removed by the next command (**Interrupted runs**); one that
-  tears down keeps them.
+  catalog rows. The command removes them before it exits, or leaves them to
+  the next command (**Dropped work**, below). A write made outside every
+  unit, which a v3 hook refuses after the file exists, and a version
+  directory a save created before its first write failed, are not tracked;
+  the first is a programming error, and the second, an empty directory no
+  recovery removes, can make the next version skip one number.
 - Run logs, the run index and the stream directories are the checkout's own;
   they are never committed.
 - Serve's start-up migrations of legacy grant and token layouts move files on
@@ -4123,6 +4125,59 @@ leave every checkout with the same records.
   before this recovery runs, which then keeps its files. This recovery still
   removes everything else the dead writer left: changes staged but never
   flushed, and commits the outbox dropped.
+
+**Dropped work** (swamp-club#3553)**.** A command that ends cleanly can
+still leave files no commit names: its commit was refused (another process
+took the writer lease, `version-live`, `version-reused`), its root was
+abandoned, its end failed, or a write was refused after the repository wrote
+its files. The checkout would then show data the datastore does not hold,
+and with swamp-club#3532 a refused version sits on its own path, so nothing
+ever replaced it.
+
+- *The unit reports it.* A unit is *touched* once a repository writes into
+  it: the scope's write signal (`signalChange`, and `stageTyped` before its
+  builder runs), or any change it records, including the batches a root
+  adopts from a committed child. A touched unit that drops work tells its
+  handle (`UnitTracker.dropped`) with its root's open time; an untouched
+  unit, such as a use case that fails validation before it writes, reports
+  nothing. A read-only command writes nothing by contract, holds no lease
+  and has no marker, so a write refused there (a programming error) is
+  never recovered.
+- *The checkout recovers when nothing is open.* Each checkout (its
+  read-model state directory) counts its open units and keeps the earliest
+  dropped root's open time. Teardown (`closeV3Datastores`) decides first,
+  while the lease and copy state are there, whether this process still
+  writes the datastore: it holds the writer lease, the lease is current, the
+  commit store's fence is not above its own (a takeover the renewal has not
+  noticed yet), and while replicating its copy is current. After compaction
+  and the closing sync, and before the stores close, such a checkout runs
+  the **Interrupted runs** recovery from that open time (floored as the
+  marker's start is) once no unit of it is open; roots wait while it runs.
+  The marker is then removed as usual.
+- *Otherwise the next command does.* A process that lost its lease, a
+  checkout with a unit still open (a root waiting to open counts), a serve
+  whose drain left runs that may still write (`keepV3WriterMarkers`), or a
+  recovery that failed keeps its
+  writer marker, and the next command in the checkout recovers it as after a
+  crash. A process that lost its lease must not rebuild the checkout: another
+  process may now write it.
+- *Why not per key.* Removing only a unit's own keys would need the
+  committed state of each key while other units of the same process are
+  live: workflow runs hold model locks per step, not per run, and definition
+  partitions take no model lock, so a per-key replay or restore could
+  overwrite another live unit's files. Recovering once nothing is open
+  reuses the tested recovery and has no such race.
+- *Serve does not recover while it runs.* Its read handlers open no unit, so
+  a recovery's catalog rebuild would show them an empty or partial catalog.
+  A refused request's files therefore stay in serve's checkout until serve
+  stops, and each dropped version there can skip one data version number
+  (never reuse one); shutdown takes the teardown path above, or keeps the
+  marker for serve's next start.
+- *Allocation keeps reading version directories.* Version allocation still
+  takes the greatest version directory into account on v3: the `mkdir` claim
+  is what keeps two units of one process apart before either commits. Once
+  dropped work is recovered, the directories are only committed versions and
+  ones a live unit staged.
 
 Serve's background writes are pinned on v3 too
 (`integration/serve_v3_background_writes_test.ts`,

@@ -381,7 +381,9 @@ async function leaveInterruptedWriter(
 
   // The process ends without tearing down: its marker and lock stay behind.
   // Here it ends its hold, then restores what a killed writer leaves, naming
-  // a pid that is gone.
+  // a pid that is gone. A killed writer never recovers its dropped work at
+  // teardown (swamp-club#3553), so this one forgets it first.
+  v3DatastoreFor(repos.repoA, filesystemConfig(repos)).forgetDroppedWork();
   await closeV3Datastores();
   await Deno.writeTextFile(
     writerMarkerPath(repos.repoA),

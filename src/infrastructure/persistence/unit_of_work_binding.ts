@@ -94,6 +94,23 @@ export const versionFloors = {
   of: (uow: UnitOfWork): VersionFloorSource | undefined => floors.get(uow),
 };
 
+const writeSignals = new WeakMap<UnitOfWork, () => void>();
+
+/**
+ * The units told when a repository writes into them: the v3 commit-log
+ * adapter's, whose dropped work a write may have left in the checkout
+ * (swamp-club#3553).
+ */
+export const unitWrites = {
+  register(uow: UnitOfWork, onWrite: () => void): void {
+    writeSignals.set(uow, onWrite);
+  },
+  /** Tells `uow` that a repository is writing into it. */
+  signal(uow: UnitOfWork): void {
+    writeSignals.get(uow)?.();
+  },
+};
+
 /** The units that take typed changes: the v3 commit-log adapter's. */
 export const typedStagers = {
   register(

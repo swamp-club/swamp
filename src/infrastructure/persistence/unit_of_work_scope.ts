@@ -65,6 +65,7 @@ import { legacyUnitOfWorkTarget } from "./legacy_unit_of_work.ts";
 import {
   typedStagers,
   unitOfWorkBinding,
+  unitWrites,
   versionFloors,
   type VersionFloorSource,
 } from "./unit_of_work_binding.ts";
@@ -140,6 +141,7 @@ export async function signalChange(
     // typed write stages through stageTyped, and any other is offered to
     // the unit, which refuses a path-only change rather than drop it.
     const adopter = adoptingUnit();
+    if (adopter !== undefined) unitWrites.signal(adopter);
     if (adopter !== undefined && !options.typed) await adopter.stage(change);
     return;
   }
@@ -151,6 +153,7 @@ export async function signalChange(
     // requires a unit, even one built before the hook was marked.
     !(requiresUnit && legacyUnitOfWorkTarget(uow) !== undefined)
   ) {
+    unitWrites.signal(uow);
     if (options.typed && typedStagers.stagerOf(uow) !== undefined) return;
     await uow.stage(change);
     return;
@@ -163,6 +166,7 @@ export async function signalChange(
     if (
       outer !== undefined && unitOfWorkBinding.boundHook(outer) === markDirty
     ) {
+      unitWrites.signal(outer);
       if (options.typed && typedStagers.stagerOf(outer) !== undefined) return;
       await outer.stage(change);
       return;
@@ -194,19 +198,24 @@ export async function stageTyped(
 ): Promise<void> {
   if (markDirty === undefined) {
     // See signalChange: a hookless write stages into the ambient v3 unit.
-    const adopter = adoptingStager();
-    if (adopter === undefined) return;
+    const adopter = adoptingUnit();
+    const stage = adoptingStager();
+    if (adopter === undefined || stage === undefined) return;
+    // The files are written by now: the unit learns of them before the
+    // build can throw (swamp-club#3553).
+    unitWrites.signal(adopter);
     const changes = await build();
-    if (changes.length > 0) await adopter(changes);
+    if (changes.length > 0) await stage(changes);
     return;
   }
   if (!unitOfWorkBinding.requiresUnit(markDirty)) return;
-  const stage = boundTypedStager(markDirty);
-  if (stage === undefined) {
+  const bound = boundTypedStager(markDirty);
+  if (bound === undefined) {
     throw new UnscopedWriteRefusedError(undefined, callerOfThisWrite());
   }
+  unitWrites.signal(bound.unit);
   const changes = await build();
-  if (changes.length > 0) await stage(changes);
+  if (changes.length > 0) await bound.stage(changes);
 }
 
 /**
@@ -220,8 +229,7 @@ export function typedStagingActive(
   markDirty: MarkDirtyHook | undefined,
 ): boolean {
   if (markDirty === undefined) return adoptingStager() !== undefined;
-  return markDirty !== undefined &&
-    unitOfWorkBinding.requiresUnit(markDirty) &&
+  return unitOfWorkBinding.requiresUnit(markDirty) &&
     boundTypedStager(markDirty) !== undefined;
 }
 
@@ -276,17 +284,25 @@ function adoptingUnit(): UnitOfWork | undefined {
   return uow === undefined ? undefined : typedStagers.openTargetOf(uow);
 }
 
-/** The ambient unit's typed stager, when that unit is bound to the hook. */
+/**
+ * The ambient unit bound to the hook and its typed stager, when it takes
+ * typed changes.
+ */
 function boundTypedStager(markDirty: MarkDirtyHook) {
   const uow = currentUnitOfWork();
   if (uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty) {
-    return typedStagers.stagerOf(uow);
+    const stage = typedStagers.stagerOf(uow);
+    return stage === undefined ? undefined : { unit: uow, stage };
   }
   // As in signalChange: an unbound unit does not hide the v3 unit around it.
   const outer = adoptingUnit();
-  return outer !== undefined && unitOfWorkBinding.boundHook(outer) === markDirty
-    ? typedStagers.stagerOf(outer)
-    : undefined;
+  if (
+    outer === undefined || unitOfWorkBinding.boundHook(outer) !== markDirty
+  ) {
+    return undefined;
+  }
+  const stage = typedStagers.stagerOf(outer);
+  return stage === undefined ? undefined : { unit: outer, stage };
 }
 
 /**

@@ -74,6 +74,14 @@ export const WRITER_MARKER_FILE = "writer.json";
  */
 const MARKER_SLACK_MS = 2_000;
 
+/**
+ * The time a recovery sweeps from for writes made at or after `at` (epoch
+ * milliseconds): the second it falls in, less {@link MARKER_SLACK_MS}.
+ */
+export function recoverySince(at: number): number {
+  return Math.floor(at / 1000) * 1000 - MARKER_SLACK_MS;
+}
+
 /** Which process last wrote a checkout, and since when. */
 export interface WriterMarker {
   readonly hostname: string;
@@ -108,7 +116,7 @@ export async function writeWriterMarker(repoDir: string): Promise<void> {
     hostname: Deno.hostname(),
     pid: Deno.pid,
     instance: PROCESS_INSTANCE,
-    since: Math.floor(Date.now() / 1000) * 1000 - MARKER_SLACK_MS,
+    since: recoverySince(Date.now()),
   };
   const path = writerMarkerPath(repoDir);
   await Deno.mkdir(dirname(path), { recursive: true });

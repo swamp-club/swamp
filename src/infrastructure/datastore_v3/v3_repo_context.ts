@@ -151,6 +151,13 @@ const markedCheckouts = new Map<string, Promise<void>>();
 /** Teardown keeps the writer markers: work may still be uncommitted. */
 let keepMarkers = false;
 
+/**
+ * Checkouts, by resolved path, whose teardown keeps the writer marker
+ * because their dropped work was not recovered (swamp-club#3553): the next
+ * command recovers them. The close resets it.
+ */
+const keptMarkers = new Set<string>();
+
 /** The liveness probe for recorded pids. */
 const processGone: ProcessGoneProbe = isProcessGone;
 
@@ -445,7 +452,7 @@ export async function holdV3Writer(
         // The marker landed and another hold in this process may already
         // rely on it: it goes at teardown, not now.
         releases.push(async () => {
-          if (!keepMarkers) {
+          if (!keepsMarker(repoDir)) {
             await removeOwnWriterMarker(repoDir).catch(() => {});
           }
         });
@@ -460,7 +467,7 @@ export async function holdV3Writer(
     // The marker goes once every unit has ended, before the lock does. A
     // marker that cannot be removed costs one needless recovery, never the
     // lock.
-    if (marks && !keepMarkers) {
+    if (marks && !keepsMarker(repoDir)) {
       try {
         await removeOwnWriterMarker(repoDir);
       } catch (error) {
@@ -685,6 +692,74 @@ export async function v3RepositoryFactoryConfig(
   };
 }
 
+/** Whether teardown keeps the writer marker of the checkout at `repoDir`. */
+function keepsMarker(repoDir: string): boolean {
+  return keepMarkers || keptMarkers.has(resolve(repoDir));
+}
+
+/**
+ * Whether this process still writes the datastore of the handle at `key`:
+ * it holds a current writer lease, and while replicating its copy is
+ * current. Only then may it rebuild the checkout.
+ */
+function writesCurrentCopy(key: string, handle: V3Datastore): boolean {
+  if (!holdsV3WriterLock(handle.datastorePath)) return false;
+  try {
+    assertV3WriterCurrent(handle.datastorePath);
+  } catch {
+    return false;
+  }
+  // A takeover the renewal has not noticed yet shows in the store's fence.
+  const fence = v3WriterFence(handle.datastorePath);
+  const stored = handle.writerFence();
+  if (stored !== undefined && (fence === undefined || stored > fence)) {
+    return false;
+  }
+  return !v3ReplicationEnabled() || currentCopies.has(key);
+}
+
+/**
+ * Recovers the work a checkout's units dropped (swamp-club#3553) before the
+ * command ends, with the swamp-club#3299 recovery. A process that lost its
+ * lease, a checkout with a unit still open, or a recovery that fails keeps
+ * the writer marker instead, so the next command in the checkout recovers.
+ * Never fails the teardown.
+ */
+async function recoverDroppedWork(
+  key: string,
+  handle: V3Datastore,
+  current: boolean,
+): Promise<void> {
+  const checkout = key.split("\0")[0];
+  const keep = (why: string): void => {
+    keptMarkers.add(checkout);
+    handle.forgetDroppedWork();
+    logger
+      .info`Work a command dropped stays in ${checkout} until the next command recovers it: ${why}`;
+  };
+  if (!current) {
+    keep("this process no longer holds the v3 writer lease");
+    return;
+  }
+  if (keepMarkers) {
+    // Serve's drain left runs that may still be writing between units.
+    keep("runs may still be writing");
+    return;
+  }
+  try {
+    const outcome = await handle.recoverDroppedWork();
+    if (outcome === "busy") {
+      keep(
+        `${
+          handle.droppedWork()?.openUnits ?? 0
+        } unit(s) of work are still open`,
+      );
+    }
+  } catch (error) {
+    keep(`its recovery failed: ${errorMessage(error)}`);
+  }
+}
+
 /**
  * Closes every v3 datastore handle this process opened and releases its
  * writer-lock holds. Idempotent; the CLI calls it at teardown on every
@@ -693,8 +768,16 @@ export async function v3RepositoryFactoryConfig(
 export async function closeV3Datastores(): Promise<void> {
   const pending = releases.splice(0);
   markedCheckouts.clear();
-  const handles = [...opened.values()];
+  const entries = [...opened.entries()];
+  const handles = entries.map(([, handle]) => handle);
   opened.clear();
+  // Whether each checkout that dropped work may recover it now
+  // (swamp-club#3553), judged while the lease and copy state are here.
+  const dropped = entries.flatMap(([key, handle]) =>
+    handle.droppedWork() === undefined
+      ? []
+      : [{ key, handle, current: writesCurrentCopy(key, handle) }]
+  );
   // A writer folds history the policy no longer retains before it lets go
   // of the lock: compaction is the single writer's (swamp-club#3258).
   for (const handle of handles) {
@@ -727,6 +810,11 @@ export async function closeV3Datastores(): Promise<void> {
     ),
   ]);
   setV3SyncDeadline(undefined);
+  // After the closing sync, which serve's drain deadline is for, and before
+  // the stores close.
+  for (const { key, handle, current } of dropped) {
+    await recoverDroppedWork(key, handle, current);
+  }
   currentCopies.clear();
   restoredCopies.clear();
   // Close before releasing, so no other writer starts while this process
@@ -742,6 +830,7 @@ export async function closeV3Datastores(): Promise<void> {
     pending.map((release) => release()),
   );
   keepMarkers = false;
+  keptMarkers.clear();
   // A replication failure comes first: it is what the command reports.
   const failed = [...synced, ...closed, ...unheld, ...released].find((
     result,

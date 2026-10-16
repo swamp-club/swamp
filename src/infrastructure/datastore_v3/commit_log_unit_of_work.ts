@@ -160,6 +160,7 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   typedStagers,
   unitOfWorkBinding,
+  unitWrites,
   versionFloors,
   type VersionFloorSource,
 } from "../persistence/unit_of_work_binding.ts";
@@ -277,6 +278,27 @@ export interface CommitLogUnitOptions {
    * committed (swamp-club#3279). Every key belongs when absent.
    */
   readonly admits?: (key: string) => boolean;
+  /**
+   * Told when the unit opens and ends, and when it drops work a repository
+   * may already have written to the checkout (swamp-club#3553).
+   */
+  readonly tracker?: UnitTracker;
+}
+
+/**
+ * What the v3 handle learns from each unit it opens (swamp-club#3553): its
+ * open units, and the dropped work its checkout may still hold.
+ */
+export interface UnitTracker {
+  opened(): void;
+  ended(): void;
+  /**
+   * A unit a repository wrote into dropped work: a refused commit, an
+   * abandon, a failed end, or a write refused after its files were written.
+   * `openedAt` is its root's open time, epoch milliseconds: nothing it
+   * wrote is older.
+   */
+  dropped(openedAt: number): void;
 }
 
 /** A path-only change staged into a commit-log unit, which takes typed ones. */
@@ -313,6 +335,8 @@ interface CommitLogState {
   readonly hook: MarkDirtyHook;
   isOpen(): boolean;
   readonly parent: UnitOfWork | undefined;
+  /** When the unit's root opened, epoch milliseconds. */
+  readonly openedAt: number;
   /** Takes a committed child's batches, in order and batch by batch. */
   adopt(batches: readonly (readonly TypedChange[])[]): void;
 }
@@ -359,6 +383,24 @@ export function createCommitLogUnitOfWork(
 ): CommitLogUnitOfWork {
   const parent = commitLogParentFor(markDirty, options.parent);
   const clock = options.clock ?? (() => new Date());
+  const openedAt = parent === undefined
+    ? clock().getTime()
+    : states.get(parent)!.openedAt;
+  /**
+   * Whether a repository wrote into this unit: a write signal, or any
+   * change it recorded, a committed child's included. Only such a unit's
+   * dropped work can be in the checkout (swamp-club#3553).
+   */
+  let touched = false;
+  const dropWork = (): void => {
+    if (!touched) return;
+    try {
+      options.tracker?.dropped(openedAt);
+    } catch (error) {
+      logger
+        .warn`Recording the work a v3 unit of work dropped failed: ${error}`;
+    }
+  };
   /** Every change staged, for `stagedOps`. */
   const all: TypedChange[] = [];
   /**
@@ -439,6 +481,7 @@ export function createCommitLogUnitOfWork(
   const record = (changes: readonly TypedChange[]): void => {
     requireBatchWithinLimit(changes);
     if (changes.length === 0) return;
+    touched = true;
     const batch: TypedChange[] = [];
     staged.push(batch);
     for (const change of changes) {
@@ -522,6 +565,7 @@ export function createCommitLogUnitOfWork(
           };
           refusedNow.push(refusal);
           if (runRank(group) === 0) refusals = [...refusals, refusal];
+          dropWork();
           continue;
         } finally {
           inFlight = undefined;
@@ -564,6 +608,7 @@ export function createCommitLogUnitOfWork(
     hook: markDirty,
     isOpen: () => ended === undefined,
     parent,
+    openedAt,
     adopt(batches) {
       for (const batch of batches) record(batch);
     },
@@ -572,6 +617,7 @@ export function createCommitLogUnitOfWork(
   const end = async (as: "committed" | "abandoned"): Promise<void> => {
     if (ended !== undefined) throw new Error(`unit of work already ${ended}`);
     ended = as;
+    options.tracker?.ended();
     if (as === "abandoned") {
       await flushing;
       staged = [];
@@ -579,6 +625,7 @@ export function createCommitLogUnitOfWork(
       const abandoned = pending;
       pending = [];
       refusals = [];
+      dropWork();
       await discardEntries(options, outbox, abandoned);
       return;
     }
@@ -587,6 +634,7 @@ export function createCommitLogUnitOfWork(
         ? parent
         : nearestOpenAncestor(parent);
       if (target === undefined) {
+        dropWork();
         throw new Error(
           "a child unit of work committed after its root ended; its changes " +
             "were not committed",
@@ -602,6 +650,7 @@ export function createCommitLogUnitOfWork(
     } catch (error) {
       // The unit ends with these commits failed, and the caller is told so:
       // a later recovery must not land them.
+      dropWork();
       await discardEntries(options, outbox, pending);
       throw error;
     }
@@ -619,18 +668,28 @@ export function createCommitLogUnitOfWork(
         checked.push(await checkChange(change));
       }
       if (checked.length === 0) return;
-      requireBatchWithinLimit(checked);
+      // Each refusal below comes after the repository wrote the files.
+      const refuse = (error: Error): never => {
+        touched = true;
+        dropWork();
+        throw error;
+      };
+      try {
+        requireBatchWithinLimit(checked);
+      } catch (error) {
+        refuse(error as Error);
+      }
       if (ended === "abandoned") {
         // Abandon discards: a write still landing in an abandoned unit's
         // scope is discarded with it, not rolled into an ancestor.
-        throw new Error("unit of work already abandoned");
+        refuse(new Error("unit of work already abandoned"));
       }
       if (ended !== undefined) {
         const ancestor = nearestOpenAncestor(parent);
         if (ancestor !== undefined) {
           return await (ancestor as CommitLogUnitOfWork).stageOps(checked);
         }
-        throw new Error(`unit of work already ${ended}`);
+        refuse(new Error(`unit of work already ${ended}`));
       }
       record(checked);
     },
@@ -664,6 +723,10 @@ export function createCommitLogUnitOfWork(
   };
   states.set(uow, state);
   unitOfWorkBinding.bind(uow, markDirty);
+  unitWrites.register(uow, () => {
+    touched = true;
+  });
+  options.tracker?.opened();
   versionFloors.register(
     uow,
     floorSourceFor(options.sink, options.namespace.toString()),

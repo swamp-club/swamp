@@ -53,7 +53,10 @@ import {
   PartitionsRefusedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
-import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
+import {
+  unitOfWorkBinding,
+  unitWrites,
+} from "../persistence/unit_of_work_binding.ts";
 import {
   commitLogParentFor,
   createCommitLogUnitOfWork,
@@ -1337,4 +1340,131 @@ Deno.test("createCommitLogUnitOfWork: a commit whose chunks are all present chec
   assert("blob" in parts);
   assertEquals(hasCalls.length, parts.blob.chunkHashes().length + 1);
   assertEquals(storage.puts() - putsBefore, parts.blob.chunkHashes().length);
+});
+
+/** A unit tracker that records what it is told (swamp-club#3553). */
+function recordingTracker() {
+  const seen = { open: 0, dropped: [] as number[] };
+  return {
+    seen,
+    tracker: {
+      opened: () => {
+        seen.open++;
+      },
+      ended: () => {
+        seen.open--;
+      },
+      dropped: (openedAt: number) => {
+        seen.dropped.push(openedAt);
+      },
+    },
+  };
+}
+
+for (const reason of ["version-live", "version-reused"] as const) {
+  Deno.test(`createCommitLogUnitOfWork: a ${reason} refusal reports dropped work at the root's open time (swamp-club#3553)`, async () => {
+    const sink = new MemorySink();
+    sink.beforeAppend = () => {
+      throw new CommitRejectedError(reason, `refused (${reason})`);
+    };
+    const { seen, tracker } = recordingTracker();
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, memory(), { tracker }),
+    );
+    assertEquals(seen.open, 1);
+    await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+    await assertRejects(() => uow.commit(), PartitionsRefusedError);
+    // Told at the refusal and again as the root's end fails: the handle
+    // keeps the earliest time, so a repeat costs nothing.
+    assert(seen.dropped.length > 0);
+    assertEquals(new Set(seen.dropped), new Set([AT.getTime()]));
+    assertEquals(seen.open, 0);
+  });
+}
+
+Deno.test("createCommitLogUnitOfWork: a root refused after a child's commit rolled up into it reports dropped work (swamp-club#3553)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const { seen, tracker } = recordingTracker();
+  const root = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root, tracker }),
+  );
+  await child.stageOp({ partition: MODEL, op: await savePut("b", 1) });
+  await child.commit();
+  assertEquals(seen.dropped, []);
+  sink.beforeAppend = () => {
+    throw new Error("the writer lease was lost");
+  };
+  await assertRejects(() => root.commit(), Error, "lease was lost");
+  assertEquals(seen.dropped, [AT.getTime()]);
+  assertEquals(seen.open, 0);
+});
+
+Deno.test("createCommitLogUnitOfWork: an abandon reports dropped work only when a repository wrote into the unit (swamp-club#3553)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const { seen, tracker } = recordingTracker();
+  const untouched = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  await untouched.abandon();
+  assertEquals(seen.dropped, []);
+
+  // A write signal with nothing staged yet: the files were written.
+  const written = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  unitWrites.signal(written);
+  await written.abandon();
+  assertEquals(seen.dropped.length, 1);
+
+  const staged = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  await staged.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await staged.abandon();
+  assertEquals(seen.dropped.length, 2);
+  assertEquals(seen.open, 0);
+});
+
+Deno.test("createCommitLogUnitOfWork: a change refused on an abandoned child reports dropped work; a clean commit reports none (swamp-club#3553)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const { seen, tracker } = recordingTracker();
+  const root = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root, tracker }),
+  );
+  await child.abandon();
+  assertEquals(seen.dropped, []);
+  await assertRejects(
+    async () =>
+      child.stageOp({ partition: MODEL, op: await savePut("late", 1) }),
+    Error,
+    "already abandoned",
+  );
+  assertEquals(seen.dropped, [AT.getTime()]);
+
+  const clean = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  await clean.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await clean.commit();
+  await root.commit();
+  assertEquals(seen.dropped.length, 1);
+  assertEquals(seen.open, 0);
 });
