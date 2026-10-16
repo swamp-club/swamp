@@ -1165,6 +1165,20 @@ on a cache miss. Plain request/response is enough, with no server push.
   otherwise hand-write. Deno streams request and response bodies, so memory
   stays bounded on both ends.
 
+Request deadlines (`src/worker/data_plane_client.ts`): unary reads give up after
+60 s (`DATA_PLANE_TIMEOUT_MS`), and unary writes (resource write and delete,
+writer open, line append, finalize) after 15 minutes
+(`DATA_PLANE_WRITE_TIMEOUT_MS`). Bulk content uploads and bundle fetches are
+unbounded. Writes wait longer because serve saves a write it has accepted even
+after the worker stops waiting, and the write routes are not idempotent (each
+creates a version or appends a line), so a write is never retried: giving up on
+a briefly stalled serve would fail a step whose data was saved
+(swamp-club#3519). A request that passes its deadline fails with a message
+naming the route, and for a write that serve may still have saved it. Dispatch
+cancel aborts any request at once. A proxy in front of serve with its own,
+shorter upstream timeout can still end a write the same way; the client deadline
+does not cover that.
+
 Implementation note: Deno negotiates HTTP/2 only via ALPN over TLS. The data
 plane runs h2 under `wss://`/`https://` deployments and HTTP/1.1 over plain
 TCP; the handlers are identical, and one listener serves both the control

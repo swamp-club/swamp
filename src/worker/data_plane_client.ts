@@ -24,7 +24,9 @@
  * All byte-heavy traffic rides here: artifact reads (cached by immutable
  * (dataId, version) identity), writes through orchestrator-side writers,
  * bundle and co-located asset fetches. Every request presents the sliding
- * session credential and carries an abort-able timeout.
+ * session credential and carries an abort-able timeout: reads give up after
+ * {@link DATA_PLANE_TIMEOUT_MS}, unary writes after the much longer
+ * {@link DATA_PLANE_WRITE_TIMEOUT_MS}.
  */
 
 import { createTlsHttpClient } from "../cli/remote_run.ts";
@@ -32,8 +34,16 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["worker", "data-plane"]);
 
-/** Default per-request timeout for unary data-plane calls. */
+/** Default per-request timeout for unary data-plane reads. */
 export const DATA_PLANE_TIMEOUT_MS = 60_000;
+
+/**
+ * Default per-request timeout for unary data-plane writes. Serve saves a write
+ * it has accepted even when the worker stops waiting, and the write routes are
+ * not idempotent, so a write cannot be retried: giving up early on a slow or
+ * stalled serve would fail a step whose data was saved (swamp-club#3519).
+ */
+export const DATA_PLANE_WRITE_TIMEOUT_MS = 15 * 60_000;
 
 export interface RemoteDataHandle {
   dataId: string;
@@ -48,8 +58,10 @@ export interface RemoteDataHandle {
 export interface DataPlaneClientOptions {
   baseUrl: string;
   credential: () => string;
-  /** Per-request timeout; bulk uploads get no upper bound. */
+  /** Per-request timeout for reads; bulk uploads get no upper bound. */
   timeoutMs?: number;
+  /** Per-request timeout for unary writes. */
+  writeTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   /** Maximum cached artifacts before oldest is evicted. Defaults to 1000. */
   maxCacheEntries?: number;
@@ -58,16 +70,10 @@ export interface DataPlaneClientOptions {
 }
 
 function combineSignals(
-  timeoutMs: number | null,
+  timeoutSignal: AbortSignal | undefined,
   signal?: AbortSignal,
 ): AbortSignal | undefined {
-  const signals: AbortSignal[] = [];
-  if (timeoutMs !== null) {
-    signals.push(AbortSignal.timeout(timeoutMs));
-  }
-  if (signal) {
-    signals.push(signal);
-  }
+  const signals = [timeoutSignal, signal].filter((s) => s !== undefined);
   if (signals.length === 0) {
     return undefined;
   }
@@ -78,6 +84,7 @@ export class DataPlaneClient {
   readonly #options: DataPlaneClientOptions;
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
+  readonly #writeTimeoutMs: number;
   readonly #maxCacheEntries: number;
   /** Immutable (contentPath) → bytes. Versioned handles never change. */
   readonly #artifactCache = new Map<string, Uint8Array>();
@@ -86,6 +93,8 @@ export class DataPlaneClient {
     this.#options = options;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? DATA_PLANE_TIMEOUT_MS;
+    this.#writeTimeoutMs = options.writeTimeoutMs ??
+      DATA_PLANE_WRITE_TIMEOUT_MS;
     this.#maxCacheEntries = options.maxCacheEntries ?? 1_000;
   }
 
@@ -100,23 +109,46 @@ export class DataPlaneClient {
       body?: BodyInit;
       signal?: AbortSignal;
       timeoutMs?: number | null;
+      /** A unary write: bounded by the write timeout, not the read one. */
+      write?: boolean;
       headers?: Record<string, string>;
     },
   ): Promise<Response> {
     const url = new URL(path, this.#options.baseUrl);
-    const response = await this.#fetch(url, {
-      method,
-      body: init?.body,
-      headers: {
-        ...this.#options.extraHeaders,
-        authorization: `Bearer ${this.#options.credential()}`,
-        ...init?.headers,
-      },
-      signal: combineSignals(
-        init?.timeoutMs === undefined ? this.#timeoutMs : init.timeoutMs,
-        init?.signal,
-      ),
-    });
+    const timeoutMs = init?.timeoutMs !== undefined
+      ? init.timeoutMs
+      : init?.write
+      ? this.#writeTimeoutMs
+      : this.#timeoutMs;
+    const timeoutSignal = timeoutMs === null
+      ? undefined
+      : AbortSignal.timeout(timeoutMs);
+    let response: Response;
+    try {
+      response = await this.#fetch(url, {
+        method,
+        body: init?.body,
+        headers: {
+          ...this.#options.extraHeaders,
+          authorization: `Bearer ${this.#options.credential()}`,
+          ...init?.headers,
+        },
+        signal: combineSignals(timeoutSignal, init?.signal),
+      });
+    } catch (error) {
+      // Only this request's own deadline is reworded. The bare DOMException
+      // text ("The operation was aborted due to timeout") names neither serve
+      // nor the request, and a cancelled step keeps its own abort reason.
+      if (timeoutSignal?.aborted && !init?.signal?.aborted) {
+        throw new Error(
+          `Serve did not answer ${method} ${path} within ` +
+            `${timeoutMs! / 1000}s` +
+            (init?.write ? "; serve may still have saved this write" : ""),
+          { cause: error },
+        );
+      }
+      throw error;
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       throw new Error(
@@ -155,6 +187,7 @@ export class DataPlaneClient {
       body: JSON.stringify(body),
       headers: { "content-type": "application/json" },
       signal,
+      write: true,
     });
     return await response.json() as RemoteDataHandle;
   }
@@ -167,6 +200,7 @@ export class DataPlaneClient {
       body: JSON.stringify(body),
       headers: { "content-type": "application/json" },
       signal,
+      write: true,
     });
   }
 
@@ -178,6 +212,7 @@ export class DataPlaneClient {
       body: JSON.stringify(body),
       headers: { "content-type": "application/json" },
       signal,
+      write: true,
     });
     return await response.json() as { writerId: string; dataId: string };
   }
@@ -191,6 +226,7 @@ export class DataPlaneClient {
     await this.#request("POST", `/data/writers/${writerId}/line`, {
       body: text,
       signal,
+      write: true,
     });
   }
 
@@ -216,7 +252,7 @@ export class DataPlaneClient {
     const response = await this.#request(
       "POST",
       `/data/writers/${writerId}/finalize`,
-      { signal },
+      { signal, write: true },
     );
     return await response.json() as RemoteDataHandle;
   }
