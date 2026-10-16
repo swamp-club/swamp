@@ -195,9 +195,12 @@ Each instance is a Proxy over a frozen, empty `Secret` object. Its state lives
 in a module-private `WeakMap` keyed by the proxy. The `ownKeys` and
 `getOwnPropertyDescriptor` traps throw. The `get` trap answers `constructor`,
 and for `toString`, `toJSON`, `valueOf` and `Symbol.toPrimitive` it returns
-functions that throw. `structuredClone` of a Proxy throws. Code that mishandles
-a `Secret` therefore fails, instead of turning it into `{}` or text. Every trap
-and function that throws records a fault first (Section 4.3).
+functions that throw. Every other key, including `then` and the `Symbol`
+inspection hooks, returns `undefined` and records no fault, so awaiting a
+`Secret` or inspecting it in a debugger is harmless. `structuredClone` of a
+Proxy throws. Code that mishandles a `Secret` therefore fails, instead of
+turning it into `{}` or text. Every trap and function that throws records a
+fault first (Section 4.3).
 
 Only module-owned factories create instances. Nothing recognizes a `Secret` by
 its shape. If Phase 1 shows that cel-js cannot use the Proxy, the fallback is a
@@ -467,7 +470,10 @@ Refusal uses registrations. It does not rewrite expressions.
      it. Selecting another field records nothing, and neither does map key
      membership, which never reads values.
    - An evaluation that has a container comparison and records a `Secret` fails
-     with `secret_operation_unsupported`, after any absorption.
+     with `secret_operation_unsupported`, after any absorption. Recording stops
+     when evaluation ends. The boundary conversion of the result reads getters
+     too, but what it reads is not recorded, so returning a record with tagged
+     fields beside an unrelated `in` is not refused.
 
    The rule over-refuses. `vault.get('v', 'k') != null && self.item in ['a']`
    fails, although the secret never reaches `in`, and so does
@@ -522,7 +528,7 @@ attribution, the dispatch allowlist, and `freeRoots` in the parse-only grammars.
 
 `model.method(model, method, inputs)` runs a method through a synthetic step. It
 is the internal environment's effectful function, and any swamp function with an
-effect follows the same three rules:
+effect follows the same four rules:
 
 1. **Effect gate.** Before it starts any work, the function checks the
    evaluation's fault context. It refuses if a fault is already recorded, or if
@@ -690,10 +696,10 @@ loaded value goes in the child environment. Generated names must not collide
 with authored environment keys.
 
 Today two cases paste a value into the command, with a warning event. One is a
-data-origin value inside a here-document with a quoted delimiter. The other is
-any value inside PowerShell single quotes. Both become refusals. A `vault.get`
-inside POSIX single quotes keeps today's behavior: the reference stays literal
-and a warning is emitted.
+data-origin value inside a here-document with a quoted delimiter. The other is a
+data-origin value inside PowerShell single quotes (`resolveForPowerShell`). Both
+become refusals. A `vault.get` inside single quotes keeps today's behavior on
+both shells: the reference stays literal and a warning is emitted.
 
 `workingDir` carries `.meta({ secrets: "refuse" })`, and the shell behavior
 refuses a secret in an environment key. Swamp supplies secrets only through the
@@ -728,7 +734,9 @@ sentinel with its reference text, `${{ vault.get('v', 'k') }}`, and takes the
 entry from the run's bag registry. It no longer searches for recorded values.
 Every caller passes the registry, including run records
 (`WorkflowRun.toPersistedData`) and direct execution (`direct_execution.ts`),
-and a sentinel the registry does not know fails the write.
+and only sentinels with a prefix the registry issued are looked up. Text with
+any other prefix is data and is written as it is, as Section 3.2 says. A
+sentinel with one of the run's prefixes and an unknown index fails the write.
 `rehydratePersistedForm` issues a sentinel in a new bag for each entry and no
 longer reads the vault. Reference text that no entry names stays inert data.
 
@@ -802,7 +810,7 @@ delivery instead of an expression.
 | A container that holds a secret, interpolated into text                                                                   | Delivered inside the JSON text                                | `secret_operation_unsupported`                                                    |
 | A secret in a task selector, placement value, path, `workingDir`, environment key, or `model.method` model or method name | Used as plaintext                                             | `secret_destination_refused`                                                      |
 | A guard or assert predicate whose result holds a secret                                                                   | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
-| A value in a quoted here-document or in PowerShell single quotes                                                          | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
+| A data-origin value in a quoted here-document or in PowerShell single quotes                                              | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
 | A malformed sensitive-fields tag or stored reference                                                                      | Treated as absent, or left as text                            | `secret_reference_invalid`                                                        |
 | `in`, or `==` or `!=` with no scalar-literal or `null` operand, in an expression that reads a secret                      | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
 | `vault.get` of a missing key, in an expression whose result nothing delivers                                              | The eager read fails the run                                  | `secret_reference_unavailable` (Section 3.4)                                      |
@@ -862,6 +870,10 @@ Phase 1.2 pins what this design relies on:
 - A custom function sees, at its start, every fault recorded earlier in the same
   evaluation, across asynchronous evaluation, so the effect gate in Section 4.5
   holds.
+- `{S: 1}` and `m[S]` record a fault through a Proxy trap, so a map-key refusal
+  is visible under `||` even though a map literal calls no overload.
+- An async custom function can return a `Secret`, and awaiting it reads `then`
+  without a fault.
 - The refusing overload set covers every built-in that accepts a string or a dyn
   value, including `==` between two secrets. The `==` overloads name every type
   cel-js accepts in a signature and answer a comparison with `null` in both
@@ -900,9 +912,11 @@ with the container rule covering macros.
 - Provenance alignment (`alignProvenance`, `SplicePair`) compares sentinels, not
   values, and `sentinelResolverOf` goes, because no bag holds a value before
   delivery.
-- Each load registers its value with the run's log redactor, and the
-  registrations of argument values (`extractSensitiveFieldValues`) go, because
-  evaluated arguments now hold sentinels.
+- Each load registers its value with the run's log redactor.
+  `extractSensitiveFieldValues` keeps registering every resolved string under a
+  sensitive field, because literal values, `env.*` values and, until Phase 4,
+  plaintext from data reads never become sentinels. Only a sentinel it finds is
+  skipped, because its load registers the value.
 - `toPersistedForm` takes entries from sentinels. The value search stays only
   for plaintext that data reads still bring into CEL.
 - Until Phase 5, the orchestrator loads the bag before a remote dispatch.
@@ -931,6 +945,7 @@ Behind the internal option:
 - Masking in reports, events, logs and errors.
 - `swamp behavior evaluate` writes its cache through the boundary conversion.
 - The `validate` diagnostics.
+- `context.runModel` as an entry point and delivery (Section 5).
 - The `model.method` rules in Section 4.5, and the refusal coverage of swamp's
   own registrations in Section 4.3.
 
@@ -949,6 +964,8 @@ load. Non-secret behavior is unchanged.
   stops reading the vault. `swamp workflow evaluate` writes its cache through
   the boundary conversion.
 - Masking in run events, run records and the run index.
+- Webhook trigger inputs bind no `vault` and refuse a `Secret` result (Section
+  5).
 - The refusals and masks for the inline resolutions in Section 3.3: placement,
   task selectors and child workflow references refuse secrets, and assert
   messages mask them. Their Phase 2 loads go.
@@ -985,7 +1002,7 @@ worker versions.
 | Access and loading      | Principal grants, the workflow `vaults:` list, one read per reference per attempt, refresh, retry and rotation. The existence check through `has` and through a probe, with loads and probes counted separately, a revoked grant, and no value in any bag. |
 | Accessor integration    | Full records, selected scalars, nested lists and maps, wildcard and cross-namespace reads, set reads, live and reconstructed outputs, child outputs and malformed tags.                                                                                    |
 | Delivery integration    | Exact method, check and shell inputs on both shell strategies, refusals before any load, and both output modes.                                                                                                                                            |
-| Persistence             | Every cache, run, index, output and checkpoint seam round-trips through `writtenReferences`. Existing files read back.                                                                                                                                     |
+| Persistence             | Every cache, run, index, output and checkpoint seam round-trips through `writtenReferences`. Existing files read back. Sentinel-shaped input text from another prefix persists as data.                                                                    |
 | Characterization corpus | Non-secret behavior is unchanged. Each row in Section 10.1 has an expected result.                                                                                                                                                                         |
 | Architecture fitness    | The sink inventory rules, the refusal coverage test in Section 4.3, and no `Secret` import outside the CEL adapter, the accessor adapter and the query view.                                                                                               |
 | swamp-uat               | Compiled-binary journeys, prohibited-sink scans, shell platforms and protocol mismatch.                                                                                                                                                                    |
