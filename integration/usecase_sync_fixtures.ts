@@ -220,7 +220,11 @@ export async function withRowRepos(
       },
     },
   });
-  const dir = await Deno.makeTempDir({ prefix: "swamp-usecase-sync-" });
+  // The CLI resolves a --repo-dir through a symlink (swamp-club#3552), and
+  // the macOS temp dir is one, so the fixture spells its repos that way too.
+  const dir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp-usecase-sync-" }),
+  );
   try {
     const repoA = join(dir, "a");
     const repoB = join(dir, "b");
