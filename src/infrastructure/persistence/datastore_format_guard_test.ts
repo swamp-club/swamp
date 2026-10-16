@@ -260,7 +260,11 @@ function customDatastore(
     reads: () => reads,
     options: {
       resolveProvider: () => Promise.resolve(provider),
-      resolveExtensionVersion: () => options.extensionVersion,
+      resolveExtension: () =>
+        options.extensionVersion === undefined ? undefined : {
+          name: "@test/bucket-ext",
+          version: options.extensionVersion,
+        },
       timeoutMs: 50,
       uncappedTimeoutMs: 200,
     },
@@ -428,7 +432,10 @@ Deno.test("ensureSupportedDatastoreFormat: a v3 extension datastore on an extens
     );
     assertStringIncludes(error.message, "2026.10.16.4");
     assertStringIncludes(error.message, V3_BUCKET_MIN_EXTENSION_VERSION);
-    assertStringIncludes(error.message, "swamp extension update @test/bucket");
+    assertStringIncludes(
+      error.message,
+      "swamp extension update @test/bucket-ext`",
+    );
   }
 });
 

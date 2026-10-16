@@ -106,12 +106,21 @@ export class V3BucketExtensionTooOldError extends UserError {
   readonly datastoreType: string;
   readonly version: string;
 
-  constructor(datastoreType: string, version: string, where: string) {
+  /**
+   * @param extensionName - the extension that ships the type, named in the
+   *   update command; the type itself when unknown
+   */
+  constructor(
+    datastoreType: string,
+    version: string,
+    where: string,
+    extensionName: string = datastoreType,
+  ) {
     super(
       `The ${datastoreType} datastore cannot host a v3 datastore: ${where} ` +
         `${version}, and v3 on S3 and GCS needs ` +
         `${V3_BUCKET_MIN_EXTENSION_VERSION} or later. Run \`swamp extension ` +
-        `update ${datastoreType}\` to update it. Nothing was changed.`,
+        `update ${extensionName}\` to update it. Nothing was changed.`,
       V3_EXTENSION_TOO_OLD_CODE,
     );
     this.name = "V3BucketExtensionTooOldError";

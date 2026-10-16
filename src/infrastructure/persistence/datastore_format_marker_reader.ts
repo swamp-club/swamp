@@ -79,13 +79,13 @@ export interface ReadDatastoreFormatMarkerOptions {
     config: CustomDatastoreConfig,
   ) => Promise<DatastoreProvider>;
   /**
-   * Overrides how the format guard learns the version of the extension a
-   * datastore type was loaded from (tests).
+   * Overrides how the format guard learns which extension, at which
+   * version, a datastore type was loaded from (tests).
    */
-  readonly resolveExtensionVersion?: (
+  readonly resolveExtension?: (
     repoDir: string,
     type: string,
-  ) => string | undefined;
+  ) => { readonly name: string; readonly version: string } | undefined;
 }
 
 /**

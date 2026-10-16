@@ -219,13 +219,14 @@ export async function ensureSupportedDatastoreFormat(
     assertV3Hosting(provider, config.type);
     // A release older than the minimum lacks swamp-club#3549's guard that
     // keeps its v2 sync off a v3 bucket (swamp-club#3567).
+    const resolveExtension = options?.resolveExtension ??
+      loadedDatastoreExtension;
+    const extension = resolveExtension(repoDir, config.type);
     assertV3BucketExtensionVersion(
-      (options?.resolveExtensionVersion ??
-        ((dir, type) => loadedDatastoreExtension(dir, type)?.version))(
-          repoDir,
-          config.type,
-        ),
+      extension?.version,
       config.type,
+      undefined,
+      extension?.name,
     );
   }
   guarded.set(config, engine);

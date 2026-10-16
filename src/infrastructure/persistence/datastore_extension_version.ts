@@ -47,18 +47,26 @@ import { swampPath } from "./paths.ts";
  * capability check still runs for it.
  *
  * @param where - what the version is, for the message, e.g. "its
- *   extension is" or "the repo's lockfile pins it at"
+ *   extension is" or "the repo's lockfile pins its extension at"
+ * @param extensionName - the extension the refusal tells the user to
+ *   update; the datastore type when unknown
  * @throws V3BucketExtensionTooOldError
  */
 export function assertV3BucketExtensionVersion(
   version: string | undefined,
   datastoreType: string,
   where = "its extension is",
+  extensionName: string = datastoreType,
 ): void {
   if (version === undefined || !CalVer.isValid(version)) return;
   const minimum = CalVer.create(V3_BUCKET_MIN_EXTENSION_VERSION);
   if (CalVer.compare(CalVer.create(version), minimum) < 0) {
-    throw new V3BucketExtensionTooOldError(datastoreType, version, where);
+    throw new V3BucketExtensionTooOldError(
+      datastoreType,
+      version,
+      where,
+      extensionName,
+    );
   }
 }
 
@@ -135,7 +143,12 @@ export async function assertV3BucketExtensionVersions(
 ): Promise<void> {
   const extension = resolveExtension(repoDir, type);
   if (extension === undefined) return;
-  assertV3BucketExtensionVersion(extension.version, type);
+  assertV3BucketExtensionVersion(
+    extension.version,
+    type,
+    undefined,
+    extension.name,
+  );
   if (lockfilePath === undefined) return;
   const pinned = (await LockfileRepository.create(lockfilePath))
     .getLockedVersion(extension.name);
@@ -143,5 +156,6 @@ export async function assertV3BucketExtensionVersions(
     pinned ?? undefined,
     type,
     "the repo's lockfile pins its extension at",
+    extension.name,
   );
 }

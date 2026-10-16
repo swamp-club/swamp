@@ -248,7 +248,7 @@ Deno.test("assertV3BucketExtensionVersions: looks the pin up by extension name, 
       "@acme/stores": "2026.10.16.1",
       "@acme/s3": "2026.10.16.9",
     });
-    await assertRejects(
+    const error = await assertRejects(
       () =>
         assertV3BucketExtensionVersions(
           dir,
@@ -258,6 +258,9 @@ Deno.test("assertV3BucketExtensionVersions: looks the pin up by extension name, 
         ),
       V3BucketExtensionTooOldError,
     );
+    // The fix names the extension to update, not the datastore type.
+    assertStringIncludes(error.message, "The @acme/s3 datastore");
+    assertStringIncludes(error.message, "swamp extension update @acme/stores`");
   });
 });
 
