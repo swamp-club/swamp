@@ -77,7 +77,7 @@ Write in plain English:
 | Doc                                                        | Enables                             | Notes                                                                |
 | ---------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
 | [expressions](./enablers/expressions.md)                   | behaviors, workflows                | CEL surface                                                          |
-| [typed-secrets](./enablers/typed-secrets.md)               | behaviors, workflows, vaults, serve | Engine 2 plan; expressions.md still describes engine 1               |
+| [typed-secrets](./enablers/typed-secrets.md)               | behaviors, workflows, vaults, serve | Plan: secrets stay references in CEL; expressions.md is current      |
 | [inputs](./enablers/inputs.md)                             | behaviors, workflows                |                                                                      |
 | [data-query](./enablers/data-query.md)                     | data                                | `data query`, catalog                                                |
 | [datastores](./enablers/datastores.md)                     | data                                | To be split: operator view / sync contract / locking                 |

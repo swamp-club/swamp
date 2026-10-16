@@ -18,9 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins for string length, offsets and regular expressions
-// (design/enablers/typed-secrets.md Section 4.2: "`size(string)` counts code
-// points. Ordinary `matches` uses JavaScript RegExp; secret matching remains
-// excluded from the first release.").
+// (design/enablers/typed-secrets.md Section 4.2, fact 8: "`size(string)` counts
+// code points. Ordinary `matches` uses JavaScript RegExp.").
 //
 // Non-ASCII inputs are built from code points so no editor or formatter can
 // normalize them (a precomposed e-acute has size 1; e + U+0301 has size 2).

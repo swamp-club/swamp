@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins for parsed-program reuse and registry mutation
-// (design/enablers/typed-secrets.md Section 4.2: "Parsed programs contain
-// mutable checker/comprehension state. Successful concurrent examples are
-// evidence for a test case, not a concurrency contract.").
+// (design/enablers/typed-secrets.md Section 4.2, fact 7: "Parsed programs
+// contain mutable checker and comprehension state. Successful concurrent
+// examples are evidence for a test case, not a concurrency contract.").
 //
 // Concurrency is driven by gates the test releases in reverse start order,
 // never by timers, so every run is suspended at the same time before any

@@ -18,13 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Pins for async equality handlers and async property access
-// (design/enablers/typed-secrets.md Section 4.2: "Async custom function inputs
-// are awaited, but derived `!=`, container `isEqual`, and `listIncludes`
-// consume equality-handler returns synchronously. Async equality is therefore
-// unsuitable. Rejecting async handlers can also leave unobserved promises." and
-// "Async namespace calls and async property getters are different mechanisms.
-// A getter-returned Promise can reach member access as an unsupported
-// value.").
+// (design/enablers/typed-secrets.md Section 4.2, fact 1: "Async custom function
+// inputs are awaited. Derived `!=`, container `isEqual`, and `listIncludes`
+// consume equality-handler returns synchronously, and a rejecting async handler
+// can leave unobserved promises. Equality handlers must therefore be
+// synchronous. A getter that returns a Promise reaches member access as an
+// unsupported value.").
 //
 // Handlers resolve without timers, so a Promise cel-js discards leaves no
 // pending timer behind for the test sanitizers.
