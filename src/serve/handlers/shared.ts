@@ -54,7 +54,10 @@ import {
 } from "../../domain/access/principal.ts";
 import type { Action } from "../../domain/access/action.ts";
 import { isControlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
-import { vaultKindResource } from "../../domain/access/access_resources.ts";
+import {
+  tagsChanged,
+  vaultKindResource,
+} from "../../domain/access/access_resources.ts";
 import {
   isControlPlaneModelType,
   normalizeModelTypeName,
@@ -1163,6 +1166,53 @@ export function authorizeOrReject(
     resource,
     ctx,
     decideAccess(socket, principal, action, resource, ctx),
+  );
+}
+
+/**
+ * Authorizes `tag` for an edit that changes a model's or workflow's tags or
+ * name (swamp-club#3085): on the resource as each prior tag set has it, so a
+ * principal cannot move it out of a tag their grants depend on, and as the
+ * edit leaves it, so they cannot move it in. A rename counts as a retag: a
+ * `tag` grant scoped by name would otherwise be passed by renaming the
+ * resource into its pattern first and retagging it after. `loaded` is the
+ * tags the edit read when it started and `stored` the tags stored now: an
+ * edit whose tags match what it loaded can still undo a retag made since. A
+ * `stored` of null (the resource is no longer found as loaded) fails closed:
+ * the edit is judged a retag. An edit that changes neither tags nor name
+ * needs no `tag`. Stops at the first refusal, which it replies and audits as
+ * {@link authorizeOrReject} does; returns whether the edit may proceed.
+ */
+export function authorizeRetag(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  retag: {
+    /** The resource before the edit, with the given tags. */
+    prior: (tags: Record<string, string>) => AccessResource;
+    /** The resource as the edit leaves it. */
+    after: AccessResource;
+    loaded: Record<string, string>;
+    stored: Record<string, string> | null;
+    afterTags: Record<string, string>;
+  },
+  ctx: ConnectionContext,
+): boolean {
+  const { loaded, stored, afterTags } = retag;
+  const renamed = retag.prior(loaded).name !== retag.after.name;
+  const changed = stored === null
+    ? [loaded]
+    : [loaded, stored].filter((prior) =>
+      renamed || tagsChanged(prior, afterTags)
+    );
+  if (changed.length === 0) return true;
+  const priors = changed.filter((tags, i) =>
+    changed.findIndex((other) => !tagsChanged(other, tags)) === i
+  );
+  const resources = [...priors.map(retag.prior), retag.after];
+  return resources.every((resource) =>
+    authorizeOrReject(socket, requestId, principal, "tag", resource, ctx)
+      .allowed
   );
 }
 

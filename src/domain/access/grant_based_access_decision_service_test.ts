@@ -1924,6 +1924,203 @@ Deno.test("hasAnyGrantForKind: run implies signal unless runImpliesSignal is fal
   );
 });
 
+// --- tag: its own action, implied by write unless writeImpliesTag is false ---
+
+function explicitTagService(grants: Grant[]): GrantBasedAccessDecisionService {
+  return new GrantBasedAccessDecisionService(
+    new PolicySnapshot(grants, [], celEvaluator),
+    { writeImpliesTag: false },
+  );
+}
+
+function makeModelResource(tags: Record<string, string>): AccessResource {
+  return {
+    kind: "model",
+    name: "other-model",
+    fields: { name: "other-model", modelType: "command/shell", tags },
+  };
+}
+
+Deno.test("writeImpliesTag: defaults to true", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  assertEquals(service.writeImpliesTag, true);
+});
+
+Deno.test("decide: write grant implies tag, marked impliedBy write", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([makeGrant({ actions: ["write"] })], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "tag", makeResource());
+  assertEquals(result?.effect, "allow");
+  assertEquals(result?.impliedBy, "write");
+});
+
+Deno.test("decide: tag-only grant allows tag and nothing else", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([makeGrant({ actions: ["tag"] })], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "tag", makeResource());
+  assertEquals(result?.effect, "allow");
+  assertEquals(result?.impliedBy, undefined);
+  for (
+    const action of [
+      "run",
+      "read",
+      "write",
+      "approve",
+      "signal",
+      "admin",
+    ] as const
+  ) {
+    assertEquals(
+      service.decide(makePrincipal("adam"), action, makeResource()),
+      null,
+    );
+  }
+});
+
+Deno.test("decide: run grant does not imply tag", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([makeGrant({ actions: ["run"] })], [], celEvaluator),
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "tag", makeResource()),
+    null,
+  );
+});
+
+Deno.test("decide: write grant does not imply tag when writeImpliesTag is false", () => {
+  const service = explicitTagService([
+    makeGrant({ actions: ["write", "run"] }),
+  ]);
+  assertEquals(service.writeImpliesTag, false);
+  assertEquals(
+    service.decide(makePrincipal("adam"), "tag", makeResource()),
+    null,
+  );
+  // The run implications are separate settings.
+  assertEquals(
+    service.decide(makePrincipal("adam"), "approve", makeResource())?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decide: deny on write denies tag even with an explicit tag grant", () => {
+  const grants = [
+    makeGrant({ actions: ["tag"], effect: "allow" }),
+    makeGrant({ actions: ["write"], effect: "deny" }),
+  ];
+  for (
+    const service of [
+      explicitTagService(grants),
+      new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], celEvaluator),
+      ),
+    ]
+  ) {
+    const result = service.decide(makePrincipal("adam"), "tag", makeResource());
+    assertEquals(result?.effect, "deny");
+    assertEquals(result?.impliedBy, "write");
+  }
+});
+
+Deno.test("decide: a deny on tag overrides the tag a write grant implies (swamp-club#3085)", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({ actions: ["write"], effect: "allow" }),
+        makeGrant({ actions: ["tag"], effect: "deny" }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "tag", makeResource())?.effect,
+    "deny",
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "write", makeResource())?.effect,
+    "allow",
+  );
+});
+
+Deno.test("decide: a tag grant conditioned on a team tag covers only that team's resources (swamp-club#3085)", () => {
+  const service = explicitTagService([
+    makeGrant({
+      actions: ["write"],
+      resource: { kind: "model", pattern: "*" },
+    }),
+    makeGrant({
+      actions: ["tag"],
+      resource: { kind: "model", pattern: "*" },
+      condition: 'tags.team == "team-a"',
+    }),
+  ]);
+  const principal = makePrincipal("adam");
+  assertEquals(
+    service.decide(principal, "tag", makeModelResource({ team: "team-a" }))
+      ?.effect,
+    "allow",
+  );
+  assertEquals(
+    service.decide(principal, "tag", makeModelResource({ team: "team-b" })),
+    null,
+  );
+  assertEquals(
+    service.decide(principal, "write", makeModelResource({ team: "team-b" }))
+      ?.effect,
+    "allow",
+  );
+});
+
+Deno.test("actionsCoveredBy: appends tag implied by an allow write grant", () => {
+  const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["write"] })),
+    [{ action: "write" }, { action: "tag", impliedBy: "write" }],
+  );
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["write", "tag"] })),
+    [{ action: "write" }, { action: "tag" }],
+  );
+});
+
+Deno.test("actionsCoveredBy: omits implied tag for allow grants when writeImpliesTag is false, keeps it for denies", () => {
+  const service = explicitTagService([]);
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["write"] })),
+    [{ action: "write" }],
+  );
+  assertEquals(
+    service.actionsCoveredBy(makeGrant({ actions: ["write"], effect: "deny" })),
+    [{ action: "write" }, { action: "tag", impliedBy: "write" }],
+  );
+});
+
+Deno.test("hasAnyGrantForKind: write implies tag unless writeImpliesTag is false", () => {
+  const grants = [
+    makeGrant({
+      actions: ["write"],
+      resource: { kind: "model", pattern: "*" },
+    }),
+  ];
+  assertEquals(
+    new GrantBasedAccessDecisionService(
+      new PolicySnapshot(grants, [], celEvaluator),
+    ).hasAnyGrantForKind(makePrincipal("adam"), "tag", "model"),
+    true,
+  );
+  assertEquals(
+    explicitTagService(grants).hasAnyGrantForKind(
+      makePrincipal("adam"),
+      "tag",
+      "model",
+    ),
+    false,
+  );
+});
+
 Deno.test("decide: a vault grant matches vaults by name, never data of the same name (swamp-club#2676)", () => {
   const grant = makeGrant({
     actions: ["read"],

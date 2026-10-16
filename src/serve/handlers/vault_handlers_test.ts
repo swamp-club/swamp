@@ -184,6 +184,7 @@ function createAnnotateCtx(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   } as ConnectionContext;
 }

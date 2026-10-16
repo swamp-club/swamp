@@ -222,8 +222,9 @@ Deno.test("parseFieldFlags: does not pollute Object.prototype", () => {
   );
 });
 
-Deno.test("parseActionsFlag: accepts signal, and an invalid action's error lists every action", () => {
+Deno.test("parseActionsFlag: accepts signal and tag, and an invalid action's error lists every action", () => {
   assertEquals(parseActionsFlag("signal"), ["signal"]);
+  assertEquals(parseActionsFlag("write,tag"), ["write", "tag"]);
   const error = assertThrows(() => parseActionsFlag("sginal"), UserError);
   for (const action of ActionSchema.options) {
     assertStringIncludes(error.message, action);

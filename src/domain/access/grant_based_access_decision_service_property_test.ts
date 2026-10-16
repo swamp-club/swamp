@@ -39,10 +39,14 @@ import { PolicySnapshot } from "./policy_snapshot.ts";
 import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
 
 const ACTIONS: readonly Action[] = ActionSchema.options;
-/** The actions a `run` grant implies, each with the option that turns it off. */
+/**
+ * The actions another action's grant implies, each with that action and the
+ * option that turns the implication off.
+ */
 const IMPLIED = [
-  { action: "approve", option: "runImpliesApprove" },
-  { action: "signal", option: "runImpliesSignal" },
+  { action: "approve", by: "run", option: "runImpliesApprove" },
+  { action: "signal", by: "run", option: "runImpliesSignal" },
+  { action: "tag", by: "write", option: "writeImpliesTag" },
 ] as const;
 type ImpliedAction = typeof IMPLIED[number];
 
@@ -110,7 +114,7 @@ function servicesFor(
   };
 }
 
-Deno.test("GrantBasedAccessDecisionService: a run implication never changes decisions for other actions", () => {
+Deno.test("GrantBasedAccessDecisionService: an implication never changes decisions for other actions", () => {
   fc.assert(
     fc.property(
       arbGrants,
@@ -136,7 +140,7 @@ Deno.test("GrantBasedAccessDecisionService: a run implication never changes deci
   );
 });
 
-Deno.test("GrantBasedAccessDecisionService: turning a run implication off only narrows its action", () => {
+Deno.test("GrantBasedAccessDecisionService: turning an implication off only narrows its action", () => {
   fc.assert(
     fc.property(arbGrants, fc.constantFrom(...IMPLIED), (grants, target) => {
       const { action, option } = target;
@@ -150,7 +154,7 @@ Deno.test("GrantBasedAccessDecisionService: turning a run implication off only n
         assertEquals(strict.impliedBy, undefined);
       }
       if (lenient?.effect === "deny") {
-        // Every deny still applies, including a deny on run.
+        // Every deny still applies, including a deny on the implying action.
         assertEquals(strict, lenient);
       }
       if (explicit.hasAnyGrantForKind(PRINCIPAL, action, "workflow")) {
@@ -160,14 +164,14 @@ Deno.test("GrantBasedAccessDecisionService: turning a run implication off only n
   );
 });
 
-Deno.test("GrantBasedAccessDecisionService: explain for an implied action differs only by run-only allow grants", () => {
+Deno.test("GrantBasedAccessDecisionService: explain for an implied action differs only by allow grants that cover it only through the implying action", () => {
   fc.assert(
     fc.property(arbGrants, fc.constantFrom(...IMPLIED), (grants, target) => {
-      const { action, option } = target;
+      const { action, by, option } = target;
       const { implied, explicit } = servicesFor(grants, option);
       const expected = implied
         .explain(PRINCIPAL, action, RESOURCE)
-        .filter((d) => !(d.effect === "allow" && d.impliedBy === "run"));
+        .filter((d) => !(d.effect === "allow" && d.impliedBy === by));
       assertEquals(explicit.explain(PRINCIPAL, action, RESOURCE), expected);
     }),
   );

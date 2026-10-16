@@ -43,7 +43,7 @@ means denied.
 | ---------- | --------------------------------------------------------------------------------------------- |
 | Subjects   | `user:<id>`, `group:<name>`, `idp-group:<collective>`, `service:scheduler`, `service:webhook` |
 | Effects    | `allow`, `deny` (deny wins)                                                                   |
-| Actions    | `run`, `read`, `write`, `approve`, `signal`, `admin`                                          |
+| Actions    | `run`, `read`, `write`, `approve`, `signal`, `tag`, `admin`                                   |
 | Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `access:*`                    |
 | Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                          |
 
@@ -74,6 +74,19 @@ alone to a callback system or to a person who answers waits without running the
 workflow. A `run` grant also permits `signal` unless serve runs with
 `--signal-requires-explicit-grant` (config
 `auth.signal-requires-explicit-grant`). A deny on `run` still denies `signal`.
+
+`tag` changes a behavior's or workflow's tags. A `model edit` or `workflow edit`
+whose tags differ from the stored ones, or that renames, needs `tag` on the old
+name and tags and on the new ones, as well as `write`. Data is judged on its
+owner's current tags, so a principal who may retag can satisfy any
+tag-conditioned `data:` grant. A `write` grant also permits `tag` unless serve
+runs with `--tag-requires-explicit-grant` (config
+`auth.tag-requires-explicit-grant`); a deny on `write` still denies `tag`. When
+reads depend on a tag condition, turn the setting on and grant `tag` where tags
+may change, or deny `tag` to those members. New resources are untagged, so a
+team that labels its own uses a condition such as
+`!("team" in tags) || tags.team == "team-a"`, which also lets it claim any
+untagged resource.
 
 ## Signals Through Serve
 
@@ -133,8 +146,10 @@ once on one token can be answered 429; retry. A step's `key` changed while its
 wait is open strands that wait for a key-only sender (old key 404, new key 409
 with no `lastWait`); someone who may read the workflow signals it by wait ID.
 
-Upgrade every host on the datastore before creating a grant that names `signal`:
-an older build drops such a grant whole, including a deny.
+Upgrade every host on the datastore before creating a grant that names `signal`
+or `tag`: an older build drops such a grant whole, with every other action in
+it, so a deny on `write,tag` stops denying `write` there. Until every host is
+upgraded, keep `signal` and `tag` in grants of their own.
 
 ## CLI Grant Management
 

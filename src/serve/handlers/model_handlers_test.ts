@@ -46,7 +46,10 @@ import type {
   DatastoreSyncService,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
-import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import {
+  GrantBasedAccessDecisionService,
+  type GrantBasedAccessDecisionServiceOptions,
+} from "../../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
@@ -281,6 +284,7 @@ function createEditCtx(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   } as ConnectionContext;
 }
@@ -400,6 +404,7 @@ function createPolicyEditCtx(
   repoDir: string,
   definitionRepo: YamlDefinitionRepository,
   grants: Grant[],
+  options: GrantBasedAccessDecisionServiceOptions = {},
 ): ConnectionContext {
   const ctx = createEditCtx(repoDir, definitionRepo);
   return {
@@ -408,6 +413,7 @@ function createPolicyEditCtx(
     policySnapshotLoader: {
       decisionService: new GrantBasedAccessDecisionService(
         new PolicySnapshot(grants, [], createConditionEvaluator()),
+        options,
       ),
     } as unknown as PolicySnapshotLoader,
   };
@@ -610,6 +616,228 @@ Deno.test("handleModelEdit: reports an unknown model as not found", async () => 
     const sent = frames(socket);
     assertEquals(sent.length, 1);
     assertEquals(sent[0].error.code, "not_found");
+  });
+});
+
+// --- handleModelEdit retag needs tag (swamp-club#3085) ---
+
+/** Write on every model; tag only on team-a models; write does not imply tag. */
+function createTeamTagCtx(
+  dir: string,
+  repo: YamlDefinitionRepository,
+  extra: Grant[] = [],
+): ConnectionContext {
+  return createPolicyEditCtx(dir, repo, [
+    grant({}),
+    grant({ actions: ["tag"], condition: 'tags.team == "team-a"' }),
+    ...extra,
+  ], { writeImpliesTag: false });
+}
+
+async function editModel(
+  ctx: ConnectionContext,
+  definition: Definition,
+  overrides: Record<string, unknown>,
+) {
+  const socket = createMockSocket();
+  await handleModelEdit(
+    socket,
+    ctx,
+    "req-retag",
+    {
+      modelIdOrName: definition.name,
+      content: editYaml(definition, overrides),
+      allowRename: true,
+    },
+    new AbortController(),
+    EDITOR,
+  );
+  return frames(socket);
+}
+
+Deno.test("handleModelEdit: a retag into another team's tag is refused without a tag grant for its current tags", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "other-model", {
+      team: "team-b",
+    });
+
+    const sent = await editModel(createTeamTagCtx(dir, repo), definition, {
+      tags: { team: "team-a" },
+    });
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals(sent[0].error.code, "unauthorized");
+    const reread = await repo.findByNameGlobal("other-model");
+    assertEquals(reread?.definition.tags, { team: "team-b" });
+  });
+});
+
+Deno.test("handleModelEdit: a retag out of a granted team's tag is refused", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "own-model", {
+      team: "team-a",
+    });
+
+    const sent = await editModel(createTeamTagCtx(dir, repo), definition, {
+      tags: { team: "team-b" },
+    });
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    const reread = await repo.findByNameGlobal("own-model");
+    assertEquals(reread?.definition.tags, { team: "team-a" });
+  });
+});
+
+Deno.test("handleModelEdit: a retag within a granted team's tag is saved", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "own-model", {
+      team: "team-a",
+    });
+
+    const sent = await editModel(createTeamTagCtx(dir, repo), definition, {
+      tags: { team: "team-a", env: "prod" },
+    });
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "model.edit");
+    const reread = await repo.findByNameGlobal("own-model");
+    assertEquals(reread?.definition.tags, { team: "team-a", env: "prod" });
+  });
+});
+
+Deno.test("handleModelEdit: an edit that keeps the tags and name needs no tag grant", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "other-model", {
+      team: "team-b",
+    });
+    const ctx = createPolicyEditCtx(dir, repo, [grant({})], {
+      writeImpliesTag: false,
+    });
+
+    const sent = await editModel(ctx, definition, { tags: { team: "team-b" } });
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "model.edit");
+  });
+});
+
+Deno.test("handleModelEdit: a rename into a name-scoped tag grant is refused, so it cannot be followed by a retag", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "other-model", {
+      team: "team-b",
+    });
+    const ctx = createPolicyEditCtx(dir, repo, [
+      grant({}),
+      grant({
+        actions: ["tag"],
+        resource: { kind: "model", pattern: "team-a-*" },
+      }),
+    ], { writeImpliesTag: false });
+
+    const sent = await editModel(ctx, definition, { name: "team-a-loot" });
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].error?.code, "unauthorized");
+    assertEquals(await repo.findByNameGlobal("team-a-loot"), null);
+    assertEquals(
+      (await repo.findByNameGlobal("other-model"))?.definition.tags,
+      { team: "team-b" },
+    );
+  });
+});
+
+Deno.test("handleModelEdit: an edit carrying the tags it loaded cannot undo a retag stored before it saves", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "own-model", {
+      team: "team-a",
+    });
+    // The handler resolves the model, the edit loads it, and the save re-reads
+    // it; another writer moves it to team-b right after the edit loads it.
+    let lookups = 0;
+    const racing = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop !== "findByNameGlobal") {
+          return Reflect.get(target, prop, receiver);
+        }
+        return async (name: string) => {
+          const found = await target.findByNameGlobal(name);
+          if (++lookups === 2) {
+            await target.save(
+              EDIT_TEST_TYPE,
+              Definition.fromData({
+                ...definition.toData(),
+                tags: { team: "team-b" },
+              }),
+            );
+          }
+          return found;
+        };
+      },
+    });
+
+    const sent = await editModel(
+      createTeamTagCtx(dir, racing),
+      definition,
+      { tags: { team: "team-a" } },
+    );
+
+    assertEquals(lookups, 3);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].error?.code, "unauthorized");
+    assertEquals(
+      (await repo.findByNameGlobal("own-model"))?.definition.tags,
+      { team: "team-b" },
+    );
+  });
+});
+
+Deno.test("handleModelEdit: a write grant still permits a retag when write implies tag", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "other-model", {
+      team: "team-b",
+    });
+
+    const sent = await editModel(
+      createPolicyEditCtx(dir, repo, [grant({})]),
+      definition,
+      { tags: { team: "team-a" } },
+    );
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "model.edit");
+  });
+});
+
+Deno.test("handleModelEdit: a restricted model's retag stays an admin decision", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "restricted-model", {
+      team: "team-b",
+    });
+    const base = createPolicyEditCtx(dir, repo, [
+      grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
+    ], { writeImpliesTag: false });
+    const ctx: ConnectionContext = {
+      ...base,
+      authConfig: {
+        ...base.authConfig,
+        restrictedModelTypes: [EDIT_TEST_TYPE.normalized],
+      },
+    };
+
+    const sent = await editModel(ctx, definition, { tags: { team: "team-a" } });
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "model.edit");
   });
 });
 

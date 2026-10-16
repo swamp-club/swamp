@@ -48,6 +48,12 @@ export interface ServeAuthConfig {
    * names `signal`; a `run` grant alone no longer implies it. Off by default.
    */
   signalRequiresExplicitGrant: boolean;
+  /**
+   * When true, changing a model's or workflow's tags needs a grant that
+   * names `tag`; a `write` grant alone no longer implies it. Off by default
+   * (swamp-club#3085).
+   */
+  tagRequiresExplicitGrant: boolean;
 }
 
 const VALID_AUTH_MODES: ReadonlySet<string> = new Set([
@@ -70,6 +76,7 @@ export interface ServeAuthConfigInput {
   restrictedCommands?: string;
   approveRequiresExplicitGrant?: boolean;
   signalRequiresExplicitGrant?: boolean;
+  tagRequiresExplicitGrant?: boolean;
 }
 
 /**
@@ -192,6 +199,7 @@ export function buildServeAuthConfig(
     restrictedCommands,
     approveRequiresExplicitGrant: input.approveRequiresExplicitGrant ?? false,
     signalRequiresExplicitGrant: input.signalRequiresExplicitGrant ?? false,
+    tagRequiresExplicitGrant: input.tagRequiresExplicitGrant ?? false,
   };
 }
 

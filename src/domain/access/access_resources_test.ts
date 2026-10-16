@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   modelAccessResource,
+  tagsChanged,
   unresolvedAccessResource,
   vaultKindResource,
   workflowAccessResource,
@@ -100,4 +101,25 @@ Deno.test("vaultKindResource: names the key only when a request names one", () =
     name: "prod",
     key: "db",
   });
+});
+
+Deno.test("tagsChanged: equal tag sets in any key order are unchanged", () => {
+  assertEquals(
+    tagsChanged({ team: "a", env: "prod" }, { env: "prod", team: "a" }),
+    false,
+  );
+});
+
+Deno.test("tagsChanged: no tags reads as an empty tag set", () => {
+  assertEquals(tagsChanged(undefined, {}), false);
+  assertEquals(tagsChanged({}, undefined), false);
+  assertEquals(tagsChanged(undefined, { team: "a" }), true);
+});
+
+Deno.test("tagsChanged: a value, an added key or a removed key is a change", () => {
+  assertEquals(tagsChanged({ team: "a" }, { team: "b" }), true);
+  assertEquals(tagsChanged({ team: "a" }, { team: "a", env: "x" }), true);
+  assertEquals(tagsChanged({ team: "a", env: "x" }, { team: "a" }), true);
+  // Same key count, different keys.
+  assertEquals(tagsChanged({ team: "a" }, { owner: "a" }), true);
 });

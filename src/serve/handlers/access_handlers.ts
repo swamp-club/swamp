@@ -500,6 +500,7 @@ export async function handleAccessCheck(
         decisions: decisions as unknown as Record<string, unknown>[],
         approveRequiresExplicitGrant: !service.runImpliesApprove,
         signalRequiresExplicitGrant: !service.runImpliesSignal,
+        tagRequiresExplicitGrant: !service.writeImpliesTag,
         ...(runVaultAccess ? { runVaultAccess } : {}),
       },
     });
@@ -599,6 +600,7 @@ export async function handleAccessCanI(
           })),
           approveRequiresExplicitGrant: !service.runImpliesApprove,
           signalRequiresExplicitGrant: !service.runImpliesSignal,
+          tagRequiresExplicitGrant: !service.writeImpliesTag,
           ...(runVaultAccess ? { runVaultAccess } : {}),
         },
       });
@@ -621,6 +623,7 @@ export async function handleAccessCanI(
           principal: principalStr,
           approveRequiresExplicitGrant: !service.runImpliesApprove,
           signalRequiresExplicitGrant: !service.runImpliesSignal,
+          tagRequiresExplicitGrant: !service.writeImpliesTag,
           decisions: grants.flatMap((g) =>
             service.actionsCoveredBy(g).map(({ action: a, impliedBy }) => ({
               action: a,

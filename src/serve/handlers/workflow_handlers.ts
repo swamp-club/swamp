@@ -207,6 +207,7 @@ import {
   accessCallerOf,
   authorizeAnyOrReject,
   authorizeOrReject,
+  authorizeRetag,
   cancelActor,
   cancelReasonFor,
   captureDecisionSubject,
@@ -2771,12 +2772,34 @@ export async function handleWorkflowEdit(
             // rename or retag needs write on the result. It runs on every save
             // rather than only on a detected change, so a concurrent retag
             // between the lookup above and the save cannot skip it.
-            authorizeUpdate: (_before, after) =>
-              authorizeOrReject(socket, requestId, principal, "write", {
-                kind: "workflow",
-                name: after.name,
-                fields: workflowAccessFields(after),
-              }, ctx).allowed,
+            authorizeUpdate: async (before, after) => {
+              const resource = workflowAccessResource(after);
+              if (
+                !authorizeOrReject(
+                  socket,
+                  requestId,
+                  principal,
+                  "write",
+                  resource,
+                  ctx,
+                ).allowed
+              ) return false;
+              // A retag or rename needs `tag`, judged against the tags stored
+              // now too (swamp-club#3085). Ids are not unique, so the stored
+              // workflow counts only under the name the edit loaded; a lookup
+              // by name reads one file, where one by id reads them all.
+              const named = await ctx.repoContext.workflowRepo.findByName(
+                before.name,
+              );
+              const stored = named?.id === workflow.id ? named : null;
+              return authorizeRetag(socket, requestId, principal, {
+                prior: (tags) => workflowAccessResource({ ...before, tags }),
+                after: resource,
+                loaded: before.tags,
+                stored: stored ? { ...stored.tags } : null,
+                afterTags: after.tags,
+              }, ctx);
+            },
             // The expressions and steps the edit adds are authorized against
             // this writer; those already stored are not (swamp-club#2755).
             authorizeContent: async (before, after) => {

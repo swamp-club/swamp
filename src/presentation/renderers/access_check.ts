@@ -53,6 +53,11 @@ export interface AccessCheckResult {
    * that predates the setting.
    */
   signalRequiresExplicitGrant?: boolean;
+  /**
+   * The server's tag policy. Undefined for a local check, or a server that
+   * predates the setting.
+   */
+  tagRequiresExplicitGrant?: boolean;
   /** Undefined for a local check, or a server that predates it. */
   runVaultAccess?: RunVaultAccessReport;
 }
@@ -95,66 +100,81 @@ export function runVaultAccessLines(
 
 interface ApprovalDecision {
   readonly effect: string;
-  readonly impliedBy?: "run";
+  readonly impliedBy?: "run" | "write";
   /** The action of a listing row; absent on a check of one action. */
   readonly action?: string;
 }
 
-/** Marks a decision that covers its action only through a run grant. */
+/**
+ * Marks a decision that covers its action only through another action's
+ * grant: `run` for approve and signal, `write` for tag.
+ */
 export function impliedMarker(decision: ApprovalDecision): string {
-  return decision.impliedBy === "run" ? " [implied by run]" : "";
+  return decision.impliedBy ? ` [implied by ${decision.impliedBy}]` : "";
 }
 
-/** An action a run grant implies unless the server requires an explicit grant. */
-type RunImpliedAction = "approve" | "signal";
+/**
+ * An action another action's grant implies unless the server requires an
+ * explicit grant, and the action that implies it.
+ */
+const IMPLYING_ACTION = {
+  approve: "run",
+  signal: "run",
+  tag: "write",
+} as const;
 
-const POLICY_LABEL: Record<RunImpliedAction, string> = {
+type ImpliedAction = keyof typeof IMPLYING_ACTION;
+
+const POLICY_LABEL: Record<ImpliedAction, string> = {
   approve: "Approval policy",
   signal: "Signal policy",
+  tag: "Tag policy",
 };
 
 function explicitGrantHint(
   requiresExplicitGrant: boolean | undefined,
-  action: RunImpliedAction,
+  action: ImpliedAction,
 ): string {
   return requiresExplicitGrant === false
     ? `Set auth.${action}-requires-explicit-grant on the server to require a grant that names ${action}.`
     : `A server started with --${action}-requires-explicit-grant requires a grant that names ${action}.`;
 }
 
-function runImpliedPolicyNote(
-  target: RunImpliedAction,
+function impliedPolicyNote(
+  target: ImpliedAction,
   action: string,
   decisions: readonly ApprovalDecision[],
   requiresExplicitGrant: boolean | undefined,
 ): string | null {
   if (action !== target) return null;
+  const implying = IMPLYING_ACTION[target];
   if (requiresExplicitGrant === true) {
     return `${
       POLICY_LABEL[target]
-    }: this server requires a grant that names ${target}; run grants do not count.`;
+    }: this server requires a grant that names ${target}; ${implying} grants do not count.`;
   }
-  const allowedOnlyThroughRun = decisions.length > 0 &&
+  const allowedOnlyThroughImplying = decisions.length > 0 &&
     decisions[0].effect === "allow" &&
-    decisions.every((d) => d.impliedBy === "run");
-  if (!allowedOnlyThroughRun) return null;
-  return `Note: ${target} is allowed only through a run grant. ${
+    decisions.every((d) => d.impliedBy === implying);
+  if (!allowedOnlyThroughImplying) return null;
+  return `Note: ${target} is allowed only through a ${implying} grant. ${
     explicitGrantHint(requiresExplicitGrant, target)
   }`;
 }
 
 /** A row with no action is a row of an approve listing, as before signal. */
 function impliedListingNote(
-  target: RunImpliedAction,
+  target: ImpliedAction,
   decisions: readonly ApprovalDecision[],
   requiresExplicitGrant: boolean | undefined,
 ): string | null {
+  const implying = IMPLYING_ACTION[target];
   const hasImpliedAllow = decisions.some((d) =>
-    d.effect === "allow" && d.impliedBy === "run" &&
+    d.effect === "allow" && d.impliedBy === implying &&
     (d.action === undefined ? target === "approve" : d.action === target)
   );
   if (!hasImpliedAllow) return null;
-  return `Note: ${target} rows marked [implied by run] come from run grants. ${
+  return `Note: ${target} rows marked [implied by ${implying}] come from ${implying} grants. ${
     explicitGrantHint(requiresExplicitGrant, target)
   }`;
 }
@@ -169,7 +189,7 @@ export function approvalPolicyNote(
   decisions: readonly ApprovalDecision[],
   approveRequiresExplicitGrant: boolean | undefined,
 ): string | null {
-  return runImpliedPolicyNote(
+  return impliedPolicyNote(
     "approve",
     action,
     decisions,
@@ -186,12 +206,24 @@ export function signalPolicyNote(
   decisions: readonly ApprovalDecision[],
   signalRequiresExplicitGrant: boolean | undefined,
 ): string | null {
-  return runImpliedPolicyNote(
+  return impliedPolicyNote(
     "signal",
     action,
     decisions,
     signalRequiresExplicitGrant,
   );
+}
+
+/**
+ * Explains how a tag check was decided, as {@link approvalPolicyNote} does
+ * for approve, with `write` in place of `run` (swamp-club#3085).
+ */
+export function tagPolicyNote(
+  action: string,
+  decisions: readonly ApprovalDecision[],
+  tagRequiresExplicitGrant: boolean | undefined,
+): string | null {
+  return impliedPolicyNote("tag", action, decisions, tagRequiresExplicitGrant);
 }
 
 /**
@@ -216,6 +248,17 @@ export function impliedSignalListingNote(
   return impliedListingNote("signal", decisions, signalRequiresExplicitGrant);
 }
 
+/**
+ * Explains implied tag rows in a permission listing, or returns null when
+ * the listing has none that allow.
+ */
+export function impliedTagListingNote(
+  decisions: readonly ApprovalDecision[],
+  tagRequiresExplicitGrant: boolean | undefined,
+): string | null {
+  return impliedListingNote("tag", decisions, tagRequiresExplicitGrant);
+}
+
 export interface AccessCheckRenderer {
   render(result: AccessCheckResult): void;
 }
@@ -234,6 +277,10 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
       result.action,
       result.decisions,
       result.signalRequiresExplicitGrant,
+    ) ?? tagPolicyNote(
+      result.action,
+      result.decisions,
+      result.tagRequiresExplicitGrant,
     );
 
     if (result.decisions.length === 0) {
@@ -306,6 +353,9 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
             ? {
               signalRequiresExplicitGrant: result.signalRequiresExplicitGrant,
             }
+            : {}),
+          ...(result.tagRequiresExplicitGrant !== undefined
+            ? { tagRequiresExplicitGrant: result.tagRequiresExplicitGrant }
             : {}),
           ...(result.runVaultAccess
             ? { runVaultAccess: result.runVaultAccess }

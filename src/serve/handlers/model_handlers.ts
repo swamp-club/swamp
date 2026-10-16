@@ -122,6 +122,7 @@ import type {
 } from "../protocol.ts";
 import {
   type DefinitionLookupResult,
+  findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
   findDefinitionsByIdGlobal,
 } from "../../domain/models/model_lookup.ts";
@@ -159,6 +160,7 @@ import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
+  authorizeRetag,
   clientErrorDetails,
   confirmRunReplicated,
   type ConnectionContext,
@@ -2603,19 +2605,37 @@ export async function handleModelEdit(
             // rename or retag needs write on the result. It runs on every save
             // rather than only on a detected change, so a concurrent retag
             // between the lookup above and the save cannot skip it.
-            authorizeUpdate: (_before, after) => {
+            authorizeUpdate: async (before, after) => {
               const { action, resource } = modelEditAuthorization(
                 after,
                 ctx.authConfig.restrictedModelTypes,
               );
-              return authorizeOrReject(
-                socket,
-                requestId,
-                principal,
-                action,
-                resource,
-                ctx,
-              ).allowed;
+              if (
+                !authorizeOrReject(
+                  socket,
+                  requestId,
+                  principal,
+                  action,
+                  resource,
+                  ctx,
+                ).allowed
+              ) return false;
+              // A control-plane or restricted model is edited as admin, which
+              // covers its tags; any other retag or rename needs `tag`, judged
+              // against the tags stored now too (swamp-club#3085).
+              if (resource.kind !== "model" || action !== "write") return true;
+              const stored = await findDefinitionByIdGlobal(
+                ctx.repoContext.definitionRepo,
+                resolved.definition.id,
+                before.name,
+              );
+              return authorizeRetag(socket, requestId, principal, {
+                prior: (tags) => modelEditResource({ ...before, tags }),
+                after: resource,
+                loaded: before.tags,
+                stored: stored ? { ...stored.definition.tags } : null,
+                afterTags: after.tags,
+              }, ctx);
             },
             // The expressions the edit adds are authorized against this
             // writer; those already stored are not (swamp-club#2755).
@@ -2694,17 +2714,26 @@ function modelEditAuthorization(
       }),
     };
   }
-  const fields = {
-    modelType: target.modelType,
-    name: target.name,
-    tags: target.tags,
-  };
+  const resource = modelEditResource(target);
   if (isAdminOnlyModelType(undefined, target.modelType, restrictedModelTypes)) {
-    return { action: "admin", resource: { kind: "access", name: "*", fields } };
+    return {
+      action: "admin",
+      resource: { kind: "access", name: "*", fields: resource.fields },
+    };
   }
+  return { action: "write", resource };
+}
+
+/** The model resource an edit of an ordinary model is authorized on. */
+function modelEditResource(target: ModelEditTarget): AccessResource {
   return {
-    action: "write",
-    resource: { kind: "model", name: target.name, fields },
+    kind: "model",
+    name: target.name,
+    fields: {
+      modelType: target.modelType,
+      name: target.name,
+      tags: target.tags,
+    },
   };
 }
 

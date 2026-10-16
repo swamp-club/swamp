@@ -375,3 +375,63 @@ Deno.test("runVaultAccessLines: a refusal that is not about scoping names its ru
     ["In serve runs: ALLOW read vault erp (not vault-scoped)"],
   );
 });
+
+// --- tag policy (swamp-club#3085) ---
+
+const impliedTag = makeResult({
+  action: "tag",
+  decisions: [{
+    effect: "allow",
+    grantId: "test-uuid-1234-5678-abcd-ef0123456789",
+    subject: { kind: "user", name: "member" },
+    impliedBy: "write",
+  }],
+});
+
+Deno.test("accessCheckRenderer log: marks tag implied by write and names the tag setting", () => {
+  const output = captureLog({ ...impliedTag, tagRequiresExplicitGrant: false });
+  assertStringIncludes(output[0], "[implied by write]");
+  const note = output[output.length - 1];
+  assertStringIncludes(note, "tag is allowed only through a write grant");
+  assertStringIncludes(note, "auth.tag-requires-explicit-grant");
+});
+
+Deno.test("accessCheckRenderer log: states the policy when the server requires an explicit tag grant", () => {
+  const output = captureLog({
+    ...impliedTag,
+    decisions: [],
+    tagRequiresExplicitGrant: true,
+    // The run settings say nothing about a tag check.
+    approveRequiresExplicitGrant: true,
+    signalRequiresExplicitGrant: true,
+  });
+  assertStringIncludes(output[0], "DENY (implicit)");
+  assertStringIncludes(output[1], "Tag policy");
+  assertStringIncludes(output[1], "write grants do not count");
+});
+
+Deno.test("accessCheckRenderer log: a write check gets no tag note", () => {
+  const output = captureLog({
+    ...impliedTag,
+    action: "write",
+    decisions: [],
+    tagRequiresExplicitGrant: true,
+  });
+  assertEquals(output.length, 1);
+});
+
+Deno.test("accessCheckRenderer json: includes the tag policy when the server reports it", () => {
+  const renderer = createAccessCheckRenderer("json");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render({ ...impliedTag, tagRequiresExplicitGrant: true });
+    renderer.render(impliedTag);
+  } finally {
+    console.log = origLog;
+  }
+  assertEquals(JSON.parse(output[0]).tagRequiresExplicitGrant, true);
+  assertEquals(JSON.parse(output[0]).matchingGrants[0].impliedBy, "write");
+  assertEquals("tagRequiresExplicitGrant" in JSON.parse(output[1]), false);
+});

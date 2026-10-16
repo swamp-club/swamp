@@ -1137,6 +1137,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.signalRequiresExplicitGrant) {
     args.push("--signal-requires-explicit-grant");
   }
+  if (options.tagRequiresExplicitGrant) {
+    args.push("--tag-requires-explicit-grant");
+  }
   if (options.groupRefreshInterval) {
     args.push(
       "--group-refresh-interval",
@@ -1608,6 +1611,7 @@ export function resolveServeStartupSettings(
     restrictedCommands: merged.restrictedCommands,
     approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
     signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
+    tagRequiresExplicitGrant: merged.tagRequiresExplicitGrant,
   });
 
   assertOffLoopbackSecurity(merged.host, tlsEnabled, authConfig.mode);
@@ -1756,6 +1760,13 @@ const daemonEnableCommand = new Command()
       "a run grant alone no longer implies signal. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--tag-requires-explicit-grant",
+    "Require a grant that names tag to change a behavior's or workflow's tags; " +
+      "a write grant alone no longer implies tag. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_TAG_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -2287,6 +2298,7 @@ const checkConfigCommand = new Command()
       restrictedCommands: merged.restrictedCommands,
       approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
       signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
+      tagRequiresExplicitGrant: merged.tagRequiresExplicitGrant,
     });
 
     const tokenSecretsKey = await checkTokenSecretsKey(
@@ -2547,6 +2559,13 @@ export const serveCommand = new Command()
       "a run grant alone no longer implies signal. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--tag-requires-explicit-grant",
+    "Require a grant that names tag to change a behavior's or workflow's tags; " +
+      "a write grant alone no longer implies tag. Off by default. " +
+      "Requires --auth-mode token or oauth " +
+      "(env: SWAMP_TAG_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -2853,6 +2872,15 @@ export const serveCommand = new Command()
     ) {
       logger.warn(
         "--signal-requires-explicit-grant is set but --auth-mode is {mode} — signal policy will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
+
+    if (
+      authConfig.mode === "none" && authConfig.tagRequiresExplicitGrant
+    ) {
+      logger.warn(
+        "--tag-requires-explicit-grant is set but --auth-mode is {mode} — tag policy will have no effect",
         { mode: authConfig.mode },
       );
     }
@@ -4261,6 +4289,7 @@ export const serveCommand = new Command()
       {
         runImpliesApprove: !authConfig.approveRequiresExplicitGrant,
         runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
+        writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
       },
       readConditionTypeLiterals,
     );
@@ -4292,6 +4321,11 @@ export const serveCommand = new Command()
       authConfig.signalRequiresExplicitGrant
         ? "Signal policy: delivering a signal requires a grant that names signal"
         : "Signal policy: a run grant also permits delivering signals",
+    );
+    logger.info(
+      authConfig.tagRequiresExplicitGrant
+        ? "Tag policy: changing a behavior's or workflow's tags requires a grant that names tag"
+        : "Tag policy: a write grant also permits changing tags",
     );
 
     let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;

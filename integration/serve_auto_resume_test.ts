@@ -63,6 +63,7 @@ const modeNone: ServeAuthConfig = {
   restrictedCommands: [],
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
+  tagRequiresExplicitGrant: false,
 };
 
 /** A gate, then a shell step that only runs once the gate is approved. */

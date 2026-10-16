@@ -94,6 +94,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   autoResume: "SWAMP_AUTO_RESUME",
   approveRequiresExplicitGrant: "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT",
   signalRequiresExplicitGrant: "SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT",
+  tagRequiresExplicitGrant: "SWAMP_TAG_REQUIRES_EXPLICIT_GRANT",
 };
 
 // ── Webhook Config Types ──────────────────────────────────────────────
@@ -135,6 +136,7 @@ export interface ServeConfigFile {
     "group-refresh-interval"?: string;
     "approve-requires-explicit-grant"?: boolean;
     "signal-requires-explicit-grant"?: boolean;
+    "tag-requires-explicit-grant"?: boolean;
   };
   tls?: {
     "cert-file"?: string;
@@ -318,6 +320,7 @@ const KNOWN_AUTH_KEYS = new Set([
   "group-refresh-interval",
   "approve-requires-explicit-grant",
   "signal-requires-explicit-grant",
+  "tag-requires-explicit-grant",
 ]);
 
 const KNOWN_TLS_KEYS = new Set([
@@ -597,6 +600,7 @@ function validateConfigValues(
       const name of [
         "approve-requires-explicit-grant",
         "signal-requires-explicit-grant",
+        "tag-requires-explicit-grant",
       ]
     ) {
       const value = authObj[name];
@@ -976,6 +980,11 @@ export interface MergedServeOptions {
    * wait, instead of accepting any `run` grant. Off by default.
    */
   signalRequiresExplicitGrant: boolean;
+  /**
+   * Require an explicit `tag` grant to change a model's or workflow's tags,
+   * instead of accepting any `write` grant. Off by default (swamp-club#3085).
+   */
+  tagRequiresExplicitGrant: boolean;
   trustProxy: boolean;
   wsIdleTimeout?: string;
   queueTimeout?: string;
@@ -1447,6 +1456,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const tagRequiresExplicitGrant = resolveBoolean(
+    "tag-requires-explicit-grant",
+    cliOptions.tagRequiresExplicitGrant as boolean,
+    config?.auth?.["tag-requires-explicit-grant"],
+    false,
+  );
+
   const dashboard = resolveBoolean(
     "dashboard",
     cliOptions.dashboard as boolean,
@@ -1496,6 +1512,7 @@ export function mergeServeOptions(
     groupRefreshInterval,
     approveRequiresExplicitGrant,
     signalRequiresExplicitGrant,
+    tagRequiresExplicitGrant,
     trustProxy,
     wsIdleTimeout,
     queueTimeout,

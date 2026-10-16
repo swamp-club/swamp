@@ -178,6 +178,11 @@ export interface ServeCtxOptions {
   activeRunRegistry?: ConnectionContext["activeRunRegistry"];
   /** Entries of `restricted-model-types`, as serve's config holds them. */
   restrictedModelTypes?: string[];
+  /**
+   * Serve's `tag-requires-explicit-grant`: a `write` grant no longer implies
+   * `tag` (swamp-club#3085).
+   */
+  tagRequiresExplicitGrant?: boolean;
 }
 
 /**
@@ -200,6 +205,7 @@ export function createServeCtx(
     restrictedCommands: [],
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
+    tagRequiresExplicitGrant: options.tagRequiresExplicitGrant ?? false,
   };
   return {
     repoDir: repo.repoDir,
@@ -224,6 +230,7 @@ export function createServeCtx(
         policySnapshotLoader: {
           decisionService: new GrantBasedAccessDecisionService(
             new PolicySnapshot(grants, [], createConditionEvaluator()),
+            { writeImpliesTag: !authConfig.tagRequiresExplicitGrant },
           ),
         } as unknown as PolicySnapshotLoader,
       }

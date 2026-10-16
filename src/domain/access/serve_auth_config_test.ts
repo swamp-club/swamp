@@ -381,6 +381,20 @@ Deno.test("buildServeAuthConfig: signalRequiresExplicitGrant passes through", ()
   assertEquals(config.signalRequiresExplicitGrant, true);
 });
 
+Deno.test("buildServeAuthConfig: tagRequiresExplicitGrant defaults to false", () => {
+  const config = buildServeAuthConfig({});
+  assertEquals(config.tagRequiresExplicitGrant, false);
+});
+
+Deno.test("buildServeAuthConfig: tagRequiresExplicitGrant passes through", () => {
+  const config = buildServeAuthConfig({
+    authMode: "token",
+    admins: "user:admin",
+    tagRequiresExplicitGrant: true,
+  });
+  assertEquals(config.tagRequiresExplicitGrant, true);
+});
+
 const REQUEST_TYPES = new Set(["vault.put", "extension.install"]);
 
 Deno.test("findIneffectiveRestrictions: reports an entry that names no model type", () => {

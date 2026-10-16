@@ -1226,6 +1226,8 @@ export interface AccessCheckResponse {
   approveRequiresExplicitGrant?: boolean;
   /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
+  /** The server's tag policy; absent from servers that predate it. */
+  tagRequiresExplicitGrant?: boolean;
   /** For a concrete vault and read or write; absent otherwise. */
   runVaultAccess?: RunVaultAccessReport;
 }
@@ -1237,8 +1239,11 @@ export interface AccessCanIDecision {
   grantId: string;
   via: string;
   condition?: string;
-  /** Set when the grant covers `approve` or `signal` only because it grants `run`. */
-  impliedBy?: "run";
+  /**
+   * Set when the grant covers the action only through another it grants:
+   * `approve` or `signal` through `run`, `tag` through `write`.
+   */
+  impliedBy?: "run" | "write";
 }
 
 export interface AccessCanIResponse {
@@ -1249,6 +1254,8 @@ export interface AccessCanIResponse {
   approveRequiresExplicitGrant?: boolean;
   /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
+  /** The server's tag policy; absent from servers that predate it. */
+  tagRequiresExplicitGrant?: boolean;
   /** For a concrete vault and read or write; absent otherwise. */
   runVaultAccess?: RunVaultAccessReport;
 }

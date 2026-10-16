@@ -1141,6 +1141,20 @@ grants:
   assertEquals(result.entries[0].actions, ["signal"]);
 });
 
+Deno.test("parseGrantFile: accepts a grant for tag (swamp-club#3085)", () => {
+  const content = `
+grants:
+  - subject: "user:member"
+    effect: allow
+    actions: [tag]
+    resource: "model:*"
+    condition: 'tags.team == "team-a"'
+`;
+  const result = parseGrantFile("teams.yaml", content);
+  assertEquals(result.errors, []);
+  assertEquals(result.entries[0].actions, ["tag"]);
+});
+
 Deno.test("parseGrantFile: a non-canonical type spelling is a warning, never an error (swamp-club#3130)", () => {
   const content = `
 grants:

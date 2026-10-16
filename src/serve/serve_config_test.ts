@@ -1914,6 +1914,69 @@ Deno.test("loadServeConfig: non-boolean auth.signal-requires-explicit-grant prod
   });
 });
 
+// ── auth.tag-requires-explicit-grant ────────────────────────────────
+
+Deno.test("mergeServeOptions: tag-requires-explicit-grant defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.tagRequiresExplicitGrant, false);
+});
+
+Deno.test("mergeServeOptions: tag-requires-explicit-grant CLI flag wins over config and env", () => {
+  const merged = mergeServeOptions(
+    { auth: { "tag-requires-explicit-grant": false } },
+    { tagRequiresExplicitGrant: true },
+    new Set(["tag-requires-explicit-grant"]),
+    (name: string) =>
+      name === "SWAMP_TAG_REQUIRES_EXPLICIT_GRANT" ? "false" : undefined,
+  );
+  assertEquals(merged.tagRequiresExplicitGrant, true);
+});
+
+Deno.test("mergeServeOptions: tag-requires-explicit-grant env var wins over config when CLI not explicit", () => {
+  const merged = mergeServeOptions(
+    { auth: { "tag-requires-explicit-grant": false } },
+    {},
+    new Set<string>(),
+    (name: string) =>
+      name === "SWAMP_TAG_REQUIRES_EXPLICIT_GRANT" ? "true" : undefined,
+  );
+  assertEquals(merged.tagRequiresExplicitGrant, true);
+});
+
+Deno.test("mergeServeOptions: tag-requires-explicit-grant from auth config when no CLI or env", () => {
+  const merged = mergeServeOptions(
+    { auth: { "tag-requires-explicit-grant": true } },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.tagRequiresExplicitGrant, true);
+});
+
+Deno.test("loadServeConfig: reads auth.tag-requires-explicit-grant", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "tag-requires-explicit-grant": true } });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.auth?.["tag-requires-explicit-grant"], true);
+  });
+});
+
+Deno.test("loadServeConfig: non-boolean auth.tag-requires-explicit-grant produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "tag-requires-explicit-grant": "false" } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid auth.tag-requires-explicit-grant",
+    );
+  });
+});
+
 // ── dashboard ──────────────────────────────────────────────────────────
 
 Deno.test("mergeServeOptions: dashboard defaults to false", () => {
