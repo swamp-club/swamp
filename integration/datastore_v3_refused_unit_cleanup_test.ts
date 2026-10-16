@@ -35,6 +35,7 @@ import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_com
 import { plantV3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
 import {
   closeV3Datastores,
+  keepV3WriterMarkers,
   v3RepositoryFactoryConfig,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
@@ -293,5 +294,23 @@ Deno.test("v3 dropped work: a teardown with a unit still open keeps the marker, 
     assertEquals(await localVersions(repos, "glass"), [1, 2]);
     release.resolve();
     await open;
+  });
+});
+
+Deno.test("v3 dropped work: a teardown after serve's drain left runs writing keeps the marker and recovers nothing", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    const model = await committedModel(repos, "glass");
+    await runInRootUnitOfWork(repos.a.repoContext, {
+      flush: undefined,
+      pushWhen: "completed",
+    }, async () => {
+      await saveData(repos.serveRepo, model, "glass");
+      throw new Error("the operation failed");
+    }).catch(() => {});
+
+    keepV3WriterMarkers();
+    await closeV3Datastores();
+    assertExists(await readWriterMarker(repos.repoA));
+    assertEquals(await localVersions(repos, "glass"), [1, 2]);
   });
 });

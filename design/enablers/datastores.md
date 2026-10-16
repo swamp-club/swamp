@@ -4155,7 +4155,9 @@ ever replaced it.
   marker's start is) once no unit of it is open; roots wait while it runs.
   The marker is then removed as usual.
 - *Otherwise the next command does.* A process that lost its lease, a
-  checkout with a unit still open, or a recovery that failed keeps its
+  checkout with a unit still open (a root waiting to open counts), a serve
+  whose drain left runs that may still write (`keepV3WriterMarkers`), or a
+  recovery that failed keeps its
   writer marker, and the next command in the checkout recovers it as after a
   crash. A process that lost its lease must not rebuild the checkout: another
   process may now write it.

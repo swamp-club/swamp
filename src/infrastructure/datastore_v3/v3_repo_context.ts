@@ -741,6 +741,11 @@ async function recoverDroppedWork(
     keep("this process no longer holds the v3 writer lease");
     return;
   }
+  if (keepMarkers) {
+    // Serve's drain left runs that may still be writing between units.
+    keep("runs may still be writing");
+    return;
+  }
   try {
     const outcome = await handle.recoverDroppedWork();
     if (outcome === "busy") {

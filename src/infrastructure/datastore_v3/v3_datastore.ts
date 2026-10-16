@@ -609,8 +609,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           fn: (root: CommitLogRootView) => Promise<T>,
         ): Promise<T> {
           // A recovery of dropped work rewrites the checkout: no root opens
-          // while it runs (swamp-club#3553).
-          await units.recovering?.catch(() => {});
+          // while it runs (swamp-club#3553). The root counts as open from
+          // the call, so no recovery starts while it waits; its unit opens
+          // synchronously once the count is handed over.
+          units.open++;
+          try {
+            await units.recovering?.catch(() => {});
+          } finally {
+            units.open--;
+          }
           return await runInCommitLogRoot<T>({ markDirty }, {
             ...unitOptions,
             ...fenced(),
