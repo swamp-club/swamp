@@ -57,6 +57,7 @@ import {
 } from "../../domain/datastore/datastore_format.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
+import { V3BucketExtensionTooOldError } from "../../domain/datastore/v3_hosting.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -91,6 +92,7 @@ function makeDeps(
     hasDatastoreRecords: () => Promise.resolve(false),
     createV3Datastore: () => Promise.resolve(),
     assertV3BucketHost: () => {},
+    assertV3ExtensionVersion: () => Promise.resolve(),
     inspectV3BucketTarget: () => Promise.resolve({ kind: "new" }),
     createV3BucketDatastore: () => Promise.resolve(),
     currentDatastore: () => Promise.resolve({ engine: "v2" }),
@@ -4437,6 +4439,10 @@ function recordingV3Deps(overrides: Partial<DatastoreSetupDeps> = {}) {
     assertV3BucketHost: () => {
       calls.push("assertV3BucketHost");
     },
+    assertV3ExtensionVersion: (type, repoDir) => {
+      calls.push(`assertV3ExtensionVersion ${type} ${repoDir}`);
+      return Promise.resolve();
+    },
     inspectV3BucketTarget: () => {
       calls.push("inspectV3BucketTarget");
       return Promise.resolve({ kind: "new" });
@@ -4485,8 +4491,9 @@ Deno.test("datastoreSetupExtension: --format 3 checks the host, the bucket and t
   >;
   assertEquals(completed.data.format, 3);
   assertEquals(completed.data.namespace, "team-a");
-  assertEquals(calls.slice(0, 2), [
+  assertEquals(calls.slice(0, 3), [
     "assertV3BucketHost",
+    "assertV3ExtensionVersion test-ext-v3-setup /tmp/repo",
     "inspectV3BucketTarget",
   ]);
   assertEquals(calls.slice(-3), [
@@ -4521,6 +4528,20 @@ Deno.test("datastoreSetupExtension: --format 3 refusals write nothing (swamp-clu
         },
       },
       "not available on Windows yet",
+    ],
+    [
+      "extension version",
+      {
+        assertV3ExtensionVersion: () =>
+          Promise.reject(
+            new V3BucketExtensionTooOldError(
+              "test-ext-v3-refuse",
+              "2026.10.16.4",
+              "the repo's lockfile pins its extension at",
+            ),
+          ),
+      },
+      "the repo's lockfile pins its extension at 2026.10.16.4",
     ],
     [
       "target",

@@ -33,6 +33,7 @@ import type {
 } from "../../domain/datastore/datastore_config.ts";
 import {
   V3_BUCKET_MIN_EXTENSION_VERSION,
+  V3BucketExtensionTooOldError,
   V3HostingUnsupportedError,
 } from "../../domain/datastore/v3_hosting.ts";
 import { errorPaths } from "../../domain/errors.ts";
@@ -212,7 +213,12 @@ Deno.test("ensureSupportedDatastoreFormat: a filesystem marker that exists but c
  */
 function customDatastore(
   read: Array<() => Promise<Uint8Array | null>>,
-  options: { capable?: boolean; format?: 3; override?: true } = {},
+  options: {
+    capable?: boolean;
+    format?: 3;
+    override?: true;
+    extensionVersion?: string;
+  } = {},
 ) {
   let reads = 0;
   const provider = {
@@ -254,6 +260,7 @@ function customDatastore(
     reads: () => reads,
     options: {
       resolveProvider: () => Promise.resolve(provider),
+      resolveExtensionVersion: () => options.extensionVersion,
       timeoutMs: 50,
       uncappedTimeoutMs: 200,
     },
@@ -396,6 +403,63 @@ Deno.test("ensureSupportedDatastoreFormat: a v3 extension datastore whose extens
     V3HostingUnsupportedError,
   );
   assertStringIncludes(error.message, V3_BUCKET_MIN_EXTENSION_VERSION);
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a v3 extension datastore on an extension older than the minimum is refused naming the update (swamp-club#3567)", async () => {
+  const cases = [
+    { label: "config 3, marker 3", read: bytes(V3_MARKER), format: 3 as const },
+    { label: "config 3, marker unreadable", read: failing, format: 3 as const },
+    {
+      label: "override, marker 3",
+      read: bytes(V3_MARKER),
+      override: true as const,
+    },
+  ];
+  for (const { label, read, ...shape } of cases) {
+    const old = customDatastore([read], {
+      ...shape,
+      extensionVersion: "2026.10.16.4",
+    });
+    const error = await assertRejects(
+      () => ensureSupportedDatastoreFormat("/repo", old.config, old.options),
+      V3BucketExtensionTooOldError,
+      undefined,
+      label,
+    );
+    assertStringIncludes(error.message, "2026.10.16.4");
+    assertStringIncludes(error.message, V3_BUCKET_MIN_EXTENSION_VERSION);
+    assertStringIncludes(error.message, "swamp extension update @test/bucket");
+  }
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a v3 extension datastore opens on the minimum, a later or an unknown extension version (swamp-club#3567)", async () => {
+  for (
+    const extensionVersion of [
+      V3_BUCKET_MIN_EXTENSION_VERSION,
+      "2026.10.17.1",
+      undefined,
+      "0.0.0",
+    ]
+  ) {
+    const v3 = customDatastore([bytes(V3_MARKER)], {
+      format: 3,
+      extensionVersion,
+    });
+    assertEquals(
+      await ensureSupportedDatastoreFormat("/repo", v3.config, v3.options),
+      "v3",
+    );
+  }
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a .swamp.yaml config with no format stays v2 on an old extension, offline too (swamp-club#3567)", async () => {
+  for (const read of [failing, never, absent]) {
+    const v2 = customDatastore([read], { extensionVersion: "2026.10.16.1" });
+    assertEquals(
+      await ensureSupportedDatastoreFormat("/repo", v2.config, v2.options),
+      "v2",
+    );
+  }
 });
 
 Deno.test("datastoreEngineOf: an unchecked extension config is v3 only when it says format 3 (swamp-club#3534)", () => {

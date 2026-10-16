@@ -78,6 +78,14 @@ export interface ReadDatastoreFormatMarkerOptions {
   readonly resolveProvider?: (
     config: CustomDatastoreConfig,
   ) => Promise<DatastoreProvider>;
+  /**
+   * Overrides how the format guard learns the version of the extension a
+   * datastore type was loaded from (tests).
+   */
+  readonly resolveExtensionVersion?: (
+    repoDir: string,
+    type: string,
+  ) => string | undefined;
 }
 
 /**

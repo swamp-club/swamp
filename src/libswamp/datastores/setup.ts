@@ -75,6 +75,8 @@ import {
   isFreshV3Skeleton,
 } from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import { assertV3BucketHost } from "../../infrastructure/datastore_v3/v3_datastore_binding.ts";
+import { assertV3BucketExtensionVersions } from "../../infrastructure/persistence/datastore_extension_version.ts";
+import { resolveModelsDir } from "../../infrastructure/persistence/resolve_models_dir.ts";
 import {
   initializeV3BucketDatastore,
   inspectV3BucketTarget,
@@ -341,6 +343,12 @@ export interface DatastoreSetupDeps {
    * or a replica target the provider refuses.
    */
   assertV3BucketHost: (provider: DatastoreProvider, type: string) => void;
+  /**
+   * Refuses a v3 bucket setup whose datastore extension, as loaded or as
+   * pinned in the repo's committed lockfile, is older than
+   * `V3_BUCKET_MIN_EXTENSION_VERSION` (swamp-club#3567).
+   */
+  assertV3ExtensionVersion: (type: string, repoDir: string) => Promise<void>;
   /**
    * Whether a v3 datastore may be created on the bucket `provider` names:
    * new, holding only a format-3 marker (a setup to resume), or refused.
@@ -809,6 +817,7 @@ async function* setupV3Extension(
 
   try {
     deps.assertV3BucketHost(provider, input.type);
+    await deps.assertV3ExtensionVersion(input.type, input.repoDir);
   } catch (err) {
     if (!(err instanceof UserError)) throw err;
     yield {
@@ -2020,6 +2029,20 @@ export function createDatastoreSetupDeps(
       initializeV3Datastore(path, options.swampVersion ?? "unknown"),
     assertV3BucketHost: (provider, type) => {
       assertV3BucketHost(provider, type);
+    },
+    assertV3ExtensionVersion: async (type, repoDir) => {
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      const modelsDir = resolveModelsDir(marker);
+      await assertV3BucketExtensionVersions(
+        repoDir,
+        type,
+        marker?.datastore?.managedConfig === true ? undefined : join(
+          isAbsolute(modelsDir) ? modelsDir : join(repoDir, modelsDir),
+          "upstream_extensions.json",
+        ),
+      );
     },
     inspectV3BucketTarget: (provider, type, repoDir, namespace) =>
       inspectV3BucketTarget(provider, type, repoDir, namespace),

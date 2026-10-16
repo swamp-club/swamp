@@ -303,8 +303,9 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
       "Datastore format: 2 (the default) or 3, the v3 commit log, replicated " +
         "to the bucket through Litestream. Format 3 needs " +
         "@swamp/s3-datastore or @swamp/gcs-datastore " +
-        `${V3_BUCKET_MIN_EXTENSION_VERSION} or later (run \`swamp extension ` +
-        "pull <type>` first for the latest), a new, empty bucket prefix and a " +
+        `${V3_BUCKET_MIN_EXTENSION_VERSION} or later, installed and pinned in ` +
+        "the lockfile (run `swamp extension pull <type>` first for the " +
+        "latest), a new, empty bucket prefix and a " +
         "repository with no records",
     ),
 ).action(async function (options: AnyOptions, type: string) {

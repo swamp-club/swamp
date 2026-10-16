@@ -47,6 +47,10 @@ import {
   readDatastoreFormatMarker,
   type ReadDatastoreFormatMarkerOptions,
 } from "./datastore_format_marker_reader.ts";
+import {
+  assertV3BucketExtensionVersion,
+  loadedDatastoreExtension,
+} from "./datastore_extension_version.ts";
 import { resolveCustomProvider } from "./datastore_global_lock.ts";
 
 /**
@@ -106,6 +110,8 @@ const guarded = new WeakMap<DatastoreConfig, DatastoreEngine>();
  *   that may be v3 cannot have its marker read
  * @throws V3HostingUnsupportedError when a v3 extension datastore's provider
  *   cannot host v3
+ * @throws V3BucketExtensionTooOldError when a v3 extension datastore's
+ *   pulled extension is older than V3_BUCKET_MIN_EXTENSION_VERSION
  */
 export async function ensureSupportedDatastoreFormat(
   repoDir: string,
@@ -211,6 +217,16 @@ export async function ensureSupportedDatastoreFormat(
       );
     }
     assertV3Hosting(provider, config.type);
+    // A release older than the minimum lacks swamp-club#3549's guard that
+    // keeps its v2 sync off a v3 bucket (swamp-club#3567).
+    assertV3BucketExtensionVersion(
+      (options?.resolveExtensionVersion ??
+        ((dir, type) => loadedDatastoreExtension(dir, type)?.version))(
+          repoDir,
+          config.type,
+        ),
+      config.type,
+    );
   }
   guarded.set(config, engine);
   return engine;

@@ -280,8 +280,9 @@ swamp datastore setup extension @swamp/s3-datastore --format 3 \
   --config '{"bucket":"my-bucket","prefix":"swamp","region":"us-east-1"}' --json
 ```
 
-- Needs `@swamp/s3-datastore` or `@swamp/gcs-datastore` 2026.10.16.5 or later;
-  an older extension is refused with the version to pull.
+- Needs `@swamp/s3-datastore` or `@swamp/gcs-datastore` 2026.10.16.5 or later,
+  both installed and pinned in the lockfile; an older one is refused (setup, and
+  every command on a v3 bucket) with `swamp extension update <type>`.
 - The bucket prefix must be new and empty (no v2 data, namespaces, chunks or
   control-plane records), and the repo must hold no data yet.
 - Not on Windows yet, and not through `--server`.
