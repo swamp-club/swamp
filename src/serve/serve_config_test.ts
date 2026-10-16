@@ -382,6 +382,131 @@ Deno.test("loadServeConfig: non-string tls.cert-file produces error", () => {
   });
 });
 
+const AUTH_LIST_KEYS = [
+  "admins",
+  "allowed-collectives",
+  "allowed-users",
+  "restricted-model-types",
+  "restricted-commands",
+];
+
+Deno.test("loadServeConfig: a scalar auth list key produces error naming the key", () => {
+  for (const key of AUTH_LIST_KEYS) {
+    withTempDir((dir) => {
+      writeConfig(dir, { auth: { mode: "token", [key]: "alice" } });
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        `Invalid auth.${key} in `,
+      );
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "expected array of strings, got string",
+      );
+    });
+  }
+});
+
+Deno.test("loadServeConfig: a non-string auth list entry produces error naming its index", () => {
+  for (const key of AUTH_LIST_KEYS) {
+    withTempDir((dir) => {
+      writeConfig(dir, { auth: { [key]: ["user:alice", { name: "bob" }] } });
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        `Invalid auth.${key}[1] in `,
+      );
+    });
+  }
+});
+
+Deno.test("loadServeConfig: a numeric auth list entry gets the quoting hint", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { admins: [42] } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      'expected string, got number; quote the value, e.g. "42"',
+    );
+  });
+});
+
+Deno.test("loadServeConfig: an empty auth list key is unset", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      auth: Object.fromEntries(AUTH_LIST_KEYS.map((key) => [key, null])),
+      "trusted-hosts": null,
+    });
+    const config = loadServeConfig(undefined, dir);
+    const merged = mergeServeOptions(config, {}, new Set(), () => undefined);
+    assertEquals(merged.admins, undefined);
+    assertEquals(merged.allowedCollectives, undefined);
+    assertEquals(merged.allowedUsers, undefined);
+    assertEquals(merged.restrictedModelTypes, undefined);
+    assertEquals(merged.restrictedCommands, undefined);
+    assertEquals(merged.trustedHosts, undefined);
+  });
+});
+
+Deno.test("loadServeConfig: a scalar trusted-hosts produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "trusted-hosts": "host.docker.internal" });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid trusted-hosts in ",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: a non-string trusted-hosts entry produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "trusted-hosts": ["host.docker.internal", 8080] });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid trusted-hosts[1] in ",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: a scalar auth or tls block produces error", () => {
+  for (const name of ["auth", "tls"]) {
+    withTempDir((dir) => {
+      writeConfig(dir, { [name]: "token" });
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        `Invalid ${name} in `,
+      );
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "expected mapping, got string",
+      );
+    });
+  }
+});
+
+Deno.test("loadServeConfig: an auth block given as a list produces error naming array", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: ["mode", "token"] });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "expected mapping, got array",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: an empty auth or tls block loads", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { port: 9191, auth: null, tls: null });
+    assertEquals(loadServeConfig(undefined, dir)?.port, 9191);
+  });
+});
+
 Deno.test("loadServeConfig: webhook missing route produces error", () => {
   withTempDir((dir) => {
     writeConfig(dir, {

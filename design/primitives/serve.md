@@ -59,8 +59,11 @@ built-in default**. Only options in `SERVE_ENV_MAP` have an env var (`port` and
 `host` do not). Explicit flags are read from `Deno.args`, so a flag set to its
 default still beats the file (`parseExplicitFlags`). Unknown YAML keys are
 warned about and ignored (`warnUnknownKeys` against `KNOWN_TOP_LEVEL_KEYS`,
-`KNOWN_AUTH_KEYS`, `KNOWN_TLS_KEYS`). `--config` names another file; without
-it the default file is optional.
+`KNOWN_AUTH_KEYS`, `KNOWN_TLS_KEYS`). A known key of the wrong type — a scalar
+where a list or mapping belongs, or a list entry that is not a string — stops
+`serve` and `serve check-config` with an error naming the key
+(`validateConfigValues`); an empty key is unset. `--config` names another file;
+without it the default file is optional.
 
 | Option (flag / yaml key) | Env var | Default | Notes |
 | --- | --- | --- | --- |
