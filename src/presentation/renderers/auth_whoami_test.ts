@@ -315,8 +315,9 @@ Deno.test("LogAuthWhoamiRenderer - shows the plan roll-up and per-collective blo
   assertStringIncludes(output, "acme  Team  active");
   assertStringIncludes(
     output,
-    "keeb  Free  trial: 13 days left (ends 2026-08-19)",
+    "keeb  trial: 13 days left (ends 2026-08-19)",
   );
+  assertEquals(output.includes("Free"), false);
 });
 
 Deno.test("LogAuthWhoamiRenderer - a paying collective is never shown a trial", () => {
@@ -344,7 +345,7 @@ Deno.test("LogAuthWhoamiRenderer - a paying collective is never shown a trial", 
   assertStringIncludes(output, "active");
 });
 
-Deno.test("LogAuthWhoamiRenderer - an expired trial says so", () => {
+Deno.test("LogAuthWhoamiRenderer - an ended trial says so, as the web does", () => {
   const output = captureLog(
     makeEntitledIdentity([
       {
@@ -362,7 +363,8 @@ Deno.test("LogAuthWhoamiRenderer - an expired trial says so", () => {
     "log",
   );
 
-  assertStringIncludes(output, "trial expired");
+  assertStringIncludes(output, "  keeb  trial ended");
+  assertEquals(output.includes("trial expired"), false);
 });
 
 Deno.test("LogAuthWhoamiRenderer - one day left is singular", () => {
@@ -397,6 +399,160 @@ Deno.test("LogAuthWhoamiRenderer - a member's withheld status renders no note", 
   assertStringIncludes(output, "acme");
   assertStringIncludes(output, "Team");
   assertEquals(output.includes("active"), false);
+});
+
+// --- standing instead of "Free" (swamp-club#3463) ---
+
+const endedTrial = {
+  state: "expired" as const,
+  startedAt: "2026-05-01T00:00:00.000Z",
+  endsAt: "2026-05-31T00:00:00.000Z",
+  daysRemaining: 0,
+};
+
+Deno.test("LogAuthWhoamiRenderer - each collective shows its standing, never Free", () => {
+  const output = captureLog(
+    makeEntitledIdentity([
+      {
+        slug: "acme",
+        plan: "team",
+        planName: "Team",
+        subscriptionStatus: "active",
+        trial: null,
+        privateExtensions: "allowed",
+      },
+      {
+        slug: "alice",
+        plan: "personal",
+        planName: "Personal License",
+        subscriptionStatus: null,
+        trial: null,
+        privateExtensions: "paywalled",
+      },
+      {
+        slug: "swamp",
+        plan: "admin",
+        planName: "Admin",
+        trial: null,
+        privateExtensions: "allowed",
+      },
+      {
+        slug: "bob",
+        plan: "free",
+        planName: "Free",
+        trial: {
+          state: "active",
+          startedAt: "2026-10-04T00:00:00.000Z",
+          endsAt: "2026-11-03T00:00:00.000Z",
+          daysRemaining: 20,
+        },
+        privateExtensions: "allowed",
+      },
+      {
+        slug: "skunk-ape",
+        plan: "free",
+        planName: "Free",
+        trial: null,
+        privateExtensions: "allowed",
+      },
+      {
+        slug: "dave",
+        plan: "free",
+        planName: "Free",
+        trial: endedTrial,
+        privateExtensions: "trial-ended",
+      },
+      {
+        slug: "erin",
+        plan: "free",
+        planName: "Free",
+        trial: null,
+        privateExtensions: "paywalled",
+      },
+    ], "admin"),
+    "log",
+  );
+
+  assertEquals(
+    output.split("\n").slice(-8).join("\n"),
+    [
+      "Collectives:",
+      "  acme       Team  active",
+      "  alice      Personal License",
+      "  swamp      Admin",
+      "  bob        trial: 20 days left (ends 2026-11-03)",
+      "  skunk-ape  covered",
+      "  dave       trial ended",
+      "  erin",
+    ].join("\n"),
+  );
+  assertEquals(output.includes("Free"), false);
+});
+
+Deno.test("LogAuthWhoamiRenderer - a covered collective is not shown its own ended trial", () => {
+  // A free collective the registry allows with no running trial is covered by
+  // another collective; its ended trial would read as a lapse.
+  const output = captureLog(
+    makeEntitledIdentity([
+      {
+        slug: "skunk-ape",
+        plan: "free",
+        planName: "Free",
+        trial: endedTrial,
+        privateExtensions: "allowed",
+      },
+    ], "free"),
+    "log",
+  );
+
+  assertStringIncludes(output, "  skunk-ape  covered");
+  assertEquals(output.includes("trial"), false);
+});
+
+Deno.test("LogAuthWhoamiRenderer - an older server's free collective with no trial is a bare slug", () => {
+  // No privateExtensions verdict, so nothing can say it is covered.
+  const output = captureLog(
+    makeEntitledIdentity([
+      { slug: "erin", plan: "free", planName: "Free", trial: null },
+    ], "free"),
+    "log",
+  );
+
+  assertEquals(output.split("\n").at(-1), "  erin");
+  assertEquals(output.includes("covered"), false);
+});
+
+Deno.test("LogAuthWhoamiRenderer - no Plan line when the strongest plan is free", () => {
+  const output = captureLog(
+    makeEntitledIdentity([
+      {
+        slug: "keeb",
+        plan: "free",
+        planName: "Free",
+        trial: endedTrial,
+      },
+    ], "free"),
+    "log",
+  );
+
+  assertEquals(output.includes("Plan:"), false);
+  assertStringIncludes(output, "Collectives:");
+});
+
+Deno.test("LogAuthWhoamiRenderer - a Personal License roll-up names the license", () => {
+  const output = captureLog(
+    makeEntitledIdentity([
+      {
+        slug: "alice",
+        plan: "personal",
+        planName: "Personal License",
+        trial: null,
+      },
+    ], "personal"),
+    "log",
+  );
+
+  assertStringIncludes(output, "Plan: Personal License");
 });
 
 Deno.test("JsonAuthWhoamiRenderer - passes plan and entitlement through verbatim", () => {
