@@ -203,10 +203,10 @@ turning it into `{}` or text. Every trap and function that throws records a
 fault first (Section 4.3).
 
 Only module-owned factories create instances. Nothing recognizes a `Secret` by
-its shape. `Deno.inspect` prints the class name and reads nothing. Phase 1.2
-showed that cel-js uses the Proxy (Section 11), so the fallback, a plain class
-with private fields with the container rule extended to comprehension macros,
-was not needed.
+its shape. `Deno.inspect` prints the class name and reads nothing, unless it is
+asked to show the proxy. Phase 1.2 showed that cel-js uses the Proxy (Section
+11), so the fallback, a plain class with private fields with the container rule
+extended to comprehension macros, was not needed.
 
 ### 3.2 Sentinels outside CEL
 
@@ -467,7 +467,9 @@ Refusal uses registrations. It does not rewrite expressions.
 3. **Macros.** Building a macro range over a `Secret` calls its `ownKeys` trap,
    which records a fault and throws. cel-js absorbs that error under `||`,
    `&&`, `exists` and `all` like a handler error, so the recorded fault is what
-   fails the evaluation (item 2).
+   fails the evaluation (item 2). Fact 3 is about an error while evaluating the
+   range expression, such as a list literal, which is not absorbed; iterating a
+   range value whose `ownKeys` throws is.
 4. **Before a run.** `vault.get` has the static return type `Secret`.
    `swamp behavior validate` and `swamp workflow validate` type-check
    expressions in the same environment, with the allowed set's overloads

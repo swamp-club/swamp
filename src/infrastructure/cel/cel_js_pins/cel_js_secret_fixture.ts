@@ -158,11 +158,6 @@ export function secretState(value: unknown): SecretState | undefined {
     : undefined;
 }
 
-/** Whether `value` was made by this module's factories. */
-export function isSecret(value: unknown): value is Secret {
-  return secretState(value) !== undefined;
-}
-
 function partsOf(value: Secret | string): readonly SecretPart[] {
   if (typeof value === "string") return [value];
   const state = secretState(value);
@@ -233,9 +228,9 @@ export function registerSecretRefusals(
     .map((fn) => fn.signature)
     .filter((signature) => !swamp.has(signature));
   const functions = [
-    ...functionRefusalSignatures(builtins, "cel-js"),
+    ...functionRefusalSignatures(builtins),
     ...(options.swamp
-      ? functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES, "swamp")
+      ? functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES)
       : []),
   ].sort();
   for (const signature of functions) {

@@ -35,14 +35,16 @@
 //   - The cel-js built-ins come from the library itself, so a dependency bump
 //     that adds a function reaches the classifier and fails until it has a
 //     disposition.
-//   - swamp's registrations come from the source text, matched only inside a
-//     registerFunction( or registerOperator( call, so a comment cannot add
-//     one and a registration cannot hide.
+//   - swamp's registrations come from the source text of the three files
+//     that register them, matched only inside a registerFunction(,
+//     registerOperator( or registerType( call. A string literal, a template
+//     literal built from the exported constants, and a bare constant are all
+//     read; any other form fails the test, so a registration cannot hide.
 //
 // Every assertion is set equality, never containment, so an extraction that
 // matches nothing fails loudly instead of passing vacuously.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { ROOT } from "./arch_fitness_helpers.ts";
 import {
@@ -65,36 +67,82 @@ import {
   SWAMP_OPERATOR_SIGNATURES,
 } from "../src/infrastructure/cel/cel_js_pins/cel_js_secret_refusal_inventory.ts";
 
-const CEL_EVALUATOR = join(ROOT, "src/infrastructure/cel/cel_evaluator.ts");
+const REGISTERING_FILES = [
+  "src/infrastructure/cel/cel_evaluator.ts",
+  "src/domain/expressions/cel_grammar.ts",
+  "src/domain/data/data_query_service.ts",
+].map((path) => join(ROOT, path));
 
 /**
- * The string literals passed as the first argument of `method(` calls in
- * `source`. A literal elsewhere, in a comment or a doc string, does not
- * match: the call paren and the opening quote must be adjacent apart from
- * whitespace.
+ * What a `${name}` placeholder or a bare constant in a registration stands
+ * for. `fn` is the loop variable data_query_service.ts registers the model
+ * functions with, so it expands to every member of MODEL_FUNCTIONS.
  */
-function registeredLiterals(source: string, method: string): string[] {
-  const calls = source.matchAll(new RegExp(`${method}\\(\\s*"([^"]+)"`, "g"));
-  return [...new Set([...calls].map((call) => call[1]))].sort();
+const BINDINGS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["LATEST_RUN_FUNCTION", [LATEST_RUN_FUNCTION]],
+  ["LITERAL_FUNCTION_SIGNATURE", [LITERAL_FUNCTION_SIGNATURE]],
+  ["fn", [...MODEL_FUNCTIONS]],
+]);
+
+/** Expand every `${name}` in a template through BINDINGS, one per combination. */
+function expandTemplate(template: string): string[] {
+  const placeholder = /\$\{(\w+)\}/;
+  const match = placeholder.exec(template);
+  if (match === null) return [template];
+  const values = BINDINGS.get(match[1]);
+  if (values === undefined) {
+    throw new Error(`Unknown placeholder in a registration: ${match[0]}`);
+  }
+  return values.flatMap((value) =>
+    expandTemplate(template.replace(match[0], value))
+  );
 }
 
-/** The signatures the query view registers from its constants. */
-function queryViewSignatures(): string[] {
-  return [
-    `${LATEST_RUN_FUNCTION}(string): dyn`,
-    ...[...MODEL_FUNCTIONS].map((fn) => `${fn}(string): bool`),
-  ];
+/**
+ * The first argument of every `method(` call in `source`: a string literal,
+ * a template literal expanded through BINDINGS, or a bare constant looked up
+ * there. The call paren and the argument must be adjacent apart from
+ * whitespace, so a signature quoted in a comment does not match, and an
+ * argument in any other form throws, so a registration cannot hide.
+ */
+function registeredSignatures(source: string, method: string): string[] {
+  const calls = source.matchAll(
+    new RegExp(
+      `${method}\\(\\s*(?:"([^"]+)"|\`([^\`]+)\`|([A-Za-z_][A-Za-z0-9_]*))`,
+      "g",
+    ),
+  );
+  const out = new Set<string>();
+  for (const [, literal, template, constant] of calls) {
+    if (literal !== undefined) out.add(literal);
+    else if (template !== undefined) {
+      for (const expanded of expandTemplate(template)) out.add(expanded);
+    } else {
+      const values = BINDINGS.get(constant);
+      if (values === undefined) {
+        throw new Error(`Unknown constant in a registration: ${constant}`);
+      }
+      for (const value of values) out.add(value);
+    }
+  }
+  return [...out].sort();
+}
+
+/** The union of `method(` registrations across the registering files. */
+async function registeredAcrossFiles(method: string): Promise<string[]> {
+  const out = new Set<string>();
+  for (const path of REGISTERING_FILES) {
+    const source = await Deno.readTextFile(path);
+    for (const signature of registeredSignatures(source, method)) {
+      out.add(signature);
+    }
+  }
+  return [...out].sort();
 }
 
 Deno.test("SWAMP_FUNCTION_SIGNATURES equals what the internal environment and the query view register", async () => {
-  const source = await Deno.readTextFile(CEL_EVALUATOR);
-  const registered = [
-    ...registeredLiterals(source, "registerFunction"),
-    LITERAL_FUNCTION_SIGNATURE,
-    ...queryViewSignatures(),
-  ].sort();
   assertEquals(
-    registered,
+    await registeredAcrossFiles("registerFunction"),
     [...SWAMP_FUNCTION_SIGNATURES].sort(),
     "Every function swamp registers must be in SWAMP_FUNCTION_SIGNATURES, " +
       "and every listed signature must be registered. A new registration " +
@@ -103,9 +151,8 @@ Deno.test("SWAMP_FUNCTION_SIGNATURES equals what the internal environment and th
 });
 
 Deno.test("SWAMP_OPERATOR_SIGNATURES equals the operators the internal environment registers", async () => {
-  const source = await Deno.readTextFile(CEL_EVALUATOR);
   assertEquals(
-    registeredLiterals(source, "registerOperator"),
+    await registeredAcrossFiles("registerOperator"),
     [...SWAMP_OPERATOR_SIGNATURES].sort(),
   );
   for (const signature of SWAMP_OPERATOR_SIGNATURES) {
@@ -120,9 +167,8 @@ Deno.test("SWAMP_OPERATOR_SIGNATURES equals the operators the internal environme
 });
 
 Deno.test("SWAMP_NAMESPACE_TYPES equals the receiver types the internal environment registers", async () => {
-  const source = await Deno.readTextFile(CEL_EVALUATOR);
   assertEquals(
-    registeredLiterals(source, "registerType"),
+    await registeredAcrossFiles("registerType"),
     [...SWAMP_NAMESPACE_TYPES].sort(),
   );
 });
@@ -139,16 +185,12 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
     container: 0,
     "type-name": 0,
   };
-  const classify = (signatures: string[], origin: "cel-js" | "swamp") => {
-    for (const signature of signatures) {
-      // Throws on an unclassified position, naming it.
-      for (const position of classifyPositions(signature, origin)) {
-        counts[position.disposition]++;
-      }
+  for (const signature of [...builtins, ...SWAMP_FUNCTION_SIGNATURES]) {
+    // Throws on an unclassified position, naming it.
+    for (const position of classifyPositions(signature)) {
+      counts[position.disposition]++;
     }
-  };
-  classify(builtins, "cel-js");
-  classify([...SWAMP_FUNCTION_SIGNATURES], "swamp");
+  }
   assertEquals(counts, {
     refusal: 75,
     "named-delivery": 3,
@@ -156,9 +198,11 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
     container: 11,
     "type-name": 1,
   });
-  assertEquals(functionRefusalSignatures(builtins, "cel-js").length, 56);
+  // Pins: when one changes, the failure prints the new number, and the
+  // change is a decision to record in the inventory, not a number to copy.
+  assertEquals(functionRefusalSignatures(builtins).length, 56);
   assertEquals(
-    functionRefusalSignatures([...SWAMP_FUNCTION_SIGNATURES], "swamp").length,
+    functionRefusalSignatures([...SWAMP_FUNCTION_SIGNATURES]).length,
     41,
   );
 });
@@ -180,17 +224,47 @@ Deno.test("every special disposition names a function that exists", () => {
   );
 });
 
-Deno.test("registeredLiterals ignores a signature that appears outside a call", () => {
+Deno.test("registeredSignatures reads literals, templates and constants, and ignores a comment", () => {
   const stub = [
     '// registerFunction "CelDataNamespace.notReal(string): dyn" in a comment',
     "    this.env.registerFunction(",
     '      "CelDataNamespace.latest(string, string): dyn",',
     "      () => {},",
     "    );",
+    "    env.registerFunction(`${fn}(string): bool`, matchesModel);",
+    "    env.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);",
     '    env.registerOperator("double + int", () => 1);',
   ].join("\n");
-  assertEquals(registeredLiterals(stub, "registerFunction"), [
-    "CelDataNamespace.latest(string, string): dyn",
+  assertEquals(
+    registeredSignatures(stub, "registerFunction"),
+    [
+      "CelDataNamespace.latest(string, string): dyn",
+      ...[...MODEL_FUNCTIONS].map((fn) => `${fn}(string): bool`),
+      LITERAL_FUNCTION_SIGNATURE,
+    ].sort(),
+  );
+  assertEquals(registeredSignatures(stub, "registerOperator"), [
+    "double + int",
   ]);
-  assertEquals(registeredLiterals(stub, "registerOperator"), ["double + int"]);
+});
+
+Deno.test("registeredSignatures fails on a form it cannot read", () => {
+  assertThrows(
+    () =>
+      registeredSignatures(
+        "env.registerFunction(buildSignature(), f);",
+        "registerFunction",
+      ),
+    Error,
+    "Unknown constant in a registration: buildSignature",
+  );
+  assertThrows(
+    () =>
+      registeredSignatures(
+        "env.registerFunction(`${other}(string): dyn`, f);",
+        "registerFunction",
+      ),
+    Error,
+    "Unknown placeholder in a registration: ${other}",
+  );
 });

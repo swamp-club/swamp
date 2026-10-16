@@ -117,13 +117,6 @@ export const COMPARISON_OPERATORS: readonly string[] = ["<", "<=", ">", ">="];
 export const UNARY_OPERATORS: readonly string[] = ["!", "-"];
 
 /**
- * `in` has no registrable `Secret` refusal: `Secret in list` and
- * `Secret in map` overlap the built-in `V in list<V>` and `K in map<K, V>` at
- * evaluation. The container rule (Section 4.3, item 5) is its only refusal.
- */
-export const NON_REGISTRABLE_OPERATORS: readonly string[] = ["in"];
-
-/**
  * The allowed set (Section 4.1): the only operator signatures with a `Secret`
  * operand that answer instead of refusing. They are excluded from the
  * generated refusals so the two sets never collide at registration.
@@ -203,9 +196,6 @@ export interface ParsedSignature {
   readonly returnType: string;
 }
 
-/** Who registered a signature: cel-js itself, or swamp. */
-export type SignatureOrigin = "cel-js" | "swamp";
-
 /** One secret-capable position of a signature and what happens to it. */
 export interface PositionDisposition {
   readonly signature: string;
@@ -265,12 +255,11 @@ export function qualifiedName(parsed: ParsedSignature): string {
 /**
  * Dispositions other than `refusal`, by qualified name. A position of a
  * function named here that carries the listed type takes that disposition;
- * every other secret-capable `string` position is a refusal, and every other
- * list-typed position of a cel-js built-in is a container (`size`, `type` and
- * the `join` receiver today). A `dyn` position not named here, or a list-typed
- * position of a swamp registration not named here, is unclassified and
+ * every other secret-capable `string` position is a refusal. A `dyn`,
+ * `list<dyn>` or `list<string>` position not named here is unclassified and
  * {@link classifyPositions} throws, because a secret there cannot be refused
- * by a signature and needs a decision.
+ * by a signature and needs a decision. That is the alarm a dependency bump
+ * trips: a new list-taking built-in is never classified silently.
  */
 const SPECIAL_DISPOSITIONS: ReadonlyMap<
   string,
@@ -294,10 +283,16 @@ const SPECIAL_DISPOSITIONS: ReadonlyMap<
     "CelDataNamespace.listVersions",
     { types: ["list<dyn>"], disposition: "argument-walk" },
   ],
+  ["size", { types: ["list<dyn>"], disposition: "container" }],
+  ["type", { types: ["list<dyn>"], disposition: "container" }],
+  ["list<dyn>.size", { types: ["list<dyn>"], disposition: "container" }],
+  ["list<string>.join", { types: ["list<string>"], disposition: "container" }],
+  ["list<dyn>.all", { types: ["list<dyn>"], disposition: "container" }],
+  ["list<dyn>.exists", { types: ["list<dyn>"], disposition: "container" }],
+  ["list<dyn>.exists_one", { types: ["list<dyn>"], disposition: "container" }],
+  ["list<dyn>.map", { types: ["list<dyn>"], disposition: "container" }],
+  ["list<dyn>.filter", { types: ["list<dyn>"], disposition: "container" }],
 ]);
-
-/** The list types a cel-js built-in may take a `Secret` inside of. */
-const CONTAINER_TYPES: readonly string[] = ["list<dyn>", "list<string>"];
 
 /** The qualified names the special dispositions refer to. */
 export function specialDispositionNames(): string[] {
@@ -314,10 +309,7 @@ const AST_PARAMETER = "ast";
  * Classify every secret-capable position of a signature. Throws when a
  * position has no disposition, which is the alarm a dependency bump trips.
  */
-export function classifyPositions(
-  signature: string,
-  origin: SignatureOrigin = "cel-js",
-): PositionDisposition[] {
+export function classifyPositions(signature: string): PositionDisposition[] {
   const parsed = parseSignature(signature);
   const name = qualifiedName(parsed);
   const special = SPECIAL_DISPOSITIONS.get(name);
@@ -331,7 +323,7 @@ export function classifyPositions(
   for (const [position, type] of positions) {
     if (type === AST_PARAMETER) continue;
     if (!SECRET_CAPABLE_TYPES.includes(type)) continue;
-    const disposition = dispositionFor(name, position, type, special, origin);
+    const disposition = dispositionFor(name, position, type, special);
     if (disposition === undefined) {
       throw new Error(
         `Unclassified secret-capable position in ${signature}: ` +
@@ -351,7 +343,6 @@ function dispositionFor(
   special:
     | { readonly types: readonly string[]; readonly disposition: Disposition }
     | undefined,
-  origin: SignatureOrigin,
 ): Disposition | undefined {
   if (special !== undefined && special.types.includes(type)) {
     return special.disposition;
@@ -362,7 +353,6 @@ function dispositionFor(
     }
     return "refusal";
   }
-  if (origin === "cel-js" && CONTAINER_TYPES.includes(type)) return "container";
   return undefined;
 }
 
@@ -385,12 +375,11 @@ export function secretCapableBuiltins(env: Environment): DefinitionFunction[] {
  */
 export function functionRefusalSignatures(
   signatures: readonly string[],
-  origin: SignatureOrigin = "cel-js",
 ): string[] {
   const out = new Set<string>();
   for (const signature of signatures) {
     const parsed = parseSignature(signature);
-    const refusals = classifyPositions(signature, origin).filter((p) =>
+    const refusals = classifyPositions(signature).filter((p) =>
       p.disposition === "refusal"
     );
     const count = refusals.length;
@@ -441,10 +430,4 @@ export function operatorRefusalSignatures(
   for (const op of UNARY_OPERATORS) out.add(`${op}${SECRET_TYPE_NAME}`);
   for (const allowed of ALLOWED_OPERATOR_SIGNATURES) out.delete(allowed);
   return [...out].sort();
-}
-
-/** Whether a signature's operator is one of the comparison operators. */
-export function isComparisonSignature(signature: string): boolean {
-  return COMPARISON_OPERATORS.some((op) => signature.includes(` ${op} `)) ||
-    signature.includes(" == ");
 }

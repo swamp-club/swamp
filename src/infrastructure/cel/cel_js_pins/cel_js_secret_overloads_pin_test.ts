@@ -137,13 +137,16 @@ Deno.test(
     "the whole inventory registers beside swamp's own signatures without an overlap, and its size is pinned",
   ),
   () => {
+    // The counts are pins on cel-js 7.6.1 plus the inventory's swamp lists.
+    // When one changes, run this test: the failure prints the new number, and
+    // the change is a decision to record, not a number to copy.
     const plain = secretEnvironment();
     assertEquals(plain.getDefinitions().functions.length, 108);
     const builtins = secretCapableBuiltins(plain).map((fn) => fn.signature);
     assertEquals(builtins.length, 49);
-    assertEquals(functionRefusalSignatures(builtins, "cel-js").length, 56);
+    assertEquals(functionRefusalSignatures(builtins).length, 56);
     assertEquals(
-      functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES, "swamp").length,
+      functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES).length,
       41,
     );
     assertEquals(operatorRefusalSignatures().length, 163);
