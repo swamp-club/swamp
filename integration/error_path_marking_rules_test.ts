@@ -114,6 +114,7 @@ const PINNED: readonly string[] = [
   "src/libswamp/extensions/pull.ts: `Cannot install ${ref.name}: the installed extension ` + `${ref.name}/${relDir} lives at ${first}/ i",
   "src/libswamp/extensions/pull.ts: `Cannot install ${ref.name}: the installed extension ` + `${ref.name}/${relDir} lives at ${first}/ i #2",
   "src/worker/data_plane_client.ts: `Data plane ${method} ${path} failed (${response.status}): ${detail}`,",
+  'src/worker/data_plane_client.ts: `Serve did not answer ${method} ${path} within ` + `${timeoutMs! / 1000}s` + (init?.write ? "; serve',
 ];
 
 Deno.test("error path marking: no new unmarked path-naming errors", async () => {
