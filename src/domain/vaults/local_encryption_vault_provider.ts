@@ -199,7 +199,10 @@ export class LocalEncryptionVaultProvider
    * detect, which the `VaultExistenceProvider` contract forbids, so `get`
    * reports it at load. With `auto_generate` and a secret file present but
    * no key file, loading key material writes a new `.key`, exactly as `get`
-   * would in that state.
+   * would in that state. Like `put` and `delete`, `has` also holds the path
+   * inside the secrets boundary with `assertSafePath`; `get` relies on
+   * `validateSecretKey` alone, so a vault directory symlinked out of the
+   * boundary makes `has` reject where `get` would read. That fails safe.
    */
   async has(secretKey: string): Promise<boolean> {
     this.validateSecretKey(secretKey);

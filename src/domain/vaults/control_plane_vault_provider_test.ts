@@ -451,8 +451,9 @@ Deno.test("hasCoLocatedTokenKey: true only for a co-located key record", async (
 
 Deno.test("ControlPlaneVaultProvider: does not implement VaultExistenceProvider", () => {
   // Deliberate: the control-plane store has no presence primitive that reads
-  // no record, a listing is not enough under the has contract, and the
-  // existence check refuses the reserved vault anyway. See the class doc.
+  // no record, a listing is not enough under the has contract, and a load
+  // refuses the reserved vault, so the existence check is not expected to
+  // ask. See the class doc.
   const provider = new ControlPlaneVaultProvider(createMockStore());
   assertEquals(isVaultExistenceProvider(provider), false);
 });
