@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { MockVaultProvider } from "./mock_vault_provider.ts";
 
 Deno.test("MockVaultProvider - constructor", async (t) => {
@@ -58,9 +58,11 @@ Deno.test("MockVaultProvider - get", async (t) => {
     assertEquals(value, "my-value");
   });
 
-  await t.step("should throw for non-existent secret", () => {
+  await t.step("should reject for non-existent secret", async () => {
+    // assertRejects fails if the call throws synchronously instead of
+    // returning a rejected promise (swamp-club#3559).
     const provider = new MockVaultProvider("test-vault");
-    const error = assertThrows(
+    const error = await assertRejects(
       () => provider.get("non-existent-key"),
       Error,
     );
@@ -115,9 +117,9 @@ Deno.test("MockVaultProvider - delete", async (t) => {
     assertEquals(keys.includes("to-delete"), false);
   });
 
-  await t.step("should throw for non-existent secret", () => {
+  await t.step("should reject for non-existent secret", async () => {
     const provider = new MockVaultProvider("test-vault");
-    const error = assertThrows(
+    const error = await assertRejects(
       () => provider.delete("nonexistent-key"),
       Error,
     );
