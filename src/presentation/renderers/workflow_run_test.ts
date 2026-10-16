@@ -2700,6 +2700,19 @@ Deno.test("ConsoleWorkflowRunRenderer: a step refused with wait_key_held names t
   assertStringIncludes(lines[failedAt + 1], "is held by step");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: a holder missing a field, as a faulty server could send, prints no holder line and does not throw", async () => {
+  const { stepName: _missing, ...partial } = HOLDER;
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    { kind: "step_started", jobId: "release", stepId: "review" },
+    keyHeldFailure(partial as typeof HOLDER),
+    { kind: "completed", run: releaseRunView("succeeded") },
+  ]);
+  assert(lines.some((line) => line.includes("failed review")));
+  assertEquals(lines.some((line) => line.includes("is held by")), false);
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: a step failure without a holder prints no holder line", async () => {
   const lines = await renderLog([
     RELEASE_STARTED,

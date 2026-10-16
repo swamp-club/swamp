@@ -30,6 +30,7 @@ import {
   type HeldPendingSignal,
   listHeldPendingSignals,
 } from "../../domain/workflows/early_signal.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { decideContinuation } from "../../domain/workflows/run_continuation.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -273,9 +274,19 @@ async function uniqueWorkflowName(
 ): Promise<string | undefined> {
   const repo = deps.workflowRepo;
   if (!repo) return undefined;
-  const sameId = repo.findAllById
-    ? await repo.findAllById(createWorkflowId(workflowId))
-    : (await repo.findAll()).filter((workflow) => workflow.id === workflowId);
+  // One workflow that cannot be read hides only its own signals.
+  let sameId: Workflow[];
+  try {
+    sameId = repo.findAllById
+      ? await repo.findAllById(createWorkflowId(workflowId))
+      : (await repo.findAll()).filter((workflow) => workflow.id === workflowId);
+  } catch (error) {
+    ctx.logger
+      .warn`Could not look up workflow ID ${workflowId} to list its pending signals: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return undefined;
+  }
   if (sameId.length > 1) {
     ctx.logger
       .debug`Not listing a pending signal of workflow ID ${workflowId}: ${sameId.length} workflows declare it, so none can be named for it.`;

@@ -167,7 +167,7 @@ export function signalWaitRows(payload: unknown): SignalWaitRow[] {
 /**
  * The signals held for a wait that is not open yet, from a `workflow.waits`
  * reply asked for with `includePending`, soonest to lapse first. With
- * `now`, a signal held until `now` or earlier is left out: serve no longer
+ * `now`, a signal held until before `now` is left out: serve no longer
  * hands it to a wait. A reply without `pending`, such as one from a serve
  * that predates held signals, lists nothing, and so does an entry without
  * the fields a row needs or with a `heldUntil` that is not a time.
@@ -209,13 +209,13 @@ export function pendingSignalRows(
 }
 
 /**
- * The rows still held at `now`: a row whose `heldUntil` is `now` or earlier
- * has lapsed. Without `now`, every row. Keeps the order it is given.
+ * The rows still held at `now`, as serve judges it: a row whose `heldUntil`
+ * is before `now` has lapsed. Without `now`, every row. Keeps the order.
  */
 export function heldAt(
   rows: readonly PendingSignalRow[],
   now?: number,
 ): PendingSignalRow[] {
   if (now === undefined) return [...rows];
-  return rows.filter((row) => Date.parse(row.heldUntil) > now);
+  return rows.filter((row) => Date.parse(row.heldUntil) >= now);
 }

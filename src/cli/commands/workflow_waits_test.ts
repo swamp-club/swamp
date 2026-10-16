@@ -260,7 +260,7 @@ function fakeServer(data: Record<string, unknown>) {
   };
 }
 
-Deno.test("renderWaits: a keyed open wait prints its by-key command after the by-ID command, and quiet prints neither", () => {
+Deno.test("renderWaits: a keyed open wait prints its by-key command after the by-ID command, labelled as an alternative, and quiet prints neither", () => {
   const keyed = wait({
     key: "kitchen-verdict",
     signalByKeyCommand: KEY_COMMAND,
@@ -269,6 +269,7 @@ Deno.test("renderWaits: a keyed open wait prints its by-key command after the by
     captureStdout(() => renderWaits(hintTestContext(), listed([keyed]))),
     [
       `  swamp workflow signal ${WAIT_ID} --payload '<json>'`,
+      "  # or by key:",
       `  ${KEY_COMMAND}`,
     ],
   );
@@ -289,6 +290,7 @@ Deno.test("renderWaits: --server is carried on the by-key command, in log and JS
     captureStdout(() => renderWaits(hintTestContext(), data, target)),
     [
       `  swamp workflow signal ${WAIT_ID} --payload '<json>'${target}`,
+      "  # or by key:",
       `  ${KEY_COMMAND}${target}`,
     ],
   );
@@ -326,7 +328,7 @@ Deno.test("renderWaits: log mode lists pending signals by key, workflow, receipt
   );
   assertEquals(info, [
     "No workflows waiting for a signal",
-    "Pending signals, each held for the next wait of its key:",
+    "Pending signals (held for the next wait of their key)",
     `release — pending signal ${PENDING.receiptId}`,
     "  Key:        kitchen-verdict",
     "  Received:   2026-01-01T00:00:00.000Z",

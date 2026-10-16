@@ -461,7 +461,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         writeOutput(
           this.pipe.failedStepLine(displayName, e.stepId, duration, ts),
         );
-        if (e.waitKeyHolder) {
+        // A server builds the holder, but a remote client checks its shape
+        // before printing it.
+        if (isWaitKeyHolder(e.waitKeyHolder)) {
           writeOutput(
             this.pipe.line(displayName, describeWaitKeyHolder(e.waitKeyHolder)),
           );
@@ -1158,6 +1160,20 @@ interface RequestedWait {
  * Names the open wait that holds the key a step was refused with
  * `wait_key_held` (swamp-club#3214). Every part can come from a server.
  */
+/** True when every field of the holder line is a string. */
+function isWaitKeyHolder(value: unknown): value is WaitKeyHolder {
+  if (typeof value !== "object" || value === null) return false;
+  const holder = value as Record<string, unknown>;
+  return [
+    "workflowId",
+    "workflowName",
+    "key",
+    "runId",
+    "stepName",
+    "waitId",
+  ].every((field) => typeof holder[field] === "string");
+}
+
 function describeWaitKeyHolder(holder: WaitKeyHolder): string {
   return dim(
     `key ${escapeControlCharacters(holder.key)} is held by step ${
@@ -1243,7 +1259,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_queued: () => {},
       step_target_disconnected: () => {},
       step_failed: (e) => {
-        if (e.waitKeyHolder) this._waitKeyHolders.push(e.waitKeyHolder);
+        if (isWaitKeyHolder(e.waitKeyHolder)) {
+          this._waitKeyHolders.push(e.waitKeyHolder);
+        }
       },
       approval_requested: (e) => {
         this._gates.push({

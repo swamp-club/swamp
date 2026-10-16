@@ -88,7 +88,9 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         writeOutput(
           `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
             keySuffix(step.wait.key)
-          } from ${step.wait.receipt.submittedBy} at ${step.wait.receipt.receivedAt}${
+          } from ${
+            escapeControlCharacters(step.wait.receipt.submittedBy)
+          } at ${step.wait.receipt.receivedAt}${
             heldSuffix(step.wait.receipt)
           }; a resume applies it`,
         );
@@ -103,9 +105,9 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         writeOutput(
           `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
             keySuffix(step.wait.key)
-          } from ${step.wait.receipt.submittedBy} at ${step.wait.receipt.receivedAt}${
-            heldSuffix(step.wait.receipt)
-          }`,
+          } from ${
+            escapeControlCharacters(step.wait.receipt.submittedBy)
+          } at ${step.wait.receipt.receivedAt}${heldSuffix(step.wait.receipt)}`,
         );
       } else if (step.nestedRun?.detached) {
         writeOutput(

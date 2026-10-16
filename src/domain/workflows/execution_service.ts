@@ -1229,7 +1229,15 @@ async function waitKeyHolderOf(
       stepName: registration.stepName,
       waitId: registration.waitId,
     };
-  } catch {
+  } catch (error) {
+    getSwampLogger(["workflow", "run"]).debug(
+      "Could not read the registration of wait {waitId}, which holds key {key}: {error}",
+      {
+        waitId: claim.waitId,
+        key: claim.key,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
     return undefined;
   }
 }

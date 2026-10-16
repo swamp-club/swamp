@@ -27,6 +27,12 @@ import { formatWait } from "../lib/wait_order.ts";
 interface PendingSignalsPanelProps {
   /** The held signals, soonest to lapse first. */
   rows: readonly PendingSignalRow[];
+  /**
+   * The time to judge the rows by, from a page that counts them on its own
+   * {@link useHeldSignalClock}, so the page and the panel agree. Without
+   * it, the panel ticks its own clock.
+   */
+  now?: number;
 }
 
 /**
@@ -64,8 +70,11 @@ export function useHeldSignalClock(active: boolean): number {
  * on a clock the panel ticks itself: a signal lapsing changes no run, so
  * nothing refetches the list. Renders nothing when no signal is held.
  */
-export function PendingSignalsPanel({ rows }: PendingSignalsPanelProps) {
-  const now = useHeldSignalClock(rows.length > 0);
+export function PendingSignalsPanel(
+  { rows, now: given }: PendingSignalsPanelProps,
+) {
+  const own = useHeldSignalClock(given === undefined && rows.length > 0);
+  const now = given ?? own;
   const held = heldAt(rows, now);
   if (held.length === 0) return null;
   return (

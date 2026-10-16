@@ -840,6 +840,27 @@ Deno.test("workflowWaits: a held signal sent without a workflow name is listed o
   assertEquals((await listPending(depsOf([], T1, store))).pending, []);
 });
 
+Deno.test("workflowWaits: a workflow lookup that fails hides only the held signals of that workflow ID", async () => {
+  const store = new InMemorySignalWaitStore();
+  await store.createPendingRecord(heldSignal({ key: "one" }));
+  await store.createPendingRecord(
+    heldSignal({ key: "broken", workflowId: COPIED_ID }),
+  );
+  const workflows = workflowsWithIds([[KITCHEN_ID, "kitchen"]]);
+  const repo = {
+    ...workflows.repo,
+    findAllById: (id: string) =>
+      id === COPIED_ID
+        ? Promise.reject(new Error("unreadable workflow file"))
+        : workflows.repo.findAllById!(id),
+  };
+  const data = await listPending({
+    ...depsOf([], T1, store),
+    workflowRepo: repo,
+  });
+  assertEquals(data.pending?.map((p) => p.key), ["one"]);
+});
+
 Deno.test("workflowWaits: a failure listing pending signals lists none and does not hide the waits", async () => {
   const run = runWaitingOnlyForSignal("release", T0);
   class FailingPending extends InMemorySignalWaitStore {

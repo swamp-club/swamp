@@ -864,4 +864,12 @@ Deno.test("listHeldPendingSignals: a signal stored below a release is listed, as
   assertEquals(listed.map((each) => each.receiptId), [
     arrival.record.receiptId,
   ]);
+
+  // Once the slot above it cannot be read, a second signal is refused as
+  // unreadable rather than already_pending, and the listing agrees.
+  store.pendingRecords.set(
+    pendingRecordKey({ workflowId: WORKFLOW, key: KEY, slot: 3, number: 1 }),
+    new TextEncoder().encode("{"),
+  );
+  assertEquals(await listHeldPendingSignals(store, WITHIN), []);
 });

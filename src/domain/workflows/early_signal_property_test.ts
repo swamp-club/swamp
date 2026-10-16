@@ -149,7 +149,7 @@ async function liveHeads(
   return heads;
 }
 
-Deno.test("listHeldPendingSignals: lists the signal decideEarlySignal refuses a second one for, and nothing when it would store; with an unreadable head only one way holds (property)", async () => {
+Deno.test("listHeldPendingSignals: lists exactly the signal decideEarlySignal refuses a second one for, and nothing when it would store or cannot decide (property)", async () => {
   await fc.assert(
     fc.asyncProperty(keyArb, async (state) => {
       const s = state.readableOnly
@@ -180,12 +180,10 @@ Deno.test("listHeldPendingSignals: lists the signal decideEarlySignal refuses a 
         assertEquals(listed.map((each) => each.receiptId), [
           decision.record.receiptId,
         ]);
-      } else if (decision.kind === "store") {
-        assertEquals(listed, []);
       } else {
-        // A live head cannot be read, so the refusal is undecided. The
-        // listing still shows a held signal it can read, if there is one.
-        assert(!s.readableOnly);
+        // Nothing is listed when a second signal would be stored, nor when
+        // a live head cannot be read and the refusal is undecided.
+        assertEquals(listed, []);
       }
     }),
   );

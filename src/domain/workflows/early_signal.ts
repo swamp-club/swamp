@@ -188,15 +188,15 @@ export interface HeldPendingSignal {
  * The pending signals held at `now`, one per key at most, ordered by when
  * their age limits end (swamp-club#3214). For each key it reads the key's
  * highest record once and the highest record of each live slot
- * ({@link liveSlotsOf}), and lists the first head that is a pending signal
- * within its age limit: the one {@link decideEarlySignal} refuses a second
- * signal for with `already_pending`. A signal listed here is one the sweep
- * neither removes nor lapses at the same `now`, since it reads only live
- * slots and lapses only past the age limit. It writes nothing.
+ * ({@link liveSlotsOf}), and lists the signal {@link decideEarlySignal}
+ * refuses a second signal for with `already_pending`. A signal listed here
+ * is one the sweep neither removes nor lapses at the same `now`, since it
+ * reads only live slots and lapses only past the age limit. It writes
+ * nothing.
  *
- * A key whose highest record cannot be read is left out, and so is a slot
- * whose head cannot be read: the listing shows what it can read and never
- * guesses.
+ * A key whose highest record cannot be read is left out, and so is a key
+ * the decision finds unreadable: a key is listed exactly when a second
+ * signal to it would be refused `already_pending`, never otherwise.
  */
 export async function listHeldPendingSignals(
   store:
@@ -218,26 +218,26 @@ export async function listHeldPendingSignals(
   for (const { workflowId, key } of keys.values()) {
     const highest = await store.highestKeyRecord(workflowId, key);
     if (highest.kind === "unreadable") continue;
+    const heads: HighestPendingRecord[] = [];
     for (const slot of liveSlotsOf(highest).live) {
-      const head = await store.highestPendingRecord({ workflowId, key, slot });
-      if (
-        head.kind !== "found" || head.record.kind !== "pending" ||
-        !isPendingHeld(head.record, now)
-      ) continue;
-      const pending = head.record;
-      held.push({
-        workflowId,
-        key,
-        receiptId: pending.receiptId,
-        receivedAt: pending.receivedAt,
-        heldUntil: heldUntil(pending).toISOString(),
-        submittedBy: pending.submittedBy,
-        ...(pending.authorizedFor !== undefined
-          ? { authorizedFor: pending.authorizedFor }
-          : {}),
-      });
-      break;
+      heads.push(await store.highestPendingRecord({ workflowId, key, slot }));
     }
+    // The same decision a second signal gets, so a key is listed exactly
+    // when it would be refused `already_pending`.
+    const decision = decideEarlySignal(heads, now);
+    if (decision.kind !== "already_pending") continue;
+    const pending = decision.record;
+    held.push({
+      workflowId,
+      key,
+      receiptId: pending.receiptId,
+      receivedAt: pending.receivedAt,
+      heldUntil: heldUntil(pending).toISOString(),
+      submittedBy: pending.submittedBy,
+      ...(pending.authorizedFor !== undefined
+        ? { authorizedFor: pending.authorizedFor }
+        : {}),
+    });
   }
   return held.sort((a, b) =>
     a.heldUntil < b.heldUntil ? -1 : a.heldUntil > b.heldUntil ? 1 : 0

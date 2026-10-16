@@ -1001,9 +1001,8 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   payload); a listed one is taken by the next wait only while that step still
   sets `acceptEarly` and declares the key. A signal sent without `--server` to a
   workflow id two definitions share is not listed. The run view marks a receipt
-  answered from a held signal (`heldAsPending` in `--json` of
-  `workflow history
-  get`, `workflow run` and `workflow resume`); step outputs
+  answered from a held signal (`heldAsPending` in the `--json` of
+  `workflow history get`, `workflow run` and `workflow resume`); step outputs
   and signal results never carry it. Upgrade every host that runs, resumes or
   lists the workflow before adding `acceptEarly`, and every client that signals
   it with `--server`: an older swamp never takes a held signal, and a server

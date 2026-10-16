@@ -210,7 +210,7 @@ Deno.test("pendingSignalRows: leaves out an entry missing what a row needs", () 
   assertEquals(rows.map((r) => r.receiptId), ["ok"]);
 });
 
-Deno.test("pendingSignalRows: with now, leaves out a signal held until now or earlier", () => {
+Deno.test("pendingSignalRows: with now, leaves out a signal held until before now and keeps one held until now, as serve does", () => {
   const now = Date.parse("2026-10-08T13:00:00.000Z");
   const rows = pendingSignalRows(
     {
@@ -224,7 +224,7 @@ Deno.test("pendingSignalRows: with now, leaves out a signal held until now or ea
     },
     now,
   );
-  assertEquals(rows.map((r) => r.receiptId), ["live"]);
+  assertEquals(rows.map((r) => r.receiptId), [held.receiptId, "live"]);
 });
 
 Deno.test("heldAt: keeps every row without now and the live ones in order with it", () => {

@@ -57,6 +57,20 @@ Deno.test("PendingSignalsPanel: a held signal shows its key, workflow, receipt, 
   assertStringIncludes(html, "2h 00m left");
 });
 
+Deno.test("PendingSignalsPanel: judges the rows by the page's clock when given one", () => {
+  const held = {
+    ...rowHeldFor(0, "sig-held"),
+    heldUntil: "2026-10-08T13:00:00.000Z",
+  };
+  const at = (iso: string) =>
+    renderToStaticMarkup(
+      <PendingSignalsPanel rows={[held]} now={Date.parse(iso)} />,
+    );
+  // Held until the instant itself, as serve judges it; gone after it.
+  assertStringIncludes(at("2026-10-08T13:00:00.000Z"), "sig-held");
+  assertEquals(at("2026-10-08T13:00:00.001Z"), "");
+});
+
 Deno.test("PendingSignalsPanel: hides a signal past its hold", () => {
   const html = renderToStaticMarkup(
     <PendingSignalsPanel

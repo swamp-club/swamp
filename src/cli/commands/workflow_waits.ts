@@ -135,6 +135,9 @@ export function renderWaits(
     if (!quiet) {
       writeOutput(`  ${wait.nextCommand}`);
       if (wait.signalByKeyCommand !== undefined) {
+        // An alternative to the line above, labelled so it is not read as
+        // a second step; a shell comment keeps both lines pasteable.
+        writeOutput("  # or by key:");
         writeOutput(`  ${wait.signalByKeyCommand}`);
       }
     }
@@ -168,9 +171,7 @@ function renderPending(
     cliCtx.logger.info("No pending signals");
     return;
   }
-  cliCtx.logger.info(
-    "Pending signals, each held for the next wait of its key:",
-  );
+  cliCtx.logger.info("Pending signals (held for the next wait of their key)");
   for (const signal of pending) {
     cliCtx.logger.info(
       "{workflowName} — pending signal {receiptId}",

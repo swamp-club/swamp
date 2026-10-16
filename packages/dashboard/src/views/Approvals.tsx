@@ -523,7 +523,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
         )}
       />
 
-      <PendingSignalsPanel rows={heldSignals} />
+      <PendingSignalsPanel rows={heldSignals} now={heldClock} />
 
       {suspendedError && suspendedData === null && (
         <div className="approvals-notice is-error" role="alert">

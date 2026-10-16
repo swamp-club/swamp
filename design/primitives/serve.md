@@ -948,9 +948,8 @@ is listed only to a reader of the one it was held for; one sent through the
 local command, which records no name, is listed only when one workflow
 declares its id. `pending` is sent only when asked for. An open wait with a key
 carries `signalByKeyCommand` beside `nextCommand`, which still signals it by
-wait ID. A
-caller with no `read` grant on any workflow, such as one granted `signal` alone,
-is refused as unauthorized. It is the same use case as `swamp workflow waits`
+wait ID. A caller with no `read` grant on any workflow, such as one granted
+`signal` alone, is refused as unauthorized. It is the same use case as `swamp workflow waits`
 and, like it, not read-only: see "Listing" under Wait for Signal in
 [workflows](workflows.md).
 
