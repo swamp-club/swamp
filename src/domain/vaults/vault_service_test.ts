@@ -1330,3 +1330,51 @@ Deno.test("VaultService: a workflow vaults list refuses an unlisted vault", asyn
     vaultTypeRegistry.invalidateType(type);
   }
 });
+
+Deno.test("requireRefreshHookProvider: names the vault's configured type, not its instance name, when the provider does not support refresh hooks", async () => {
+  const service = new VaultService();
+  service.registerVault({ name: "erp", type: "mock", config: {} });
+
+  const error = await assertRejects(
+    () => service.getRefreshHook("erp", "TOKEN"),
+    Error,
+  );
+
+  assertEquals(
+    error.message,
+    "Vault 'erp' (type: mock) does not support refresh hooks",
+  );
+});
+
+Deno.test("requireDeleteProvider: names the vault's configured type, not its instance name, when the provider does not support deleting secrets", async () => {
+  const type = `@test/no-delete-${crypto.randomUUID()}`;
+  // Answers getName() with the instance name, as the built-in providers do.
+  vaultTypeRegistry.register({
+    type,
+    name: "No delete",
+    description: "A vault provider without delete",
+    isBuiltIn: false,
+    createProvider: (name) => ({
+      get: () => Promise.resolve(""),
+      put: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+      getName: () => name,
+    }),
+  });
+  try {
+    const service = new VaultService();
+    service.registerVault({ name: "erp", type, config: {} });
+
+    const error = await assertRejects(
+      () => service.delete("erp", "TOKEN"),
+      Error,
+    );
+
+    assertEquals(
+      error.message,
+      `Vault 'erp' (type: ${type}) does not support deleting secrets`,
+    );
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
+});
