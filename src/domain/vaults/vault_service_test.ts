@@ -1380,3 +1380,36 @@ Deno.test("requireDeleteProvider: names the vault's configured type, not its ins
     vaultTypeRegistry.invalidateType(type);
   }
 });
+
+Deno.test("requireExistenceProvider: names the vault's configured type, not its instance name, when the provider does not support existence checks", async () => {
+  const type = `@test/no-has-${crypto.randomUUID()}`;
+  // Answers getName() with the instance name, as the built-in providers do.
+  vaultTypeRegistry.register({
+    type,
+    name: "No has",
+    description: "A vault provider without has",
+    isBuiltIn: false,
+    createProvider: (name) => ({
+      get: () => Promise.resolve(""),
+      put: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+      getName: () => name,
+    }),
+  });
+  try {
+    const service = new VaultService();
+    service.registerVault({ name: "erp", type, config: {} });
+
+    const error = await assertRejects(
+      () => service.has("erp", "TOKEN"),
+      Error,
+    );
+
+    assertEquals(
+      error.message,
+      `Vault 'erp' (type: ${type}) does not support existence checks`,
+    );
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
+});
