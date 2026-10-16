@@ -118,13 +118,6 @@ export interface DeleteDataOlderThanOptions {
    */
   exemptTypes?: readonly string[];
   /**
-   * Keep each name's latest version even when it is past the cutoff, so a
-   * name is never emptied. Set where nothing keeps a deleted name's version
-   * numbers from being reused (a v3 datastore, until its partition
-   * high-water mark reaches version allocation).
-   */
-  keepLatestVersion?: boolean;
-  /**
    * Scan state a caller keeps across the batches of one pass, so each batch
    * resumes where the last stopped instead of re-reading every name it kept
    * from the oldest row. Absent, the call scans from the start.
@@ -634,7 +627,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
           );
 
           if (
-            !options.keepLatestVersion && latest &&
+            latest &&
             latest.createdAt.getTime() < cutoff.getTime()
           ) {
             const sizes = new Map(group.map((v) => [v.version, v.size]));

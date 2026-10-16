@@ -592,6 +592,31 @@ export class SqliteCommitStore implements CommitStore {
     }
   }
 
+  /**
+   * A data name's high-water mark in its partition, from the file: a cached
+   * partition another connection has since written is rebuilt first.
+   */
+  dataHighWater(
+    namespace: string,
+    key: PartitionKey,
+    name: string,
+  ): Promise<number> {
+    if (this.#closed) return Promise.reject(closedError());
+    const run = this.#queue.then(async () => {
+      let partition = await this.#partition(namespace, key);
+      const head = this.#selectHead.get(namespace, key.toString()) as
+        | { seq: number }
+        | undefined;
+      if ((head?.seq ?? 0) !== partition.seq) {
+        this.#cache.delete(cacheKeyOf(namespace, key.toString()));
+        partition = await this.#partition(namespace, key);
+      }
+      return partition.highWater(name);
+    });
+    this.#queue = run.catch(() => {});
+    return run;
+  }
+
   append(commit: Commit): Promise<CommitStoreAppendResult> {
     if (this.#closed) return Promise.reject(closedError());
     const run = this.#queue.then(() => this.#append(commit, false));
@@ -811,7 +836,7 @@ export class SqliteCommitStore implements CommitStore {
         const commit = await parseRow(row);
         let applied;
         try {
-          applied = partition.append(commit);
+          applied = partition.append(commit, { replay: true });
         } catch (error) {
           throw corrupt(row, errorMessage(error));
         }
@@ -1310,6 +1335,13 @@ export class SqliteCommitStore implements CommitStore {
    * none. The writer fence is left alone. Cursors are
    * never reused: later appends land past the removed ones.
    *
+   * One thing is not undone: the data versions the removed commits recorded
+   * (swamp-club#3532). Each touched partition keeps them in its names'
+   * high-water marks and removed versions, written as a snapshot at its new
+   * head, so a later write never gives one of those numbers to different
+   * content. Apart from that the store is the one that appended only the
+   * commits up to `mark`.
+   *
    * Queued behind appends in flight, and applied in one write transaction.
    * The removed commits are read, and the touched partitions rebuilt at
    * their new heads, before it starts.
@@ -1369,6 +1401,14 @@ export class SqliteCommitStore implements CommitStore {
           `Partition ${first.partition} changed in commits.db during truncation: another process is writing the store`,
         );
       }
+      // The data versions the removed commits recorded stay out of reach of
+      // later writes (swamp-club#3532): the writer that made them may have
+      // shared them already. A snapshot at the new head keeps that, since a
+      // replay of the kept commits alone would not.
+      let retained = false;
+      for (const [name, versions] of droppedVersions(commits, cacheKey)) {
+        if (rebuilt.retainDroppedVersions(name, versions)) retained = true;
+      }
       // The partition's one snapshot row is past the new head: put back the
       // snapshot the appends up to it wrote last. A compacted partition's
       // snapshot is never past it (checkMark refuses that).
@@ -1378,7 +1418,9 @@ export class SqliteCommitStore implements CommitStore {
       ) as { seq: number } | undefined;
       const at = keep - keep % this.#snapshotInterval;
       let snapshot: { seq: number; body: string } | undefined;
-      if (stored !== undefined && stored.seq > keep && at > 0) {
+      if (retained) {
+        snapshot = { seq: keep, body: JSON.stringify(rebuilt.snapshot()) };
+      } else if (stored !== undefined && stored.seq > keep && at > 0) {
         const state = at === keep ? rebuilt : await this.#rebuild(
           first.namespace,
           first.partition,
@@ -1664,6 +1706,27 @@ function closedError(): Error {
 
 function cacheKeyOf(namespace: string, partition: string): string {
   return JSON.stringify([namespace, partition]);
+}
+
+/** The data versions `commits` recorded in one partition, by name. */
+function droppedVersions(
+  commits: readonly Commit[],
+  cacheKey: string,
+): Map<string, number[]> {
+  const versions = new Map<string, number[]>();
+  for (const commit of commits) {
+    if (
+      cacheKeyOf(commit.namespace, commit.partition.toString()) !== cacheKey
+    ) {
+      continue;
+    }
+    for (const op of commit.ops) {
+      if (op.kind !== "data-version") continue;
+      const { name, version } = op.metadata;
+      versions.set(name, [...versions.get(name) ?? [], version]);
+    }
+  }
+  return versions;
 }
 
 /**

@@ -399,7 +399,9 @@ const SIGNAL_CHANGE_LOOKBACK = 200;
  * One key per reference to the hook field inside a datastore-tier repository
  * class that is not the first argument of a `signalChange(...)` call, or of
  * a `stageTyped(...)` call, the typed route after a write, or the only
- * argument of `typedStagingActive(...)` (swamp-club#3250), as
+ * argument of `typedStagingActive(...)` (swamp-club#3250) or
+ * `versionFloorSource(...)` (swamp-club#3532), lookups of the unit the hook
+ * routes to, as
  * "<file>: <class>": calling the hook, passing it elsewhere, or storing it.
  * Code before and after the reference is read across lines, so a call that
  * deno fmt wraps still counts as signalChange's argument. The constructor
@@ -431,9 +433,10 @@ function hookReferencesOutsideSignalChange(
           );
           const after = source.slice(start + match[0].length);
           if (
-            /\b(?:signalChange|stageTyped|typedStagingActive)\(\s*$/.test(
-              before,
-            ) &&
+            /\b(?:signalChange|stageTyped|typedStagingActive|versionFloorSource)\(\s*$/
+              .test(
+                before,
+              ) &&
             /^\s*[,)]/.test(after)
           ) {
             continue;
@@ -1021,6 +1024,9 @@ const PINNED_BOUND_HOOK_READERS: readonly string[] = [
   // (x2) since swamp-club#3279: an unbound unit does not hide the v3 unit
   // around it that is bound to the write's hook.
   "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager (x2)",
+  // swamp-club#3532: version allocation finds the unit's version-floor
+  // source the way the typed route finds its stager.
+  "src/infrastructure/persistence/unit_of_work_scope.ts: versionFloorSource (x2)",
 ];
 
 // Who registers a unit as taking typed changes: only the v3 commit-log
@@ -1351,7 +1357,9 @@ Deno.test("datastore write seams: repositories reference their hook only as sign
     "Datastore-tier repository hook references outside signalChange",
     "A repository reaches its mark hook only as the first argument of\n" +
       "signalChange(this.<hook>, change), stageTyped(this.<hook>, build) or\n" +
-      "typedStagingActive(this.<hook>), so the unit of work sees every change.\n" +
+      "typedStagingActive(this.<hook>), or looks up its unit's version floor\n" +
+      "with versionFloorSource(this.<hook>), so the unit of work sees every\n" +
+      "change.\n" +
       "Do not call the hook, pass it on, or store it.",
   );
 });
@@ -1371,6 +1379,7 @@ Deno.test("datastore write seams: the hook reference scan catches calls and pass
     "    );",
     "    await stageTyped(this.markDirty, () => changes);",
     "    if (typedStagingActive(this.markDirty)) read();",
+    "    const floors = versionFloorSource(this.markDirty);",
     "    await stageTyped(",
     "      this.markDirty,",
     "      () => changes,",
@@ -1589,11 +1598,7 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps",
   // `doctor datastores --retention` reports a v3 datastore's history
   // (swamp-club#3473).
-  // swamp-club#3473: on v3 retention keeps each name's latest version, as
-  // nothing there stops a deleted name's version numbers being reused yet.
-  "src/libswamp/datastores/retention_check.ts: retentionScanSourcesFor (x2)",
-  "src/libswamp/data/gc.ts: createDataGcDeps",
-  "src/libswamp/retention/collectors.ts: createRetentionCollectors",
+  "src/libswamp/datastores/retention_check.ts: retentionScanSourcesFor",
   // Commands v3 refuses choose a read-only open before they open, so the
   // refusal takes no writer lease and changes nothing (swamp-club#3359):
   // `datastore sync` and `datastore migrate-index`.

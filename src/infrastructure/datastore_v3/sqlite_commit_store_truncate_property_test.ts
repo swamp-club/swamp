@@ -18,12 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Truncation to a high-water mark (swamp-club#3482) undoes appends exactly:
- * a store that appended a prefix, took its mark, appended a suffix and was
+ * Truncation to a high-water mark (swamp-club#3482) undoes appends: a store
+ * that appended a prefix, took its mark, appended a suffix and was
  * truncated to the mark is observably the store that appended the prefix
- * only, and stays so when both append the suffix again. Commits span three
- * partitions in two namespaces, share chunks, raise fences through lease
- * ops, and may be partly compacted before the mark.
+ * only, and stays so when both append more. The one exception is the data
+ * versions the suffix recorded (swamp-club#3532): a partition that recorded
+ * any keeps them in a snapshot at its new head, which is the prefix's state
+ * with those versions retained. Commits span three partitions in two
+ * namespaces, share chunks, record data versions, raise fences through
+ * lease ops, and may be partly compacted before the mark.
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -33,6 +36,7 @@ import fc from "fast-check";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import { leaseOp } from "../../domain/datastore_v3/op.ts";
+import { Partition } from "../../domain/datastore_v3/partition.ts";
 import {
   type PartitionKey,
   partitionOf,
@@ -42,6 +46,8 @@ import {
   MODEL_TYPE,
   modelCommit,
   modelPartition,
+  savePut,
+  versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import {
   CommitStoreTruncateRefusedError,
@@ -87,20 +93,28 @@ const arbStep = fc.record({
   name: fc.constantFrom("x", "y", "z"),
   blob: fc.integer({ min: 0, max: BLOBS.length - 1 }),
   fenceBump: fc.integer({ min: 0, max: 2 }),
+  /** Records a data version instead of only writing a blob. */
+  versioned: fc.boolean(),
 });
 type Step = typeof arbStep extends fc.Arbitrary<infer T> ? T : never;
 
-/** Builds each step's commit, numbering seqs per partition. */
+/**
+ * Builds each step's commit, numbering seqs per partition and data versions
+ * per partition and name, from `versionBase` up, so no version repeats.
+ */
 class Builder {
   readonly #seqs = new Map<number, number>();
   readonly #fences = new Map<number, number>();
+  readonly #versions = new Map<string, number>();
   #txn = 0;
+
+  constructor(readonly txnPrefix = "t", readonly versionBase = 0) {}
 
   async build(step: Step): Promise<Commit> {
     const space = SPACES[step.space];
     const seq = (this.#seqs.get(step.space) ?? 0) + 1;
     this.#seqs.set(step.space, seq);
-    const txnId = `t-${this.#txn++}`;
+    const txnId = `${this.txnPrefix}-${this.#txn++}`;
     if (space.lease) {
       const fence = (this.#fences.get(step.space) ?? 1) + step.fenceBump;
       this.#fences.set(step.space, fence);
@@ -111,9 +125,14 @@ class Builder {
         txnId,
       });
     }
+    const versionKey = `${step.space}/${step.name}`;
+    const version = (this.#versions.get(versionKey) ?? this.versionBase) + 1;
+    if (step.versioned) this.#versions.set(versionKey, version);
     return modelCommit(
       seq,
-      [await blobPut(step.name, 1, BLOBS[step.blob])],
+      step.versioned
+        ? [await savePut(step.name, version), versionOp(step.name, version)]
+        : [await blobPut(step.name, 1, BLOBS[step.blob])],
       {
         namespace: space.namespace,
         partition: space.partition(),
@@ -134,18 +153,98 @@ async function appendAll(
   }
 }
 
+/** The snapshot rows of the partitions not in `except`, raw. */
+function snapshotRows(path: string, except: ReadonlySet<string> = new Set()) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return (db.prepare(
+      "SELECT namespace, partition, seq, body FROM partition_snapshots ORDER BY namespace, partition",
+    ).all() as { namespace: string; partition: string }[])
+      .filter((row) => !except.has(`${row.namespace}/${row.partition}`));
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The partitions the commits recorded data versions in, as
+ * `namespace/partition`, with those versions by name.
+ */
+function recordedVersions(
+  commits: readonly Commit[],
+): Map<string, Map<string, number[]>> {
+  const recorded = new Map<string, Map<string, number[]>>();
+  for (const commit of commits) {
+    for (const op of commit.ops) {
+      if (op.kind !== "data-version") continue;
+      const key = `${commit.namespace}/${commit.partition}`;
+      const names = recorded.get(key) ?? new Map<string, number[]>();
+      recorded.set(key, names);
+      const { name, version } = op.metadata;
+      names.set(name, [...names.get(name) ?? [], version]);
+    }
+  }
+  return recorded;
+}
+
+/**
+ * Checks each retaining partition's snapshot row: the state of its prefix
+ * commits with the dropped versions retained, then any `later` commits up
+ * to the row's seq.
+ */
+function assertRetainedSnapshots(
+  path: string,
+  prefix: readonly Commit[],
+  dropped: Map<string, Map<string, number[]>>,
+  later: readonly Commit[] = [],
+): void {
+  const db = new DatabaseSync(path, { readOnly: true });
+  let rows: {
+    namespace: string;
+    partition: string;
+    seq: number;
+    body: string;
+  }[];
+  try {
+    rows = db.prepare(
+      "SELECT namespace, partition, seq, body FROM partition_snapshots",
+    ).all() as typeof rows;
+  } finally {
+    db.close();
+  }
+  for (const [key, names] of dropped) {
+    const space = SPACES.find((s) =>
+      `${s.namespace}/${s.partition()}` === key
+    )!;
+    const row = rows.find((r) => `${r.namespace}/${r.partition}` === key);
+    assert(row !== undefined, `${key} has no snapshot keeping its versions`);
+    const state = Partition.empty(space.partition());
+    const inSpace = (commit: Commit) =>
+      `${commit.namespace}/${commit.partition}` === key;
+    for (const commit of prefix.filter(inSpace)) state.append(commit);
+    for (const [name, versions] of names) {
+      state.retainDroppedVersions(name, versions);
+    }
+    for (const commit of later.filter(inSpace)) {
+      if (commit.seq <= row.seq) state.append(commit);
+    }
+    assertEquals(row.seq, state.seq, key);
+    assertEquals(JSON.parse(row.body), state.snapshot(), key);
+  }
+}
+
 /** What a store shows: heads, feed, partitions, snapshots and chunk references. */
-async function observe(store: SqliteCommitStore, path: string) {
+async function observe(
+  store: SqliteCommitStore,
+  path: string,
+  except: ReadonlySet<string> = new Set(),
+) {
   const db = new DatabaseSync(path, { readOnly: true });
   let chunkRefs: unknown[];
-  let snapshots: unknown[];
   let compacted: Map<string, number>;
   try {
     chunkRefs = db.prepare(
       "SELECT namespace, sha256, refs FROM chunk_refs ORDER BY namespace, sha256",
-    ).all();
-    snapshots = db.prepare(
-      "SELECT namespace, partition, seq, body FROM partition_snapshots ORDER BY namespace, partition",
     ).all();
     compacted = new Map(
       (db.prepare(
@@ -156,6 +255,9 @@ async function observe(store: SqliteCommitStore, path: string) {
   } finally {
     db.close();
   }
+  // The snapshots of partitions that retain dropped versions are checked by
+  // assertRetainedSnapshots.
+  const snapshots = snapshotRows(path, except);
   const { compactedThrough } = await store.history();
   const feed = (await store.changesSince(compactedThrough, 1_000_000)).map((
     change,
@@ -177,6 +279,7 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
   const dir = await Deno.makeTempDir({ prefix: "swamp-truncate-property-" });
   let truncatedRuns = 0;
   let refusedRuns = 0;
+  let retainingRuns = 0;
   try {
     await fc.assert(
       fc.asyncProperty(
@@ -235,18 +338,28 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
               removed: suffix.length,
             });
             assertEquals(truncated.highWaterMark(), mark);
+            const dropped = recordedVersions(suffix);
+            if (dropped.size > 0) retainingRuns++;
+            const retaining = new Set(dropped.keys());
             assertEquals(
-              await observe(truncated, truncatedPath),
-              await observe(prefixOnly, prefixPath),
+              await observe(truncated, truncatedPath, retaining),
+              await observe(prefixOnly, prefixPath, retaining),
             );
+            assertRetainedSnapshots(truncatedPath, prefix, dropped);
 
-            // Both take the suffix again, from rebuilt or cached partitions.
-            await appendAll(truncated, suffix);
-            await appendAll(prefixOnly, suffix);
+            // Both take the same steps again, from rebuilt or cached
+            // partitions, with versions the dropped commits never used.
+            const again = new Builder("again", 1000);
+            for (const step of prefixSteps) await again.build(step);
+            const more: Commit[] = [];
+            for (const step of suffixSteps) more.push(await again.build(step));
+            await appendAll(truncated, more);
+            await appendAll(prefixOnly, more);
             assertEquals(
-              await observe(truncated, truncatedPath),
-              await observe(prefixOnly, prefixPath),
+              await observe(truncated, truncatedPath, retaining),
+              await observe(prefixOnly, prefixPath, retaining),
             );
+            assertRetainedSnapshots(truncatedPath, prefix, dropped, more);
             assert(
               truncated.highWaterMark().cursor >
                 prefixOnly.highWaterMark().cursor,
@@ -262,6 +375,7 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
     // A refusal only arises with compaction, which about half the runs do.
     assert(truncatedRuns > 60, `only ${truncatedRuns} runs truncated`);
     assert(refusedRuns > 0, "no run was refused");
+    assert(retainingRuns > 30, `only ${retainingRuns} runs dropped a version`);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

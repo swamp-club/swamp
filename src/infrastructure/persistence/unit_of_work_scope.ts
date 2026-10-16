@@ -62,7 +62,12 @@ import type {
 import { getSwampLogger } from "../logging/logger.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { legacyUnitOfWorkTarget } from "./legacy_unit_of_work.ts";
-import { typedStagers, unitOfWorkBinding } from "./unit_of_work_binding.ts";
+import {
+  typedStagers,
+  unitOfWorkBinding,
+  versionFloors,
+  type VersionFloorSource,
+} from "./unit_of_work_binding.ts";
 
 const ambientUnitOfWork = new AsyncLocalStorage<UnitOfWork>();
 
@@ -218,6 +223,28 @@ export function typedStagingActive(
   return markDirty !== undefined &&
     unitOfWorkBinding.requiresUnit(markDirty) &&
     boundTypedStager(markDirty) !== undefined;
+}
+
+/**
+ * The version-floor source of the v3 unit a write through `markDirty` stages
+ * into, found as {@link stageTyped} finds its stager; undefined on v2.
+ */
+export function versionFloorSource(
+  markDirty: MarkDirtyHook | undefined,
+): VersionFloorSource | undefined {
+  if (markDirty === undefined) {
+    const uow = adoptingUnit();
+    return uow === undefined ? undefined : versionFloors.of(uow);
+  }
+  if (!unitOfWorkBinding.requiresUnit(markDirty)) return undefined;
+  const uow = currentUnitOfWork();
+  if (uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty) {
+    return versionFloors.of(uow);
+  }
+  const outer = adoptingUnit();
+  return outer !== undefined && unitOfWorkBinding.boundHook(outer) === markDirty
+    ? versionFloors.of(outer)
+    : undefined;
 }
 
 /**

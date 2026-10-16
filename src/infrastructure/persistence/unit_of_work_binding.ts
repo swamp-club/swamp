@@ -75,6 +75,25 @@ const stagers = new WeakMap<UnitOfWork, TypedStager>();
  */
 const openTargets = new WeakMap<UnitOfWork, () => UnitOfWork | undefined>();
 
+/**
+ * Where a v3 unit reads the version a data name's next version must exceed
+ * (swamp-club#3532), and records a version it handed out.
+ */
+export interface VersionFloorSource {
+  floor(partition: string, name: string): Promise<number>;
+  claim(partition: string, name: string, version: number): void;
+}
+
+const floors = new WeakMap<UnitOfWork, VersionFloorSource>();
+
+/** The version-floor source of each v3 unit that has one. */
+export const versionFloors = {
+  register(uow: UnitOfWork, source: VersionFloorSource): void {
+    floors.set(uow, source);
+  },
+  of: (uow: UnitOfWork): VersionFloorSource | undefined => floors.get(uow),
+};
+
 /** The units that take typed changes: the v3 commit-log adapter's. */
 export const typedStagers = {
   register(

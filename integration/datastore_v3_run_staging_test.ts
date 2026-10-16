@@ -28,8 +28,9 @@
  *   context, and its unit commits on a succeeded, failed, suspended or
  *   cancelled run and discards on an early stop.
  * - A run record never names data whose partition was refused (decision 7):
- *   a real `version-live` refusal, and an `expect-failed` one, followed by
- *   the run's record.
+ *   a `version-live` and an `expect-failed` refusal, followed by the run's
+ *   record. Two checkouts no longer collide on a version: the second
+ *   allocates above the first's (swamp-club#3532).
  */
 
 import "../src/domain/models/models.ts";
@@ -523,7 +524,10 @@ Deno.test("v3 run staging: a run whose consumer stops before an outcome commits 
 });
 
 /** A sink that refuses each model-partition commit as `reason`. */
-function refusingModels(env: V3Env, reason: "expect-failed"): CommitSink {
+function refusingModels(
+  env: V3Env,
+  reason: "version-live" | "expect-failed",
+): CommitSink {
   return {
     append: (commit) =>
       commit.partition.kind === "model"
@@ -544,14 +548,7 @@ for (const reason of ["version-live", "expect-failed"] as const) {
       const type = registerWriter();
       const definition = Definition.create({ name: "writer" });
       const steps = [writeStep("a")];
-      let sink: CommitSink | undefined;
-      if (reason === "version-live") {
-        // Another checkout of the same model already recorded result@1.
-        const first = await runContext(env, "first", type, definition, steps);
-        await runWorkflow(env, first, drain);
-      } else {
-        sink = refusingModels(env, reason);
-      }
+      const sink = refusingModels(env, reason);
 
       const context = await runContext(env, "second", type, definition, steps);
       const seen: PartitionsRefusedError[] = [];

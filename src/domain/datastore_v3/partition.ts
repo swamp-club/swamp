@@ -36,6 +36,7 @@ import type { Commit } from "./commit.ts";
 import { requireFence } from "./op.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
+import { type VersionRange, VersionRanges } from "./version_ranges.ts";
 
 /** Why a partition refused a commit. */
 export type CommitRejection =
@@ -54,6 +55,12 @@ export type CommitRejection =
    * commit carries no `data.append` put for that version.
    */
   | "version-live"
+  /**
+   * A data-version op names a version its name recorded and then removed,
+   * and the commit carries no `data.append` put for that version
+   * (swamp-club#3532): a version number never names different content.
+   */
+  | "version-reused"
   /**
    * A retry older than the commit outbox's retry bound (swamp-club#3490):
    * refused before it is appended, since the store may no longer know its
@@ -101,6 +108,8 @@ export interface PartitionSnapshot {
     readonly name: string;
     readonly live: readonly number[];
     readonly highWater: number;
+    /** The versions recorded and then removed, as ranges; absent when none. */
+    readonly removed?: readonly VersionRange[];
   }[];
 }
 
@@ -110,6 +119,8 @@ interface DataName {
   readonly live: Set<number>;
   /** The greatest version ever recorded; it never decreases. */
   highWater: number;
+  /** The versions recorded and then removed; never recorded again. */
+  removed: VersionRanges;
 }
 
 function nameVersion(name: string, version: number): string {
@@ -126,13 +137,21 @@ type RecordState = string | null;
  * - `seq` is gapless: a partition accepts only its current seq plus one.
  * - A commit whose txnId the partition holds is a no-op, not a second commit.
  * - A data version is recorded only when its name does not hold it live, so
- *   two writers can never both claim one live version. A version removed
- *   earlier may be recorded again, and versions may arrive out of order, as
- *   v2 allocates them (swamp-club#3250). The one exception re-records a live
- *   version: an append, whose `data.append` put for that name and version
- *   comes earlier in the commit than the data-version op; each such put lets
- *   one op through. Each name has exactly one latest, its greatest live
- *   version.
+ *   two writers can never both claim one live version, and has never held
+ *   it, so one version number never names two contents (swamp-club#3532):
+ *   a version recorded and then removed is refused as `version-reused`.
+ *   Versions may still arrive out of order (swamp-club#3250): a deferred
+ *   version promoted after a higher one, or parallel writers finishing out
+ *   of order, records a version below the high-water mark that was never
+ *   recorded. The one exception re-records a version: an append, whose
+ *   `data.append` put for that name and version comes earlier in the commit
+ *   than the data-version op; each such put lets one op through. Each name
+ *   has exactly one latest, its greatest live version.
+ *
+ *   Writers allocate above the high-water mark, so a refusal means a writer
+ *   bypassed that: for example orphan reclaim re-staging, under a new
+ *   txnId, a promoted version that has since been removed. The refused
+ *   partition fails the step that wrote it instead of reusing the number.
  * - A put's or tombstone's `expect` that does not hold refuses the commit.
  * - A commit carrying a fence below the highest the partition has seen is
  *   refused; so is a lease op carrying one. Once a partition has seen a
@@ -254,11 +273,11 @@ export class Partition {
       }
       const fields = entry as Record<string, unknown>;
       for (const field of Object.keys(fields)) {
-        if (!["name", "live", "highWater"].includes(field)) {
+        if (!["name", "live", "highWater", "removed"].includes(field)) {
           return fail(`a data name has the unknown field '${field}'`);
         }
       }
-      const { name, live, highWater } = fields;
+      const { name, live, highWater, removed } = fields;
       if (typeof name !== "string" || partition.#names.has(name)) {
         return fail("a data name is missing or appears twice");
       }
@@ -280,9 +299,29 @@ export class Partition {
           `data ${name}'s live versions are not distinct positive integers up to its high-water mark`,
         );
       }
+      let removedVersions = VersionRanges.EMPTY;
+      if (removed !== undefined) {
+        if (!Array.isArray(removed) || removed.some((r) => !Array.isArray(r))) {
+          return fail(`data ${name}'s removed versions are not ranges`);
+        }
+        try {
+          removedVersions = VersionRanges.of(removed as number[][]);
+        } catch (error) {
+          return fail(`data ${name}: ${(error as Error).message}`);
+        }
+        if (
+          removedVersions.max > highWater ||
+          live.some((v) => removedVersions.has(v as number))
+        ) {
+          return fail(
+            `data ${name}'s removed versions pass its high-water mark or include a live version`,
+          );
+        }
+      }
       partition.#names.set(name, {
         live: new Set(live as number[]),
         highWater,
+        removed: removedVersions,
       });
     }
     return partition;
@@ -309,6 +348,7 @@ export class Partition {
           name,
           live: [...entry.live].sort((a, b) => a - b),
           highWater: entry.highWater,
+          ...(entry.removed.isEmpty ? {} : { removed: entry.removed.ranges }),
         })),
     };
   }
@@ -364,6 +404,38 @@ export class Partition {
     return this.#names.get(name)?.highWater ?? 0;
   }
 
+  /** Whether a name recorded `version` and then removed it. */
+  removed(name: string, version: number): boolean {
+    return this.#names.get(name)?.removed.has(version) ?? false;
+  }
+
+  /**
+   * Keeps versions a truncation dropped from being handed out again
+   * (swamp-club#3532): raises the name's high-water mark to them and counts
+   * each one not live here as removed. A writer whose commits were truncated
+   * away may have shared those versions already. Returns whether anything
+   * changed.
+   */
+  retainDroppedVersions(name: string, versions: readonly number[]): boolean {
+    let entry = this.#names.get(name);
+    let changed = false;
+    for (const version of versions) {
+      if (entry === undefined) {
+        entry = { live: new Set(), highWater: 0, removed: VersionRanges.EMPTY };
+        this.#names.set(name, entry);
+      }
+      if (version > entry.highWater) {
+        entry.highWater = version;
+        changed = true;
+      }
+      if (!entry.live.has(version) && !entry.removed.has(version)) {
+        entry.removed = entry.removed.add(version);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   /**
    * Applies a commit, or refuses it with a {@link CommitRejectedError} and
    * changes nothing. A commit for another partition is refused first. Then a
@@ -371,8 +443,14 @@ export class Partition {
    * before seq, so retrying a commit that landed is a no-op even though its
    * seq is now behind. Retries go to the same partition, so checking the
    * partition first never turns a retry into a refusal.
+   *
+   * `replay` is for commits the store already holds: they were accepted
+   * under the rules of their time, and a store written before
+   * `version-reused` existed may hold a reused version, so replay does not
+   * refuse one. It still tracks removed versions, so the next live commit
+   * is checked against the whole history.
    */
-  append(commit: Commit): AppendResult {
+  append(commit: Commit, options: { replay?: boolean } = {}): AppendResult {
     if (!commit.partition.equals(this.key)) {
       throw new CommitRejectedError(
         "partition-mismatch",
@@ -415,6 +493,7 @@ export class Partition {
         entry = {
           live: new Set(base?.live ?? []),
           highWater: base?.highWater ?? 0,
+          removed: base?.removed ?? VersionRanges.EMPTY,
         };
         names.set(name, entry);
       }
@@ -457,7 +536,10 @@ export class Partition {
             // A name never written has no versions to remove; leave it out
             // rather than list it with no versions.
             if (names.has(intent.name) || this.#names.has(intent.name)) {
-              dataName(intent.name).live.delete(intent.version);
+              const entry = dataName(intent.name);
+              if (entry.live.delete(intent.version)) {
+                entry.removed = entry.removed.add(intent.version);
+              }
             }
           }
           break;
@@ -465,15 +547,23 @@ export class Partition {
         case "data-version": {
           const { name, version } = op.metadata;
           const entry = dataName(name);
-          if (
-            entry.live.has(version) &&
-            !appended.delete(nameVersion(name, version))
-          ) {
+          const consume = () => appended.delete(nameVersion(name, version));
+          if (entry.live.has(version) && !consume()) {
             throw new CommitRejectedError(
               "version-live",
               `Data ${name} version ${version} is already live; only an append re-records it`,
             );
           }
+          if (
+            !options.replay && !entry.live.has(version) &&
+            entry.removed.has(version) && !consume()
+          ) {
+            throw new CommitRejectedError(
+              "version-reused",
+              `Data ${name} version ${version} was removed; it is never recorded again`,
+            );
+          }
+          entry.removed = entry.removed.delete(version);
           entry.live.add(version);
           entry.highWater = Math.max(entry.highWater, version);
           break;

@@ -351,6 +351,59 @@ export const arbCommand = fc.record({
 export type Command = typeof arbCommand extends fc.Arbitrary<infer T> ? T
   : never;
 
+/**
+ * Three commands that record a version, remove it and record it again
+ * (swamp-club#3532), sometimes with an append put: random commands alone
+ * almost never line those up.
+ */
+export const arbReuse: fc.Arbitrary<Command[]> = fc.record({
+  name: arbName,
+  version: arbVersion,
+  append: fc.boolean(),
+}).map(({ name, version, append }) => {
+  const command = (ops: OpSpec[]): Command => ({
+    seqOffset: 0,
+    reuseTxn: undefined,
+    // The highest fence the random commands use, so none is stale.
+    fence: 6,
+    ops,
+  });
+  const record: OpSpec = { kind: "data-version", name, version };
+  return [
+    command([record]),
+    command([{
+      kind: "tombstone",
+      name,
+      version,
+      versioned: true,
+      present: false,
+    }]),
+    command([
+      ...(append
+        ? [{
+          kind: "put" as const,
+          name,
+          version,
+          content: "x" as const,
+          append: true,
+          expect: undefined,
+        }]
+        : []),
+      record,
+    ]),
+  ];
+});
+
+/** Random commands with reuse scenarios mixed in. */
+export const arbCommands = (maxLength: number): fc.Arbitrary<Command[]> =>
+  fc.array(
+    fc.oneof(
+      { weight: 4, arbitrary: arbCommand.map((command) => [command]) },
+      { weight: 1, arbitrary: arbReuse },
+    ),
+    { minLength: 1, maxLength },
+  ).map((chunks) => chunks.flat());
+
 /** The tombstoned key of a version-less delete: the name's latest marker. */
 function latestKey(name: string): RecordKey {
   return RecordKey.create(`data/model/${name}/latest`);
@@ -405,6 +458,7 @@ export interface Model {
   records: Record<string, string>;
   live: Record<string, number[]>;
   highWater: Record<string, number>;
+  removed: Record<string, number[]>;
 }
 
 export type ModelResult = AppendResult | { kind: "rejected"; reason: string };
@@ -461,7 +515,14 @@ export async function modelAppend(
       }
       delete next.records[key];
       if (spec.versioned) {
-        next.live[spec.name] = (next.live[spec.name] ?? []).filter((v) =>
+        const live = next.live[spec.name] ?? [];
+        if (live.includes(spec.version)) {
+          next.removed[spec.name] = [
+            ...(next.removed[spec.name] ?? []),
+            spec.version,
+          ];
+        }
+        next.live[spec.name] = live.filter((v) =>
           v !== spec.version
         );
       }
@@ -473,6 +534,13 @@ export async function modelAppend(
         if (at === -1) return reject("version-live");
         appended.splice(at, 1);
       } else {
+        const removed = next.removed[spec.name] ?? [];
+        if (removed.includes(spec.version)) {
+          const at = appended.indexOf(`${spec.version}:${spec.name}`);
+          if (at === -1) return reject("version-reused");
+          appended.splice(at, 1);
+          next.removed[spec.name] = removed.filter((v) => v !== spec.version);
+        }
         next.live[spec.name] = [...live, spec.version];
       }
       next.highWater[spec.name] = Math.max(
@@ -505,6 +573,13 @@ export function observe(partition: Partition) {
     highWater: Object.fromEntries(
       NAMES.map((name) => [name, partition.highWater(name)]),
     ),
+    removed: Object.fromEntries(
+      NAMES.map((name) => [
+        name,
+        Array.from({ length: partition.highWater(name) }, (_, i) => i + 1)
+          .filter((version) => partition.removed(name, version)),
+      ]),
+    ),
   };
 }
 
@@ -524,6 +599,12 @@ export function expected(model: Model) {
     highWater: Object.fromEntries(
       NAMES.map((name) => [name, model.highWater[name] ?? 0]),
     ),
+    removed: Object.fromEntries(
+      NAMES.map((name) => [
+        name,
+        [...(model.removed[name] ?? [])].sort((a, b) => a - b),
+      ]),
+    ),
   };
 }
 
@@ -536,5 +617,6 @@ export function emptyModel(): Model {
     records: {},
     live: {},
     highWater: {},
+    removed: {},
   };
 }

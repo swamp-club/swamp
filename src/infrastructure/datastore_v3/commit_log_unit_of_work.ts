@@ -160,6 +160,8 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   typedStagers,
   unitOfWorkBinding,
+  versionFloors,
+  type VersionFloorSource,
 } from "../persistence/unit_of_work_binding.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
@@ -171,9 +173,58 @@ const logger = getSwampLogger(["datastore", "v3"]);
  * outbox. `head` gives the seq the next commit takes.
  */
 export type CommitSink = Pick<CommitStore, "append" | "head"> & {
+  /** A data name's high-water mark in its partition (swamp-club#3532). */
+  readonly dataHighWater?: (
+    namespace: string,
+    partition: PartitionKey,
+    name: string,
+  ) => Promise<number>;
   /** Makes each commit durable until it has landed (swamp-club#3490). */
   readonly outbox?: SinkOutbox;
 };
+
+/**
+ * The greatest version each data name was given in this process, by sink,
+ * then namespace, partition and name (swamp-club#3532). It covers versions
+ * staged but not committed yet, which the commit store cannot see: in the
+ * same unit, a sibling unit, or a deferred write. One number per name a
+ * process writes, so it is never evicted.
+ */
+const claimedVersions = new WeakMap<CommitSink, Map<string, number>>();
+
+/**
+ * A unit's version-floor source: the floor is the greater of the name's
+ * committed high-water mark and the greatest version this process gave it.
+ */
+function floorSourceFor(
+  sink: CommitSink,
+  namespace: string,
+): VersionFloorSource {
+  let claimed = claimedVersions.get(sink);
+  if (claimed === undefined) {
+    claimed = new Map();
+    claimedVersions.set(sink, claimed);
+  }
+  const marks = claimed;
+  const keyOf = (partition: string, name: string) =>
+    JSON.stringify([namespace, partition, name]);
+  return {
+    async floor(partition, name) {
+      const committed = sink.dataHighWater === undefined
+        ? 0
+        : await sink.dataHighWater(
+          namespace,
+          PartitionKey.parse(partition),
+          name,
+        );
+      return Math.max(committed, marks.get(keyOf(partition, name)) ?? 0);
+    },
+    claim(partition, name, version) {
+      const key = keyOf(partition, name);
+      marks.set(key, Math.max(marks.get(key) ?? 0, version));
+    },
+  };
+}
 
 /** What a {@link CommitSink} offers a unit to keep its commits durable. */
 export interface SinkOutbox {
@@ -613,6 +664,10 @@ export function createCommitLogUnitOfWork(
   };
   states.set(uow, state);
   unitOfWorkBinding.bind(uow, markDirty);
+  versionFloors.register(
+    uow,
+    floorSourceFor(options.sink, options.namespace.toString()),
+  );
   typedStagers.register(
     uow,
     (changes) => uow.stageOps(changes),

@@ -39,6 +39,7 @@ import {
   SOLO_NAMESPACE,
 } from "../src/domain/data/namespace.ts";
 import { MAX_COMMIT_OPS } from "../src/domain/datastore_v3/commit.ts";
+import { DefaultDataLifecycleService } from "../src/domain/data/data_lifecycle_service.ts";
 import { CommitRejectedError } from "../src/domain/datastore_v3/partition.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import {
@@ -59,6 +60,7 @@ import type { CommitSink } from "../src/infrastructure/datastore_v3/commit_log_u
 import type { Commit } from "../src/domain/datastore_v3/commit.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlOutputRepository } from "../src/infrastructure/persistence/yaml_output_repository.ts";
@@ -100,8 +102,12 @@ class V3Writer {
   readonly outputs: YamlOutputRepository;
   readonly namespace: Namespace;
 
-  constructor(readonly env: V3Env, readonly namespaceName: string) {
-    this.dir = join(env.dir, "writer");
+  constructor(
+    readonly env: V3Env,
+    readonly namespaceName: string,
+    checkout = "writer",
+  ) {
+    this.dir = join(env.dir, checkout);
     this.namespace = namespaceName === ""
       ? SOLO_NAMESPACE
       : restoreNamespace(namespaceName);
@@ -732,4 +738,123 @@ for (const where of ["root", "child"] as const) {
       assertEquals(deleted[1].ops.at(-1)?.kind, "tombstone");
     });
   });
+}
+
+// swamp-club#3532: a version number never names two contents, so a name
+// emptied of every version continues above its old high-water mark.
+
+Deno.test("v3 staging: a name emptied by data delete continues above its old high-water mark", async () => {
+  await withV3Env(async (env) => {
+    const writer = new V3Writer(env, "");
+    const repo = writer.data;
+    const save = (content: string) =>
+      repo.save(MODEL_TYPE, MODEL_ID, data("r"), text(content));
+    for (const n of [1, 2, 3]) await writer.run(() => save(`r${n}`));
+    await writer.run(() => repo.delete(MODEL_TYPE, MODEL_ID, "r"));
+    assertEquals(await repo.listVersions(MODEL_TYPE, MODEL_ID, "r"), []);
+    await writer.run(() => save("after"));
+    assertEquals(await repo.listVersions(MODEL_TYPE, MODEL_ID, "r"), [4]);
+    await assertMatches(writer);
+  });
+});
+
+Deno.test("v3 staging: a deleted top version is not given to the next save", async () => {
+  await withV3Env(async (env) => {
+    const writer = new V3Writer(env, "");
+    const repo = writer.data;
+    const save = (content: string) =>
+      repo.save(MODEL_TYPE, MODEL_ID, data("t"), text(content));
+    for (const n of [1, 2]) await writer.run(() => save(`t${n}`));
+    await writer.run(() => repo.delete(MODEL_TYPE, MODEL_ID, "t", 2));
+    await writer.run(() => save("after"));
+    assertEquals(await repo.listVersions(MODEL_TYPE, MODEL_ID, "t"), [1, 3]);
+    await assertMatches(writer);
+  });
+});
+
+Deno.test("v3 staging: a save, a delete of the name and a save again inside one unit", async () => {
+  await withV3Env(async (env) => {
+    const writer = new V3Writer(env, "");
+    const repo = writer.data;
+    const save = (content: string) =>
+      repo.save(MODEL_TYPE, MODEL_ID, data("u"), text(content));
+    await writer.run(() => save("u1"));
+    // Version 2 is staged, not committed, when the name is emptied: the
+    // commit store cannot see it, so the process's own mark must.
+    await writer.run(async () => {
+      await save("u2");
+      await repo.delete(MODEL_TYPE, MODEL_ID, "u");
+      await save("u3");
+    });
+    assertEquals(await repo.listVersions(MODEL_TYPE, MODEL_ID, "u"), [3]);
+    await assertMatches(writer);
+  });
+});
+
+Deno.test("v3 staging: retention emptying a name leaves its next write above the old versions", async () => {
+  await withV3Env(async (env) => {
+    const writer = new V3Writer(env, "");
+    const repo = writer.data;
+    const save = (content: string) =>
+      repo.save(MODEL_TYPE, MODEL_ID, data("aged"), text(content));
+    await writer.run(() => save("a1"));
+    await writer.run(() => save("a2"));
+    const newest = await repo.findByName(MODEL_TYPE, MODEL_ID, "aged", 2);
+    const cutoff = newest!.createdAt.getTime() + 1;
+    while (Date.now() < cutoff) {
+      // poll the clock until it passes the newest version
+    }
+    const result = await writer.run(() =>
+      new DefaultDataLifecycleService(repo, {} as never).deleteDataOlderThan(
+        new Date(cutoff),
+        { dryRun: false, isExempt: () => false },
+      )
+    );
+    assertEquals(result.entriesDeleted, 1);
+    assertEquals(await repo.listVersions(MODEL_TYPE, MODEL_ID, "aged"), []);
+    await writer.run(() => save("a3"));
+    assertEquals(await repo.listVersions(MODEL_TYPE, MODEL_ID, "aged"), [3]);
+    await assertMatches(writer);
+  });
+});
+
+for (const emptied of [false, true]) {
+  Deno.test(
+    `v3 staging: a second checkout whose files are behind writes above the first's versions${
+      emptied ? " after it emptied the name" : ""
+    }`,
+    async () => {
+      await withV3Env(async (env) => {
+        const first = new V3Writer(env, "");
+        const save = (writer: V3Writer, content: string) =>
+          writer.data.save(MODEL_TYPE, MODEL_ID, data("shared"), text(content));
+        for (const n of [1, 2, 3]) {
+          await first.run(() => save(first, `first ${n}`));
+        }
+        if (emptied) {
+          await first.run(() =>
+            first.data.delete(MODEL_TYPE, MODEL_ID, "shared")
+          );
+        }
+
+        // Another process: its own connection to commits.db, and a checkout
+        // whose files have not caught up with the first's commits.
+        const second = new V3Writer(env, "", "second");
+        const store = SqliteCommitStore.open(join(env.dir, "commits.db"));
+        try {
+          assertEquals(
+            await second.data.listVersions(MODEL_TYPE, MODEL_ID, "shared"),
+            [],
+          );
+          await second.run(() => save(second, "second"), store);
+        } finally {
+          await store.close();
+        }
+        assertEquals(
+          await second.data.listVersions(MODEL_TYPE, MODEL_ID, "shared"),
+          [4],
+        );
+      });
+    },
+  );
 }

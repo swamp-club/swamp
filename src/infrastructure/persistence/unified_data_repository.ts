@@ -24,6 +24,7 @@ import {
   signalChange,
   stageTyped,
   typedStagingActive,
+  versionFloorSource,
 } from "./unit_of_work_scope.ts";
 import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import type {
@@ -3024,15 +3025,26 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     const versions = await this.listVersions(type, modelId, dataName);
     // Never below the version floor: a number deleted versions used is not
-    // given to new content (swamp-club#3473).
+    // given to new content. v2 keeps it in a file (swamp-club#3473); on v3 it
+    // is the partition's high-water mark, with the versions this process
+    // staged but has not committed yet (swamp-club#3532). The partition key
+    // is built only on v3: it needs a UUID model id, and v2 does not.
     const floor = await this.readVersionFloor(type, modelId, dataName);
-    let nextVersion = Math.max(maxOf(versions) ?? 0, floor) + 1;
+    const v3Floors = versionFloorSource(this.markDirty);
+    const partition = v3Floors === undefined
+      ? ""
+      : new ModelChanges(type, modelId).partition.toString();
+    const v3Floor = v3Floors === undefined
+      ? 0
+      : await v3Floors.floor(partition, dataName);
+    let nextVersion = Math.max(maxOf(versions) ?? 0, floor, v3Floor) + 1;
 
     const maxRetries = 100;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const versionDir = this.getPath(type, modelId, dataName, nextVersion);
       try {
         await Deno.mkdir(versionDir);
+        v3Floors?.claim(partition, dataName, nextVersion);
         return { version: nextVersion, versionDir, priorVersions: versions };
       } catch (error) {
         if (error instanceof Deno.errors.AlreadyExists) {

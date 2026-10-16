@@ -127,17 +127,101 @@ Deno.test("Partition.append: a live data version is never recorded twice", () =>
   assertEquals(partition.seq, 1);
 });
 
-Deno.test("Partition.append: a removed version can be recorded again, as v2 reuses it (swamp-club#3250)", () => {
+Deno.test("Partition.append: a removed version is never recorded again (swamp-club#3532)", () => {
   const partition = Partition.empty(modelPartition());
   partition.append(modelCommit(1, [versionOp("vpc", 1), versionOp("vpc", 2)]));
   partition.append(modelCommit(2, [deleteVersion("vpc", 2)]));
   assertEquals(partition.latest("vpc"), 1);
   assertEquals(partition.highWater("vpc"), 2);
-  // v2 allocates max(existing) + 1, so the next save is version 2 again.
-  partition.append(modelCommit(3, [versionOp("vpc", 2)]));
+  assertEquals(partition.removed("vpc", 2), true);
+  // Another clone may hold version 2's old content.
+  assertRejected(
+    () => partition.append(modelCommit(3, [versionOp("vpc", 2)])),
+    "version-reused",
+  );
+  // Nor once the name is empty.
+  partition.append(modelCommit(3, [deleteVersion("vpc", 1)]));
+  assertEquals(partition.versions("vpc"), []);
+  for (const version of [1, 2]) {
+    assertRejected(
+      () => partition.append(modelCommit(4, [versionOp("vpc", version)])),
+      "version-reused",
+    );
+  }
+  partition.append(modelCommit(4, [versionOp("vpc", 3)]));
+  assertEquals(partition.versions("vpc"), [3]);
+  assertEquals(partition.highWater("vpc"), 3);
+});
+
+Deno.test("Partition.append: a version removed in the same commit is not recorded again", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 1)]));
+  assertRejected(
+    () =>
+      partition.append(
+        modelCommit(2, [deleteVersion("vpc", 1), versionOp("vpc", 1)]),
+      ),
+    "version-reused",
+  );
+  assertEquals(partition.seq, 1);
+  assertEquals(partition.removed("vpc", 1), false);
+});
+
+Deno.test("Partition.append: a version removed before it was recorded may still arrive", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 2)]));
+  // A tombstone of a version the name never held live removes nothing, so
+  // a deferred version 1 promoted later still records.
+  partition.append(modelCommit(2, [deleteVersion("vpc", 1)]));
+  assertEquals(partition.removed("vpc", 1), false);
+  partition.append(modelCommit(3, [versionOp("vpc", 1)]));
   assertEquals(partition.versions("vpc"), [1, 2]);
-  assertEquals(partition.latest("vpc"), 2);
-  assertEquals(partition.highWater("vpc"), 2);
+});
+
+Deno.test("Partition.append: replay accepts a reuse a store holds from before version-reused", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 1)]));
+  partition.append(modelCommit(2, [deleteVersion("vpc", 1)]));
+  assertEquals(
+    partition.append(modelCommit(3, [versionOp("vpc", 1)]), { replay: true }),
+    { kind: "appended", seq: 3 },
+  );
+  assertEquals(partition.versions("vpc"), [1]);
+  assertEquals(partition.removed("vpc", 1), false);
+  // Removing it again is remembered, and live commits are checked.
+  partition.append(modelCommit(4, [deleteVersion("vpc", 1)]));
+  assertRejected(
+    () => partition.append(modelCommit(5, [versionOp("vpc", 1)])),
+    "version-reused",
+  );
+  // Replay keeps every other rule.
+  partition.append(modelCommit(5, [versionOp("vpc", 2)]));
+  assertRejected(
+    () =>
+      partition.append(modelCommit(6, [versionOp("vpc", 2)]), {
+        replay: true,
+      }),
+    "version-live",
+  );
+});
+
+Deno.test("Partition.retainDroppedVersions: raises the high-water mark and counts dropped versions removed", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 1)]));
+  assertEquals(partition.retainDroppedVersions("vpc", [1]), false);
+  assertEquals(partition.retainDroppedVersions("vpc", [2, 3]), true);
+  assertEquals(partition.versions("vpc"), [1]);
+  assertEquals(partition.highWater("vpc"), 3);
+  assertEquals(partition.removed("vpc", 1), false);
+  assertEquals(partition.removed("vpc", 3), true);
+  assertEquals(partition.retainDroppedVersions("vpc", [2]), false);
+  // A name the kept commits never wrote.
+  assertEquals(partition.retainDroppedVersions("subnet", [4]), true);
+  assertEquals(partition.highWater("subnet"), 4);
+  assertRejected(
+    () => partition.append(modelCommit(2, [versionOp("subnet", 4)])),
+    "version-reused",
+  );
 });
 
 Deno.test("Partition.append: versions can arrive out of order, as parallel writers finish", () => {
@@ -541,23 +625,94 @@ Deno.test("Partition.restore: an empty partition round-trips", () => {
   assertEquals(restored.highestFence, undefined);
 });
 
-Deno.test("Partition.restore: round-trips after a reused and an out-of-order version", () => {
+Deno.test("Partition.restore: round-trips removed and out-of-order versions", () => {
   const partition = Partition.empty(modelPartition());
-  partition.append(modelCommit(1, [versionOp("a", 1), versionOp("a", 3)]));
-  partition.append(modelCommit(2, [deleteVersion("a", 3)]));
-  partition.append(modelCommit(3, [versionOp("a", 3), versionOp("a", 2)]));
+  partition.append(
+    modelCommit(1, [
+      versionOp("a", 1),
+      versionOp("a", 2),
+      versionOp("a", 3),
+      versionOp("a", 5),
+    ]),
+  );
+  partition.append(
+    modelCommit(2, [
+      deleteVersion("a", 1),
+      deleteVersion("a", 2),
+      deleteVersion("a", 5),
+    ]),
+  );
+  partition.append(modelCommit(3, [versionOp("a", 4)]));
+  const snapshotted = partition.snapshot();
+  assertEquals(snapshotted.names, [
+    { name: "a", live: [3, 4], highWater: 5, removed: [[1, 2], [5, 5]] },
+  ]);
   const restored = Partition.restore(
     modelPartition(),
-    JSON.parse(JSON.stringify(partition.snapshot())),
+    JSON.parse(JSON.stringify(snapshotted)),
     () => false,
   );
   assertEquals(snapshot(restored), snapshot(partition));
-  assertEquals(restored.versions("a"), [1, 2, 3]);
-  assertEquals(restored.highWater("a"), 3);
+  assertEquals(restored.versions("a"), [3, 4]);
+  assertEquals(restored.highWater("a"), 5);
   assertRejected(
-    () => restored.append(modelCommit(4, [versionOp("a", 2)])),
+    () => restored.append(modelCommit(4, [versionOp("a", 4)])),
     "version-live",
   );
+  assertRejected(
+    () => restored.append(modelCommit(4, [versionOp("a", 2)])),
+    "version-reused",
+  );
+});
+
+Deno.test("Partition.restore: a snapshot written before removed versions existed restores with none", () => {
+  const restored = Partition.restore(modelPartition(), {
+    v: 1,
+    partition: modelPartition().toString(),
+    seq: 3,
+    records: [],
+    names: [{ name: "a", live: [1], highWater: 4 }],
+  }, () => false);
+  assertEquals(restored.highWater("a"), 4);
+  assertEquals(restored.removed("a", 2), false);
+  // Below the high-water mark and never known removed: it may arrive.
+  restored.append(modelCommit(4, [versionOp("a", 2)]));
+  assertEquals(restored.versions("a"), [1, 2]);
+});
+
+Deno.test("Partition.restore: merges overlapping removed ranges and refuses invalid ones", () => {
+  const snapshotWith = (removed: unknown, live = [1]) => ({
+    v: 1,
+    partition: modelPartition().toString(),
+    seq: 1,
+    records: [],
+    names: [{ name: "a", live, highWater: 9, removed }],
+  });
+  const merged = Partition.restore(
+    modelPartition(),
+    snapshotWith([[5, 6], [2, 3], [4, 4], [6, 7]]),
+    () => false,
+  );
+  assertEquals(merged.snapshot().names[0].removed, [[2, 7]]);
+  for (
+    const removed of [
+      "1-2",
+      [3],
+      [[3, 2]],
+      [[0, 2]],
+      [[2, 10]],
+      [[1, 1]],
+      [["2", 3]],
+    ]
+  ) {
+    assertThrows(
+      () =>
+        Partition.restore(modelPartition(), snapshotWith(removed), () => false),
+      Error,
+      "Invalid snapshot",
+      JSON.stringify(removed),
+    );
+  }
 });
 
 Deno.test("Partition.restore: refuses a damaged snapshot", async () => {
