@@ -59,6 +59,18 @@ import {
 import { collectReporterContext } from "../../infrastructure/process/reporter_context_collector.ts";
 import { VERSION } from "./version.ts";
 
+/**
+ * `value` unchanged, or a UserError naming `flag` when it is empty or only
+ * whitespace. swamp-club refuses a blank title or body, so the request is
+ * never sent (swamp-club#3542).
+ */
+export function requireNonBlank(flag: string, value: string): string {
+  if (value.trim() === "") {
+    throw new UserError(`${flag} must not be empty or only whitespace.`);
+  }
+  return value;
+}
+
 /** Extension target after refusals have been thrown — never "refused". */
 export type UsableExtensionTarget = Exclude<
   ExtensionTarget,

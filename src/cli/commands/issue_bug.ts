@@ -30,6 +30,7 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   dispatchExtensionRepositoryReport,
+  requireNonBlank,
   resolveDestination,
   resolveExtensionOrRefuse,
   submitIssue,
@@ -120,7 +121,10 @@ export const issueBugCommand = new Command()
     "Report a bug against a specific extension",
     "swamp issue bug --extension @adam/cfgmgmt",
   )
-  .option("-t, --title <title:string>", "Bug title (skips editor for title)")
+  .option(
+    "-t, --title <title:string>",
+    "Bug title (with --body, skips the editor)",
+  )
   .option(
     "-b, --body <body:string>",
     "Bug description (requires --title, skips editor entirely)",
@@ -180,10 +184,10 @@ export const issueBugCommand = new Command()
     let title: string;
     let body: string;
 
-    if (options.title && options.body) {
-      title = options.title;
-      body = options.body;
-    } else if (options.body && !options.title) {
+    if (options.title !== undefined && options.body !== undefined) {
+      title = requireNonBlank("--title", options.title);
+      body = requireNonBlank("--body", options.body);
+    } else if (options.body !== undefined) {
       throw new UserError("--body requires --title to be specified");
     } else {
       if (ctx.outputMode === "json") {

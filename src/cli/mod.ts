@@ -241,6 +241,7 @@ import {
   resolveTelemetryInvocation,
   toRecordedInvocation,
 } from "./telemetry_invocation.ts";
+import { findEmptyOptionValue } from "./empty_option_value.ts";
 import type { AnyCommand } from "./cli_schema.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import {
@@ -2817,6 +2818,13 @@ async function runInvocation(
   bootstrapSpan.end();
 
   try {
+    // Cliffy would take the token after an empty `--title=` as its value
+    // (swamp-club#3542), so reject the empty value before it parses.
+    const emptyOption = findEmptyOptionValue(cli, args);
+    if (emptyOption !== undefined) {
+      throw new UserError(`Missing value for option "${emptyOption}".`);
+    }
+
     await cli.parse(args);
 
     // Hook commands exit immediately — no teardown needed. The action's

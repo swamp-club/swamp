@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { parseRepositoryUrl } from "../../domain/extensions/repository_url.ts";
@@ -27,9 +32,25 @@ import type { CommandContext } from "../context.ts";
 import {
   buildMailtoUrl,
   dispatchExtensionRepositoryReport,
+  requireNonBlank,
   resolveExtensionOrRefuse,
   submitIssue,
 } from "./issue_submit.ts";
+
+Deno.test("requireNonBlank: rejects an empty or whitespace-only value", () => {
+  for (const value of ["", " ", "   ", "\t", "\n", " \t\n "]) {
+    const error = assertThrows(
+      () => requireNonBlank("--body", value),
+      UserError,
+    );
+    assertEquals(error.message, "--body must not be empty or only whitespace.");
+  }
+});
+
+Deno.test("requireNonBlank: returns a value with content unchanged", () => {
+  assertEquals(requireNonBlank("--title", "probe"), "probe");
+  assertEquals(requireNonBlank("--title", "  padded  "), "  padded  ");
+});
 
 Deno.test("buildMailtoUrl: builds correct mailto URL for bug", () => {
   const url = buildMailtoUrl("bug", "CLI crash", "Steps to reproduce");

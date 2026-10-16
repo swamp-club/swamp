@@ -34,6 +34,7 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { requireNonBlank } from "./issue_submit.ts";
 import { redactIssueContent } from "../../domain/issues/content_redactor.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
@@ -107,8 +108,8 @@ export const issueRippleCommand = new Command()
 
     let body: string;
 
-    if (typeof options.body === "string" && options.body.length > 0) {
-      body = options.body;
+    if (options.body !== undefined) {
+      body = requireNonBlank("--body", options.body);
     } else {
       if (ctx.outputMode === "json") {
         throw new UserError(
