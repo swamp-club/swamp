@@ -3069,6 +3069,18 @@ for (
       line: '  plain: "true"',
     },
     {
+      label: "a plain string edited to one the CST quotes on its own",
+      key: "plain",
+      value: '"quoted" text',
+      line: `  plain: '"quoted" text'`,
+    },
+    {
+      label: "a plain string edited to a multi-line string",
+      key: "plain",
+      value: "line one\nline two",
+      line: "  plain: |-\n    line one\n    line two",
+    },
+    {
       label: "a plain string edited to a boolean",
       key: "plain",
       value: true,

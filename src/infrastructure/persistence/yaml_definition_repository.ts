@@ -1477,8 +1477,10 @@ function renderMerged(
   oldData: Record<string, unknown>,
 ): string {
   const expected = canonicalJson(newData);
-  const edited = editScalarsInPlace(raw, newData, oldData);
-  if (edited !== undefined && readsBackAs(edited, expected)) return edited;
+  for (const restyle of [false, true]) {
+    const edited = editScalarsInPlace(raw, newData, oldData, restyle);
+    if (edited !== undefined && readsBackAs(edited, expected)) return edited;
+  }
   for (const expand of [false, true]) {
     const doc = parseDocument(raw, { version: "1.1" });
     const lineWidth = mergeLineWidth(raw, doc);
@@ -1502,11 +1504,17 @@ function renderMerged(
  * `oldData` and `newData`, keeping every other byte. Undefined when the change
  * is not only to existing scalars (a key added or removed, a list resized, a
  * value behind an alias), or the file is not a single document.
+ *
+ * Without `restyle` each value is written as the CST chooses from the token's
+ * own style. With it, each value is written in the style `scalarTypeFor` picks
+ * and block scalars are indented under their key — for edits that otherwise
+ * read back as something else (swamp-club#3541).
  */
 function editScalarsInPlace(
   raw: string,
   newData: Record<string, unknown>,
   oldData: Record<string, unknown>,
+  restyle: boolean,
 ): string | undefined {
   const tokens = Array.from(new Parser().parse(raw));
   const docs = Array.from(
@@ -1521,7 +1529,11 @@ function editScalarsInPlace(
     // Every edited scalar is a value, never a key: without afterKey a block
     // scalar's lines are written at its key's indent and no longer parse.
     for (const { token, value, type } of edits) {
-      CST.setScalarValue(token, value, { afterKey: true, type });
+      CST.setScalarValue(
+        token,
+        value,
+        restyle ? { afterKey: true, type } : undefined,
+      );
     }
   } catch {
     // A token the CST cannot rewrite leaves the change to the document merge.
@@ -1589,9 +1601,10 @@ function collectScalarEdits(
 
 /**
  * The style to write `value` in, over a scalar currently written as `current`.
- * A string keeps a quoted or block style, and a plain one is double-quoted
- * when written plain would read back as something else; any other value is
- * written plain, since quoted it would read back as a string
+ * A string that spans lines is a block scalar, folded only if it already was.
+ * Any other string keeps a quoted or block style, and a plain one is
+ * double-quoted when written plain would read back as something else. Any
+ * other value is written plain, since quoted it would read back as a string
  * (swamp-club#3541).
  */
 function scalarTypeFor(
@@ -1599,6 +1612,9 @@ function scalarTypeFor(
   current: Scalar.Type | undefined,
 ): Scalar.Type {
   if (typeof value !== "string") return Scalar.PLAIN;
+  if (value.includes("\n")) {
+    return current === Scalar.BLOCK_FOLDED ? current : Scalar.BLOCK_LITERAL;
+  }
   if (current !== undefined && current !== Scalar.PLAIN) return current;
   return readsPlainAs(value) ? Scalar.PLAIN : Scalar.QUOTE_DOUBLE;
 }
