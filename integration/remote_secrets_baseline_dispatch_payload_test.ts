@@ -59,6 +59,7 @@ import {
   StdioTransport,
 } from "../src/domain/remote/stdio_transport.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
 import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
 import {
   buildRunnerBootstrapParams,
@@ -73,6 +74,9 @@ import {
   startBaselineOrchestrator,
   withTempDir,
 } from "./remote_secrets_baseline_harness.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 await initializeLogging({});
 
@@ -128,8 +132,8 @@ async function dispatchStepWithSecret(
     });
   });
 
-  const bag = new VaultSecretBag();
-  const sentinel = bag.addSecret(secret);
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(secret, REF);
   const model = payloadModel();
   const definition = Definition.create({
     name: `payload-${crypto.randomUUID().slice(0, 8)}`,
@@ -331,8 +335,10 @@ Deno.test({
   },
 });
 
-Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 4", () => {
-  assertEquals(REMOTE_PROTOCOL_VERSION, 4);
+Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 5", () => {
+  // 5 since the sentinel prefix grew to 128 bits (swamp-club#3558): the
+  // dispatch schema validates the format, so the format is the protocol.
+  assertEquals(REMOTE_PROTOCOL_VERSION, 5);
 });
 
 for (const offset of [1, -1]) {

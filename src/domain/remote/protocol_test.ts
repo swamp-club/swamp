@@ -25,7 +25,9 @@ import {
   DispatchResultSchema,
   EnrollParamsSchema,
   parseRpcFrame,
+  REMOTE_PROTOCOL_VERSION,
 } from "./protocol.ts";
+import { SENTINEL_SOURCE } from "../vaults/secret_bag_registry.ts";
 
 Deno.test("parseRpcFrame: returns null for non-RPC messages", () => {
   assertEquals(parseRpcFrame({ type: "workflow.run", id: "1" }), null);
@@ -126,7 +128,7 @@ function dispatchWithSecretBag(sentinel: string) {
     dispatchId: "d-1",
     leaseId: "l-1",
     execution: {
-      protocolVersion: 4,
+      protocolVersion: REMOTE_PROTOCOL_VERSION,
       modelType: "command/shell",
       modelId: "m-1",
       methodName: "execute",
@@ -143,7 +145,7 @@ function dispatchWithSecretBag(sentinel: string) {
 }
 
 Deno.test("DispatchParamsSchema: carries the unresolved args and secret bag (swamp-club#2760)", () => {
-  const sentinel = "__SWAMP_VSEC_0a1b2c3d_0__";
+  const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
   const parsed = DispatchParamsSchema.parse(
     JSON.parse(JSON.stringify(dispatchWithSecretBag(sentinel))),
   );
@@ -170,7 +172,7 @@ Deno.test("DispatchParamsSchema: a schema without the bag fields keeps the resol
     secretBag: true,
   });
   const parsed = olderSchema.parse(
-    dispatchWithSecretBag("__SWAMP_VSEC_0a1b2c3d_0__"),
+    dispatchWithSecretBag(`__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`),
   );
   assertEquals("secretBag" in parsed, false);
   assertEquals(parsed.execution.methodArgs, { run: "echo s3cret" });
@@ -335,4 +337,22 @@ Deno.test("dispatchErrorPaths: trims marked paths to what the schema accepts", (
 Deno.test("dispatchErrorPaths: is undefined when the error marked nothing", () => {
   assertEquals(dispatchErrorPaths(new Error("boom")), undefined);
   assertEquals(dispatchErrorPaths("boom"), undefined);
+});
+
+Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret bag is validated against (swamp-club#3558)", () => {
+  // The dispatch schema checks each shipped sentinel with SENTINEL_EXACT,
+  // so a change to the format changes the wire: bump the version with it,
+  // and a worker on the other side of the change is refused at enrollment
+  // instead of failing on its first secret-bearing dispatch.
+  assertEquals(
+    [REMOTE_PROTOCOL_VERSION, SENTINEL_SOURCE],
+    [5, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
+  );
+  // A sentinel of the protocol 4 shape is refused by the schema.
+  assertEquals(
+    DispatchParamsSchema.safeParse(
+      dispatchWithSecretBag("__SWAMP_VSEC_0a1b2c3d_0__"),
+    ).success,
+    false,
+  );
 });

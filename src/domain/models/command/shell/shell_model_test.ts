@@ -38,6 +38,7 @@ import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
 import { SecretRedactor } from "../../../secrets/mod.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
 import { Definition } from "../../../definitions/definition.ts";
 import { extractForeignTemplateFields } from "../../foreign_template_fields.ts";
 import { DefaultModelValidationService } from "../../validation_service.ts";
@@ -49,6 +50,9 @@ import {
   processLockHolderMarker,
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../../../datastore/lock_holder_marker.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 /**
  * Skip on Windows. The matching `windowsOnlyTest` below covers the
@@ -1381,8 +1385,8 @@ windowsOnlyTest(
   "shellModel.methods.execute (powershell): preserves vault metacharacters",
   async () => {
     const secret = "pass;rm -rf /|cat /etc/passwd&whoami";
-    const vaultSecrets = new VaultSecretBag();
-    const sentinel = vaultSecrets.addSecret(secret);
+    const vaultSecrets = new VaultSecretBag(new SecretBagRegistry());
+    const sentinel = vaultSecrets.addSecret(secret, REF);
     const { context, getResults } = createTestContext({
       vaultSecrets,
       unresolvedMethodArgs: { run: `Write-Output ${sentinel}` },
@@ -1738,8 +1742,8 @@ windowsOnlyTest(
 posixOnlyTest(
   "shellModel.methods.execute: a data-read secret in single quotes is delivered without a warning (swamp-club#2171)",
   async () => {
-    const vaultSecrets = new VaultSecretBag();
-    const sentinel = vaultSecrets.addDataSecret("data-s3cret");
+    const vaultSecrets = new VaultSecretBag(new SecretBagRegistry());
+    const sentinel = vaultSecrets.addDataSecret("data-s3cret", REF);
     const events: { type: string; message: string }[] = [];
     const { context, getResults } = createTestContext({
       vaultSecrets,
@@ -1757,8 +1761,8 @@ posixOnlyTest(
 posixOnlyTest(
   "shellModel.methods.execute: a data-read secret in a quoted heredoc warns that it is in the command line (swamp-club#2171)",
   async () => {
-    const vaultSecrets = new VaultSecretBag();
-    const sentinel = vaultSecrets.addDataSecret("data-s3cret");
+    const vaultSecrets = new VaultSecretBag(new SecretBagRegistry());
+    const sentinel = vaultSecrets.addDataSecret("data-s3cret", REF);
     const events: { type: string; message: string }[] = [];
     const { context, getResults } = createTestContext({
       vaultSecrets,
@@ -1773,5 +1777,25 @@ posixOnlyTest(
       "sensitive_value_in_command_line",
     ]);
     assertStringIncludes(events[0].message, "command line");
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute: a sentinel an earlier pass issued is delivered through a step bag that issued nothing (swamp-club#3558)",
+  async () => {
+    const registry = new SecretBagRegistry();
+    const early = new VaultSecretBag(registry).addDataSecret(
+      "early-s3cret",
+      REF,
+    );
+    const vaultSecrets = new VaultSecretBag(registry);
+    assertEquals(vaultSecrets.isEmpty, true);
+    const { context, getResults } = createTestContext({
+      vaultSecrets,
+      unresolvedMethodArgs: { run: `echo "v=${early}"` },
+    });
+    await shellModel.methods.execute.execute({ run: "placeholder" }, context);
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, "v=early-s3cret");
   },
 );

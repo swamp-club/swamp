@@ -84,7 +84,10 @@ Deno.test("classifyValue: exact equality wins over the shape a canary imitates",
 Deno.test("classifyValue: names the engine-1 stand-ins", () => {
   const canary = generateCanary("quotes");
   assertEquals(classifyValue(undefined, canary), "absent");
-  assertEquals(classifyValue("__SWAMP_VSEC_0a1b2c3d_7__", canary), "sentinel");
+  assertEquals(
+    classifyValue(`__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_7__`, canary),
+    "sentinel",
+  );
   assertEquals(
     classifyValue("${{ vault.get('canary', 'k') }}", canary),
     "reference",

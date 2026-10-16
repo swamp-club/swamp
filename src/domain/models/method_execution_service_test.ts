@@ -59,11 +59,15 @@ import { MALFORMED_TYPE_VERSION_CODE } from "./definition_upgrade_service.ts";
 import { getLogger } from "@logtape/logtape";
 import { createModelOutputId, type ModelOutput } from "./model_output.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import {
   RunVaultAccess,
   runWithVaultAccess,
 } from "../vaults/run_vault_access.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 /**
  * Test model that mimics the echo model's write method.
@@ -2742,8 +2746,8 @@ Deno.test(
     // Simulate post-runtime-resolution: the in-memory definition has sentinel
     // tokens in place of vault expressions (as happens in run.ts after
     // resolveRuntimeExpressionsInDefinition).
-    const secretBag = new VaultSecretBag();
-    const sentinel = secretBag.addSecret("sk-test-secret-12345");
+    const secretBag = new VaultSecretBag(new SecretBagRegistry());
+    const sentinel = secretBag.addSecret("sk-test-secret-12345", REF);
 
     const definition = Definition.create({
       name: "test-vault-def",
@@ -4424,8 +4428,8 @@ async function captureRemoteRequest(
 }
 
 Deno.test("executeWorkflow - placed step ships its secret bag and unresolved args (swamp-club#2760)", async () => {
-  const secretBag = new VaultSecretBag();
-  const sentinel = secretBag.addSecret("s3cret-value");
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = secretBag.addSecret("s3cret-value", REF);
 
   const request = await captureRemoteRequest(secretBag, {
     value: `token ${sentinel}`,
@@ -4823,4 +4827,62 @@ Deno.test("executeWorkflow - logs no file move when an upgraded definition is sa
     infos.filter((m) => m.startsWith("Moved definition file")),
     [],
   );
+});
+
+Deno.test("execute - a sentinel an earlier pass issued resolves through a step bag that issued nothing", async () => {
+  const service = new DefaultMethodExecutionService();
+  const registry = new SecretBagRegistry();
+  const early = new VaultSecretBag(registry).addDataSecret("early-s3cret", REF);
+  const stepBag = new VaultSecretBag(registry);
+  assertEquals(stepBag.isEmpty, true);
+
+  let received: Record<string, unknown> = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/earlier-pass-sentinel"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({ value: z.string() }),
+        execute: (args) => {
+          received = args as Record<string, unknown>;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    methods: { run: { arguments: { value: `token ${early}` } } },
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "run",
+    vaultSecrets: stepBag,
+  });
+  await service.execute(definition, model.methods.run, context);
+  assertEquals(received.value, "token early-s3cret");
+});
+
+Deno.test("executeWorkflow - a placed step ships the run's entries its arguments carry, and nothing else", async () => {
+  const registry = new SecretBagRegistry();
+  const runStart = new VaultSecretBag(registry);
+  const early = runStart.addDataSecret("early-s3cret", REF);
+  runStart.addSecret("unrelated-s3cret", REF);
+  const stepBag = new VaultSecretBag(registry);
+
+  const request = await captureRemoteRequest(stepBag, {
+    value: `token ${early}`,
+  });
+
+  assertEquals(request.methodArgs.value, "token early-s3cret");
+  assertEquals(request.unresolvedMethodArgs?.value, `token ${early}`);
+  assertEquals(request.secretBag, [{
+    sentinel: early,
+    value: "early-s3cret",
+    dataOrigin: true,
+  }]);
+  assertEquals(request.secretValues?.includes("early-s3cret"), true);
+  assertEquals(request.secretValues?.includes("unrelated-s3cret"), false);
 });

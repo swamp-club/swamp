@@ -709,7 +709,7 @@ export async function* modelMethodRun(
             let executedProvenance = ProvenanceMap.authored();
             // Where data sits in the raw copy, as the evaluated cache stores it.
             let rawProvenance = ProvenanceMap.authored();
-            const stepSecretBag = new VaultSecretBag();
+            const stepSecretBag = new VaultSecretBag(sensitiveValues.sentinels);
 
             // Provenance for the runtime pass, collected from the SOURCE
             // definition — never from the evaluated one, which already has data
@@ -802,7 +802,7 @@ export async function* modelMethodRun(
                 rawProvenance,
                 evaluatedDefinition.toData(),
                 executedDefinition.toData(),
-                undefined,
+                sentinelResolverOf(stepSecretBag),
                 sentinelResolverOf(stepSecretBag),
               );
               for (const expression of lastEval.authoredExpressions) {
@@ -852,7 +852,6 @@ export async function* modelMethodRun(
                 [],
                 definition,
                 sensitiveValues,
-                stepSecretBag,
               );
               pendingSave = persisted.definition;
               pendingReferences = persisted.writtenReferences;

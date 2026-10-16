@@ -445,7 +445,7 @@ export class ModelInvocationService {
     }
 
     let executedDefinition = evaluatedDefinition;
-    const stepSecretBag = new VaultSecretBag();
+    const stepSecretBag = new VaultSecretBag(sensitiveValues.sentinels);
     let failedExpressions: ReadonlyMap<string, Error> = new Map();
     // Where data sits in each copy, carried into the runtime pass so data
     // the definition pass spliced is never resolved there.

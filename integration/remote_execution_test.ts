@@ -56,6 +56,7 @@ import {
 } from "../src/domain/models/worker/enrollment_token_model.ts";
 import { sweepStaleRecords } from "../src/serve/boot_reconciliation.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { RpcStreamEvent } from "../src/domain/remote/protocol.ts";
 
@@ -66,6 +67,9 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 await initializeLogging({});
 
 import { IT_DEFINITION_ID, IT_TYPE } from "./remote_execution_test_model.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 const MODULE_DIR = dirname(fromFileUrl(import.meta.url));
 const RUNNER_ENTRY = join(
@@ -727,11 +731,11 @@ function shellStepRequest(
   shipBag: boolean,
   onEvent?: (event: RpcStreamEvent) => void,
 ) {
-  const bag = new VaultSecretBag();
-  const vaultSentinel = bag.addSecret(VAULT_SECRET);
-  const dataSentinel = bag.addDataSecret(DATA_SECRET);
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const vaultSentinel = bag.addSecret(VAULT_SECRET, REF);
+  const dataSentinel = bag.addDataSecret(DATA_SECRET, REF);
   // Kept separate so only this secret's single-quoted use raises the warning.
-  const quotedSentinel = bag.addSecret("quoted-s3cret-value");
+  const quotedSentinel = bag.addSecret("quoted-s3cret-value", REF);
   const unresolved = {
     run: `echo STEP=secrets; ` +
       `${checkValue(`"${vaultSentinel}"`, VAULT_SECRET, "VAULT")}; ` +

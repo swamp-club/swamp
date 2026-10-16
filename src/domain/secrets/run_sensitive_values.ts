@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  SecretBagRegistry,
+  type SecretReference,
+} from "../vaults/secret_bag_registry.ts";
 import type { SecretRedactor } from "./secret_redactor.ts";
 
 /**
@@ -36,11 +40,11 @@ export function definedEntry(
   });
 }
 
-/** The vault location a resolved secret was read from. */
-export interface SecretSource {
-  readonly vaultName: string;
-  readonly key: string;
-}
+/**
+ * The vault location a resolved secret was read from: the same vault name
+ * and key a bag entry references.
+ */
+export type SecretSource = SecretReference;
 
 /**
  * Receives secret values as they are resolved from vault references.
@@ -82,14 +86,21 @@ function encodeKeyForName(key: string): string {
  * Created once per run alongside the run's SecretRedactor and passed
  * explicitly to every place that resolves sensitive vault references for
  * expressions. Every value is forwarded to the redactor, so logs and the
- * persisted shell command field mask it.
+ * persisted shell command field mask it. It carries the run's sentinel
+ * registry, the index of the same secrets by sentinel, so every bag of the
+ * run is a view of one registry wherever the run's values go, child runs
+ * included.
  */
 export class RunSensitiveValues implements SecretSink {
   private readonly entries = new Map<string, SecretSource>();
   /** list() result, rebuilt only after a new value is recorded. */
   private sorted: SensitiveEntry[] | undefined;
 
-  constructor(private readonly redactor?: SecretRedactor) {}
+  constructor(
+    private readonly redactor?: SecretRedactor,
+    /** The sentinels this run issued; every bag of the run issues into it. */
+    readonly sentinels: SecretBagRegistry = new SecretBagRegistry(),
+  ) {}
 
   addSecret(value: string, source?: SecretSource): void {
     this.redactor?.addSecret(value);

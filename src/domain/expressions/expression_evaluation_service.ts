@@ -73,6 +73,7 @@ import { BINDING_MACROS, freeRoots } from "./cel_grammar.ts";
 import { maskLiteralCalls, stripStringLiterals } from "./cel_string_lexer.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   CyclicDependencyError as TopoCyclicError,
@@ -106,6 +107,17 @@ const VAULT_PATTERN = /(?<![.\w])vault\b/;
  * where the context also carries the process environment.
  */
 const ENV_PATTERN = /(?<![.\w])env\b/;
+
+/**
+ * A bag for a caller that passed none: a view of the run's registry when the
+ * context carries the run's sensitive values, otherwise a registry of its
+ * own for the paths with no run, such as the validate pre-flight checks.
+ */
+function bagFor(context: ExpressionContext | undefined): VaultSecretBag {
+  return new VaultSecretBag(
+    sensitiveValuesOf(context)?.sentinels ?? new SecretBagRegistry(),
+  );
+}
 
 /**
  * Walks a parsed CEL tree looking for a reference to the root `env`
@@ -1057,7 +1069,7 @@ export class ExpressionEvaluationService {
     } = {},
   ): Promise<RuntimeResolutionResult> {
     const logger = getLogger(["swamp", "expressions"]);
-    const secretBag = options.secretBag ?? new VaultSecretBag();
+    const secretBag = options.secretBag ?? bagFor(expressionContext);
     const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
     const provenance = options.provenance ?? ProvenanceMap.authored();
@@ -1148,7 +1160,7 @@ export class ExpressionEvaluationService {
       ...expressionContext,
       env: buildEnvContext(),
     };
-    const secretBag = new VaultSecretBag();
+    const secretBag = bagFor(expressionContext);
     const resolved = await this.resolveRuntimeData(
       data,
       runtimeExpressions,
@@ -1161,7 +1173,7 @@ export class ExpressionEvaluationService {
 
     // For the data path, resolve sentinels to raw values immediately
     // since there's no shell context to worry about.
-    if (!secretBag.isEmpty) {
+    if (secretBag.resolvesAny) {
       return secretBag.resolveDeep(resolved);
     }
     return resolved;
@@ -1223,7 +1235,7 @@ export class ExpressionEvaluationService {
       "unrestricted",
     );
     // Legacy callers expect raw values, so resolve sentinels immediately
-    if (!result.secretBag.isEmpty) {
+    if (result.secretBag.resolvesAny) {
       const data = result.definition.toData();
       const resolved = result.secretBag.resolveDeep(data);
       return DefinitionClass.fromData(
@@ -1279,7 +1291,7 @@ export class ExpressionEvaluationService {
       runtimeExpressions,
       celContext,
       redactor,
-      secretBag ?? new VaultSecretBag(),
+      secretBag ?? bagFor(expressionContext),
       sanitizer,
       provenance,
     );

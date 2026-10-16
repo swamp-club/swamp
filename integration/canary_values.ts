@@ -26,7 +26,7 @@
 // checks the boundaries where plaintext is allowed.
 
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
-import { SENTINEL_EXACT } from "../src/domain/vaults/vault_secret_bag.ts";
+import { SENTINEL_EXACT } from "../src/domain/vaults/secret_bag_registry.ts";
 
 /**
  * The shortest value the redactor masks: `SecretRedactor.addSecret` ignores
@@ -78,7 +78,7 @@ const PAYLOADS: Partial<Record<CanaryClass, string>> = {
   "newline-lf": "\n",
   "newline-crlf": "\r\n",
   "reference-shaped": "${{ vault.get('v', 'k') }}",
-  "sentinel-shaped": "__SWAMP_VSEC_deadbeef_0__",
+  "sentinel-shaped": `__SWAMP_VSEC_${"deadbeef".repeat(4)}_0__`,
   "placeholder-shaped": "sensitive-v.k",
   "mask-collision": "***",
 };

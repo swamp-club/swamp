@@ -260,8 +260,9 @@ export interface SanitizedTaskFields {
 /**
  * Sanitized task fields for the steps of one evaluated workflow, keyed by
  * the Step instance (forEach expansion keeps it, so every iteration shares
- * the entry). Its sentinels come from a workflow-level bag and are re-issued
- * from each step's own bag when the step reads them.
+ * the entry). Its sentinels come from a workflow-level bag, a view of the
+ * run's registry like each step's bag, and are re-issued from each step's
+ * own bag when the step reads them so the step ships what it delivers.
  */
 export class SanitizedTaskOverlay {
   private constructor(
@@ -317,8 +318,8 @@ export class SanitizedTaskOverlay {
     const entry = this.entries.get(step);
     if (!entry) return undefined;
     return {
-      inputs: this.bag.rehomeDataSentinels(entry.inputs, stepBag),
-      globalArgs: this.bag.rehomeDataSentinels(entry.globalArgs, stepBag),
+      inputs: this.bag.rehomeSentinels(entry.inputs, stepBag),
+      globalArgs: this.bag.rehomeSentinels(entry.globalArgs, stepBag),
     };
   }
 }
@@ -637,7 +638,8 @@ function sanitizeTasks(
 ): { overlay: SanitizedTaskOverlay; provenance: ProvenanceMap } | undefined {
   const sensitiveValues = sensitiveValuesOf(context);
   if (!sensitiveValues || sensitiveValues.isEmpty) return undefined;
-  const bag = new VaultSecretBag();
+  // The run-start pass issues into the run's registry like every other.
+  const bag = new VaultSecretBag(sensitiveValues.sentinels);
   const sanitized = replaceExpressionsTracked(
     workflowData,
     values,

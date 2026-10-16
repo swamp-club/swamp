@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 /** A `[start, end)` character range of a string that came from data. */
@@ -473,11 +474,34 @@ export function prefix(root: string, path: string): string {
 /** The real value a sentinel stands for, or undefined when it is not one. */
 export type SentinelResolver = (sentinel: string) => string | undefined;
 
-/** Resolves the sentinels `bag` issued. */
+/**
+ * Resolves every sentinel of the run `bag` is a view of. Pass it for both
+ * copies of an alignment: a raw copy can carry a sentinel from an earlier
+ * pass, and resolving it on one side only would make the copies differ.
+ */
 export function sentinelResolverOf(bag: VaultSecretBag): SentinelResolver {
   return (sentinel) => {
     const value = bag.resolveRaw(sentinel);
     return value === sentinel ? undefined : value;
+  };
+}
+
+/**
+ * Stands each sentinel `registry` issued in for what it references, without
+ * reading its value: two sentinels for one entry, as a sentinel and its
+ * rehomed copy in another bag, read alike, and the copies align wherever
+ * both hold sentinels.
+ */
+export function sentinelIdentityOf(
+  registry: SecretBagRegistry,
+): SentinelResolver {
+  return (sentinel) => {
+    const entry = registry.issuedEntryOf(sentinel);
+    if (!entry) return undefined;
+    const { vaultName, key } = entry.reference;
+    return `${vaultName}\u0000${key}\u0000${entry.encoding}\u0000${
+      entry.dataOrigin ? "data" : "vault"
+    }`;
   };
 }
 

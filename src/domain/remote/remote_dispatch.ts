@@ -37,7 +37,7 @@ import type { ModelDefinition } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { StepPlacement } from "./scheduler.ts";
 import type { DispatchOutput, RpcStreamEvent } from "./protocol.ts";
-import type { SecretBagEntry } from "../vaults/vault_secret_bag.ts";
+import type { SecretBagEntry } from "../vaults/secret_bag_registry.ts";
 
 export interface RemoteStepRequest {
   placement: StepPlacement;

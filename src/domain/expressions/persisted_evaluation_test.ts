@@ -39,7 +39,7 @@ function recorded(): RunSensitiveValues {
 
 /** The executed copy: a sentinel where the value was spliced, raw in a tag. */
 function executed(bag: VaultSecretBag): Definition {
-  const sentinel = bag.addDataSecret(SECRET);
+  const sentinel = bag.addDataSecret(SECRET, SOURCE);
   return Definition.create({
     name: "consumer",
     tags: { owner: SECRET },
@@ -49,13 +49,13 @@ function executed(bag: VaultSecretBag): Definition {
 }
 
 Deno.test("persistEvaluatedDefinition: sentinels become references and tags placeholders", () => {
-  const bag = new VaultSecretBag();
+  const values = recorded();
+  const bag = new VaultSecretBag(values.sentinels);
   const persisted = persistEvaluatedDefinition(
     executed(bag),
     [],
     Definition.create({ name: "consumer" }),
-    recorded(),
-    bag,
+    values,
   );
   assertEquals(persisted.definition.globalArguments, {
     token: `Bearer ${REF}`,
@@ -75,7 +75,6 @@ Deno.test("persistEvaluatedDefinition: sentinels become references and tags plac
 });
 
 Deno.test("persistEvaluatedDefinition: deferred binding values are written as references", () => {
-  const bag = new VaultSecretBag();
   const persisted = persistEvaluatedDefinition(
     Definition.create({ name: "consumer" }),
     [{
@@ -85,7 +84,6 @@ Deno.test("persistEvaluatedDefinition: deferred binding values are written as re
     }],
     Definition.create({ name: "consumer" }),
     recorded(),
-    bag,
   );
   assertEquals(persisted.deferredExpressions[0].bindings, {
     inputs: { token: REF },
@@ -97,16 +95,16 @@ Deno.test("persistEvaluatedDefinition: deferred binding values are written as re
 });
 
 Deno.test("rehydrateEvaluatedDefinition: restores the raw and executed copies of a fresh run", async () => {
-  const bag = new VaultSecretBag();
+  const recordedValues = recorded();
+  const bag = new VaultSecretBag(recordedValues.sentinels);
   const persisted = persistEvaluatedDefinition(
     executed(bag),
     [],
     Definition.create({ name: "consumer" }),
-    recorded(),
-    bag,
+    recordedValues,
   );
   const values = new RunSensitiveValues();
-  const stepBag = new VaultSecretBag();
+  const stepBag = new VaultSecretBag(values.sentinels);
   const restored = await rehydrateEvaluatedDefinition(
     persisted,
     () => Promise.resolve(SECRET),
