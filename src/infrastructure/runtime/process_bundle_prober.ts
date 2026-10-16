@@ -27,7 +27,7 @@ import type {
 } from "../../domain/extensions/bundle_prober.ts";
 import { sanitizeDataUrlError } from "../../domain/models/bundle.ts";
 import { attachProcessJob } from "../process/windows_job.ts";
-import { findChildPids } from "../process/process_kill.ts";
+import { findChildPids, isProcessAlive } from "../process/process_kill.ts";
 import {
   BUNDLE_PROBE_FRAME_ENV,
   BUNDLE_PROBE_HOST_MARKER,
@@ -213,7 +213,13 @@ function startProbeHost(
       // Windows the job ends them.
       // Only while the host runs: once it has exited and been reaped, its
       // pid may belong to an unrelated process whose children are not ours.
-      const started = job || exited ? [] : await listChildren(child.pid);
+      // The host is reaped before child.status settles, so one gone from the
+      // process table has exited too (swamp-club#3524). Not on Windows, where
+      // Deno.kill(pid, 0) is no liveness check.
+      const reaped = Deno.build.os !== "windows" && !isProcessAlive(child.pid);
+      const started = job || exited || reaped
+        ? []
+        : await listChildren(child.pid);
       // Killed before stdin is closed: a write to a host that stopped
       // reading would otherwise never finish.
       if (job) job.terminate();
