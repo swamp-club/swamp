@@ -35,9 +35,9 @@ export const DEFAULT_RETENTION_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
  */
 export const DEFAULT_RETENTION_GC_INITIAL_DELAY_MS = 5 * 60 * 1000;
 /**
- * How long one pass may run batches. A large backlog is then cleared over
- * several hourly passes, and the mutex a manual gc waits on is never held
- * for longer (swamp-club#3535).
+ * How long one pass may run batches. A backlog bigger than one budget's
+ * worth is cleared over several hourly passes, and the mutex a manual gc
+ * waits on is never held for longer (swamp-club#3535).
  */
 export const DEFAULT_RETENTION_GC_BUDGET_MS = 5 * 60 * 1000;
 

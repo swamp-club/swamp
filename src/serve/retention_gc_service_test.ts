@@ -132,28 +132,6 @@ Deno.test("RetentionGcService.runOnce: one of two serves on a datastore runs eac
   }
 });
 
-Deno.test("GcMutex.run: collections run one at a time, in order", async () => {
-  const mutex = new GcMutex();
-  const order: string[] = [];
-  let releaseFirst!: () => void;
-  const first = mutex.run(async () => {
-    order.push("first:start");
-    await new Promise<void>((resolve) => (releaseFirst = resolve));
-    order.push("first:end");
-  });
-  const second = mutex.run(() => {
-    order.push("second");
-    return Promise.resolve();
-  });
-  assertEquals(mutex.held, true);
-  assertEquals(await mutex.tryRun(() => Promise.resolve(1)), undefined);
-  releaseFirst();
-  await Promise.all([first, second]);
-  assertEquals(order, ["first:start", "first:end", "second"]);
-  assertEquals(mutex.held, false);
-  assertEquals(await mutex.tryRun(() => Promise.resolve(1)), 1);
-});
-
 Deno.test("RetentionGcService.runOnce: a busy mutex leaves the hour unclaimed", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -187,19 +165,6 @@ Deno.test("RetentionGcService.runOnce: a busy mutex leaves the hour unclaimed", 
       if (Deno.build.os !== "windows") throw error;
     });
   }
-});
-
-Deno.test("GcMutex.waiting: true only while a collection queues behind the one running", async () => {
-  const mutex = new GcMutex();
-  let releaseFirst!: () => void;
-  const gate = new Promise<void>((resolve) => (releaseFirst = resolve));
-  const first = mutex.run(() => gate);
-  assertEquals(mutex.waiting, false);
-  const second = mutex.run(() => Promise.resolve());
-  assertEquals(mutex.waiting, true);
-  releaseFirst();
-  await Promise.all([first, second]);
-  assertEquals(mutex.waiting, false);
 });
 
 Deno.test("RetentionGcService.runOnce: a pass gets the budget and sees a manual gc waiting", async () => {

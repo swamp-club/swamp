@@ -227,9 +227,10 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
   remove that fails on a directory still holding entries
   (`cleanupEmptyParentDirs`), never by listing them, and run listings are read
   in full before anything is deleted, since on macOS a failed remove makes a
-  listing still open on that directory skip entries (swamp-club#3535). On a
-  filesystem datastore, 220 old runs beside 20,000 kept ones take about 7
-  seconds; 98,000 runs and 137,000 outputs take about 150 seconds.
+  listing still open on that directory skip entries (swamp-club#3535).
+  Measured on a filesystem datastore on macOS for swamp-club#3535: 220 old
+  runs beside 20,000 kept ones take about 7 seconds; 98,000 runs and 137,000
+  outputs take about 150 seconds.
 - **Flags**: `--dry-run`, `--force`, `--older-than <duration>` (uses
   `parseDuration`; units m, h, d, w, mo, y).
 - **Automatic**: with `garbageCollection.automatic: true` the same
