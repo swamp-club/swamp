@@ -909,13 +909,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     };
 
     try {
-      scan: for await (const entry of Deno.readDir(this.baseDir)) {
+      // Both listings are read in full before anything is deleted: a delete
+      // tries to remove its directory, and on macOS a failed remove of a
+      // directory makes a walk open on it skip entries (swamp-club#3535).
+      scan: for (const entry of await listDirEntries(this.baseDir)) {
         if (!entry.isDirectory) continue;
         const workflowId = entry.name as WorkflowId;
         const dir = this.getRunsDir(workflowId);
 
         try {
-          for await (const fileEntry of Deno.readDir(dir)) {
+          for (const fileEntry of await listDirEntries(dir)) {
             if (
               !fileEntry.isFile ||
               !fileEntry.name.startsWith("workflow-run-") ||

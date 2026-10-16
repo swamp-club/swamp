@@ -277,3 +277,59 @@ Deno.test("runRetentionPass: a pass stopped for shutdown skips afterPass", async
   );
   assertEquals(ran, false);
 });
+
+Deno.test("runRetentionPass: a pass past its budget stops at a batch boundary and the next pass continues", async () => {
+  // The clock moves a minute per batch; the budget is two and a half.
+  let clockMs = NOW.getTime();
+  const calls: string[] = [];
+  const runs = countingCollector("workflowRuns", 10, calls);
+  const outputs = countingCollector("outputs", 5, calls);
+  const watermarks = new MemoryWatermarks();
+  const previous: RetentionWatermark = {
+    kind: "outputs",
+    cutoff: "2026-10-01T00:00:00.000Z",
+    retention: "1d",
+    lastPassAt: "2026-10-01T00:00:00.000Z",
+    complete: true,
+    deleted: 7,
+    bytesReclaimed: 70,
+  };
+  await watermarks.put(previous);
+  const clockedDeps: RetentionPassDeps = {
+    collectors: [runs, outputs],
+    watermarks,
+    runBatch: async (fn) => {
+      clockMs += 60_000;
+      return await fn();
+    },
+    now: () => new Date(clockMs),
+  };
+  const policy = RetentionPolicy.fromConfig({ retention: "1d" });
+
+  const first = await runRetentionPass(clockedDeps, {
+    policy,
+    batchSize: 2,
+    budgetMs: 150_000,
+  });
+
+  assertEquals(first.stoppedBy, "budget");
+  assertEquals(first.complete, false);
+  assertEquals(
+    first.kinds.map((k) => [k.kind, k.deleted, k.complete]),
+    [["workflowRuns", 6, false], ["outputs", 0, false]],
+  );
+  assertEquals(watermarks.records.get("workflowRuns")?.complete, false);
+  assertEquals(watermarks.records.get("outputs"), previous);
+
+  const second = await runRetentionPass(clockedDeps, {
+    policy,
+    batchSize: 2,
+    budgetMs: 60 * 60_000,
+  });
+
+  assertEquals(second.complete, true);
+  assertEquals(
+    second.kinds.map((k) => [k.kind, k.deleted, k.complete]),
+    [["workflowRuns", 4, true], ["outputs", 5, true]],
+  );
+});

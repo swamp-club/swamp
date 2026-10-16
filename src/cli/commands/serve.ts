@@ -7543,7 +7543,7 @@ export const serveCommand = new Command()
             RepoPath.create(resolvedRepoDir),
           ))?.garbageCollection,
         ),
-      runPass: (policy, isStopping) =>
+      runPass: (policy, control) =>
         runRepoRetention(
           {
             repoDir: resolvedRepoDir,
@@ -7585,9 +7585,12 @@ export const serveCommand = new Command()
           },
           {
             policy,
-            isStopping,
-            // Busy: every run slot taken. The next pass continues.
+            isStopping: control.isStopping,
+            budgetMs: control.budgetMs,
+            // Busy: every run slot taken, or a manual gc waiting for the
+            // mutex. The next pass continues.
             shouldBackOff: () =>
+              control.manualGcWaiting() ||
               activeRunRegistry.size >= (maxConcurrentRuns ?? 100),
           },
         ),

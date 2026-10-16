@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { RetentionGcService } from "./retention_gc_service.ts";
+import {
+  DEFAULT_RETENTION_GC_BUDGET_MS,
+  RetentionGcService,
+  type RetentionPassControl,
+} from "./retention_gc_service.ts";
 import { GcMutex } from "./gc_mutex.ts";
 import {
   type RetentionConfig,
@@ -42,6 +46,7 @@ function service(
     onPass?: (r: RetentionPassResult) => void;
     watermarks?: ControlPlaneRetentionWatermarkRepository;
     instanceId?: string;
+    runPass?: (control: RetentionPassControl) => Promise<RetentionPassResult>;
   } = {},
 ): RetentionGcService {
   const passes = options.passes ?? [];
@@ -51,9 +56,9 @@ function service(
     mutex: options.mutex ?? new GcMutex(),
     watermarks: options.watermarks,
     readPolicy: () => Promise.resolve(RetentionPolicy.fromConfig(config)),
-    runPass: () => {
+    runPass: (_policy, control) => {
       passes.push(passes.length);
-      return Promise.resolve(passResult());
+      return options.runPass?.(control) ?? Promise.resolve(passResult());
     },
     onPass: options.onPass,
     now: () => NOW,
@@ -127,28 +132,6 @@ Deno.test("RetentionGcService.runOnce: one of two serves on a datastore runs eac
   }
 });
 
-Deno.test("GcMutex.run: collections run one at a time, in order", async () => {
-  const mutex = new GcMutex();
-  const order: string[] = [];
-  let releaseFirst!: () => void;
-  const first = mutex.run(async () => {
-    order.push("first:start");
-    await new Promise<void>((resolve) => (releaseFirst = resolve));
-    order.push("first:end");
-  });
-  const second = mutex.run(() => {
-    order.push("second");
-    return Promise.resolve();
-  });
-  assertEquals(mutex.held, true);
-  assertEquals(await mutex.tryRun(() => Promise.resolve(1)), undefined);
-  releaseFirst();
-  await Promise.all([first, second]);
-  assertEquals(order, ["first:start", "first:end", "second"]);
-  assertEquals(mutex.held, false);
-  assertEquals(await mutex.tryRun(() => Promise.resolve(1)), 1);
-});
-
 Deno.test("RetentionGcService.runOnce: a busy mutex leaves the hour unclaimed", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -182,4 +165,33 @@ Deno.test("RetentionGcService.runOnce: a busy mutex leaves the hour unclaimed", 
       if (Deno.build.os !== "windows") throw error;
     });
   }
+});
+
+Deno.test("RetentionGcService.runOnce: a pass gets the budget and sees a manual gc waiting", async () => {
+  const mutex = new GcMutex();
+  const seen: Array<[number, boolean, boolean]> = [];
+  let manual: Promise<void> | undefined;
+  const svc = service({ automatic: true, retention: "30d" }, {
+    mutex,
+    runPass: (control) => {
+      seen.push([
+        control.budgetMs,
+        control.manualGcWaiting(),
+        control.isStopping(),
+      ]);
+      manual = mutex.run(() => Promise.resolve());
+      seen.push([
+        control.budgetMs,
+        control.manualGcWaiting(),
+        control.isStopping(),
+      ]);
+      return Promise.resolve(passResult());
+    },
+  });
+  await svc.runOnce();
+  await manual;
+  assertEquals(seen, [
+    [DEFAULT_RETENTION_GC_BUDGET_MS, false, false],
+    [DEFAULT_RETENTION_GC_BUDGET_MS, true, false],
+  ]);
 });

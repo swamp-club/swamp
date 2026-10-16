@@ -34,11 +34,29 @@ export const DEFAULT_RETENTION_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
  * retention, without adding work to boot itself.
  */
 export const DEFAULT_RETENTION_GC_INITIAL_DELAY_MS = 5 * 60 * 1000;
+/**
+ * How long one pass may run batches. A backlog bigger than one budget's
+ * worth is cleared over several hourly passes, and the mutex a manual gc
+ * waits on is never held for longer (swamp-club#3535).
+ */
+export const DEFAULT_RETENTION_GC_BUDGET_MS = 5 * 60 * 1000;
+
+/** What a pass checks between batches. */
+export interface RetentionPassControl {
+  /** Stop starting batches after this long; the next pass continues. */
+  readonly budgetMs: number;
+  /** True once serve is shutting down. */
+  isStopping(): boolean;
+  /** True while a `run.gc` or `data.gc` request waits on the mutex. */
+  manualGcWaiting(): boolean;
+}
 
 export interface RetentionGcDeps {
   readonly intervalMs: number;
   /** Delay before the first pass; defaults to the interval. */
   readonly initialDelayMs?: number;
+  /** Budget of each pass; defaults to `DEFAULT_RETENTION_GC_BUDGET_MS`. */
+  readonly budgetMs?: number;
   /** This process, recorded on the hourly claim. */
   readonly instanceId: string;
   /** Reads `.swamp.yaml` each tick, so edits apply without a restart. */
@@ -50,7 +68,7 @@ export interface RetentionGcDeps {
   /** Runs one pass in batches; see `runRepoRetention`. */
   runPass(
     policy: RetentionPolicy,
-    isStopping: () => boolean,
+    control: RetentionPassControl,
   ): Promise<RetentionPassResult>;
   /** Called with each finished pass, e.g. to write the audit summary. */
   onPass?(result: RetentionPassResult): void;
@@ -63,7 +81,8 @@ export interface RetentionGcDeps {
  * `garbageCollection.automatic: true`. Of several serves sharing a
  * datastore, the one that claims the hour runs its pass; the others skip.
  * A pass works in small batches and stops at a batch boundary on shutdown,
- * so the next pass continues where it stopped.
+ * when its budget is spent, or when a manual gc waits for the mutex, so
+ * the next pass continues where it stopped.
  */
 export class RetentionGcService {
   readonly #deps: RetentionGcDeps;
@@ -140,7 +159,11 @@ export class RetentionGcService {
         );
         if (!claimed) return "claimed-elsewhere" as const;
       }
-      return await this.#deps.runPass(policy, () => this.#disposed);
+      return await this.#deps.runPass(policy, {
+        budgetMs: this.#deps.budgetMs ?? DEFAULT_RETENTION_GC_BUDGET_MS,
+        isStopping: () => this.#disposed,
+        manualGcWaiting: () => this.#deps.mutex.waiting,
+      });
     });
     if (outcome === undefined) {
       logger.debug("Skipping retention pass: a garbage collection is running");
