@@ -21,6 +21,7 @@ import { join } from "@std/path";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type {
   VaultDeleteProvider,
+  VaultExistenceProvider,
   VaultProvider,
   VaultPutOptions,
 } from "./vault_provider.ts";
@@ -148,7 +149,8 @@ export class LocalEncryptionVaultProvider
     VaultProvider,
     VaultAnnotationProvider,
     VaultRefreshHookProvider,
-    VaultDeleteProvider {
+    VaultDeleteProvider,
+    VaultExistenceProvider {
   private readonly name: string;
   private readonly config: LocalEncryptionConfig;
   private readonly vaultDir: string;
@@ -182,12 +184,53 @@ export class LocalEncryptionVaultProvider
           `Secret '${secretKey}' not found in local vault '${this.name}'`,
         );
       }
-      throw new Error(
-        `Failed to retrieve secret '${secretKey}': ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      throw this.retrieveError(secretKey, error);
     }
+  }
+
+  /**
+   * Answers whether {@link get} would succeed, without reading or decrypting
+   * the value. One file holds one secret, so a stat on that file answers
+   * presence, and loading the cached key material confirms the credential
+   * `get` needs: a missing or unreadable key source rejects here with the
+   * same wrapping `get` uses. The file's contents are never read, so a file
+   * that exists but cannot be parsed or decrypted (corrupt, or written under
+   * another key) answers `true`; that is an integrity fault only a read can
+   * detect, which the `VaultExistenceProvider` contract forbids, so `get`
+   * reports it at load. With `auto_generate` and a secret file present but
+   * no key file, loading key material writes a new `.key`, exactly as `get`
+   * would in that state.
+   */
+  async has(secretKey: string): Promise<boolean> {
+    this.validateSecretKey(secretKey);
+    const encryptedFilePath = join(this.vaultDir, `${secretKey}.enc`);
+    await assertSafePath(encryptedFilePath, this.secretsBoundary);
+
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.stat(encryptedFilePath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw this.retrieveError(secretKey, error);
+    }
+    if (!info.isFile) {
+      throw this.retrieveError(secretKey, new Error("not a regular file"));
+    }
+    try {
+      await this.getKeyMaterial();
+    } catch (error) {
+      throw this.retrieveError(secretKey, error);
+    }
+    return true;
+  }
+
+  /** The error {@link get} and {@link has} raise for a key that exists but cannot be served. */
+  private retrieveError(secretKey: string, error: unknown): Error {
+    return new Error(
+      `Failed to retrieve secret '${secretKey}': ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 
   async put(

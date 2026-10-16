@@ -128,6 +128,67 @@ const restored = VaultAnnotation.fromData(data);
 const updated = annotation.merge({ labels: { version: "2" } });
 ```
 
+## Existence Conformance
+
+For vaults that implement `VaultExistenceProvider`, two helpers hold `has()` to
+its contract: `true` exactly when `get()` succeeds, `false` for a missing key,
+the same error as `get()` for an unauthorized key, and no value read.
+
+### Existence Export Conformance
+
+Verify that `createProvider` returns an object with `has()`. Call this **after**
+`assertVaultExportConformance`:
+
+```typescript
+import {
+  assertVaultExistenceExportConformance,
+  assertVaultExportConformance,
+} from "@swamp-club/swamp-testing";
+import { vault } from "./my_vault.ts";
+
+Deno.test("vault export conforms with existence checks", () => {
+  assertVaultExportConformance(vault, {
+    validConfigs: [{ region: "us-east-1" }],
+  });
+  assertVaultExistenceExportConformance(vault, {
+    validConfigs: [{ region: "us-east-1" }],
+  });
+});
+```
+
+### Existence Contract Conformance
+
+Test the full `VaultExistenceProvider` contract:
+
+```typescript
+import { assertVaultExistenceConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("vault existence contract", async () => {
+  const provider = vault.createProvider("test", { region: "us-east-1" });
+  await assertVaultExistenceConformance(provider, {
+    getValueReadCount: () => client.getSecretValueCalls,
+    unauthorizedKey: "swamp-conformance-denied",
+  });
+});
+```
+
+Tests: `has(missing)` is false and `get(missing)` rejects; after `put()`,
+`has()` is true and `get()` resolves; a second key leaves the first answer
+unchanged; after `delete()` (when the provider has one) `has()` is false; every
+answer is a boolean.
+
+| Option              | Default                     | Description                                                              |
+| ------------------- | --------------------------- | ------------------------------------------------------------------------ |
+| `keyPrefix`         | `"swamp-conformance-test-"` | Namespace for test keys                                                  |
+| `cleanup`           | `true`                      | Remove test keys after                                                   |
+| `getValueReadCount` | unset                       | Value-read counter, asserted unchanged around every `has()` call         |
+| `unauthorizedKey`   | unset                       | A key the credentials cannot read; `has()` and `get()` must reject alike |
+
+Prove `has()` never reads a value by wiring `getValueReadCount` to a counter on
+the mocked client (the `GetSecretValue` call count, for example), or to
+`getOperationsByMethod("get").length` on
+`createVaultTestContext({ withExistence: true })`.
+
 ## Mocking External Calls
 
 Test the exact production code path by intercepting at the runtime boundary. No

@@ -20,6 +20,7 @@
 import { getLogger } from "@logtape/logtape";
 import {
   isVaultDeleteProvider,
+  isVaultExistenceProvider,
   type VaultConfiguration,
   type VaultProvider,
   type VaultPutOptions,
@@ -79,7 +80,7 @@ async function authorizeVaultAction(
  * Service for managing vault providers and resolving vault operations.
  *
  * Every per-vault method is held to the run vault access scope
- * (`run_vault_access.ts`): reads (`get`, `list`, `getAnnotation`,
+ * (`run_vault_access.ts`): reads (`get`, `has`, `list`, `getAnnotation`,
  * `getRefreshHook`) and writes (`put`, `delete`, `putAnnotation`,
  * `deleteAnnotation`, `putRefreshHook`, `deleteRefreshHook`) are decided
  * before the provider is reached.
@@ -403,6 +404,57 @@ export class VaultService {
     if (!isVaultDeleteProvider(provider)) {
       throw new Error(
         `Vault '${vaultName}' (type: ${provider.getName()}) does not support deleting secrets`,
+      );
+    }
+    return provider;
+  }
+
+  /**
+   * Answers whether {@link get} would succeed for the key, without reading
+   * the value. Held to the run vault access scope as a read, so a principal
+   * that cannot read the key cannot learn whether it exists. Runs no refresh
+   * hook (a hook runs a command, and presence does not depend on freshness)
+   * and records no audit entry (no value is read).
+   *
+   * Only a provider that implements `VaultExistenceProvider` can answer;
+   * check {@link supportsExistenceCheck} first. For any other provider the
+   * caller falls back to a probe read through {@link get}.
+   */
+  async has(vaultName: string, secretKey: string): Promise<boolean> {
+    await authorizeVaultAction(vaultName, "read", secretKey);
+    const provider = this.requireExistenceProvider(vaultName);
+    return await provider.has(secretKey);
+  }
+
+  /**
+   * Whether the named vault's provider answers {@link has} itself, so a
+   * caller can tell a `has` answer from a probe read. False for an unknown
+   * vault.
+   */
+  supportsExistenceCheck(vaultName: string): boolean {
+    const provider = this.providers.get(vaultName);
+    if (!provider) return false;
+    return isVaultExistenceProvider(provider);
+  }
+
+  private requireExistenceProvider(vaultName: string) {
+    const provider = this.providers.get(vaultName);
+    if (!provider) {
+      const availableVaults = Array.from(this.providers.keys());
+      if (availableVaults.length === 0) {
+        throw new Error(
+          `Vault '${vaultName}' not found. No vaults are configured.`,
+        );
+      }
+      throw new Error(
+        `Vault '${vaultName}' not found. Available vaults: ${
+          availableVaults.join(", ")
+        }`,
+      );
+    }
+    if (!isVaultExistenceProvider(provider)) {
+      throw new Error(
+        `Vault '${vaultName}' (type: ${provider.getName()}) does not support existence checks`,
       );
     }
     return provider;

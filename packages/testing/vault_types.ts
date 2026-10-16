@@ -162,3 +162,20 @@ export interface VaultAnnotationProvider {
   deleteAnnotation(secretKey: string): Promise<void>;
   listAnnotations(): Promise<Map<string, VaultAnnotation>>;
 }
+
+/**
+ * Optional interface for vault providers that can answer whether a secret
+ * exists without reading its value. Separate from VaultProvider — providers
+ * opt in by implementing both.
+ *
+ * `has(secretKey)` resolves `true` exactly when `get(secretKey)` would succeed
+ * under the same provider credentials, `false` for a key that does not exist,
+ * and rejects with the same error `get` raises when the caller is not
+ * authorized. It never reads the value, and presence in a listing or a
+ * describe call is not enough. Implement it only where the backing API can
+ * answer without reading the value; swamp otherwise falls back to one probe
+ * read per reference per run.
+ */
+export interface VaultExistenceProvider {
+  has(secretKey: string): Promise<boolean>;
+}

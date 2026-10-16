@@ -136,6 +136,32 @@ Deno.test("MockVaultProvider - delete", async (t) => {
   });
 });
 
+Deno.test("MockVaultProvider - has", async (t) => {
+  await t.step("should answer true for a present secret", async () => {
+    const provider = new MockVaultProvider("test-vault", { present: "value" });
+    assertEquals(await provider.has("present"), true);
+  });
+
+  await t.step("should answer false for a missing secret", async () => {
+    const provider = new MockVaultProvider("test-vault");
+    assertEquals(await provider.has("missing"), false);
+  });
+
+  await t.step("should follow put and delete", async () => {
+    const provider = new MockVaultProvider("test-vault");
+    await provider.put("k", "v");
+    assertEquals(await provider.has("k"), true);
+    await provider.delete("k");
+    assertEquals(await provider.has("k"), false);
+  });
+
+  await t.step("should answer true for an empty-string secret", async () => {
+    const provider = new MockVaultProvider("test-vault");
+    await provider.put("empty", "");
+    assertEquals(await provider.has("empty"), true);
+  });
+});
+
 Deno.test("MockVaultProvider - listSecrets", async (t) => {
   await t.step("should list all secret keys", () => {
     const provider = new MockVaultProvider("test-vault", {

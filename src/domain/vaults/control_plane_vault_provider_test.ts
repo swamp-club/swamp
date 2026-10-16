@@ -42,6 +42,7 @@ import {
   tokenKeyFingerprint,
   TokenSecretsKeyError,
 } from "./token_secrets_key.ts";
+import { isVaultExistenceProvider } from "./vault_provider.ts";
 
 await initializeLogging({});
 
@@ -446,4 +447,12 @@ Deno.test("hasCoLocatedTokenKey: true only for a co-located key record", async (
     false,
   );
   assertEquals(hasCoLocatedTokenKey(new Map()), false);
+});
+
+Deno.test("ControlPlaneVaultProvider: does not implement VaultExistenceProvider", () => {
+  // Deliberate: the control-plane store has no presence primitive that reads
+  // no record, a listing is not enough under the has contract, and the
+  // existence check refuses the reserved vault anyway. See the class doc.
+  const provider = new ControlPlaneVaultProvider(createMockStore());
+  assertEquals(isVaultExistenceProvider(provider), false);
 });

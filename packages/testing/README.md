@@ -132,11 +132,18 @@ Deno.test("reads API key from vault", async () => {
 });
 ```
 
-| Option           | Default        | Description                           |
-| ---------------- | -------------- | ------------------------------------- |
-| `name`           | `"test-vault"` | Vault provider name                   |
-| `secrets`        | `{}`           | Pre-seed secrets for `get()` calls    |
-| `throwOnMissing` | `true`         | Reject on missing keys vs return `""` |
+| Option             | Default        | Description                                     |
+| ------------------ | -------------- | ----------------------------------------------- |
+| `name`             | `"test-vault"` | Vault provider name                             |
+| `secrets`          | `{}`           | Pre-seed secrets for `get()` calls              |
+| `throwOnMissing`   | `true`         | Reject on missing keys vs return `""`           |
+| `withAnnotations`  | `false`        | Also implement `VaultAnnotationProvider`        |
+| `withExistence`    | `false`        | Also implement `has()` (needs `throwOnMissing`) |
+| `unauthorizedKeys` | `[]`           | Keys `get()` and `has()` reject alike           |
+
+With `withExistence`, `getOperationsByMethod("get")` and
+`getOperationsByMethod("has")` count value reads and existence checks
+separately.
 
 ## `createDatastoreTestContext`
 

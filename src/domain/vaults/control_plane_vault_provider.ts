@@ -92,6 +92,18 @@ export interface ControlPlaneVaultProviderOptions {
   readonly migrate?: boolean;
 }
 
+/**
+ * The reserved `_token-secrets` vault: token secrets encrypted at rest in the
+ * control plane.
+ *
+ * It does not implement `VaultExistenceProvider`. `ControlPlaneStore` offers
+ * only `get`, `put`, `putIfAbsent`, `delete` and `list`, so the only answer
+ * that reads no record would come from a listing, which the `has` contract
+ * rejects, and a `get` of the record is the read the contract forbids. The
+ * typed-secrets existence check also refuses this reserved vault before any
+ * provider call (design/enablers/typed-secrets.md Section 3.3), so nothing
+ * would ask. `control_plane_vault_provider_test.ts` pins the decision.
+ */
 export class ControlPlaneVaultProvider
   implements VaultProvider, VaultDeleteProvider {
   readonly #store: ControlPlaneStore;

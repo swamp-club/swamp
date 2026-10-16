@@ -86,6 +86,43 @@ export function isVaultDeleteProvider(
 }
 
 /**
+ * Optional interface for vault providers that can answer whether a secret
+ * exists without reading its value. Separate from VaultProvider — providers
+ * opt in by implementing both.
+ *
+ * The contract of `has(secretKey)` is that `get(secretKey)` would succeed
+ * under the same provider credentials:
+ *
+ * - It resolves `true` exactly when `get` would resolve, and `false` for a
+ *   key that does not exist. Presence in a listing or a describe call is not
+ *   enough: a key the credentials can list but not read is not `true`.
+ * - When the caller is not authorized for the key, it rejects with the same
+ *   error `get` raises, so a caller learns nothing from `has` that `get`
+ *   would not tell it.
+ * - It never reads the value. A provider whose API cannot answer without
+ *   reading the value must not implement it; the typed-secrets existence
+ *   check then falls back to one probe read per reference per run
+ *   (design/enablers/typed-secrets.md Section 3.4).
+ *
+ * `assertVaultExistenceConformance` in `@swamp-club/swamp-testing` holds a
+ * provider to this contract.
+ */
+export interface VaultExistenceProvider {
+  has(secretKey: string): Promise<boolean>;
+}
+
+/**
+ * Type guard to check if a vault provider can answer existence checks.
+ */
+export function isVaultExistenceProvider(
+  provider: unknown,
+): provider is VaultExistenceProvider {
+  if (typeof provider !== "object" || provider === null) return false;
+  const obj = provider as Record<string, unknown>;
+  return typeof obj.has === "function";
+}
+
+/**
  * Configuration for vault providers.
  */
 export interface VaultConfiguration {

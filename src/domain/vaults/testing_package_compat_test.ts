@@ -25,7 +25,10 @@
  * canonical interface, this file will fail to type-check.
  */
 
-import type { VaultProvider as CanonicalVaultProvider } from "./vault_provider.ts";
+import type {
+  VaultExistenceProvider as CanonicalVaultExistenceProvider,
+  VaultProvider as CanonicalVaultProvider,
+} from "./vault_provider.ts";
 import type {
   VaultAnnotationData as CanonicalVaultAnnotationData,
   VaultAnnotationProvider as CanonicalVaultAnnotationProvider,
@@ -34,6 +37,7 @@ import type {
   VaultAnnotation as TestingVaultAnnotation,
   VaultAnnotationData as TestingVaultAnnotationData,
   VaultAnnotationProvider as TestingVaultAnnotationProvider,
+  VaultExistenceProvider as TestingVaultExistenceProvider,
   VaultProvider as TestingVaultProvider,
 } from "../../../packages/testing/vault_types.ts";
 
@@ -118,9 +122,18 @@ function _checkVaultAnnotationMethods(annotation: TestingVaultAnnotation) {
   void [_toData, _isEmpty, _url, _notes, _labels, _updatedAt];
 }
 
+function _checkVaultExistenceProviderFields(
+  provider: TestingVaultExistenceProvider,
+) {
+  const _has: ReturnType<CanonicalVaultExistenceProvider["has"]> = provider
+    .has("key");
+  void _has;
+}
+
 Deno.test("testing package vault types: compile-time compatibility check", () => {
   void [
     _checkVaultProviderFields,
+    _checkVaultExistenceProviderFields,
     _checkVaultAnnotationProviderFields,
     _checkVaultAnnotationDataFields,
     _checkVaultAnnotationMethods,

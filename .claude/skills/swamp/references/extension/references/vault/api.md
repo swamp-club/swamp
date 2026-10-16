@@ -51,6 +51,33 @@ values themselves.
 Returns the name of this vault instance. This is the `name` parameter passed to
 `createProvider` — typically the vault instance name from `.swamp.yaml`.
 
+## VaultExistenceProvider (optional)
+
+A provider that can answer whether a secret exists without reading its value
+also implements `VaultExistenceProvider`. swamp detects it at run time. A
+provider without it is unaffected: the typed-secrets existence check gives it
+one probe read per reference per run instead, so implement `has` when a read has
+a cost or an effect (such as minting a dynamic credential).
+
+```typescript
+interface VaultExistenceProvider {
+  has(secretKey: string): Promise<boolean>;
+}
+```
+
+### `has(secretKey)`
+
+- Resolves `true` exactly when `get(secretKey)` would succeed under the same
+  credentials, and `false` for a key that does not exist
+- Rejects with the same `Error` `get` raises when the caller is not authorized
+- Never reads the value. Presence in a listing or a describe call is not enough:
+  a key the credentials can list but not read is not `true`
+- Implement it only when the backing API answers without reading the value (a
+  describe or head call that also enforces read access); otherwise leave it out
+
+Hold an implementation to the contract with `assertVaultExistenceConformance`
+(see [testing.md](testing.md)).
+
 ## VaultConfiguration
 
 Configuration structure used when configuring vaults.

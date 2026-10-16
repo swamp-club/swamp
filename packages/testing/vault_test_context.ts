@@ -20,6 +20,7 @@
 import type {
   VaultAnnotation,
   VaultAnnotationProvider,
+  VaultExistenceProvider,
   VaultProvider,
   VaultPutOptions,
 } from "./vault_types.ts";
@@ -28,6 +29,7 @@ import type {
 export interface VaultOperation {
   method:
     | "get"
+    | "has"
     | "put"
     | "list"
     | "getName"
@@ -53,6 +55,22 @@ export interface VaultTestContextOptions {
   throwOnMissing?: boolean;
   /** If true, the vault also implements VaultAnnotationProvider (default: false). */
   withAnnotations?: boolean;
+  /**
+   * If true, the vault also implements VaultExistenceProvider (default: false).
+   * has() answers presence without touching the value and is recorded as a
+   * "has" operation, so getOperationsByMethod("get") and
+   * getOperationsByMethod("has") count value reads and existence checks
+   * separately. Requires throwOnMissing (the default): has() must agree with
+   * get(), and a get() that returns the empty string for a missing key
+   * always succeeds.
+   */
+  withExistence?: boolean;
+  /**
+   * Keys the vault's credentials may not read. get() and has() both reject
+   * them with the same error, as a real provider does for a key it can see
+   * but not read. put() and list() are unaffected.
+   */
+  unauthorizedKeys?: string[];
 }
 
 /** The return value from createVaultTestContext. */
@@ -71,6 +89,13 @@ export interface VaultTestContextResult {
   getOperationsByMethod(
     method: VaultOperation["method"],
   ): VaultOperation[];
+}
+
+/** The return value from createVaultTestContext when withExistence is set. */
+export interface VaultExistenceTestContextResult
+  extends VaultTestContextResult {
+  /** The provider, which also implements VaultExistenceProvider. */
+  vault: VaultProvider & VaultExistenceProvider;
 }
 
 /**
@@ -92,6 +117,12 @@ export interface VaultTestContextResult {
  * ```
  */
 export function createVaultTestContext(
+  options: VaultTestContextOptions & { withExistence: true },
+): VaultExistenceTestContextResult;
+export function createVaultTestContext(
+  options?: VaultTestContextOptions,
+): VaultTestContextResult;
+export function createVaultTestContext(
   options?: VaultTestContextOptions,
 ): VaultTestContextResult {
   const secrets = new Map<string, string>(
@@ -103,6 +134,21 @@ export function createVaultTestContext(
   const name = options?.name ?? "test-vault";
   const throwOnMissing = options?.throwOnMissing ?? true;
   const withAnnotations = options?.withAnnotations ?? false;
+  const withExistence = options?.withExistence ?? false;
+  const unauthorized = new Set(options?.unauthorizedKeys ?? []);
+  if (withExistence && !throwOnMissing) {
+    throw new Error(
+      "createVaultTestContext: withExistence requires throwOnMissing, " +
+        "because has() must agree with get() and a get() that returns the " +
+        "empty string for a missing key always succeeds",
+    );
+  }
+
+  function unauthorizedError(secretKey: string): Error {
+    return new Error(
+      `Access denied to secret '${secretKey}' in test vault '${name}'`,
+    );
+  }
 
   function record(
     method: VaultOperation["method"],
@@ -112,9 +158,12 @@ export function createVaultTestContext(
     operations.push({ method, key, value, timestamp: Date.now() });
   }
 
-  const vault: VaultProvider = {
+  const baseVault: VaultProvider = {
     get(secretKey: string): Promise<string> {
       record("get", secretKey);
+      if (unauthorized.has(secretKey)) {
+        return Promise.reject(unauthorizedError(secretKey));
+      }
       const secret = secrets.get(secretKey);
       if (secret === undefined) {
         if (throwOnMissing) {
@@ -152,6 +201,18 @@ export function createVaultTestContext(
       return name;
     },
   };
+
+  const vault: VaultProvider = withExistence
+    ? Object.assign(baseVault, {
+      has(secretKey: string): Promise<boolean> {
+        record("has", secretKey);
+        if (unauthorized.has(secretKey)) {
+          return Promise.reject(unauthorizedError(secretKey));
+        }
+        return Promise.resolve(secrets.has(secretKey));
+      },
+    })
+    : baseVault;
 
   let annotationProvider: VaultAnnotationProvider | undefined;
   if (withAnnotations) {

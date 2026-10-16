@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { createVaultTestContext } from "./vault_test_context.ts";
 import { VaultAnnotation } from "./vault_types.ts";
 
@@ -228,4 +233,53 @@ Deno.test("createVaultTestContext: annotation operations are recorded", async ()
   assertEquals(getOperationsByMethod("getAnnotation").length, 1);
   assertEquals(getOperationsByMethod("listAnnotations").length, 1);
   assertEquals(getOperationsByMethod("deleteAnnotation").length, 1);
+});
+
+Deno.test("createVaultTestContext: without withExistence the vault has no has method", () => {
+  const { vault } = createVaultTestContext();
+  assertEquals("has" in vault, false);
+});
+
+Deno.test("createVaultTestContext: withExistence answers presence without reading a value", async () => {
+  const { vault, getOperationsByMethod } = createVaultTestContext({
+    withExistence: true,
+    secrets: { a: "1" },
+  });
+
+  assertEquals(await vault.has("a"), true);
+  assertEquals(await vault.has("missing"), false);
+  await vault.put("b", "2");
+  assertEquals(await vault.has("b"), true);
+
+  const hasOps = getOperationsByMethod("has");
+  assertEquals(hasOps.length, 3);
+  assertEquals(hasOps[1].key, "missing");
+  assertEquals(hasOps[0].value, undefined);
+  assertEquals(getOperationsByMethod("get").length, 0);
+});
+
+Deno.test("createVaultTestContext: unauthorizedKeys make get and has reject alike", async () => {
+  const { vault } = createVaultTestContext({
+    withExistence: true,
+    secrets: { denied: "x", open: "y" },
+    unauthorizedKeys: ["denied"],
+  });
+
+  const fromGet = await assertRejects(() => vault.get("denied"), Error);
+  const fromHas = await assertRejects(() => vault.has("denied"), Error);
+  assertEquals(fromHas.message, fromGet.message);
+  assertStringIncludes(fromGet.message, "Access denied to secret 'denied'");
+
+  // The key is still listed: a listing is not enough to answer has().
+  assertEquals(await vault.list(), ["denied", "open"]);
+  assertEquals(await vault.has("open"), true);
+});
+
+Deno.test("createVaultTestContext: withExistence with throwOnMissing false is refused", () => {
+  assertThrows(
+    () =>
+      createVaultTestContext({ withExistence: true, throwOnMissing: false }),
+    Error,
+    "withExistence requires throwOnMissing",
+  );
 });
