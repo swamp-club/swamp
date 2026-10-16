@@ -375,3 +375,58 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
     }
   });
 });
+
+Deno.test("openV3Datastore: dropped work is recovered only once no unit of the checkout is open (swamp-club#3553)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "a");
+    const handle = openV3Datastore({ repoDir, datastorePath });
+    try {
+      assertEquals(await handle.recoverDroppedWork(), "clean");
+      const engine = handle.engineFor(() => Promise.resolve(), () => {
+        throw new Error("no run repository needed");
+      });
+      /** Writes `name` to the checkout, as a repository does, and stages it. */
+      const write = async (name: string) => {
+        const key = recordKeyOf(["auto-definitions", name]);
+        const bytes = new TextEncoder().encode(`name: ${name}\n`);
+        await Deno.mkdir(swampPath(repoDir, "auto-definitions"), {
+          recursive: true,
+        });
+        await Deno.writeFile(
+          swampPath(repoDir, "auto-definitions", name),
+          bytes,
+        );
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await unit.stageOps([
+          new AutoDefinitionChanges(crypto.randomUUID()).write(key, bytes),
+        ]);
+        await unit.commit();
+      };
+      await engine.runRoot({}, () => write("kept.yaml"));
+
+      // A root stays open while another drops the work it wrote.
+      const release = Promise.withResolvers<void>();
+      const open = engine.runRoot({}, () => release.promise);
+      await engine.runRoot(
+        { disposition: () => "discard" },
+        () => write("dropped.yaml"),
+      );
+      assertEquals(handle.droppedWork()?.openUnits, 1);
+      assertEquals(await handle.recoverDroppedWork(), "busy");
+      const dropped = swampPath(repoDir, "auto-definitions", "dropped.yaml");
+      assert(await Deno.stat(dropped).then(() => true));
+
+      release.resolve();
+      await open;
+      assertEquals(await handle.recoverDroppedWork(), "recovered");
+      await assertRejects(() => Deno.stat(dropped), Deno.errors.NotFound);
+      await Deno.stat(swampPath(repoDir, "auto-definitions", "kept.yaml"));
+      assertEquals(handle.droppedWork(), undefined);
+      assertEquals(await handle.recoverDroppedWork(), "clean");
+    } finally {
+      await handle.close();
+    }
+  });
+});

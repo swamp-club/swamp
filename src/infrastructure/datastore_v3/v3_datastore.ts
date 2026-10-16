@@ -85,7 +85,9 @@ import { currentUnitOfWork } from "../persistence/unit_of_work_scope.ts";
 import {
   commitLogParentFor,
   createCommitLogUnitOfWork,
+  type UnitTracker,
 } from "./commit_log_unit_of_work.ts";
+import { recoverySince } from "./interrupted_writer_recovery.ts";
 import { runInCommitLogRoot } from "./commit_log_root.ts";
 import {
   createOutboxCommitSink,
@@ -322,6 +324,28 @@ export interface V3Datastore {
     signal?: AbortSignal,
   ): Promise<string[]>;
   /**
+   * The work this checkout's units dropped and have not recovered
+   * (swamp-club#3553): a refused commit, an abandon or a failed end left the
+   * files their repositories wrote. `openUnits` counts the checkout's units
+   * open now. Undefined when nothing was dropped.
+   */
+  droppedWork():
+    | { readonly since: number; readonly openUnits: number }
+    | undefined;
+  /**
+   * Rebuilds this checkout from the commit log with the swamp-club#3299
+   * recovery, removing the files dropped work left, once no unit of the
+   * checkout is open; roots wait while it runs. Resolves `clean` when
+   * nothing was dropped, `busy` when a unit is open (nothing is done),
+   * `recovered` otherwise. Run it only while this process holds a current
+   * writer lease.
+   */
+  recoverDroppedWork(
+    signal?: AbortSignal,
+  ): Promise<"clean" | "busy" | "recovered">;
+  /** Forgets the dropped work: the writer marker leaves it to the next command. */
+  forgetDroppedWork(): void;
+  /**
    * The commit-log engine for a repository context whose hook is
    * `markDirty`; `runRepo` gives the context's workflow run repository,
    * which settles refused run records.
@@ -379,6 +403,30 @@ export function processCommitWriter(): CommitWriter {
 }
 
 /**
+ * Each checkout's open units and the dropped work it holds, by read-model
+ * state directory (swamp-club#3553): every handle on a checkout shares its
+ * files and catalog, and the recovery rebuilds them all.
+ */
+interface CheckoutUnits {
+  open: number;
+  /** The earliest open time of a root whose unit dropped work. */
+  droppedSince?: number;
+  /** The recovery running now, which new roots wait for. */
+  recovering?: Promise<unknown>;
+}
+
+const checkoutUnits = new Map<string, CheckoutUnits>();
+
+function checkoutUnitsFor(stateDir: string): CheckoutUnits {
+  let units = checkoutUnits.get(stateDir);
+  if (units === undefined) {
+    units = { open: 0 };
+    checkoutUnits.set(stateDir, units);
+  }
+  return units;
+}
+
+/**
  * Opens the v3 datastore at `options.datastorePath` for the checkout at
  * `options.repoDir`. Creates `commits.db` when absent (setup created the
  * marker first) and the checkout's read-model state directory.
@@ -426,6 +474,18 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // Bounds every commit's content uploads for the process's lifetime; close
   // aborts what is still in flight.
   const lifetime = new AbortController();
+  const units = checkoutUnitsFor(stateDir);
+  const tracker: UnitTracker = {
+    opened: () => {
+      units.open++;
+    },
+    ended: () => {
+      units.open--;
+    },
+    dropped: (openedAt) => {
+      units.droppedSince = Math.min(units.droppedSince ?? openedAt, openedAt);
+    },
+  };
   const unitNamespace = namespace === ""
     ? SOLO_NAMESPACE
     : restoreNamespace(namespace);
@@ -487,6 +547,33 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         signal: signal ?? lifetime.signal,
       });
     },
+    droppedWork() {
+      return units.droppedSince === undefined
+        ? undefined
+        : { since: units.droppedSince, openUnits: units.open };
+    },
+    async recoverDroppedWork(signal) {
+      const since = units.droppedSince;
+      if (since === undefined) return "clean";
+      if (units.open > 0) return "busy";
+      const recovery = readModel.recover(namespace, {
+        since: recoverySince(since),
+        admits,
+        signal: signal ?? lifetime.signal,
+      });
+      units.recovering = recovery;
+      try {
+        await recovery;
+      } finally {
+        units.recovering = undefined;
+      }
+      // Work dropped while it ran (none: no root opened) would be newer.
+      if (units.droppedSince === since) units.droppedSince = undefined;
+      return "recovered";
+    },
+    forgetDroppedWork() {
+      units.droppedSince = undefined;
+    },
     engineFor(markDirty, runRepo, engineOptions = {}) {
       const fenced = () => {
         const fence = options.writerFence?.();
@@ -503,6 +590,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         namespace: unitNamespace,
         writer,
         signal: lifetime.signal,
+        tracker,
       };
       return {
         openUnit(): UnitOfWork {
@@ -516,11 +604,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           return commitLogParentFor(markDirty, currentUnitOfWork()) !==
             undefined;
         },
-        runRoot<T>(
+        async runRoot<T>(
           rootOptions: CommitLogRootRunOptions<T>,
           fn: (root: CommitLogRootView) => Promise<T>,
         ): Promise<T> {
-          return runInCommitLogRoot<T>({ markDirty }, {
+          // A recovery of dropped work rewrites the checkout: no root opens
+          // while it runs (swamp-club#3553).
+          await units.recovering?.catch(() => {});
+          return await runInCommitLogRoot<T>({ markDirty }, {
             ...unitOptions,
             ...fenced(),
             ...(rootOptions.disposition !== undefined

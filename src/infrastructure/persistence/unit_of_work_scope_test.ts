@@ -40,7 +40,11 @@ import {
   UnscopedWriteRefusedError,
   useUnscopedChangeReporterForTesting,
 } from "./unit_of_work_scope.ts";
-import { typedStagers, unitOfWorkBinding } from "./unit_of_work_binding.ts";
+import {
+  typedStagers,
+  unitOfWorkBinding,
+  unitWrites,
+} from "./unit_of_work_binding.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   modelIntent,
@@ -657,4 +661,36 @@ Deno.test("typedStagingActive: true only in a typed unit bound to a hook that re
     assertEquals(typedStagingActive(hook), false);
     return Promise.resolve();
   });
+});
+
+Deno.test("signalChange and stageTyped: tell a v3 unit a repository writes into it, before its builder can throw (swamp-club#3553)", async () => {
+  const { hook } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  const typed = typedUnit(hook);
+  let writes = 0;
+  unitWrites.register(typed.uow, () => {
+    writes++;
+  });
+  await runInUnitOfWork(typed.uow, async () => {
+    await signalChange(hook, WRITE, { typed: true });
+    await assertRejects(
+      () => stageTyped(hook, throwingBuild),
+      Error,
+      "the typed builder ran",
+    );
+  });
+  assertEquals(writes, 2);
+
+  // A hookless write in the unit's scope belongs to it too, while it is
+  // the open unit such writes stage into.
+  typedStagers.register(
+    typed.uow,
+    () => Promise.resolve(),
+    () => typed.uow,
+  );
+  await runInUnitOfWork(typed.uow, async () => {
+    await signalChange(undefined, WRITE, { typed: true });
+    await stageTyped(undefined, () => []);
+  });
+  assertEquals(writes, 4);
 });

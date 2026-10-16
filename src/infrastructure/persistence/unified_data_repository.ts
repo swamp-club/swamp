@@ -3029,6 +3029,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // is the partition's high-water mark, with the versions this process
     // staged but has not committed yet (swamp-club#3532). The partition key
     // is built only on v3: it needs a UUID model id, and v2 does not.
+    // v3 still reads the version directories: the mkdir below is what keeps
+    // two units of this process apart before either commits. A dropped
+    // version's directory does not outlive its command (swamp-club#3553),
+    // except in a running serve, where it can skip a number until serve
+    // stops; a number is skipped, never reused.
     const floor = await this.readVersionFloor(type, modelId, dataName);
     const v3Floors = versionFloorSource(this.markDirty);
     const partition = v3Floors === undefined
