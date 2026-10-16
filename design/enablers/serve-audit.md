@@ -340,9 +340,14 @@ workflow as the resource:
   `fireTime`, and `replayed=true` for a fire replayed at boot. Source IP is
   `127.0.0.1`.
 - `workflow.schedule.skipped`: a fire did not run. `reason=overlap` (previous run
-  still in progress; outcome `failure`) or `reason=dedup` (another instance
-  claimed the fire; outcome `success`). A fleet audit shows one fire plus a
-  dedup skip from each other instance per tick.
+  still in progress; outcome `failure`), `reason=dedup` (another instance
+  claimed the fire; outcome `success`) or `reason=paused` (the schedule is
+  paused, swamp-club#3522; outcome `success`, detail adds the JSON-quoted
+  `pauseReason` and `pausedBy`, and `replayed=true` for a replayed fire). A
+  fleet audit shows one fire plus a dedup skip from each other instance per
+  tick. The pause and resume requests themselves are audited as `admin`
+  requests on the workflow (`workflow.schedule.pause`,
+  `workflow.schedule.resume`).
 - `workflow.webhook.fire`: a webhook run started. Detail carries `route` and
   `run`; source IP is the sender's (`X-Forwarded-For` when `--trust-proxy`).
 - `workflow.webhook.rejected`: a delivery was refused before it queued (missing

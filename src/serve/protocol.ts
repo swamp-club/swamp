@@ -745,6 +745,21 @@ export interface WorkflowTriggerRemovePayload {
   workflowName: string;
 }
 
+/** Pauses a workflow's schedule (swamp-club#3522). */
+export interface WorkflowSchedulePausePayload {
+  workflowIdOrName: string;
+  reason?: string;
+  /** An ISO-8601 time, or a duration from now such as 30m, 2h, 1d. */
+  until?: string;
+}
+
+export interface WorkflowScheduleResumePayload {
+  workflowIdOrName: string;
+}
+
+/** Lists scheduled workflows with their pause state; takes no fields. */
+export type WorkflowScheduleListPayload = Record<string, never>;
+
 export interface EffectiveTrigger {
   readonly schedule: string | null;
   readonly inputs: Record<string, unknown>;
@@ -1110,6 +1125,21 @@ export type ServerRequest =
     type: "workflow.trigger.remove";
     id: string;
     payload: WorkflowTriggerRemovePayload;
+  }
+  | {
+    type: "workflow.schedule.pause";
+    id: string;
+    payload: WorkflowSchedulePausePayload;
+  }
+  | {
+    type: "workflow.schedule.resume";
+    id: string;
+    payload: WorkflowScheduleResumePayload;
+  }
+  | {
+    type: "workflow.schedule.list";
+    id: string;
+    payload?: WorkflowScheduleListPayload;
   }
   | {
     type: "workflow.validate";
@@ -1872,6 +1902,42 @@ export interface WorkflowTriggerRemoveResponse {
   data: { workflowName: string };
 }
 
+export interface WorkflowSchedulePauseResponse {
+  data: {
+    workflowId: string;
+    workflowName: string;
+    schedule: string;
+    reason?: string;
+    pausedBy: string;
+    pausedAt: string;
+    until?: string;
+    replaced: boolean;
+  };
+}
+
+export interface WorkflowScheduleResumeResponse {
+  data: { workflowId: string; workflowName: string; wasPaused: boolean };
+}
+
+/** One entry of `workflow.schedule.list`. */
+export interface WorkflowScheduleListEntry {
+  workflowId: string;
+  workflowName: string;
+  schedule: string | null;
+  source: "definition" | "override" | null;
+  nextRun: string | null;
+  paused: boolean;
+  reason?: string;
+  pausedBy?: string;
+  pausedAt?: string;
+  until?: string;
+  orphaned: boolean;
+}
+
+export interface WorkflowScheduleListResponse {
+  data: { schedules: WorkflowScheduleListEntry[] };
+}
+
 export interface VaultCreateResponse {
   data: Record<string, unknown>;
 }
@@ -2220,6 +2286,21 @@ export type ServerMessage =
     type: "workflow.trigger.remove";
     id: string;
     payload: WorkflowTriggerRemoveResponse;
+  }
+  | {
+    type: "workflow.schedule.pause";
+    id: string;
+    payload: WorkflowSchedulePauseResponse;
+  }
+  | {
+    type: "workflow.schedule.resume";
+    id: string;
+    payload: WorkflowScheduleResumeResponse;
+  }
+  | {
+    type: "workflow.schedule.list";
+    id: string;
+    payload: WorkflowScheduleListResponse;
   }
   | {
     type: "workflow.validate";

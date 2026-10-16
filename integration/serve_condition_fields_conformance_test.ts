@@ -108,6 +108,8 @@ const CATEGORIES: Record<string, Category> = {
   "workflow.trigger.set": "resource",
   "workflow.trigger.get": "resource",
   "workflow.trigger.remove": "resource",
+  "workflow.schedule.pause": "resource",
+  "workflow.schedule.resume": "resource",
   "workflow.approve": "resource",
   "workflow.reject": "resource",
   "workflow.resume": "resource",
@@ -127,6 +129,7 @@ const CATEGORIES: Record<string, Category> = {
   "data.search": "collection",
   "data.query": "collection",
   "workflow.search": "collection",
+  "workflow.schedule.list": "collection",
   "workflow.approvals": "collection",
   // Exercised under a tags deny in serve_signal_test.
   "workflow.waits": "collection",

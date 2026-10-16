@@ -48,6 +48,8 @@ import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { serverRequestPayloadFields } from "../src/serve/connection.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
+import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
+import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import {
   type Definition,
   Definition as DefinitionEntity,
@@ -260,6 +262,16 @@ const workflow = (f: Fixtures, t: "prod" | "dev") =>
   t === "prod" ? f.prodWorkflow : f.devWorkflow;
 const gated = (f: Fixtures, t: "prod" | "dev") =>
   t === "prod" ? f.prodGated : f.devGated;
+
+/** The test context with the control-plane store serve keeps pauses in. */
+function withPauseStore(f: Fixtures): ConnectionContext {
+  return {
+    ...f.ctx,
+    controlPlaneStore: new FileSystemControlPlaneStore(
+      swampPath(f.repo.repoDir),
+    ),
+  };
+}
 
 function simple(
   type: string,
@@ -588,6 +600,37 @@ const CASES: Record<string, Case> = {
     (f, t) => ({ workflowName: workflow(f, t).id }),
     "workflow:prod-flow",
   ),
+  "workflow.schedule.pause": {
+    send: async (f, t) => {
+      // Only a scheduled workflow can be paused: schedule it through a
+      // serve.yaml override.
+      await sendRequest(
+        f.admin,
+        request("workflow.trigger.set", {
+          workflowName: workflow(f, t).name,
+          schedule: "0 * * * *",
+        }),
+      );
+      return await sendRequest(
+        withPauseStore(f),
+        request("workflow.schedule.pause", {
+          workflowIdOrName: workflow(f, t).id,
+          reason: "hold",
+        }),
+      );
+    },
+    deniedAs: "workflow:prod-flow",
+  },
+  "workflow.schedule.resume": {
+    send: (f, t) =>
+      sendRequest(
+        withPauseStore(f),
+        request("workflow.schedule.resume", {
+          workflowIdOrName: workflow(f, t).id,
+        }),
+      ),
+    deniedAs: "workflow:prod-flow",
+  },
   "workflow.trigger.remove": {
     send: async (f, t) => {
       // A trigger override must exist for its removal to succeed.

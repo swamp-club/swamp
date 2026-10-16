@@ -205,7 +205,7 @@ async function readFilesystemMarker(
  * signal handed to it at that moment. A read that ignores the signal is
  * raced all the same.
  */
-async function withDeadline<T>(
+export async function withDeadline<T>(
   read: (signal: AbortSignal) => Promise<T>,
   ms: number,
 ): Promise<T> {

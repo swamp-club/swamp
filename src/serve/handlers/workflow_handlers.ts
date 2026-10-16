@@ -42,6 +42,14 @@ import {
   workflowDelete,
 } from "../../libswamp/workflows/delete.ts";
 import {
+  createWorkflowScheduleDeps,
+  overrideSchedulesOf,
+  type WorkflowScheduleDeps,
+  workflowScheduleList,
+  workflowSchedulePause,
+  workflowScheduleResume,
+} from "../../libswamp/workflows/schedule.ts";
+import {
   createWorkflowEditDeps,
   workflowEdit,
   type WorkflowEditTarget,
@@ -130,6 +138,11 @@ import type {
   WorkflowRunPayload,
   WorkflowRunSearchPayload,
   WorkflowRunSummaryPayload,
+  WorkflowScheduleListResponse,
+  WorkflowSchedulePausePayload,
+  WorkflowSchedulePauseResponse,
+  WorkflowScheduleResumePayload,
+  WorkflowScheduleResumeResponse,
   WorkflowSchemaPayload,
   WorkflowSearchPayload,
   WorkflowSignalPayload,
@@ -3256,6 +3269,251 @@ export async function handleWorkflowTriggerRemove(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_trigger_remove_failed", message);
+  }
+}
+
+// ── Workflow schedule pause handlers (swamp-club#3522) ─────────────
+
+/**
+ * The schedule operations' deps on serve: pauses in the control-plane store
+ * the scheduler checks, overrides and schedules as the running scheduler
+ * holds them (the config file when serve runs without one). Null when serve
+ * has no control-plane store.
+ */
+function scheduleDeps(ctx: ConnectionContext): WorkflowScheduleDeps | null {
+  if (!ctx.controlPlaneStore) return null;
+  const scheduler = ctx.scheduledExecution;
+  return createWorkflowScheduleDeps({
+    workflowRepo: ctx.repoContext.workflowRepo,
+    controlPlaneStore: ctx.controlPlaneStore,
+    overrideSchedules: async () =>
+      overrideSchedulesOf(
+        scheduler ? scheduler.getTriggerOverrides() : Object.entries(
+          (await readServeConfigFile(ctx.repoDir, ctx.serveConfigPath))
+            ?.triggers ?? {},
+        ),
+      ),
+    liveSchedules: scheduler
+      ? () =>
+        scheduler.listSchedules().map((entry) => ({
+          workflowId: entry.workflowId,
+          workflowName: entry.workflowName,
+          cronExpression: entry.cronExpression,
+          nextRun: entry.nextRun,
+        }))
+      : undefined,
+  });
+}
+
+function sendNoPauseStore(
+  socket: WebSocket,
+  requestId: string,
+  errorCode: string,
+): void {
+  sendError(
+    socket,
+    requestId,
+    errorCode,
+    "This server has no control-plane store to keep schedule pauses in",
+  );
+}
+
+export async function handleWorkflowSchedulePause(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowSchedulePausePayload,
+  _controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  // Authorize the workflow the request resolves to, by its canonical name,
+  // and pause exactly that workflow's id: the identity authorized is the
+  // identity stored.
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
+  if (
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_schedule_pause_failed",
+    )
+  ) return;
+  const deps = scheduleDeps(ctx);
+  if (!deps) {
+    sendNoPauseStore(socket, requestId, "workflow_schedule_pause_failed");
+    return;
+  }
+  const workflow = targetArgument(target, payload.workflowIdOrName);
+
+  try {
+    let result: WorkflowSchedulePauseResponse["data"] | undefined;
+    await consumeStream(
+      workflowSchedulePause(handlerLibSwampContext(ctx), deps, {
+        workflowIdOrName: workflow.idOrName,
+        byId: workflow.byId,
+        expectedName: workflow.expectedName,
+        reason: payload.reason,
+        until: payload.until,
+        pausedBy: principal ? principalToString(principal) : "ghost",
+      }),
+      {
+        pausing: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+    if (!result) throw new Error("Pause did not complete");
+    logger.info(
+      "Paused the schedule of workflow {name} for {principal}",
+      { name: result.workflowName, principal: result.pausedBy },
+    );
+    send(socket, {
+      type: "workflow.schedule.pause",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_schedule_pause_failed", message);
+  }
+}
+
+export async function handleWorkflowScheduleResume(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkflowScheduleResumePayload,
+  _controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  // As pause. A pause left for a workflow that is gone matches nothing, so
+  // it is authorized as the bare id given, like an unresolved trigger name.
+  const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
+  if (
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "write",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_schedule_resume_failed",
+    )
+  ) return;
+  const deps = scheduleDeps(ctx);
+  if (!deps) {
+    sendNoPauseStore(socket, requestId, "workflow_schedule_resume_failed");
+    return;
+  }
+  const workflow = targetArgument(target, payload.workflowIdOrName);
+
+  try {
+    let result: WorkflowScheduleResumeResponse["data"] | undefined;
+    await consumeStream(
+      workflowScheduleResume(handlerLibSwampContext(ctx), deps, {
+        workflowIdOrName: workflow.idOrName,
+        byId: workflow.byId,
+        expectedName: workflow.expectedName,
+      }),
+      {
+        resuming: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+    if (!result) throw new Error("Resume did not complete");
+    if (result.wasPaused) {
+      logger.info("Resumed the schedule of workflow {name}", {
+        name: result.workflowName,
+      });
+    }
+    send(socket, {
+      type: "workflow.schedule.resume",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_schedule_resume_failed", message);
+  }
+}
+
+export async function handleWorkflowScheduleList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
+  ) return;
+  const deps = scheduleDeps(ctx);
+  if (!deps) {
+    sendNoPauseStore(socket, requestId, "workflow_schedule_list_failed");
+    return;
+  }
+
+  try {
+    let result: WorkflowScheduleListResponse["data"] | undefined;
+    await consumeStream(
+      workflowScheduleList(handlerLibSwampContext(ctx), deps),
+      {
+        listing: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    // Each entry is shown only to a principal that may read its workflow.
+    const canonical = canonicalResources(ctx);
+    const schedules = await filterByResources(
+      result?.schedules ?? [],
+      (entry) => canonical.workflowOwners(entry.workflowId, entry.workflowName),
+      socket,
+      principal,
+      "read",
+      ctx,
+    );
+    send(socket, {
+      type: "workflow.schedule.list",
+      id: requestId,
+      payload: { data: { schedules } },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "workflow_schedule_list_failed", message);
   }
 }
 

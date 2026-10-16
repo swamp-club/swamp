@@ -37,8 +37,9 @@ import { SYNC_GATED_REQUESTS } from "./sync_gate.ts";
  * Left out on purpose, because they commit nothing to the datastore or
  * acknowledge no write: reads, `model.validate` (a read; a check that
  * writes is incidental), `vault.put` (secrets stay in the always-local
- * `.swamp/secrets`), and `workflow.signal` and `workflow.trigger.*`
- * (control-plane records, outside the commit log). The integration tests
+ * `.swamp/secrets`), and `workflow.signal`, `workflow.trigger.*` and
+ * `workflow.schedule.*` (control-plane records and serve config, outside the
+ * commit log). The integration tests
  * pin the dispatch: every request named here is wrapped, and no other.
  */
 export const CONFIRMED_WRITE_REQUESTS: ReadonlySet<string> = new Set([

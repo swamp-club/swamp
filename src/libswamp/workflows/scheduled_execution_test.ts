@@ -38,6 +38,11 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type {
+  SchedulePause,
+  SchedulePauseRepository,
+} from "../../domain/workflows/schedule_pause.ts";
+import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
 import type { WorkflowRunEvent, WorkflowRunInput } from "./run.ts";
 
 function createTestWorkflow(
@@ -1213,7 +1218,7 @@ Deno.test("ScheduledExecutionService: skipped fires carry the fire time", async 
   const skipped = events.find((e) => e.kind === "schedule_skipped");
   assertEquals(
     skipped?.kind === "schedule_skipped" &&
-      !Number.isNaN(Date.parse(skipped.fireTime)),
+      !Number.isNaN(Date.parse(skipped.fireTime ?? "")),
     true,
   );
 });
@@ -1796,4 +1801,306 @@ Deno.test("ScheduledExecutionService.queueStatus: records the delay of a replay 
   } finally {
     await service.stop();
   }
+});
+
+// ── Schedule pauses (swamp-club#3522) ─────────────────────────────
+
+/** An in-memory pause repository whose reads can be made to fail. */
+function createPauseRepo(pauses: SchedulePause[] = []) {
+  const records = new Map(pauses.map((p) => [p.workflowId, p]));
+  const state = { failReads: false, reads: 0 };
+  const repo: SchedulePauseRepository = {
+    get: (id) => {
+      state.reads++;
+      if (state.failReads) return Promise.reject(new Error("store down"));
+      return Promise.resolve(records.get(id) ?? null);
+    },
+    list: () => Promise.resolve([...records.values()]),
+    save: (pause) => {
+      records.set(pause.workflowId, pause);
+      return Promise.resolve();
+    },
+    delete: (id) => {
+      records.delete(id);
+      return Promise.resolve();
+    },
+  };
+  return { repo, records, state };
+}
+
+function pauseOf(wf: Workflow, extra: Partial<SchedulePause> = {}) {
+  return {
+    workflowId: wf.id,
+    workflowName: wf.name,
+    pausedBy: "user:ops",
+    pausedAt: new Date().toISOString(),
+    ...extra,
+  };
+}
+
+Deno.test("ScheduledExecutionService: a paused schedule's fires are skipped with the pause reason", async () => {
+  const wf = createTestWorkflow("paused-wf", "* * * * * *");
+  const pauses = createPauseRepo([pauseOf(wf, { reason: "incident 3518" })]);
+  const events: ScheduledExecutionEvent[] = [];
+  let executions = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executions++;
+      return Promise.resolve();
+    },
+    schedulePauses: pauses.repo,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_skipped"),
+    "schedule_skipped event",
+  );
+  await service.stop();
+
+  assertEquals(executions, 0);
+  assertEquals(events.some((e) => e.kind === "schedule_fired"), false);
+  const skipped = events.find((e) => e.kind === "schedule_skipped");
+  assert(skipped?.kind === "schedule_skipped");
+  assertEquals(skipped.reason, "paused (incident 3518)");
+  assertEquals(skipped.paused, {
+    reason: "incident 3518",
+    pausedBy: "user:ops",
+    until: undefined,
+  });
+  assertEquals(typeof skipped.fireTime, "string");
+});
+
+Deno.test("ScheduledExecutionService: a pause whose until has passed lets the fire run", async () => {
+  const wf = createTestWorkflow("lapsed-wf", "* * * * * *");
+  const pauses = createPauseRepo([
+    pauseOf(wf, { until: new Date(Date.now() - 60_000).toISOString() }),
+  ]);
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    schedulePauses: pauses.repo,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_fired"),
+    "schedule_fired event",
+  );
+  await service.stop();
+
+  assertEquals(events.some((e) => e.kind === "schedule_skipped"), false);
+});
+
+Deno.test("ScheduledExecutionService: an unpaused workflow fires though another is paused", async () => {
+  const paused = createTestWorkflow("held-wf", "* * * * * *");
+  const free = createTestWorkflow("free-wf", "* * * * * *");
+  const pauses = createPauseRepo([pauseOf(paused)]);
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([paused, free]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    schedulePauses: pauses.repo,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () =>
+      events.some((e) =>
+        e.kind === "schedule_fired" && e.workflowName === "free-wf"
+      ) &&
+      events.some((e) =>
+        e.kind === "schedule_skipped" && e.workflowName === "held-wf"
+      ),
+    "free fired and held skipped",
+  );
+  await service.stop();
+
+  assertEquals(
+    events.some((e) =>
+      e.kind === "schedule_fired" && e.workflowName === "held-wf"
+    ),
+    false,
+  );
+});
+
+Deno.test("ScheduledExecutionService: an unreadable pause store keeps the pause last read", async () => {
+  const wf = createTestWorkflow("flaky-wf", "* * * * * *");
+  const pauses = createPauseRepo([pauseOf(wf)]);
+  const events: ScheduledExecutionEvent[] = [];
+  let executions = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executions++;
+      return Promise.resolve();
+    },
+    schedulePauses: pauses.repo,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_skipped"),
+    "first skip read from the store",
+  );
+  pauses.state.failReads = true;
+  const readsBefore = pauses.state.reads;
+  await waitFor(
+    () =>
+      pauses.state.reads > readsBefore &&
+      events.filter((e) => e.kind === "schedule_skipped").length >= 2,
+    "a skip while the store is unreadable",
+  );
+  await service.stop();
+
+  assertEquals(executions, 0);
+});
+
+Deno.test("ScheduledExecutionService: with no pause read yet, an unreadable store fires the workflow", async () => {
+  const wf = createTestWorkflow("cold-wf", "* * * * * *");
+  const pauses = createPauseRepo([pauseOf(wf)]);
+  pauses.state.failReads = true;
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    schedulePauses: pauses.repo,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_fired"),
+    "schedule_fired event",
+  );
+  await service.stop();
+});
+
+Deno.test("ScheduledExecutionService: a replayed fire of a paused workflow is skipped and its pending entry consumed", async () => {
+  const wf = createTestWorkflow("replay-paused-wf", "0 0 1 1 *");
+  const pauses = createPauseRepo([pauseOf(wf, { reason: "hold" })]);
+  const events: ScheduledExecutionEvent[] = [];
+  const deleted: string[] = [];
+  let executions = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executions++;
+      return Promise.resolve();
+    },
+    pendingRunHook: {
+      enqueue: () => Promise.resolve(),
+      delete: (id) => {
+        deleted.push(id);
+        return Promise.resolve();
+      },
+    },
+    schedulePauses: pauses.repo,
+  });
+
+  await service.start((e) => events.push(e));
+  service.enqueueForReplay({
+    pendingRunId: "pending-1",
+    workflowIdOrName: wf.name,
+  });
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_skipped"),
+    "replayed skip",
+  );
+  await service.stop();
+
+  assertEquals(executions, 0);
+  assertEquals(deleted, ["pending-1"]);
+  const skipped = events.find((e) => e.kind === "schedule_skipped");
+  assert(skipped?.kind === "schedule_skipped");
+  assertEquals(skipped.replayed, true);
+  assertEquals(skipped.workflowId, wf.id);
+  assertEquals(skipped.fireTime, undefined);
+});
+
+Deno.test("ScheduledExecutionService: a pause follows the workflow id, not its name", async () => {
+  const wf = createTestWorkflow("renamed-wf", "* * * * * *");
+  // Paused under an earlier name: the id still matches.
+  const pauses = createPauseRepo([
+    pauseOf(wf, { workflowName: "old-name" }),
+  ]);
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    schedulePauses: pauses.repo,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_skipped"),
+    "schedule_skipped event",
+  );
+  await service.stop();
+
+  assertEquals(events.some((e) => e.kind === "schedule_fired"), false);
+});
+
+Deno.test("ScheduledExecutionService: a pause read that never settles is bounded: the last read pause holds, and a cold boot fires", async () => {
+  const wf = createTestWorkflow("hung-store-wf", "* * * * * *");
+  const record = new TextEncoder().encode(JSON.stringify(pauseOf(wf)));
+  const state = { hang: false };
+  const hangingStore = {
+    put: () => Promise.resolve(),
+    get: () =>
+      state.hang ? new Promise<Uint8Array | null>(() => {}) : Promise.resolve(
+        record,
+      ),
+    delete: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  };
+  const run = async (hangFromStart: boolean) => {
+    state.hang = hangFromStart;
+    const events: ScheduledExecutionEvent[] = [];
+    let executions = 0;
+    const service = new ScheduledExecutionService({
+      workflowRepo: createMockWorkflowRepo([wf]),
+      repoDir: "/tmp/nonexistent-test-repo",
+      executeWorkflow: () => {
+        executions++;
+        return Promise.resolve();
+      },
+      schedulePauses: new ControlPlaneSchedulePauseRepository(
+        hangingStore,
+        20,
+      ),
+    });
+    await service.start((e) => events.push(e));
+    return { service, events, executions: () => executions };
+  };
+
+  // A read before the hang: later fires keep that pause.
+  const warm = await run(false);
+  await waitFor(
+    () => warm.events.some((e) => e.kind === "schedule_skipped"),
+    "skip from a settled read",
+  );
+  state.hang = true;
+  await waitFor(
+    () => warm.events.filter((e) => e.kind === "schedule_skipped").length >= 2,
+    "skip while the read hangs",
+  );
+  await warm.service.stop();
+  assertEquals(warm.executions(), 0);
+
+  // No read ever settled: the fire goes ahead.
+  const cold = await run(true);
+  await waitFor(
+    () => cold.events.some((e) => e.kind === "schedule_fired"),
+    "fire on a cold boot with a hung store",
+  );
+  await cold.service.stop();
 });

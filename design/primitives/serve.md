@@ -1039,6 +1039,43 @@ run never starts); see
 skips are audited as `workflow.schedule.fire` and `workflow.schedule.skipped`
 ([serve-audit](../enablers/serve-audit.md#trigger-events)).
 
+**Schedule pauses.** `swamp workflow schedule pause|resume|list`
+(`workflow.schedule.*` over WebSocket) pause a workflow's cron fires without
+editing its definition or `serve.yaml` (swamp-club#3522). A pause is a
+`SchedulePause` record (`src/domain/workflows/schedule_pause.ts`) in the
+control-plane store, at `schedule-pauses/<workflow id>`
+(`ControlPlaneSchedulePauseRepository`), so every instance sharing the
+datastore sees it, and it survives `workflow edit` (a rename keeps the id),
+`serve reload` and restarts. It records the reason (at most 500 characters, no
+control characters), who paused it, when, and an optional `until`: a duration
+or an ISO-8601 time with `Z` or an offset (a zone-less time would be read in
+whichever process parses it, the server's with `--server`), up to year 9999.
+
+Before each fire, and before a replayed cron run starts, the service reads the
+workflow's pause; while it is in force the fire is skipped with a
+`schedule_skipped` event carrying `paused`, logged as
+`Skipped scheduled workflow "<name>": paused ("<reason>")`. Manual and webhook
+runs never read it. `until` is enforced at the fire: a lapsed pause is ignored
+and replaced by the next pause or removed by resume, so no timer can be lost
+across a restart. A record that does not parse, or cannot be read, counts as
+an open-ended pause: `list` shows it and `resume` removes it. Each pause read
+is bounded by a 5 s deadline (`SCHEDULE_PAUSE_READ_TIMEOUT_MS`), so a slow
+control plane delays a fire by at most that.
+When the store cannot be read, the pause last read for that workflow decides;
+with none read yet (a cold boot during a datastore outage) the fire runs and a
+warning names the workflow, since failing closed would stop every schedule.
+
+Pause and resume authorize `write` on the resolved workflow and store under
+its id, the identity authorized; they are audited as `admin` requests. `list`
+shows each schedule a caller may `read`, with its pause state and next fire,
+plus pauses whose workflow is gone or unscheduled (orphaned; resumed by id,
+authorized on the bare id). A pulled extension workflow whose release changes
+its id loses its pause, which `list` then shows as orphaned. Without
+`--server`, the commands open the repository read-only (serve holds the
+writer lease) and write the filesystem store serve uses for a filesystem
+datastore, `.swamp/_control`, with no grant check, as local `trigger set`
+writes `serve.yaml`; a custom datastore's pauses are set through serve.
+
 Fires that are not skipped join one queue. Up to
 `--max-concurrent-scheduled-runs` entries run at once (default 1: one at a
 time, in fire order). The service starts the first queued entry whose workflow
