@@ -237,7 +237,14 @@ export async function handleAccessGrantList(
               const tokenSub = token.principalId.startsWith("user:")
                 ? token.principalId.slice(5)
                 : token.principalId;
+              // `access token mint` without --email stores the principal
+              // itself as principalEmail; that is no display name, and the
+              // renderer would print it as user:user:<sub> (swamp-club#3547).
+              const isPrincipalItself =
+                token.principalEmail === token.principalId ||
+                token.principalEmail === tokenSub;
               if (
+                !isPrincipalItself &&
                 unresolvedSubs.has(tokenSub) &&
                 !subjectDisplayNames[tokenSub]
               ) {

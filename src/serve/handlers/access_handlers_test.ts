@@ -33,6 +33,7 @@ import { useUnscopedChangeReporterForTesting } from "../../infrastructure/persis
 import {
   handleAccessCanI,
   handleAccessCheck,
+  handleAccessGrantList,
   handleAccessReload,
   handleAccessTokenRevoke,
   handleAccessTokenRotate,
@@ -56,7 +57,10 @@ import type { Principal } from "../../domain/access/principal.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
-import type { Grant } from "../../domain/models/access/grant_model.ts";
+import {
+  type Grant,
+  GRANT_MODEL_TYPE,
+} from "../../domain/models/access/grant_model.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -1386,4 +1390,112 @@ Deno.test("handleAccessReload: without a resolver a username subject is rejected
       "username subjects are not resolved here",
     );
   });
+});
+
+// --- grant list: subject display names (swamp-club#3547) ---
+
+function serverTokenRecord(
+  name: string,
+  principalId: string,
+  principalEmail: string,
+) {
+  return {
+    attributes: {
+      name,
+      state: "active",
+      principalId,
+      principalEmail,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      vaultName: "_token-secrets",
+      secretKey: `server-token-${name}`,
+    },
+  };
+}
+
+async function listGrantDisplayNames(
+  grants: Grant[],
+  tokens: ReturnType<typeof serverTokenRecord>[],
+  resolvedUserNames?: Record<string, string>,
+): Promise<Record<string, string> | undefined> {
+  const { service } = createMockDecisionService();
+  const ctx = createCtx(service, "none");
+  ctx.repoContext = {
+    unifiedDataRepo: {
+      findAllForType(type: { normalized: string }) {
+        if (type.normalized !== GRANT_MODEL_TYPE.normalized) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve(grants.map((grant) => ({
+          data: {
+            name: grant.id,
+            isRenamed: false,
+            isDeleted: false,
+            tags: {},
+          },
+          modelType: GRANT_MODEL_TYPE,
+          modelId: grant.id,
+        })));
+      },
+      getContent(_type: unknown, modelId: string) {
+        const grant = grants.find((g) => g.id === modelId);
+        return Promise.resolve(
+          grant ? new TextEncoder().encode(JSON.stringify(grant)) : null,
+        );
+      },
+    },
+    dataQueryService: { query: () => Promise.resolve(tokens) },
+  } as unknown as ConnectionContext["repoContext"];
+  if (resolvedUserNames) ctx.resolvedUserNames = resolvedUserNames;
+  const socket = createMockSocket();
+  await handleAccessGrantList(socket, ctx, "req-1", null);
+  const response = JSON.parse(socket.sent[0]);
+  assertEquals(response.type, "access.grant.list");
+  assertEquals(response.payload.grants.length, grants.length);
+  return response.payload.subjectDisplayNames;
+}
+
+Deno.test("handleAccessGrantList: a token minted without --email gives no display name", async () => {
+  const displayNames = await listGrantDisplayNames(
+    [makeGrant({ subject: { kind: "user", name: "member" } })],
+    [serverTokenRecord("member", "user:member", "user:member")],
+  );
+  assertEquals(displayNames, undefined);
+});
+
+Deno.test("handleAccessGrantList: a principalEmail equal to the bare sub gives no display name", async () => {
+  const displayNames = await listGrantDisplayNames(
+    [makeGrant({ subject: { kind: "user", name: "member" } })],
+    [serverTokenRecord("member", "user:member", "member")],
+  );
+  assertEquals(displayNames, undefined);
+});
+
+Deno.test("handleAccessGrantList: a token's real email names its subject", async () => {
+  const displayNames = await listGrantDisplayNames(
+    [makeGrant({ subject: { kind: "user", name: "alice" } })],
+    [serverTokenRecord("alice", "user:alice", "alice@example.com")],
+  );
+  assertEquals(displayNames, { alice: "alice@example.com" });
+});
+
+Deno.test("handleAccessGrantList: a real email wins over a defaulted one for the same sub, in either order", async () => {
+  const defaulted = serverTokenRecord("a-cli", "user:member", "user:member");
+  const real = serverTokenRecord("b-laptop", "user:member", "m@example.com");
+  for (const tokens of [[defaulted, real], [real, defaulted]]) {
+    const displayNames = await listGrantDisplayNames(
+      [makeGrant({ subject: { kind: "user", name: "member" } })],
+      tokens,
+    );
+    assertEquals(displayNames, { member: "m@example.com" });
+  }
+});
+
+Deno.test("handleAccessGrantList: a resolved username wins over a token's email", async () => {
+  const displayNames = await listGrantDisplayNames(
+    [makeGrant({ subject: { kind: "user", name: "699e486007f7" } })],
+    [serverTokenRecord("paul", "user:699e486007f7", "paul@example.com")],
+    { "699e486007f7": "stack72" },
+  );
+  assertEquals(displayNames, { "699e486007f7": "stack72" });
 });
