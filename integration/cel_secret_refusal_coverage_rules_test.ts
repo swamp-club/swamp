@@ -35,18 +35,27 @@
 //   - The cel-js built-ins come from the library itself, so a dependency bump
 //     that adds a function reaches the classifier and fails until it has a
 //     disposition.
-//   - swamp's registrations come from the source text of the three files
-//     that register them, matched only inside a registerFunction(,
-//     registerOperator( or registerType( call. A string literal, a template
-//     literal built from the exported constants, and a bare constant are all
-//     read; any other form fails the test, so a registration cannot hide.
+//   - swamp's registrations come from the source text of the files that
+//     register them, matched only inside a registerFunction(,
+//     registerOperator( or registerType( call on a line that is not a
+//     comment. A string literal, a template literal built from the exported
+//     constants, and a bare constant are all read; any other form fails the
+//     test. The set of registering files is itself pinned against a walk of
+//     src/, so a registration in a fourth file cannot hide either.
 //
 // Every assertion is set equality, never containment, so an extraction that
 // matches nothing fails loudly instead of passing vacuously.
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
-import { ROOT } from "./arch_fitness_helpers.ts";
+import {
+  isCommentLine,
+  isUnder,
+  productionSourceFiles,
+  repoRelative,
+  ROOT,
+  SRC_DIR,
+} from "./arch_fitness_helpers.ts";
 import {
   LATEST_RUN_FUNCTION,
   MODEL_FUNCTIONS,
@@ -57,9 +66,9 @@ import {
   classifyPositions,
   type Disposition,
   functionRefusalSignatures,
+  isSecretCapableType,
   parseSignature,
   qualifiedName,
-  SECRET_CAPABLE_TYPES,
   secretCapableBuiltins,
   specialDispositionNames,
   SWAMP_FUNCTION_SIGNATURES,
@@ -67,11 +76,15 @@ import {
   SWAMP_OPERATOR_SIGNATURES,
 } from "../src/infrastructure/cel/cel_js_pins/cel_js_secret_refusal_inventory.ts";
 
-const REGISTERING_FILES = [
-  "src/infrastructure/cel/cel_evaluator.ts",
-  "src/domain/expressions/cel_grammar.ts",
+/** The production files that register CEL functions, operators or types. */
+const REGISTERING_FILES: readonly string[] = [
   "src/domain/data/data_query_service.ts",
-].map((path) => join(ROOT, path));
+  "src/domain/expressions/cel_grammar.ts",
+  "src/infrastructure/cel/cel_evaluator.ts",
+];
+
+const METHODS = ["registerFunction", "registerOperator", "registerType"];
+const REGISTRATION = new RegExp(`\\b(?:${METHODS.join("|")})\\(`);
 
 /**
  * What a `${name}` placeholder or a bare constant in a registration stands
@@ -98,22 +111,34 @@ function expandTemplate(template: string): string[] {
   );
 }
 
+/** `source` without its comment lines, so a commented-out call is not read. */
+function withoutCommentLines(source: string): string {
+  return source.split("\n").filter((line) => !isCommentLine(line)).join("\n");
+}
+
 /**
  * The first argument of every `method(` call in `source`: a string literal,
  * a template literal expanded through BINDINGS, or a bare constant looked up
- * there. The call paren and the argument must be adjacent apart from
- * whitespace, so a signature quoted in a comment does not match, and an
- * argument in any other form throws, so a registration cannot hide.
+ * there. Comment lines are dropped first. Every call is matched, and an
+ * argument in any other form (a single-quoted string, a call, an expression)
+ * throws, so a registration cannot hide.
  */
 function registeredSignatures(source: string, method: string): string[] {
-  const calls = source.matchAll(
-    new RegExp(
-      `${method}\\(\\s*(?:"([^"]+)"|\`([^\`]+)\`|([A-Za-z_][A-Za-z0-9_]*))`,
-      "g",
-    ),
-  );
+  const text = withoutCommentLines(source);
   const out = new Set<string>();
-  for (const [, literal, template, constant] of calls) {
+  for (const call of text.matchAll(new RegExp(`\\b${method}\\(`, "g"))) {
+    const rest = text.slice(call.index);
+    const argument = new RegExp(
+      `^${method}\\(\\s*(?:"([^"]+)"|\`([^\`]+)\`|([A-Za-z_][A-Za-z0-9_]*)\\s*[,)])`,
+    ).exec(rest);
+    if (argument === null) {
+      throw new Error(
+        `Unreadable registration argument: ${rest.slice(0, 40)}... ` +
+          "(use a double-quoted literal, a template over the exported " +
+          "constants, or a bare constant)",
+      );
+    }
+    const [, literal, template, constant] = argument;
     if (literal !== undefined) out.add(literal);
     else if (template !== undefined) {
       for (const expanded of expandTemplate(template)) out.add(expanded);
@@ -132,13 +157,30 @@ function registeredSignatures(source: string, method: string): string[] {
 async function registeredAcrossFiles(method: string): Promise<string[]> {
   const out = new Set<string>();
   for (const path of REGISTERING_FILES) {
-    const source = await Deno.readTextFile(path);
+    const source = await Deno.readTextFile(join(ROOT, path));
     for (const signature of registeredSignatures(source, method)) {
       out.add(signature);
     }
   }
   return [...out].sort();
 }
+
+Deno.test("REGISTERING_FILES equals the production files under src/ that register with cel-js", async () => {
+  const found: string[] = [];
+  for await (const file of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(file);
+    if (isUnder(rel, "src/infrastructure/cel/cel_js_pins")) continue;
+    const source = withoutCommentLines(await Deno.readTextFile(file));
+    if (REGISTRATION.test(source)) found.push(rel);
+  }
+  assertEquals(
+    found.sort(),
+    [...REGISTERING_FILES],
+    "A production file registers with cel-js but is not scanned. Add it to " +
+      "REGISTERING_FILES and give each of its secret-capable positions a " +
+      "disposition in the inventory.",
+  );
+});
 
 Deno.test("SWAMP_FUNCTION_SIGNATURES equals what the internal environment and the query view register", async () => {
   assertEquals(
@@ -156,13 +198,12 @@ Deno.test("SWAMP_OPERATOR_SIGNATURES equals the operators the internal environme
     [...SWAMP_OPERATOR_SIGNATURES].sort(),
   );
   for (const signature of SWAMP_OPERATOR_SIGNATURES) {
-    for (const type of SECRET_CAPABLE_TYPES) {
-      assertEquals(
-        signature.includes(type),
-        false,
-        `${signature} has a secret-capable operand and needs a refusal`,
-      );
-    }
+    const operands = signature.split(/ [^ ]+ /);
+    assertEquals(
+      operands.some(isSecretCapableType),
+      false,
+      `${signature} has a secret-capable operand and needs a refusal`,
+    );
   }
 });
 
@@ -177,7 +218,7 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
   const builtins = secretCapableBuiltins(createExtensionCelEnvironment()).map(
     (fn) => fn.signature,
   );
-  assertEquals(builtins.length, 49);
+  assertEquals(builtins.length, 57);
   const counts: Record<Disposition, number> = {
     refusal: 0,
     "named-delivery": 0,
@@ -193,9 +234,9 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
   }
   assertEquals(counts, {
     refusal: 75,
-    "named-delivery": 3,
+    "named-delivery": 6,
     "argument-walk": 3,
-    container: 11,
+    container: 16,
     "type-name": 1,
   });
   // Pins: when one changes, the failure prints the new number, and the
@@ -224,9 +265,10 @@ Deno.test("every special disposition names a function that exists", () => {
   );
 });
 
-Deno.test("registeredSignatures reads literals, templates and constants, and ignores a comment", () => {
+Deno.test("registeredSignatures reads literals, templates and constants, and ignores a comment line", () => {
   const stub = [
     '// registerFunction "CelDataNamespace.notReal(string): dyn" in a comment',
+    '// env.registerFunction("CelDataNamespace.commentedOut(string): dyn", f);',
     "    this.env.registerFunction(",
     '      "CelDataNamespace.latest(string, string): dyn",',
     "      () => {},",
@@ -256,7 +298,25 @@ Deno.test("registeredSignatures fails on a form it cannot read", () => {
         "registerFunction",
       ),
     Error,
-    "Unknown constant in a registration: buildSignature",
+    "Unreadable registration argument: registerFunction(buildSignature()",
+  );
+  assertThrows(
+    () =>
+      registeredSignatures(
+        "env.registerFunction('single(string): dyn', f);",
+        "registerFunction",
+      ),
+    Error,
+    "Unreadable registration argument: registerFunction('single",
+  );
+  assertThrows(
+    () =>
+      registeredSignatures(
+        "env.registerFunction(UNKNOWN_CONSTANT, f);",
+        "registerFunction",
+      ),
+    Error,
+    "Unknown constant in a registration: UNKNOWN_CONSTANT",
   );
   assertThrows(
     () =>

@@ -125,7 +125,32 @@ Deno.test("classifyPositions: named deliveries, argument walks and containers co
   ]);
 });
 
-Deno.test("classifyPositions: an unnamed dyn or list position is the alarm", () => {
+Deno.test("classifyPositions: optionals and map containers come from the table too", () => {
+  assertEquals(
+    classifyPositions("OptionalNamespace.of(A): optional<A>")[0].disposition,
+    "named-delivery",
+  );
+  assertEquals(
+    classifyPositions("optional<dyn>.hasValue(): bool")[0].disposition,
+    "container",
+  );
+  assertEquals(
+    classifyPositions("size(map<dyn, dyn>): int")[0].disposition,
+    "container",
+  );
+});
+
+Deno.test("classifyPositions: an unnamed dyn, generic or container position is the alarm", () => {
+  assertThrows(
+    () => classifyPositions("string.format(list<A>): string"),
+    Error,
+    "Unclassified secret-capable position in string.format(list<A>): string: 0 is list<A>",
+  );
+  assertThrows(
+    () => classifyPositions("map<K, V>.stringify(): string"),
+    Error,
+    "receiver is map<K, V>",
+  );
   assertThrows(
     () => classifyPositions("format(list<dyn>): string"),
     Error,
@@ -196,10 +221,10 @@ Deno.test("secretCapableBuiltins: keeps a function only when a Secret can reach 
   assertEquals(names.includes("f"), false);
 });
 
-Deno.test("specialDispositionNames: is sorted and names only qualified functions", () => {
+Deno.test("specialDispositionNames: is sorted and every name round-trips through a signature", () => {
   const names = specialDispositionNames();
   assertEquals(names, [...names].sort());
   for (const name of names) {
-    assertEquals(/^[A-Za-z_<>.]+$/.test(name), true, name);
+    assertEquals(qualifiedName(parseSignature(`${name}(): dyn`)), name);
   }
 });

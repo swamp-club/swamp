@@ -25,9 +25,10 @@
 // as valid, and `has()` on a call result fails as `invalid_macro_argument`.").
 //
 // The validation environment registers the allowed set's overloads in place
-// of the refusing ones. The escapes are caught by the run-time refusals; the
-// `has()` case fails for a reason of its own although `has()` is in the
-// allowed set.
+// of the refusing ones. A dyn operand and a map-literal key are refused at
+// run time instead; `type()` is never refused, it answers the type name and
+// reveals nothing; and the `has()` case fails for a reason of its own
+// although `has()` is in the allowed set.
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { Environment, TypeError as CelTypeError } from "cel-js";
 import { pin } from "./cel_js_pin_test_helpers.ts";
@@ -36,7 +37,7 @@ import {
   registerAllowedSet,
   registerSecretType,
   secretEnvironmentOptions,
-} from "./cel_js_secret_fixture.ts";
+} from "./cel_js_secret_test_helpers.ts";
 
 class Vault {}
 

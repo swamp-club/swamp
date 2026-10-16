@@ -64,7 +64,7 @@ import {
   secretEnvironmentOptions,
   SecretRefusedError,
   withFaultContext,
-} from "./cel_js_secret_fixture.ts";
+} from "./cel_js_secret_test_helpers.ts";
 import {
   functionRefusalSignatures,
   operatorRefusalSignatures,
@@ -143,7 +143,7 @@ Deno.test(
     const plain = secretEnvironment();
     assertEquals(plain.getDefinitions().functions.length, 108);
     const builtins = secretCapableBuiltins(plain).map((fn) => fn.signature);
-    assertEquals(builtins.length, 49);
+    assertEquals(builtins.length, 57);
     assertEquals(functionRefusalSignatures(builtins).length, 56);
     assertEquals(
       functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES).length,

@@ -43,7 +43,7 @@ import {
   secretEnvironmentOptions,
   SecretRefusedError,
   withFaultContext,
-} from "./cel_js_secret_fixture.ts";
+} from "./cel_js_secret_test_helpers.ts";
 
 const s = createSecret("v/k");
 

@@ -442,11 +442,14 @@ Refusal uses registrations. It does not rewrite expressions.
    conversion, or one of swamp's own registrations. The refusal inventory
    (`cel_js_secret_refusal_inventory.ts`, Phase 1.2) classifies every
    secret-capable position, a receiver or a parameter typed `string`, `dyn`,
-   `list<dyn>` or `list<string>`, as one of five dispositions: a refusal, a
-   named delivery (`dyn(dyn)`, `cel.bind` and `model.method` inputs, Section
-   4.5), an argument walk (the vary list, below), a container (`size`, `type`
-   and the `join` receiver, which reveal nothing), or a type name (`type(S)`,
-   which cel-js registers itself and which answers `Type<Secret>`). The
+   a type variable, or a list, map or optional of anything, as one of five
+   dispositions: a refusal, a named delivery (`dyn(dyn)`, `cel.bind`, the
+   optional accessors `of`, `value` and `orValue`, and `model.method` inputs,
+   Section 4.5), an argument walk (the vary list, below), a container (`size`
+   and `type` of a list or map, the `join` receiver, the comprehension macros
+   over a list, and `hasValue` and `or` on an optional, which reveal nothing),
+   or a type name (`type(S)`, which cel-js registers itself and which answers
+   `Type<Secret>`). The
    refusals are the full cross product over a signature's refusal positions,
    because one overload per position leaves a call with two secrets to a
    missing-overload error that records no fault. Every operator is covered,
@@ -475,11 +478,12 @@ Refusal uses registrations. It does not rewrite expressions.
    expressions in the same environment, with the allowed set's overloads
    (Section 4.1) in place of the refusing ones. The allowed set passes there,
    and any other operation on a `vault.get` result is a check-time error, with
-   four exceptions: a dyn operand (an unlisted variable, or `dyn(...)`), a map
-   literal keyed by the result, and `type()` check as valid, so only the
-   run-time refusals catch them; and `has()` on a call result is a check-time
-   error of its own, `invalid_macro_argument`. Secrets from records are dyn
-   values, so their misuse shows up only at run time.
+   four exceptions: a dyn operand (an unlisted variable, or `dyn(...)`) and a
+   map literal keyed by the result check as valid and are refused only at run
+   time; `type()` checks as valid and answers the type name at run time, which
+   reveals nothing; and `has()` on a call result is a check-time error of its
+   own, `invalid_macro_argument`. Secrets from records are dyn values, so
+   their misuse shows up only at run time.
 5. **Containers.** cel-js answers `in` and list or map equality without calling
    any handler (fact 2). They cannot reveal a value, because a `Secret` holds
    none, but they would answer by identity: a guard
@@ -901,7 +905,7 @@ Phase 1.1 (swamp-club#3510, shipped) pins the facts in Section 4.2.
 
 Phase 1.2 (swamp-club#3551, shipped) pins what this design relies on, in
 `cel_js_secret_*_pin_test.ts` beside the Phase 1.1 suite, with the `Secret`
-fixture in `cel_js_secret_fixture.ts`, the refusal inventory in
+fixture in `cel_js_secret_test_helpers.ts`, the refusal inventory in
 `cel_js_secret_refusal_inventory.ts` and the coverage fitness test in
 `integration/cel_secret_refusal_coverage_rules_test.ts`. Each claim, as
 observed on cel-js 7.6.1:

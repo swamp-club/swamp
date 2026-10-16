@@ -47,7 +47,7 @@ import {
   SecretRefusedError,
   secretState,
   withFaultContext,
-} from "./cel_js_secret_fixture.ts";
+} from "./cel_js_secret_test_helpers.ts";
 
 function secretEnvironment(): Environment {
   return registerSecretType(new Environment(secretEnvironmentOptions()));

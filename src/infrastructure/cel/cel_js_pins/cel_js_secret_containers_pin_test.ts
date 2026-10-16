@@ -34,6 +34,7 @@
 // accessor adapter and the boundary conversion will (Section 6.1). A `Map`
 // instance cannot carry a getter, so the adapter builds plain objects.
 import {
+  assert,
   assertEquals,
   assertInstanceOf,
   assertStrictEquals,
@@ -50,7 +51,7 @@ import {
   registerSecretType,
   secretEnvironmentOptions,
   withFaultContext,
-} from "./cel_js_secret_fixture.ts";
+} from "./cel_js_secret_test_helpers.ts";
 
 const s = createSecret("v/k");
 const t = createSecret("v/k2");
@@ -225,7 +226,7 @@ Deno.test(
       );
       const seen = observe(env, expression);
       assertEquals(seen.result, expected, expression);
-      assertEquals(seen.reads.length > 0, true, `${expression} records`);
+      assert(seen.reads.length > 0, `${expression} records`);
       assertEquals(seen.faults, [], `${expression} calls no handler`);
     }
   },

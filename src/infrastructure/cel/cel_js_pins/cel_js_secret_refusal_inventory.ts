@@ -23,8 +23,9 @@
  *
  * It answers one question for every place a `Secret` can meet a cel-js
  * built-in or one of swamp's own registrations: what happens to it there. Each
- * secret-capable position (a receiver or a parameter typed `string`, `dyn`,
- * `list<dyn>` or `list<string>`) has exactly one disposition:
+ * secret-capable position (a receiver or a parameter typed `string`, `dyn`, a
+ * type variable, or a list, map or optional of anything, see
+ * {@link isSecretCapableType}) has exactly one disposition:
  *
  * - `refusal`: a refusing overload with `Secret` in that position is
  *   registered. The refusal signatures are the full cross product over a
@@ -32,13 +33,15 @@
  *   one overload per position leaves a call with two secrets to a
  *   missing-overload error that records no fault and is absorbed.
  * - `named-delivery`: the value is passed along by design and the callee owns
- *   it (`dyn(dyn)`, `cel.bind`, the `inputs` of `CelModelNamespace.method`).
+ *   it (`dyn(dyn)`, `cel.bind`, `optional.of`, `optional.value`,
+ *   `optional.orValue`, and the `inputs` of `CelModelNamespace.method`).
  * - `argument-walk`: the position takes a list a `Secret` may sit in, and the
  *   handler walks it at run time (`secret_destination_refused` for the vary
  *   list of the data accessors). No signature can refuse an element.
  * - `container`: a built-in that takes a container a `Secret` may sit in and
- *   reveals nothing (`size`, `type` and the `join` receiver). A getter records
- *   the element when the built-in reads it.
+ *   reveals nothing: `size` and `type` of a list or map, the `join` receiver,
+ *   the comprehension macros over a list, and `hasValue` and `or` on an
+ *   optional. A getter records the element when the built-in reads it.
  * - `type-name`: `type(x)`. cel-js registers `type(Secret): type` itself when
  *   the type is registered and a second registration is an overlap error, so
  *   `type(S)` answers the type name and reveals nothing.
@@ -65,13 +68,16 @@ import type { DefinitionFunction, Environment } from "cel-js";
 /** The registered type name of the secret value. */
 export const SECRET_TYPE_NAME = "Secret";
 
-/** The types a position may declare for a `Secret` to be able to reach it. */
-export const SECRET_CAPABLE_TYPES: readonly string[] = [
-  "string",
-  "dyn",
-  "list<dyn>",
-  "list<string>",
-];
+/**
+ * Whether a `Secret` can reach a position declared with `type`: `string`,
+ * `dyn`, a type variable such as `A`, or a list, map or optional of anything.
+ * A `Secret` is a dyn value at run time, so cel-js dispatches it to any of
+ * these; a scalar type such as `int` or `bytes` never matches it.
+ */
+export function isSecretCapableType(type: string): boolean {
+  return type === "string" || type === "dyn" || /^[A-Z]$/.test(type) ||
+    /^(list|map|optional|dyn)<.*>$/.test(type);
+}
 
 /**
  * Every type name cel-js 7.6.1 accepts in an operator signature, `Secret`
@@ -255,11 +261,12 @@ export function qualifiedName(parsed: ParsedSignature): string {
 /**
  * Dispositions other than `refusal`, by qualified name. A position of a
  * function named here that carries the listed type takes that disposition;
- * every other secret-capable `string` position is a refusal. A `dyn`,
- * `list<dyn>` or `list<string>` position not named here is unclassified and
- * {@link classifyPositions} throws, because a secret there cannot be refused
- * by a signature and needs a decision. That is the alarm a dependency bump
- * trips: a new list-taking built-in is never classified silently.
+ * every other secret-capable `string` position is a refusal. Any other
+ * secret-capable position not named here (a `dyn`, a type variable, a list,
+ * map or optional) is unclassified and {@link classifyPositions} throws,
+ * because a secret there cannot be refused by a signature and needs a
+ * decision. That is the alarm a dependency bump trips: a new generic or
+ * container-taking built-in is never classified silently.
  */
 const SPECIAL_DISPOSITIONS: ReadonlyMap<
   string,
@@ -267,6 +274,20 @@ const SPECIAL_DISPOSITIONS: ReadonlyMap<
 > = new Map([
   ["dyn", { types: ["dyn"], disposition: "named-delivery" }],
   ["CelNamespace.bind", { types: ["dyn"], disposition: "named-delivery" }],
+  ["OptionalNamespace.of", { types: ["A"], disposition: "named-delivery" }],
+  ["optional<A>.value", {
+    types: ["optional<A>"],
+    disposition: "named-delivery",
+  }],
+  [
+    "optional<dyn>.orValue",
+    { types: ["optional<dyn>"], disposition: "named-delivery" },
+  ],
+  ["optional<dyn>.hasValue", {
+    types: ["optional<dyn>"],
+    disposition: "container",
+  }],
+  ["optional<dyn>.or", { types: ["optional<dyn>"], disposition: "container" }],
   [
     "CelModelNamespace.method",
     { types: ["dyn"], disposition: "named-delivery" },
@@ -283,9 +304,13 @@ const SPECIAL_DISPOSITIONS: ReadonlyMap<
     "CelDataNamespace.listVersions",
     { types: ["list<dyn>"], disposition: "argument-walk" },
   ],
-  ["size", { types: ["list<dyn>"], disposition: "container" }],
-  ["type", { types: ["list<dyn>"], disposition: "container" }],
+  ["size", { types: ["list<dyn>", "map<dyn, dyn>"], disposition: "container" }],
+  ["type", { types: ["list<dyn>", "map<dyn, dyn>"], disposition: "container" }],
   ["list<dyn>.size", { types: ["list<dyn>"], disposition: "container" }],
+  ["map<dyn, dyn>.size", {
+    types: ["map<dyn, dyn>"],
+    disposition: "container",
+  }],
   ["list<string>.join", { types: ["list<string>"], disposition: "container" }],
   ["list<dyn>.all", { types: ["list<dyn>"], disposition: "container" }],
   ["list<dyn>.exists", { types: ["list<dyn>"], disposition: "container" }],
@@ -322,7 +347,7 @@ export function classifyPositions(signature: string): PositionDisposition[] {
   const out: PositionDisposition[] = [];
   for (const [position, type] of positions) {
     if (type === AST_PARAMETER) continue;
-    if (!SECRET_CAPABLE_TYPES.includes(type)) continue;
+    if (!isSecretCapableType(type)) continue;
     const disposition = dispositionFor(name, position, type, special);
     if (disposition === undefined) {
       throw new Error(
@@ -362,9 +387,8 @@ function dispositionFor(
  */
 export function secretCapableBuiltins(env: Environment): DefinitionFunction[] {
   return env.getDefinitions().functions.filter((fn) =>
-    (fn.receiverType !== null &&
-      SECRET_CAPABLE_TYPES.includes(fn.receiverType)) ||
-    fn.params.some((p) => SECRET_CAPABLE_TYPES.includes(p.type))
+    (fn.receiverType !== null && isSecretCapableType(fn.receiverType)) ||
+    fn.params.some((p) => isSecretCapableType(p.type))
   );
 }
 
