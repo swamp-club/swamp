@@ -31,7 +31,9 @@ import {
   type GlobalOptions,
   hasExplicitRepoDir,
   isQuietFromArgs,
+  logicalCwdFrom,
   postCommandNoticesAllowed,
+  repoDirAsGivenFrom,
   resolveColorEnabled,
   resolveExtensionsDir,
   resolveRepoDir,
@@ -935,4 +937,144 @@ Deno.test("postCommandNoticesAllowed: only log mode without -q shows notices", (
   assertEquals(postCommandNoticesAllowed("log", true), false);
   assertEquals(postCommandNoticesAllowed("json", false), false);
   assertEquals(postCommandNoticesAllowed("json", true), false);
+});
+
+/**
+ * A symlink resolver over a fixed layout: `link` is a symlink to `real`, so
+ * every path under either spelling resolves under `real`.
+ */
+function linkedLayout(): {
+  real: string;
+  link: string;
+  realPath: (path: string) => string;
+} {
+  const real = resolve("/data/real");
+  const link = resolve("/home/me/link");
+  const known = new Set([
+    resolve("/data"),
+    real,
+    join(real, "repo"),
+    join(real, "repo", "extensions"),
+    join(real, "other"),
+  ]);
+  const realPath = (raw: string): string => {
+    const path = resolve(raw);
+    const spelled = path === link || path.startsWith(link + SEPARATOR)
+      ? real + path.slice(link.length)
+      : path;
+    if (!known.has(spelled)) throw new Deno.errors.NotFound(path);
+    return spelled;
+  };
+  return { real, link, realPath };
+}
+
+Deno.test("logicalCwdFrom: a PWD naming the cwd through a symlink is the cwd as spelled", () => {
+  const { real, link, realPath } = linkedLayout();
+  assertEquals(
+    logicalCwdFrom(join(real, "repo"), join(link, "repo"), realPath),
+    join(link, "repo"),
+  );
+});
+
+Deno.test("logicalCwdFrom: a missing, stale, relative or dot-segment PWD gives the cwd", () => {
+  const { real, link, realPath } = linkedLayout();
+  const cwd = join(real, "repo");
+  assertEquals(logicalCwdFrom(cwd, undefined, realPath), cwd);
+  // Left over from a parent that changed directory without updating it.
+  assertEquals(logicalCwdFrom(cwd, join(link, "other"), realPath), cwd);
+  assertEquals(logicalCwdFrom(cwd, "link/repo", realPath), cwd);
+  // `pwd -L` never trusts a PWD with dot segments, even one naming the cwd.
+  assertEquals(
+    logicalCwdFrom(cwd, `${link}${SEPARATOR}repo${SEPARATOR}.`, realPath),
+    cwd,
+  );
+  // A PWD that no longer resolves.
+  assertEquals(logicalCwdFrom(cwd, resolve("/gone/repo"), realPath), cwd);
+});
+
+Deno.test("repoDirAsGivenFrom: the repo found from a symlinked cwd keeps the cwd's spelling", () => {
+  const { real, link, realPath } = linkedLayout();
+  const repoDir = join(real, "repo");
+  assertEquals(
+    repoDirAsGivenFrom({
+      cliValue: undefined,
+      envValue: undefined,
+      cwd: join(link, "repo", "extensions"),
+      repoDir,
+      realPath,
+    }),
+    join(link, "repo"),
+  );
+  // Started from the real spelling, nothing changes.
+  assertEquals(
+    repoDirAsGivenFrom({
+      cliValue: undefined,
+      envValue: undefined,
+      cwd: join(real, "repo", "extensions"),
+      repoDir,
+      realPath,
+    }),
+    repoDir,
+  );
+});
+
+Deno.test("repoDirAsGivenFrom: --repo-dir and SWAMP_REPO_DIR resolve against the cwd as spelled", () => {
+  const { real, link, realPath } = linkedLayout();
+  const repoDir = join(real, "repo");
+  const cwd = join(link, "other");
+  assertEquals(
+    repoDirAsGivenFrom({
+      cliValue: "../repo",
+      envValue: undefined,
+      cwd,
+      repoDir,
+      realPath,
+    }),
+    join(link, "repo"),
+  );
+  assertEquals(
+    repoDirAsGivenFrom({
+      cliValue: undefined,
+      envValue: "../repo",
+      cwd,
+      repoDir,
+      realPath,
+    }),
+    join(link, "repo"),
+  );
+});
+
+Deno.test("repoDirAsGivenFrom: a spelling that is not the repo gives the repo dir back", () => {
+  const { real, realPath } = linkedLayout();
+  const repoDir = join(real, "repo");
+  assertEquals(
+    repoDirAsGivenFrom({
+      cliValue: undefined,
+      envValue: undefined,
+      cwd: resolve("/elsewhere"),
+      repoDir,
+      realPath,
+    }),
+    repoDir,
+  );
+  assertEquals(
+    repoDirAsGivenFrom({
+      cliValue: "../nowhere",
+      envValue: undefined,
+      cwd: join(real, "other"),
+      repoDir,
+      realPath,
+    }),
+    repoDir,
+  );
+});
+
+Deno.test("resolveExtensionsDir: a relative value resolves against the cwd passed", () => {
+  withMockedEnv({ SWAMP_EXTENSIONS_DIR: undefined }, () => {
+    const cwd = resolve("/home/me/link/repo");
+    assertPathEquals(
+      resolveExtensionsDir("ext", cwd)!,
+      join(cwd, "ext"),
+    );
+  });
 });

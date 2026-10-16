@@ -19,7 +19,14 @@
 
 import type { Logger } from "@logtape/logtape";
 import { setColorEnabled } from "@std/fmt/colors";
-import { basename, dirname, join, resolve, SEPARATOR } from "@std/path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 import { CLUB_API_KEY_FILE_FLAG } from "../infrastructure/persistence/api_key_source.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -431,6 +438,100 @@ export function resolveRepoDir(cliValue: string | undefined): string {
 }
 
 /**
+ * The current directory as the user spelled it (swamp-club#3536). The
+ * process cwd has its symlinks resolved, so a directory reached through a
+ * link (macOS `/var` is `/private/var`) would print under a spelling the
+ * user never typed. A POSIX shell keeps the spelling in `PWD`, which is
+ * used, as `pwd -L` uses it, only when it is absolute, has no `.` or `..`
+ * segment and names the same directory as the cwd; otherwise the cwd.
+ * Windows always gets the cwd.
+ */
+export function logicalCwd(): string {
+  if (Deno.build.os === "windows") return Deno.cwd();
+  return logicalCwdFrom(
+    Deno.cwd(),
+    Deno.env.get("PWD"),
+    (path) => Deno.realPathSync(path),
+  );
+}
+
+/** {@link logicalCwd} over the given cwd, `PWD` and symlink resolver. */
+export function logicalCwdFrom(
+  cwd: string,
+  pwd: string | undefined,
+  realPath: (path: string) => string,
+): string {
+  if (pwd === undefined || pwd === cwd || !isAbsolute(pwd)) return cwd;
+  if (pwd.split(/[\\/]/).some((s) => s === "." || s === "..")) return cwd;
+  try {
+    return realPath(pwd) === realPath(cwd) ? resolve(pwd) : cwd;
+  } catch {
+    return cwd;
+  }
+}
+
+/**
+ * The repository directory {@link resolveRepoDir} found, spelled the way
+ * the user gave it: `--repo-dir` or `SWAMP_REPO_DIR` resolved against the
+ * {@link logicalCwd}, or else the ancestor of the logical cwd that is the
+ * repository. Any spelling that does not name the same directory gives
+ * `repoDir` back. Paths swamp reports use this spelling; storage keeps
+ * `repoDir`, because `node:sqlite` refuses a path through a symlink
+ * (swamp-club#3552).
+ */
+export function repoDirAsGiven(
+  cliValue: string | undefined,
+  repoDir: string,
+): string {
+  if (Deno.build.os === "windows") return repoDir;
+  return repoDirAsGivenFrom({
+    cliValue,
+    envValue: Deno.env.get("SWAMP_REPO_DIR"),
+    cwd: logicalCwd(),
+    repoDir,
+    realPath: (path) => Deno.realPathSync(path),
+  });
+}
+
+/** {@link repoDirAsGiven} over the given values and symlink resolver. */
+export function repoDirAsGivenFrom(options: {
+  cliValue: string | undefined;
+  envValue: string | undefined;
+  cwd: string;
+  repoDir: string;
+  realPath: (path: string) => string;
+}): string {
+  const { cliValue, envValue, cwd, repoDir, realPath } = options;
+  let realRepoDir: string;
+  try {
+    realRepoDir = realPath(repoDir);
+  } catch {
+    return repoDir;
+  }
+  const namesRepo = (path: string): boolean => {
+    try {
+      return realPath(path) === realRepoDir;
+    } catch {
+      return false;
+    }
+  };
+  const explicit = cliValue ??
+    (envValue !== undefined && envValue.length > 0 ? envValue : undefined);
+  if (explicit !== undefined) {
+    const given = resolve(cwd, explicit);
+    return namesRepo(given) ? given : repoDir;
+  }
+  let dir = cwd;
+  for (let depth = 0; depth < MAX_ANCESTOR_DEPTH; depth++) {
+    if (namesRepo(dir)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return repoDir;
+}
+
+/**
  * Resolves the traceparent for a command, given the Cliffy parsed
  * `--traceparent` option value.
  *
@@ -549,16 +650,19 @@ function declaresClubApiKeyFile(
  * Priority: --extensions-dir flag > SWAMP_EXTENSIONS_DIR env var > undefined.
  *
  * When undefined, callers should fall back to repoDir for extension scanning.
+ * A relative value resolves against `cwd`, the process cwd unless the
+ * caller passes the {@link logicalCwd}.
  */
 export function resolveExtensionsDir(
   cliValue: string | undefined,
+  cwd: string = Deno.cwd(),
 ): string | undefined {
   if (cliValue !== undefined) {
-    return resolve(cliValue);
+    return resolve(cwd, cliValue);
   }
   const envDir = Deno.env.get("SWAMP_EXTENSIONS_DIR");
   if (envDir && envDir.length > 0) {
-    return resolve(envDir);
+    return resolve(cwd, envDir);
   }
   return undefined;
 }

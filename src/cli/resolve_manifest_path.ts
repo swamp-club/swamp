@@ -17,7 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extname, isAbsolute, join, resolve } from "@std/path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
 
 /** Manifest file names a directory argument may hold, in lookup order. */
@@ -153,5 +162,39 @@ async function statOrNull(path: string): Promise<Deno.FileInfo | null> {
     // absent too; anything else (permissions) is the caller's problem.
     if (error instanceof Deno.errors.NotADirectory) return null;
     throw error;
+  }
+}
+
+/**
+ * `manifestPath` re-spelled under `repoDir` when it reaches the same
+ * repository through another spelling, such as the real path of a repo the
+ * user entered through a symlink (swamp-club#3536). The extension files
+ * resolve under `repoDir`, so a manifest left in the other spelling would
+ * report them through a path that climbs to the root and back. A manifest
+ * already under `repoDir` is returned unchanged, so a symlink inside the
+ * repository is never resolved away, and so is one outside the repository.
+ */
+export async function manifestPathUnderRepo(
+  manifestPath: string,
+  repoDir: string,
+): Promise<string> {
+  if (!escapes(relative(repoDir, manifestPath))) return manifestPath;
+  const realDir = await realPathOrNull(dirname(manifestPath));
+  const realRepoDir = await realPathOrNull(repoDir);
+  if (realDir === null || realRepoDir === null) return manifestPath;
+  const rel = relative(realRepoDir, realDir);
+  if (escapes(rel)) return manifestPath;
+  return join(repoDir, rel, basename(manifestPath));
+}
+
+function escapes(rel: string): boolean {
+  return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
+}
+
+async function realPathOrNull(path: string): Promise<string | null> {
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    return null;
   }
 }

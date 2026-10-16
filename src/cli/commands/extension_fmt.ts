@@ -29,11 +29,16 @@ import { createExtensionFmtRenderer } from "../../presentation/renderers/extensi
 import {
   createContext,
   type GlobalOptions,
+  logicalCwd,
+  repoDirAsGiven,
   resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { resolveManifestArgument } from "../resolve_manifest_path.ts";
+import {
+  manifestPathUnderRepo,
+  resolveManifestArgument,
+} from "../resolve_manifest_path.ts";
 import {
   createModuleGraphReader,
   findDenoConfig,
@@ -74,14 +79,24 @@ export const extensionFmtCommand = new Command()
     const cliCtx = createContext(options, ["extension", "fmt"]);
     cliCtx.logger.debug`Starting extension fmt`;
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    const extensionsDir = resolveExtensionsDir(options.extensionsDir);
-    const { absoluteManifestPath } = await resolveManifestArgument({
-      argument: manifestPath,
-      cwd: Deno.cwd(),
+    // The repo context opens the resolved repo dir; the extension's files
+    // resolve and report under the spelling the user gave, as push and
+    // quality do (swamp-club#3536).
+    const storageRepoDir = resolveRepoDir(options.repoDir);
+    const repoDir = repoDirAsGiven(options.repoDir, storageRepoDir);
+    const cwd = logicalCwd();
+    const extensionsDir = resolveExtensionsDir(options.extensionsDir, cwd);
+    const { absoluteManifestPath: manifestArgumentPath } =
+      await resolveManifestArgument({
+        argument: manifestPath,
+        cwd,
+        repoDir,
+        extensionsDir,
+      });
+    const absoluteManifestPath = await manifestPathUnderRepo(
+      manifestArgumentPath,
       repoDir,
-      extensionsDir,
-    });
+    );
     if (isPulledExtensionManifest(repoDir, absoluteManifestPath)) {
       throw new UserError(
         "Cannot run fmt on a pulled extension. Pulled extensions are read-only " +
@@ -91,7 +106,7 @@ export const extensionFmtCommand = new Command()
     }
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir,
+      repoDir: storageRepoDir,
       outputMode: cliCtx.outputMode,
     });
     const {

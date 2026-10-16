@@ -34,11 +34,16 @@ import { createExtensionQualityRenderer } from "../../presentation/renderers/ext
 import {
   createContext,
   type GlobalOptions,
+  logicalCwd,
+  repoDirAsGiven,
   resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { resolveManifestArgument } from "../resolve_manifest_path.ts";
+import {
+  manifestPathUnderRepo,
+  resolveManifestArgument,
+} from "../resolve_manifest_path.ts";
 import {
   createModuleGraphReader,
   findDenoConfig,
@@ -82,14 +87,24 @@ export const extensionQualityCommand = new Command()
       const cliCtx = createContext(options, ["extension", "quality"]);
       cliCtx.logger.debug`Starting extension quality`;
 
-      const repoDir = resolveRepoDir(options.repoDir);
-      const extensionsDir = resolveExtensionsDir(options.extensionsDir);
-      const { absoluteManifestPath } = await resolveManifestArgument({
-        argument: manifestPath,
-        cwd: Deno.cwd(),
+      // The repo context and the package cache open the resolved repo dir;
+      // the extension's files resolve and report under the spelling the
+      // user gave (swamp-club#3536).
+      const storageRepoDir = resolveRepoDir(options.repoDir);
+      const repoDir = repoDirAsGiven(options.repoDir, storageRepoDir);
+      const cwd = logicalCwd();
+      const extensionsDir = resolveExtensionsDir(options.extensionsDir, cwd);
+      const { absoluteManifestPath: manifestArgumentPath } =
+        await resolveManifestArgument({
+          argument: manifestPath,
+          cwd,
+          repoDir,
+          extensionsDir,
+        });
+      const absoluteManifestPath = await manifestPathUnderRepo(
+        manifestArgumentPath,
         repoDir,
-        extensionsDir,
-      });
+      );
       if (isPulledExtensionManifest(repoDir, absoluteManifestPath)) {
         throw new UserError(
           "Cannot run quality on a pulled extension. Pulled extensions are read-only " +
@@ -99,7 +114,7 @@ export const extensionQualityCommand = new Command()
       }
 
       const { repoContext } = await requireInitializedRepoReadOnly({
-        repoDir,
+        repoDir: storageRepoDir,
         outputMode: cliCtx.outputMode,
       });
 
@@ -122,7 +137,7 @@ export const extensionQualityCommand = new Command()
       const identity = await loadIdentity();
       const prepareDeps = createExtensionPushPrepareDeps(identity);
       const cache = new ExtensionPackageCache(
-        defaultPackageCacheRoot(repoDir),
+        defaultPackageCacheRoot(storageRepoDir),
         VERSION,
       );
       const deps = createExtensionQualityDeps(prepareDeps, cache, identity);
@@ -199,7 +214,7 @@ export const extensionQualityCommand = new Command()
             symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
           },
         }),
-        renderer.handlers({ manifestDir, repoDir }),
+        renderer.handlers({ manifestDir, repoDir, cwd }),
       );
 
       cliCtx.logger.debug`Extension quality command completed`;

@@ -23,6 +23,7 @@ import {
   extname,
   isAbsolute,
   join,
+  relative,
   resolve,
   SEPARATOR,
 } from "@std/path";
@@ -204,6 +205,11 @@ export interface WorkflowManifestEntry {
    * on it refuses it, so the link is never followed.
    */
   realPath: string;
+  /**
+   * The workflow file under the spelling of the directory it was found in,
+   * which is what push reports (swamp-club#3536); `realPath` when absent.
+   */
+  path?: string;
 }
 
 /** The archive and lookup names decided for one manifest workflow entry. */
@@ -285,7 +291,7 @@ export function planWorkflowArchiveNames(
     taken.set(archiveKey, entry.ref);
     planned.push({
       ref: entry.ref,
-      sourcePath: entry.realPath,
+      sourcePath: entry.path ?? entry.realPath,
       archiveName,
       lookupName,
     });
@@ -352,6 +358,11 @@ function typedEntries(
 
 function isSameOrUnder(path: string, root: string): boolean {
   return path === root || path.startsWith(root + SEPARATOR);
+}
+
+/** Whether a `relative()` result leaves the directory it was taken from. */
+function isOutside(rel: string): boolean {
+  return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
 }
 
 /**
@@ -924,6 +935,7 @@ export async function resolveExtensionFiles(
     for (const wfRef of manifest.workflows) {
       let realPath: string | null = null;
       let foundIn = "";
+      let path = "";
 
       for (const candidateDir of wfCandidateDirs) {
         const candidate = resolve(candidateDir, wfRef);
@@ -931,6 +943,7 @@ export async function resolveExtensionFiles(
           realPath = await Deno.realPath(candidate);
           manifestWfReal.add(realPath);
           foundIn = candidateDir;
+          path = candidate;
           // A symlinked workflow is listed by its own path, never parsed.
           if (await probe.check(candidate) !== undefined) realPath = candidate;
           break;
@@ -958,7 +971,7 @@ export async function resolveExtensionFiles(
         rootWfDirs.map((d) => resolve(d, wfRef)),
         repoWfDirs.map((d) => resolve(d, wfRef)),
       );
-      wfEntries.push({ ref: wfRef, realPath });
+      wfEntries.push({ ref: wfRef, realPath, path });
     }
 
     // Push writes every workflow to extension/workflows/<archiveName>, so
@@ -1003,10 +1016,12 @@ export async function resolveExtensionFiles(
     }
 
     // Merge workflow files from dependency resolution.
-    // Use realPath on dep-resolver paths so they match the manifest paths
-    // (which were already realPath'd). Without this, symlinks in the repo
-    // path itself (e.g. /tmp → /private/tmp on macOS) cause mismatches.
-    const wfSet = new Set(workflowFiles.map((wf) => wf.sourcePath));
+    // Compare real paths so a dep-resolver path matches a manifest entry
+    // however either is spelled (e.g. /tmp → /private/tmp on macOS). The
+    // dep resolver reads the resolved repo dir, so a file under it is
+    // reported under the repo dir's own spelling (swamp-club#3536).
+    const realRepoDir = await realPathOr(resolve(repoDir));
+    const wfSet = new Set<string>();
     for (const wf of depResult.workflowFiles) {
       let realWf: string;
       try {
@@ -1015,7 +1030,12 @@ export async function resolveExtensionFiles(
         continue; // Skip if the file doesn't exist
       }
       if (manifestWfReal.has(realWf)) continue;
+      // A symlinked workflow is listed by its own path, never followed.
       if (await probe.check(wf) !== undefined) realWf = resolve(wf);
+      const rel = relative(realRepoDir, realWf);
+      const sourcePath = rel !== "" && !isOutside(rel)
+        ? join(repoDir, rel)
+        : realWf;
       if (!wfSet.has(realWf)) {
         const archiveName = basename(realWf);
         const archiveKey = normalizeAdditionalFileEntry(archiveName);
@@ -1023,16 +1043,16 @@ export async function resolveExtensionFiles(
         if (takenBy !== undefined) {
           throw markErrorPaths(
             new UserError(
-              `Workflow ${realWf}, referenced by a workflow step, would be ` +
+              `Workflow ${sourcePath}, referenced by a workflow step, would be ` +
                 `packaged as ${archiveName}, the same archive name as ` +
                 `${takenBy}. Rename one of the files so each workflow in the ` +
                 `package has a distinct file name.`,
             ),
-            [realWf, archiveName, takenBy],
+            [sourcePath, archiveName, takenBy],
           );
         }
-        takenArchiveNames.set(archiveKey, realWf);
-        workflowFiles.push({ sourcePath: realWf, archiveName });
+        takenArchiveNames.set(archiveKey, sourcePath);
+        workflowFiles.push({ sourcePath, archiveName });
         wfSet.add(realWf);
       }
     }
