@@ -105,6 +105,8 @@ export type NestedWaitAction =
     readonly waitId: string;
     /** When the wait stops accepting a signal, as an ISO timestamp. */
     readonly deadline: string;
+    /** The key the wait's step declared, if any (swamp-club#3214). */
+    readonly key?: string;
   }
   | { readonly kind: "resume"; readonly target: NestedRunTarget }
   | { readonly kind: "recover"; readonly target: NestedRunTarget }
@@ -522,6 +524,7 @@ export class NestedRunLink {
         stepName: openWait.stepName,
         waitId: openWait.wait.id,
         deadline: openWait.wait.deadline,
+        ...(openWait.wait.key !== undefined ? { key: openWait.wait.key } : {}),
       };
     }
 
@@ -549,7 +552,11 @@ function openWaitOnRecord(
   return {
     jobName: open.jobName,
     stepName: open.stepName,
-    wait: { id: open.wait.id, deadline: open.wait.deadline.toISOString() },
+    wait: {
+      id: open.wait.id,
+      deadline: open.wait.deadline.toISOString(),
+      ...(open.wait.key !== undefined ? { key: open.wait.key } : {}),
+    },
   };
 }
 

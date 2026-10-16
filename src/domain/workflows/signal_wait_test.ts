@@ -24,11 +24,14 @@ import {
   openSignalWaitMessage,
   parseStoredWait,
   persistedWait,
+  receiptForCaller,
   RESERVED_PAYLOAD_KEYS,
   schemaExpressions,
   SIGNAL_PAYLOAD_MAX_BYTES,
   SIGNAL_PAYLOAD_MAX_DEPTH,
   SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
+  signalByKeyCommand,
+  SignalReceiptSchema,
   SignalWait,
   unenforcedSchemaKeywords,
 } from "./signal_wait.ts";
@@ -673,4 +676,41 @@ Deno.test("isIdempotencyKey: accepts 1 to 128 letters, digits, dots, colons, hyp
   ) {
     assertEquals(isIdempotencyKey(key), false, key);
   }
+});
+
+Deno.test("signalByKeyCommand: names the workflow and key with the flags workflow signal takes, quoted for a shell", () => {
+  assertEquals(
+    signalByKeyCommand("release", "release-verdict"),
+    "swamp workflow signal --workflow release --key release-verdict --payload '<json>'",
+  );
+  assertEquals(
+    signalByKeyCommand("it's mine", "k"),
+    `swamp workflow signal --workflow 'it'"'"'s mine' --key k --payload '<json>'`,
+  );
+  assertEquals(
+    signalByKeyCommand("bad\x1bname", "k"),
+    "swamp workflow signal --workflow $'bad\\x1bname' --key k --payload '<json>'",
+  );
+});
+
+Deno.test("receiptForCaller: leaves heldAsPending out and keeps everything else", () => {
+  const receipt = {
+    id: "33333333-3333-4333-8333-333333333333",
+    waitId: "11111111-1111-4111-8111-111111111111",
+    receivedAt: NOW.toISOString(),
+    submittedBy: "camera",
+    idempotencyKey: "retry-1",
+  };
+  assertEquals(receiptForCaller({ ...receipt, heldAsPending: true }), receipt);
+  assertEquals(receiptForCaller(receipt), receipt);
+  // A stored receipt keeps the marker; any other value is refused.
+  assertEquals(
+    SignalReceiptSchema.parse({ ...receipt, heldAsPending: true }),
+    { ...receipt, heldAsPending: true },
+  );
+  assertEquals(
+    SignalReceiptSchema.safeParse({ ...receipt, heldAsPending: false })
+      .success,
+    false,
+  );
 });

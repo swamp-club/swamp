@@ -52,6 +52,7 @@ import {
 import {
   parseStoredWait,
   persistedWait,
+  receiptForCaller,
   type SignalWait,
   type StoredWait,
   WAIT_TIMEOUT_STEP_ERROR,
@@ -762,7 +763,9 @@ export class StepRun {
         this.succeed({
           type: "wait_for_signal",
           payload: validation.payload,
-          signal: { ...outcome.receipt },
+          // The wait keeps the receipt as stored; the output has the
+          // documented shape (swamp-club#3214).
+          signal: receiptForCaller(outcome.receipt),
         });
         return true;
       }

@@ -30,6 +30,7 @@
 
 import type { InputsSchema } from "../definitions/definition.ts";
 import {
+  heldUntil,
   type HighestPendingRecord,
   isPendingHeld,
   type PendingSignal,
@@ -164,6 +165,83 @@ export function decideEarlySignal(
       ? own.record.number + 1
       : own.number + 1,
   };
+}
+
+/**
+ * A pending signal held for the next wait of its key, as a listing shows it
+ * (swamp-club#3214). It names the signal by its receipt and never carries
+ * the payload.
+ */
+export interface HeldPendingSignal {
+  workflowId: string;
+  key: string;
+  receiptId: string;
+  receivedAt: string;
+  /** When its age limit ends, as an ISO timestamp. */
+  heldUntil: string;
+  submittedBy: string;
+  /** The workflow name the sender was authorized to signal, if it was. */
+  authorizedFor?: string;
+}
+
+/**
+ * The pending signals held at `now`, one per key at most, ordered by when
+ * their age limits end (swamp-club#3214). For each key it reads the key's
+ * highest record once and the highest record of each live slot
+ * ({@link liveSlotsOf}), and lists the signal {@link decideEarlySignal}
+ * refuses a second signal for with `already_pending`. A signal listed here
+ * is one the sweep neither removes nor lapses at the same `now`, since it
+ * reads only live slots and lapses only past the age limit. It writes
+ * nothing.
+ *
+ * A key whose highest record cannot be read is left out, and so is a key
+ * the decision finds unreadable: a key is listed exactly when a second
+ * signal to it would be refused `already_pending`, never otherwise.
+ */
+export async function listHeldPendingSignals(
+  store:
+    & Pick<WaitKeyRecords, "highestKeyRecord">
+    & Pick<
+      PendingSignalRecords,
+      "highestPendingRecord" | "listPendingAddresses"
+    >,
+  now: Date,
+): Promise<HeldPendingSignal[]> {
+  const keys = new Map<string, { workflowId: string; key: string }>();
+  for (const at of await store.listPendingAddresses()) {
+    keys.set(JSON.stringify([at.workflowId, at.key]), {
+      workflowId: at.workflowId,
+      key: at.key,
+    });
+  }
+  const held: HeldPendingSignal[] = [];
+  for (const { workflowId, key } of keys.values()) {
+    const highest = await store.highestKeyRecord(workflowId, key);
+    if (highest.kind === "unreadable") continue;
+    const heads: HighestPendingRecord[] = [];
+    for (const slot of liveSlotsOf(highest).live) {
+      heads.push(await store.highestPendingRecord({ workflowId, key, slot }));
+    }
+    // The same decision a second signal gets, so a key is listed exactly
+    // when it would be refused `already_pending`.
+    const decision = decideEarlySignal(heads, now);
+    if (decision.kind !== "already_pending") continue;
+    const pending = decision.record;
+    held.push({
+      workflowId,
+      key,
+      receiptId: pending.receiptId,
+      receivedAt: pending.receivedAt,
+      heldUntil: heldUntil(pending).toISOString(),
+      submittedBy: pending.submittedBy,
+      ...(pending.authorizedFor !== undefined
+        ? { authorizedFor: pending.authorizedFor }
+        : {}),
+    });
+  }
+  return held.sort((a, b) =>
+    a.heldUntil < b.heldUntil ? -1 : a.heldUntil > b.heldUntil ? 1 : 0
+  );
 }
 
 /** An early signal, checked and ready to be stored. */

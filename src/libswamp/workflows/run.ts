@@ -170,6 +170,8 @@ export type WorkflowRunEvent =
     waitId: string;
     /** When the wait stops accepting a signal, as an ISO timestamp. */
     deadline: string;
+    /** The key the step declared, if any (swamp-club#3214). */
+    key?: string;
   }
   | {
     kind: "step_failed";
@@ -186,6 +188,11 @@ export type WorkflowRunEvent =
      */
     modelName?: string;
     methodName?: string;
+    /**
+     * On a `wait_key_held` failure: the open wait that holds the key, as its
+     * own registration names it (swamp-club#3214). The error stays bare.
+     */
+    waitKeyHolder?: WaitKeyHolder;
     forEachTemplate?: string;
     forEachIndex?: number;
   }
@@ -294,8 +301,9 @@ export type WorkflowRunEvent =
     /**
      * Set when the run suspended on a step waiting for a signal: the wait
      * `workflow signal` names. `jobId` and `stepId` are then that step.
+     * `key` is the key the step declared, if any (swamp-club#3214).
      */
-    wait?: { id: string; deadline: string };
+    wait?: { id: string; deadline: string; key?: string };
     /**
      * The open waits for a signal that nested runs of this run hold, each at
      * the innermost run that has to act (swamp-club#3110). A run on a server
@@ -318,6 +326,21 @@ export interface NestedSignalWaitData {
   waitId: string;
   /** When the wait stops accepting a signal, as an ISO timestamp. */
   deadline: string;
+  /** The key the wait's step declared, if any (swamp-club#3214). */
+  key?: string;
+}
+
+/**
+ * The open wait that holds a key a step was refused with `wait_key_held`
+ * (swamp-club#3214).
+ */
+export interface WaitKeyHolder {
+  workflowId: string;
+  workflowName: string;
+  key: string;
+  runId: string;
+  stepName: string;
+  waitId: string;
 }
 
 /**
@@ -613,6 +636,11 @@ export function toRunData(
             stepData.wait = {
               id: step.signalWait.id,
               deadline: step.signalWait.deadline.toISOString(),
+              ...(step.signalWait.key !== undefined
+                ? { key: step.signalWait.key }
+                : {}),
+              // As stored, heldAsPending included: the run view is the one
+              // place that shows it (swamp-club#3214).
               ...(step.signalWait.receipt
                 ? { receipt: { ...step.signalWait.receipt } }
                 : {}),

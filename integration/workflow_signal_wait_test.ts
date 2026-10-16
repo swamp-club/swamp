@@ -3227,6 +3227,49 @@ Deno.test("early signal: a signal sent before the run reaches its wait is the st
   });
 });
 
+Deno.test("early signal: the steps after a step that took a pending signal as it opened read the documented receipt, without heldAsPending (swamp-club#3214)", async () => {
+  const workflow = Workflow.create({
+    name: "early-live-outputs",
+    jobs: [
+      Job.create({
+        name: "release",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(3600, VERDICT_SCHEMA, EARLY_KEY, 600),
+          }),
+          Step.create({
+            name: "ship",
+            dependsOn: [{
+              step: "review",
+              condition: TriggerCondition.succeeded(),
+            }],
+            // Skipped unless the receipt has the documented shape.
+            guard: '${{ "heldAsPending" in steps.review.outputs.signal || ' +
+              '!("receivedAt" in steps.review.outputs.signal) }}',
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  await withHarness([workflow], async (h) => {
+    const sent = await signalByKeyAt(h, workflow, { verdict: "ship" });
+    assert(sent.kind === "pending", `got ${sent.kind}`);
+
+    await drain(h.service.run(workflow.name));
+    const run = await only(h, workflow);
+    assertEquals(run.status, "succeeded");
+    assertEquals(stepOf(run, "ship").status, "succeeded");
+    assertEquals(h.executor.executed, [`${workflow.name}/ship`]);
+    // The run view keeps the marker on the wait itself.
+    assertEquals(
+      stepOf(run, "review").signalWait?.receipt?.heldAsPending,
+      true,
+    );
+  });
+});
+
 Deno.test("early signal: a pending signal older than the limit is ignored, the wait opens, and it takes a later signal", async () => {
   const workflow = earlyRelease("early-too-old", 10);
   await withHarness([workflow], async (h) => {

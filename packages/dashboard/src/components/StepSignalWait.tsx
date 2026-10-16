@@ -24,10 +24,17 @@
 export interface StepSignalWaitInfo {
   id: string;
   deadline: string;
+  /** The key a signal sent by key reaches the wait with. */
+  key?: string;
   receipt?: {
     id: string;
     receivedAt: string;
     submittedBy: string;
+    /**
+     * The signal came by key before the wait was open, and serve held it
+     * until the wait took it.
+     */
+    heldAsPending?: true;
   };
 }
 
@@ -38,8 +45,9 @@ interface StepSignalWaitProps {
 }
 
 /**
- * A `wait_for_signal` step's wait: its ID and deadline while it waits, and
- * the receipt of the signal that settled it. A step still `waiting` with a
+ * A `wait_for_signal` step's wait: its ID, key and deadline while it
+ * waits, and the receipt of the signal that settled it, marked when serve
+ * held that signal for the wait before the wait was open. A step still `waiting` with a
  * receipt was signalled after the run suspended; the next resume applies
  * the signal. Renders nothing for a step with no wait.
  */
@@ -63,14 +71,20 @@ export function StepSignalWait({ status, wait }: StepSignalWaitProps) {
             Signal <span className="mono">{wait.receipt.id}</span> from{" "}
             {wait.receipt.submittedBy} at{" "}
             <span className="mono">{wait.receipt.receivedAt}</span>
+            {wait.receipt.heldAsPending &&
+              ", held as a pending signal until the wait took it"}
             {waiting && " — a resume applies it"}
           </span>
         )
         : (
           <span>
             {waiting ? "Waiting for signal" : "Waited for signal"}{" "}
-            <span className="mono">{wait.id}</span> until{" "}
-            <span className="mono">{wait.deadline}</span>
+            <span className="mono">{wait.id}</span> {wait.key && (
+              <>
+                (key <span className="mono">{wait.key}</span>){" "}
+              </>
+            )}
+            until <span className="mono">{wait.deadline}</span>
           </span>
         )}
     </div>

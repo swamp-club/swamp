@@ -93,6 +93,7 @@ untagged resource.
 ```bash
 # CLI, against a server
 swamp workflow waits --server wss://...          # needs read on the workflow
+swamp workflow waits --pending --server wss://...  # plus signals held for a key
 swamp workflow signal <waitId> --payload '{"verdict":"ship"}' --server wss://...
 # By key: no wait ID and no read grant needed, only signal on the workflow
 swamp workflow signal --workflow <name> --key <key> --payload '{"verdict":"ship"}' --server wss://...
@@ -115,9 +116,13 @@ curl -X POST https://<host>/api/v1/signal \
 ```
 
 `swamp workflow run --server` prints the wait ID and the signal command with
-`--server` when the run suspends on a wait, its own or a nested run's. A nested
-run's wait is named only to a caller who may read that workflow. The dashboard's
-Approvals page lists open, signalled and expired waits.
+`--server` when the run suspends on a wait, its own or a nested run's, and for a
+keyed wait the by-key command too. A nested run's wait is named only to a caller
+who may read that workflow, and so is the holder a `wait_key_held` failure
+names. The dashboard's Approvals & Signals page lists open, signalled and
+expired waits with their keys and by-key commands, and the pending signals held
+for a key with the time left. A server older than `--pending` lists no pending
+signals, and the command warns.
 
 | HTTP status | Meaning                                                        |
 | ----------- | -------------------------------------------------------------- |

@@ -2531,3 +2531,360 @@ Deno.test("renderWorkflowRunAccepted: log mode escapes control characters in the
   assertEquals(output.includes("\u0007"), false);
   assertStringIncludes(output, "(run: run\\x1b]0;x\\x07)");
 });
+
+// swamp-club#3214: a keyed wait is signalled by key as well as by ID, and a
+// step refused with wait_key_held names the wait that holds the key.
+
+const KEY_TARGET = " --server ws://localhost:9090";
+const BY_KEY =
+  "swamp workflow signal --workflow release --key kitchen-verdict --payload '<json>'";
+
+const HOLDER = {
+  workflowId: "wf-1",
+  workflowName: "release",
+  key: "kitchen-verdict",
+  runId: "run-0",
+  stepName: "review",
+  waitId: WAIT_ID,
+};
+
+function keyHeldFailure(
+  waitKeyHolder: typeof HOLDER | null = HOLDER,
+): WorkflowRunEvent {
+  return {
+    kind: "step_failed",
+    jobId: "release",
+    stepId: "review",
+    error: "wait_key_held",
+    allowedFailure: true,
+    ...(waitKeyHolder ? { waitKeyHolder } : {}),
+  };
+}
+
+function releaseRunView(status: "succeeded" | "failed"): WorkflowRunView {
+  return { ...makeRunView(status), workflowName: "release" };
+}
+
+async function renderLog(
+  events: WorkflowRunEvent[],
+  commandTarget?: string,
+): Promise<string[]> {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "release",
+    commandTarget,
+  });
+  return await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+}
+
+const RELEASE_STARTED: WorkflowRunEvent = {
+  kind: "started",
+  runId: "run-1",
+  workflowName: "release",
+  jobs: [{ id: "release", stepCount: 1, dependsOn: [] }],
+};
+
+Deno.test("ConsoleWorkflowRunRenderer: a keyed wait prints the by-key command beside the by-ID one, when requested and at the suspension, with the target", async () => {
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    {
+      kind: "signal_wait_requested",
+      runId: "run-1",
+      jobId: "release",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+      key: "kitchen-verdict",
+    },
+    {
+      kind: "suspended",
+      run: releaseRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE, key: "kitchen-verdict" },
+    },
+  ], KEY_TARGET);
+  const byId = lines.filter((line) =>
+    line.includes(`swamp workflow signal ${WAIT_ID} --payload '<json>'`)
+  );
+  const byKey = lines.filter((line) => line.includes("--key"));
+  assertEquals(byId.length, 2);
+  assertEquals(byKey.length, 2);
+  for (const line of byKey) {
+    assertStringIncludes(line, `Or by key:  ${BY_KEY}${KEY_TARGET}`);
+  }
+  // Each by-key line follows its by-ID line.
+  for (const line of byKey) {
+    const at = lines.indexOf(line);
+    assertStringIncludes(lines[at - 1], `signal ${WAIT_ID}`);
+  }
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a key that is not a string, as a faulty server could send, prints the by-ID command only and does not throw", async () => {
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    {
+      kind: "suspended",
+      run: releaseRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: {
+        id: WAIT_ID,
+        deadline: WAIT_DEADLINE,
+        key: { not: "a string" } as unknown as string,
+      },
+    },
+  ], KEY_TARGET);
+  assert(
+    lines.some((line) =>
+      line.includes(`swamp workflow signal ${WAIT_ID} --payload '<json>'`)
+    ),
+  );
+  assertEquals(lines.some((line) => line.includes("Or by key")), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: an unkeyed wait prints no by-key command", async () => {
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    {
+      kind: "signal_wait_requested",
+      runId: "run-1",
+      jobId: "release",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: releaseRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+    },
+  ]);
+  assertEquals(lines.some((line) => line.includes("--key")), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a keyed nested wait prints the by-key command under the nested workflow's name", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "parent",
+    commandTarget: KEY_TARGET,
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream([
+        {
+          kind: "started",
+          runId: "run-1",
+          workflowName: "parent",
+          jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+        },
+        {
+          kind: "suspended",
+          run: makeRunView("succeeded"),
+          jobId: "main",
+          stepId: "call-child",
+          prompt: "",
+          nested: { workflowName: "child", runId: "child-1" },
+          nestedSignalWaits: [{ ...NESTED_WAIT, key: "kitchen-verdict" }],
+        },
+      ]),
+      renderer.handlers(),
+    );
+  });
+  const byKey = lines.filter((line) => line.includes("--key"));
+  assertEquals(byKey.length, 1);
+  assertStringIncludes(
+    byKey[0],
+    `Or by key:  swamp workflow signal --workflow child --key kitchen-verdict --payload '<json>'${KEY_TARGET}`,
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a step refused with wait_key_held names the holder under its failure, escaped", async () => {
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    { kind: "step_started", jobId: "release", stepId: "review" },
+    keyHeldFailure({ ...HOLDER, stepName: "rev\x1b[2Jiew" }),
+    { kind: "completed", run: releaseRunView("succeeded") },
+  ]);
+  const output = lines.join("\n");
+  assertStringIncludes(
+    output,
+    `key kitchen-verdict is held by step rev\\x1b[2Jiew of workflow release run run-0 (wait ${WAIT_ID})`,
+  );
+  assertEquals(output.includes("\x1b[2J"), false);
+  const failedAt = lines.findIndex((line) => line.includes("failed review"));
+  assertStringIncludes(lines[failedAt + 1], "is held by step");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a holder missing a field, as a faulty server could send, prints no holder line and does not throw", async () => {
+  const { stepName: _missing, ...partial } = HOLDER;
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    { kind: "step_started", jobId: "release", stepId: "review" },
+    keyHeldFailure(partial as typeof HOLDER),
+    { kind: "completed", run: releaseRunView("succeeded") },
+  ]);
+  assert(lines.some((line) => line.includes("failed review")));
+  assertEquals(lines.some((line) => line.includes("is held by")), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a step failure without a holder prints no holder line", async () => {
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    { kind: "step_started", jobId: "release", stepId: "review" },
+    keyHeldFailure(null),
+    { kind: "completed", run: releaseRunView("succeeded") },
+  ]);
+  assertEquals(lines.some((line) => line.includes("is held by")), false);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a keyed wait carries its key in signalRequired, signalWaits and nestedSignalWaits", async () => {
+  const run = {
+    ...waitingRunView([{
+      name: "review",
+      status: "waiting",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE, key: "kitchen-verdict" },
+    }]),
+    workflowName: "release",
+  };
+  const nested = { ...NESTED_WAIT, key: "child-key" };
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run,
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE, key: "kitchen-verdict" },
+      nestedSignalWaits: [nested],
+    },
+  ]);
+  const parsed = stdout[0] as Record<string, unknown> & {
+    signalRequired: { key?: string };
+    signalWaits: Array<{ key?: string }>;
+    nestedSignalWaits: Array<{ key?: string }>;
+  };
+  assertEquals(parsed.signalRequired.key, "kitchen-verdict");
+  assertEquals(parsed.signalWaits.map((w) => w.key), ["kitchen-verdict"]);
+  assertEquals(parsed.nestedSignalWaits, [nested]);
+  assertEquals("waitKeyHolders" in parsed, false);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a nested keyed wait requested in the stream carries its key in signalRequired", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "signal_wait_requested",
+      runId: "child-1",
+      workflowName: "child",
+      jobId: "child-job",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+      key: "child-key",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+    },
+  ]);
+  const parsed = stdout[0] as { signalRequired: { key?: string } };
+  assertEquals(parsed.signalRequired.key, "child-key");
+});
+
+Deno.test("JsonWorkflowRunRenderer: an unkeyed wait carries no key", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run: waitingRunView([{
+        name: "review",
+        status: "waiting",
+        wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+      }]),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+    },
+  ]);
+  const parsed = stdout[0] as {
+    signalRequired: Record<string, unknown>;
+    signalWaits: Array<Record<string, unknown>>;
+  };
+  assertEquals("key" in parsed.signalRequired, false);
+  assertEquals("key" in parsed.signalWaits[0], false);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a completed run carries the key holders its steps were refused with, and none without them", async () => {
+  const run = releaseRunView("failed");
+  const { stdout } = await renderJson([
+    keyHeldFailure(),
+    { kind: "completed", run },
+  ]);
+  assertEquals(stdout, [{ ...run, waitKeyHolders: [HOLDER] }]);
+
+  // A failure with no holder named leaves the output as it was.
+  const plain = await renderJson([
+    keyHeldFailure(null),
+    { kind: "completed", run },
+  ]);
+  assertEquals(plain.stdout, [run]);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a cancelled run carries the key holders its steps were refused with", async () => {
+  const run = releaseRunView("failed");
+  const { stdout } = await renderJson([
+    keyHeldFailure(),
+    { kind: "cancelled", run },
+  ]);
+  assertEquals(stdout, [{ ...run, waitKeyHolders: [HOLDER] }]);
+
+  const plain = await renderJson([{ kind: "cancelled", run }]);
+  assertEquals(plain.stdout, [run]);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a suspended run carries the key holders a step that may fail was refused with", async () => {
+  const run = waitingRunView([{
+    name: "other",
+    status: "waiting",
+    wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+  }]);
+  const suspended: WorkflowRunEvent = {
+    kind: "suspended",
+    run,
+    jobId: "release",
+    stepId: "other",
+    prompt: "",
+    wait: { id: WAIT_ID, deadline: WAIT_DEADLINE },
+  };
+  const { stdout } = await renderJson([keyHeldFailure(), suspended]);
+  const parsed = stdout[0] as Record<string, unknown>;
+  assertEquals(parsed.waitKeyHolders, [HOLDER]);
+  assert("signalRequired" in parsed);
+
+  // On a gate too.
+  const gated = await renderJson([
+    keyHeldFailure(),
+    { kind: "suspended", run, jobId: "release", stepId: "gate", prompt: "ok" },
+  ]);
+  const gatedParsed = gated.stdout[0] as Record<string, unknown>;
+  assertEquals(gatedParsed.waitKeyHolders, [HOLDER]);
+  assert("approvalRequired" in gatedParsed);
+
+  const plain = await renderJson([suspended]);
+  assertEquals("waitKeyHolders" in (plain.stdout[0] as object), false);
+});

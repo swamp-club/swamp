@@ -909,9 +909,9 @@ also clears a serve-started run whose approval gate has timed out, and a run
 left `running` by a serve process that has died. A gate past its `timeout` can
 no longer be approved or rejected: `swamp workflow approvals` lists it in a
 separate expired section with the cancel command for its run (an `expired` array
-in `--json`), and the dashboard's Approvals view has a Cancel button for it. If
-it answers that the run was not cancelled, the reply says what still holds it.
-See
+in `--json`), and the dashboard's Approvals & Signals view has a Cancel button
+for it. If it answers that the run was not cancelled, the reply says what still
+holds it. See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **`wait_for_signal`** - Suspend the workflow until a JSON message arrives or a
@@ -945,6 +945,7 @@ it. Use it when a step needs a value, not a yes or no:
 ```
 swamp workflow run release     # runs to the wait, prints the wait ID, suspends
 swamp workflow waits           # wait ID, workflow, step, deadline, schema
+swamp workflow waits --pending # also signals held for a key no wait took yet
 swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
 swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}'   # by key, in place of the wait ID
 swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}' --idempotency-key build-812   # safe to send again
@@ -975,21 +976,26 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   on a step under `forEach`. While one run's wait holds the key, the same step
   of another run fails with `wait_key_held` and opens no wait, so give it
   `allowFailure` or a `failed` dependent. The key is free again once the holder
-  is signalled, timed out or cancelled. `workflow waits` shows the key. A signal
-  names the wait ID, or `--workflow <id-or-name> --key <key>` (not both; either
-  works with `--server`): the key resolves to the wait that holds it, and the
-  result names that wait ID. A key the workflow does not declare, or an unknown
-  workflow, is not found; a declared key with no open wait is refused
-  (`no_open_wait`) and nothing is stored, so send again once the run reaches the
-  wait. A retry after a signal that landed gets `no_open_wait` too: the message
-  says how and when the key's last wait was settled, and the `--json` error
-  carries `refusal` and `lastWait` (`waitId`, `settledAs`, `settledAt`).
-  `settledAs: accepted` at about the time of the first attempt means it landed;
-  an older time means the next run has not reached its wait. Changing a step's
-  `key` while its wait is open strands that wait for key senders (old key: not
-  found; new key: `no_open_wait`, no `lastWait`): signal it by wait ID, or let
-  it settle first. Upgrade every host before adding a key: an older swamp
-  ignores it and opens the wait unclaimed.
+  is signalled, timed out or cancelled. `workflow run` names the holder's run,
+  step and wait ID under the failure (`waitKeyHolders` with `--json`; through
+  serve only to a reader of the holder's workflow); the step's error stays
+  `wait_key_held`. `workflow waits` shows the key, and it and `workflow run`
+  print the by-key signal command beside the by-ID one for a keyed wait
+  (`signalByKeyCommand` and `key` with `--json`). A signal names the wait ID, or
+  `--workflow <id-or-name> --key <key>` (not both; either works with
+  `--server`): the key resolves to the wait that holds it, and the result names
+  that wait ID. A key the workflow does not declare, or an unknown workflow, is
+  not found; a declared key with no open wait is refused (`no_open_wait`) and
+  nothing is stored, so send again once the run reaches the wait. A retry after
+  a signal that landed gets `no_open_wait` too: the message says how and when
+  the key's last wait was settled, and the `--json` error carries `refusal` and
+  `lastWait` (`waitId`, `settledAs`, `settledAt`). `settledAs: accepted` at
+  about the time of the first attempt means it landed; an older time means the
+  next run has not reached its wait. Changing a step's `key` while its wait is
+  open strands that wait for key senders (old key: not found; new key:
+  `no_open_wait`, no `lastWait`): signal it by wait ID, or let it settle first.
+  Upgrade every host before adding a key: an older swamp ignores it and opens
+  the wait unclaimed.
 - `acceptEarly` holds a signal by key that arrives before the wait opens,
   instead of refusing it `no_open_wait`. The signal's result then has
   `pending: true`, the receipt and `heldUntil`, and names no wait or run: it is
@@ -1016,12 +1022,18 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   read that before sending again. The payload is checked on arrival against the
   schema as written, so the schema of such a step may hold no expression,
   `inputs.*` included (`workflow validate` refuses one). A pending signal is
-  stored in plaintext like any payload, and `workflow waits` does not list it.
-  Upgrade every host that runs, resumes or lists the workflow before adding
-  `acceptEarly`, and every client that signals it with `--server`: an older
-  swamp never takes a held signal, and a server holds nothing for an older
-  client, which is refused `no_open_wait`. A server older than
-  `--idempotency-key` ignores the key.
+  stored in plaintext like any payload. `workflow waits --pending` lists held
+  signals (key, workflow, receipt, received, `heldUntil`, sender; never the
+  payload); a listed one is taken by the next wait only while that step still
+  sets `acceptEarly` and declares the key. A signal sent without `--server` to a
+  workflow id two definitions share is not listed. The run view marks a receipt
+  answered from a held signal (`heldAsPending` in the `--json` of
+  `workflow history get`, `workflow run` and `workflow resume`); step outputs
+  and signal results never carry it. Upgrade every host that runs, resumes or
+  lists the workflow before adding `acceptEarly`, and every client that signals
+  it with `--server`: an older swamp never takes a held signal, and a server
+  holds nothing for an older client, which is refused `no_open_wait`. A server
+  older than `--idempotency-key` ignores the key.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

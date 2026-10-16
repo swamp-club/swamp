@@ -136,11 +136,19 @@ export interface StepRunView {
 export interface SignalWaitView {
   id: string;
   deadline: string;
+  /** The key the step declared, if any (swamp-club#3214). */
+  key?: string;
   receipt?: {
     id: string;
     waitId: string;
     receivedAt: string;
     submittedBy: string;
+    /**
+     * Set when the signal arrived before the wait opened and was held as
+     * its key's pending signal until the wait took it (swamp-club#3214).
+     * The run view is the one place that shows it.
+     */
+    heldAsPending?: true;
   };
 }
 

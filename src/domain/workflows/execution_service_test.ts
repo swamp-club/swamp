@@ -19052,6 +19052,206 @@ Deno.test("wait_for_signal: of two steps that declare one key, one opens its wai
   });
 });
 
+/** A workflow with one keyed wait_for_signal step, allowed to fail. */
+function keyedWaitWorkflow(name: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "review",
+            allowFailure: true,
+            task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("wait_for_signal: a keyed wait's suspension and wait request carry its key (swamp-club#3214)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = keyedWaitWorkflow(`wait-key-shown-${crypto.randomUUID()}`);
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    service.signalWaits = inMemorySignalWaits();
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(workflow.name)) events.push(event);
+
+    const requested = events.find((e) => e.kind === "signal_wait_requested");
+    assert(requested?.kind === "signal_wait_requested");
+    assertEquals(requested.key, "verdict");
+    const suspended = events.at(-1);
+    assert(suspended?.kind === "suspended");
+    assertEquals(suspended.wait, {
+      id: requested.waitId,
+      deadline: requested.deadline,
+      key: "verdict",
+    });
+  });
+});
+
+Deno.test("wait_for_signal: a step refused its key by another run's open wait names that wait on step_failed, and its error stays bare (swamp-club#3214)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = keyedWaitWorkflow(
+      `wait-key-holder-${crypto.randomUUID()}`,
+    );
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    service.signalWaits = waits;
+    const failuresOf = async () => {
+      const events: WorkflowExecutionEvent[] = [];
+      for await (const event of service.run(workflow.name)) events.push(event);
+      return events.flatMap((e) => e.kind === "step_failed" ? [e] : []);
+    };
+
+    assertEquals(await failuresOf(), []);
+    const [holder] = await waits.store.listRegistrations();
+
+    const [failed] = await failuresOf();
+    assertEquals(failed.error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals(failed.waitKeyHolder, {
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      key: "verdict",
+      runId: holder.runId,
+      stepName: "review",
+      waitId: holder.waitId,
+    });
+    const runs = await runRepo.findAllByWorkflowId(workflow.id);
+    const refused = runs.find((run) => run.id !== holder.runId)!;
+    assertEquals(
+      refused.getJob("job1")!.getStep("review")!.error,
+      WAIT_KEY_HELD_STEP_ERROR,
+    );
+  });
+});
+
+Deno.test("wait_for_signal: a holder whose registration is missing, names another run, or cannot be read leaves waitKeyHolder off, and the step fails as before (swamp-club#3214)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = keyedWaitWorkflow(
+      `wait-key-nameless-${crypto.randomUUID()}`,
+    );
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const store = new InMemorySignalWaitStore();
+    service.signalWaits = { supported: true, store };
+    const failuresOf = async () => {
+      const events: WorkflowExecutionEvent[] = [];
+      for await (const event of service.run(workflow.name)) events.push(event);
+      return events.flatMap((e) => e.kind === "step_failed" ? [e] : []);
+    };
+    assertEquals(await failuresOf(), []);
+    const [holder] = await store.listRegistrations();
+
+    // A registration that names another run than the claim.
+    await store.removeRegistration(holder.waitId);
+    await store.register({ ...holder, runId: crypto.randomUUID() });
+    const [otherRun] = await failuresOf();
+    assertEquals(otherRun.error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals("waitKeyHolder" in otherRun, false);
+
+    // No registration at all.
+    await store.removeRegistration(holder.waitId);
+    const [missing] = await failuresOf();
+    assertEquals(missing.error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals("waitKeyHolder" in missing, false);
+
+    // A store that fails reading it.
+    await store.register(holder);
+    const findRegistration = store.findRegistration.bind(store);
+    let reads = 0;
+    store.findRegistration = (waitId: string) => {
+      // The claim reads the holder's registration for its pending signal
+      // only with acceptEarly; this step has none, so the one read is ours.
+      if (waitId === holder.waitId) {
+        reads++;
+        return Promise.reject(new Error("bucket unreachable"));
+      }
+      return findRegistration(waitId);
+    };
+    const [failing] = await failuresOf();
+    assertEquals(failing.error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals("waitKeyHolder" in failing, false);
+    assert(reads > 0);
+  });
+});
+
+Deno.test("wait_for_signal: a parent's suspension names the key of its nested run's open wait (swamp-club#3214)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const child = keyedWaitWorkflow(`wait-key-child-${crypto.randomUUID()}`);
+    await workflowRepo.save(child);
+    const parent = Workflow.create({
+      name: `wait-key-parent-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow(child.name),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parent);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    service.signalWaits = waits;
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(parent.name)) events.push(event);
+
+    const suspended = events.at(-1);
+    assert(suspended?.kind === "suspended");
+    const [registration] = await waits.store.listRegistrations();
+    assertEquals(suspended.nestedSignalWaits?.map((w) => [w.waitId, w.key]), [
+      [registration.waitId, "verdict"],
+    ]);
+  });
+});
+
 Deno.test("wait_for_signal: a key whose highest record cannot be read fails the step and opens no wait", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();

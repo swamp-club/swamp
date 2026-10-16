@@ -146,3 +146,34 @@ Deno.test("SignalWaitsPanel: escapes markup in workflow and step names", () => {
   assertEquals(html.includes("<img"), false);
   assertStringIncludes(html, "&lt;script&gt;");
 });
+
+Deno.test("SignalWaitsPanel: a keyed open wait shows its key and the by-key command beside the signal command", () => {
+  const byKey =
+    "swamp workflow signal --workflow deploy --key order-42 --payload '<json>'";
+  const html = renderToStaticMarkup(
+    <SignalWaitsPanel
+      rows={[{ ...open, key: "order-42", signalByKeyCommand: byKey }]}
+    />,
+  );
+  assertStringIncludes(html, "order-42");
+  assertStringIncludes(html, "key <span");
+  assertStringIncludes(html, `swamp workflow signal ${base.waitId}`);
+  assertStringIncludes(html, "Or by key:");
+  assertStringIncludes(html, "--key order-42");
+});
+
+Deno.test("SignalWaitsPanel: a keyed signalled wait shows its key and no by-key command", () => {
+  const html = renderToStaticMarkup(
+    <SignalWaitsPanel
+      rows={[{ ...signalled, key: "order-42", signalByKeyCommand: "stale" }]}
+    />,
+  );
+  assertStringIncludes(html, "order-42");
+  assertEquals(html.includes("Or by key"), false);
+});
+
+Deno.test("SignalWaitsPanel: a wait without a key renders as before", () => {
+  const html = renderToStaticMarkup(<SignalWaitsPanel rows={[open]} />);
+  assertEquals(html.includes("key <span"), false);
+  assertEquals(html.includes("Or by key"), false);
+});

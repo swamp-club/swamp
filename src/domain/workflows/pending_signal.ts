@@ -338,7 +338,8 @@ export function isReceivedForWait(
  * slot the wait's claim reads, the wait's run recorded the workflow name its
  * sender was authorized for, it was received no earlier than the wait
  * allows and no later than its deadline, and the schema the wait captured
- * allows the payload. The outcome is the same whoever builds it.
+ * allows the payload. The outcome is the same whoever builds it, and its
+ * receipt is marked `heldAsPending` (swamp-club#3214).
  */
 export function pendingOutcome(
   pending: PendingSignal,
@@ -374,6 +375,7 @@ export function pendingOutcome(
       ...(pending.idempotencyKey !== undefined
         ? { idempotencyKey: pending.idempotencyKey }
         : {}),
+      heldAsPending: true,
     },
     payload: validation.payload,
   };

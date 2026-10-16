@@ -1584,6 +1584,91 @@ Deno.test("mapWorkflowExecutionEvent: keeps step_failed errorPaths off the publi
   });
 });
 
+Deno.test("mapWorkflowExecutionEvent: carries a wait's key and a wait_key_held holder to the published events (swamp-club#3214)", () => {
+  const repo = new InMemoryWorkflowRunRepository();
+  const holder = {
+    workflowId: "wf-1",
+    workflowName: "kitchen",
+    key: "verdict",
+    runId: "run-0",
+    stepName: "review",
+    waitId: "wait-0",
+  };
+  assertEquals(
+    mapWorkflowExecutionEvent({
+      kind: "step_failed",
+      jobId: "job1",
+      stepId: "review",
+      runId: "run-1",
+      error: "wait_key_held",
+      allowedFailure: true,
+      waitKeyHolder: holder,
+    }, repo),
+    {
+      kind: "step_failed",
+      jobId: "job1",
+      stepId: "review",
+      error: "wait_key_held",
+      allowedFailure: true,
+      waitKeyHolder: holder,
+    },
+  );
+
+  const requested: WorkflowExecutionEvent = {
+    kind: "signal_wait_requested",
+    runId: "run-1",
+    workflowName: "kitchen",
+    jobId: "job1",
+    stepId: "review",
+    waitId: "wait-1",
+    deadline: "2026-01-01T00:05:00.000Z",
+    key: "verdict",
+  };
+  assertEquals(mapWorkflowExecutionEvent(requested, repo), requested);
+
+  const workflow = Workflow.create({
+    name: "kitchen",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  const nested = {
+    workflowId: "wf-2",
+    workflowName: "child",
+    runId: "run-2",
+    jobId: "job1",
+    stepId: "review",
+    waitId: "wait-2",
+    deadline: "2026-01-01T00:05:00.000Z",
+    key: "child-verdict",
+  };
+  const suspended = mapWorkflowExecutionEvent({
+    kind: "suspended",
+    run,
+    jobId: "job1",
+    stepId: "review",
+    prompt: "",
+    wait: {
+      id: "wait-1",
+      deadline: "2026-01-01T00:05:00.000Z",
+      key: "verdict",
+    },
+    nestedSignalWaits: [nested],
+  }, repo);
+  if (suspended.kind !== "suspended") throw new Error(suspended.kind);
+  assertEquals(suspended.wait?.key, "verdict");
+  assertEquals(suspended.nestedSignalWaits, [nested]);
+});
+
 Deno.test("mapWorkflowExecutionEvent: carries a nested run's parentRunId on started and omits it at top level (swamp-club#2470)", () => {
   const started = (parentRunId?: string): WorkflowExecutionEvent => ({
     kind: "started",

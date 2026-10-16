@@ -48,7 +48,15 @@ import {
   pendingApprovals,
 } from "../client/approvals.ts";
 import { SignalWaitsPanel } from "../components/SignalWaitsPanel.tsx";
-import { signalWaitRows } from "../client/signal_wait_state.ts";
+import {
+  PendingSignalsPanel,
+  useHeldSignalClock,
+} from "../components/PendingSignalsPanel.tsx";
+import {
+  heldAt,
+  pendingSignalRows,
+  signalWaitRows,
+} from "../client/signal_wait_state.ts";
 import { RouteLink } from "../components/RouteLink.tsx";
 import { RunHistoryBar } from "../components/RunHistoryBar.tsx";
 import { type Stat, StatPills } from "../components/StatPills.tsx";
@@ -114,12 +122,16 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   });
   // Refused to a caller who may read no workflow: nothing is listed then.
   // Refetched only with the gates, never on a timer: the listing settles
-  // expired waits as it reads.
+  // expired waits as it reads. A held signal lapsing changes no run, so the
+  // page and the pending signals panel drop lapsed ones on the same clock.
   const { data: waitsData, refetch: refetchWaits } = useRequest(
     "workflow.waits",
-    { includeSignalled: true },
+    { includeSignalled: true, includePending: true },
   );
   const signalWaits = signalWaitRows(waitsData);
+  const heldSignalRows = pendingSignalRows(waitsData);
+  const heldClock = useHeldSignalClock(heldSignalRows.length > 0);
+  const allHeldSignals = heldAt(heldSignalRows, heldClock);
   const suspendedRuns = useMemo(() => suspendedData ?? [], [suspendedData]);
   // Runs serve drives now, whoever approved them (swamp-club#3005).
   const servedRuns = activeRunIds(health?.activeRuns);
@@ -237,6 +249,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   const expired = filterRows(allExpired, (g) => g.workflowName);
   const awaitingResume = filterRows(allAwaiting, (r) => r.workflowName);
   const waits = filterRows(signalWaits, (w) => w.workflowName);
+  const heldSignals = filterRows(allHeldSignals, (p) => p.workflowName);
 
   const gatesLoaded = data !== null;
   const gatesError = approvalsRequest.error && !gatesLoaded
@@ -244,9 +257,9 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
     : null;
   const filtering = isFilterActive(filter);
   const allCount = allPending.length + allExpired.length + allAwaiting.length +
-    signalWaits.length;
+    signalWaits.length + allHeldSignals.length;
   const shownCount = pending.length + expired.length + awaitingResume.length +
-    waits.length;
+    waits.length + heldSignals.length;
 
   // One summary for every workflow on the page, for the history strips.
   // Keyed by the names, so a refetch listing the same workflows keeps the
@@ -318,6 +331,13 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
       title: "Runs waiting for a signal",
     });
   }
+  if (allHeldSignals.length > 0) {
+    stats.push({
+      label: "pending signals",
+      value: formatCount(heldSignals.length),
+      title: "Signals sent by key, held for the next wait on their key",
+    });
+  }
 
   const clearFilters = (
     <button
@@ -332,10 +352,10 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   return (
     <div className="approvals-page">
       <div className="page-header">
-        <h1>Approvals</h1>
+        <h1>Approvals & Signals</h1>
         <div className="header-right">
           {gatesLoaded && suspendedData !== null
-            ? <StatPills stats={stats} label="Approvals summary" />
+            ? <StatPills stats={stats} label="Approvals & Signals summary" />
             : !gatesError && <SkeletonPills count={3} />}
         </div>
       </div>
@@ -502,6 +522,8 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
           />
         )}
       />
+
+      <PendingSignalsPanel rows={heldSignals} now={heldClock} />
 
       {suspendedError && suspendedData === null && (
         <div className="approvals-notice is-error" role="alert">

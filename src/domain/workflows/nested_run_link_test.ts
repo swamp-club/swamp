@@ -389,7 +389,7 @@ Deno.test("assertNestedWaitsSettled: refuses with every child named, and a gener
 });
 
 /** A parent suspended on a child that waits for a signal opened at `now`. */
-function signalWaitPair(now: Date, timeoutSeconds: number) {
+function signalWaitPair(now: Date, timeoutSeconds: number, key?: string) {
   const childWorkflow = Workflow.create({
     name: "child",
     jobs: [
@@ -398,7 +398,11 @@ function signalWaitPair(now: Date, timeoutSeconds: number) {
         steps: [
           Step.create({
             name: "review",
-            task: StepTask.waitForSignal(timeoutSeconds, { type: "object" }),
+            task: StepTask.waitForSignal(
+              timeoutSeconds,
+              { type: "object" },
+              key,
+            ),
           }),
         ],
       }),
@@ -419,7 +423,13 @@ function signalWaitPair(now: Date, timeoutSeconds: number) {
   child.start();
   const review = child.getJob("child-job")!.getStep("review")!;
   review.start();
-  const wait = SignalWait.open({ type: "object" }, timeoutSeconds, now);
+  const wait = SignalWait.open(
+    { type: "object" },
+    timeoutSeconds,
+    now,
+    undefined,
+    key,
+  );
   review.waitForSignal(wait);
   child.suspend();
   parent.getJob("main")!.getStep("call-child")!.waitForNestedRun({
@@ -457,6 +467,27 @@ Deno.test("NestedRunLink.describeWait: a child with an open signal wait is signa
   const hint = nestedWaitHint(pending.action);
   assert(hint.includes(`swamp workflow signal ${wait.id}`));
   assert(hint.includes(`swamp workflow resume child --run ${child.id}`));
+});
+
+Deno.test("NestedRunLink.describeWait: a keyed wait's signal action carries its key, with or without a wait store, and the hint still names the wait by ID", async () => {
+  const { parent, deps, wait } = signalWaitPair(new Date(), 3600, "verdict");
+
+  const [onRecord] = await new NestedRunLink(deps).pendingWaits(parent);
+  assert(onRecord.action.kind === "signal");
+  assertEquals(onRecord.action.key, "verdict");
+  assert(
+    nestedWaitHint(onRecord.action).includes(
+      `swamp workflow signal ${wait.id} --payload`,
+    ),
+  );
+
+  const [inStore] = await new NestedRunLink({
+    ...deps,
+    signalWaits: { supported: true, store: new InMemorySignalWaitStore() },
+  }).pendingWaits(parent);
+  assert(inStore.action.kind === "signal");
+  assertEquals(inStore.action.key, "verdict");
+  assertEquals(inStore.action.waitId, wait.id);
 });
 
 Deno.test("NestedRunLink.describeWait: a child whose signal wait expired is resumed, which fails its step", async () => {

@@ -48,6 +48,28 @@ export interface SignalWaitRow {
   awaitingResume: boolean;
   /** The CLI command that moves the wait on. */
   command: string;
+  /** The key a signal sent by key reaches the wait with; only a keyed wait has one. */
+  key?: string;
+  /**
+   * The CLI command that signals the wait by its key. Serve sends it only
+   * for an open wait that has a key.
+   */
+  signalByKeyCommand?: string;
+}
+
+/**
+ * A signal sent by key before any wait for that key was open. Serve holds
+ * it until `heldUntil`, and the first wait for its key in that time takes
+ * it.
+ */
+export interface PendingSignalRow {
+  workflowId: string;
+  workflowName: string;
+  key: string;
+  receiptId: string;
+  receivedAt: string;
+  heldUntil: string;
+  submittedBy: string;
 }
 
 function text(value: unknown): string | undefined {
@@ -70,6 +92,8 @@ function baseOf(
   const runId = text(item.runId);
   const stepName = text(item.stepName);
   if (!waitId || !workflowName || !runId || !stepName) return undefined;
+  const key = text(item.key);
+  const signalByKeyCommand = text(item.signalByKeyCommand);
   return {
     waitId,
     workflowName,
@@ -77,6 +101,8 @@ function baseOf(
     stepName,
     deadline: text(item.deadline) ?? "",
     command: text(item.nextCommand) ?? "",
+    ...(key ? { key } : {}),
+    ...(signalByKeyCommand ? { signalByKeyCommand } : {}),
   };
 }
 
@@ -136,4 +162,60 @@ export function signalWaitRows(payload: unknown): SignalWaitRow[] {
   }
 
   return [...open, ...signalled, ...expired];
+}
+
+/**
+ * The signals held for a wait that is not open yet, from a `workflow.waits`
+ * reply asked for with `includePending`, soonest to lapse first. With
+ * `now`, a signal held until before `now` is left out: serve no longer
+ * hands it to a wait. A reply without `pending`, such as one from a serve
+ * that predates held signals, lists nothing, and so does an entry without
+ * the fields a row needs or with a `heldUntil` that is not a time.
+ */
+export function pendingSignalRows(
+  payload: unknown,
+  now?: number,
+): PendingSignalRow[] {
+  if (typeof payload !== "object" || payload === null) return [];
+  const data = (payload as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return [];
+
+  const rows: { row: PendingSignalRow; until: number }[] = [];
+  for (const item of records((data as { pending?: unknown }).pending)) {
+    const workflowName = text(item.workflowName);
+    const key = text(item.key);
+    const receiptId = text(item.receiptId);
+    const heldUntil = text(item.heldUntil);
+    if (!workflowName || !key || !receiptId || !heldUntil) continue;
+    const until = Date.parse(heldUntil);
+    if (Number.isNaN(until)) continue;
+    rows.push({
+      until,
+      row: {
+        workflowId: text(item.workflowId) ?? "",
+        workflowName,
+        key,
+        receiptId,
+        receivedAt: text(item.receivedAt) ?? "",
+        heldUntil,
+        submittedBy: text(item.submittedBy) ?? "unknown",
+      },
+    });
+  }
+  return heldAt(
+    rows.sort((a, b) => a.until - b.until).map(({ row }) => row),
+    now,
+  );
+}
+
+/**
+ * The rows still held at `now`, as serve judges it: a row whose `heldUntil`
+ * is before `now` has lapsed. Without `now`, every row. Keeps the order.
+ */
+export function heldAt(
+  rows: readonly PendingSignalRow[],
+  now?: number,
+): PendingSignalRow[] {
+  if (now === undefined) return [...rows];
+  return rows.filter((row) => Date.parse(row.heldUntil) >= now);
 }

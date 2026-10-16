@@ -24,6 +24,7 @@ import {
 } from "../../libswamp/workflows/workflow_run_view.ts";
 import type {
   NestedSignalWaitData,
+  WaitKeyHolder,
   WorkflowRunEvent,
 } from "../../libswamp/workflows/run.ts";
 import type { Renderer } from "../renderer.ts";
@@ -35,6 +36,7 @@ import {
 import { containsExpression } from "../../domain/expressions/expression_parser.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
+import { signalByKeyCommand } from "../../domain/workflows/signal_wait.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
@@ -459,6 +461,13 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         writeOutput(
           this.pipe.failedStepLine(displayName, e.stepId, duration, ts),
         );
+        // A server builds the holder, but a remote client checks its shape
+        // before printing it.
+        if (isWaitKeyHolder(e.waitKeyHolder)) {
+          writeOutput(
+            this.pipe.line(displayName, describeWaitKeyHolder(e.waitKeyHolder)),
+          );
+        }
       },
       approval_requested: (e) => {
         this.gateShown = true;
@@ -522,6 +531,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             }  swamp workflow signal ${e.waitId} --payload '<json>'${this.commandTarget}`,
           ),
         );
+        this.writeSignalByKey(name, waitWorkflow, e.key);
       },
       model_resolved: (e) => {
         if (!this.pipe) return;
@@ -895,6 +905,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               }  swamp workflow signal ${e.wait.id} --payload '<json>'${this.commandTarget}`,
             ),
           );
+          this.writeSignalByKey("system", e.run.workflowName, e.wait.key);
           writeOutput(
             this.pipe.line(
               "system",
@@ -950,6 +961,30 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   }
 
   /**
+   * Beside a by-ID signal command, the command that signals the same wait by
+   * its workflow and key, when its step declared one (swamp-club#3214).
+   */
+  private writeSignalByKey(
+    name: string,
+    workflowName: string,
+    key: string | undefined,
+  ): void {
+    // The key and the name can come from a server: anything but a string
+    // prints no by-key line rather than failing the stream's rendering.
+    if (
+      !this.pipe || typeof key !== "string" || typeof workflowName !== "string"
+    ) return;
+    writeOutput(
+      this.pipe.line(
+        name,
+        `${yellow("Or by key:")}  ${
+          signalByKeyCommand(workflowName, key)
+        }${this.commandTarget}`,
+      ),
+    );
+  }
+
+  /**
    * Shows the open waits of nested runs that a suspension names and this
    * stream has not shown: every one of them for a run on a server, which is
    * not sent a wait as it is requested, and for a resume that found a nested
@@ -990,6 +1025,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             } --payload '<json>'${this.commandTarget}`,
           ),
         );
+        this.writeSignalByKey("system", wait.workflowName, wait.key);
       }
       if (further) {
         writeOutput(
@@ -1121,6 +1157,35 @@ interface RequestedWait {
   stepId: string;
   waitId: string;
   deadline: string;
+  key?: string;
+}
+
+/** True when every field of the holder line is a string. */
+function isWaitKeyHolder(value: unknown): value is WaitKeyHolder {
+  if (typeof value !== "object" || value === null) return false;
+  const holder = value as Record<string, unknown>;
+  return [
+    "workflowId",
+    "workflowName",
+    "key",
+    "runId",
+    "stepName",
+    "waitId",
+  ].every((field) => typeof holder[field] === "string");
+}
+
+/**
+ * Names the open wait that holds the key a step was refused with
+ * `wait_key_held` (swamp-club#3214). Every part can come from a server.
+ */
+function describeWaitKeyHolder(holder: WaitKeyHolder): string {
+  return dim(
+    `key ${escapeControlCharacters(holder.key)} is held by step ${
+      escapeControlCharacters(holder.stepName)
+    } of workflow ${escapeControlCharacters(holder.workflowName)} run ${
+      escapeControlCharacters(holder.runId)
+    } (wait ${escapeControlCharacters(holder.waitId)})`,
+  );
 }
 
 /** An approval gate as the run's stream requested it. */
@@ -1140,6 +1205,18 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   private readonly _gates: RequestedGate[] = [];
   // Signal waits requested in this stream, nested runs' included.
   private readonly _waits: RequestedWait[] = [];
+  // The holders of keys steps were refused with wait_key_held.
+  private readonly _waitKeyHolders: WaitKeyHolder[] = [];
+
+  /**
+   * `waitKeyHolders` for the run's final output, only when a step was
+   * refused with a key some wait holds: otherwise the output is unchanged.
+   */
+  private waitKeyHoldersField(): { waitKeyHolders?: WaitKeyHolder[] } {
+    return this._waitKeyHolders.length > 0
+      ? { waitKeyHolders: this._waitKeyHolders }
+      : {};
+  }
 
   handlers(): EventHandlers<WorkflowRunEvent> {
     return {
@@ -1185,7 +1262,11 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       step_queued: () => {},
       step_target_disconnected: () => {},
-      step_failed: () => {},
+      step_failed: (e) => {
+        if (isWaitKeyHolder(e.waitKeyHolder)) {
+          this._waitKeyHolders.push(e.waitKeyHolder);
+        }
+      },
       approval_requested: (e) => {
         this._gates.push({
           runId: e.runId,
@@ -1204,6 +1285,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
           stepId: e.stepId,
           waitId: e.waitId,
           deadline: e.deadline,
+          ...(e.key !== undefined ? { key: e.key } : {}),
         });
       },
       model_resolved: () => {},
@@ -1231,11 +1313,15 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
-        unguardedConsole.log(JSON.stringify(e.run, null, 2));
+        unguardedConsole.log(
+          JSON.stringify({ ...e.run, ...this.waitKeyHoldersField() }, null, 2),
+        );
       },
       cancelled: (e) => {
         this._failed = true;
-        unguardedConsole.log(JSON.stringify(e.run, null, 2));
+        unguardedConsole.log(
+          JSON.stringify({ ...e.run, ...this.waitKeyHoldersField() }, null, 2),
+        );
       },
       suspended: (e) => {
         // On a nested wait, the gate to decide is the nested run's: the one
@@ -1282,6 +1368,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
             jobId: e.jobId,
             waitId: e.wait.id,
             deadline: e.wait.deadline,
+            ...(e.wait.key !== undefined ? { key: e.wait.key } : {}),
           }
           : requestedWait
           ? {
@@ -1291,6 +1378,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
             jobId: requestedWait.jobId,
             waitId: requestedWait.waitId,
             deadline: requestedWait.deadline,
+            ...(requestedWait.key !== undefined
+              ? { key: requestedWait.key }
+              : {}),
           }
           : undefined;
         // Every step of this run still waiting for a signal, so a run with
@@ -1303,6 +1393,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
                 jobId: job.name,
                 waitId: step.wait.id,
                 deadline: step.wait.deadline,
+                ...(step.wait.key !== undefined ? { key: step.wait.key } : {}),
               }]
               : []
           )
@@ -1318,6 +1409,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               signalRequired,
               ...waitsField,
               ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
+              ...this.waitKeyHoldersField(),
             },
             null,
             2,
@@ -1348,6 +1440,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
             // nested workflow rather than a gate of its own.
             ...waitsField,
             ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
+            ...this.waitKeyHoldersField(),
           },
           null,
           2,

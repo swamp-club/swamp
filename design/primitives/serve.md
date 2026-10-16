@@ -938,28 +938,46 @@ are still authenticating, and should retry. Behind a proxy without
 workflows they may read. With the optional payload `{ includeSignalled: true }`
 the reply also carries `signalled`, the waits a signal has settled whose run has
 not been resumed, each with its receipt, under the same filter; without it the
-reply is as before, so a client that predates the option sees no change. A
-caller with no `read` grant on any workflow, such as one granted `signal` alone,
-is refused as unauthorized. It is the same use case as `swamp workflow waits`
-and, like it, not read-only: see "Listing" under Wait for Signal in
-[workflows](workflows.md).
+reply is as before, so a client that predates the option sees no change. With
+`{ includePending: true }` it also carries `pending`, the signals held for a key
+no wait has taken (swamp-club#3214), each with its workflow, key, receipt ID,
+received time, `heldUntil` and sender and never the payload. It is filtered on
+`read` of the signal's workflow, resolved from the workflow id and the name
+the sender was authorized under, so of two workflows that share an id a signal
+is listed only to a reader of the one it was held for; one sent through the
+local command, which records no name, is listed only when one workflow
+declares its id. `pending` is sent only when asked for. An open wait with a key
+carries `signalByKeyCommand` beside `nextCommand`, which still signals it by
+wait ID. A caller with no `read` grant on any workflow, such as one granted
+`signal` alone, is refused as unauthorized. It is the same use case as
+`swamp workflow waits` and, like it, not read-only: see "Listing" under Wait
+for Signal in [workflows](workflows.md).
 
 **Signal waits in a run stream.** `signal_wait_requested` is never sent to a
 client (`LOCAL_ONLY_EVENT_KINDS`, `src/serve/serializer.ts`): a released client
 dispatches each event by kind and fails on one it does not know. A client learns
 of a wait from fields of the `suspended` event, which it already handles and
 whose unknown fields it ignores: `wait` for the run's own wait, and
-`nestedSignalWaits` for the open waits of nested runs (swamp-club#3110). New
+`nestedSignalWaits` for the open waits of nested runs (swamp-club#3110). Both
+carry the wait's `key` when its step declares one (swamp-club#3214). New
 information for clients goes in such a field, never in a new event kind;
 `src/serve/serializer_test.ts` pins which kinds are sent. `redactStreamEvent`
 (`src/serve/handlers/nested_run_redaction.ts`) keeps a `nestedSignalWaits`
 entry only for a caller who may read the workflow the wait belongs to, which
 can be a grandchild's and differ from the nested run the step waits on. Every
 path that sends run events applies it: a run, a buffered run, a resume, a
-buffered resume, and `run.attach`. For a run on a server the CLI prints the
-signal command with the `--server` it was given.
+buffered resume, and `run.attach`. A `step_failed` for a step refused
+`wait_key_held` carries `waitKeyHolder`, the workflow, key, run, step and wait
+ID of the wait that holds the key, and `redactStreamEvent` drops it for a
+caller who may not read the holder's workflow (`canRead(waitKeyHolder)`),
+which can differ from the run's. For a run on a server the CLI prints the
+signal command, and for a keyed wait the command by key beside it, with the
+`--server` it was given.
 
-`swamp workflow signal` and `swamp workflow waits` take `--server`. A signal
+`swamp workflow signal` and `swamp workflow waits` take `--server`, and
+`swamp workflow waits --pending --server` asks for `includePending`; a server
+that predates it replies without `pending`, and the command warns that the
+server needs an upgrade. A signal
 through a server names a wait ID, or `--workflow` with `--key`
 (swamp-club#3211). An address the server would refuse as malformed (a wait ID
 that is not a UUID, a key not in the form of one) is answered by the command as

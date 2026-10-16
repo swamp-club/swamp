@@ -51,7 +51,8 @@ const DETAIL_STYLE = {
 
 /**
  * The runs waiting for a signal: each wait with its ID, deadline and what
- * moves it on. An open wait shows the payload schema and the signal command;
+ * moves it on. An open wait shows the payload schema and the signal command,
+ * and a keyed one its key and the command that signals it by key;
  * a signalled wait shows its receipt and the resume that applies it; an
  * expired wait shows the resume that fails its step. Renders nothing when no
  * run waits. Takes its rows as props and reads no context, so it renders the
@@ -98,6 +99,11 @@ export function SignalWaitsPanel(
             <div style={DETAIL_STYLE}>
               Step <span className="mono">{row.stepName}</span> · wait{" "}
               <span className="mono">{row.waitId}</span>
+              {row.key && (
+                <>
+                  {" "}· key <span className="mono">{row.key}</span>
+                </>
+              )}
             </div>
             {row.deadline && (
               <div style={DETAIL_STYLE}>
@@ -133,6 +139,12 @@ export function SignalWaitsPanel(
               : row.command && (
                 <div className="mono" style={DETAIL_STYLE}>{row.command}</div>
               )}
+            {row.state === "open" && row.signalByKeyCommand && (
+              <div style={DETAIL_STYLE}>
+                Or by key:{" "}
+                <span className="mono">{row.signalByKeyCommand}</span>
+              </div>
+            )}
           </div>
         </div>
       ))}

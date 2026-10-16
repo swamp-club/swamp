@@ -926,6 +926,7 @@ const WorkflowWaitsRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     includeSignalled: z.boolean().optional(),
+    includePending: z.boolean().optional(),
   }).optional(),
 });
 

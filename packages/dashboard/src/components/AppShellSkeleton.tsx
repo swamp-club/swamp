@@ -39,7 +39,7 @@ import { parseCollapsed, SIDEBAR_COLLAPSED_KEY } from "./sidebar_state.ts";
 const NAV: Array<[string, string[]]> = [
   ["Overview", ["Dashboard"]],
   ["Automation", ["Workflows", "Executions", "Behaviors"]],
-  ["Operations", ["Schedules", "Webhooks", "Approvals", "Activity"]],
+  ["Operations", ["Schedules", "Webhooks", "Approvals & Signals", "Activity"]],
   ["System", ["Data", "Vaults", "Extensions", "System"]],
 ];
 

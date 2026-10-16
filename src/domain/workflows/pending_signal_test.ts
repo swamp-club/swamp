@@ -227,7 +227,7 @@ Deno.test("earlySlots: a claim reads its own slot, and the one below when it was
   );
 });
 
-Deno.test("pendingOutcome: a signal received within the limit becomes the wait's accepted outcome, with the sender's receipt", () => {
+Deno.test("pendingOutcome: a signal received within the limit becomes the wait's accepted outcome, with the sender's receipt marked as held", () => {
   assertEquals(pendingOutcome(pending(), ref()), {
     kind: "accepted",
     waitId: WAIT_ID,
@@ -240,6 +240,9 @@ Deno.test("pendingOutcome: a signal received within the limit becomes the wait's
       waitId: WAIT_ID,
       receivedAt: "2026-01-01T00:00:05.000Z",
       submittedBy: "camera",
+      // Every reader builds the same outcome, the mark included
+      // (swamp-club#3214).
+      heldAsPending: true,
     },
     payload: { verdict: "known" },
   });

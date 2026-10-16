@@ -275,10 +275,11 @@ swamp workflow resume  <parent> --run <parent-run-id>
   same way: `swamp workflow signal <wait-id> --payload '<json>'`, resume the
   child, then resume the parent. The parent's `workflow run` output names the
   wait ID, with and without `--server` (`signalRequired.waitId` and
-  `nestedSignalWaits[]` with `--json`), and so does its refusal. A wait further
-  down prints the resume of the run that holds it: run that first, then each run
-  above it. The parent cannot read the child's payload through
-  `steps.<nested>.outputs`.
+  `nestedSignalWaits[]` with `--json`), and so does its refusal. A keyed wait
+  also gets the by-key command (`--workflow <child> --key <key>`) and `key` in
+  `signalRequired` and `nestedSignalWaits[]`. A wait further down prints the
+  resume of the run that holds it: run that first, then each run above it. The
+  parent cannot read the child's payload through `steps.<nested>.outputs`.
 - Under `swamp serve`, the parent resumes on its own once the child finishes,
   when the parent's auto-resume policy is on and the caller who approved or
   signalled the child may also `approve` or `signal` the parent. Otherwise

@@ -315,6 +315,85 @@ Deno.test("redactStreamEvent: hides a nested step's failure that names a run the
   assertStrictEquals(await redactStreamEvent(shown, canRead), shown);
 });
 
+// A wait_key_held failure naming the wait that holds the key (swamp-club#3214).
+function keyHeld(
+  holderWorkflowId: string,
+  extra: Record<string, unknown> = {},
+): SerializedEvent {
+  return {
+    kind: "step_failed",
+    jobId: "main",
+    stepId: "review",
+    error: "wait_key_held",
+    waitKeyHolder: {
+      workflowId: holderWorkflowId,
+      workflowName: "holder",
+      key: "release-42",
+      runId: "holder-run",
+      stepName: "review",
+      waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
+    },
+    ...extra,
+  };
+}
+
+Deno.test("redactStreamEvent: names the wait holding a key only to a reader of its workflow, on a copy", async () => {
+  const shown = keyHeld("readable-id");
+  assertStrictEquals(await redactStreamEvent(shown, canRead), shown);
+
+  const event = keyHeld("secret-id");
+  const hidden = await redactStreamEvent(event, canRead);
+  assertEquals("waitKeyHolder" in hidden, false);
+  assertEquals(hidden.error, "wait_key_held");
+  assertEquals(hidden.stepId, "review");
+  assert(!JSON.stringify(hidden).includes("holder-run"));
+  // The buffered event other clients share is left as it was.
+  assertEquals(event, keyHeld("secret-id"));
+});
+
+Deno.test("redactStreamEvent: drops a waitKeyHolder that names no workflow", async () => {
+  for (const waitKeyHolder of [null, "holder", { workflowId: "readable-id" }]) {
+    const event: SerializedEvent = {
+      kind: "step_failed",
+      jobId: "main",
+      stepId: "review",
+      error: "wait_key_held",
+      waitKeyHolder,
+    };
+    const redacted = await redactStreamEvent(event, canRead);
+    assertEquals("waitKeyHolder" in redacted, false, String(waitKeyHolder));
+    assertEquals("waitKeyHolder" in event, true);
+  }
+});
+
+Deno.test("redactStreamEvent: judges a failure's waitKeyHolder and nestedRun each on its own workflow", async () => {
+  const nestedRun = (workflowId: string) => ({
+    nestedRun: { workflowId, workflowName: "secret-child" },
+    error: 'Nested run child-run of workflow "secret-child" failed.',
+  });
+  const cases: Array<
+    [holder: string, nested: string, keepsHolder: boolean, keepsNested: boolean]
+  > = [
+    ["readable-id", "readable-id", true, true],
+    ["readable-id", "secret-id", true, false],
+    ["secret-id", "readable-id", false, true],
+    ["secret-id", "secret-id", false, false],
+  ];
+  for (const [holder, nested, keepsHolder, keepsNested] of cases) {
+    const label = `${holder}/${nested}`;
+    const event = keyHeld(holder, nestedRun(nested));
+    const redacted = await redactStreamEvent(event, canRead);
+    assertEquals("waitKeyHolder" in redacted, keepsHolder, label);
+    assertEquals("nestedRun" in redacted, keepsNested, label);
+    assertEquals(
+      String(redacted.error).includes("secret-child"),
+      keepsNested,
+      label,
+    );
+    assertEquals(event, keyHeld(holder, nestedRun(nested)), label);
+  }
+});
+
 Deno.test("redactStreamEvent: passes an event without links through unchanged", async () => {
   const event: SerializedEvent = { kind: "step_started", jobId: "j" };
   assertStrictEquals(await redactStreamEvent(event, canRead), event);

@@ -118,6 +118,11 @@ export type WorkflowExecutionEvent =
     waitId: string;
     /** When the wait stops accepting a signal, as an ISO timestamp. */
     deadline: string;
+    /**
+     * The key the step declared, if any, so the wait can be signalled by
+     * workflow and key (swamp-club#3214).
+     */
+    key?: string;
   }
   | {
     kind: "step_failed";
@@ -161,6 +166,15 @@ export type WorkflowExecutionEvent =
      * mapWorkflowExecutionEvent strips it from the published event.
      */
     errorPaths?: string[];
+    /**
+     * The open wait that holds the key a `wait_key_held` failure was refused
+     * for, read from that wait's own registration (swamp-club#3214). Set
+     * only when the registration was found and names the workflow, the key
+     * and the run of the claim that refused the step; the step's error stays
+     * the bare `wait_key_held`. A server can hide it from a caller who may
+     * not read the holder's workflow.
+     */
+    waitKeyHolder?: WaitKeyHolder;
     forEachTemplate?: string;
     forEachIndex?: number;
   }
@@ -283,8 +297,9 @@ export type WorkflowExecutionEvent =
     /**
      * Set when the run suspended on a step waiting for a signal rather than
      * a gate: the wait a signal names. `jobId` and `stepId` are that step.
+     * `key` is the key the step declared, if any (swamp-club#3214).
      */
-    wait?: { id: string; deadline: string };
+    wait?: { id: string; deadline: string; key?: string };
     /**
      * The open waits for a signal that nested runs of this run hold, each at
      * the innermost run that has to act: one per nested run still waited on,
@@ -306,4 +321,16 @@ export interface NestedSignalWait {
   waitId: string;
   /** When the wait stops accepting a signal, as an ISO timestamp. */
   deadline: string;
+  /** The key the wait's step declared, if any (swamp-club#3214). */
+  key?: string;
+}
+
+/** The open wait that holds a key another step was refused (swamp-club#3214). */
+export interface WaitKeyHolder {
+  workflowId: string;
+  workflowName: string;
+  key: string;
+  runId: string;
+  stepName: string;
+  waitId: string;
 }
