@@ -91,6 +91,10 @@ function observe(env: Environment, expression: string): Observation {
  * The static half of the container rule: an `in`, or an `==` or `!=` with no
  * operand that is a scalar literal or `null`. List and map literals are not
  * scalars, so `s in [1]` and `1 in lst` count and `x == 'a'` does not.
+ *
+ * A pin heuristic only: it treats every non-literal node as non-scalar, so
+ * `x == -1` would count if the minus parses as an operator. The Phase 3
+ * production scan must decide scalar-ness properly rather than copy this.
  */
 function hasContainerComparison(node: ASTNode): boolean {
   const { op, args } = node as { op: string; args: unknown };

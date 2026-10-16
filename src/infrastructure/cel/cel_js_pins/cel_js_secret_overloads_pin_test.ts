@@ -25,16 +25,18 @@
 // overloads name every type cel-js accepts in a signature and answer a
 // comparison with `null` in both operand orders. Adding `Secret == Secret`
 // beside `Secret == dyn` does not remove the overlap, so the enumerated set is
-// the only shape. `in` and `type(S)` have no registrable refusal." and
+// the only shape. `in`, `join` on a list holding a secret, and `type(S)` have
+// no registrable refusal." and
 // "Synchronous entry points still return synchronous results with the
 // `Secret` registrations in place, although every operator use is marked
 // maybe-async.").
 //
-// Three observations shaped the inventory: `in` overloads overlap the
-// built-in at evaluation, `type(Secret)` is registered by cel-js itself and
-// cannot be replaced, and one refusal per parameter position leaves a call
-// with two secrets to a missing-overload error that records no fault, which
-// is why the inventory generates the full cross product.
+// Four observations shaped the inventory: `in` overloads overlap the built-in
+// at evaluation, `type(Secret)` is registered by cel-js itself and cannot be
+// replaced, a `join` overload on a list receiver never intercepts a list that
+// holds a secret, and one refusal per parameter position leaves a call with
+// two secrets to a missing-overload error that records no fault, which is why
+// the inventory generates the full cross product.
 import {
   assertEquals,
   assertInstanceOf,
@@ -154,11 +156,11 @@ Deno.test(
       functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES).length,
       41,
     );
-    assertEquals(operatorRefusalSignatures().length, 275);
-    assertEquals(operatorRefusalSignatures(SWAMP_NAMESPACE_TYPES).length, 279);
+    assertEquals(operatorRefusalSignatures().length, 293);
+    assertEquals(operatorRefusalSignatures(SWAMP_NAMESPACE_TYPES).length, 369);
 
     const { registration } = internalEnvironment();
-    assertEquals(registration.operators.length, 279);
+    assertEquals(registration.operators.length, 369);
     assertEquals(registration.functions.length, 97);
   },
 );
@@ -257,6 +259,47 @@ Deno.test(
       assertEquals(faults, []);
     });
     assertRefused(internal, "s in {'a': 1}", "Symbol(Symbol.toPrimitive)");
+  },
+);
+
+Deno.test(
+  pin(
+    "a join overload on a list receiver never intercepts a list that holds a Secret",
+  ),
+  () => {
+    const env = secretEnvironment()
+      .registerFunction(
+        "list<dyn>.join(string): string",
+        () => refuse("list<dyn>.join(string): string"),
+        { async: false },
+      )
+      .registerFunction(
+        "list<Secret>.join(string): string",
+        () => refuse("list<Secret>.join(string): string"),
+        { async: false },
+      );
+    withFaultContext((faults) => {
+      assertEquals(env.evaluate("['a', 'b'].join(',')", {}), "a,b");
+      for (const expression of ["['a', s].join(',')", "[s].join(',')"]) {
+        assertCelError(
+          () => env.evaluate(expression, { s }),
+          EvaluationError,
+          "invalid_list_element_type",
+        );
+      }
+      assertEquals(
+        env.evaluate("['a', s].join(',') == 'x' || true", { s }),
+        true,
+      );
+      assertEquals(faults, [], "the built-in's element check runs first");
+    });
+    // The overload is reachable only by a list no string overload matches.
+    assertRefused(
+      env,
+      "[1, 2].join(',')",
+      "list<dyn>.join(string): string",
+      {},
+    );
   },
 );
 
@@ -434,9 +477,17 @@ Deno.test(
         "google.protobuf.Timestamp > Secret",
       ],
       ["s + true", "Secret + bool"],
+      ["s + null", "Secret + null"],
+      ["null < s", "null < Secret"],
+      ["s - data", "Secret - CelDataNamespace"],
+      ["data < s", "CelDataNamespace < Secret"],
       ["-s", "-Secret"],
       ["!s", "!Secret"],
     ];
+    withFaultContext((faults) => {
+      assertEquals(env.evaluate("s < null || true", { s }), true);
+      assertEquals(faults, [{ operation: "Secret < null" }]);
+    });
     for (const [expression, operation] of cases) {
       assertRefused(env, expression, operation);
     }

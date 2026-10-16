@@ -233,6 +233,8 @@ Deno.test(
   },
 );
 
+// This pin depends on Deno's inspect output, not on cel-js: a Deno bump in
+// .tool-versions is what would change it.
 Deno.test(
   pin(
     "inspecting a Secret is harmless: Deno.inspect prints the class and touches no trap, except with showProxy",

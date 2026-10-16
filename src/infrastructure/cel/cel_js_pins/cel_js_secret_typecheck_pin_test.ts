@@ -20,9 +20,10 @@
 // Phase 1.2 pins for check-time refusal (design/enablers/typed-secrets.md
 // Section 4.3 item 4, and the Phase 1.2 list in Section 11: "`vault.get`,
 // with the static return type `Secret`, gives check-time errors in the
-// validation environment, except for the allowed set in Section 4.1 and four
-// escapes: a dyn operand, a map literal keyed by the result and `type()` check
-// as valid, and `has()` on a call result fails as `invalid_macro_argument`.").
+// validation environment, except for the allowed set in Section 4.1 and
+// three escapes: a dyn operand, a map literal keyed by the result and `type()`
+// check as valid; `has()` on a call result fails as
+// `invalid_macro_argument`.").
 //
 // The validation environment registers the allowed set's overloads in place
 // of the refusing ones. A dyn operand and a map-literal key are refused at

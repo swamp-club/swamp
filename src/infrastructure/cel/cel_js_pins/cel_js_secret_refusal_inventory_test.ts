@@ -209,11 +209,15 @@ Deno.test("operatorRefusalSignatures: excludes the allowed set and adds custom e
   assertEquals(plain.includes("Secret + google.protobuf.Duration"), true);
   assertEquals(plain.includes("google.protobuf.Timestamp >= Secret"), true);
   assertEquals(plain.includes("Secret == CelNamespace"), true);
-  assertEquals(plain.includes("!Secret"), true);
-  assertEquals(plain.includes("Secret in list"), false);
+  assertEquals(plain.includes("Secret + null"), true);
+  assertEquals(plain.includes("null < Secret"), true);
+  assertEquals(plain.includes("Secret == null"), false, "allowed set");
+  // A custom type adds one equality and both orders of the nine operators.
   const custom = operatorRefusalSignatures(["Ns", "Secret"]);
-  assertEquals(custom.length, plain.length + 1);
+  assertEquals(custom.length, plain.length + 19);
   assertEquals(custom.includes("Secret == Ns"), true);
+  assertEquals(custom.includes("Secret + Ns"), true);
+  assertEquals(custom.includes("Ns < Secret"), true);
 });
 
 Deno.test("secretCapableBuiltins: keeps a function only when a Secret can reach it", () => {

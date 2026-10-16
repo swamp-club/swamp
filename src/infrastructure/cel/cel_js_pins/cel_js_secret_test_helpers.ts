@@ -39,9 +39,9 @@
  *
  * This is a test fixture, not production code. Nothing outside this directory
  * imports it, and its name follows the directory's `_test_helpers` convention
- * so the affected-commands rules read it as test support. Compare two secrets with `assertStrictEquals` or
- * {@link secretState}: `assertEquals` between two different references walks
- * their keys and trips the `ownKeys` trap.
+ * so the affected-commands rules read it as test support. Compare two secrets
+ * with `assertStrictEquals` or {@link secretState}: `assertEquals` between two
+ * different references walks their keys and trips the `ownKeys` trap.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";

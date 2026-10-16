@@ -452,10 +452,15 @@ Refusal uses registrations. It does not rewrite expressions.
    `Type<Secret>`). The
    refusals are the full cross product over a signature's refusal positions,
    because one overload per position leaves a call with two secrets to a
-   missing-overload error that records no fault. Every operator is covered,
-   not only the string-accepting ones, so arithmetic on a secret records a
-   fault too. `in` has no registrable refusal, because `Secret in list` and
-   `Secret in map` overlap the built-in at evaluation; item 5 covers it. Every
+   missing-overload error that records no fault. Every operator is covered
+   against every type cel-js or swamp can name, `null` included, so arithmetic
+   or a comparison on a secret records a fault whatever the other operand is.
+   Two built-ins have no registrable refusal. `in` overlaps the built-in at
+   evaluation (`Secret in list`, `Secret in map`); item 5 covers it. `join` on
+   a list that holds a secret fails with cel-js's own
+   `invalid_list_element_type` before any handler runs, and a `list<dyn>.join`
+   overload never intercepts it; it records no fault and reveals nothing, and
+   stays a known unrecorded failure. Every
    overload is synchronous, and functions use `{ async: false }`. Equality is
    one refusing `Secret == T` overload for each type cel-js can name in a
    signature, `Secret` and swamp's own namespace types among them, and a
@@ -478,12 +483,13 @@ Refusal uses registrations. It does not rewrite expressions.
    expressions in the same environment, with the allowed set's overloads
    (Section 4.1) in place of the refusing ones. The allowed set passes there,
    and any other operation on a `vault.get` result is a check-time error, with
-   four exceptions: a dyn operand (an unlisted variable, or `dyn(...)`) and a
+   three escapes: a dyn operand (an unlisted variable, or `dyn(...)`) and a
    map literal keyed by the result check as valid and are refused only at run
-   time; `type()` checks as valid and answers the type name at run time, which
-   reveals nothing; and `has()` on a call result is a check-time error of its
-   own, `invalid_macro_argument`. Secrets from records are dyn values, so
-   their misuse shows up only at run time.
+   time, and `type()` checks as valid and answers the type name at run time,
+   which reveals nothing. `has()` on a call result fails the check for a
+   reason of its own, `invalid_macro_argument`, although `has()` is in the
+   allowed set. Secrets from records are dyn values, so their misuse shows up
+   only at run time.
 5. **Containers.** cel-js answers `in` and list or map equality without calling
    any handler (fact 2). They cannot reveal a value, because a `Secret` holds
    none, but they would answer by identity: a guard
@@ -926,17 +932,16 @@ observed on cel-js 7.6.1:
   product over each signature's refusal positions. The `==` overloads name every
   type cel-js accepts in a signature and answer a comparison with `null` in both
   operand orders. Adding `Secret == Secret` beside `Secret == dyn` does not
-  remove the overlap, so the enumerated set is the only shape. `in` and
-  `type(S)` have no registrable refusal.
+  remove the overlap, so the enumerated set is the only shape. `in`, `join`
+  on a list holding a secret, and `type(S)` have no registrable refusal.
 - A fault recorded in the ambient context survives absorption by `||`, `&&`,
   `exists` and `all`, across asynchronous evaluation.
 - Synchronous entry points still return synchronous results with the `Secret`
   registrations in place, although every operator use is marked maybe-async.
 - `vault.get`, with the static return type `Secret`, gives check-time errors in
   the validation environment, except for the allowed set in Section 4.1 and
-  four escapes: a dyn operand, a map literal keyed by the result and `type()`
-  check as valid, and `has()` on a call result fails as
-  `invalid_macro_argument`.
+  three escapes: a dyn operand, a map literal keyed by the result and `type()`
+  check as valid; `has()` on a call result fails as `invalid_macro_argument`.
 - The container rule in Section 4.3 refuses every case the fact 2 pins answer by
   identity. cel-js reads a record field, a list element and a map value through
   ordinary property access, so a getter records the secret on selection and on

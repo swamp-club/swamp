@@ -41,7 +41,11 @@
  * - `container`: a built-in that takes a container a `Secret` may sit in and
  *   reveals nothing: `size` and `type` of a list or map, the `join` receiver,
  *   the comprehension macros over a list, and `hasValue` and `or` on an
- *   optional. A getter records the element when the built-in reads it.
+ *   optional. A getter records the element when the built-in reads it. `join`
+ *   is the one that records nothing on its own: cel-js checks the element
+ *   types itself and throws `invalid_list_element_type` before any handler,
+ *   and a `list<dyn>.join` overload never intercepts it (pinned). It reveals
+ *   nothing, and it is documented beside `in` as an unrecorded failure.
  * - `type-name`: `type(x)`. cel-js registers `type(Secret): type` itself when
  *   the type is registered and a second registration is an overlap error, so
  *   `type(S)` answers the type name and reveals nothing.
@@ -112,10 +116,14 @@ export const EQUALITY_TYPES: readonly string[] = [
 
 /**
  * The operand types the arithmetic and comparison refusals pair with: every
- * equality type, so any binary operator with a `Secret` on one side records a
- * fault whatever is on the other.
+ * equality type, the environment's custom types, and `null`, so any binary
+ * operator with a `Secret` on one side records a fault whatever is on the
+ * other. `null` is here although it is not an equality type: `Secret == null`
+ * is the allowed set's answer, `Secret < null` is a refusal.
  */
-export const OPERAND_TYPES: readonly string[] = EQUALITY_TYPES;
+export function operandTypes(customTypes: readonly string[]): string[] {
+  return [...equalityTypes(customTypes), "null"];
+}
 
 /**
  * Names that appear in cel-js's definitions without being types a `Secret`
@@ -474,8 +482,9 @@ export function equalityTypes(customTypes: readonly string[]): string[] {
 /**
  * The refusing operator signatures: `Secret == T` for every equality type
  * (`!=` and the mirrored order are derived by cel-js), both operand orders of
- * every arithmetic and comparison operator against every operand type, and
- * the unary operators. The allowed set is excluded.
+ * every arithmetic and comparison operator against every operand type, `null`
+ * and the custom types included, and the unary operators. The allowed set is
+ * excluded.
  */
 export function operatorRefusalSignatures(
   customTypes: readonly string[] = [],
@@ -485,7 +494,7 @@ export function operatorRefusalSignatures(
     out.add(`${SECRET_TYPE_NAME} == ${type}`);
   }
   for (const op of [...ARITHMETIC_OPERATORS, ...COMPARISON_OPERATORS]) {
-    for (const type of OPERAND_TYPES) {
+    for (const type of operandTypes(customTypes)) {
       out.add(`${SECRET_TYPE_NAME} ${op} ${type}`);
       out.add(`${type} ${op} ${SECRET_TYPE_NAME}`);
     }

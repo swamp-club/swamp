@@ -194,9 +194,11 @@ Deno.test("REGISTERING_FILES equals the production files under src/ that registe
   assertEquals(
     found.sort(),
     [...REGISTERING_FILES.keys()].sort(),
-    "A production file registers with cel-js but is not scanned. Add it to " +
-      "REGISTERING_FILES and give each of its secret-capable positions a " +
-      "disposition in the inventory.",
+    "A production file calls registerFunction, registerOperator or " +
+      "registerType but is not scanned. If the call is on a cel-js " +
+      "Environment, add the file to REGISTERING_FILES and give each of its " +
+      "secret-capable positions a disposition in the inventory; if it is " +
+      "another registry's method of the same name, narrow REGISTRATION.",
   );
 });
 
