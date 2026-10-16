@@ -3024,6 +3024,104 @@ Deno.test("YamlDefinitionRepository.save: a changed string that would read as an
   });
 });
 
+/** A commented file whose scalars use each style an in-place edit meets. */
+function scalarStylesYaml(id: string): string {
+  return [
+    "# hand-written comment",
+    `type: ${testType.normalized}`,
+    "typeVersion: 2026.06.04.2",
+    `id: ${id}`,
+    "name: styles",
+    "version: 1",
+    "tags: {}",
+    "globalArguments:",
+    "  empty: ''",
+    "  plain: hello",
+    "  count: 3",
+    "  script: |",
+    "    echo one",
+    "    echo two",
+    "  # npm yaml's 1.1 schema reads this as a float; @std/yaml as a string",
+    "  neighbour: e0",
+    "methods: {}",
+    "",
+  ].join("\n");
+}
+
+for (
+  const { label, key, value, line } of [
+    {
+      label: "a quoted empty string edited to null",
+      key: "empty",
+      value: null,
+      line: "  empty: null",
+    },
+    {
+      label: "a plain string edited to a string that reads as a number",
+      key: "plain",
+      value: "123",
+      line: '  plain: "123"',
+    },
+    {
+      label: "a plain string edited to a string that reads as a boolean",
+      key: "plain",
+      value: "true",
+      line: '  plain: "true"',
+    },
+    {
+      label: "a plain string edited to a boolean",
+      key: "plain",
+      value: true,
+      line: "  plain: true",
+    },
+    {
+      label: "a number edited to a string that reads as a number",
+      key: "count",
+      value: "4",
+      line: '  count: "4"',
+    },
+    {
+      label: "a block literal edited to another multi-line string",
+      key: "script",
+      value: "echo one\necho three\n",
+      line: "  script: |\n    echo one\n    echo three",
+    },
+    {
+      label: "a block literal edited to null",
+      key: "script",
+      value: null,
+      line: "  script: null",
+    },
+  ]
+) {
+  Deno.test(`YamlDefinitionRepository.save: ${label} is rewritten in place, keeping every other byte (swamp-club#3541)`, async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlDefinitionRepository(dir);
+      const id = crypto.randomUUID();
+      const typeDir = join(dir, "models", testType.toDirectoryPath());
+      await ensureDir(typeDir);
+      const path = join(typeDir, "styles.yaml");
+      const original = scalarStylesYaml(id);
+      await Deno.writeTextFile(path, original);
+      const data = jsonDataFromYaml(original);
+      (data.globalArguments as Record<string, unknown>)[key] = value;
+
+      await repo.save(
+        testType,
+        Definition.fromData(data as Parameters<typeof Definition.fromData>[0]),
+      );
+
+      const saved = await Deno.readTextFile(path);
+      assertEquals(jsonDataFromYaml(saved), data);
+      const lines = original.split("\n");
+      const start = lines.findIndex((l) => l.startsWith(`  ${key}:`));
+      const end = key === "script" ? start + 3 : start + 1;
+      lines.splice(start, end - start, line);
+      assertEquals(saved, lines.join("\n"));
+    });
+  });
+}
+
 Deno.test("YamlDefinitionRepository.save: changing an anchored list that unchanged aliases still use reads back as saved", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

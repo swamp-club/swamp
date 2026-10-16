@@ -270,7 +270,20 @@ Deno.test("WriterLease with SqliteCommitStore: fences are unique, and only the c
         await run(writers, commands);
       },
     ),
-    { numRuns: 400 },
+    {
+      numRuns: 400,
+      // One interleaving that reaches every outcome below, so the coverage
+      // check never rests on the random runs alone (swamp-club#3541).
+      examples: [[[2, [
+        { kind: "acquire", writer: 0 },
+        { kind: "commit", writer: 0 },
+        { kind: "acquire", writer: 1 },
+        { kind: "advance", ms: TTL + WRITER_LEASE_CLOCK_SKEW_MS + 1 },
+        { kind: "acquire", writer: 1 },
+        { kind: "commit", writer: 0 },
+        { kind: "renew", writer: 0 },
+      ]]]],
+    },
   );
   // The interleavings reached what the properties are about.
   for (const [outcome, count] of Object.entries(coverage)) {

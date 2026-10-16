@@ -1513,17 +1513,28 @@ function editScalarsInPlace(
     new Composer({ version: "1.1", keepSourceTokens: true }).compose(tokens),
   );
   if (docs.length !== 1 || docs[0].errors.length > 0) return undefined;
-  const edits: { token: CST.Token; value: string }[] = [];
+  const edits: ScalarEdit[] = [];
   if (!collectScalarEdits(docs[0].contents, oldData, newData, edits)) {
     return undefined;
   }
   try {
-    for (const { token, value } of edits) CST.setScalarValue(token, value);
+    // Every edited scalar is a value, never a key: without afterKey a block
+    // scalar's lines are written at its key's indent and no longer parse.
+    for (const { token, value, type } of edits) {
+      CST.setScalarValue(token, value, { afterKey: true, type });
+    }
   } catch {
     // A token the CST cannot rewrite leaves the change to the document merge.
     return undefined;
   }
   return tokens.map((token) => CST.stringify(token)).join("");
+}
+
+/** A new value for a scalar token, and the style to write it in. */
+interface ScalarEdit {
+  token: CST.Token;
+  value: string;
+  type?: Scalar.Type;
 }
 
 /**
@@ -1535,7 +1546,7 @@ function collectScalarEdits(
   node: YamlNode | null,
   oldValue: unknown,
   newValue: unknown,
-  edits: { token: CST.Token; value: string }[],
+  edits: ScalarEdit[],
 ): boolean {
   if (canonicalJson(oldValue) === canonicalJson(newValue)) return true;
   if (isPlainRecord(oldValue) && isPlainRecord(newValue) && isMap(node)) {
@@ -1566,10 +1577,39 @@ function collectScalarEdits(
       )
     );
   }
-  const token = isScalar(node) ? node.srcToken : undefined;
-  if (!token || !isPrimitive(oldValue) || !isPrimitive(newValue)) return false;
-  edits.push({ token, value: String(newValue) });
+  if (!isScalar(node) || !node.srcToken) return false;
+  if (!isPrimitive(oldValue) || !isPrimitive(newValue)) return false;
+  edits.push({
+    token: node.srcToken,
+    value: String(newValue),
+    type: scalarTypeFor(newValue, node.type),
+  });
   return true;
+}
+
+/**
+ * The style to write `value` in, over a scalar currently written as `current`.
+ * A string keeps a quoted or block style, and a plain one is double-quoted
+ * when written plain would read back as something else; any other value is
+ * written plain, since quoted it would read back as a string
+ * (swamp-club#3541).
+ */
+function scalarTypeFor(
+  value: string | number | boolean | null,
+  current: Scalar.Type | undefined,
+): Scalar.Type {
+  if (typeof value !== "string") return Scalar.PLAIN;
+  if (current !== undefined && current !== Scalar.PLAIN) return current;
+  return readsPlainAs(value) ? Scalar.PLAIN : Scalar.QUOTE_DOUBLE;
+}
+
+/** Whether `value`, written as a plain scalar, reads back as that string. */
+function readsPlainAs(value: string): boolean {
+  try {
+    return parseYaml(value) === value;
+  } catch {
+    return false;
+  }
 }
 
 function isPrimitive(
