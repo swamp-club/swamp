@@ -1000,13 +1000,15 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   signals (key, workflow, receipt, received, `heldUntil`, sender; never the
   payload); a listed one is taken by the next wait only while that step still
   sets `acceptEarly` and declares the key. A signal sent without `--server` to a
-  workflow id two definitions share is not listed. `workflow history get` marks
-  a receipt answered from a held signal (`heldAsPending` with `--json`); step
-  outputs and signal results never carry it. Upgrade every host that runs,
-  resumes or lists the workflow before adding `acceptEarly`, and every client
-  that signals it with `--server`: an older swamp never takes a held signal, and
-  a server holds nothing for an older client, which is refused `no_open_wait`. A
-  server older than `--idempotency-key` ignores the key.
+  workflow id two definitions share is not listed. The run view marks a receipt
+  answered from a held signal (`heldAsPending` in `--json` of
+  `workflow history
+  get`, `workflow run` and `workflow resume`); step outputs
+  and signal results never carry it. Upgrade every host that runs, resumes or
+  lists the workflow before adding `acceptEarly`, and every client that signals
+  it with `--server`: an older swamp never takes a held signal, and a server
+  holds nothing for an older client, which is refused `no_open_wait`. A server
+  older than `--idempotency-key` ignores the key.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

@@ -42,6 +42,22 @@ const DETAIL_STYLE = {
 };
 
 /**
+ * The time to judge held signals by: re-read every {@link TICK_MS} while
+ * `active`, so a page counting held signals drops a lapsed one when the
+ * panel does.
+ */
+export function useHeldSignalClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+/**
  * The signals sent by key before any wait for the key was open: each with
  * its key, workflow, receipt, when serve received it and how long serve
  * holds it for the next wait on the key. A signal past its hold is hidden,
@@ -49,15 +65,7 @@ const DETAIL_STYLE = {
  * nothing refetches the list. Renders nothing when no signal is held.
  */
 export function PendingSignalsPanel({ rows }: PendingSignalsPanelProps) {
-  const [now, setNow] = useState(() => Date.now());
-  const ticking = rows.length > 0;
-  useEffect(() => {
-    if (!ticking) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
-    return () => clearInterval(timer);
-  }, [ticking]);
-
+  const now = useHeldSignalClock(rows.length > 0);
   const held = heldAt(rows, now);
   if (held.length === 0) return null;
   return (

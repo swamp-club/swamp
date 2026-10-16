@@ -62,6 +62,9 @@ without writing the run: the step stays `waiting` until the next resume applies
 the signal. A resume refuses while a wait is open; once the wait's deadline has
 passed, the resume fails the step with `wait_timeout` instead. The waiting step
 is settled as it stands: its `guard` and `dependsOn` are not evaluated again.
+For a keyed wait, `workflow run` prints the by-key command beside the one by
+wait ID, and `swamp workflow waits --pending` lists the signals held for a key
+before its wait opens.
 
 Resume is a separate invocation: `swamp workflow resume <workflow>`. It
 re-enters the executor, skips completed steps, and runs the remaining pending

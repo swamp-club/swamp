@@ -1827,10 +1827,12 @@ get` reads the wait's outcome when it builds the run view and sets
 it. The record is not written. The run view also carries the wait's `key`,
 which the log output shows as `(key <key>)` on a waiting step, and keeps
 `heldAsPending` on a receipt a pending signal answered, which the log output
-shows as "held as a pending signal until the wait took it" (swamp-club#3214). The
-run view, in `workflow history get` and the dashboard's run detail, is the one
-place the marker is shown: `steps.<name>.outputs.signal` stays `id`, `waitId`,
-`receivedAt` and `submittedBy`, and no reply to a sender carries it. The local
+shows as "held as a pending signal until the wait took it"
+(swamp-club#3214). The run view is the one place the marker is shown:
+`workflow history get`, the dashboard's run detail, the run in the `--json`
+output of `workflow run` and `workflow resume`, and the run serve streams.
+`steps.<name>.outputs.signal` stays `id`, `waitId`, `receivedAt` and
+`submittedBy`, and no reply to a sender carries it. The local
 command reads the store from its
 read-only repository context, which carries it for a filesystem datastore only
 (`requireInitializedRepoReadOnly`). A custom datastore's store pulls its

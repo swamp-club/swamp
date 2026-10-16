@@ -48,8 +48,12 @@ import {
   pendingApprovals,
 } from "../client/approvals.ts";
 import { SignalWaitsPanel } from "../components/SignalWaitsPanel.tsx";
-import { PendingSignalsPanel } from "../components/PendingSignalsPanel.tsx";
 import {
+  PendingSignalsPanel,
+  useHeldSignalClock,
+} from "../components/PendingSignalsPanel.tsx";
+import {
+  heldAt,
   pendingSignalRows,
   signalWaitRows,
 } from "../client/signal_wait_state.ts";
@@ -119,13 +123,15 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   // Refused to a caller who may read no workflow: nothing is listed then.
   // Refetched only with the gates, never on a timer: the listing settles
   // expired waits as it reads. A held signal lapsing changes no run, so the
-  // pending signals panel drops lapsed ones on its own clock.
+  // page and the pending signals panel drop lapsed ones on the same clock.
   const { data: waitsData, refetch: refetchWaits } = useRequest(
     "workflow.waits",
     { includeSignalled: true, includePending: true },
   );
   const signalWaits = signalWaitRows(waitsData);
-  const allHeldSignals = pendingSignalRows(waitsData, Date.now());
+  const heldSignalRows = pendingSignalRows(waitsData);
+  const heldClock = useHeldSignalClock(heldSignalRows.length > 0);
+  const allHeldSignals = heldAt(heldSignalRows, heldClock);
   const suspendedRuns = useMemo(() => suspendedData ?? [], [suspendedData]);
   // Runs serve drives now, whoever approved them (swamp-club#3005).
   const servedRuns = activeRunIds(health?.activeRuns);
