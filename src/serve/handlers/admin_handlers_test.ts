@@ -503,6 +503,7 @@ async function createSyncRepo(dir: string, managedConfig: boolean) {
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   } as ConnectionContext;
   const cleanup = () => repoContext.catalogStore.close();
@@ -882,6 +883,7 @@ Deno.test("handleDoctorWorkflows: checks the dirs the server loads workflows fro
           restrictedCommands: [],
           approveRequiresExplicitGrant: false,
           signalRequiresExplicitGrant: false,
+          tagRequiresExplicitGrant: false,
         },
       } as unknown as ConnectionContext;
       const socket = createMockSocket();
@@ -959,6 +961,7 @@ Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the 
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   } as unknown as ConnectionContext;
   const reports: UnscopedChange[] = [];
@@ -1030,6 +1033,7 @@ Deno.test("handleRunDoctor: fix settles an interrupted row whose renamed workflo
           restrictedCommands: [],
           approveRequiresExplicitGrant: false,
           signalRequiresExplicitGrant: false,
+          tagRequiresExplicitGrant: false,
         },
       } as unknown as ConnectionContext;
 
@@ -1145,6 +1149,7 @@ async function doctorScan(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   } as unknown as ConnectionContext;
   const socket = createMockSocket();
@@ -1339,6 +1344,7 @@ function leaseListCtx(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
     ...(grants
       ? {

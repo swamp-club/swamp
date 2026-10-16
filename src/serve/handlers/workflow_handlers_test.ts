@@ -52,7 +52,10 @@ import type { Principal } from "../../domain/access/principal.ts";
 import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
-import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import {
+  GrantBasedAccessDecisionService,
+  type GrantBasedAccessDecisionServiceOptions,
+} from "../../domain/access/grant_based_access_decision_service.ts";
 import type { ServeConfigFile } from "../serve_config.ts";
 import type { TriggerOverride } from "../../libswamp/workflows/scheduled_execution.ts";
 import { type ActiveRun, ActiveRunRegistry } from "../active_run_registry.ts";
@@ -178,6 +181,7 @@ const searchAuthBase: Omit<ServeAuthConfig, "mode"> = {
   restrictedCommands: [],
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
+  tagRequiresExplicitGrant: false,
 };
 
 const searchPrincipal: Principal = { kind: "user", id: "reader" };
@@ -968,6 +972,7 @@ function workflowEditCtx(
   repoDir: string,
   workflowRepo: YamlWorkflowRepository,
   grants?: Grant[],
+  options: GrantBasedAccessDecisionServiceOptions = {},
 ): ConnectionContext {
   const ctx: Record<string, unknown> = {
     repoDir,
@@ -980,6 +985,7 @@ function workflowEditCtx(
     ctx.policySnapshotLoader = {
       decisionService: new GrantBasedAccessDecisionService(
         new PolicySnapshot(grants, [], createConditionEvaluator()),
+        options,
       ),
     } as unknown as PolicySnapshotLoader;
   }
@@ -1147,6 +1153,205 @@ Deno.test("handleWorkflowEdit: a retag into a denied scope sends one error and w
     assertEquals(sent.length, 1);
     assertEquals(sent[0].type, "error");
     assertEquals((await repo.findByName("retag-wf"))?.tags, { env: "dev" });
+  });
+});
+
+// --- handleWorkflowEdit retag needs tag (swamp-club#3085) ---
+
+/** Write on every workflow; tag only on team-a ones; write does not imply tag. */
+function teamTagWorkflowCtx(
+  dir: string,
+  repo: YamlWorkflowRepository,
+): ConnectionContext {
+  return workflowEditCtx(dir, repo, [
+    workflowGrant({}),
+    workflowGrant({ actions: ["tag"], condition: 'tags.team == "team-a"' }),
+  ], { writeImpliesTag: false });
+}
+
+async function editWorkflowTags(
+  ctx: ConnectionContext,
+  workflow: Workflow,
+  tags: Record<string, string>,
+) {
+  const socket = editSocket();
+  await handleWorkflowEdit(
+    socket,
+    ctx,
+    "req-retag",
+    {
+      workflowIdOrName: workflow.name,
+      content: workflowYaml(workflow, { tags }),
+    },
+    new AbortController(),
+    WORKFLOW_EDITOR,
+  );
+  return sentFrames(socket);
+}
+
+Deno.test("handleWorkflowEdit: a retag into another team's tag is refused without a tag grant for its current tags", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "other-wf", {
+      team: "team-b",
+    });
+
+    const sent = await editWorkflowTags(
+      teamTagWorkflowCtx(dir, repo),
+      workflow,
+      {
+        team: "team-a",
+      },
+    );
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals(sent[0].error.code, "unauthorized");
+    assertEquals((await repo.findByName("other-wf"))?.tags, { team: "team-b" });
+  });
+});
+
+Deno.test("handleWorkflowEdit: a retag out of a granted team's tag is refused", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "own-wf", { team: "team-a" });
+
+    const sent = await editWorkflowTags(
+      teamTagWorkflowCtx(dir, repo),
+      workflow,
+      {
+        team: "team-b",
+      },
+    );
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals((await repo.findByName("own-wf"))?.tags, { team: "team-a" });
+  });
+});
+
+Deno.test("handleWorkflowEdit: a retag within a granted team's tag is saved", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "own-wf", { team: "team-a" });
+
+    const sent = await editWorkflowTags(
+      teamTagWorkflowCtx(dir, repo),
+      workflow,
+      {
+        team: "team-a",
+        env: "prod",
+      },
+    );
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "workflow.edit");
+    assertEquals((await repo.findByName("own-wf"))?.tags, {
+      team: "team-a",
+      env: "prod",
+    });
+  });
+});
+
+Deno.test("handleWorkflowEdit: an edit that keeps the tags needs no tag grant", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "other-wf", {
+      team: "team-b",
+    });
+    const ctx = workflowEditCtx(dir, repo, [workflowGrant({})], {
+      writeImpliesTag: false,
+    });
+
+    const sent = await editWorkflowTags(ctx, workflow, { team: "team-b" });
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "workflow.edit");
+  });
+});
+
+Deno.test("handleWorkflowEdit: a rename into a name-scoped tag grant is refused, so it cannot be followed by a retag", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "other-wf", {
+      team: "team-b",
+    });
+    const ctx = workflowEditCtx(dir, repo, [
+      workflowGrant({}),
+      workflowGrant({
+        actions: ["tag"],
+        resource: { kind: "workflow", pattern: "team-a-*" },
+      }),
+    ], { writeImpliesTag: false });
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      ctx,
+      "req-rename",
+      {
+        workflowIdOrName: "other-wf",
+        content: workflowYaml(workflow, { name: "team-a-loot" }),
+        allowRename: true,
+      },
+      new AbortController(),
+      WORKFLOW_EDITOR,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].error?.code, "unauthorized");
+    assertEquals(await repo.findByName("team-a-loot"), null);
+    assertEquals((await repo.findByName("other-wf"))?.tags, { team: "team-b" });
+  });
+});
+
+Deno.test("handleWorkflowEdit: an edit carrying the tags it loaded cannot undo a retag stored before it saves", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "own-wf", { team: "team-a" });
+    // The handler resolves the workflow, the edit loads it, and the save
+    // re-reads it; another writer moves it to team-b right after the load.
+    let lookups = 0;
+    const racing = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop !== "findByName") return Reflect.get(target, prop, receiver);
+        return async (name: string) => {
+          const found = await target.findByName(name);
+          if (++lookups === 2) {
+            await target.save(
+              Workflow.fromData({
+                ...workflow.toData(),
+                tags: { team: "team-b" },
+              }),
+            );
+          }
+          return found;
+        };
+      },
+    });
+
+    const sent = await editWorkflowTags(
+      teamTagWorkflowCtx(dir, racing),
+      workflow,
+      { team: "team-a" },
+    );
+
+    assertEquals(lookups, 3);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].error?.code, "unauthorized");
+    assertEquals((await repo.findByName("own-wf"))?.tags, { team: "team-b" });
+  });
+});
+
+Deno.test("handleWorkflowEdit: a write grant still permits a retag when write implies tag", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "other-wf", {
+      team: "team-b",
+    });
+
+    const sent = await editWorkflowTags(
+      workflowEditCtx(dir, repo, [workflowGrant({})]),
+      workflow,
+      { team: "team-a" },
+    );
+
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "workflow.edit");
   });
 });
 

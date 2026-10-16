@@ -559,9 +559,10 @@ type that names a resource, and
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `run`     | Execute a workflow or method (implies `approve` and `signal`)                                                                                                                               |
 | `read`    | Query data, view definitions, list resources                                                                                                                                                |
-| `write`   | Create or update behaviors, definitions, data                                                                                                                                               |
+| `write`   | Create or update behaviors, definitions, data (implies `tag`)                                                                                                                               |
 | `approve` | Approve or reject a workflow manual-approval gate                                                                                                                                           |
 | `signal`  | Deliver a signal to a `wait_for_signal` step of a workflow, and nothing else                                                                                                                |
+| `tag`     | Change a behavior's or workflow's tags, in addition to `write` on it                                                                                                                        |
 | `admin`   | Manage grants, groups, tokens, restricted behaviors (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored; see below), and any operation on a control-plane record |
 
 **Renaming through an edit**: `model.edit` and `workflow.edit` refuse content
@@ -636,16 +637,83 @@ build that cannot validate a stored grant or group treats it as unrecognised
 once running it keeps a deny it read earlier. Upgrade every host that reads the
 datastore before the first grant naming `signal` is created.
 
+**`tag` is its own action, and `write` implies it** (swamp-club#3085). A
+behavior's or workflow's tags are what a condition such as
+`tags.team == "team-a"` reads, for the behavior or workflow itself and for the
+data it owns, which is judged on its owner's current tags. Whoever may change
+those tags may therefore move a resource into or out of every grant that reads
+them, including a `data:` read grant. So a `model.edit` or `workflow.edit` whose
+saved tags differ from the stored ones needs `tag` as well as `write`: on the
+resource as it was (its name and prior tags), so a member cannot move it out of
+a tag their grants depend on, and on the resource as the edit leaves it, so they
+cannot move it in. A rename counts as a retag and needs `tag` on the old name
+and the new one: a `tag` grant scoped by name would otherwise be reached by
+renaming a resource into its pattern first and retagging it after. An edit that
+changes neither tags nor name needs no `tag`. A restricted or control-plane behavior is edited as admin, which covers
+its tags. Behaviors and workflows are created untagged (`model.create`,
+`workflow.create` and direct type execution set no tags), so every tag is set
+through an edit.
+
+The prior tags are both the ones the edit loaded and the ones stored when it
+saves, read again just before the save: an edit carrying tags it loaded before
+someone else's retag would otherwise put the old tags back without a `tag`
+check. When the stored resource is no longer found under the name and id the
+edit loaded, the edit is judged a retag. The window between that read and the
+save remains, as for every edit (edits take no lock).
+
+By default a grant with `actions: [write]` also passes `tag` checks, so existing
+grants keep their meaning. That leaves a tag-conditioned read grant open to
+anyone who may write the resources it covers. Close it either way:
+
+- **Require an explicit `tag` grant** (opt-in): `swamp serve
+  --tag-requires-explicit-grant` (config key
+  `auth.tag-requires-explicit-grant`, env var
+  `SWAMP_TAG_REQUIRES_EXPLICIT_GRANT`) stops an allow grant on `write` from
+  passing `tag`. It is independent of the `approve` and `signal` settings, off
+  by default and per process. A deny on `write` always denies `tag`, setting or
+  not, so turning it on can only narrow access. Grant `tag` where tags may
+  change, scoped by a condition when needed; a name pattern also works, since
+  a rename needs `tag` too.
+- **Deny `tag`** without the setting: a deny grant on `tag` for the members
+  whose reads depend on tags overrides the `tag` their `write` implies.
+
+A self-service team that may label its own resources needs a `tag` grant whose
+condition holds both before and after the change. Because new resources are
+untagged, `tags.team == "team-a"` alone does not let a member tag a new
+behavior into team-a; `!("team" in tags) || tags.team == "team-a"` does, and
+lets them claim any resource without a `team` tag. Keep data other teams must
+not read away from untagged owners.
+
+A data resource takes its owner's current name as well as its tags, so a `data:`
+grant scoped by name has the same exposure: with `read` on `data:team-a-*` and
+`write` on `model:*`, renaming another team's behavior to `team-a-x` exposes its
+data. This predates the `tag` action. Since a rename needs `tag`, either way of
+closing the retag above closes it too; without one, scope data reads by tag
+conditions only together with one of them.
+
+**Do not store a grant that names `tag` while an older build shares the
+datastore**, for the reason given for `signal` above: a build from before this
+action skips the whole grant, and every other action in it goes with it. A deny
+on `write, tag` no longer denies `write` there, so the older build lets the
+member edit what the grant was written to stop. Upgrade every host first, and
+until then keep `tag` in a grant entry of its own, a deny above all.
+
 An `AccessDecision` whose grant passed `approve` or `signal` only through `run`
-carries `impliedBy: "run"`. `swamp access check` and `swamp access can-i` show it
-as `[implied by run]`, and `can-i` without an action lists an implied `approve`
-row and an implied `signal` row per such grant. The server's `access.check` and
-`access.can-i` responses report the policies as `approveRequiresExplicitGrant`
-and `signalRequiresExplicitGrant`.
+carries `impliedBy: "run"`, and one that passed `tag` only through `write`
+carries `impliedBy: "write"`. `swamp access check` and `swamp access can-i` show
+them as `[implied by run]` and `[implied by write]`, and `can-i` without an
+action lists an implied `approve` row and an implied `signal` row per `run`
+grant, and an implied `tag` row per `write` grant. The server's `access.check`
+and `access.can-i` responses report the policies as
+`approveRequiresExplicitGrant`, `signalRequiresExplicitGrant` and
+`tagRequiresExplicitGrant`.
 
 Implementation: `src/domain/access/action.ts`,
 `src/domain/access/grant_based_access_decision_service.ts`
-(`runImpliesApprove` and `runImpliesSignal` options, `actionsCoveredBy`).
+(`runImpliesApprove`, `runImpliesSignal` and `writeImpliesTag` options,
+`actionsCoveredBy`), `tagsChanged` in `src/domain/access/access_resources.ts`,
+and `authorizeRetag` in `src/serve/handlers/shared.ts`, called from the
+`model.edit` and `workflow.edit` handlers.
 
 ## Grant evaluation model
 
@@ -656,8 +724,8 @@ action, resource) triple:
 2. **Collect candidates**: every grant whose subject is in the list.
 3. **Filter**: keep grants matching the resource selector, the action and the
    method name (when the grant has a `methods` list). Implied actions count:
-   `run` implies `approve` and `signal`, each except for allow grants when the
-   server requires an explicit grant for that action.
+   `run` implies `approve` and `signal`, and `write` implies `tag`, each except
+   for allow grants when the server requires an explicit grant for that action.
 4. **Partition**: split into deny and allow grants.
 5. **Evaluate denies first**: check each deny's condition, if any. The first
    matching deny wins and the request is rejected.

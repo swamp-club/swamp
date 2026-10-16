@@ -79,6 +79,7 @@ without it the default file is optional.
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted behavior type needs admin to create, run, edit or delete a behavior of it, delete or rename its data, or add or change a workflow step running it. A behavior type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
+| `--tag-requires-explicit-grant` / `auth.tag-requires-explicit-grant` | `SWAMP_TAG_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
@@ -112,6 +113,11 @@ Table notes:
 - `--signal-requires-explicit-grant`: delivering a signal to a wait needs a
   grant naming `signal`; a `run` grant alone no longer passes. Every replica
   must share the value.
+- `--tag-requires-explicit-grant`: an edit that changes a behavior's or
+  workflow's tags or name needs a grant naming `tag`; a `write` grant alone no longer
+  passes (swamp-club#3085, see "Actions" in access-control.md). Turn it on
+  when grants read tags in conditions and members may write the resources
+  they cover. Every replica must share the value.
 - The worker timeouts are covered in remote-execution. Related built-in
   defaults: 60 s reconnection grace (`DEFAULT_GRACE_WINDOW_MS`,
   `src/serve/worker_gateway.ts`) and 600 s queue ceiling

@@ -453,3 +453,31 @@ Deno.test("accessCanIRenderer log: a trigger principal's run-time decision names
   assertStringIncludes(log, "In serve runs: ALLOW read vault erp");
   assertStringIncludes(log, "every scheduled or webhook run");
 });
+
+Deno.test("accessCanIRenderer log: enumeration explains implied tag rows with the tag setting (swamp-club#3085)", () => {
+  const output = captureRender("log", {
+    principal: "user:member",
+    tagRequiresExplicitGrant: false,
+    decisions: [
+      makeDecision({ action: "write", resource: "model:*" }),
+      makeDecision({ action: "tag", resource: "model:*", impliedBy: "write" }),
+    ],
+  });
+  const tagRow = output.find((l) => l.includes(" tag "));
+  assertStringIncludes(tagRow!, "[implied by write]");
+  const notes = output.filter((l) => l.startsWith("Note:"));
+  assertEquals(notes.length, 1);
+  assertStringIncludes(notes[0], "tag rows marked [implied by write]");
+  assertStringIncludes(notes[0], "auth.tag-requires-explicit-grant");
+});
+
+Deno.test("accessCanIRenderer json: includes the tag policy and impliedBy write", () => {
+  const output = captureRender("json", {
+    principal: "user:member",
+    tagRequiresExplicitGrant: true,
+    decisions: [makeDecision({ action: "tag", impliedBy: "write" })],
+  });
+  const parsed = JSON.parse(output.join(""));
+  assertEquals(parsed.tagRequiresExplicitGrant, true);
+  assertEquals(parsed.decisions[0].impliedBy, "write");
+});

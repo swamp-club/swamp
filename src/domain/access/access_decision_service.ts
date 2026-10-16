@@ -56,10 +56,11 @@ export interface AccessDecision {
   readonly subject: Subject;
   readonly condition?: string;
   /**
-   * Set when the grant matched `approve` or `signal` only because it grants
-   * `run`, not because it names the action itself.
+   * Set when the grant matched the action only through another it grants —
+   * `approve` or `signal` through `run`, `tag` through `write` — not because
+   * it names the action itself.
    */
-  readonly impliedBy?: "run";
+  readonly impliedBy?: "run" | "write";
 }
 
 export interface AccessDecisionService {

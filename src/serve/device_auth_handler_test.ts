@@ -70,6 +70,7 @@ function makeMockDeps(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
     repoDir: "/tmp/test-repo",
     repoContext: {} as RepositoryContext,

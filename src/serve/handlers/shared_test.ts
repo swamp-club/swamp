@@ -37,6 +37,7 @@ import { notFound, validationFailed } from "../../libswamp/errors.ts";
 import {
   authorizeAnyOrReject,
   authorizeOrReject,
+  authorizeRetag,
   cancelActor,
   cancelReasonFor,
   captureDecisionSubject,
@@ -130,6 +131,7 @@ function makeCtx(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   };
 }
@@ -2140,4 +2142,181 @@ Deno.test("confirmRequest: a request during which nothing committed is not confi
   confirm.calls[0].resolve();
   await done;
   assertEquals(sent.length, 2);
+});
+
+// --- authorizeRetag (swamp-club#3085) ---
+
+/** A context where `write` does not imply `tag`, as with the flag on. */
+function explicitTagCtx(grants: Grant[]): ConnectionContext {
+  return {
+    ...makeCtx(grants),
+    policySnapshotLoader: {
+      decisionService: new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+        { writeImpliesTag: false },
+      ),
+    } as unknown as PolicySnapshotLoader,
+  };
+}
+
+function modelWithTags(tags: Record<string, string>) {
+  return {
+    kind: "model" as const,
+    name: "other-model",
+    fields: { name: "other-model", modelType: "command/shell", tags },
+  };
+}
+
+/** Write on every model, and tag only on team-a models. */
+const teamATagGrants = [
+  makeGrant({ actions: ["write"] }),
+  makeGrant({ actions: ["tag"], condition: 'tags.team == "team-a"' }),
+];
+
+function retag(
+  ctx: ConnectionContext,
+  tags: {
+    loaded: Record<string, string>;
+    stored: Record<string, string> | null;
+    afterTags: Record<string, string>;
+  },
+): { allowed: boolean; frames: string[] } {
+  const { socket, frames } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  const allowed = authorizeRetag(socket, "req-retag", makePrincipal("adam"), {
+    prior: modelWithTags,
+    after: modelWithTags(tags.afterTags),
+    ...tags,
+  }, ctx);
+  return { allowed, frames };
+}
+
+Deno.test("authorizeRetag: an edit that changes no tags needs no tag grant", () => {
+  const tags = { team: "team-b" };
+  const result = retag(explicitTagCtx([makeGrant({ actions: ["write"] })]), {
+    loaded: tags,
+    stored: { ...tags },
+    afterTags: { ...tags },
+  });
+  assertEquals(result, { allowed: true, frames: [] });
+});
+
+Deno.test("authorizeRetag: moving a resource into a tag needs tag on its prior tags", () => {
+  const result = retag(explicitTagCtx(teamATagGrants), {
+    loaded: { team: "team-b" },
+    stored: { team: "team-b" },
+    afterTags: { team: "team-a" },
+  });
+  assertEquals(result.allowed, false);
+  assertEquals(result.frames.length, 1);
+  assertEquals(JSON.parse(result.frames[0]).type, "error");
+});
+
+Deno.test("authorizeRetag: moving a resource out of a tag needs tag on its new tags", () => {
+  const result = retag(explicitTagCtx(teamATagGrants), {
+    loaded: { team: "team-a" },
+    stored: { team: "team-a" },
+    afterTags: { team: "team-b" },
+  });
+  assertEquals(result.allowed, false);
+  assertEquals(result.frames.length, 1);
+});
+
+Deno.test("authorizeRetag: a retag within a granted tag is allowed", () => {
+  const result = retag(explicitTagCtx(teamATagGrants), {
+    loaded: { team: "team-a" },
+    stored: { team: "team-a" },
+    afterTags: { team: "team-a", env: "prod" },
+  });
+  assertEquals(result, { allowed: true, frames: [] });
+});
+
+Deno.test("authorizeRetag: an edit carrying the loaded tags cannot undo a retag stored since", () => {
+  // The edit loaded team-a and writes team-a back, but team-b is stored now.
+  const result = retag(explicitTagCtx(teamATagGrants), {
+    loaded: { team: "team-a" },
+    stored: { team: "team-b" },
+    afterTags: { team: "team-a" },
+  });
+  assertEquals(result.allowed, false);
+  assertEquals(result.frames.length, 1);
+});
+
+Deno.test("authorizeRetag: a resource no longer stored as loaded is judged a retag", () => {
+  const tags = { team: "team-b" };
+  const refused = retag(explicitTagCtx([makeGrant({ actions: ["write"] })]), {
+    loaded: tags,
+    stored: null,
+    afterTags: { ...tags },
+  });
+  assertEquals(refused.allowed, false);
+  const allowed = retag(
+    explicitTagCtx([makeGrant({ actions: ["write", "tag"] })]),
+    { loaded: tags, stored: null, afterTags: { ...tags } },
+  );
+  assertEquals(allowed, { allowed: true, frames: [] });
+});
+
+Deno.test("authorizeRetag: write implies tag unless the server requires an explicit grant", () => {
+  const result = retag(makeCtx([makeGrant({ actions: ["write"] })]), {
+    loaded: { team: "team-b" },
+    stored: { team: "team-b" },
+    afterTags: { team: "team-a" },
+  });
+  assertEquals(result, { allowed: true, frames: [] });
+});
+
+function namedModel(name: string, tags: Record<string, string>) {
+  return {
+    kind: "model" as const,
+    name,
+    fields: { name, modelType: "command/shell", tags },
+  };
+}
+
+function rename(
+  ctx: ConnectionContext,
+  names: { from: string; to: string },
+  tags: Record<string, string>,
+): boolean {
+  const { socket } = recordingSocket();
+  setConnectionCollectives(socket, [], []);
+  return authorizeRetag(socket, "req-rename", makePrincipal("adam"), {
+    prior: (prior) => namedModel(names.from, prior),
+    after: namedModel(names.to, { ...tags }),
+    loaded: tags,
+    stored: { ...tags },
+    afterTags: { ...tags },
+  }, ctx);
+}
+
+Deno.test("authorizeRetag: a rename needs tag on the old and new name, so a name-scoped tag grant cannot be reached by renaming first", () => {
+  const nameScoped = explicitTagCtx([
+    makeGrant({ actions: ["write"] }),
+    makeGrant({
+      actions: ["tag"],
+      resource: { kind: "model", pattern: "team-a-*" },
+    }),
+  ]);
+  const tags = { team: "team-b" };
+
+  assertEquals(
+    rename(nameScoped, { from: "other-model", to: "team-a-loot" }, tags),
+    false,
+  );
+  assertEquals(
+    rename(nameScoped, { from: "team-a-old", to: "team-a-new" }, tags),
+    true,
+  );
+});
+
+Deno.test("authorizeRetag: by default a rename passes on the tag write implies", () => {
+  assertEquals(
+    rename(
+      makeCtx([makeGrant({ actions: ["write"] })]),
+      { from: "other-model", to: "team-a-loot" },
+      { team: "team-b" },
+    ),
+    true,
+  );
 });

@@ -876,6 +876,16 @@ Deno.test("collectServeExtraArgs: omits --signal-requires-explicit-grant when no
   assertEquals(args.includes("--signal-requires-explicit-grant"), false);
 });
 
+Deno.test("collectServeExtraArgs: forwards --tag-requires-explicit-grant", () => {
+  const args = collectServeExtraArgs({ tagRequiresExplicitGrant: true });
+  assertEquals(args, ["--tag-requires-explicit-grant"]);
+});
+
+Deno.test("collectServeExtraArgs: omits --tag-requires-explicit-grant when not set", () => {
+  const args = collectServeExtraArgs({});
+  assertEquals(args.includes("--tag-requires-explicit-grant"), false);
+});
+
 Deno.test("collectServeExtraArgs: forwards --enable-internal-api", () => {
   const args = collectServeExtraArgs({ enableInternalApi: true });
   assertEquals(args, ["--enable-internal-api"]);

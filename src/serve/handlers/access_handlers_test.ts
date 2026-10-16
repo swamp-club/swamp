@@ -151,6 +151,7 @@ function createCtx(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   };
 }
@@ -308,6 +309,7 @@ function createReloadCtx(
       restrictedCommands: [],
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
+      tagRequiresExplicitGrant: false,
     },
   };
 }
@@ -395,11 +397,13 @@ function createPolicyCtx(
   grants: Grant[],
   runImpliesApprove: boolean,
   runImpliesSignal = true,
+  writeImpliesTag = true,
 ): ConnectionContext {
   const snapshot = new PolicySnapshot(grants, []);
   const decisionService = new GrantBasedAccessDecisionService(snapshot, {
     runImpliesApprove,
     runImpliesSignal,
+    writeImpliesTag,
   });
   const ctx = createCtx(decisionService);
   return {
@@ -412,6 +416,7 @@ function createPolicyCtx(
       ...ctx.authConfig!,
       approveRequiresExplicitGrant: !runImpliesApprove,
       signalRequiresExplicitGrant: !runImpliesSignal,
+      tagRequiresExplicitGrant: !writeImpliesTag,
     },
   };
 }
@@ -471,6 +476,32 @@ Deno.test("handleAccessCanI: specific signal check carries impliedBy", async () 
   assertEquals(payload.decisions.length, 1);
   assertEquals(payload.decisions[0].effect, "allow");
   assertEquals(payload.decisions[0].impliedBy, "run");
+});
+
+Deno.test("handleAccessCanI: listing shows tag implied by a write grant, unless tag requires an explicit grant (swamp-club#3085)", async () => {
+  for (const writeImpliesTag of [true, false]) {
+    const socket = createMockSocket();
+    const ctx = createPolicyCtx(
+      [makeGrant({ actions: ["write"] })],
+      true,
+      true,
+      writeImpliesTag,
+    );
+
+    await handleAccessCanI(socket, ctx, "req-1", {}, RESUMER);
+
+    const payload = JSON.parse(socket.sent[0]).payload;
+    assertEquals(payload.tagRequiresExplicitGrant, !writeImpliesTag);
+    assertEquals(
+      payload.decisions.map((d: { action: string; impliedBy?: string }) => [
+        d.action,
+        d.impliedBy,
+      ]),
+      writeImpliesTag
+        ? [["write", undefined], ["tag", "write"]]
+        : [["write", undefined]],
+    );
+  }
 });
 
 Deno.test("handleAccessCanI: listing omits implied approve when approve requires an explicit grant", async () => {

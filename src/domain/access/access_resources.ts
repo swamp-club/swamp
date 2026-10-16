@@ -121,3 +121,19 @@ export function vaultKindResource(name: string, key?: string): AccessResource {
     fields: { name, ...(key !== undefined ? { key } : {}) },
   };
 }
+
+/**
+ * Whether two tag sets differ: a key added, removed or given another value.
+ * Key order does not matter, and no tags reads as `{}`. A change to tags is
+ * a retag, authorized as `tag` (swamp-club#3085).
+ */
+export function tagsChanged(
+  before: Readonly<Record<string, string>> | undefined,
+  after: Readonly<Record<string, string>> | undefined,
+): boolean {
+  const a = before ?? {};
+  const b = after ?? {};
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return true;
+  return keys.some((key) => !Object.hasOwn(b, key) || a[key] !== b[key]);
+}

@@ -24,9 +24,11 @@ import {
   impliedApproveListingNote,
   impliedMarker,
   impliedSignalListingNote,
+  impliedTagListingNote,
   runVaultAccessLines,
   type RunVaultAccessReport,
   signalPolicyNote,
+  tagPolicyNote,
 } from "./access_check.ts";
 
 export interface CanIDecision {
@@ -36,8 +38,11 @@ export interface CanIDecision {
   grantId: string;
   via: string;
   condition?: string;
-  /** Set when the grant covers approve or signal only because it grants run. */
-  impliedBy?: "run";
+  /**
+   * Set when the grant covers the action only through another it grants:
+   * approve or signal through run, tag through write.
+   */
+  impliedBy?: "run" | "write";
 }
 
 export interface AccessCanIResult {
@@ -49,6 +54,8 @@ export interface AccessCanIResult {
   approveRequiresExplicitGrant?: boolean;
   /** The server's signal policy; undefined for servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
+  /** The server's tag policy; undefined for servers that predate it. */
+  tagRequiresExplicitGrant?: boolean;
   /** The run-time vault decision; undefined for servers that predate it. */
   runVaultAccess?: RunVaultAccessReport;
 }
@@ -75,6 +82,10 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       result.query!.action,
       result.decisions,
       result.signalRequiresExplicitGrant,
+    ) ?? tagPolicyNote(
+      result.query!.action,
+      result.decisions,
+      result.tagRequiresExplicitGrant,
     );
 
     if (result.decisions.length === 0) {
@@ -154,6 +165,10 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
         result.decisions,
         result.signalRequiresExplicitGrant,
       ),
+      impliedTagListingNote(
+        result.decisions,
+        result.tagRequiresExplicitGrant,
+      ),
     ].filter((note) => note !== null);
     if (notes.length > 0) writeOutput("");
     for (const note of notes) writeOutput(note);
@@ -165,6 +180,7 @@ function policyField(
 ): {
   approveRequiresExplicitGrant?: boolean;
   signalRequiresExplicitGrant?: boolean;
+  tagRequiresExplicitGrant?: boolean;
 } {
   return {
     ...(result.approveRequiresExplicitGrant !== undefined
@@ -172,6 +188,9 @@ function policyField(
       : {}),
     ...(result.signalRequiresExplicitGrant !== undefined
       ? { signalRequiresExplicitGrant: result.signalRequiresExplicitGrant }
+      : {}),
+    ...(result.tagRequiresExplicitGrant !== undefined
+      ? { tagRequiresExplicitGrant: result.tagRequiresExplicitGrant }
       : {}),
   };
 }
