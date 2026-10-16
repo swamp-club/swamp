@@ -453,8 +453,10 @@ function wholeSpliceMap(
   if (origin.map.isAuthored) return origin.map;
   if (value === evaluated) return origin.map;
   // A sanitizer swapped sensitive values for sentinels: carry the map
-  // across by position, so data stays data wherever it now sits.
-  return alignProvenance(origin.map, evaluated, value, undefined, resolve);
+  // across by position, so data stays data wherever it now sits. Both
+  // copies resolve alike, as the evaluated value can already carry a
+  // sentinel an earlier pass issued.
+  return alignProvenance(origin.map, evaluated, value, resolve, resolve);
 }
 
 /**

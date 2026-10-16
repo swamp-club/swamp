@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import {
   isDefinitionArgumentPath,
   sensitiveSpliceSanitizer,
@@ -32,7 +33,7 @@ const recordExpr = "${{ data.latest('db', 'creds').attributes }}";
 function setup() {
   const values = new RunSensitiveValues();
   values.addSecret("s3cret-pw", { vaultName: "prod", key: "db-password" });
-  return { values, bag: new VaultSecretBag() };
+  return { values, bag: new VaultSecretBag(new SecretBagRegistry()) };
 }
 
 Deno.test("isDefinitionArgumentPath: accepts only argument paths", () => {
@@ -68,7 +69,7 @@ Deno.test("SplicePair.splice: a multi-line secret inside an embedded object stay
   const values = new RunSensitiveValues();
   const pem = '-----BEGIN KEY-----\nabc"def\n-----END KEY-----';
   values.addSecret(pem, { vaultName: "prod", key: "tls" });
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const pair = SplicePair.of({ body: `payload=${recordExpr}` }).splice(
     new Map([[recordExpr, { key: pem }]]),
     sensitiveSpliceSanitizer(values, bag),

@@ -25,6 +25,7 @@ import {
 } from "./available_expression_resolver.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { sensitiveSpliceSanitizer, SplicePair } from "./splice_pair.ts";
 
 /**
@@ -214,7 +215,7 @@ Deno.test("resolveAvailableExpressionsPair: evaluates once and sanitizes only th
   const { evaluate, calls } = makeEvaluator();
   const values = new RunSensitiveValues();
   values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "api-token" });
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const pair = resolveAvailableExpressionsPair(
     SplicePair.of({
       run: "echo ${{ self.item }} s3",

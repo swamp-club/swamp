@@ -36,6 +36,7 @@ import {
 import { ModelType } from "./model_type.ts";
 import { Definition } from "../definitions/definition.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
 import {
@@ -62,7 +63,10 @@ const passthroughEvaluator: Evaluator = {
   },
   buildRuntimeContext: () => Promise.resolve({} as RuntimeContext),
   resolveRuntimeExpressionsInDefinition: (definition) =>
-    Promise.resolve({ definition, secretBag: new VaultSecretBag() }),
+    Promise.resolve({
+      definition,
+      secretBag: new VaultSecretBag(new SecretBagRegistry()),
+    }),
 };
 
 function makeStubContext(

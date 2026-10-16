@@ -28,11 +28,13 @@ import {
   mergeRanges,
   ProvenanceMap,
   routedGlobalProvenance,
+  sentinelIdentityOf,
   sentinelResolverOf,
 } from "./provenance_map.ts";
 import { sensitiveSpliceSanitizer } from "./splice_pair.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { workflowInputsProvenance } from "../workflows/input_provenance.ts";
 import { Workflow } from "../workflows/workflow.ts";
 import { Job } from "../workflows/job.ts";
@@ -46,6 +48,9 @@ import {
 import { partitionAuthoredAt } from "./expression_evaluation_service.ts";
 import { staticAccessPath } from "./cel_grammar.ts";
 import { attachBindingProvenance, spliceOrigin } from "./splice_origin.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 Deno.test("ProvenanceMap.overlapsData: partial overlap counts, adjacency does not", () => {
   const map = ProvenanceMap.authored().withRanges("a.b", [[4, 10]]);
@@ -286,7 +291,7 @@ Deno.test("replaceExpressionsTracked: a sanitizer's clone keeps data positional 
   const token = "${{ env.TOKEN }}";
   const values = new RunSensitiveValues();
   values.addSecret("s3cret-value", { vaultName: "v", key: "k" });
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const cfg = { a: token, b: token, c: "uses s3cret-value" };
   const result = replaceExpressionsTracked(
     { v: "${{ inputs.cfg }}" },
@@ -304,9 +309,9 @@ Deno.test("replaceExpressionsTracked: a sanitizer's clone keeps data positional 
 });
 
 Deno.test("alignStrings: sentinels resolve through the bag, so authored text between them keeps its standing", () => {
-  const bag = new VaultSecretBag();
-  const one = bag.addDataSecret("pw1secret");
-  const two = bag.addDataSecret("pw2secret");
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const one = bag.addDataSecret("pw1secret", REF);
+  const two = bag.addDataSecret("pw2secret", REF);
   const raw = "pw1secret ${{ env.A }} pw2secret";
   const sanitized = `${one} \${{ env.A }} ${two}`;
   const aligned = alignStrings(
@@ -478,4 +483,66 @@ Deno.test("canonicalPath: folds an unquoted .[ but never inside a quoted key", (
     .withWholeData(keyPath("inputs", "a[b"))
     .graft(keyPath("inputs", "a.[b"), ProvenanceMap.authored());
   assertEquals(map.isWholeDataAt(keyPath("inputs", "a[b")), true);
+});
+
+Deno.test("alignStrings: a sentinel and its rehomed copy align by what they reference, with no value read", () => {
+  const registry = new SecretBagRegistry();
+  const workflowBag = new VaultSecretBag(registry);
+  const stepBag = new VaultSecretBag(registry);
+  const one = workflowBag.addDataSecret("pw1secret", {
+    vaultName: "v",
+    key: "a",
+  });
+  const two = workflowBag.addSecret("pw2", { vaultName: "v", key: "b" });
+  const overlay = `${one} \${{ env.A }} ${two}`;
+  const rehomed = workflowBag.rehomeSentinels(overlay, stepBag) as string;
+  assertEquals(rehomed !== overlay, true);
+  const identity = sentinelIdentityOf(registry);
+  const [r1, r2] = rehomed.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(identity(one), identity(r1));
+  assertEquals(identity(two), identity(r2));
+  assertEquals(identity(one) !== identity(two), true);
+  assertEquals(identity("__SWAMP_VSEC_" + "0".repeat(32) + "_0__"), undefined);
+  assertEquals(identity(one)!.includes("pw1secret"), false);
+
+  const ranges = [[0, one.length], [
+    overlay.length - two.length,
+    overlay.length,
+  ]] as const;
+  const aligned = alignStrings(ranges, overlay, rehomed, identity, identity);
+  assertEquals(aligned, [[0, r1.length], [
+    rehomed.length - r2.length,
+    rehomed.length,
+  ]]);
+  // Without a resolver both copies differ in two spans, so the single-span
+  // fallback would mark the authored text between them as data.
+  const fallback = alignStrings(ranges, overlay, rehomed);
+  assertEquals(fallback.length, 1);
+});
+
+Deno.test("alignStrings: resolving both copies keeps a sentinel from an earlier pass exact", () => {
+  const registry = new SecretBagRegistry();
+  const early = new VaultSecretBag(registry).addDataSecret("early-pw", REF);
+  const stepBag = new VaultSecretBag(registry);
+  const late = stepBag.addDataSecret("late-pw", REF);
+  // The raw copy already carries the earlier sentinel; the sanitized copy
+  // carries it too and new sentinels where the raw copy holds the value.
+  const raw = `late-pw A ${early} B late-pw`;
+  const sanitized = `${late} A ${early} B ${late}`;
+  const ranges = [
+    [0, 7],
+    [10, 10 + early.length],
+    [raw.length - 7, raw.length],
+  ] as const;
+  const resolve = sentinelResolverOf(stepBag);
+  const aligned = alignStrings(ranges, raw, sanitized, resolve, resolve);
+  assertEquals(aligned, [
+    [0, late.length],
+    [late.length + 3, late.length + 3 + early.length],
+    [sanitized.length - late.length, sanitized.length],
+  ]);
+  // Resolving one side only makes the copies differ, and the fallback
+  // treats the whole differing span, authored text included, as data.
+  const oneSided = alignStrings(ranges, raw, sanitized, undefined, resolve);
+  assertEquals(oneSided, [[0, sanitized.length]]);
 });

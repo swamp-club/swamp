@@ -29,6 +29,7 @@ import {
 import type { VaultService } from "../vaults/vault_service.ts";
 import { MockVaultProvider } from "../vaults/mock_vault_provider.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { Definition } from "../definitions/definition.ts";
 import { Data } from "../data/data.ts";
@@ -1886,7 +1887,7 @@ Deno.test("resolveVaultExpressions: quoted args used verbatim (existing behaviou
   const resolver = createVaultResolver({
     "my-vault": { "api-key": "secret-123" },
   });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const result = await resolver.resolveVaultExpressions(
     `vault.get('my-vault', 'api-key')`,
     undefined,
@@ -1900,7 +1901,7 @@ Deno.test("resolveVaultExpressions: bare-token args CEL-evaluated from inputs", 
   const resolver = createVaultResolver({
     "prod-vault": { "db-password": "prod-pass-42" },
   });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const celOptions = makeCelOptions({
     vaultName: "prod-vault",
     secretKey: "db-password",
@@ -1919,7 +1920,7 @@ Deno.test("resolveVaultExpressions: mixed literal/dynamic args", async () => {
   const resolver = createVaultResolver({
     "infra": { "prod-key": "infra-secret" },
   });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const celOptions = makeCelOptions({ secretKey: "prod-key" });
   const result = await resolver.resolveVaultExpressions(
     `vault.get('infra', inputs.secretKey)`,
@@ -1935,7 +1936,7 @@ Deno.test("resolveVaultExpressions: bare-token fallback for non-CEL tokens", asy
   const resolver = createVaultResolver({
     "my-vault": { "my-key": "fallback-secret" },
   });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const celOptions = makeCelOptions({});
   // "my-vault" contains a hyphen — not valid CEL — should fall back to verbatim
   const result = await resolver.resolveVaultExpressions(
@@ -1952,7 +1953,7 @@ Deno.test("resolveVaultExpressions: hard error for valid CEL with missing input"
   const resolver = createVaultResolver({
     "any-vault": { "any-key": "value" },
   });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const celOptions = makeCelOptions({});
   await assertRejects(
     () =>
@@ -1971,7 +1972,7 @@ Deno.test("resolveVaultExpressions: non-string CEL result throws", async () => {
   const resolver = createVaultResolver({
     "any-vault": { "any-key": "value" },
   });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const celOptions = makeCelOptions({ vaultNum: 42 });
   await assertRejects(
     () =>
@@ -1990,7 +1991,7 @@ Deno.test("resolveVaultExpressions: without celOptions bare tokens used verbatim
   const resolver = createVaultResolver({
     "my-vault": { "my-key": "plain-secret" },
   });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   // No celOptions — bare tokens should be used verbatim (backwards compat)
   const result = await resolver.resolveVaultExpressions(
     `vault.get(my-vault, my-key)`,
@@ -2690,7 +2691,7 @@ Deno.test("resolveVaultExpressions: vault.get text inside a literal() is left as
       ...rest,
     );
   };
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const result = await resolver.resolveVaultExpressions(
     `literal('{{ vault.get("v", "decoy") }}') + vault.get('v', 'real')`,
     undefined,
@@ -2707,7 +2708,7 @@ Deno.test("resolveVaultExpressions: vault.get text inside a literal() is left as
 
 Deno.test("resolveVaultExpressions: a call that starts inside a string does not swallow the real one", async () => {
   const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
-  const secretBag = new VaultSecretBag();
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const result = await resolver.resolveVaultExpressions(
     `literal('vault.get(') + vault.get('a','b')`,
     undefined,
@@ -2726,7 +2727,7 @@ Deno.test("resolveVaultExpressions: a vault form only a direct call resolves is 
       resolver.resolveVaultExpressions(
         `cel.bind(v, vault, v.get('a', 'b'))`,
         undefined,
-        new VaultSecretBag(),
+        new VaultSecretBag(new SecretBagRegistry()),
       ),
     Error,
     "Unsupported vault expression",
@@ -2740,7 +2741,7 @@ Deno.test("resolveVaultExpressions: ignores member access and comments", async (
     await resolver.resolveVaultExpressions(
       value,
       undefined,
-      new VaultSecretBag(),
+      new VaultSecretBag(new SecretBagRegistry()),
     ),
     value,
   );
@@ -2753,7 +2754,7 @@ Deno.test("resolveVaultExpressions: a member reached across whitespace is not th
     await resolver.resolveVaultExpressions(
       value,
       undefined,
-      new VaultSecretBag(),
+      new VaultSecretBag(new SecretBagRegistry()),
     ),
     value,
   );
@@ -2768,7 +2769,7 @@ Deno.test("resolveVaultExpressions: a call inside another call's argument is not
       resolver.resolveVaultExpressions(
         `vault.get(vault.get('a','b'), 'c')`,
         undefined,
-        new VaultSecretBag(),
+        new VaultSecretBag(new SecretBagRegistry()),
       ),
     Error,
   );
@@ -3654,5 +3655,25 @@ Deno.test("data.latest(): attributes come from content a metadata-only pull left
     const viaCatalog = await light.data!.latest("vpc", "main");
     assertEquals(viaCatalog?.attributes, { vpcId: "vpc-0abc123" });
     catalog.close();
+  });
+});
+
+Deno.test("resolveVaultExpressions: the issued entry carries the vault name and key it was read from", async () => {
+  const resolver = createVaultResolver({
+    "my-vault": { "api-key": "secret-123" },
+  });
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
+  const result = await resolver.resolveVaultExpressions(
+    `vault.get('my-vault', 'api-key')`,
+    undefined,
+    secretBag,
+  );
+  const sentinel = result.slice(1, -1);
+  assertEquals(secretBag.registry.issuedEntryOf(sentinel), {
+    sentinel,
+    value: "secret-123",
+    reference: { vaultName: "my-vault", key: "api-key" },
+    encoding: "raw",
+    dataOrigin: false,
   });
 });

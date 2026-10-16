@@ -281,7 +281,6 @@ const PINNED: ReadonlyArray<
     calls: [
       "secretValues.push(...extractSensitiveFieldValues(methodArgSchema, methodArgs))",
       "secretValues.push(...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs))",
-      "secretValues.push(...secretBag.rawValues)",
     ],
   },
   {

@@ -1834,9 +1834,12 @@ export class ModelResolver {
 
         let celReplacement: string;
         if (secretBag) {
-          // Sentinel-based resolution: secret value goes into the bag,
-          // sentinel token goes into the CEL expression.
-          const sentinel = secretBag.addSecret(secretValue);
+          // Sentinel-based resolution: the value and its reference go into
+          // the bag, the sentinel token goes into the CEL expression.
+          const sentinel = secretBag.addSecret(secretValue, {
+            vaultName,
+            key: secretKey,
+          });
           celReplacement = `"${sentinel}"`;
         } else {
           // Legacy fallback: escape for CEL string safety only.

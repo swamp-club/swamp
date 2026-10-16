@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import {
   rehydratePersistedForm,
   toPersistedForm,
@@ -46,8 +47,8 @@ const read = (vault: string, key: string) =>
 
 Deno.test("toPersistedForm: replaces whole, embedded and sentinel values with references", () => {
   const values = recorded();
-  const bag = new VaultSecretBag();
-  const sentinel = bag.addDataSecret(secret);
+  const bag = new VaultSecretBag(values.sentinels);
+  const sentinel = bag.addDataSecret(secret, source);
   const form = toPersistedForm(
     {
       whole: secret,
@@ -55,7 +56,7 @@ Deno.test("toPersistedForm: replaces whole, embedded and sentinel values with re
       spliced: `echo ${sentinel}`,
     },
     values,
-    { bag, applies: everywhere },
+    { applies: everywhere },
   );
   assertEquals(form.data, {
     whole: ref,
@@ -133,7 +134,7 @@ Deno.test("rehydratePersistedForm: sanitized copy carries data-origin sentinels 
     applies: everywhere,
   });
   const values = new RunSensitiveValues();
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const restored = await rehydratePersistedForm(
     form.data,
     form.writtenReferences,
@@ -233,7 +234,7 @@ Deno.test("rehydratePersistedForm: sentinels only where a fresh run sanitizes, r
     values,
     { applies: everywhere },
   );
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const restored = await rehydratePersistedForm(
     form.data,
     form.writtenReferences,
@@ -245,4 +246,110 @@ Deno.test("rehydratePersistedForm: sentinels only where a fresh run sanitizes, r
   assertEquals(restored.sanitized.description, `for ${secret}`);
   assertEquals(restored.sanitized.args.run.includes(secret), false);
   assertEquals(bag.resolveRaw(restored.sanitized.args.run), `echo ${secret}`);
+});
+
+Deno.test("toPersistedForm: a vault.get sentinel is written as its reference from its entry, with no recorded value", () => {
+  const values = new RunSensitiveValues();
+  const bag = new VaultSecretBag(values.sentinels);
+  const sentinel = bag.addSecret("vault-value", {
+    vaultName: "prod",
+    key: "k",
+  });
+  const form = toPersistedForm({ run: `echo ${sentinel}` }, values, {
+    applies: () => false,
+  });
+  assertEquals(form.data, {
+    run: `echo ${vaultReferenceText({ vaultName: "prod", key: "k" })}`,
+  });
+  assertEquals(form.writtenReferences, [{
+    path: ["run"],
+    occurrence: 0,
+    vaultName: "prod",
+    key: "k",
+    encoding: "raw",
+    dataOrigin: false,
+  }]);
+});
+
+Deno.test("toPersistedForm: a JSON-encoded data sentinel keeps its encoding from its entry", () => {
+  const values = recorded();
+  const bag = new VaultSecretBag(values.sentinels);
+  const escaped = JSON.stringify('a"b').slice(1, -1);
+  const sentinel = bag.addDataSecret(escaped, source, "json");
+  const form = toPersistedForm({ body: `{"k":"${sentinel}"}` }, values, {
+    applies: () => false,
+  });
+  assertEquals(form.writtenReferences.map((r) => [r.encoding, r.dataOrigin]), [
+    ["json", true],
+  ]);
+});
+
+Deno.test("toPersistedForm: a sentinel with a prefix of this run but no entry fails the write", () => {
+  const values = new RunSensitiveValues();
+  const bag = new VaultSecretBag(values.sentinels);
+  const issued = bag.addSecret("x", source);
+  const unknown = issued.replace(/_\d+__$/, "_999__");
+  assertThrows(
+    () => toPersistedForm({ run: unknown }, values, { applies: everywhere }),
+    Error,
+    "has no entry",
+  );
+});
+
+Deno.test("toPersistedForm: sentinel-shaped text with another prefix is written as data", () => {
+  const values = recorded();
+  new VaultSecretBag(values.sentinels).addSecret("x", source);
+  const foreign = `__SWAMP_VSEC_${"f".repeat(32)}_0__`;
+  const form = toPersistedForm(
+    { run: `${foreign} ${secret}` },
+    values,
+    { applies: everywhere },
+  );
+  assertEquals(form.data.run, `${foreign} ${ref}`);
+  assertEquals(form.writtenReferences.length, 1);
+});
+
+Deno.test("rehydratePersistedForm: an issued sentinel carries the written entry's reference and encoding", async () => {
+  const values = new RunSensitiveValues();
+  const bag = new VaultSecretBag(values.sentinels);
+  const restored = await rehydratePersistedForm(
+    { run: `echo ${ref}`, body: `{"k":"${ref}"}` },
+    [
+      {
+        path: ["run"],
+        occurrence: 0,
+        vaultName: source.vaultName,
+        key: source.key,
+        encoding: "raw",
+        dataOrigin: true,
+      },
+      {
+        path: ["body"],
+        occurrence: 0,
+        vaultName: source.vaultName,
+        key: source.key,
+        encoding: "json",
+        dataOrigin: false,
+      },
+    ],
+    () => Promise.resolve('p"w'),
+    values,
+    bag,
+  );
+  const [runSentinel] = restored.sanitized.run.match(
+    VaultSecretBag.SENTINEL_PATTERN,
+  )!;
+  const [bodySentinel] = restored.sanitized.body.match(
+    VaultSecretBag.SENTINEL_PATTERN,
+  )!;
+  assertEquals(values.sentinels.issuedEntryOf(runSentinel), {
+    sentinel: runSentinel,
+    value: 'p"w',
+    reference: source,
+    encoding: "raw",
+    dataOrigin: true,
+  });
+  assertEquals(values.sentinels.issuedEntryOf(bodySentinel)?.encoding, "json");
+  assertEquals(values.sentinels.issuedEntryOf(bodySentinel)?.value, 'p\\"w');
+  assertEquals(JSON.parse(bag.resolveRaw(restored.sanitized.body)).k, 'p"w');
 });

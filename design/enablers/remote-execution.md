@@ -1467,10 +1467,13 @@ credentials and extensions onto workers:
   worker exactly as a local run does: extension behaviors get plaintext args,
   and a `command/shell` step gets `vault.get()` and sensitive data values as
   `__SWAMP_VAULT_N` environment variables, never in its `sh -c` argv. Both
-  fields are optional, so the protocol version is unchanged: a worker that
-  predates them drops them and runs the resolved args, with the values in its
-  command line as before, and a newer worker under an older orchestrator does
-  the same.
+  fields are optional, so adding them left the protocol version unchanged: a
+  worker that predates them drops them and runs the resolved args, with the
+  values in its command line as before, and a newer worker under an older
+  orchestrator does the same. The sentinel format the schema validates is part
+  of the protocol, though: when the prefix grew to 128 bits (swamp-club#3558)
+  the version went to 5, so a worker on either side of that change is refused
+  at enrollment rather than failing on its first secret-bearing dispatch.
 
   **Secret redaction.** Vault-derived values must be scrubbed from all persisted
   output (log resources, result resources and workflow-run records) before they

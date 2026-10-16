@@ -42,6 +42,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
@@ -152,7 +153,7 @@ function createFakeEvaluationService(): any {
     resolveRuntimeExpressionsInDefinition: (def: Definition) =>
       Promise.resolve({
         definition: def,
-        secretBag: new VaultSecretBag(),
+        secretBag: new VaultSecretBag(new SecretBagRegistry()),
       }),
     resolveRuntimeExpressionsInData: (data: unknown) => Promise.resolve(data),
   };
@@ -1317,7 +1318,7 @@ Deno.test("modelMethodRun: schema-declared inputs contribute authored expression
         seenAuthored = authored;
         return Promise.resolve({
           definition: def,
-          secretBag: new VaultSecretBag(),
+          secretBag: new VaultSecretBag(new SecretBagRegistry()),
         });
       },
     }),

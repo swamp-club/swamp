@@ -320,10 +320,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Resolve vault sentinels to raw values for method args and global args.
     // This ensures extension models receive exact secret values with no escaping.
     const secretBag = context.vaultSecrets;
-    const resolvedMethodArgs = secretBag && !secretBag.isEmpty
+    const resolvedMethodArgs = secretBag?.resolvesAny
       ? secretBag.resolveDeep(rawMethodArgs) as Record<string, unknown>
       : rawMethodArgs;
-    const resolvedGlobalArgs = secretBag && !secretBag.isEmpty
+    const resolvedGlobalArgs = secretBag?.resolvesAny
       ? secretBag.resolveDeep(
         definition.globalArguments,
       ) as Record<string, unknown>
@@ -507,29 +507,35 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     const secretBag = context.vaultSecrets;
-    const methodArgs = secretBag && !secretBag.isEmpty
+    const methodArgs = secretBag?.resolvesAny
       ? secretBag.resolveDeep(
         executionRequest.methodArgs,
       ) as Record<string, unknown>
       : executionRequest.methodArgs;
-    const globalArgs = secretBag && !secretBag.isEmpty
+    const globalArgs = secretBag?.resolvesAny
       ? secretBag.resolveDeep(
         executionRequest.globalArgs,
       ) as Record<string, unknown>
       : executionRequest.globalArgs;
 
-    const secretValues: string[] = [];
-    if (secretBag && !secretBag.isEmpty) {
-      secretValues.push(...secretBag.rawValues);
-    }
+    // The entries this step delivers: its own, and any the run issued
+    // earlier that its unresolved arguments carry. Nothing else of the run
+    // reaches the worker.
+    const shippedEntries = secretBag?.resolvesAny
+      ? secretBag.entriesFor({
+        methodArgs: executionRequest.methodArgs,
+        globalArgs: executionRequest.globalArgs,
+      })
+      : [];
+    const secretValues = shippedEntries.map((entry) => entry.value);
     // The worker rebuilds the bag from these and resolves the args itself,
     // so a command/shell step gets its secrets as environment variables
     // there, as it does locally (swamp-club#2760). The resolved args above
     // still travel for workers that predate the fields.
-    const secretDelivery = secretBag && !secretBag.isEmpty
+    const secretDelivery = shippedEntries.length > 0
       ? {
         unresolvedMethodArgs: executionRequest.methodArgs,
-        secretBag: secretBag.toEntries(),
+        secretBag: shippedEntries,
       }
       : {};
     if (modelDef.globalArguments) {
@@ -699,7 +705,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
       // regex()) validate against actual secret values, not sentinel tokens.
       const secretBag = context.vaultSecrets;
-      if (secretBag && !secretBag.isEmpty) {
+      if (secretBag?.resolvesAny) {
         const rawGlobal = currentDefinition.globalArguments;
         const resolvedGlobal = secretBag.resolveDeep(rawGlobal) as Record<
           string,

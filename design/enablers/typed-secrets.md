@@ -213,7 +213,7 @@ extended to comprehension macros, was not needed.
 Outside CEL a secret is a sentinel, text of the form
 `__SWAMP_VSEC_<prefix>_<n>__`. A `VaultSecretBag` maps each sentinel to its
 reference, an encoding and a data-origin flag. Each bag draws a 128-bit random
-prefix, so data cannot guess a sentinel. Today's prefix has 32 bits.
+prefix, so data cannot guess a sentinel.
 
 The CEL adapter converts at its boundary:
 
@@ -231,11 +231,16 @@ the existing walkers, clones and codecs need no change.
 Two rules keep that true:
 
 - **One bag registry per run.** Every pass, including the run-start pass and
-  workflow-level evaluation, issues sentinels into a run-scoped registry, and a
-  step's bag is a view of it. A load resolves any sentinel the run issued, so a
-  `Secret` from an earlier pass is never delivered as literal sentinel text.
-  Rehoming between bags (`SanitizedTaskOverlay.forStep`) covers vault-origin
-  entries as well as data-origin ones.
+  workflow-level evaluation, issues sentinels into a run-scoped registry
+  (`SecretBagRegistry`), and a step's bag is a view of it. A load resolves any
+  sentinel the run issued, so a `Secret` from an earlier pass is never
+  delivered as literal sentinel text. The registry travels with the run's
+  `RunSensitiveValues`, so its boundary is the parent-child run tree: a child
+  workflow issues into its parent's registry under prefixes of its own, while
+  `context.runModel` keeps a registry of its own. Rehoming between bags
+  (`SanitizedTaskOverlay.forStep`) covers vault-origin entries as well as
+  data-origin ones, and what a bag ships to a worker stays the entries it
+  issued plus those its step's arguments reference.
 - **New objects at the boundary.** The accessor adapter and the binding
   conversion build new objects. They never wrap or mutate a context, a cached
   record or a live output in place (`data_writer.ts` mutates in place today), so
@@ -953,6 +958,17 @@ Section 3.1 was not needed.
 
 ### Phase 2: sentinels hold references
 
+Phase 2.2 (swamp-club#3558, shipped) is the structural half, done while values
+are still read eagerly so the existing suites prove the refactor preserved
+behavior: entries hold a reference, an encoding and a data-origin flag beside
+the value; the run-scoped registry with each bag as a view of it, carried by
+`RunSensitiveValues`; the 128-bit prefix; `toPersistedForm` from entries; and
+provenance alignment by sentinel identity at the rehoming seam, with symmetric
+value resolution elsewhere until 2.3. The dispatch schema validates the
+sentinel format, so `REMOTE_PROTOCOL_VERSION` went to 5 with the longer
+prefix, while the dispatch fields stayed as they are (Section 9). The load
+step, the inline resolutions as loads and the existence check are 2.1 and 2.3.
+
 - `VaultSecretBag` entries hold a reference, an encoding and a data-origin flag.
   A load step fills values at delivery (Section 3.3).
 - `resolveVaultExpressions` issues a sentinel for the reference and stops
@@ -1105,7 +1121,7 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Pinned cel-js behavior (Section 4.2) | `src/infrastructure/cel/cel_js_pins/`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                   |
 | Expression passes and templates      | `src/domain/expressions/expression_evaluation_service.ts`, `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts` |
 | Vault rewrite and dynamic arguments  | `src/domain/expressions/model_resolver.ts` (`resolveVaultExpressions`), `vault_reference_extractor.ts`                                                                                                                           |
-| Sentinels and shell placement        | `src/domain/vaults/vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                                            |
+| Sentinels and shell placement        | `src/domain/vaults/secret_bag_registry.ts`, `vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                  |
 | Vault access scope                   | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                      |
 | Sensitive values and persisted form  | `src/domain/secrets/run_sensitive_values.ts`, `persisted_sensitive_form.ts`, `secret_redactor.ts`, `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts`                                |
 | Sensitive fields and schema metadata | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                |

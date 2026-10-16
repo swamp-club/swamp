@@ -140,7 +140,6 @@ export function persistEvaluatedWorkflow(
   };
   const sourcePaths = extractExpressions(source.toData()).map((e) => e.path);
   const form = toPersistedForm(file, values, {
-    bag: overlay?.bag,
     applies: (path) => {
       if (path[0] === "deferredExpressions" && path[2] === "bindings") {
         return true;
@@ -194,7 +193,7 @@ export async function rehydrateEvaluatedWorkflow(
       deferredExpressions: [...cached.deferredExpressions],
     };
   }
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(values.sentinels);
   const file = {
     ...cached.workflow.toData(),
     deferredExpressions: [...cached.deferredExpressions],

@@ -50,12 +50,13 @@ export function sensitiveSpliceSanitizer(
   bag: VaultSecretBag,
   applies: (path: string) => boolean = () => true,
 ): SpliceSanitizer {
-  const secrets = () => sensitiveValues.list().map((entry) => entry.value);
   return {
     whole: (value, path) =>
-      applies(path) ? bag.sentinelizeValues(value, secrets()) : value,
+      applies(path)
+        ? bag.sentinelizeValues(value, sensitiveValues.list())
+        : value,
     embedded: (text, path) =>
-      applies(path) ? bag.sentinelizeText(text, secrets()) : text,
+      applies(path) ? bag.sentinelizeText(text, sensitiveValues.list()) : text,
     resolve: sentinelResolverOf(bag),
   };
 }

@@ -36,6 +36,10 @@ import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import { attachSensitiveValues } from "../expressions/sensitive_context.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 function emptyContext(): ExpressionContext {
   return { model: {}, env: {} };
@@ -1348,7 +1352,7 @@ Deno.test("WorkflowExpressionEvaluator: keeps real values and returns a sanitize
   assertEquals(task.inputs.run, `echo ${SECRET}`);
   assertEquals(task.globalArgs.tok, SECRET);
 
-  const stepBag = new VaultSecretBag();
+  const stepBag = new VaultSecretBag(new SecretBagRegistry());
   const fields = result.sanitizedTasks!.forStep(step, stepBag)!;
   const inputs = fields.inputs as Record<string, string>;
   const globals = fields.globalArgs as Record<string, string>;
@@ -1396,7 +1400,7 @@ Deno.test("DefinitionExpressionEvaluator: sanitizes argument splices and binds r
     tags: {},
     globalArguments: definition.globalArguments,
   };
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const result = await new DefinitionExpressionEvaluator(new CelEvaluator())
     .evaluate(definition, context, "unrestricted", bag);
   assertEquals(result.definition.globalArguments.tok, SECRET);
@@ -1421,10 +1425,10 @@ Deno.test("DefinitionExpressionEvaluator: splices the sanitized copy into a dist
     globalArguments: { tok: SECRET },
     methods: { run: { arguments: { region: "${{ inputs.region }}" } } },
   });
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const base = Definition.fromData({
     ...definition.toData(),
-    globalArguments: { tok: bag.addDataSecret(SECRET) },
+    globalArguments: { tok: bag.addDataSecret(SECRET, REF) },
   });
   const result = await new DefinitionExpressionEvaluator(new CelEvaluator())
     .evaluate(definition, sensitiveContext(), "unrestricted", bag, base);

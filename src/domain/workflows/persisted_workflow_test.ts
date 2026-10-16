@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -161,7 +162,7 @@ Deno.test("rehydrateEvaluatedWorkflow: a replay restores task inputs, including 
   // The overlay hands the step sentinels, not the value.
   const overlay = restored.sanitizedTasks!.forStep(
     restored.workflow.jobs[0].steps[0],
-    new VaultSecretBag(),
+    new VaultSecretBag(new SecretBagRegistry()),
   );
   assertEquals(JSON.stringify(overlay).includes(SECRET), false);
 });

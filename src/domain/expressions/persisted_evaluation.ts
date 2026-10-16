@@ -74,7 +74,6 @@ export function persistEvaluatedDefinition(
   deferredExpressions: readonly DeferredExpression[],
   source: Definition,
   values: RunSensitiveValues,
-  bag: VaultSecretBag,
 ): PersistedEvaluatedDefinition {
   const data = executed.toData();
   const file = {
@@ -84,7 +83,6 @@ export function persistEvaluatedDefinition(
   };
   const sourcePaths = extractExpressions(source.toData()).map((e) => e.path);
   const form = toPersistedForm(file, values, {
-    bag,
     applies: cachedValuePath(sourcePaths),
   });
   const { deferredExpressions: persistedDeferred, ...definitionData } =

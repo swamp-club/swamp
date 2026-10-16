@@ -21,6 +21,7 @@ import { RunSensitiveValues } from "../secrets/mod.ts";
 import { attachSensitiveValues } from "./sensitive_context.ts";
 import { SplicePair } from "./splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -51,6 +52,9 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-eval-service-" });
@@ -1765,7 +1769,7 @@ Deno.test("evaluateDataPair: reads data once and splices raw and sanitized copie
       repoDir,
     );
     const reads = { count: 0 };
-    const bag = new VaultSecretBag();
+    const bag = new VaultSecretBag(new SecretBagRegistry());
     const expression = "${{ data.latest('db', 'creds').attributes.token }}";
     const pair = await service.evaluateDataPair(
       SplicePair.of({ run: `echo ${expression}`, whole: expression }),
@@ -1794,8 +1798,8 @@ Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expres
       new YamlDefinitionRepository(repoDir),
       repoDir,
     );
-    const bag = new VaultSecretBag();
-    const spliced = bag.addDataSecret(SENSITIVE);
+    const bag = new VaultSecretBag(new SecretBagRegistry());
+    const spliced = bag.addDataSecret(SENSITIVE, REF);
     const definition = Definition.create({
       name: "mixed",
       globalArguments: { tok: spliced },
@@ -2032,4 +2036,33 @@ Deno.test("authoredConstantsProducing: names the constants whose output includes
     [LITERAL_OF_VERSION],
   );
   assertEquals([...authoredConstantsProducing(authored, ["${{ x }}"])], []);
+});
+
+Deno.test("resolveRuntimeExpressionsInData: a sentinel an earlier pass issued resolves inline through the run's registry", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    const values = new RunSensitiveValues();
+    const early = new VaultSecretBag(values.sentinels).addDataSecret(
+      SENSITIVE,
+      REF,
+    );
+    const context = attachSensitiveValues(
+      { model: {}, env: {} } as ExpressionContext,
+      values,
+    );
+    const result = await withMockedEnv(
+      { SWAMP_TEST_EARLY_HOME: "/tmp/early" },
+      () =>
+        service.resolveRuntimeExpressionsInData(
+          { run: `\${{ env["SWAMP_TEST_EARLY_HOME"] }}:${early}` },
+          undefined,
+          context,
+          "unrestricted",
+        ),
+    ) as { run: string };
+    assertEquals(result.run, `/tmp/early:${SENSITIVE}`);
+  });
 });

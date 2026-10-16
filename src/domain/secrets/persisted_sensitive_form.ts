@@ -81,24 +81,28 @@ interface Segment {
 }
 
 /**
- * Builds the form of `data` to write to disk. Every data-origin sentinel of
- * `bag` becomes the vault reference its value came from, and at the
- * positions `applies` accepts, so does every recorded sensitive value:
- * whole or embedded in a string, JSON-escaped, or a whole number or boolean
- * leaf whose text equals one. Structural fields are never touched because
- * `applies` never accepts them. Text inside inserted references is never
- * searched.
+ * Builds the form of `data` to write to disk. Every sentinel the run issued
+ * (`values.sentinels`) becomes the vault reference its entry names, with the
+ * entry's encoding and data-origin flag, so no value is looked up for a
+ * sentinel; sentinel-shaped text with a prefix the run never drew is data
+ * and is written as it is. At the positions `applies` accepts, so does
+ * every recorded sensitive value: whole or embedded in a string,
+ * JSON-escaped, or a whole number or boolean leaf whose text equals one.
+ * That value search stays only for plaintext that data reads still bring
+ * into CEL; typed-secrets Phase 4 deletes it. Structural fields are never
+ * touched because `applies` never accepts them. Text inside inserted
+ * references is never searched.
  */
 export function toPersistedForm<T>(
   data: T,
   values: RunSensitiveValues,
   options: {
-    bag?: VaultSecretBag;
     applies: (path: DataPath) => boolean;
   },
 ): PersistedForm<T> {
   const writtenReferences: WrittenReference[] = [];
-  if (values.isEmpty && !options.bag) return { data, writtenReferences };
+  const registry = values.sentinels;
+  if (values.isEmpty && registry.isEmpty) return { data, writtenReferences };
   const entries = values.list();
 
   const escapedSource = new Map<string, SecretSource>();
@@ -107,10 +111,27 @@ export function toPersistedForm<T>(
     if (escaped !== value) escapedSource.set(escaped, source);
   }
 
-  const referenceFor = (
-    secret: string,
-    dataOrigin: boolean,
-  ): Segment["written"] | undefined => {
+  /** The reference a sentinel is written as, from its entry. */
+  const referenceOf = (sentinel: string): Segment["written"] => {
+    const entry = registry.issuedEntryOf(sentinel);
+    if (!entry) {
+      throw new Error(
+        registry.entryOf(sentinel)
+          ? "A secret bag entry without a reference cannot be persisted"
+          : "A vault secret sentinel of this run has no entry, so its reference cannot be written",
+      );
+    }
+    return {
+      ref: vaultReferenceText(entry.reference),
+      vaultName: entry.reference.vaultName,
+      key: entry.reference.key,
+      encoding: entry.encoding,
+      dataOrigin: entry.dataOrigin,
+    };
+  };
+
+  /** The reference a recorded plaintext value is written as, by search. */
+  const referenceFor = (secret: string): Segment["written"] | undefined => {
     const direct = values.sourceOf(secret);
     const source = direct ?? escapedSource.get(secret);
     if (!source) return undefined;
@@ -119,21 +140,20 @@ export function toPersistedForm<T>(
       vaultName: source.vaultName,
       key: source.key,
       encoding: direct ? "raw" : "json",
-      dataOrigin,
+      dataOrigin: false,
     };
   };
 
   const persistString = (text: string, path: DataPath): string => {
-    // Sentinels first: exact splice positions.
+    // Sentinels first: exact splice positions, each from its entry.
     let segments: Segment[] = [];
     let last = 0;
     for (const match of text.matchAll(VaultSecretBag.SENTINEL_PATTERN)) {
       const start = match.index ?? 0;
       if (start > last) segments.push({ text: text.slice(last, start) });
-      const secret = options.bag?.dataSecretOf(match[0]);
-      const written = secret === undefined
-        ? undefined
-        : referenceFor(secret, true);
+      const written = registry.drewPrefixOf(match[0])
+        ? referenceOf(match[0])
+        : undefined;
       segments.push(
         written
           ? { text: written.ref, written, locked: true }
@@ -151,7 +171,7 @@ export function toPersistedForm<T>(
         if (escaped !== value) forms.push(escaped);
       }
       for (const form of forms) {
-        const written = referenceFor(form, false);
+        const written = referenceFor(form);
         if (!written) continue;
         segments = segments.flatMap((segment) => {
           if (segment.locked) return [segment];
@@ -281,9 +301,21 @@ export async function rehydratePersistedForm<T>(
       restore(sanitized, leaf);
     } else {
       restore(raw, text);
+      // Every restored reference becomes a data-origin sentinel. The flag
+      // cannot choose the origin yet: an entry the value search wrote
+      // carries `dataOrigin: false` for plaintext a data read brought into
+      // CEL, and no vault.get sentinel reaches a persisted position before
+      // typed-secrets 2.3 (the caches are written before the runtime pass,
+      // and the overlay holds only data-origin entries).
       restore(
         sanitized,
-        bag && sanitizes(entry.path) ? bag.addDataSecret(text) : text,
+        bag && sanitizes(entry.path)
+          ? bag.addDataSecret(
+            text,
+            { vaultName: entry.vaultName, key: entry.key },
+            entry.encoding,
+          )
+          : text,
       );
     }
   }

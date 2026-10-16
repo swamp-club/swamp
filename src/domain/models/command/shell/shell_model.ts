@@ -121,7 +121,7 @@ async function executeCommand(
     let shellCommand = args.run;
     let shellEnv = args.env ?? {};
     const secretBag = context.vaultSecrets;
-    if (secretBag && !secretBag.isEmpty && context.unresolvedMethodArgs) {
+    if (secretBag?.resolvesAny && context.unresolvedMethodArgs) {
       const unresolvedRun = context.unresolvedMethodArgs.run;
       if (typeof unresolvedRun === "string") {
         const resolved = shellStrategy.resolveSecrets(unresolvedRun, secretBag);

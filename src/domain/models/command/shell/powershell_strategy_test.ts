@@ -20,6 +20,10 @@
 import { assertEquals } from "@std/assert";
 import { PowerShellStrategy } from "./powershell_strategy.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 const POWERSHELL_COMPATIBILITY_PREFIX =
   "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
@@ -65,8 +69,8 @@ Deno.test("PowerShellStrategy.buildInvocation: passes command through verbatim a
 
 Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to quoted $env:VAR outside quotes", () => {
   const strategy = new PowerShellStrategy();
-  const bag = new VaultSecretBag();
-  const sentinel = bag.addSecret("secret-value");
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret("secret-value", REF);
 
   const resolved = strategy.resolveSecrets(`Write-Output ${sentinel}`, bag);
 
@@ -79,8 +83,8 @@ Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to quoted $env:V
 
 Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to bare $env:VAR inside double quotes", () => {
   const strategy = new PowerShellStrategy();
-  const bag = new VaultSecretBag();
-  const sentinel = bag.addSecret("token-xyz");
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret("token-xyz", REF);
 
   const resolved = strategy.resolveSecrets(
     `Write-Output "auth: ${sentinel}"`,
@@ -95,9 +99,9 @@ Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to bare $env:VAR
 
 Deno.test("PowerShellStrategy.resolveSecrets: handles multiple secrets", () => {
   const strategy = new PowerShellStrategy();
-  const bag = new VaultSecretBag();
-  const s1 = bag.addSecret("user");
-  const s2 = bag.addSecret("pass");
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const s1 = bag.addSecret("user", REF);
+  const s2 = bag.addSecret("pass", REF);
 
   const resolved = strategy.resolveSecrets(
     `Connect-Service -User ${s1} -Password ${s2}`,
@@ -116,7 +120,7 @@ Deno.test("PowerShellStrategy.resolveSecrets: handles multiple secrets", () => {
 
 Deno.test("PowerShellStrategy.resolveSecrets: empty bag returns command unchanged", () => {
   const strategy = new PowerShellStrategy();
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const resolved = strategy.resolveSecrets("Write-Output hello", bag);
   assertEquals(resolved.command, "Write-Output hello");
   assertEquals(resolved.env, {});

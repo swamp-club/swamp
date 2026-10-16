@@ -35,7 +35,6 @@ import {
   type WrittenReference,
 } from "../../domain/secrets/mod.ts";
 import { persistEvaluatedDefinition } from "../../domain/expressions/persisted_evaluation.ts";
-import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -222,7 +221,6 @@ async function saveWithoutSecrets(
     [],
     source,
     sensitiveValues,
-    new VaultSecretBag(),
   );
   await deps.saveEvaluatedDefinition(
     result.type,

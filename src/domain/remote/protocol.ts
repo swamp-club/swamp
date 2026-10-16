@@ -38,15 +38,17 @@ import {
 } from "../datastore/lock_holder_marker.ts";
 import { errorPaths } from "../errors.ts";
 import { z } from "zod";
-import { SENTINEL_EXACT } from "../vaults/vault_secret_bag.ts";
+import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
 
 /**
  * Version of the remote-execution protocol. Negotiated at enrollment: a
  * worker whose protocol version does not match is rejected before any
- * dispatch, never mid-run. Also pins the capability-verb inventory — any
- * change to the verbs below requires a version bump.
+ * dispatch, never mid-run. Also pins the capability-verb inventory and the
+ * sentinel format a dispatch's secret bag is validated against — any change
+ * to the verbs below or to `SENTINEL_EXACT` requires a version bump.
+ * Version 5: sentinels carry a 128-bit prefix (swamp-club#3558).
  */
-export const REMOTE_PROTOCOL_VERSION = 4;
+export const REMOTE_PROTOCOL_VERSION = 5;
 
 // ── RPC framing ──────────────────────────────────────────────────────────
 

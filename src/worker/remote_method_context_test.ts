@@ -589,8 +589,9 @@ Deno.test("remote context: readModelData resolves a name once per dispatch, incl
   });
 });
 
-const SENTINEL = "__SWAMP_VSEC_0a1b2c3d_0__";
-const DATA_SENTINEL = "__SWAMP_VSEC_0a1b2c3d_1__";
+const PREFIX = "0a1b2c3d".repeat(4);
+const SENTINEL = `__SWAMP_VSEC_${PREFIX}_0__`;
+const DATA_SENTINEL = `__SWAMP_VSEC_${PREFIX}_1__`;
 
 function dispatchWithSecretBag(): DispatchParams {
   const d = dispatch();
@@ -609,7 +610,7 @@ Deno.test("remote context: a shipped secret bag is rebuilt as vaultSecrets (swam
     const h = harness(dir, undefined, undefined, dispatchWithSecretBag());
     const bag = h.context.vaultSecrets!;
     assertEquals(bag.toEntries(), dispatchWithSecretBag().secretBag);
-    assertEquals(bag.isDataOrigin(DATA_SENTINEL), true);
+    assertEquals(bag.entryOf(DATA_SENTINEL)?.dataOrigin, true);
     return Promise.resolve();
   });
 });

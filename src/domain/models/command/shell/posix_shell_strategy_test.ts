@@ -20,6 +20,10 @@
 import { assertEquals } from "@std/assert";
 import { PosixShellStrategy } from "./posix_shell_strategy.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
+import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
+
+/** The reference every secret of these tests stands for. */
+const REF = { vaultName: "v", key: "k" };
 
 Deno.test("PosixShellStrategy.buildInvocation: wraps command in sh -c", () => {
   const strategy = new PosixShellStrategy();
@@ -46,8 +50,8 @@ Deno.test("PosixShellStrategy.buildInvocation: passes command through verbatim (
 
 Deno.test("PosixShellStrategy.resolveSecrets: delegates to VaultSecretBag.resolveForShell", () => {
   const strategy = new PosixShellStrategy();
-  const bag = new VaultSecretBag();
-  const sentinel = bag.addSecret("secret-value");
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret("secret-value", REF);
 
   const resolved = strategy.resolveSecrets(`echo ${sentinel}`, bag);
 
@@ -59,7 +63,7 @@ Deno.test("PosixShellStrategy.resolveSecrets: delegates to VaultSecretBag.resolv
 
 Deno.test("PosixShellStrategy.resolveSecrets: empty bag returns command unchanged", () => {
   const strategy = new PosixShellStrategy();
-  const bag = new VaultSecretBag();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   const resolved = strategy.resolveSecrets("echo hello", bag);
   assertEquals(resolved.command, "echo hello");
   assertEquals(resolved.env, {});

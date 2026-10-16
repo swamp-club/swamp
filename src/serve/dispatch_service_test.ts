@@ -1605,7 +1605,7 @@ Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the s
 
 Deno.test("DispatchService: forwards the unresolved args and secret bag to the worker (swamp-club#2760)", async () => {
   const h = createHarness();
-  const sentinel = "__SWAMP_VSEC_0a1b2c3d_0__";
+  const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
   const registered: Array<Record<string, unknown>> = [];
   h.setBehavior((name) => {
     for (const entry of h.dispatches.forWorker(name)) {

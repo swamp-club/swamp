@@ -23,6 +23,8 @@ import {
   vaultReferenceText,
 } from "./run_sensitive_values.ts";
 import { SecretRedactor } from "./secret_redactor.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 const source = { vaultName: "prod-vault", key: "db-password" };
 
@@ -154,4 +156,19 @@ Deno.test("RunSensitiveValues.masked: keeps a key named __proto__ as data", () =
     JSON.stringify(masked),
     '{"__proto__":{"pw":"***"},"a":1}',
   );
+});
+
+Deno.test("RunSensitiveValues.sentinels: one registry per run, shared by every bag made from it", () => {
+  const values = new RunSensitiveValues();
+  const a = new VaultSecretBag(values.sentinels);
+  const b = new VaultSecretBag(values.sentinels);
+  const sentinel = a.addSecret("value", { vaultName: "v", key: "k" });
+  assertEquals(b.resolveRaw(sentinel), "value");
+  assertEquals(values.sentinels.issuedEntryOf(sentinel)?.reference, {
+    vaultName: "v",
+    key: "k",
+  });
+  const own = new SecretBagRegistry();
+  assertEquals(new RunSensitiveValues(undefined, own).sentinels, own);
+  assertEquals(new RunSensitiveValues().sentinels !== values.sentinels, true);
 });

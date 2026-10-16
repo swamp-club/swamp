@@ -281,6 +281,7 @@ import {
   methodArgumentPath,
   ProvenanceMap,
   routedGlobalProvenance,
+  sentinelIdentityOf,
   sentinelResolverOf,
 } from "../expressions/provenance_map.ts";
 import {
@@ -448,7 +449,7 @@ function sanitizedDirectExecution(
     explicit ? taskArgs.sanitized.globalArgs : taskArgs.sanitized.inputs,
   );
   const globals = result.definition.globalArguments as Record<string, unknown>;
-  const secrets = sensitiveValues.list().map((entry) => entry.value);
+  const secrets = sensitiveValues.list();
   for (const key of Object.keys(rawSource)) {
     if (!explicit && Object.hasOwn(result.routedMethodInputs, key)) continue;
     if (!Object.hasOwn(globals, key)) continue;
@@ -1668,11 +1669,12 @@ export class DefaultStepExecutor implements StepExecutor {
     let resolvedPlacement = resolvePlacement(effectiveFields);
     let placementMap = ctx.placementProvenance ?? ProvenanceMap.authored();
 
-    // This step's bag. Sensitive data values spliced into the step's
-    // arguments become its sentinels: from the workflow-level overlay, the
-    // step-input passes, the definition pass and the runtime pass. One bag
-    // per step, so remote dispatch ships only this step's secrets.
-    const stepSecretBag = new VaultSecretBag();
+    // This step's bag, a view of the run's registry. Sensitive data values
+    // spliced into the step's arguments become its sentinels: from the
+    // workflow-level overlay, the step-input passes, the definition pass and
+    // the runtime pass. One bag per step, so remote dispatch ships only this
+    // step's secrets, while any sentinel the run issued resolves through it.
+    const stepSecretBag = new VaultSecretBag(ctx.sensitiveValues.sentinels);
     const argumentSanitizer = sensitiveSpliceSanitizer(
       ctx.sensitiveValues,
       stepSecretBag,
@@ -1688,17 +1690,19 @@ export class DefaultStepExecutor implements StepExecutor {
       .forStep(ctx.step);
     let taskProvenance = stepMaps.raw.subtree("task");
     // The overlay's map is in the workflow bag's sentinels; the step reads
-    // them re-issued from its own bag, whose sentinels can differ in length.
+    // them re-issued from its own bag. Both copies hold sentinels, so they
+    // are compared by what each sentinel references, with no value read.
     const overlayEntry = ctx.step
       ? ctx.sanitizedTasks?.entryFor(ctx.step)
       : undefined;
+    const sentinelIdentity = sentinelIdentityOf(ctx.sensitiveValues.sentinels);
     const sanitizedTaskProvenance = overlay && overlayEntry
       ? alignProvenance(
         stepMaps.sanitized.subtree("task"),
         { inputs: overlayEntry.inputs, globalArgs: overlayEntry.globalArgs },
         { inputs: overlay.inputs, globalArgs: overlay.globalArgs },
-        sentinelResolverOf(ctx.sanitizedTasks!.bag),
-        sentinelResolverOf(stepSecretBag),
+        sentinelIdentity,
+        sentinelIdentity,
       )
       : stepMaps.sanitized.subtree("task");
     let taskArgs = new SplicePair<TaskArgs>(
@@ -1879,7 +1883,7 @@ export class DefaultStepExecutor implements StepExecutor {
           inputs: taskArgs.sanitized.inputs,
           globalArgs: taskArgs.sanitized.globalArgs,
         },
-        undefined,
+        sentinelResolverOf(stepSecretBag),
         sentinelResolverOf(stepSecretBag),
       ),
     );
@@ -2236,7 +2240,7 @@ export class DefaultStepExecutor implements StepExecutor {
           cachedProvenance,
           evaluatedDefinition.toData(),
           executedDefinition.toData(),
-          undefined,
+          sentinelResolverOf(stepSecretBag),
           sentinelResolverOf(stepSecretBag),
         ),
       };
@@ -2429,7 +2433,6 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext?.deferredExpressions ?? [],
         originalDefinition,
         ctx.sensitiveValues,
-        stepSecretBag,
       );
       await evaluatedDefRepo.save(
         modelType,
@@ -3683,7 +3686,9 @@ export class WorkflowExecutionService {
               cachedProvenance,
               workflow.toData(),
               sanitizedTasks?.sanitizedData ?? workflow.toData(),
-              undefined,
+              sanitizedTasks
+                ? sentinelResolverOf(sanitizedTasks.bag)
+                : undefined,
               sanitizedTasks
                 ? sentinelResolverOf(sanitizedTasks.bag)
                 : undefined,
