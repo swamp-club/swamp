@@ -2028,7 +2028,11 @@ It is synchronous, and a refused commit leaves the partition unchanged:
     names two contents, even on a clone that pulled the old one. A versioned
     `data.delete` or `data.gc` tombstone of a live version adds it to the
     name's removed versions, which snapshots keep (as `removed` ranges, absent
-    when none, so older snapshots still restore).
+    when none, so older snapshots still restore). The field came with
+    `commits.db` schema 6: a swamp at schema 5 would reject it as unknown
+    and call the store corrupt, so it refuses the store as newer instead
+    (`datastore_v3_schema_newer`). Every checkout of a v3 datastore upgrades
+    together.
   - Versions may still arrive out of order: parallel writers of one name,
     and a deferred version promoted after a higher one committed, record a
     version below the high-water mark that was never recorded.

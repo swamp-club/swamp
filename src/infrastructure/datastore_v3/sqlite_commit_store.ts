@@ -319,6 +319,12 @@ const MIGRATIONS: readonly string[] = [
     txn_id TEXT NOT NULL
   ) STRICT;
   `,
+  // 5 → 6: partition snapshots may carry each data name's removed versions
+  // (swamp-club#3532). No table changes; the version number is the point.
+  // A swamp at schema 5 or below rejects the new snapshot field as an
+  // unknown one and would call the store corrupt, so it must refuse the
+  // store as newer instead.
+  `SELECT 1;`,
 ];
 
 /** Error code for a `commits.db` written by a newer swamp. */

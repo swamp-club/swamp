@@ -434,6 +434,37 @@ Deno.test("SqliteCommitStore: refuses a database from a newer schema", async () 
   });
 });
 
+Deno.test("SqliteCommitStore: a store whose snapshots carry removed versions is at a schema older swamps refuse (swamp-club#3532)", async () => {
+  // Schema 5 is the last whose Partition.restore rejects a snapshot's
+  // `removed` field as unknown, so a swamp at 5 must see a newer schema and
+  // ask to be upgraded, not report the store corrupt.
+  const LAST_SCHEMA_WITHOUT_REMOVED = 5;
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path, { snapshotInterval: 2 });
+    try {
+      await store.append(await save(1));
+      await store.append(modelCommit(2, [deleteVersion("a", 1)], { fence: 1 }));
+    } finally {
+      await store.close();
+    }
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      const { body } = db.prepare(
+        "SELECT body FROM partition_snapshots",
+      ).get() as { body: string };
+      assertEquals(JSON.parse(body).names[0].removed, [[1, 1]]);
+      const { user_version } = db.prepare("PRAGMA user_version").get() as {
+        user_version: number;
+      };
+      assertEquals(user_version, COMMIT_STORE_SCHEMA_VERSION);
+      assert(user_version > LAST_SCHEMA_WITHOUT_REMOVED);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 Deno.test("SqliteCommitStore: notices a write from another connection", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
