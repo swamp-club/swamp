@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   V3ReplicationError,
   V3ReplicationUnavailableError,
@@ -598,15 +599,20 @@ Deno.test({
         probe.close();
       }
       await b.release();
-      const after = await Deno.open(world.paths.useLock, {
-        read: true,
-        write: true,
-      });
-      try {
-        assertEquals(await after.tryLock(true), true, "no hold leaked");
-      } finally {
-        after.close();
-      }
+      // Polled, not checked once: under full-suite load the released hold
+      // was once still seen right after release (swamp-club#3560). A hold
+      // that is never dropped still fails when the wait runs out.
+      await waitFor(async () => {
+        const after = await Deno.open(world.paths.useLock, {
+          read: true,
+          write: true,
+        });
+        try {
+          return await after.tryLock(true);
+        } finally {
+          after.close();
+        }
+      }, "no hold leaked");
     });
   },
 });

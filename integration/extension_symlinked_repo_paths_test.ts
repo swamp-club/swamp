@@ -205,12 +205,13 @@ for (
         input,
       );
 
+      // Push reports these with the platform's separators.
       assertEquals(
         prepared.resolvedData.models.map((m) => m.fileName),
-        ["extensions/models/ext/fields.ts"],
+        [join("extensions", "models", "ext", "fields.ts")],
       );
       assertEquals(prepared.resolvedData.workflowFiles, [
-        "workflows/deploy.yaml",
+        join("workflows", "deploy.yaml"),
       ]);
     });
   });

@@ -751,6 +751,47 @@ async function isZod4InPackageJson(
 }
 
 /**
+ * Whether `deno bundle` output names a failed esbuild install: two bundles
+ * started at once on a cache without esbuild both install it, and one can
+ * fail copying the binary the other is writing.
+ */
+export function isEsbuildInstallRace(output: string): boolean {
+  return output.includes("failed to copy esbuild binary");
+}
+
+/**
+ * Runs `fn` alone for the first call per `key`; later calls wait for it to
+ * settle, then run side by side. A failed first call clears the key, so
+ * the next caller goes first in its place.
+ */
+export async function runFirstAlone<T>(
+  gates: Map<string, Promise<boolean>>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  for (let gate = gates.get(key); gate; gate = gates.get(key)) {
+    if (await gate) return await fn();
+  }
+  let settle!: (ok: boolean) => void;
+  gates.set(key, new Promise<boolean>((resolve) => settle = resolve));
+  try {
+    const result = await fn();
+    settle(true);
+    return result;
+  } catch (error) {
+    gates.delete(key);
+    settle(false);
+    throw error;
+  }
+}
+
+/**
+ * The first bundle per Deno cache in this process, which installs esbuild
+ * into an empty cache and so must not race another bundle doing the same.
+ */
+const firstBundles = new Map<string, Promise<boolean>>();
+
+/**
  * Bundles a TypeScript extension file into JavaScript using `deno bundle` subprocess.
  *
  * Transpiles TypeScript syntax (interfaces, type annotations, generics) and
@@ -844,12 +885,23 @@ export async function bundleExtension(
       ...(options?.env ? { env: options.env } : {}),
     });
 
-    const output = await command.output();
+    // The child's cache: options.env merges over this process's env.
+    const denoDir = options?.env?.DENO_DIR ?? Deno.env.get("DENO_DIR") ??
+      "";
+    let output = await runFirstAlone(
+      firstBundles,
+      denoDir,
+      async () => await command.output(),
+    );
+    // Another process may have been installing esbuild into the same cache.
+    if (!output.success && isEsbuildInstallRace(outputText(output))) {
+      logger
+        .debug`Retrying bundle of ${absolutePath} after an esbuild install race`;
+      output = await command.output();
+    }
 
     if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr);
-      const stdout = new TextDecoder().decode(output.stdout);
-      const rawDetails = (stderr + stdout).trim() ||
+      const rawDetails = outputText(output).trim() ||
         "(no output — try running deno 2.7.x or later)";
       const details = stripAnsiCode(rawDetails);
       throw markErrorPaths(
@@ -888,4 +940,9 @@ export async function bundleExtension(
       // Temp file cleanup is best-effort
     }
   }
+}
+
+function outputText(output: Deno.CommandOutput): string {
+  const decoder = new TextDecoder();
+  return decoder.decode(output.stderr) + decoder.decode(output.stdout);
 }

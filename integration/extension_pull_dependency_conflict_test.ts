@@ -35,6 +35,7 @@ import {
   initializeLogging,
 } from "../src/infrastructure/logging/logger.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
+import { EmbeddedDenoRuntime } from "../src/infrastructure/runtime/embedded_deno_runtime.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -174,7 +175,9 @@ Deno.test("pullExtension: answering y to a dependency's conflict installs the de
           depth: 0,
           denoRuntime: {
             ensureDeno: () => Promise.resolve(Deno.execPath()),
-            getDenoEnv: () => Deno.env.toObject(),
+            // The shared cache linked under SWAMP_HOME above, as the real
+            // runtime picks it: never a fresh cache under the mocked HOME.
+            getDenoEnv: () => new EmbeddedDenoRuntime().getDenoEnv(),
           },
           repository: new ExtensionRepository({
             catalog,

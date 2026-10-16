@@ -1352,10 +1352,10 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves workflows from man
     });
 
     assertEquals(result.workflowFiles.length, 1);
-    const wfRealPath = await Deno.realPath(
+    assertEquals(
+      result.workflowFiles[0].sourcePath,
       join(subdir, "extensions", "workflows", "test-wf.yaml"),
     );
-    assertEquals(result.workflowFiles[0].sourcePath, wfRealPath);
   });
 });
 
@@ -1404,10 +1404,10 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative f
     });
 
     assertEquals(result.workflowFiles.length, 1);
-    const manifestRelativePath = await Deno.realPath(
+    assertEquals(
+      result.workflowFiles[0].sourcePath,
       join(subdir, "extensions", "workflows", "shared.yaml"),
     );
-    assertEquals(result.workflowFiles[0].sourcePath, manifestRelativePath);
   });
 });
 
@@ -2299,9 +2299,7 @@ Deno.test("resolveExtensionFiles: with --extensions-dir a workflow present under
     assertEquals(result.workflowFiles.length, 1);
     assertPathEquals(
       result.workflowFiles[0].sourcePath,
-      await Deno.realPath(
-        join(ext, "extensions", "workflows", "hello-wf", "workflow.yaml"),
-      ),
+      join(ext, "extensions", "workflows", "hello-wf", "workflow.yaml"),
     );
   });
 });
@@ -2384,7 +2382,7 @@ Deno.test("resolveExtensionFiles: under paths.base manifest the manifest-dir cop
     });
     assertPathEquals(
       result.workflowFiles[0].sourcePath,
-      await Deno.realPath(join(ext, "hello-wf", "workflow.yaml")),
+      join(ext, "hello-wf", "workflow.yaml"),
     );
   });
 });

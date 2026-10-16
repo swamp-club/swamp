@@ -17,8 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { UserError } from "../errors.ts";
 import {
@@ -27,9 +33,11 @@ import {
   fixCjsEsmInterop,
   importMapTarget,
   installZodGlobal,
+  isEsbuildInstallRace,
   isExpectedBundleFailure,
   rejectZodV3Imports,
   rewriteZodImports,
+  runFirstAlone,
   sanitizeDataUrlError,
   sourceHasBareSpecifiers,
   uint8ArrayToBase64,
@@ -1203,5 +1211,99 @@ Deno.test("importMapTarget: no entry, a non-matching key or a bare target gives 
   assertEquals(
     importMapTarget("lib", { "lib": "./lib/mod.ts" }),
     "./lib/mod.ts",
+  );
+});
+
+Deno.test("runFirstAlone: a later call waits until the first call for its key settles", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const started: string[] = [];
+  const a = runFirstAlone(gates, "cache", async () => {
+    started.push("a");
+    await first.promise;
+  });
+  const b = runFirstAlone(gates, "cache", () => {
+    started.push("b");
+    return Promise.resolve();
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(started, ["a"]);
+  first.resolve();
+  await Promise.all([a, b]);
+  assertEquals(started, ["a", "b"]);
+});
+
+Deno.test("runFirstAlone: once the first call succeeds, later calls run side by side", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  await runFirstAlone(gates, "cache", () => Promise.resolve());
+  const held = Promise.withResolvers<void>();
+  let running = 0;
+  let peak = 0;
+  const call = () =>
+    runFirstAlone(gates, "cache", async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await held.promise;
+      running--;
+    });
+  const calls = [call(), call()];
+  await waitFor(() => running === 2, "both calls running");
+  held.resolve();
+  await Promise.all(calls);
+  assertEquals(peak, 2);
+});
+
+Deno.test("runFirstAlone: a different key is not held back", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const a = runFirstAlone(gates, "one", () => first.promise);
+  let otherRan = false;
+  await runFirstAlone(gates, "two", () => {
+    otherRan = true;
+    return Promise.resolve();
+  });
+  assertEquals(otherRan, true);
+  first.resolve();
+  await a;
+});
+
+Deno.test("runFirstAlone: a failed first call lets the next caller go first", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const a = runFirstAlone(gates, "cache", () => first.promise);
+  const second = Promise.withResolvers<void>();
+  const started: string[] = [];
+  const b = runFirstAlone(gates, "cache", async () => {
+    started.push("b");
+    await second.promise;
+  });
+  const c = runFirstAlone(gates, "cache", () => {
+    started.push("c");
+    return Promise.resolve();
+  });
+  first.reject(new Error("spawn failed"));
+  await assertRejects(() => a, Error, "spawn failed");
+  await waitFor(() => started.length > 0, "a caller to start");
+  assertEquals(started, ["b"], "b runs alone in the failed call's place");
+  second.resolve();
+  await Promise.all([b, c]);
+  assertEquals(started, ["b", "c"]);
+});
+
+Deno.test("isEsbuildInstallRace: matches only the esbuild copy failure", () => {
+  assertEquals(
+    isEsbuildInstallRace(
+      "error: failed to copy esbuild binary from /c/npm/esbuild to " +
+        "/c/dl/esbuild-0.25.5-1/.esbuild-13911.tmp\n\nCaused by:\n" +
+        "    No such file or directory (os error 2)",
+    ),
+    true,
+  );
+  assertEquals(
+    isEsbuildInstallRace(
+      'error: Module not found "file:///x/missing.ts".',
+    ),
+    false,
   );
 });

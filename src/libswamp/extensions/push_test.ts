@@ -2516,7 +2516,13 @@ Deno.test("extensionPushPrepare: an accepted finding in a typed directory beside
       result.contentMetadata?.acceptances?.accepted[0].file,
       "vaults/v.ts",
     );
-    assertEquals(JSON.stringify(result.contentMetadata).includes(dir), false);
+    // Search for dir as JSON spells it, so a Windows path is found too.
+    assertEquals(
+      JSON.stringify(result.contentMetadata).includes(
+        JSON.stringify(dir).slice(1, -1),
+      ),
+      false,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
@@ -3506,8 +3512,13 @@ Deno.test("extensionPushPrepare: a file with a symlink on its path is refused by
     });
 
     const safety = result.gateFailures.find((f) => f.gate === "safety");
+    // Read the message itself: JSON would double each backslash of a
+    // Windows path, so the path never matches its JSON text.
+    const symlinkError = (safety?.details as {
+      safetyErrors?: Array<{ ruleId: string; message: string }>;
+    } | undefined)?.safetyErrors?.find((e) => e.ruleId === "symlink");
     assertStringIncludes(
-      JSON.stringify(safety?.details ?? {}),
+      symlinkError?.message ?? "",
       `${linkDir} is a symlink`,
     );
     assertEquals(analyzed.some((files) => files.includes(linked)), false);

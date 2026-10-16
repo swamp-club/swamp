@@ -133,6 +133,8 @@ Deno.test("createExtensionTreeIndexer: reports the type each source registers wh
       repoDir: dir,
     })(root);
 
+    assertEquals(index.failures.map((f) => f.fileName), ["broken.ts"]);
+    assertStringIncludes(index.failures[0].reason, "boom");
     assertEquals(typesByFile(index), {
       "constant.ts": "@acme/constant",
       "imported.ts": "@acme/imported",
@@ -143,8 +145,6 @@ Deno.test("createExtensionTreeIndexer: reports the type each source registers wh
       "shared/type.ts": null,
       "spread.ts": "@other/spread",
     });
-    assertEquals(index.failures.map((f) => f.fileName), ["broken.ts"]);
-    assertStringIncludes(index.failures[0].reason, "boom");
     // Bundles go under repoDir's .swamp, never into the tree itself.
     assertEquals(await filesUnder(root), before);
   });
@@ -166,11 +166,12 @@ Deno.test("createExtensionPushPrepareDeps: indexArchive loads the sources a push
       "@acme/ext",
     );
 
+    // Failures first, so a failed source shows its reason.
+    assertEquals(index.failures, []);
     assertEquals(typesByFile(index), {
       "constant.ts": "@acme/constant",
       "lib/helper.ts": "@other/helper",
     });
-    assertEquals(index.failures, []);
   });
 });
 
