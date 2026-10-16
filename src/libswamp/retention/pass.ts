@@ -67,6 +67,7 @@ export interface RetentionPassDeps {
   runBatch<T>(fn: () => Promise<T>): Promise<T>;
   /** Runs once after the batches, e.g. v3 history compaction. */
   afterPass?(result: RetentionPassResult): Promise<void>;
+  /** The pass's clock: cutoffs are taken from it, and the budget measured. */
   now(): Date;
 }
 
@@ -119,7 +120,6 @@ export async function runRetentionPass(
   options: RetentionPassOptions,
 ): Promise<RetentionPassResult> {
   const now = deps.now();
-  const startedMs = Date.now();
   const batchSize = options.batchSize ?? DEFAULT_RETENTION_BATCH_SIZE;
   const result: RetentionPassResult = {
     startedAt: now.toISOString(),
@@ -132,7 +132,7 @@ export async function runRetentionPass(
     if (options.isStopping?.()) return "stopping";
     if (
       options.budgetMs !== undefined &&
-      Date.now() - startedMs >= options.budgetMs
+      deps.now().getTime() - now.getTime() >= options.budgetMs
     ) return "budget";
     if (options.shouldBackOff?.()) return "busy";
     return undefined;

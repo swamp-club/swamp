@@ -1838,6 +1838,31 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the IDs of the run
   });
 });
 
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: deletes every collectable run in one call, beside a run it keeps", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+    // Each delete is followed by an attempt to remove the still non-empty
+    // runs directory; on macOS a walk of that directory open at the time
+    // skipped entries (swamp-club#3535).
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const collectable: string[] = [];
+    for (let i = 0; i < 220; i++) {
+      const id = crypto.randomUUID();
+      collectable.push(id);
+      await Deno.writeTextFile(join(runsDir, `workflow-run-${id}.yaml`), "");
+    }
+
+    const result = await repo.deleteOlderThan(new Date(Date.now() + 60_000));
+
+    assertEquals(result.deletedRunIds.sort(), collectable.sort());
+    assertEquals(await repo.listRunIds(), new Set([running.id]));
+  });
+});
+
 Deno.test("YamlWorkflowRunRepository.listRunIds: lists run IDs across workflows and ignores other files", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);

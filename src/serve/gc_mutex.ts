@@ -33,6 +33,14 @@ export class GcMutex {
     return this.#pending > 0;
   }
 
+  /**
+   * True while a collection waits behind the one running: serve's
+   * retention pass stops at its next batch for it (swamp-club#3535).
+   */
+  get waiting(): boolean {
+    return this.#pending > 1;
+  }
+
   /** Runs `fn` once every collection queued before it has finished. */
   async run<T>(fn: () => Promise<T>): Promise<T> {
     const previous = this.#tail;

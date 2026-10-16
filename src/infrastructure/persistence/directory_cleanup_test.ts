@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { ensureDir, exists } from "@std/fs";
 import {
   cleanupEmptyParentDirs,
+  type DirectoryCleanupFs,
   pruneOrphanFiles,
 } from "./directory_cleanup.ts";
 import { PathTraversalError } from "./safe_path.ts";
@@ -145,6 +146,101 @@ Deno.test("cleanupEmptyParentDirs does not go above stop directory", async () =>
     // But data and swamp should still exist
     assertEquals(await exists(dataDir), true);
     assertEquals(await exists(swampDir), true);
+  });
+});
+
+/** The real file operations, counting each call. */
+function countingFs(): DirectoryCleanupFs & {
+  calls: { lstat: number; remove: number; readDir: number };
+} {
+  const calls = { lstat: 0, remove: 0, readDir: 0 };
+  return {
+    calls,
+    lstat: (path) => {
+      calls.lstat++;
+      return Deno.lstat(path);
+    },
+    remove: (path) => {
+      calls.remove++;
+      return Deno.remove(path);
+    },
+    readDir: (path) => {
+      calls.readDir++;
+      return Deno.readDir(path);
+    },
+  };
+}
+
+Deno.test("cleanupEmptyParentDirs: a directory with siblings left is never listed, however many", async () => {
+  for (const siblings of [1, 50, 500]) {
+    await withTempDir(async (tempDir) => {
+      const outputsDir = join(tempDir, "outputs");
+      const methodDir = join(outputsDir, "command", "shell", "execute");
+      await ensureDir(methodDir);
+      for (let i = 0; i < siblings; i++) {
+        await Deno.writeTextFile(join(methodDir, `kept-${i}.yaml`), "x");
+      }
+      const deleted = join(methodDir, "deleted.yaml");
+      await Deno.writeTextFile(deleted, "x");
+      await Deno.remove(deleted);
+
+      const fs = countingFs();
+      await cleanupEmptyParentDirs(deleted, outputsDir, fs);
+
+      assertEquals(fs.calls, { lstat: 1, remove: 1, readDir: 0 });
+      assertEquals(await exists(join(methodDir, "kept-0.yaml")), true);
+    });
+  }
+});
+
+Deno.test("cleanupEmptyParentDirs: a directory that gained a file after the delete is kept", async () => {
+  await withTempDir(async (tempDir) => {
+    const dataDir = join(tempDir, "data");
+    const vpcDir = join(dataDir, "aws", "vpc");
+    await ensureDir(vpcDir);
+    const deleted = join(vpcDir, "old.yaml");
+    await Deno.writeTextFile(deleted, "x");
+    await Deno.remove(deleted);
+    await Deno.writeTextFile(join(vpcDir, "new.yaml"), "x");
+
+    await cleanupEmptyParentDirs(deleted, dataDir);
+
+    assertEquals(await exists(join(vpcDir, "new.yaml")), true);
+    assertEquals(await exists(join(dataDir, "aws")), true);
+  });
+});
+
+Deno.test("cleanupEmptyParentDirs: a symlinked directory whose target holds files is kept", async () => {
+  await withTempDir(async (tempDir) => {
+    const dataDir = join(tempDir, "data");
+    const target = join(tempDir, "elsewhere");
+    await ensureDir(dataDir);
+    await ensureDir(target);
+    await Deno.writeTextFile(join(target, "kept.yaml"), "x");
+    const link = join(dataDir, "linked");
+    await Deno.symlink(target, link, { type: "dir" });
+
+    await cleanupEmptyParentDirs(join(link, "deleted.yaml"), dataDir);
+
+    assertEquals((await Deno.lstat(link)).isSymlink, true);
+    assertEquals(await exists(join(target, "kept.yaml")), true);
+  });
+});
+
+Deno.test("cleanupEmptyParentDirs: a symlinked directory whose target is empty is removed", async () => {
+  await withTempDir(async (tempDir) => {
+    const dataDir = join(tempDir, "data");
+    const target = join(tempDir, "elsewhere");
+    await ensureDir(join(dataDir, "type"));
+    await ensureDir(target);
+    const link = join(dataDir, "type", "linked");
+    await Deno.symlink(target, link, { type: "dir" });
+
+    await cleanupEmptyParentDirs(join(link, "deleted.yaml"), dataDir);
+
+    assertEquals(await exists(link), false);
+    assertEquals(await exists(join(dataDir, "type")), false);
+    assertEquals(await exists(target), true);
   });
 });
 

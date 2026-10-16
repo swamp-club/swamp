@@ -222,6 +222,14 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
   once it is past the retention cutoff and has not been written for 7 days,
   whatever `--older-than` or the method's `outputLifetime` says. A method
   directory holding a record gc cannot read keeps all its logs.
+- **Cost**: deleting a record costs the same however much history is kept
+  beside it. The emptied directories above a deleted file are removed with a
+  remove that fails on a directory still holding entries
+  (`cleanupEmptyParentDirs`), never by listing them, and run listings are read
+  in full before anything is deleted, since on macOS a failed remove makes a
+  listing still open on that directory skip entries (swamp-club#3535). On a
+  filesystem datastore, 220 old runs beside 20,000 kept ones take about 7
+  seconds; 98,000 runs and 137,000 outputs take about 150 seconds.
 - **Flags**: `--dry-run`, `--force`, `--older-than <duration>` (uses
   `parseDuration`; units m, h, d, w, mo, y).
 - **Automatic**: with `garbageCollection.automatic: true` the same
@@ -299,16 +307,25 @@ garbageCollection:
     (never for the whole pass), backs off while every run slot is taken,
     shares a mutex with `run.gc` and `data.gc` (taken before the sync gate,
     in that order everywhere), claims the hour only once it holds the
-    mutex, and writes one
+    mutex, runs batches for at most 5 minutes
+    (`DEFAULT_RETENTION_GC_BUDGET_MS`), stops at its next batch when a
+    `run.gc` or `data.gc` request is waiting on that mutex, and writes one
     `retention.pass` system audit event per pass. Of several serves on one
     datastore, the one that claims the hour (`putIfAbsent` on
     `_control/retention/claims/serve/<hour>`) runs it.
+    A first pass over a large backlog fits in one budget: on a filesystem
+    datastore (macOS, about 1,000 items a second) a backlog of 98,000 runs,
+    98,000 snapshots and 137,000 outputs took one 232-second pass, and serve
+    writes, schedules and webhooks kept their normal latency through it. A
+    backlog several times that size catches up over as many hourly passes.
+    A pass rescans its kind's directories on each batch, which was about 14%
+    of that pass (swamp-club#3535).
   - A CLI command that opened the repository to write runs a pass in
     teardown, after its own locks are released (`runRetentionAtCommandEnd`,
     `src/cli/retention_teardown.ts`): at most hourly per checkout
     (`.swamp/retention-last-attempt.json`) and per datastore (an hourly
-    claim of its own, `claims/cli/<hour>`: a CLI pass is capped by its
-    budget, so it never uses up the hour of serve's unbudgeted pass), taking the datastore lock through `requireInitializedRepo` with a
+    claim of its own, `claims/cli/<hour>`: a CLI pass is capped at 10
+    seconds, so it never uses up the hour of serve's longer pass), taking the datastore lock through `requireInitializedRepo` with a
     2-second wait (`lockWaitMs`; v2 and custom datastores: on v3 the command
     already holds the writer lease, whose contention is settled when the
     command starts, so the pass runs as that writer), stopping after 10 seconds of batches and

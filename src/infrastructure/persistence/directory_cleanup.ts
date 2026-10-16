@@ -61,11 +61,37 @@ export async function pruneOrphanFiles(
   return removed;
 }
 
+/** The file operations {@link cleanupEmptyParentDirs} uses; tests count them. */
+export interface DirectoryCleanupFs {
+  lstat(path: string): Promise<Deno.FileInfo>;
+  remove(path: string): Promise<void>;
+  readDir(path: string): AsyncIterable<Deno.DirEntry>;
+}
+
+const denoCleanupFs: DirectoryCleanupFs = {
+  lstat: (path) => Deno.lstat(path),
+  remove: (path) => Deno.remove(path),
+  readDir: (path) => Deno.readDir(path),
+};
+
+async function hasEntries(
+  fs: DirectoryCleanupFs,
+  dir: string,
+): Promise<boolean> {
+  for await (const _entry of fs.readDir(dir)) return true;
+  return false;
+}
+
 /**
  * Removes empty parent directories up to but not including the stopAt directory.
  *
  * This is useful when deleting files from nested directory structures
  * (e.g., data/inputs/aws/ec2/vpc/uuid.yaml) to clean up empty folders.
+ *
+ * Each directory is removed without listing it: a non-recursive remove
+ * fails on a directory that is not empty, so a deletion costs the same
+ * however many entries sit beside it (swamp-club#3535). That failure, or
+ * any other, ends the cleanup quietly.
  *
  * @param filePath The path of the file that was deleted
  * @param stopAtDir The directory to stop at (will not be deleted)
@@ -73,30 +99,25 @@ export async function pruneOrphanFiles(
 export async function cleanupEmptyParentDirs(
   filePath: string,
   stopAtDir: string,
+  fs: DirectoryCleanupFs = denoCleanupFs,
 ): Promise<void> {
   let currentDir = dirname(filePath);
 
   while (currentDir !== stopAtDir && currentDir.startsWith(stopAtDir)) {
     try {
-      // Check if directory is empty
-      const entries = [];
-      for await (const entry of Deno.readDir(currentDir)) {
-        entries.push(entry);
-      }
+      // A remove unlinks a symlink whatever its target holds, so a linked
+      // directory goes only once its target is empty.
+      const info = await fs.lstat(currentDir);
+      if (info.isSymlink && await hasEntries(fs, currentDir)) break;
 
-      if (entries.length === 0) {
-        await Deno.remove(currentDir);
-        currentDir = dirname(currentDir);
-      } else {
-        // Directory not empty, stop cleaning
-        break;
-      }
+      await fs.remove(currentDir);
+      currentDir = dirname(currentDir);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         // Directory already gone, try parent
         currentDir = dirname(currentDir);
       } else {
-        // Other error, stop cleaning
+        // Not empty (each OS words it differently), or another error: stop
         break;
       }
     }
