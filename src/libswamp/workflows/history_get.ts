@@ -131,6 +131,7 @@ export async function showAcceptedSignals(
       try {
         const stored = await signalWaits.store.findOutcome(step.wait.id);
         if (stored.kind === "found" && stored.record.kind === "accepted") {
+          // As stored, heldAsPending included (swamp-club#3214).
           step.wait.receipt = { ...stored.record.receipt };
         }
       } catch {

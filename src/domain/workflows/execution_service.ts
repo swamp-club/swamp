@@ -95,6 +95,7 @@ import {
 } from "./orphaned_nested_run.ts";
 import {
   openSignalWaitMessage,
+  receiptForCaller,
   schemaExpressions,
   SignalWait,
   WAIT_KEY_HELD_STEP_ERROR,
@@ -104,6 +105,7 @@ import {
 import {
   claimWaitKey,
   type WaitKeyAcquisition,
+  type WaitKeyClaim,
   waitKeyRefusal,
 } from "./wait_key_claim.ts";
 import {
@@ -1200,6 +1202,39 @@ export function trackerStatusForRun(
 }
 
 /**
+ * The open wait that holds the key `claim` refused a step for, as the
+ * holder's own registration names it (swamp-club#3214). Undefined when the
+ * registration is missing, cannot be read, or names another workflow, key or
+ * run than the claim: nothing then says which wait it is. A store that
+ * fails is the same: the step has failed with `wait_key_held` already, and
+ * a missing name never changes that.
+ */
+async function waitKeyHolderOf(
+  store: Pick<SignalWaitStore, "findRegistration">,
+  claim: WaitKeyClaim,
+): Promise<WaitKeyHolder | undefined> {
+  try {
+    const stored = await store.findRegistration(claim.waitId);
+    if (stored.kind !== "found") return undefined;
+    const registration = stored.record;
+    if (
+      registration.workflowId !== claim.workflowId ||
+      registration.key !== claim.key || registration.runId !== claim.runId
+    ) return undefined;
+    return {
+      workflowId: registration.workflowId,
+      workflowName: registration.workflowName,
+      key: registration.key,
+      runId: registration.runId,
+      stepName: registration.stepName,
+      waitId: registration.waitId,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The suspended event for a run that suspended at a level checkpoint: its
  * waiting approval gate, or else the nested workflow step waiting on a
  * suspended child run (swamp-club#2736). Undefined when neither waits.
@@ -1242,6 +1277,9 @@ function suspendedEventFor(
           wait: {
             id: signalWait.wait.id,
             deadline: signalWait.wait.deadline.toISOString(),
+            ...(signalWait.wait.key !== undefined
+              ? { key: signalWait.wait.key }
+              : {}),
           },
         }
         : {}),
@@ -3187,7 +3225,10 @@ export class DefaultStepExecutor implements StepExecutor {
 // Re-export from dedicated file for backward compatibility
 export type { WorkflowExecutionEvent } from "./execution_events.ts";
 export type { RecoveryAssessment } from "./recovery_assessment.ts";
-import type { WorkflowExecutionEvent } from "./execution_events.ts";
+import type {
+  WaitKeyHolder,
+  WorkflowExecutionEvent,
+} from "./execution_events.ts";
 import {
   assessRecoveryForRun,
   findInterruptedRun,
@@ -6037,6 +6078,10 @@ export class WorkflowExecutionService {
             );
             stepRun.fail(WAIT_KEY_HELD_STEP_ERROR);
             if (step.allowFailure) stepRun.markAllowedFailure();
+            // The run output names the holder; the step's error stays bare.
+            const waitKeyHolder = acquisition.kind === "held"
+              ? await waitKeyHolderOf(waits, acquisition.claim)
+              : undefined;
             yield {
               kind: "step_failed",
               jobId: job.name,
@@ -6044,6 +6089,7 @@ export class WorkflowExecutionService {
               runId: run.id,
               error: WAIT_KEY_HELD_STEP_ERROR,
               allowedFailure: step.allowFailure || undefined,
+              ...(waitKeyHolder ? { waitKeyHolder } : {}),
               forEachTemplate,
               forEachIndex,
             };
@@ -6110,7 +6156,7 @@ export class WorkflowExecutionService {
             // that follow in this run read the same outputs.
             liveOutputs = {
               payload: taken.record.payload,
-              signal: { ...taken.record.receipt },
+              signal: receiptForCaller(taken.record.receipt),
             };
             stepSpan.setStatus({ code: SpanStatusCode.OK });
             yield {
@@ -6132,6 +6178,7 @@ export class WorkflowExecutionService {
           stepId: stepName,
           waitId: wait.id,
           deadline: wait.deadline.toISOString(),
+          ...(wait.key !== undefined ? { key: wait.key } : {}),
         };
         run.suspend(stepExprContext?.inputs);
         return;
@@ -6651,6 +6698,7 @@ export class WorkflowExecutionService {
             stepId: action.stepName,
             waitId: action.waitId,
             deadline: action.deadline,
+            ...(action.key !== undefined ? { key: action.key } : {}),
           }]
           : []
       );

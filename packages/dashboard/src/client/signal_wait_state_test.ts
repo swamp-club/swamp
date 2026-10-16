@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { signalWaitRows } from "./signal_wait_state.ts";
+import {
+  heldAt,
+  pendingSignalRows,
+  signalWaitRows,
+} from "./signal_wait_state.ts";
 
 const place = {
   workflowId: "wf-1",
@@ -127,4 +131,112 @@ Deno.test("signalWaitRows: leaves out an entry missing what a row needs", () => 
     },
   });
   assertEquals(rows.map((r) => r.waitId), ["ok"]);
+});
+
+Deno.test("signalWaitRows: a keyed open wait carries its key and the by-key command", () => {
+  const [row] = signalWaitRows({
+    data: {
+      waits: [{
+        ...place,
+        waitId: "w-key",
+        key: "order-42",
+        nextCommand: "swamp workflow signal w-key --payload '<json>'",
+        signalByKeyCommand:
+          "swamp workflow signal --workflow deploy --key order-42 --payload '<json>'",
+      }],
+    },
+  });
+  assertEquals(row.key, "order-42");
+  assertEquals(
+    row.signalByKeyCommand,
+    "swamp workflow signal --workflow deploy --key order-42 --payload '<json>'",
+  );
+  assertEquals(row.command, "swamp workflow signal w-key --payload '<json>'");
+});
+
+Deno.test("signalWaitRows: a wait from a serve without keys has neither key field", () => {
+  const [row] = signalWaitRows({
+    data: { waits: [{ ...place, waitId: "w-old", nextCommand: "x" }] },
+  });
+  assertEquals("key" in row, false);
+  assertEquals("signalByKeyCommand" in row, false);
+});
+
+const held = {
+  workflowId: "wf-1",
+  workflowName: "deploy",
+  key: "order-42",
+  receiptId: "sig-1",
+  receivedAt: "2026-10-08T12:00:00.000Z",
+  heldUntil: "2026-10-08T13:00:00.000Z",
+  submittedBy: "user:ada",
+};
+
+Deno.test("pendingSignalRows: lists nothing for a reply without pending signals", () => {
+  assertEquals(pendingSignalRows(null), []);
+  assertEquals(pendingSignalRows({}), []);
+  assertEquals(pendingSignalRows({ data: null }), []);
+  assertEquals(pendingSignalRows({ data: { waits: [] } }), []);
+  assertEquals(pendingSignalRows({ data: { pending: "nope" } }), []);
+  assertEquals(pendingSignalRows({ data: { waits: [], pending: [] } }), []);
+});
+
+Deno.test("pendingSignalRows: carries every field and sorts by heldUntil", () => {
+  const rows = pendingSignalRows({
+    data: {
+      pending: [
+        { ...held, receiptId: "late", heldUntil: "2026-10-08T15:00:00.000Z" },
+        held,
+        { ...held, receiptId: "mid", heldUntil: "2026-10-08T14:00:00Z" },
+      ],
+    },
+  });
+  assertEquals(rows.map((r) => r.receiptId), ["sig-1", "mid", "late"]);
+  assertEquals(rows[0], held);
+});
+
+Deno.test("pendingSignalRows: leaves out an entry missing what a row needs", () => {
+  const rows = pendingSignalRows({
+    data: {
+      pending: [
+        null,
+        { ...held, key: "" },
+        { ...held, receiptId: undefined },
+        { ...held, heldUntil: "not a time" },
+        { ...held, receiptId: "ok" },
+      ],
+    },
+  });
+  assertEquals(rows.map((r) => r.receiptId), ["ok"]);
+});
+
+Deno.test("pendingSignalRows: with now, leaves out a signal held until now or earlier", () => {
+  const now = Date.parse("2026-10-08T13:00:00.000Z");
+  const rows = pendingSignalRows(
+    {
+      data: {
+        pending: [
+          { ...held, receiptId: "lapsed", heldUntil: "2026-10-08T12:59:00Z" },
+          held,
+          { ...held, receiptId: "live", heldUntil: "2026-10-08T13:00:01Z" },
+        ],
+      },
+    },
+    now,
+  );
+  assertEquals(rows.map((r) => r.receiptId), ["live"]);
+});
+
+Deno.test("heldAt: keeps every row without now and the live ones in order with it", () => {
+  const rows = [
+    held,
+    { ...held, receiptId: "b", heldUntil: "2026-10-08T14:00:00.000Z" },
+  ];
+  assertEquals(heldAt(rows), rows);
+  assertEquals(
+    heldAt(rows, Date.parse("2026-10-08T13:30:00.000Z")).map((r) =>
+      r.receiptId
+    ),
+    ["b"],
+  );
 });

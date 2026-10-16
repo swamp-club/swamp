@@ -20,6 +20,7 @@
 import { green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type {
   StepSkipReasonView,
   WorkflowRunView,
@@ -34,6 +35,18 @@ export function renderWorkflowRunDisplay(
   } else {
     renderLogWorkflowRun(data);
   }
+}
+
+/** " (key K)" for a wait whose step declared a key, else nothing. */
+function keySuffix(key: string | undefined): string {
+  return key === undefined ? "" : ` (key ${escapeControlCharacters(key)})`;
+}
+
+/** Says so when the signal arrived before its wait opened (swamp-club#3214). */
+function heldSuffix(receipt: { heldAsPending?: true }): string {
+  return receipt.heldAsPending
+    ? ", held as a pending signal until the wait took it"
+    : "";
 }
 
 function formatTimestamp(iso: string | undefined): string {
@@ -73,11 +86,26 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
       } else if (step.wait?.receipt && step.status === "waiting") {
         // Signalled since the run suspended: the next resume applies it.
         writeOutput(
-          `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id} from ${step.wait.receipt.submittedBy} at ${step.wait.receipt.receivedAt}; a resume applies it`,
+          `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
+            keySuffix(step.wait.key)
+          } from ${step.wait.receipt.submittedBy} at ${step.wait.receipt.receivedAt}${
+            heldSuffix(step.wait.receipt)
+          }; a resume applies it`,
         );
       } else if (step.wait && step.status === "waiting") {
         writeOutput(
-          `      -> waiting for signal ${step.wait.id} until ${step.wait.deadline}`,
+          `      -> waiting for signal ${step.wait.id}${
+            keySuffix(step.wait.key)
+          } until ${step.wait.deadline}`,
+        );
+      } else if (step.wait?.receipt?.heldAsPending) {
+        // Answered before its wait opened: the one place this is shown.
+        writeOutput(
+          `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
+            keySuffix(step.wait.key)
+          } from ${step.wait.receipt.submittedBy} at ${step.wait.receipt.receivedAt}${
+            heldSuffix(step.wait.receipt)
+          }`,
         );
       } else if (step.nestedRun?.detached) {
         writeOutput(

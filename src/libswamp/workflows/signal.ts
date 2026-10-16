@@ -29,6 +29,7 @@ import {
   IDEMPOTENCY_KEY_FORM,
   isIdempotencyKey,
   isWaitKey,
+  receiptForCaller,
   type SignalReceipt,
 } from "../../domain/workflows/signal_wait.ts";
 import {
@@ -457,7 +458,7 @@ function alreadySettled(
   return refused(
     "already_settled",
     `Wait ${typedId} is already settled: ${where} received signal ${receipt.id}.`,
-    { receipt },
+    { receipt: receiptForCaller(receipt) },
   );
 }
 
@@ -893,7 +894,7 @@ async function deliver(
       runId: registration.runId,
       jobName: registration.jobName,
       stepName: registration.stepName,
-      signal: { ...stored.record.receipt },
+      signal: receiptForCaller(stored.record.receipt),
       awaitingResume: run !== null &&
         (await decideContinuation(run, store)).kind === "resumable",
       runRecordAvailable: run !== null,
@@ -947,7 +948,9 @@ async function lastWaitUnder(
     waitId: outcome.waitId,
     settledAs: outcome.kind,
     settledAt: outcome.settledAt,
-    ...(outcome.kind === "accepted" ? { receipt: { ...outcome.receipt } } : {}),
+    ...(outcome.kind === "accepted"
+      ? { receipt: receiptForCaller(outcome.receipt) }
+      : {}),
   };
 }
 
@@ -1191,7 +1194,7 @@ async function landedAnswer(
       waitId: claim.waitId,
       key: input.key,
       ...place,
-      signal: receipt,
+      signal: receiptForCaller(receipt),
       // A step that took the signal on opening its wait succeeded inside
       // its run, and no resume applies it. A wait that was already open may
       // have been given the signal by another reader, and its run is

@@ -3054,6 +3054,34 @@ Deno.test("StepRun.applyWaitOutcome: an accepted signal succeeds the step with i
   assertEquals(StepRun.fromData(step.toData()).toData(), step.toData());
 });
 
+Deno.test("StepRun.applyWaitOutcome: a signal held as pending keeps the mark on the wait's receipt and not in the step's output", () => {
+  const { step, wait } = waitingStep();
+  const outcome = acceptedOutcome(
+    wait,
+    { verdict: "ship" },
+    new Date(WAIT_NOW.getTime() + 1000),
+  );
+  const held = {
+    ...outcome,
+    receipt: { ...outcome.receipt, heldAsPending: true as const },
+  };
+
+  assertEquals(step.applyWaitOutcome(held), true);
+
+  // The output has the documented shape (swamp-club#3214); the run view
+  // reads the wait.
+  assertEquals(step.output, {
+    type: "wait_for_signal",
+    payload: { verdict: "ship" },
+    signal: outcome.receipt,
+  });
+  assertEquals(step.signalWait?.receipt, held.receipt);
+  assertEquals(
+    StepRun.fromData(step.toData()).signalWait?.receipt,
+    held.receipt,
+  );
+});
+
 Deno.test("StepRun.applyWaitOutcome: an outcome whose payload the captured schema refuses is not applied", () => {
   const { step, wait } = waitingStep();
   const before = step.toData();

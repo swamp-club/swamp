@@ -17,8 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
-import type { SignalReceipt } from "../../domain/workflows/signal_wait.ts";
-import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import {
+  receiptForCaller,
+  signalByKeyCommand,
+  type SignalReceipt,
+} from "../../domain/workflows/signal_wait.ts";
+import type {
+  WorkflowRepository,
+  WorkflowRunRepository,
+} from "../../domain/workflows/repositories.ts";
+import {
+  type HeldPendingSignal,
+  listHeldPendingSignals,
+} from "../../domain/workflows/early_signal.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { decideContinuation } from "../../domain/workflows/run_continuation.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -66,6 +77,30 @@ export interface SignalWaitInfo {
   schema: InputsSchema;
   /** The command that moves the wait on: a signal, or a resume once expired. */
   nextCommand: string;
+  /**
+   * The command that signals the wait by its workflow and key, beside
+   * {@link nextCommand}, which names it by ID (swamp-club#3214). Only on an
+   * open wait whose step declared a key.
+   */
+  signalByKeyCommand?: string;
+}
+
+/**
+ * A signal by key held for the next wait of its key, because none was open
+ * when it arrived (swamp-club#3214). Named by its receipt; the payload is
+ * never listed.
+ */
+export interface PendingSignalInfo {
+  workflowId: string;
+  /** The workflow the signal is for, which a reader is authorized against. */
+  workflowName: string;
+  key: string;
+  /** The ID of the receipt the sender was given. */
+  receiptId: string;
+  receivedAt: string;
+  /** When its age limit ends: no wait takes it after that. */
+  heldUntil: string;
+  submittedBy: string;
 }
 
 /**
@@ -115,6 +150,11 @@ export interface WorkflowWaitsData {
   unreadableWaits: UnreadableWaitInfo[];
   /** Listed only when asked for with `includeSignalled`. */
   signalled?: SignalledWaitInfo[];
+  /**
+   * Listed only when asked for with `includePending`, soonest `heldUntil`
+   * first; empty when the datastore holds no wait records.
+   */
+  pending?: PendingSignalInfo[];
 }
 
 /** Options for {@link workflowWaits}. */
@@ -124,6 +164,11 @@ export interface WorkflowWaitsOptions {
    * yet, under `signalled`.
    */
   includeSignalled?: boolean;
+  /**
+   * Also list the signals by key held for the next wait of their key, under
+   * `pending` (swamp-club#3214).
+   */
+  includePending?: boolean;
 }
 
 export type WorkflowWaitsEvent =
@@ -135,6 +180,11 @@ export interface WorkflowWaitsDeps {
   runRepo: Pick<WorkflowRunRepository, "findGlobalByStatus" | "findById">;
   /** Where wait records are kept, or why this datastore cannot hold them. */
   signalWaits: SignalWaitSupport;
+  /**
+   * Names the workflow of a pending signal its sender was not authorized
+   * for by name. Without it such a signal is not listed.
+   */
+  workflowRepo?: Pick<WorkflowRepository, "findAll" | "findAllById">;
   /** The time deadlines are compared against. Defaults to the current time. */
   now?: () => Date;
 }
@@ -142,8 +192,9 @@ export interface WorkflowWaitsDeps {
 export function createWorkflowWaitsDeps(
   runRepo: WorkflowWaitsDeps["runRepo"],
   signalWaits: SignalWaitSupport,
+  workflowRepo?: WorkflowWaitsDeps["workflowRepo"],
 ): WorkflowWaitsDeps {
-  return { runRepo, signalWaits };
+  return { runRepo, signalWaits, ...(workflowRepo ? { workflowRepo } : {}) };
 }
 
 function resumeCommandFor(workflowName: string, runId: string): string {
@@ -164,6 +215,72 @@ function unreadableAt(
     stepName: place.stepName,
     nextCommand: resumeCommandFor(place.workflowName, place.runId),
   };
+}
+
+/**
+ * The held pending signals, each under the workflow name it is for. A
+ * signal whose sender was authorized for a name is listed under that name.
+ * One sent without (through the local CLI) is listed only when exactly one
+ * workflow declares its ID: IDs are not unique, and no single name could
+ * authorize a reader for it otherwise. One whose name cannot be found is
+ * left out.
+ */
+async function collectPending(
+  ctx: LibSwampContext,
+  deps: WorkflowWaitsDeps,
+  store: SignalWaitStore,
+  now: Date,
+): Promise<PendingSignalInfo[]> {
+  const names = new Map<string, Promise<string | undefined>>();
+  const nameOf = (workflowId: string): Promise<string | undefined> => {
+    let name = names.get(workflowId);
+    if (!name) {
+      name = uniqueWorkflowName(ctx, deps, workflowId);
+      names.set(workflowId, name);
+    }
+    return name;
+  };
+  const pending: PendingSignalInfo[] = [];
+  for (const held of await listHeldPendingSignals(store, now)) {
+    const workflowName = held.authorizedFor ??
+      await nameOf(held.workflowId);
+    if (workflowName === undefined) continue;
+    pending.push(pendingInfo(held, workflowName));
+  }
+  return pending;
+}
+
+function pendingInfo(
+  held: HeldPendingSignal,
+  workflowName: string,
+): PendingSignalInfo {
+  return {
+    workflowId: held.workflowId,
+    workflowName,
+    key: held.key,
+    receiptId: held.receiptId,
+    receivedAt: held.receivedAt,
+    heldUntil: held.heldUntil,
+    submittedBy: held.submittedBy,
+  };
+}
+
+/** The name of the one workflow that declares `workflowId`, if exactly one does. */
+async function uniqueWorkflowName(
+  ctx: LibSwampContext,
+  deps: WorkflowWaitsDeps,
+  workflowId: string,
+): Promise<string | undefined> {
+  const repo = deps.workflowRepo;
+  if (!repo) return undefined;
+  const sameId = repo.findAllById
+    ? await repo.findAllById(createWorkflowId(workflowId))
+    : (await repo.findAll()).filter((workflow) => workflow.id === workflowId);
+  if (sameId.length > 1) {
+    ctx.logger
+      .debug`Not listing a pending signal of workflow ID ${workflowId}: ${sameId.length} workflows declare it, so none can be named for it.`;
+  }
+  return sameId.length === 1 ? sameId[0].name : undefined;
 }
 
 /**
@@ -339,7 +456,9 @@ export async function* workflowWaits(
                 : {}),
               waitingSince: registration.registeredAt,
               deadline: registration.deadline,
-              signal: { ...outcome.record.receipt },
+              // The shape every reply to a sender has: only the run view
+              // shows how the signal arrived (swamp-club#3214).
+              signal: receiptForCaller(outcome.record.receipt),
               awaitingResume,
               nextCommand: resumeCommandFor(
                 registration.workflowName,
@@ -366,6 +485,14 @@ export async function* workflowWaits(
           nextCommand: expired
             ? resumeCommandFor(registration.workflowName, registration.runId)
             : `swamp workflow signal ${registration.waitId} --payload '<json>'`,
+          ...(!expired && registration.key !== undefined
+            ? {
+              signalByKeyCommand: signalByKeyCommand(
+                registration.workflowName,
+                registration.key,
+              ),
+            }
+            : {}),
         });
       }
       waits.sort((a, b) => a.deadline.localeCompare(b.deadline));
@@ -374,12 +501,25 @@ export async function* workflowWaits(
         a.signal.receivedAt.localeCompare(b.signal.receivedAt)
       );
 
+      let pending: PendingSignalInfo[] = [];
+      if (store && options.includePending) {
+        // A failure here must not hide the waits listed above.
+        try {
+          pending = await collectPending(ctx, deps, store, now);
+        } catch (error) {
+          ctx.logger.warn`Could not list pending signals: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+
       yield {
         kind: "completed",
         data: {
           waits,
           unreadableWaits,
           ...(options.includeSignalled ? { signalled } : {}),
+          ...(options.includePending ? { pending } : {}),
         },
       };
     })(),

@@ -980,10 +980,18 @@ by wait ID, never trusted by its own answer.
 A step that reaches its wait while another open wait holds the key fails with
 error `wait_key_held`, so `allowFailure` and `failed` dependents apply. No wait
 is opened and nothing is registered for it. The log names the holding wait,
-step and run; the step's error is the bare `wait_key_held`. A second run does
-not replace the holder: a run never ends another run's wait. The same failure
-is given when the highest record of the key cannot be read, since its holder
-is then unknown, and when eight creates in a row were lost to other claimants.
+step and run; the step's error is the bare `wait_key_held`. The run's output
+names the holder too (swamp-club#3214): `step_failed` carries `waitKeyHolder`
+(workflow, key, run, step and wait ID), taken from the holder's own
+registration and only when its workflow, key and run agree with the claim, so
+a registration that is missing, unreadable or disagrees names no holder and
+never changes the failure. `workflow run` and `workflow resume` print it under
+the failure and, with `--json`, collect them as `waitKeyHolders`. Through serve
+it is sent only to a caller who may read the holder's workflow. A second run
+does not replace the holder: a run never ends another run's wait. The same
+failure is given when the highest record of the key cannot be read, since its
+holder is then unknown, and when eight creates in a row were lost to other
+claimants.
 
 The key names the wait currently open under it, not one attempt. A step that
 is reset closes its wait as before, and its next attempt claims the key again
@@ -1046,6 +1054,14 @@ wait that holds it before anything is decided, and from there the signal is the
 one a wait ID gets: the same decision, the same write-once outcome, the same
 refusals. The result names the wait ID that took the signal, and the key of any
 wait that has one, whichever way it was addressed.
+
+Where swamp prints how to signal an open wait whose step declares a key, it
+prints the command by key beside the one by wait ID (`signalByKeyCommand` in
+`src/domain/workflows/signal_wait.ts`, swamp-club#3214): `workflow run` and
+`workflow resume` for the run's own wait, a nested run's wait and the local
+`signal_wait_requested` line, and `workflow waits`. Each carries `--server`
+when the run or listing was on a server. `--json` adds `key` to
+`signalRequired`, `signalWaits[]` and `nestedSignalWaits[]`.
 
 Resolving reads and never writes. The workflow is looked up by name, then by
 ID, and must have a `wait_for_signal` step that declares the key in its
@@ -1245,8 +1261,14 @@ deadline, and the schema the wait captured allows the payload. No reader's
 clock enters the decision, so every reader reaches the same one whenever it
 looks. Taking creates the wait's `accepted` outcome through the same
 write-once `settle` as any outcome, with the pending signal's receipt ID,
-sender and received time and the wait's ID; whoever takes it creates the same
-outcome. A pending record is taken only when it names the workflow and key of
+sender and received time and the wait's ID, and `heldAsPending: true` on the
+receipt; whoever takes it creates the same outcome. A receipt from a signal by
+wait ID never has the marker, and an older build that wins the same take
+writes none, so the marker is then missing. It is shown only in the run view
+(see "Showing a signal before the resume"): it is removed from the step's
+outputs and from every reply to a sender (`receiptForCaller`), whose shapes
+stay as documented. A pending record is taken only when it names the workflow
+and key of
 the record that places the wait, in a slot that wait's own claim generation
 allows. A claim, a registration or a pending record altered to point elsewhere
 is unreadable and nothing is taken, by the rule that keeps a signal by key
@@ -1633,7 +1655,10 @@ not walked, so it is settled when its job ends: it fails with `wait_timeout`
 **Listing.** `swamp workflow waits` (`src/libswamp/workflows/waits.ts`) lists
 the registered waits nothing has answered, soonest deadline first, with the wait
 ID, workflow, run, job, step, deadline and schema, and the wait's key when its
-step declared one, in log and JSON output. A registration is enough: a
+step declared one, in log and JSON output. An open wait with a key also carries
+`signalByKeyCommand`, the command that signals it by workflow and key, printed
+under the wait beside `nextCommand`, which still names the wait ID
+(swamp-club#3214). A registration is enough: a
 wait is listed even when its run record has not reached this host. A wait past
 its deadline is settled as timed out and listed with `expired: true` and the
 resume command, so the run that needs a resume can be found. A wait a signal
@@ -1652,14 +1677,36 @@ resume has applied is not listed, though its registration stays until the run
 ends. A run or sibling wait that cannot be read lists the wait as not ready to
 resume. The dashboard asks for it.
 
+Asked with `--pending` (`includePending`, an option of the use case and of
+serve's `workflow.waits`), the listing also returns `pending`: each signal held
+for a key that no wait has taken yet, soonest `heldUntil` first, with the
+workflow, key, receipt ID, received time, `heldUntil` and sender, never the
+payload (`listHeldPendingSignals` in `src/domain/workflows/early_signal.ts`,
+swamp-club#3214). The log output prints them in a section of their own. A
+signal is listed while it is the head of a live slot and within its age limit,
+the same test that refuses a second signal `already_pending`, and none is one
+the sweep would remove or lapse at the same moment. It is held for the next
+wait only while that step still sets `acceptEarly` and declares the key: a
+signal whose step has since dropped either stays listed until `heldUntil`,
+though no wait will take it. The workflow named is the one the sender was
+authorized under (`authorizedFor`). A signal sent through the local command
+records none and is listed only when exactly one workflow declares its id, so
+a workflow id two definitions share never has it named after the wrong one. A
+key or slot that cannot be read is left out, and a failure listing pending
+signals is logged as a warning and returns none, so the waits are still
+listed. Without `--pending` the output is as before.
+
 Through serve, `workflow.waits` and `swamp workflow waits --server` run the same
-listing for a caller with `read` and show the waits of the workflows that caller
-may read. It writes as the local listing does, for every workflow and not only
-those shown: it registers unregistered waits, settles overdue ones as timed out
-and sweeps. That is a write behind a read grant, accepted because each write
-depends only on stored state, never on the request, and because the listing is
-what makes a wait of an older run reachable by a signal through serve, which
-does not scan run records.
+listing for a caller with `read` and show the waits and pending signals of the
+workflows that caller may read. The commands printed with `--server` carry it,
+the by-key one included. A server that predates `includePending` replies
+without `pending`: the log output warns that the server needs an upgrade, and
+`--json` leaves the field out. It writes as the local listing does, for every
+workflow and not only those shown: it registers unregistered waits, settles
+overdue ones as timed out and sweeps. That is a write behind a read grant,
+accepted because each write depends only on stored state, never on the
+request, and because the listing is what makes a wait of an older run
+reachable by a signal through serve, which does not scan run records.
 
 **Cancel and reject** settle a waiting step as they settle a waiting gate: it
 fails with error `cancelled`. See "Settling a cancelled run" below.
@@ -1742,14 +1789,18 @@ inside a nested workflow").
 The parent's `suspended` event names the wait in `nestedSignalWaits`
 (swamp-club#3110): for each nested run still waited on, the open wait at the
 innermost run that has to act, with its workflow, run, job, step, wait ID and
-deadline. The execution service reads it at suspension through
+deadline, and the wait's key when its step declares one (swamp-club#3214).
+The execution service reads it at suspension through
 `NestedRunLink.pendingWaits`, the walk a refused resume uses, whichever step the
 event itself names, so a parent suspended on its own gate names a nested wait
 too. One action is named per nested run, a gate before a wait, so a nested run
 with a gate to decide lists no wait, and one with two open waits lists the
 first. A read that fails is logged and leaves the field off. `workflow run`
-prints each named wait with its signal command and, with `--json`, reports it
-as `signalRequired` and lists all of them under `nestedSignalWaits`.
+prints each named wait with its signal command, and for a keyed wait the
+command that signals it by key beside it, and, with `--json`, reports it as
+`signalRequired` and lists all of them under `nestedSignalWaits`, with `key`.
+The resume refusal still names the wait ID, since it addresses the exact wait
+it refuses.
 
 A wait held further down than the nested run the step waits on is printed with
 the resume of the run that holds it, which has to come first; the closing hint
@@ -1773,7 +1824,14 @@ run record shows the step waiting until a resume applies it. `workflow history
 get` reads the wait's outcome when it builds the run view and sets
 `wait.receipt` on a step that still waits (`showAcceptedSignals`,
 `src/libswamp/workflows/history_get.ts`); the log output says a resume applies
-it. The record is not written. The local command reads the store from its
+it. The record is not written. The run view also carries the wait's `key`,
+which the log output shows as `(key <key>)` on a waiting step, and keeps
+`heldAsPending` on a receipt a pending signal answered, which the log output
+shows as "held as a pending signal until the wait took it" (swamp-club#3214). The
+run view, in `workflow history get` and the dashboard's run detail, is the one
+place the marker is shown: `steps.<name>.outputs.signal` stays `id`, `waitId`,
+`receivedAt` and `submittedBy`, and no reply to a sender carries it. The local
+command reads the store from its
 read-only repository context, which carries it for a filesystem datastore only
 (`requireInitializedRepoReadOnly`). A custom datastore's store pulls its
 namespace when it opens, and that context neither syncs nor holds the lock, so
@@ -1823,9 +1881,6 @@ every iteration would claim it.
   suspended in is not refused: the run tracker is local to a host.
 - A run tracker row whose pid was reused by another live process keeps the
   resume refused until the run is cancelled.
-- A key cannot be signalled yet; a signal names the wait ID (swamp-club#3210).
-  Remote clients and the dashboard get the key in the waits listing's data
-  but do not show it yet (swamp-club#3214).
 - A workflow started again while its keyed wait is open fails at that step
   with `wait_key_held` until the holder is signalled, times out or is
   cancelled, so the `timeout` of a keyed wait bounds how long a forgotten run
@@ -1859,8 +1914,11 @@ every iteration would claim it.
   whose clock runs ahead also judges a pending signal past its age limit
   early and stores its own over it; the sender of the first was told it was
   held.
-- `workflow waits` lists open waits, not pending signals. A held signal shows
-  only in the answer its sender got, until a step takes it.
+- `workflow waits` lists pending signals only with `--pending`, and a server
+  from before swamp-club#3214 does not list them. A listed signal whose step
+  no longer sets `acceptEarly` or declares its key stays listed until its
+  `heldUntil`, though no wait will take it. A signal sent through the local
+  command to a workflow id that two definitions share is not listed at all.
 - A retry by key after a lost reply, sent with no idempotency key, is held as
   a second signal, and the next run that opens its wait within `acceptEarly`
   takes it. Nothing refuses it: the key is free, and a signal for the next run
@@ -1893,8 +1951,12 @@ every iteration would claim it.
 - `acceptEarly` has one maximum, 3600 seconds. `swamp serve` cannot lower it
   as it lowers a wait's timeout.
 - The dashboard lists suspended runs as awaiting approval, expired or awaiting
-  resume, and lists waits for a signal with their state and the commands to run
-  next. It cannot send a signal: there is no payload form. Expired
+  resume, and lists waits for a signal with their state, key and the commands to
+  run next, the command by key included, and the pending signals held for a key
+  with the time left. A pending signal is hidden once its `heldUntil` passes on
+  the page's clock; one held after the page loaded shows when a run changes or
+  the page reloads, since holding a signal changes no run. It cannot send a
+  signal: there is no payload form. Expired
   and awaiting-resume rows have a Cancel action, which sends `workflow.cancel`
   with the run id after a second click to confirm; the sidebar count is of
   gates that can still be decided. Cancel is authorized on `run` access, so a

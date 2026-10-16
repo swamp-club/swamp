@@ -512,6 +512,12 @@ export interface WorkflowWaitsPayload {
    * yet, under `signalled`.
    */
   includeSignalled?: boolean;
+  /**
+   * Also list the signals by key held for the next wait of their key, under
+   * `pending`, each only to a caller who may read its workflow
+   * (swamp-club#3214).
+   */
+  includePending?: boolean;
 }
 
 export interface WorkflowRejectPayload {

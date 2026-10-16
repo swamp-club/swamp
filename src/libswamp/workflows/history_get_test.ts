@@ -301,7 +301,7 @@ Deno.test("workflowHistoryGet: reports a passed workflow with no runs as today",
 });
 
 /** A run suspended with `review` waiting for a signal opened at `opened`. */
-function runWaitingForSignal(opened: Date): WorkflowRun {
+function runWaitingForSignal(opened: Date, key?: string): WorkflowRun {
   const workflow = RealWorkflow.create({
     name: "my-workflow",
     jobs: [
@@ -310,7 +310,7 @@ function runWaitingForSignal(opened: Date): WorkflowRun {
         steps: [
           Step.create({
             name: "review",
-            task: StepTask.waitForSignal(60, { type: "object" }),
+            task: StepTask.waitForSignal(60, { type: "object" }, key),
           }),
         ],
       }),
@@ -322,7 +322,9 @@ function runWaitingForSignal(opened: Date): WorkflowRun {
   job.start();
   const step = job.getStep("review")!;
   step.start();
-  step.waitForSignal(SignalWait.open({ type: "object" }, 60, opened));
+  step.waitForSignal(
+    SignalWait.open({ type: "object" }, 60, opened, undefined, key),
+  );
   run.suspend();
   return run;
 }
@@ -348,6 +350,41 @@ Deno.test("workflowHistoryGet: a step waiting for a signal shows its wait", asyn
     id: wait.id,
     deadline: "2026-01-01T00:01:00.000Z",
   });
+});
+
+Deno.test("workflowHistoryGet: a keyed step shows its key, and a signal held as pending is marked on the receipt", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  const read = async (run: WorkflowRun) => {
+    const events = await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({ findLatestRun: () => Promise.resolve(run) }),
+        "my-workflow",
+      ),
+    );
+    const completed = events[1] as Extract<
+      WorkflowHistoryGetEvent,
+      { kind: "completed" }
+    >;
+    return completed.data.jobs[0].steps[0].wait;
+  };
+
+  const run = runWaitingForSignal(opened, "kitchen-verdict");
+  const review = run.getJob("main")!.getStep("review")!;
+  assertEquals(await read(run), {
+    id: review.signalWait!.id,
+    deadline: "2026-01-01T00:01:00.000Z",
+    key: "kitchen-verdict",
+  });
+
+  const outcome = acceptedOutcomeFor(review.signalWait!, { ok: true }, {
+    at: opened,
+  });
+  const receipt = { ...outcome.receipt, heldAsPending: true as const };
+  assertEquals(review.applyWaitOutcome({ ...outcome, receipt }), true);
+  const shown = await read(run);
+  assertEquals(shown?.key, "kitchen-verdict");
+  assertEquals(shown?.receipt, receipt);
 });
 
 Deno.test("workflowHistoryGet: a signalled step shows the receipt", async () => {
@@ -405,6 +442,39 @@ Deno.test("workflowHistoryGet: a step signalled since the run suspended shows th
   // Only a resume writes a suspended run.
   assertEquals(review.status, "waiting_signal");
   assertEquals(review.signalWait?.receipt, undefined);
+});
+
+Deno.test("workflowHistoryGet: a signal held as pending that settled the wait since the run suspended shows the mark while the step waits", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  const run = runWaitingForSignal(opened, "kitchen-verdict");
+  const review = run.getJob("main")!.getStep("review")!;
+  const store = new InMemorySignalWaitStore();
+  const outcome = acceptedOutcomeFor(review.signalWait!, { ok: true }, {
+    at: opened,
+    runId: run.id,
+  });
+  const receipt = { ...outcome.receipt, heldAsPending: true as const };
+  await store.settle({ ...outcome, receipt });
+
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(
+      createLibSwampContext(),
+      makeDeps({
+        findLatestRun: () => Promise.resolve(run),
+        signalWaits: { supported: true, store },
+      }),
+      "my-workflow",
+    ),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  const step = completed.data.jobs[0].steps[0];
+  assertEquals(step.status, "waiting");
+  assertEquals(step.wait?.key, "kitchen-verdict");
+  assertEquals(step.wait?.receipt, receipt);
 });
 
 Deno.test("workflowHistoryGet: an open wait, a timed-out wait and a store that fails all show the wait without a receipt", async () => {

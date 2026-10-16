@@ -526,6 +526,25 @@ Deno.test("workflowSignal: a wait an earlier build settled in the run record is 
   assertEquals(fixture.waits.outcomes.size, 0);
 });
 
+Deno.test("workflowSignal: a run record whose receipt says the signal was held answers without that mark", async () => {
+  const { run, waitId } = suspendedAtWait(makeWorkflow());
+  const review = run.getJob("main")!.getStep("review")!;
+  const settled = acceptedOutcomeFor(review.signalWait!, { verdict: "ship" });
+  review.applyWaitOutcome({
+    ...settled,
+    receipt: { ...settled.receipt, heldAsPending: true },
+  });
+  const fixture = await fixtureOf([run], { registered: false });
+
+  const again = await send(fixture, waitId, { verdict: "fix" });
+
+  assert(again.kind === "error");
+  assertEquals(
+    (again.error.details as { receipt: unknown }).receipt,
+    settled.receipt,
+  );
+});
+
 Deno.test("workflowSignal: a step that no longer waits, with no outcome, is closed", async () => {
   const workflow = makeWorkflow();
   const { run, waitId } = suspendedAtWait(workflow);
@@ -1786,6 +1805,18 @@ Deno.test("workflowSignal: a wait opened over a pending signal its step never re
   assertEquals(outcome.record.payload, { verdict: "ship" });
   assertEquals(outcome.record.receipt.id, early.data.signal.id);
   assertEquals(outcome.record.receipt.waitId, opened.waitId);
+  // The stored receipt says the signal was held; the refusal shows the
+  // sender the receipt shape every reply has (swamp-club#3214).
+  assertEquals(outcome.record.receipt.heldAsPending, true);
+  assertEquals(
+    later.details.receipt,
+    {
+      id: early.data.signal.id,
+      waitId: opened.waitId,
+      receivedAt: early.data.signal.receivedAt,
+      submittedBy: early.data.signal.submittedBy,
+    },
+  );
 });
 
 Deno.test("workflowSignal: a signal that finds its key held by a wait past its deadline settles that wait and is held for the next", async () => {
@@ -1857,6 +1888,10 @@ Deno.test("workflowSignal: a signal sent as the step opens its wait is delivered
   // The receipt is the one the pending record carries: one signal, stored
   // once as pending and once as the outcome.
   assertEquals(outcome.record.receipt.id, sent.data.signal.id);
+  // The wait took it as its key's pending signal, which the stored receipt
+  // records and the reply leaves out (swamp-club#3214).
+  assertEquals(outcome.record.receipt.heldAsPending, true);
+  assertEquals("heldAsPending" in sent.data.signal, false);
   const [address] = await waits.listPendingAddresses();
   const pending = await waits.findPendingRecord(address);
   assert(pending.kind === "found" && pending.record.kind === "pending");
@@ -1918,6 +1953,8 @@ Deno.test("workflowSignal: a retry of an early signal a run took is answered wit
   assertEquals(retry.data.runId, opened.run.id);
   assertEquals(retry.data.signal.id, early.signal.id);
   assertEquals(retry.data.signal.idempotencyKey, "order-1");
+  // Only the run view says the signal was held (swamp-club#3214).
+  assertEquals("heldAsPending" in retry.data.signal, false);
   assertEquals(waits.pendingRecords.size, held);
 
   // Under another key, or none, it is a signal for the next run, as before.
@@ -2594,4 +2631,31 @@ Deno.test("workflowSignal: a held signal the step took as it opened its wait is 
   assertEquals(sent.data.waitId, waitId);
   assertEquals(sent.data.runRecordAvailable, true);
   assertEquals(sent.data.awaitingResume, false);
+});
+
+Deno.test("workflowSignal: the last wait a no_open_wait refusal names carries the receipt without heldAsPending", async () => {
+  const { waits, early, opened, at } = await landedEarlySignal("order-1");
+  const stored = await waits.findOutcome(opened.waitId);
+  assert(stored.kind === "found" && stored.record.kind === "accepted");
+  assertEquals(stored.record.receipt.heldAsPending, true);
+
+  // A caller that cannot be told a signal is held finds the key free.
+  const events = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), (await at(7)).deps, {
+      workflow: "release",
+      key: KEY,
+      payload: { verdict: "ship" },
+      submittedBy: "tux",
+      holdEarly: false,
+    }),
+  );
+  const refusal = refusalOf(events.at(-1)!);
+  assertEquals(refusal.kind, "no_open_wait");
+  assertEquals(refusal.lastWait?.receipt, {
+    id: early.signal.id,
+    waitId: opened.waitId,
+    receivedAt: early.signal.receivedAt,
+    submittedBy: early.signal.submittedBy,
+    idempotencyKey: "order-1",
+  });
 });

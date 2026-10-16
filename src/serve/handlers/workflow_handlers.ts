@@ -1836,6 +1836,8 @@ export async function handleWorkflowSignal(
  *
  * With `includeSignalled` the reply also lists, under `signalled`, the waits
  * a signal has settled whose run has not been resumed (swamp-club#3110).
+ * With `includePending` it also lists, under `pending`, the signals by key
+ * held for the next wait of their key (swamp-club#3214).
  */
 export async function handleWorkflowWaits(
   socket: WebSocket,
@@ -1860,11 +1862,15 @@ export async function handleWorkflowWaits(
     const deps = createWorkflowWaitsDeps(
       ctx.repoContext.workflowRunRepo,
       ctx.repoContext.signalWaits ?? SIGNAL_WAITS_NOT_CONFIGURED,
+      // Names the workflow of a pending signal sent without one, through
+      // the local CLI; without it such a signal is never listed.
+      ctx.repoContext.workflowRepo,
     );
     let listed: WorkflowWaitsData | undefined;
     await consumeStream<WorkflowWaitsEvent>(
       workflowWaits(handlerLibSwampContext(ctx), deps, {
         includeSignalled: payload.includeSignalled === true,
+        includePending: payload.includePending === true,
       }),
       {
         resolving: () => {},
@@ -1917,6 +1923,21 @@ export async function handleWorkflowWaits(
       )
       : undefined;
 
+    // A pending signal names its sender and the key it is held for: it is
+    // listed only to a reader of the workflow it is for. workflowOwners
+    // prefers the workflow with both the ID and the name, so a signal bound
+    // to one of two workflows sharing an ID is never listed under the other.
+    const pending = data.pending
+      ? await filterByResources(
+        data.pending,
+        ownersOf,
+        socket,
+        principal,
+        "read",
+        ctx,
+      )
+      : undefined;
+
     send(socket, {
       type: "workflow.waits",
       id: requestId,
@@ -1925,6 +1946,7 @@ export async function handleWorkflowWaits(
           waits,
           unreadableWaits,
           ...(signalled ? { signalled } : {}),
+          ...(pending ? { pending } : {}),
         },
       },
     });

@@ -82,3 +82,43 @@ Deno.test("StepSignalWait: escapes markup in the sender", () => {
   assertEquals(html.includes("<b>"), false);
   assertStringIncludes(html, "&lt;b&gt;");
 });
+
+Deno.test("StepSignalWait: a waiting keyed step shows its key", () => {
+  const html = renderToStaticMarkup(
+    <StepSignalWait status="waiting" wait={{ ...wait, key: "order-42" }} />,
+  );
+  assertStringIncludes(html, "Waiting for signal");
+  assertStringIncludes(html, '(key <span class="mono">order-42</span>)');
+});
+
+Deno.test("StepSignalWait: a step without a key shows no key", () => {
+  const html = renderToStaticMarkup(
+    <StepSignalWait status="waiting" wait={wait} />,
+  );
+  assertEquals(html.includes("(key"), false);
+});
+
+Deno.test("StepSignalWait: a receipt held as a pending signal says so", () => {
+  const html = renderToStaticMarkup(
+    <StepSignalWait
+      status="succeeded"
+      wait={{
+        ...wait,
+        key: "order-42",
+        receipt: { ...receipt, heldAsPending: true },
+      }}
+    />,
+  );
+  assertStringIncludes(html, "sig-1");
+  assertStringIncludes(
+    html,
+    "held as a pending signal until the wait took it",
+  );
+});
+
+Deno.test("StepSignalWait: a receipt without heldAsPending has no pending note", () => {
+  const html = renderToStaticMarkup(
+    <StepSignalWait status="succeeded" wait={{ ...wait, receipt }} />,
+  );
+  assertEquals(html.includes("pending signal"), false);
+});

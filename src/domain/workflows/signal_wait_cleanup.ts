@@ -162,8 +162,24 @@ export async function findRegistrationOfStep(
 export interface OpenWaitRef {
   jobName: string;
   stepName: string;
-  /** The wait's id and when it stops accepting a signal, as an ISO timestamp. */
-  wait: { id: string; deadline: string };
+  /**
+   * The wait's id, when it stops accepting a signal, as an ISO timestamp,
+   * and the key its step declared, if any (swamp-club#3214).
+   */
+  wait: { id: string; deadline: string; key?: string };
+}
+
+/**
+ * The wait of an {@link OpenWaitRef}. The key is read from the step's wait:
+ * a ref carries it only for a step that set `acceptEarly`.
+ */
+function openWaitOf(ref: WaitRef, step: StepRun): OpenWaitRef["wait"] {
+  const key = step.signalWait?.key;
+  return {
+    id: ref.waitId,
+    deadline: ref.deadline,
+    ...(key !== undefined ? { key } : {}),
+  };
 }
 
 /**
@@ -191,7 +207,7 @@ export async function findUnsettledWait(
       return {
         jobName: job.jobName,
         stepName: step.stepName,
-        wait: { id: ref.waitId, deadline: ref.deadline },
+        wait: openWaitOf(ref, step),
       };
     }
   }
@@ -292,7 +308,7 @@ export async function applyAcceptedSignals(
         open ??= {
           jobName: job.jobName,
           stepName: step.stepName,
-          wait: { id: ref.waitId, deadline: ref.deadline },
+          wait: openWaitOf(ref, step),
         };
       } else if (
         stored.kind === "found" && stored.record.kind === "accepted"

@@ -25,6 +25,7 @@ import {
 } from "../definitions/definition.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
+import { quoteShellWord } from "../shell_word.ts";
 
 /**
  * The longest a wait may stay open, in seconds: one year. A deadline further
@@ -136,6 +137,17 @@ export function openSignalWaitMessage(
 }
 
 /**
+ * The command that signals the open wait of `key` in `workflowName`, for a
+ * hint printed beside the command by wait ID (swamp-club#3214). The name and
+ * the key are quoted for a POSIX shell.
+ */
+export function signalByKeyCommand(workflowName: string, key: string): string {
+  return `swamp workflow signal --workflow ${
+    quoteShellWord(workflowName)
+  } --key ${quoteShellWord(key)} --payload '<json>'`;
+}
+
+/**
  * What swamp records about the signal that settled a wait. Written by swamp,
  * never by the sender.
  */
@@ -146,9 +158,25 @@ export const SignalReceiptSchema = z.object({
   submittedBy: z.string().min(1),
   /** The idempotency key the sender gave, if any. */
   idempotencyKey: z.string().refine(isIdempotencyKey).optional(),
+  /**
+   * Set when the signal arrived before its wait opened and was held as the
+   * key's pending signal until the wait took it (swamp-club#3214). Only the
+   * run view shows it: {@link receiptForCaller} leaves it out of step outputs
+   * and of every reply to a sender, whose receipt shape is documented.
+   */
+  heldAsPending: z.literal(true).optional(),
 });
 
 export type SignalReceipt = z.infer<typeof SignalReceiptSchema>;
+
+/**
+ * A receipt as a step's outputs and a sender's reply carry it: without
+ * `heldAsPending`, which only the run view shows (swamp-club#3214).
+ */
+export function receiptForCaller(receipt: SignalReceipt): SignalReceipt {
+  const { heldAsPending: _heldAsPending, ...rest } = receipt;
+  return rest;
+}
 
 /**
  * What a wait whose step set `acceptEarly` keeps so that any reader can find

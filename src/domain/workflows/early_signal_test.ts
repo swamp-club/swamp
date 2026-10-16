@@ -25,12 +25,14 @@ import {
   type EarlySignal,
   findSignalByIdempotencyKey,
   holdEarlySignal,
+  listHeldPendingSignals,
   liveSlotsOf,
   validateEarlyPayload,
 } from "./early_signal.ts";
 import { Job } from "./job.ts";
 import {
   earlyWaitRef,
+  pendingRecordKey,
   type PendingSignal,
   takePendingSignal,
 } from "./pending_signal.ts";
@@ -754,4 +756,112 @@ Deno.test("holdEarlySignal: a signal whose other copy settled the wait that read
     assert(held.kind === "pending", `got ${held.kind}`);
     assertEquals(held.record.slot, 2);
   }
+});
+
+Deno.test("listHeldPendingSignals: lists a held signal by its receipt, without its payload, until its age limit ends", async () => {
+  const store = new InMemorySignalWaitStore();
+  const held = await holdEarlySignal(
+    store,
+    signal({ authorizedFor: "kitchen" }),
+    NOW,
+  );
+  assert(held.kind === "pending");
+  const expected = {
+    workflowId: WORKFLOW,
+    key: KEY,
+    receiptId: held.record.receiptId,
+    receivedAt: NOW.toISOString(),
+    heldUntil: "2026-01-01T00:00:10.000Z",
+    submittedBy: "camera",
+    authorizedFor: "kitchen",
+  };
+  assertEquals(await listHeldPendingSignals(store, WITHIN), [expected]);
+  assertEquals(await listHeldPendingSignals(store, AFTER_LIMIT), []);
+});
+
+Deno.test("listHeldPendingSignals: a signal a wait took, or one superseded by a lapse, is not listed", async () => {
+  const store = new InMemorySignalWaitStore();
+  const held = await holdEarlySignal(store, signal(), NOW);
+  assert(held.kind === "pending");
+  // The next claim takes it: its slot is no longer live.
+  const { claim: taker } = await claim(store, WITHIN);
+  const registration = await store.findRegistration(taker.waitId);
+  assert(registration.kind === "found");
+  await takePendingSignal(store, earlyWaitRef(registration.record)!);
+  assertEquals(await listHeldPendingSignals(store, WITHIN), []);
+
+  const other = new InMemorySignalWaitStore();
+  const first = await holdEarlySignal(other, signal(), NOW);
+  assert(first.kind === "pending");
+  await other.createPendingRecord({
+    kind: "lapse",
+    workflowId: WORKFLOW,
+    key: KEY,
+    slot: first.record.slot,
+    number: first.record.number + 1,
+    recordedAt: NOW.toISOString(),
+  });
+  assertEquals(await listHeldPendingSignals(other, WITHIN), []);
+});
+
+Deno.test("listHeldPendingSignals: lists one signal per key, ordered by when each is held until", async () => {
+  const store = new InMemorySignalWaitStore();
+  const late = await holdEarlySignal(
+    store,
+    signal({ key: "late", acceptEarly: 60 }),
+    NOW,
+  );
+  const soon = await holdEarlySignal(
+    store,
+    signal({ key: "soon", acceptEarly: 20 }),
+    NOW,
+  );
+  assert(late.kind === "pending" && soon.kind === "pending");
+  // A second signal for a held key is refused, so it adds nothing.
+  await holdEarlySignal(store, signal({ key: "soon" }), WITHIN);
+  assertEquals(
+    (await listHeldPendingSignals(store, WITHIN)).map((each) => each.key),
+    ["soon", "late"],
+  );
+});
+
+Deno.test("listHeldPendingSignals: a key or a slot head that cannot be read is left out, and the rest is listed", async () => {
+  const store = new InMemorySignalWaitStore();
+  const readable = await holdEarlySignal(store, signal({ key: "fine" }), NOW);
+  assert(readable.kind === "pending");
+  const broken = await holdEarlySignal(store, signal({ key: "broken" }), NOW);
+  assert(broken.kind === "pending");
+  store.pendingRecords.set(
+    pendingRecordKey(broken.record),
+    new TextEncoder().encode("{"),
+  );
+  const keyless = await holdEarlySignal(store, signal({ key: "keyless" }), NOW);
+  assert(keyless.kind === "pending");
+  store.keyRecords.set(
+    waitKeyRecordKey({ workflowId: WORKFLOW, key: "keyless", generation: 1 }),
+    new TextEncoder().encode("{"),
+  );
+  assertEquals(
+    (await listHeldPendingSignals(store, WITHIN)).map((each) => each.key),
+    ["fine"],
+  );
+});
+
+Deno.test("listHeldPendingSignals: a signal stored below a release is listed, as the next claim reads that slot", async () => {
+  const store = new InMemorySignalWaitStore();
+  const gone = await claim(store, NOW);
+  await store.settle(cancelledOutcome(waitRefOfClaim(gone.claim), NOW));
+  const arrival = await holdEarlySignal(
+    afterFirstCreate(store, async () => {
+      await releaseKeyClaims(store, () => true, NOW);
+    }),
+    signal(),
+    NOW,
+  );
+  assert(arrival.kind === "pending");
+  assertEquals(arrival.record.slot, 2);
+  const listed = await listHeldPendingSignals(store, WITHIN);
+  assertEquals(listed.map((each) => each.receiptId), [
+    arrival.record.receiptId,
+  ]);
 });

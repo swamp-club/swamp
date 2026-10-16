@@ -77,6 +77,7 @@ export {
   mapWorkflowExecutionEvent,
   type NestedSignalWaitData,
   toRunData,
+  type WaitKeyHolder,
   workflowExecutionFailed,
   workflowNotFound,
   workflowRun,
@@ -435,6 +436,7 @@ export {
 } from "./workflows/signal.ts";
 export {
   createWorkflowWaitsDeps,
+  type PendingSignalInfo,
   type SignalledWaitInfo,
   type SignalWaitInfo,
   type UnreadableWaitInfo,

@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { WorkflowRunEvent } from "../libswamp/workflows/run.ts";
+import type {
+  NestedSignalWaitData,
+  WaitKeyHolder,
+  WorkflowRunEvent,
+} from "../libswamp/workflows/run.ts";
 import { assertEquals } from "@std/assert";
 import {
   deserializeEvent,
@@ -326,6 +330,72 @@ Deno.test("serializeEvent: a suspension's nestedSignalWaits round-trips, in a ki
   assertEquals(isWireEvent(event), true);
   const wire = JSON.parse(JSON.stringify(serializeEvent(event)));
   assertEquals(deserializeEvent(wire), event);
+});
+
+Deno.test("serializeEvent: a wait's key and a key's holder round-trip in kinds an older client already handles (swamp-club#3214)", () => {
+  const wait: Extract<WorkflowRunEvent, { kind: "suspended" }>["wait"] = {
+    id: "0b6c7a1e-2f43-4c0e-9a8d-5e1f3b2c4d6a",
+    deadline: "2026-10-09T00:00:00.000Z",
+    key: "release-42",
+  };
+  const nestedSignalWaits: NestedSignalWaitData[] = [{
+    workflowId: "wf-child",
+    workflowName: "child",
+    runId: "child-1",
+    jobId: "child-job",
+    stepId: "review",
+    waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
+    deadline: "2026-10-09T00:00:00.000Z",
+    key: "release-42",
+  }];
+  const waitKeyHolder: WaitKeyHolder = {
+    workflowId: "wf-child",
+    workflowName: "child",
+    key: "release-42",
+    runId: "child-1",
+    stepName: "review",
+    waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
+  };
+  const corpus: Array<{ kind: string; [key: string]: unknown }> = [
+    {
+      kind: "suspended",
+      run: { id: "run-1", jobs: [] },
+      jobId: "main",
+      stepId: "review",
+      prompt: "",
+      wait,
+    },
+    {
+      kind: "suspended",
+      run: { id: "run-2", jobs: [] },
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+      nestedSignalWaits,
+    },
+    {
+      kind: "step_failed",
+      jobId: "main",
+      stepId: "review",
+      error: "wait_key_held",
+      waitKeyHolder,
+    },
+  ];
+  for (const event of corpus) {
+    assertEquals(isWireEvent(event), true, event.kind);
+    const wire = JSON.parse(JSON.stringify(serializeEvent(event)));
+    assertEquals(deserializeEvent(wire), event);
+  }
+  const [own, nested, failed] = corpus.map((event) =>
+    deserializeEvent(JSON.parse(JSON.stringify(serializeEvent(event))))
+  );
+  assertEquals((own.wait as { key?: string }).key, "release-42");
+  assertEquals(
+    (nested.nestedSignalWaits as NestedSignalWaitData[])[0].key,
+    "release-42",
+  );
+  assertEquals(failed.waitKeyHolder, waitKeyHolder);
 });
 
 // Every kind a workflow run publishes, checked against the union by the

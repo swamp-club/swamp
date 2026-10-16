@@ -30,13 +30,8 @@ import { dirname, join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import type { AuditEmitter } from "../src/domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
-import { GrantBasedAccessDecisionService } from "../src/domain/access/grant_based_access_decision_service.ts";
-import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
-import type { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loader.ts";
-import { createConditionEvaluator } from "../src/domain/access/policy_snapshot_loader.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -62,6 +57,7 @@ import {
   type ServeRepo,
   withServeRepo,
 } from "./serve_request_harness.ts";
+import { ctxWith, workflowGrant } from "./serve_signal_harness.ts";
 
 await initializeLogging({});
 
@@ -126,40 +122,6 @@ async function suspendOnWait(
   const wait = run!.findSignalWaits()[0].wait;
   assert(wait, "the run holds a readable wait");
   return { workflow, runId: run!.id, waitId: wait.id };
-}
-
-function workflowGrant(
-  actions: Grant["actions"],
-  pattern = "*",
-  effect: Grant["effect"] = "allow",
-): Grant {
-  return grant({ actions, effect, resource: { kind: "workflow", pattern } });
-}
-
-/** A token-mode context enforcing `grants`, optionally recording audit events. */
-function ctxWith(
-  repo: ServeRepo,
-  grants: Grant[],
-  options: { runImpliesSignal?: boolean; audit?: AuditEvent[] } = {},
-): ConnectionContext {
-  const ctx = createServeCtx(repo, grants);
-  return {
-    ...ctx,
-    policySnapshotLoader: {
-      decisionService: new GrantBasedAccessDecisionService(
-        new PolicySnapshot(grants, [], createConditionEvaluator()),
-        { runImpliesSignal: options.runImpliesSignal ?? true },
-      ),
-    } as unknown as PolicySnapshotLoader,
-    ...(options.audit
-      ? {
-        auditEmitter: {
-          emit: (event: AuditEvent) => options.audit!.push(event),
-        } as unknown as AuditEmitter,
-        instanceId: "test-instance",
-      }
-      : {}),
-  };
 }
 
 function signal(
@@ -645,6 +607,81 @@ Deno.test({
         const data = frames.find((f) => f.type === "workflow.waits")!.payload!
           .data as Record<string, unknown>;
         assertEquals(Object.keys(data).sort(), ["unreadableWaits", "waits"]);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve waits: includePending lists a held signal to a reader of its workflow only, and without it the reply is unchanged (swamp-club#3214)",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const mine = await saveEarly(repo);
+      const theirs = await saveEarly(repo);
+      const signaller = ctxWith(repo, [workflowGrant(["signal", "read"])]);
+      const heldReply = (frames: Frame[]) => {
+        assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+        const reply = frames.find((f) => f.type === "workflow.signal");
+        assert(reply?.payload?.pending, JSON.stringify(frames));
+        return reply.payload.pending as {
+          heldUntil: string;
+          signal: { id: string; receivedAt: string; submittedBy: string };
+        };
+      };
+      const held = heldReply(
+        await signalByKey(signaller, mine.name, KEY, { verdict: "ship" }),
+      );
+      const hidden = heldReply(
+        await signalByKey(signaller, theirs.name, KEY, { verdict: "fix" }),
+      );
+      const waitsAs = async (
+        ctx: ConnectionContext,
+        payload?: Record<string, unknown>,
+      ) => {
+        const frames = await sendRequest(ctx, {
+          type: "workflow.waits",
+          id: `waits-${crypto.randomUUID()}`,
+          ...(payload ? { payload } : {}),
+        });
+        assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+        return frames.find((f) => f.type === "workflow.waits")!.payload!
+          .data as Record<string, unknown>;
+      };
+
+      const reader = ctxWith(repo, [workflowGrant(["read"], mine.name)]);
+      const listed = await waitsAs(reader, { includePending: true });
+      assertEquals(listed.pending, [{
+        workflowId: mine.id,
+        workflowName: mine.name,
+        key: KEY,
+        receiptId: held.signal.id,
+        receivedAt: held.signal.receivedAt,
+        heldUntil: held.heldUntil,
+        submittedBy: held.signal.submittedBy,
+      }]);
+      // Never the payload, and nothing of the other workflow's signal.
+      assertEquals(JSON.stringify(listed).includes("ship"), false);
+      assertEquals(JSON.stringify(listed).includes(hidden.signal.id), false);
+
+      // A reader of another workflow is listed none of this one's.
+      const other = ctxWith(repo, [
+        workflowGrant(["read"], `nothing-${crypto.randomUUID().slice(0, 8)}`),
+      ]);
+      assertEquals(
+        (await waitsAs(other, { includePending: true })).pending,
+        [],
+      );
+
+      // Without the option the reply is as a client that predates it expects.
+      for (
+        const payload of [undefined, {}, { includePending: false }] as const
+      ) {
+        assertEquals(
+          Object.keys(await waitsAs(reader, payload)).sort(),
+          ["unreadableWaits", "waits"],
+        );
       }
     });
   },

@@ -31,6 +31,7 @@ import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { PendingSignal } from "../../domain/workflows/pending_signal.ts";
 import { registrationOf } from "../../domain/workflows/signal_wait_records.ts";
 import {
   acceptedOutcomeFor,
@@ -627,4 +628,234 @@ Deno.test("workflowWaits: a keyed wait is listed with its key, open or signalled
   assertEquals(last.data.signalled?.map((w) => [w.stepName, w.key]), [
     ["review", "kitchen-verdict"],
   ]);
+});
+
+Deno.test("workflowWaits: an open keyed wait carries the by-key command beside the by-ID one, and an expired or unkeyed wait does not", async () => {
+  const workflow = workflowNamed("night-shift", ["review", "plain"]);
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  job.getStep("review")!.start();
+  job.getStep("review")!.waitForSignal(
+    SignalWait.open(SCHEMA, 60, T0, undefined, "kitchen-verdict"),
+  );
+  job.getStep("plain")!.start();
+  job.getStep("plain")!.waitForSignal(SignalWait.open(SCHEMA, 120, T0));
+  job.getStep("gate")!.waitForApproval("Approve");
+  run.suspend();
+  const keyed = job.getStep("review")!.signalWait!;
+
+  const open = await list(depsOf([run], T1));
+  assertEquals(open[0].stepName, "review");
+  assertEquals(
+    open[0].nextCommand,
+    `swamp workflow signal ${keyed.id} --payload '<json>'`,
+  );
+  assertEquals(
+    open[0].signalByKeyCommand,
+    "swamp workflow signal --workflow night-shift --key kitchen-verdict --payload '<json>'",
+  );
+  assertEquals("signalByKeyCommand" in open[1], false);
+
+  // Past its deadline only a resume moves the wait on.
+  const expired = await list(
+    depsOf([run], new Date(T0.getTime() + 61_000)),
+  );
+  assertEquals(expired[0].expired, true);
+  assertEquals("signalByKeyCommand" in expired[0], false);
+});
+
+Deno.test("workflowWaits: a signalled wait's receipt has the shape a sender is given, without heldAsPending", async () => {
+  const run = runWaitingOnlyForSignal("release", T0);
+  const step = run.getJob("main")!.getStep("review")!;
+  const waits = new InMemorySignalWaitStore();
+  const outcome = acceptedOutcomeFor(step.signalWait!, { verdict: "ship" }, {
+    runId: run.id,
+    at: T1,
+  });
+  await waits.settle({
+    ...outcome,
+    receipt: { ...outcome.receipt, heldAsPending: true },
+  });
+
+  const data = await listAll(depsOf([run], T1, waits), true);
+  assertEquals(data.signalled?.map((w) => w.signal), [outcome.receipt]);
+});
+
+const KITCHEN_ID = "aaaaaaaa-0000-4000-8000-000000000001";
+const COPIED_ID = "aaaaaaaa-0000-4000-8000-000000000002";
+const GONE_ID = "aaaaaaaa-0000-4000-8000-000000000003";
+
+function heldSignal(
+  overrides: Partial<PendingSignal> & { key: string },
+): PendingSignal {
+  return {
+    kind: "pending",
+    workflowId: KITCHEN_ID,
+    slot: 1,
+    number: 1,
+    receiptId: crypto.randomUUID(),
+    receivedAt: T0.toISOString(),
+    submittedBy: "camera",
+    payload: { verdict: "ship" },
+    acceptEarly: 60,
+    ...overrides,
+  };
+}
+
+async function listPending(
+  deps: WorkflowWaitsDeps,
+  options: { includePending?: boolean } = { includePending: true },
+) {
+  const events = await collect<WorkflowWaitsEvent>(
+    workflowWaits(createLibSwampContext(), deps, options),
+  );
+  const last = events.at(-1)!;
+  if (last.kind !== "completed") throw new Error(`got ${last.kind}`);
+  return last.data;
+}
+
+/** Workflow lookups by ID, counting how often each is asked. */
+function workflowsWithIds(
+  entries: Array<[string, string]>,
+  options: { byId?: boolean } = {},
+) {
+  const workflows = entries.map(([id, name]) =>
+    Workflow.fromData({ ...workflowNamed(name).toData(), id })
+  );
+  const asked: string[] = [];
+  return {
+    asked,
+    repo: {
+      findAll: () => {
+        asked.push("*");
+        return Promise.resolve(workflows);
+      },
+      ...(options.byId === false ? {} : {
+        findAllById: (id: string) => {
+          asked.push(id);
+          return Promise.resolve(workflows.filter((w) => w.id === id));
+        },
+      }),
+    },
+  };
+}
+
+Deno.test("workflowWaits: without includePending the result carries no pending list, and with it but no wait store an empty one", async () => {
+  const run = runWaitingOnlyForSignal("release", T0);
+  const store = new InMemorySignalWaitStore();
+  await store.createPendingRecord(
+    heldSignal({ key: "verdict", authorizedFor: "kitchen" }),
+  );
+  assertEquals(
+    "pending" in await listPending(depsOf([run], T1, store), {}),
+    false,
+  );
+  assertEquals((await listPending(depsOf([run], T1, undefined))).pending, []);
+});
+
+Deno.test("workflowWaits: includePending lists held signals by receipt under the name their sender was authorized for, soonest held-until first", async () => {
+  const store = new InMemorySignalWaitStore();
+  const later = heldSignal({
+    key: "later",
+    authorizedFor: "kitchen",
+    acceptEarly: 600,
+  });
+  const sooner = heldSignal({ key: "sooner", authorizedFor: "kitchen" });
+  await store.createPendingRecord(later);
+  await store.createPendingRecord(sooner);
+
+  const data = await listPending(depsOf([], T1, store));
+  assertEquals(data.waits, []);
+  assertEquals(data.pending, [
+    {
+      workflowId: KITCHEN_ID,
+      workflowName: "kitchen",
+      key: "sooner",
+      receiptId: sooner.receiptId,
+      receivedAt: T0.toISOString(),
+      heldUntil: "2026-01-01T00:01:00.000Z",
+      submittedBy: "camera",
+    },
+    {
+      workflowId: KITCHEN_ID,
+      workflowName: "kitchen",
+      key: "later",
+      receiptId: later.receiptId,
+      receivedAt: T0.toISOString(),
+      heldUntil: "2026-01-01T00:10:00.000Z",
+      submittedBy: "camera",
+    },
+  ]);
+  // Past its age limit a signal is no longer listed.
+  const afterLimit = new Date("2026-01-01T00:01:00.001Z");
+  assertEquals(
+    (await listPending(depsOf([], afterLimit, store))).pending?.map((p) =>
+      p.key
+    ),
+    ["later"],
+  );
+});
+
+Deno.test("workflowWaits: a held signal sent without a workflow name is listed only under the one workflow that declares its ID, looked up once per ID", async () => {
+  const store = new InMemorySignalWaitStore();
+  await store.createPendingRecord(heldSignal({ key: "one" }));
+  await store.createPendingRecord(heldSignal({ key: "two" }));
+  await store.createPendingRecord(
+    heldSignal({ key: "shared", workflowId: COPIED_ID }),
+  );
+  await store.createPendingRecord(
+    heldSignal({ key: "orphan", workflowId: GONE_ID }),
+  );
+  const workflows = workflowsWithIds([
+    [KITCHEN_ID, "kitchen"],
+    [COPIED_ID, "original"],
+    [COPIED_ID, "copy"],
+  ]);
+  const deps = { ...depsOf([], T1, store), workflowRepo: workflows.repo };
+
+  const data = await listPending(deps);
+  assertEquals(
+    data.pending?.map((p) => [p.key, p.workflowName]).sort(),
+    [["one", "kitchen"], ["two", "kitchen"]],
+  );
+  // Each ID is looked up once, however many signals it holds.
+  assertEquals(
+    [...workflows.asked].sort(),
+    [KITCHEN_ID, COPIED_ID, GONE_ID],
+  );
+
+  // A repository that cannot look up by ID is filtered by it instead.
+  const fallback = workflowsWithIds([[KITCHEN_ID, "kitchen"]], {
+    byId: false,
+  });
+  const listed = await listPending({
+    ...depsOf([], T1, store),
+    workflowRepo: fallback.repo,
+  });
+  assertEquals(listed.pending?.map((p) => p.key).sort(), ["one", "two"]);
+
+  // With no way to name the workflow, such a signal is not listed.
+  assertEquals((await listPending(depsOf([], T1, store))).pending, []);
+});
+
+Deno.test("workflowWaits: a failure listing pending signals lists none and does not hide the waits", async () => {
+  const run = runWaitingOnlyForSignal("release", T0);
+  class FailingPending extends InMemorySignalWaitStore {
+    private lists = 0;
+    override listPendingAddresses() {
+      // The sweep lists first; the pending listing lists after.
+      return this.lists++ === 0
+        ? super.listPendingAddresses()
+        : Promise.reject(new Error("bucket unreachable"));
+    }
+  }
+  const store = new FailingPending();
+  await store.createPendingRecord(
+    heldSignal({ key: "verdict", authorizedFor: "kitchen" }),
+  );
+  const data = await listPending(depsOf([run], T1, store));
+  assertEquals(data.pending, []);
+  assertEquals(data.waits.map((w) => w.workflowName), ["release"]);
 });

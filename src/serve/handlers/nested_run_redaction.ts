@@ -156,9 +156,11 @@ export async function redactRunViewLinks(
  * (swamp-club#2736), and a nested workflow step's failure that names a
  * hidden nested run reports {@link HIDDEN_NESTED_STEP_ERROR} instead. A
  * suspension names a nested run's open wait for a signal only to a reader of
- * the wait's workflow. A buffered event is shared by every client attached
- * to the run, so an event that needs a change is copied first. A nested run's own events, forwarded
- * into its parent's stream, are left as they are.
+ * the wait's workflow, and a step refused a key held by another wait names
+ * that wait only to a reader of its workflow. A buffered event is shared by
+ * every client attached to the run, so an event that needs a change is
+ * copied first. A nested run's own events, forwarded into its parent's
+ * stream, are left as they are.
  */
 export async function redactStreamEvent(
   event: SerializedEvent,
@@ -175,10 +177,27 @@ export async function redactStreamEvent(
     else delete copy.detachedNestedRuns;
     return copy;
   }
-  if (event.kind === "step_failed" && isNamedWorkflow(event.nestedRun)) {
-    if (await canRead(event.nestedRun)) return event;
-    const { nestedRun: _hidden, ...rest } = event;
-    return { ...rest, error: HIDDEN_NESTED_STEP_ERROR };
+  if (event.kind === "step_failed") {
+    // A wait_key_held failure names the wait holding the key, which can be
+    // in another workflow's run: only to a reader of that workflow
+    // (swamp-club#3214). Removing it builds a new object, so the shared
+    // buffered event is never changed.
+    let failed = event;
+    if (
+      "waitKeyHolder" in event &&
+      !(isNamedWorkflow(event.waitKeyHolder) &&
+        await canRead(event.waitKeyHolder))
+    ) {
+      const { waitKeyHolder: _hidden, ...rest } = event;
+      failed = rest as SerializedEvent;
+    }
+    if (isNamedWorkflow(failed.nestedRun)) {
+      if (await canRead(failed.nestedRun)) return failed;
+      const { nestedRun: _hidden, ...rest } = failed;
+      return { ...rest, error: HIDDEN_NESTED_STEP_ERROR };
+    }
+    // A step failure carries no run view to redact.
+    return failed;
   }
   if (!isRunView(event.run)) return event;
   const copy = structuredClone(event) as SerializedEvent & {
