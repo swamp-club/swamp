@@ -467,7 +467,9 @@ export class VaultService {
     }
     if (!isVaultExistenceProvider(provider)) {
       throw new Error(
-        `Vault '${vaultName}' (type: ${provider.getName()}) does not support existence checks`,
+        `Vault '${vaultName}' (type: ${
+          this.vaultTypeOf(vaultName)
+        }) does not support existence checks`,
       );
     }
     return provider;
