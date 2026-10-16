@@ -1477,8 +1477,10 @@ function renderMerged(
   oldData: Record<string, unknown>,
 ): string {
   const expected = canonicalJson(newData);
-  const edited = editScalarsInPlace(raw, newData, oldData);
-  if (edited !== undefined && readsBackAs(edited, expected)) return edited;
+  for (const restyle of [false, true]) {
+    const edited = editScalarsInPlace(raw, newData, oldData, restyle);
+    if (edited !== undefined && readsBackAs(edited, expected)) return edited;
+  }
   for (const expand of [false, true]) {
     const doc = parseDocument(raw, { version: "1.1" });
     const lineWidth = mergeLineWidth(raw, doc);
@@ -1502,28 +1504,49 @@ function renderMerged(
  * `oldData` and `newData`, keeping every other byte. Undefined when the change
  * is not only to existing scalars (a key added or removed, a list resized, a
  * value behind an alias), or the file is not a single document.
+ *
+ * Without `restyle` each value is written as the CST chooses from the token's
+ * own style. With it, each value is written in the style `scalarTypeFor` picks
+ * and block scalars are indented under their key — for edits that otherwise
+ * read back as something else (swamp-club#3541).
  */
 function editScalarsInPlace(
   raw: string,
   newData: Record<string, unknown>,
   oldData: Record<string, unknown>,
+  restyle: boolean,
 ): string | undefined {
   const tokens = Array.from(new Parser().parse(raw));
   const docs = Array.from(
     new Composer({ version: "1.1", keepSourceTokens: true }).compose(tokens),
   );
   if (docs.length !== 1 || docs[0].errors.length > 0) return undefined;
-  const edits: { token: CST.Token; value: string }[] = [];
+  const edits: ScalarEdit[] = [];
   if (!collectScalarEdits(docs[0].contents, oldData, newData, edits)) {
     return undefined;
   }
   try {
-    for (const { token, value } of edits) CST.setScalarValue(token, value);
+    // Every edited scalar is a value, never a key: without afterKey a block
+    // scalar's lines are written at its key's indent and no longer parse.
+    for (const { token, value, type } of edits) {
+      CST.setScalarValue(
+        token,
+        value,
+        restyle ? { afterKey: true, type } : undefined,
+      );
+    }
   } catch {
     // A token the CST cannot rewrite leaves the change to the document merge.
     return undefined;
   }
   return tokens.map((token) => CST.stringify(token)).join("");
+}
+
+/** A new value for a scalar token, and the style to write it in. */
+interface ScalarEdit {
+  token: CST.Token;
+  value: string;
+  type?: Scalar.Type;
 }
 
 /**
@@ -1535,7 +1558,7 @@ function collectScalarEdits(
   node: YamlNode | null,
   oldValue: unknown,
   newValue: unknown,
-  edits: { token: CST.Token; value: string }[],
+  edits: ScalarEdit[],
 ): boolean {
   if (canonicalJson(oldValue) === canonicalJson(newValue)) return true;
   if (isPlainRecord(oldValue) && isPlainRecord(newValue) && isMap(node)) {
@@ -1566,10 +1589,43 @@ function collectScalarEdits(
       )
     );
   }
-  const token = isScalar(node) ? node.srcToken : undefined;
-  if (!token || !isPrimitive(oldValue) || !isPrimitive(newValue)) return false;
-  edits.push({ token, value: String(newValue) });
+  if (!isScalar(node) || !node.srcToken) return false;
+  if (!isPrimitive(oldValue) || !isPrimitive(newValue)) return false;
+  edits.push({
+    token: node.srcToken,
+    value: String(newValue),
+    type: scalarTypeFor(newValue, node.type),
+  });
   return true;
+}
+
+/**
+ * The style to write `value` in, over a scalar currently written as `current`.
+ * A string that spans lines is a block scalar, folded only if it already was.
+ * Any other string keeps a quoted or block style, and a plain one is
+ * double-quoted when written plain would read back as something else. Any
+ * other value is written plain, since quoted it would read back as a string
+ * (swamp-club#3541).
+ */
+function scalarTypeFor(
+  value: string | number | boolean | null,
+  current: Scalar.Type | undefined,
+): Scalar.Type {
+  if (typeof value !== "string") return Scalar.PLAIN;
+  if (value.includes("\n")) {
+    return current === Scalar.BLOCK_FOLDED ? current : Scalar.BLOCK_LITERAL;
+  }
+  if (current !== undefined && current !== Scalar.PLAIN) return current;
+  return readsPlainAs(value) ? Scalar.PLAIN : Scalar.QUOTE_DOUBLE;
+}
+
+/** Whether `value`, written as a plain scalar, reads back as that string. */
+function readsPlainAs(value: string): boolean {
+  try {
+    return parseYaml(value) === value;
+  } catch {
+    return false;
+  }
 }
 
 function isPrimitive(

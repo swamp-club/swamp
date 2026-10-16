@@ -195,7 +195,15 @@ Deno.test("YamlDefinitionRepository.save: scalar-only edits to a commented file 
         });
       },
     ),
-    { numRuns: 150 },
+    {
+      numRuns: 150,
+      // A quoted empty string edited to null, beside a plain string that the
+      // document merge's parser reads as a float (swamp-club#3541).
+      examples: [[
+        { alpha: { alpha: "" }, beta: { alpha: { alpha: "e0" } } },
+        [null],
+      ]],
+    },
   );
 });
 
