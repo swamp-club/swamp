@@ -969,7 +969,11 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     workflowName: string,
     key: string | undefined,
   ): void {
-    if (!this.pipe || key === undefined) return;
+    // The key and the name can come from a server: anything but a string
+    // prints no by-key line rather than failing the stream's rendering.
+    if (
+      !this.pipe || typeof key !== "string" || typeof workflowName !== "string"
+    ) return;
     writeOutput(
       this.pipe.line(
         name,
@@ -1156,10 +1160,6 @@ interface RequestedWait {
   key?: string;
 }
 
-/**
- * Names the open wait that holds the key a step was refused with
- * `wait_key_held` (swamp-club#3214). Every part can come from a server.
- */
 /** True when every field of the holder line is a string. */
 function isWaitKeyHolder(value: unknown): value is WaitKeyHolder {
   if (typeof value !== "object" || value === null) return false;
@@ -1174,6 +1174,10 @@ function isWaitKeyHolder(value: unknown): value is WaitKeyHolder {
   ].every((field) => typeof holder[field] === "string");
 }
 
+/**
+ * Names the open wait that holds the key a step was refused with
+ * `wait_key_held` (swamp-club#3214). Every part can come from a server.
+ */
 function describeWaitKeyHolder(holder: WaitKeyHolder): string {
   return dim(
     `key ${escapeControlCharacters(holder.key)} is held by step ${

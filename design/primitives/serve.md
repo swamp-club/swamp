@@ -949,9 +949,9 @@ local command, which records no name, is listed only when one workflow
 declares its id. `pending` is sent only when asked for. An open wait with a key
 carries `signalByKeyCommand` beside `nextCommand`, which still signals it by
 wait ID. A caller with no `read` grant on any workflow, such as one granted
-`signal` alone, is refused as unauthorized. It is the same use case as `swamp workflow waits`
-and, like it, not read-only: see "Listing" under Wait for Signal in
-[workflows](workflows.md).
+`signal` alone, is refused as unauthorized. It is the same use case as
+`swamp workflow waits` and, like it, not read-only: see "Listing" under Wait
+for Signal in [workflows](workflows.md).
 
 **Signal waits in a run stream.** `signal_wait_requested` is never sent to a
 client (`LOCAL_ONLY_EVENT_KINDS`, `src/serve/serializer.ts`): a released client

@@ -2623,6 +2623,31 @@ Deno.test("ConsoleWorkflowRunRenderer: a keyed wait prints the by-key command be
   }
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: a key that is not a string, as a faulty server could send, prints the by-ID command only and does not throw", async () => {
+  const lines = await renderLog([
+    RELEASE_STARTED,
+    { kind: "job_started", jobId: "release" },
+    {
+      kind: "suspended",
+      run: releaseRunView("succeeded"),
+      jobId: "release",
+      stepId: "review",
+      prompt: "",
+      wait: {
+        id: WAIT_ID,
+        deadline: WAIT_DEADLINE,
+        key: { not: "a string" } as unknown as string,
+      },
+    },
+  ], KEY_TARGET);
+  assert(
+    lines.some((line) =>
+      line.includes(`swamp workflow signal ${WAIT_ID} --payload '<json>'`)
+    ),
+  );
+  assertEquals(lines.some((line) => line.includes("Or by key")), false);
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: an unkeyed wait prints no by-key command", async () => {
   const lines = await renderLog([
     RELEASE_STARTED,

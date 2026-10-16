@@ -43,8 +43,14 @@ Deno.test("PendingSignalsPanel: renders nothing when no signal is held", () => {
 });
 
 Deno.test("PendingSignalsPanel: a held signal shows its key, workflow, receipt, receipt time and time left", () => {
-  const row = rowHeldFor(2 * HOUR + 30_000, "sig-1");
-  const html = renderToStaticMarkup(<PendingSignalsPanel rows={[row]} />);
+  const now = Date.parse("2026-10-08T12:30:00.000Z");
+  const row = {
+    ...rowHeldFor(0, "sig-1"),
+    heldUntil: new Date(now + 2 * HOUR + 30_000).toISOString(),
+  };
+  const html = renderToStaticMarkup(
+    <PendingSignalsPanel rows={[row]} now={now} />,
+  );
   assertStringIncludes(html, "Pending signals");
   assertStringIncludes(html, '<span class="panel-count">1</span>');
   assertStringIncludes(html, "deploy");

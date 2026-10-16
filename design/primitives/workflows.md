@@ -1269,10 +1269,10 @@ writes none, so the marker is then missing. It is shown only in the run view
 outputs and from every reply to a sender (`receiptForCaller`), whose shapes
 stay as documented. A pending record is taken only when it names the workflow
 and key of the record that places the wait, in a slot that wait's own claim
-generation allows. A claim, a registration or a pending record altered to point elsewhere
-is unreadable and nothing is taken, by the rule that keeps a signal by key
-from being carried to another workflow's wait. A pending signal that does not
-apply is ignored and the wait opens as usual.
+generation allows. A claim, a registration or a pending record altered to
+point elsewhere is unreadable and nothing is taken, by the rule that keeps a
+signal by key from being carried to another workflow's wait. A pending signal
+that does not apply is ignored and the wait opens as usual.
 
 A step that took a signal on opening succeeds at once with the payload and the
 receipt, in the outputs of any signalled step, and the steps after it in the
