@@ -751,6 +751,62 @@ async function isZod4InPackageJson(
 }
 
 /**
+ * Whether `deno bundle` output names a failed esbuild install: two bundles
+ * started at once on a cache without esbuild both install it, and one can
+ * fail copying the binary the other is writing.
+ */
+export function isEsbuildInstallRace(output: string): boolean {
+  return output.includes("failed to copy esbuild binary");
+}
+
+/**
+ * Runs `fn` alone for the first call per `key`; later calls wait for it to
+ * settle, then run side by side. A first call that throws, or whose result
+ * `succeeded` rejects, clears the key, so the next caller goes first in its
+ * place. An abort of `signal` ends the wait with its reason.
+ */
+export async function runFirstAlone<T>(
+  gates: Map<string, Promise<boolean>>,
+  key: string,
+  fn: () => Promise<T>,
+  options: { signal?: AbortSignal; succeeded?: (result: T) => boolean } = {},
+): Promise<T> {
+  for (let gate = gates.get(key); gate; gate = gates.get(key)) {
+    if (await abortable(gate, options.signal)) return await fn();
+  }
+  let settle!: (ok: boolean) => void;
+  gates.set(key, new Promise<boolean>((resolve) => settle = resolve));
+  let ok = false;
+  try {
+    const result = await fn();
+    ok = options.succeeded?.(result) ?? true;
+    return result;
+  } finally {
+    if (!ok) gates.delete(key);
+    settle(ok);
+  }
+}
+
+/** `promise`, or a rejection with the abort reason once `signal` aborts. */
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() =>
+      signal.removeEventListener("abort", onAbort)
+    );
+  });
+}
+
+/**
+ * The first bundle per Deno cache in this process, which installs esbuild
+ * into an empty cache and so must not race another bundle doing the same.
+ */
+const firstBundles = new Map<string, Promise<boolean>>();
+
+/**
  * Bundles a TypeScript extension file into JavaScript using `deno bundle` subprocess.
  *
  * Transpiles TypeScript syntax (interfaces, type annotations, generics) and
@@ -830,26 +886,45 @@ export async function bundleExtension(
 
     args.push("--platform", "deno", "-o", tempFile, absolutePath);
 
-    const signal = options?.signal ??
-      AbortSignal.timeout(BUNDLE_TIMEOUT_MS);
+    // Each run gets its own timeout, started when it runs: never spent
+    // waiting behind the first bundle.
+    const runBundle = () =>
+      new Deno.Command(denoPath, {
+        args,
+        stdout: "piped",
+        stderr: "piped",
+        signal: options?.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
+        // For package.json projects, set cwd so Deno auto-detects package.json
+        // and resolves bare specifiers from node_modules/.
+        ...(options?.packageJsonDir ? { cwd: options.packageJsonDir } : {}),
+        ...(options?.env ? { env: options.env } : {}),
+      }).output();
 
-    const command = new Deno.Command(denoPath, {
-      args,
-      stdout: "piped",
-      stderr: "piped",
-      signal,
-      // For package.json projects, set cwd so Deno auto-detects package.json
-      // and resolves bare specifiers from node_modules/.
-      ...(options?.packageJsonDir ? { cwd: options.packageJsonDir } : {}),
-      ...(options?.env ? { env: options.env } : {}),
+    // A bundle that lost an esbuild install race to another process is
+    // retried once, inside the gate: a waiter must not start beside it.
+    const runWithRetry = async () => {
+      const first = await runBundle();
+      if (first.success || !isEsbuildInstallRace(outputText(first))) {
+        return first;
+      }
+      logger
+        .debug`Retrying bundle of ${absolutePath} after an esbuild install race`;
+      return await runBundle();
+    };
+
+    // The child's cache: options.env merges over this process's env.
+    const denoDir = options?.env?.DENO_DIR ?? Deno.env.get("DENO_DIR") ??
+      "";
+    const output = await runFirstAlone(firstBundles, denoDir, runWithRetry, {
+      signal: options?.signal,
+      // Still lost after the retry: the cache may lack esbuild, so the next
+      // bundle installs it alone again.
+      succeeded: (result) =>
+        result.success || !isEsbuildInstallRace(outputText(result)),
     });
 
-    const output = await command.output();
-
     if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr);
-      const stdout = new TextDecoder().decode(output.stdout);
-      const rawDetails = (stderr + stdout).trim() ||
+      const rawDetails = outputText(output).trim() ||
         "(no output — try running deno 2.7.x or later)";
       const details = stripAnsiCode(rawDetails);
       throw markErrorPaths(
@@ -888,4 +963,9 @@ export async function bundleExtension(
       // Temp file cleanup is best-effort
     }
   }
+}
+
+function outputText(output: Deno.CommandOutput): string {
+  const decoder = new TextDecoder();
+  return decoder.decode(output.stderr) + decoder.decode(output.stdout);
 }

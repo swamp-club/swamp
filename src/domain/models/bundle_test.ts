@@ -17,8 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
+import { waitFor, withMockedCommand } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { UserError } from "../errors.ts";
 import {
@@ -27,9 +33,11 @@ import {
   fixCjsEsmInterop,
   importMapTarget,
   installZodGlobal,
+  isEsbuildInstallRace,
   isExpectedBundleFailure,
   rejectZodV3Imports,
   rewriteZodImports,
+  runFirstAlone,
   sanitizeDataUrlError,
   sourceHasBareSpecifiers,
   uint8ArrayToBase64,
@@ -1203,5 +1211,235 @@ Deno.test("importMapTarget: no entry, a non-matching key or a bare target gives 
   assertEquals(
     importMapTarget("lib", { "lib": "./lib/mod.ts" }),
     "./lib/mod.ts",
+  );
+});
+
+Deno.test("runFirstAlone: a later call waits until the first call for its key settles", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const started: string[] = [];
+  const a = runFirstAlone(gates, "cache", async () => {
+    started.push("a");
+    await first.promise;
+  });
+  const b = runFirstAlone(gates, "cache", () => {
+    started.push("b");
+    return Promise.resolve();
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(started, ["a"]);
+  first.resolve();
+  await Promise.all([a, b]);
+  assertEquals(started, ["a", "b"]);
+});
+
+Deno.test("runFirstAlone: once the first call succeeds, later calls run side by side", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  await runFirstAlone(gates, "cache", () => Promise.resolve());
+  const held = Promise.withResolvers<void>();
+  let running = 0;
+  let peak = 0;
+  const call = () =>
+    runFirstAlone(gates, "cache", async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await held.promise;
+      running--;
+    });
+  const calls = [call(), call()];
+  await waitFor(() => running === 2, "both calls running");
+  held.resolve();
+  await Promise.all(calls);
+  assertEquals(peak, 2);
+});
+
+Deno.test("runFirstAlone: a different key is not held back", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const a = runFirstAlone(gates, "one", () => first.promise);
+  let otherRan = false;
+  await runFirstAlone(gates, "two", () => {
+    otherRan = true;
+    return Promise.resolve();
+  });
+  assertEquals(otherRan, true);
+  first.resolve();
+  await a;
+});
+
+Deno.test("runFirstAlone: a failed first call lets the next caller go first", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const a = runFirstAlone(gates, "cache", () => first.promise);
+  const second = Promise.withResolvers<void>();
+  const started: string[] = [];
+  const b = runFirstAlone(gates, "cache", async () => {
+    started.push("b");
+    await second.promise;
+  });
+  const c = runFirstAlone(gates, "cache", () => {
+    started.push("c");
+    return Promise.resolve();
+  });
+  first.reject(new Error("spawn failed"));
+  await assertRejects(() => a, Error, "spawn failed");
+  await waitFor(() => started.length > 0, "a caller to start");
+  assertEquals(started, ["b"], "b runs alone in the failed call's place");
+  second.resolve();
+  await Promise.all([b, c]);
+  assertEquals(started, ["b", "c"]);
+});
+
+Deno.test("runFirstAlone: a first result that succeeded rejects lets the next caller go first", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<string>();
+  const a = runFirstAlone(gates, "cache", () => first.promise, {
+    succeeded: (result) => result === "installed",
+  });
+  const second = Promise.withResolvers<string>();
+  const started: string[] = [];
+  const b = runFirstAlone(gates, "cache", async () => {
+    started.push("b");
+    return await second.promise;
+  });
+  const c = runFirstAlone(gates, "cache", () => {
+    started.push("c");
+    return Promise.resolve("installed");
+  });
+  first.resolve("lost the race");
+  assertEquals(await a, "lost the race", "the caller still gets its result");
+  await waitFor(() => started.length > 0, "a caller to start");
+  assertEquals(started, ["b"], "b runs alone in the failed call's place");
+  second.resolve("installed");
+  await Promise.all([b, c]);
+  assertEquals(started, ["b", "c"]);
+});
+
+Deno.test("runFirstAlone: an abort ends a wait behind the first call", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const a = runFirstAlone(gates, "cache", () => first.promise);
+  const controller = new AbortController();
+  let ran = false;
+  const b = runFirstAlone(gates, "cache", () => {
+    ran = true;
+    return Promise.resolve();
+  }, { signal: controller.signal });
+  controller.abort(new Error("shutting down"));
+  await assertRejects(() => b, Error, "shutting down");
+  assertEquals(ran, false);
+  first.resolve();
+  await a;
+});
+
+const RACE_OUTPUT =
+  "error: failed to copy esbuild binary from /c/npm/esbuild " +
+  "to /c/dl/esbuild-0.25.5-1/.esbuild-1.tmp (os error 2)";
+
+/**
+ * A fake `deno bundle`: writes the `-o` file, or answers with the esbuild
+ * install race while `loses()` holds. Records how many run at once.
+ */
+function fakeBundler(loses: () => boolean) {
+  const state = { running: 0, peak: 0, runs: 0 };
+  const handler = async (_cmd: string, args: string[]) => {
+    state.runs++;
+    state.running++;
+    state.peak = Math.max(state.peak, state.running);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    state.running--;
+    if (loses()) return { stdout: "", stderr: RACE_OUTPUT, code: 1 };
+    await Deno.writeTextFile(
+      args[args.indexOf("-o") + 1],
+      "export const bundled = 1;\n",
+    );
+    return { stdout: "", code: 0 };
+  };
+  return { state, handler };
+}
+
+Deno.test("bundleExtension: a bundle that loses an esbuild install race is retried once", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    let lost = 0;
+    const { state, handler } = fakeBundler(() => lost++ === 0);
+    const { result } = await withMockedCommand(
+      handler,
+      () =>
+        bundleExtension(path, DENO_PATH, {
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }),
+    );
+    assertStringIncludes(result, "bundled");
+    assertEquals(state.runs, 2);
+  });
+});
+
+Deno.test("bundleExtension: an error other than the esbuild race is not retried", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    const { calls } = await withMockedCommand(
+      [{ stdout: "", stderr: "error: Module not found", code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            bundleExtension(path, DENO_PATH, {
+              env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+            }),
+          Error,
+          "Module not found",
+        );
+      },
+    );
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("bundleExtension: no bundle on the same cache starts beside the first one or its retry", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    let lost = 0;
+    // The first run loses the race; its retry and every later run succeed.
+    const { state, handler } = fakeBundler(() => lost++ === 0);
+    const env = { DENO_DIR: `/cache-${crypto.randomUUID()}` };
+    await withMockedCommand(handler, async () => {
+      const first = bundleExtension(path, DENO_PATH, { env });
+      const second = bundleExtension(path, DENO_PATH, { env });
+      await Promise.all([first, second]);
+    });
+    assertEquals(state.runs, 3);
+    assertEquals(state.peak, 1, "the retry and the waiter never overlap");
+  });
+});
+
+Deno.test("bundleExtension: bundles on different caches do not wait for each other", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    const { state, handler } = fakeBundler(() => false);
+    await withMockedCommand(handler, async () => {
+      await Promise.all([
+        bundleExtension(path, DENO_PATH, {
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }),
+        bundleExtension(path, DENO_PATH, {
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }),
+      ]);
+    });
+    assertEquals(state.peak, 2);
+  });
+});
+
+Deno.test("isEsbuildInstallRace: matches only the esbuild copy failure", () => {
+  assertEquals(
+    isEsbuildInstallRace(
+      "error: failed to copy esbuild binary from /c/npm/esbuild to " +
+        "/c/dl/esbuild-0.25.5-1/.esbuild-13911.tmp\n\nCaused by:\n" +
+        "    No such file or directory (os error 2)",
+    ),
+    true,
+  );
+  assertEquals(
+    isEsbuildInstallRace(
+      'error: Module not found "file:///x/missing.ts".',
+    ),
+    false,
   );
 });
