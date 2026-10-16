@@ -448,7 +448,6 @@ const PINNED: ReadonlyArray<
     file: "src/presentation/renderers/auth_whoami.ts",
     reason: "collectives of one account",
     calls: [
-      'Math.max(...entitlements.map((c) => (c.planName ?? c.plan ?? "").length))',
       "Math.max(...entitlements.map((c) => c.slug.length))",
     ],
   },
