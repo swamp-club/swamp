@@ -394,7 +394,7 @@ export function Sidebar({
           off={off.webhooks}
         />
         <NavItem
-          label="Approvals"
+          label="Approvals & Signals"
           view="approvals"
           active={activeView === "approvals"}
           onClick={onNavigate}

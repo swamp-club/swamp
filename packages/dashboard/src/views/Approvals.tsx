@@ -352,10 +352,10 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   return (
     <div className="approvals-page">
       <div className="page-header">
-        <h1>Approvals</h1>
+        <h1>Approvals & Signals</h1>
         <div className="header-right">
           {gatesLoaded && suspendedData !== null
-            ? <StatPills stats={stats} label="Approvals summary" />
+            ? <StatPills stats={stats} label="Approvals & Signals summary" />
             : !gatesError && <SkeletonPills count={3} />}
         </div>
       </div>

@@ -119,10 +119,10 @@ curl -X POST https://<host>/api/v1/signal \
 `--server` when the run suspends on a wait, its own or a nested run's, and for a
 keyed wait the by-key command too. A nested run's wait is named only to a caller
 who may read that workflow, and so is the holder a `wait_key_held` failure
-names. The dashboard's Approvals page lists open, signalled and expired waits
-with their keys and by-key commands, and the pending signals held for a key with
-the time left. A server older than `--pending` lists no pending signals, and the
-command warns.
+names. The dashboard's Approvals & Signals page lists open, signalled and
+expired waits with their keys and by-key commands, and the pending signals held
+for a key with the time left. A server older than `--pending` lists no pending
+signals, and the command warns.
 
 | HTTP status | Meaning                                                        |
 | ----------- | -------------------------------------------------------------- |
