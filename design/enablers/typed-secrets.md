@@ -100,11 +100,11 @@ Remote dispatch is the one exception to items 2 and 3 until Phase 5 (Section 9).
 
 Plaintext exists in vault storage and vault providers, in a step's loaded bag
 during its delivery attempt, and in trusted consumers. The trusted consumers are
-methods, pre-flight checks, `readResource` and shell child processes. Extensions
-and scripts can transform, send or log what they receive, and this plan does not
-sandbox them. `SecretRedactor` stays as defense in depth for their output. It
-ignores values shorter than three characters, so it cannot replace the rules
-above.
+methods, pre-flight checks, `readResource`, `readModelData` and shell child
+processes. Extensions and scripts can transform, send or log what they receive,
+and this plan does not sandbox them. `SecretRedactor` stays as defense in depth
+for their output. It ignores values shorter than three characters, so it cannot
+replace the rules above.
 
 ### 1.2 Starting point
 
@@ -155,8 +155,10 @@ Out of scope, each its own issue if it is needed:
 
 Other CEL environments keep their contracts. These are the extension CEL factory
 (`createExtensionCelEnvironment`, `packages/testing/_cel_environment.ts`), the
-grant-condition environment and the datastore config resolver. Only the internal
-evaluator and the expression-facing query view register `Secret`.
+grant-condition environment, the workflow-run history filter
+(`workflow_run_filter.ts`, which binds only persisted-form inputs and tags) and
+the datastore config resolver. Only the internal evaluator and the
+expression-facing query view register `Secret`.
 
 ## 2. Implementation decisions
 
@@ -223,6 +225,20 @@ The conversion runs before the adapter's own post-processing (`coerceBigInts`,
 outside the CEL adapter sees a `Secret`. Everything else stays plain JSON, so
 the existing walkers, clones and codecs need no change.
 
+Two rules keep that true:
+
+- **One bag registry per run.** Every pass, including the run-start pass and
+  workflow-level evaluation, issues sentinels into a run-scoped registry, and a
+  step's bag is a view of it. A load resolves any sentinel the run issued, so a
+  `Secret` from an earlier pass is never delivered as literal sentinel text.
+  Rehoming between bags (`SanitizedTaskOverlay.forStep`) covers vault-origin
+  entries as well as data-origin ones.
+- **New objects at the boundary.** The accessor adapter and the binding
+  conversion build new objects. They never wrap or mutate a context, a cached
+  record or a live output in place (`data_writer.ts` mutates in place today), so
+  no `Secret` reaches `steps.*` contexts, deferred bindings or a
+  `structuredClone`.
+
 Sentinels sit only in literal text. Spliced text is never evaluated, so a
 sentinel cannot end up inside an expression. A sentinel-shaped string with
 another prefix is ordinary text.
@@ -244,15 +260,17 @@ Some code resolves sentinels inline today, through
 same rules. That keeps its behavior unchanged until the phase that refuses or
 masks the destination:
 
-| Inline resolution                                                                   | Destination (Section 7.1)             | Loads until                                |
-| ----------------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------ |
-| Pre-flight checks in `swamp model validate` (`src/libswamp/models/validate.ts`)     | Pre-flight checks, a trusted consumer | Always. Phase 3 uses the shared load step. |
-| Placement and task selectors (`execution_service.ts`)                               | Refuses secrets                       | Phase 4                                    |
-| Child workflow references (`execution_service.ts`)                                  | Refuses secrets                       | Phase 4                                    |
-| Assert message interpolation (`execution_service.ts`)                               | Masked                                | Phase 4                                    |
-| `resolveVaultExpressionsInDefinition`, `resolveVaultExpressionsInData` (deprecated) | The caller's                          | Phase 4, which deletes them                |
+| Inline resolution                                                                                       | Destination (Section 7.1)                                  | Loads until                                |
+| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------ |
+| Pre-flight checks in `swamp behavior validate` (`src/libswamp/models/validate.ts`)                      | Pre-flight checks, a trusted consumer                      | Always. Phase 3 uses the shared load step. |
+| Placement and task selectors (`execution_service.ts`)                                                   | Refuses secrets                                            | Phase 4                                    |
+| Child workflow references (`execution_service.ts`)                                                      | Refuses secrets                                            | Phase 4                                    |
+| Deferred task targets, `inputs` and `globalArgs` (`resolveRecordExpression`, `resolveScalarExpression`) | Targets refuse secrets. Records issue into the step's bag. | Phase 4                                    |
+| Assert message interpolation (`execution_service.ts`)                                                   | Masked                                                     | Phase 4                                    |
+| `resolveVaultExpressionsInDefinition`, `resolveVaultExpressionsInData` (deprecated)                     | The caller's                                               | Phase 4, which deletes them                |
 
-A new inline caller of `resolveDeep` needs a row here.
+A new inline caller of `resolveDeep`, or a new direct `evaluateAsync` caller
+outside the passes in Section 5, needs a row here.
 
 A load calls `VaultService.get(vault, key, "expression:vault-resolve")` inside
 the run's ambient `RunVaultAccess`. The principal's grants and the workflow's
@@ -314,7 +332,10 @@ A **load** reads a value for delivery (Section 3.3). A **probe** reads one only
 for this check. Read counts in exit criteria and tests count loads unless they
 say otherwise. A reference costs at most one probe per run, and none on a
 provider with `has`. A refusal before delivery makes zero loads, though a probe
-may already have run.
+may already have run. Today one eager read serves both purposes, so a provider
+without `has` sees one extra read per delivered reference per run. That matters
+when a read has an effect, such as minting a dynamic credential. Such a provider
+should implement `has`, and the release notes say so (Section 10.3).
 
 Every CEL entry point runs the check, including `swamp behavior evaluate` and
 `swamp workflow evaluate`, so they still report a missing or unauthorized key.
@@ -399,7 +420,8 @@ How they shape the design:
 - Overloads follow the registration rules, and synchronous entry points must
   stay synchronous with them in place (fact 4).
 - The Proxy turns a macro range over a secret into an error (fact 5).
-- Aliasing `vault` is harmless, because `vault.get` reads nothing (fact 6).
+- `vault` stays usable only as the receiver of a direct `vault.get(...)` call,
+  so every reference is a call the existence check finds (fact 6, Section 4.4).
 - The design adds no state to shared programs (fact 7).
 - Fact 8 no longer affects the design. Its pin stays as an upgrade alarm.
 
@@ -461,6 +483,16 @@ Phase 1 decides whether the list comes from cel-js or from a maintained list
 pinned against the dependency. For `==`, the type list is maintained, because
 cel-js does not export its type table.
 
+The same test covers swamp's own registrations in the internal environment and
+the query view, such as the `data`, `file` and `model` namespaces. Each string,
+dyn or `list<dyn>` parameter either has a `Secret` refusal that records a fault,
+or is a named delivery (`model.method` inputs, Section 4.5). Without that, a
+`Secret` argument would meet a missing-overload error that records no fault, and
+`||` could absorb it. A `Secret` in the vary list of `data.latest`,
+`data.version` or `data.listVersions` is refused with
+`secret_destination_refused`, because a lookup key cannot use the stand-in that
+a data-name suffix gets.
+
 ### 4.4 `vault.get`
 
 `vault` is a receiver type with one method, `get(string, string): Secret`. The
@@ -475,8 +507,41 @@ working, and `prod-vault` is never parsed as subtraction. A bare token with a
 `.` is already CEL.
 
 This retires the regular-expression rewrite (`resolveVaultExpressions`,
-`findVaultGetCalls`). It also retires the rule that refuses any other read of
-the `vault` namespace (`assertNoUnresolvedVault`).
+`findVaultGetCalls`). It keeps the rule that refuses any other use of the
+`vault` namespace (`assertNoUnresolvedVault`). Aliases such as
+`cel.bind(v, vault, v.get(...))`, `dyn(vault).get(...)` and
+`[vault].map(m, m.get(...))` stay refused, so every reference is a direct call
+that the existence check in Section 3.4 finds before the expression runs.
+
+One AST-based extractor, run over the text after the bare-token rewrite, finds
+those calls. It replaces every consumer of `findVaultGetCalls`: the existence
+check, `vaults:` list validation (`vault_reference_extractor.ts`), foreign-root
+attribution, the dispatch allowlist, and `freeRoots` in the parse-only grammars.
+
+### 4.5 Effectful functions
+
+`model.method(model, method, inputs)` runs a method through a synthetic step. It
+is the internal environment's effectful function, and any swamp function with an
+effect follows the same three rules:
+
+1. **Effect gate.** Before it starts any work, the function checks the
+   evaluation's fault context. It refuses if a fault is already recorded, or if
+   the expression has a container comparison and a `Secret` is already recorded
+   (Section 4.3 item 5). An absorbed refusal therefore cannot let an effect run
+   that today's short-circuit would have skipped, as in
+   `attrs.mode == 'frozen' || model.method('prod', 'deploy', {})`.
+2. **Routing arguments refuse secrets.** The model and method names are routing
+   values, like task selectors. A `Secret` there is refused with a recorded
+   fault.
+3. **Inputs are a delivery.** The call converts `inputs` at the CEL boundary, so
+   each `Secret` becomes a sentinel in the synthetic step's bag. The step loads
+   it under its own attempt, as Section 3.3 loads method arguments. No `Secret`
+   reaches the step delegate, step creation or persistence. This is what happens
+   today, where the sentinel reaches the step and the bag resolves it.
+4. **Results go through the accessor adapter.** `model.method` returns the
+   step's latest resource or its raw result. Tagged fields in it become `Secret`
+   values through the adapter in Section 6.1, as `data.latest` returns them, so
+   reference text never comes back as a comparable string.
 
 ## 5. Evaluation passes
 
@@ -499,6 +564,13 @@ splices the results into text, and leaves the rest for a later pass. `vault` and
 - Every CEL entry point converts at the boundary. These are the run-start, step
   and runtime passes, `forEach` expansion and step names, guards, asserts,
   `swamp behavior evaluate`, `swamp workflow evaluate` and validation.
+- `context.runModel` (`model_invocation_service.ts`) evaluates and delivers a
+  nested invocation with its own bag. It is an entry point and a delivery under
+  Sections 3.3 and 5, and moves with Phase 3.
+- Webhook trigger inputs (`trigger_input_resolver.ts`) are evaluated with no
+  bag. That evaluation binds no `vault` and refuses a `Secret` result with
+  `secret_destination_refused`, so no sentinel is persisted as orphan run-input
+  text.
 
 The run-start pass reads data for steps that a guard may later skip. Those reads
 now return references and load nothing.
@@ -545,7 +617,9 @@ runs, because wrapping only the returned value is not enough.
 
 A predicate cannot operate on a secret. A projection can return a `Secret` or a
 container of them. The view returns them to the calling expression without
-cloning them.
+cloning them. It converts or skips each `Secret` before its own `coerceBigInts`
+walk, as Section 3.2 does, so selecting `attributes.password` does not trip the
+`ownKeys` trap.
 
 Errors propagate. Query filtering must not turn a refusal or a malformed
 reference into `false`, a missing row or `null`. The raw `swamp data query`
@@ -578,19 +652,19 @@ The boundary lives in `src/domain/models/method_execution_service.ts`.
 
 ### 7.1 Destination contract
 
-| Destination                                                                                          | Policy                                                                                                                                                                          |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Method arguments, `context.globalArgs`, orchestrator pre-flight checks, `readResource`               | Plaintext at the trusted extension boundary, loaded at delivery. Checks see method arguments with sentinels, as today.                                                          |
-| Shell `env` values                                                                                   | Plaintext in the child environment. A value with an embedded NUL is refused without echoing it.                                                                                 |
-| Shell `run`, `workingDir`, environment keys                                                          | `run` keeps environment-variable placement (Section 7.2). `workingDir` and environment keys refuse secrets.                                                                     |
-| Other fields with `.meta({ secrets: "refuse" })`                                                     | Refuse a secret anywhere in the value.                                                                                                                                          |
-| Tags, labels, names, data-name suffixes, task selectors, placement, paths, child workflow references | Tags, labels, names and data-name suffixes get the `sensitive-<vault>.<key>` stand-in, as today. Task selectors, placement, paths and child workflow references refuse secrets. |
-| Guards/assert predicates                                                                             | A result that holds a secret is refused.                                                                                                                                        |
-| Assert messages, logs, reports, previews, history, telemetry, events                                 | Sentinels are masked as `***`. Errors carry no value. Output redaction stays.                                                                                                   |
-| Evaluated caches, run records, run index, pending scopes                                             | The persisted form in Section 8.1.                                                                                                                                              |
-| Auto-definitions                                                                                     | Each sentinel is written as its reference text.                                                                                                                                 |
-| Lease, pending-dispatch, and worker records; serve audit; `run_tracker` payloads                     | References and masks only. Error strings are masked.                                                                                                                            |
-| Protected worker delivery                                                                            | Plaintext only in worker memory, for the current dispatch attempt (Phase 5).                                                                                                    |
+| Destination                                                                                                                    | Policy                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Method arguments, `context.globalArgs`, orchestrator pre-flight checks, `readResource`, `readModelData`, `model.method` inputs | Plaintext at the trusted extension boundary, loaded at delivery. Checks see method arguments with sentinels, as today.                                                          |
+| Shell `env` values                                                                                                             | Plaintext in the child environment. A value with an embedded NUL is refused without echoing it.                                                                                 |
+| Shell `run`, `workingDir`, environment keys                                                                                    | `run` keeps environment-variable placement (Section 7.2). `workingDir` and environment keys refuse secrets.                                                                     |
+| Other fields with `.meta({ secrets: "refuse" })`                                                                               | Refuse a secret anywhere in the value.                                                                                                                                          |
+| Tags, labels, names, data-name suffixes, task selectors, placement, paths, child workflow references                           | Tags, labels, names and data-name suffixes get the `sensitive-<vault>.<key>` stand-in, as today. Task selectors, placement, paths and child workflow references refuse secrets. |
+| Guards/assert predicates                                                                                                       | A result that holds a secret is refused.                                                                                                                                        |
+| Assert messages, logs, reports, previews, history, telemetry, events                                                           | Sentinels are masked as `***`. Errors carry no value. Output redaction stays.                                                                                                   |
+| Evaluated caches, run records, run index, pending scopes                                                                       | The persisted form in Section 8.1.                                                                                                                                              |
+| Auto-definitions                                                                                                               | Each sentinel is written as its reference text.                                                                                                                                 |
+| Lease, pending-dispatch, and worker records; serve audit; `run_tracker` payloads                                               | References and masks only. Error strings are masked.                                                                                                                            |
+| Protected worker delivery                                                                                                      | Plaintext only in worker memory, for the current dispatch attempt (Phase 5).                                                                                                    |
 
 Keep one implementation per destination family, shared by the CLI, libswamp,
 workflows, serve and workers. Beyond the caches and run records, the sinks found
@@ -651,7 +725,10 @@ key, an encoding and a data-origin flag
 
 What changes is where entries come from. `toPersistedForm` replaces each
 sentinel with its reference text, `${{ vault.get('v', 'k') }}`, and takes the
-entry from the bag. It no longer searches for recorded values.
+entry from the run's bag registry. It no longer searches for recorded values.
+Every caller passes the registry, including run records
+(`WorkflowRun.toPersistedData`) and direct execution (`direct_execution.ts`),
+and a sentinel the registry does not know fails the write.
 `rehydratePersistedForm` issues a sentinel in a new bag for each entry and no
 longer reads the vault. Reference text that no entry names stays inert data.
 
@@ -718,22 +795,22 @@ evaluates is a refusal with a stable code, so no expression silently changes
 meaning. The last two rows are the changes that reach a trusted consumer or a
 delivery instead of an expression.
 
-| Expression or value                                                                 | Today                                                         | After                                                                             |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `==`, `size`, `type`, a conversion or a string function on a `vault.get` result     | Works on the sentinel text, or fails                          | `validate` reports a type error. A run fails with `secret_operation_unsupported`. |
-| The same operations on a tagged sensitive field                                     | Work on plaintext                                             | `secret_operation_unsupported`                                                    |
-| A container that holds a secret, interpolated into text                             | Delivered inside the JSON text                                | `secret_operation_unsupported`                                                    |
-| A secret in a task selector, placement value, path, `workingDir` or environment key | Used as plaintext                                             | `secret_destination_refused`                                                      |
-| A guard or assert predicate whose result holds a secret                             | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
-| A value in a quoted here-document or in PowerShell single quotes                    | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
-| A malformed sensitive-fields tag or stored reference                                | Treated as absent, or left as text                            | `secret_reference_invalid`                                                        |
-| `in`, or `==` or `!=` with no literal operand, in an expression that reads a secret | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
-| `vault.get` of a missing key, in an expression whose result nothing delivers        | The eager read fails the run                                  | `secret_reference_unavailable` (Section 3.4)                                      |
-| A secret in a name, tag, label or data-name suffix                                  | The `sensitive-<vault>.<key>` stand-in, found by value search | The same stand-in, taken from the sentinel                                        |
-| `== null` or `!= null` on a secret                                                  | Works                                                         | Unchanged                                                                         |
-| `vault.get(my-vault, KEY)`                                                          | Literal names                                                 | Unchanged                                                                         |
-| A pre-flight check reading a tagged data field in its method arguments              | Can see the plaintext                                         | A sentinel, as for a `vault.get` value. The value is in `context.vaultSecrets`.   |
-| Delivering a tagged data field whose vault key is missing or whose vault is down    | The reference text is delivered                               | The load fails the step with `secret_reference_unavailable` or the provider error |
+| Expression or value                                                                                                       | Today                                                         | After                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `==`, `size`, `type`, a conversion or a string function on a `vault.get` result                                           | Works on the sentinel text, or fails                          | `validate` reports a type error. A run fails with `secret_operation_unsupported`. |
+| The same operations on a tagged sensitive field                                                                           | Work on plaintext                                             | `secret_operation_unsupported`                                                    |
+| A container that holds a secret, interpolated into text                                                                   | Delivered inside the JSON text                                | `secret_operation_unsupported`                                                    |
+| A secret in a task selector, placement value, path, `workingDir`, environment key, or `model.method` model or method name | Used as plaintext                                             | `secret_destination_refused`                                                      |
+| A guard or assert predicate whose result holds a secret                                                                   | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
+| A value in a quoted here-document or in PowerShell single quotes                                                          | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
+| A malformed sensitive-fields tag or stored reference                                                                      | Treated as absent, or left as text                            | `secret_reference_invalid`                                                        |
+| `in`, or `==` or `!=` with no scalar-literal or `null` operand, in an expression that reads a secret                      | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
+| `vault.get` of a missing key, in an expression whose result nothing delivers                                              | The eager read fails the run                                  | `secret_reference_unavailable` (Section 3.4)                                      |
+| A secret in a name, tag, label or data-name suffix                                                                        | The `sensitive-<vault>.<key>` stand-in, found by value search | The same stand-in, taken from the sentinel                                        |
+| `== null` or `!= null` on a secret                                                                                        | Works                                                         | Unchanged                                                                         |
+| `vault.get(my-vault, KEY)`                                                                                                | Literal names                                                 | Unchanged                                                                         |
+| A pre-flight check reading a tagged data field in its method arguments                                                    | Can see the plaintext                                         | A sentinel, as for a `vault.get` value. The value is in `context.vaultSecrets`.   |
+| Delivering a tagged data field whose vault key is missing or whose vault is down                                          | The reference text is delivered                               | The load fails the step with `secret_reference_unavailable` or the provider error |
 
 The extension API does not change (Section 6.3). `context.vaultSecrets` holds
 the loaded bag.
@@ -750,8 +827,9 @@ same codes. No new doctor command is needed.
 
 Phases 3 and 4 are built behind an internal option that only tests set. The
 release that ends Phase 4 turns the new path on for every entry point and
-removes the option. Its release notes carry the table in Section 10.1. Phases 2
-and 5 ship on their own.
+removes the option. Its release notes carry the table in Section 10.1. The Phase
+2 release notes say that a provider without `has` gets one probe read at
+evaluation as well as its load at delivery. Phases 2 and 5 ship on their own.
 
 ## 11. Delivery phases
 
@@ -781,6 +859,9 @@ Phase 1.2 pins what this design relies on:
 
 - cel-js recognizes the Proxy-based `Secret` by its constructor. Building a
   macro range over it fails, and the failure is not absorbed.
+- A custom function sees, at its start, every fault recorded earlier in the same
+  evaluation, across asynchronous evaluation, so the effect gate in Section 4.5
+  holds.
 - The refusing overload set covers every built-in that accepts a string or a dyn
   value, including `==` between two secrets. The `==` overloads name every type
   cel-js accepts in a signature and answer a comparison with `null` in both
@@ -815,6 +896,13 @@ with the container rule covering macros.
 - Each inline resolution in Section 3.3 becomes a load, so no destination
   receives a sentinel in place of the value it receives today.
 - The sentinel prefix grows to 128 random bits.
+- The run-scoped bag registry (Section 3.2). `toPersistedForm` callers pass it.
+- Provenance alignment (`alignProvenance`, `SplicePair`) compares sentinels, not
+  values, and `sentinelResolverOf` goes, because no bag holds a value before
+  delivery.
+- Each load registers its value with the run's log redactor, and the
+  registrations of argument values (`extractSensitiveFieldValues`) go, because
+  evaluated arguments now hold sentinels.
 - `toPersistedForm` takes entries from sentinels. The value search stays only
   for plaintext that data reads still bring into CEL.
 - Until Phase 5, the orchestrator loads the bag before a remote dispatch.
@@ -843,6 +931,8 @@ Behind the internal option:
 - Masking in reports, events, logs and errors.
 - `swamp behavior evaluate` writes its cache through the boundary conversion.
 - The `validate` diagnostics.
+- The `model.method` rules in Section 4.5, and the refusal coverage of swamp's
+  own registrations in Section 4.3.
 
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any
@@ -946,6 +1036,7 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Sensitive fields and schema metadata | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                |
 | Queries                              | `src/domain/data/data_query_service.ts`                                                                                                                                                                                          |
 | Method boundary and checks           | `src/domain/models/method_execution_service.ts`, `method_context.ts`, `model.ts`                                                                                                                                                 |
+| Nested invocations and triggers      | `src/domain/models/model_invocation_service.ts`, `src/domain/workflows/trigger_input_resolver.ts`                                                                                                                                |
 | Workflow execution and forEach       | `src/domain/workflows/execution_service.ts`, `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts`                                                                                                               |
 | Remote execution                     | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`                                                                                               |
 | Sink inventory and canaries          | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                          |
