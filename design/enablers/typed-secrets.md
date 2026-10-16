@@ -63,11 +63,11 @@ This plan makes none of those choices:
   operations needs registered overloads, not a compiler.
 - The current persisted form already stores references by path and keeps
   reference-looking data inert. Current binaries write and read it.
-- Every behavior change is a refusal with a stable code, so no expression
-  silently changes meaning. That includes the comparisons cel-js answers without
-  calling a handler (Section 4.3) and a reference to a missing key (Section
-  3.4). The change ships in place with release notes instead of as an opt-in
-  engine.
+- Every change to how an expression evaluates is a refusal with a stable code,
+  so no expression silently changes meaning. That includes the comparisons
+  cel-js answers without calling a handler (Section 4.3) and a reference to a
+  missing key (Section 3.4). The change ships in place with release notes
+  instead of as an opt-in engine.
 
 ## 1. Scope and success criteria
 
@@ -90,10 +90,9 @@ record's `_swamp.sensitiveFields` tag names.
 5. Swamp never puts a secret in the command text of its own `command/shell`
    invocation. That is `sh -c` on POSIX and `powershell.exe -Command` on
    Windows. Secrets reach the shell through the child environment.
-6. Any operation on a secret other than passing it along, joining it with text
-   or comparing it with `null` fails with a value-free error. This holds inside
-   `||`, `&&`, `exists` and `all`, and for the comparisons cel-js answers
-   without a handler (Section 4.3).
+6. Any operation on a secret outside the allowed set in Section 4.1 fails with a
+   value-free error. This holds inside `||`, `&&`, `exists` and `all`, and for
+   the comparisons cel-js answers without a handler (Section 4.3).
 7. Reference-looking text that arrives as data stays data. The inert-data rule
    in [expressions](./expressions.md) is unchanged.
 
@@ -167,7 +166,7 @@ evaluator and the expression-facing query view register `Secret`.
 | Representation outside CEL | A sentinel in text, which a `VaultSecretBag` maps to its reference. Everything else stays plain JSON.                                                                                                                 |
 | `vault.get`                | A real CEL function, `vault.get(string, string): Secret`. It reads nothing. Legacy bare-token arguments become quoted strings before parsing.                                                                         |
 | Loading                    | Only at delivery, through `VaultService.get` under the run's `RunVaultAccess`. One load per reference per attempt. An existence check keeps a missing key failing at evaluation (Section 3.4).                        |
-| Operations                 | Passing along, concatenation and comparison with `null`. Everything else is refused, including container comparisons that cel-js answers without a handler.                                                           |
+| Operations                 | The allowed set in Section 4.1: passing along, concatenation, comparison with `null`, and `has()` or `.?`. Everything else is refused, including container comparisons that cel-js answers without a handler.         |
 | Accessors                  | Every expression-facing accessor returns tagged fields as `Secret` values and reads no vault.                                                                                                                         |
 | Identifiers                | Names, tags, labels and data-name suffixes keep the `sensitive-<vault>.<key>` stand-in. Step identities keep `sensitive-<index>`. Task selectors, placement, paths, `workingDir` and environment keys refuse secrets. |
 | Shell                      | Today's environment-variable placement for `run`. The two cases that paste a value into the command become refusals.                                                                                                  |
@@ -276,15 +275,22 @@ expression is evaluated, because the eager read fails. Loading at delivery would
 make that failure disappear wherever nothing delivers the reference, such as a
 guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
 
-- **What is checked.** Every `vault.get` reference with literal arguments in the
-  expression is checked before evaluation, whichever branch runs, as the eager
-  read does today. References built from non-literal arguments, and
-  sensitive-field references the evaluation selects from records, are recorded
-  in the evaluation's ambient context. They are checked after evaluation, before
-  its result is used. A guard result is used only after its references pass.
-- **How.** Every check authorizes `read` on the vault and key under the run's
-  `RunVaultAccess`, as a load would, so a grant revoked mid-run fails the next
-  check. It then asks the provider:
+- **`vault.get` references.** Before the expression runs, the evaluator
+  evaluates the arguments of every `vault.get` call in it, whichever branch
+  would run, as `resolveVaultArg` does today, and with today's rules for which
+  arguments it accepts. An argument that fails to evaluate fails the expression,
+  as today. Each resulting reference is checked.
+- **Sensitive-field references.** Today the accessor resolves every tagged field
+  of a record it returns, and re-throws only an access denial; a missing key or
+  an unavailable vault leaves the reference text in place
+  (`ModelResolver.resolveRecordVaultRefs`). The check keeps exactly that. The
+  accessor adapter records the references in each record it returns, and after
+  evaluation, before the result is used, each is authorized under the run's
+  `RunVaultAccess` with no provider call. A missing key fails only if the
+  reference is delivered, at its load (Section 10.1).
+- **How, for `vault.get`.** Every check authorizes `read` on the vault and key
+  under the run's `RunVaultAccess`, as a load would, so a grant revoked mid-run
+  fails the next check. It then asks the provider:
   1. A provider that implements the optional `VaultExistenceProvider.has(key)`
      answers from it. The contract of `has` is that `get(key)` would succeed
      under the same provider credentials, so presence in a listing or a describe
@@ -301,7 +307,8 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   the vault, the key and the authored location. An unauthorized key fails with
   the access error a load would raise. A probe that fails fails the step with
   the provider's error, as the eager read does today. A key fails the check
-  exactly where the eager read would have failed it.
+  exactly where today's eager read or record resolution would have failed it. A
+  guard result is used only after its references pass.
 
 A **load** reads a value for delivery (Section 3.3). A **probe** reads one only
 for this check. Read counts in exit criteria and tests count loads unless they
@@ -318,6 +325,11 @@ Every CEL entry point runs the check, including `swamp behavior evaluate` and
 
 Let `S` be a `Secret`, single or composed.
 
+The **allowed set** is passing `S` along, concatenation (`+` and template
+interpolation), comparison with `null`, and `has()` or `.?`, which expose no
+field. Every other operation is refused. Sections 1.1, 2 and 4.3 refer to this
+set.
+
 | Operation                                                                          | Result                                                |
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `S + string`, `string + S`, `S + S`, template interpolation                        | A composed `Secret`                                   |
@@ -327,7 +339,7 @@ Let `S` be a `Secret`, single or composed.
 | `size`, conversions such as `int` and `string`, string functions, `matches` on `S` | Refused                                               |
 | `S` as a map key, a macro range, a `data.query` predicate or a regex pattern       | Refused                                               |
 | A container that holds `S`, interpolated into text                                 | Refused. Pass the container as a structured argument. |
-| `type(S)`                                                                          | `Secret`                                              |
+| `type(S)`                                                                          | Refused                                               |
 | `has(S.x)`, `S.?x`                                                                 | No field is exposed                                   |
 | `S in list`, list or map equality with a secret element                            | Refused (Section 4.3, item 5)                         |
 
@@ -412,10 +424,11 @@ Refusal uses registrations. It does not rewrite expressions.
    which throws. cel-js does not absorb range errors.
 4. **Before a run.** `vault.get` has the static return type `Secret`.
    `swamp behavior validate` and `swamp workflow validate` type-check
-   expressions in the same environment, with a `Secret == null` overload in
-   place of the refusing ones. A comparison with `null` passes there, and any
-   other operation on a `vault.get` result is a check-time error. Secrets from
-   records are dyn values, so their misuse shows up only at run time.
+   expressions in the same environment, with the allowed set's overloads
+   (Section 4.1) in place of the refusing ones. The allowed set passes there,
+   and any other operation on a `vault.get` result is a check-time error.
+   Secrets from records are dyn values, so their misuse shows up only at run
+   time.
 5. **Containers.** cel-js answers `in` and list or map equality without calling
    any handler (fact 2). They cannot reveal a value, because a `Secret` holds
    none, but they would answer by identity: a guard
@@ -700,12 +713,14 @@ serve keeps requiring TLS and an auth mode (`assertOffLoopbackSecurity`).
 ### 10.1 What changes for users
 
 There is one expression engine, changed in place. No repository marker selects
-it, and there is no migration command. Every behavior change is a refusal with a
-stable code, so no expression silently changes meaning.
+it, and there is no migration command. Every change to how an expression
+evaluates is a refusal with a stable code, so no expression silently changes
+meaning. The last two rows are the changes that reach a trusted consumer or a
+delivery instead of an expression.
 
 | Expression or value                                                                 | Today                                                         | After                                                                             |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `==`, `size`, a conversion or a string function on a `vault.get` result             | Works on the sentinel text, or fails                          | `validate` reports a type error. A run fails with `secret_operation_unsupported`. |
+| `==`, `size`, `type`, a conversion or a string function on a `vault.get` result     | Works on the sentinel text, or fails                          | `validate` reports a type error. A run fails with `secret_operation_unsupported`. |
 | The same operations on a tagged sensitive field                                     | Work on plaintext                                             | `secret_operation_unsupported`                                                    |
 | A container that holds a secret, interpolated into text                             | Delivered inside the JSON text                                | `secret_operation_unsupported`                                                    |
 | A secret in a task selector, placement value, path, `workingDir` or environment key | Used as plaintext                                             | `secret_destination_refused`                                                      |
@@ -717,6 +732,8 @@ stable code, so no expression silently changes meaning.
 | A secret in a name, tag, label or data-name suffix                                  | The `sensitive-<vault>.<key>` stand-in, found by value search | The same stand-in, taken from the sentinel                                        |
 | `== null` or `!= null` on a secret                                                  | Works                                                         | Unchanged                                                                         |
 | `vault.get(my-vault, KEY)`                                                          | Literal names                                                 | Unchanged                                                                         |
+| A pre-flight check reading a tagged data field in its method arguments              | Can see the plaintext                                         | A sentinel, as for a `vault.get` value. The value is in `context.vaultSecrets`.   |
+| Delivering a tagged data field whose vault key is missing or whose vault is down    | The reference text is delivered                               | The load fails the step with `secret_reference_unavailable` or the provider error |
 
 The extension API does not change (Section 6.3). `context.vaultSecrets` holds
 the loaded bag.
@@ -774,7 +791,7 @@ Phase 1.2 pins what this design relies on:
 - Synchronous entry points still return synchronous results with the `Secret`
   registrations in place.
 - `vault.get`, with the static return type `Secret`, gives check-time errors in
-  the validation environment, except for a comparison with `null`.
+  the validation environment, except for the allowed set in Section 4.1.
 - The container rule in Section 4.3 refuses every case the fact 2 pins answer by
   identity. cel-js reads a record field, a list element and a map value through
   ordinary property access, so a getter records the secret on selection and on
@@ -816,8 +833,8 @@ Behind the internal option:
 
 - The `Secret` type, the boundary conversion, the refusals, the container rule
   and the fault context.
-- The existence check for references from non-literal arguments and from
-  selected sensitive fields.
+- The existence check with up-front argument evaluation for `vault.get` as a CEL
+  function, and the authorization check for sensitive-field references.
 - `vault.get` as a CEL function, with bare-token rewriting. It replaces the
   regular-expression rewrite on this path.
 - The accessor adapter for `data.*` and `model.*.resource`.
