@@ -161,19 +161,19 @@ evaluator and the expression-facing query view register `Secret`.
 
 ## 2. Implementation decisions
 
-| Area                       | Decision                                                                                                                                                                                                                                     |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Representation in CEL      | One registered `Secret` type. It holds a vault reference, a sensitive-field reference, or an ordered list of text and references. It never holds plaintext.                                                                                  |
-| Representation outside CEL | A sentinel in text, which a `VaultSecretBag` maps to its reference. Everything else stays plain JSON.                                                                                                                                        |
-| `vault.get`                | A real CEL function, `vault.get(string, string): Secret`. It reads nothing. Legacy bare-token arguments become quoted strings before parsing.                                                                                                |
-| Loading                    | Only at delivery, through `VaultService.get` under the run's `RunVaultAccess`. One read per reference per attempt. An existence check keeps a missing key failing at evaluation, reading a value only when the provider has no other answer. |
-| Operations                 | Passing along, concatenation and comparison with `null`. Everything else is refused, including container comparisons that cel-js answers without a handler.                                                                                  |
-| Accessors                  | Every expression-facing accessor returns tagged fields as `Secret` values and reads no vault.                                                                                                                                                |
-| Identifiers                | Names, tags, labels and data-name suffixes keep the `sensitive-<vault>.<key>` stand-in. Step identities keep `sensitive-<index>`. Task selectors, placement, paths, `workingDir` and environment keys refuse secrets.                        |
-| Shell                      | Today's environment-variable placement for `run`. The two cases that paste a value into the command become refusals.                                                                                                                         |
-| Persistence                | `sensitiveFormat: 1` and `writtenReferences`, unchanged. Entries come from sentinels.                                                                                                                                                        |
-| Rollout                    | One engine, changed in place. Changes are refusals with stable codes. `validate` reports static cases early, and release notes list them all. There is no repository marker and no migration command.                                        |
-| Remote                     | Phase 5. Dispatch carries sentinels and references, and the worker loads each value over the data plane.                                                                                                                                     |
+| Area                       | Decision                                                                                                                                                                                                              |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Representation in CEL      | One registered `Secret` type. It holds a vault reference, a sensitive-field reference, or an ordered list of text and references. It never holds plaintext.                                                           |
+| Representation outside CEL | A sentinel in text, which a `VaultSecretBag` maps to its reference. Everything else stays plain JSON.                                                                                                                 |
+| `vault.get`                | A real CEL function, `vault.get(string, string): Secret`. It reads nothing. Legacy bare-token arguments become quoted strings before parsing.                                                                         |
+| Loading                    | Only at delivery, through `VaultService.get` under the run's `RunVaultAccess`. One load per reference per attempt. An existence check keeps a missing key failing at evaluation (Section 3.4).                        |
+| Operations                 | Passing along, concatenation and comparison with `null`. Everything else is refused, including container comparisons that cel-js answers without a handler.                                                           |
+| Accessors                  | Every expression-facing accessor returns tagged fields as `Secret` values and reads no vault.                                                                                                                         |
+| Identifiers                | Names, tags, labels and data-name suffixes keep the `sensitive-<vault>.<key>` stand-in. Step identities keep `sensitive-<index>`. Task selectors, placement, paths, `workingDir` and environment keys refuse secrets. |
+| Shell                      | Today's environment-variable placement for `run`. The two cases that paste a value into the command become refusals.                                                                                                  |
+| Persistence                | `sensitiveFormat: 1` and `writtenReferences`, unchanged. Entries come from sentinels.                                                                                                                                 |
+| Rollout                    | One engine, changed in place. Changes are refusals with stable codes. `validate` reports static cases early, and release notes list them all. There is no repository marker and no migration command.                 |
+| Remote                     | Phase 5. Dispatch carries sentinels and references, and the worker loads each value over the data plane.                                                                                                              |
 
 ## 3. Representation and loading
 
@@ -239,6 +239,22 @@ Swamp loads a secret only when it delivers it:
 - `readResource` keeps resolving tagged fields itself.
 - Until Phase 5, the orchestrator loads a remote step's bag before dispatch.
 
+Some code resolves sentinels inline today, through
+`resolveRuntimeExpressionsInData` and `resolveAllExpressionsInData`, which call
+`VaultSecretBag.resolveDeep`. Phase 2 turns each of these into a load under the
+same rules. That keeps its behavior unchanged until the phase that refuses or
+masks the destination:
+
+| Inline resolution                                                                   | Destination (Section 7.1)             | Loads until                                |
+| ----------------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------ |
+| Pre-flight checks in `swamp model validate` (`src/libswamp/models/validate.ts`)     | Pre-flight checks, a trusted consumer | Always. Phase 3 uses the shared load step. |
+| Placement and task selectors (`execution_service.ts`)                               | Refuses secrets                       | Phase 4                                    |
+| Child workflow references (`execution_service.ts`)                                  | Refuses secrets                       | Phase 4                                    |
+| Assert message interpolation (`execution_service.ts`)                               | Masked                                | Phase 4                                    |
+| `resolveVaultExpressionsInDefinition`, `resolveVaultExpressionsInData` (deprecated) | The caller's                          | Phase 4, which deletes them                |
+
+A new inline caller of `resolveDeep` needs a row here.
+
 A load calls `VaultService.get(vault, key, "expression:vault-resolve")` inside
 the run's ambient `RunVaultAccess`. The principal's grants and the workflow's
 `vaults:` list both apply. A sentinel is not a grant. The reserved
@@ -255,11 +271,10 @@ A step that a guard skips loads nothing.
 
 ### 3.4 Existence check
 
-Today a reference to a missing or unauthorized key fails the run when the
+Today a reference to a missing or unreadable key fails the run when the
 expression is evaluated, because the eager read fails. Loading at delivery would
 make that failure disappear wherever nothing delivers the reference, such as a
-guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it, and
-reads no value wherever the provider can answer without one.
+guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
 
 - **What is checked.** Every `vault.get` reference with literal arguments in the
   expression is checked before evaluation, whichever branch runs, as the eager
@@ -267,32 +282,35 @@ reads no value wherever the provider can answer without one.
   sensitive-field references the evaluation selects from records, are recorded
   in the evaluation's ambient context. They are checked after evaluation, before
   its result is used. A guard result is used only after its references pass.
-- **How.** The check runs under the run's `RunVaultAccess` and authorizes `read`
-  on the vault and key, as a load would. It then asks the provider, in order:
+- **How.** Every check authorizes `read` on the vault and key under the run's
+  `RunVaultAccess`, as a load would, so a grant revoked mid-run fails the next
+  check. It then asks the provider:
   1. A provider that implements the optional `VaultExistenceProvider.has(key)`
-     answers directly, and its answer is final.
-  2. Otherwise a key that `list()` returns exists. `list()` returns key names
-     only. Its absence proves nothing, because the provider contract does not
-     tie `get` to `list`: a provider can accept key forms it does not list, page
-     or truncate its listing, or not support listing at all.
-  3. A key that `list()` does not return, or a provider whose `list()` fails,
-     gets one keyed `get`, as the eager read does today. The probe registers the
-     value with the run's `SecretRedactor` and drops it. The value never enters
-     a bag, CEL or a delivery.
+     answers from it. The contract of `has` is that `get(key)` would succeed
+     under the same provider credentials, so presence in a listing or a describe
+     call is not enough. A conformance suite in `packages/testing/` holds
+     providers to that, and a built-in provider implements `has` only where its
+     API can answer it without reading the value.
+  2. Any other provider gets one keyed `get`, the read the eager read does
+     today. This probe registers the value with the run's `SecretRedactor` and
+     drops it. The value never enters a bag, CEL or a delivery.
 
-  Results are cached for the run, per reference and per listed vault, so a vault
-  is listed at most once per run. A key removed later fails at load.
+  Only a positive answer is cached, for the run and per reference. A key removed
+  later fails at load. Authorization is never cached.
 - **Failure.** A missing key fails with `secret_reference_unavailable`, naming
   the vault, the key and the authored location. An unauthorized key fails with
   the access error a load would raise. A probe that fails fails the step with
-  the provider's error, exactly as the eager read does today. A key fails the
-  check only where the eager read would have failed it.
+  the provider's error, as the eager read does today. A key fails the check
+  exactly where the eager read would have failed it.
+
+A **load** reads a value for delivery (Section 3.3). A **probe** reads one only
+for this check. Read counts in exit criteria and tests count loads unless they
+say otherwise. A reference costs at most one probe per run, and none on a
+provider with `has`. A refusal before delivery makes zero loads, though a probe
+may already have run.
 
 Every CEL entry point runs the check, including `swamp behavior evaluate` and
 `swamp workflow evaluate`, so they still report a missing or unauthorized key.
-Phase 2 adds `has` to every built-in provider that can answer it without reading
-a value, so probes are left to extension providers and to keys their listing
-omits.
 
 ## 4. CEL semantics
 
@@ -417,10 +435,11 @@ Refusal uses registrations. It does not rewrite expressions.
      with `secret_operation_unsupported`, after any absorption.
 
    The rule over-refuses. `vault.get('v', 'k') != null && self.item in ['a']`
-   fails, although the secret never reaches `in`. The refusal is loud and names
-   the expression. Moving the comparison into its own expression, such as an
-   input, avoids it. A later change can narrow the rule if cel-js gains a
-   container-equality hook.
+   fails, although the secret never reaches `in`, and so does
+   `vault.get('v', 'k') != null && inputs.a == self.item` with two strings. The
+   refusal is loud and names the expression. Moving the comparison into its own
+   expression, such as an input, avoids it. A later change can narrow the rule
+   if cel-js gains a container-equality hook.
 
 A fitness test lists the internal environment's built-in operators, functions
 and conversions. It fails when one that accepts a string or a dyn value has no
@@ -546,19 +565,19 @@ The boundary lives in `src/domain/models/method_execution_service.ts`.
 
 ### 7.1 Destination contract
 
-| Destination                                                                            | Policy                                                                                                                                               |
-| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Method arguments, `context.globalArgs`, orchestrator pre-flight checks, `readResource` | Plaintext at the trusted extension boundary, loaded at delivery. Checks see method arguments with sentinels, as today.                               |
-| Shell `env` values                                                                     | Plaintext in the child environment. A value with an embedded NUL is refused without echoing it.                                                      |
-| Shell `run`, `workingDir`, environment keys                                            | `run` keeps environment-variable placement (Section 7.2). `workingDir` and environment keys refuse secrets.                                          |
-| Other fields with `.meta({ secrets: "refuse" })`                                       | Refuse a secret anywhere in the value.                                                                                                               |
-| Tags, labels, names, data-name suffixes, task selectors, placement, paths              | Tags, labels, names and data-name suffixes get the `sensitive-<vault>.<key>` stand-in, as today. Task selectors, placement and paths refuse secrets. |
-| Guards/assert predicates                                                               | A result that holds a secret is refused.                                                                                                             |
-| Assert messages, logs, reports, previews, history, telemetry, events                   | Sentinels are masked as `***`. Errors carry no value. Output redaction stays.                                                                        |
-| Evaluated caches, run records, run index, pending scopes                               | The persisted form in Section 8.1.                                                                                                                   |
-| Auto-definitions                                                                       | Each sentinel is written as its reference text.                                                                                                      |
-| Lease, pending-dispatch, and worker records; serve audit; `run_tracker` payloads       | References and masks only. Error strings are masked.                                                                                                 |
-| Protected worker delivery                                                              | Plaintext only in worker memory, for the current dispatch attempt (Phase 5).                                                                         |
+| Destination                                                                                          | Policy                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Method arguments, `context.globalArgs`, orchestrator pre-flight checks, `readResource`               | Plaintext at the trusted extension boundary, loaded at delivery. Checks see method arguments with sentinels, as today.                                                          |
+| Shell `env` values                                                                                   | Plaintext in the child environment. A value with an embedded NUL is refused without echoing it.                                                                                 |
+| Shell `run`, `workingDir`, environment keys                                                          | `run` keeps environment-variable placement (Section 7.2). `workingDir` and environment keys refuse secrets.                                                                     |
+| Other fields with `.meta({ secrets: "refuse" })`                                                     | Refuse a secret anywhere in the value.                                                                                                                                          |
+| Tags, labels, names, data-name suffixes, task selectors, placement, paths, child workflow references | Tags, labels, names and data-name suffixes get the `sensitive-<vault>.<key>` stand-in, as today. Task selectors, placement, paths and child workflow references refuse secrets. |
+| Guards/assert predicates                                                                             | A result that holds a secret is refused.                                                                                                                                        |
+| Assert messages, logs, reports, previews, history, telemetry, events                                 | Sentinels are masked as `***`. Errors carry no value. Output redaction stays.                                                                                                   |
+| Evaluated caches, run records, run index, pending scopes                                             | The persisted form in Section 8.1.                                                                                                                                              |
+| Auto-definitions                                                                                     | Each sentinel is written as its reference text.                                                                                                                                 |
+| Lease, pending-dispatch, and worker records; serve audit; `run_tracker` payloads                     | References and masks only. Error strings are masked.                                                                                                                            |
+| Protected worker delivery                                                                            | Plaintext only in worker memory, for the current dispatch attempt (Phase 5).                                                                                                    |
 
 Keep one implementation per destination family, shared by the CLI, libswamp,
 workflows, serve and workers. Beyond the caches and run records, the sinks found
@@ -693,7 +712,7 @@ stable code, so no expression silently changes meaning.
 | A guard or assert predicate whose result holds a secret                             | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
 | A value in a quoted here-document or in PowerShell single quotes                    | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
 | A malformed sensitive-fields tag or stored reference                                | Treated as absent, or left as text                            | `secret_reference_invalid`                                                        |
-| List or map equality, or `in`, in an expression that reads a secret                 | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
+| `in`, or `==` or `!=` with no literal operand, in an expression that reads a secret | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
 | `vault.get` of a missing key, in an expression whose result nothing delivers        | The eager read fails the run                                  | `secret_reference_unavailable` (Section 3.4)                                      |
 | A secret in a name, tag, label or data-name suffix                                  | The `sensitive-<vault>.<key>` stand-in, found by value search | The same stand-in, taken from the sentinel                                        |
 | `== null` or `!= null` on a secret                                                  | Works                                                         | Unchanged                                                                         |
@@ -773,20 +792,23 @@ with the container rule covering macros.
   reading the vault. Data-origin sentinels record the source that
   `RunSensitiveValues` already holds for each value.
 - The existence check (Section 3.4) for every reference
-  `resolveVaultExpressions` finds, with `VaultExistenceProvider` and `has` on
-  each built-in provider that can answer without reading a value. It ships with
-  this phase because this phase stops the eager read.
+  `resolveVaultExpressions` finds, with `VaultExistenceProvider`, its
+  conformance suite, and `has` on each built-in provider that can honor its
+  contract. It ships with this phase because this phase stops the eager read.
+- Each inline resolution in Section 3.3 becomes a load, so no destination
+  receives a sentinel in place of the value it receives today.
 - The sentinel prefix grows to 128 random bits.
 - `toPersistedForm` takes entries from sentinels. The value search stays only
   for plaintext that data reads still bring into CEL.
 - Until Phase 5, the orchestrator loads the bag before a remote dispatch.
 
-**Exit:** no bag holds plaintext before delivery. A counting vault sees one read
-per reference per attempt. A step that a guard skips makes no `vault.get` read.
-A missing or unauthorized key fails at evaluation exactly where the eager read
-failed it, and a key the eager read resolved never fails the check. A key that
-`has` or a listing confirms is checked with no value read. Refresh diagnostics
-carry no value. Existing suites pass unchanged.
+**Exit:** no bag holds plaintext before delivery. A counting vault sees one load
+per reference per attempt, and at most one probe per reference per run. A step
+that a guard skips makes no load. A missing or unauthorized key fails at
+evaluation exactly where the eager read failed it, including a key a principal
+can list but not read. A key that `has` confirms is checked with no value read.
+Every inline resolution in Section 3.3 receives what it receives today. Refresh
+diagnostics carry no value. Existing suites pass unchanged.
 
 ### Phase 3: local behavior execution
 
@@ -820,6 +842,9 @@ load. Non-secret behavior is unchanged.
   stops reading the vault. `swamp workflow evaluate` writes its cache through
   the boundary conversion.
 - Masking in run events, run records and the run index.
+- The refusals and masks for the inline resolutions in Section 3.3: placement,
+  task selectors and child workflow references refuse secrets, and assert
+  messages mask them. Their Phase 2 loads go.
 
 Then turn the path on for every entry point and remove the internal option.
 Delete the regular-expression rewrite, the value search, and the
@@ -846,17 +871,17 @@ worker versions.
 
 ### 12.1 Test matrix
 
-| Suite                   | Evidence                                                                                                                                                                                                                                                                  |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CEL conformance         | Every exposed operator, function and macro class on single and composed secrets. Both operand orders, nesting, selected and unselected branches, and absorption. Each container comparison the fact 2 pins list, and the over-refusal case in Section 4.3.                |
-| Value properties        | Composition, the boundary conversion round trip, Optional, failing clone and stringify, and sentinel uniqueness.                                                                                                                                                          |
-| Access and loading      | Principal grants, the workflow `vaults:` list, one read per reference per attempt, refresh, retry and rotation. The existence check through `has`, a listed key, an unlisted key that `get` resolves, and a failing `list()`, with reads counted and no value in any bag. |
-| Accessor integration    | Full records, selected scalars, nested lists and maps, wildcard and cross-namespace reads, set reads, live and reconstructed outputs, child outputs and malformed tags.                                                                                                   |
-| Delivery integration    | Exact method, check and shell inputs on both shell strategies, refusals before any load, and both output modes.                                                                                                                                                           |
-| Persistence             | Every cache, run, index, output and checkpoint seam round-trips through `writtenReferences`. Existing files read back.                                                                                                                                                    |
-| Characterization corpus | Non-secret behavior is unchanged. Each row in Section 10.1 has an expected result.                                                                                                                                                                                        |
-| Architecture fitness    | The sink inventory rules, the refusal coverage test in Section 4.3, and no `Secret` import outside the CEL adapter, the accessor adapter and the query view.                                                                                                              |
-| swamp-uat               | Compiled-binary journeys, prohibited-sink scans, shell platforms and protocol mismatch.                                                                                                                                                                                   |
+| Suite                   | Evidence                                                                                                                                                                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CEL conformance         | Every exposed operator, function and macro class on single and composed secrets. Both operand orders, nesting, selected and unselected branches, and absorption. Each container comparison the fact 2 pins list, and the over-refusal case in Section 4.3. |
+| Value properties        | Composition, the boundary conversion round trip, Optional, failing clone and stringify, and sentinel uniqueness.                                                                                                                                           |
+| Access and loading      | Principal grants, the workflow `vaults:` list, one read per reference per attempt, refresh, retry and rotation. The existence check through `has` and through a probe, with loads and probes counted separately, a revoked grant, and no value in any bag. |
+| Accessor integration    | Full records, selected scalars, nested lists and maps, wildcard and cross-namespace reads, set reads, live and reconstructed outputs, child outputs and malformed tags.                                                                                    |
+| Delivery integration    | Exact method, check and shell inputs on both shell strategies, refusals before any load, and both output modes.                                                                                                                                            |
+| Persistence             | Every cache, run, index, output and checkpoint seam round-trips through `writtenReferences`. Existing files read back.                                                                                                                                     |
+| Characterization corpus | Non-secret behavior is unchanged. Each row in Section 10.1 has an expected result.                                                                                                                                                                         |
+| Architecture fitness    | The sink inventory rules, the refusal coverage test in Section 4.3, and no `Secret` import outside the CEL adapter, the accessor adapter and the query view.                                                                                               |
+| swamp-uat               | Compiled-binary journeys, prohibited-sink scans, shell platforms and protocol mismatch.                                                                                                                                                                    |
 
 ### 12.2 Canary oracle
 
@@ -871,7 +896,7 @@ the inventory, including the configured datastore and temporary execution
 locations, not only the local `.swamp/` directory. Look for escaped and encoded
 forms wherever an operation could produce them, because a missing whole canary
 alone is not enough. Assert vault read counts and zero deliveries at refusing
-destinations. Refusals before load make zero reads. Vault storage, protected
+destinations. Refusals before delivery make zero loads. Vault storage, protected
 data-plane traffic and trusted consumers are left out of the zero-plaintext
 scan. Test their authorization and lifetime instead.
 
