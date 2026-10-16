@@ -205,6 +205,10 @@ Deno.test("operatorRefusalSignatures: excludes the allowed set and adds custom e
   assertEquals(plain.includes("string == Secret"), false, "mirrored by cel-js");
   assertEquals(plain.includes("Secret < string"), true);
   assertEquals(plain.includes("string < Secret"), true);
+  assertEquals(plain.includes("Secret == google.protobuf.Timestamp"), true);
+  assertEquals(plain.includes("Secret + google.protobuf.Duration"), true);
+  assertEquals(plain.includes("google.protobuf.Timestamp >= Secret"), true);
+  assertEquals(plain.includes("Secret == CelNamespace"), true);
   assertEquals(plain.includes("!Secret"), true);
   assertEquals(plain.includes("Secret in list"), false);
   const custom = operatorRefusalSignatures(["Ns", "Secret"]);

@@ -66,11 +66,13 @@ import {
   withFaultContext,
 } from "./cel_js_secret_test_helpers.ts";
 import {
+  equalityTypes,
   functionRefusalSignatures,
   operatorRefusalSignatures,
   secretCapableBuiltins,
   SWAMP_FUNCTION_SIGNATURES,
   SWAMP_NAMESPACE_TYPES,
+  typeNamesInDefinitions,
 } from "./cel_js_secret_refusal_inventory.ts";
 
 const s = createSecret("v/k");
@@ -144,16 +146,19 @@ Deno.test(
     assertEquals(plain.getDefinitions().functions.length, 108);
     const builtins = secretCapableBuiltins(plain).map((fn) => fn.signature);
     assertEquals(builtins.length, 57);
+    // The equality type list is exactly the set of type names cel-js uses
+    // in its own definitions, so a type a dependency bump adds fails here.
+    assertEquals(typeNamesInDefinitions(plain), [...equalityTypes([])].sort());
     assertEquals(functionRefusalSignatures(builtins).length, 56);
     assertEquals(
       functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES).length,
       41,
     );
-    assertEquals(operatorRefusalSignatures().length, 163);
-    assertEquals(operatorRefusalSignatures(SWAMP_NAMESPACE_TYPES).length, 167);
+    assertEquals(operatorRefusalSignatures().length, 275);
+    assertEquals(operatorRefusalSignatures(SWAMP_NAMESPACE_TYPES).length, 279);
 
     const { registration } = internalEnvironment();
-    assertEquals(registration.operators.length, 167);
+    assertEquals(registration.operators.length, 279);
     assertEquals(registration.functions.length, 97);
   },
 );
@@ -175,6 +180,10 @@ Deno.test(
       ["list", "[1]"],
       ["map", "{'a': 1}"],
       ["optional", "optional.of(1)"],
+      ["google.protobuf.Timestamp", "timestamp('2020-01-01T00:00:00Z')"],
+      ["google.protobuf.Duration", "duration('1s')"],
+      ["CelNamespace", "cel"],
+      ["OptionalNamespace", "optional"],
       ["Secret", "t"],
       ["CelDataNamespace", "data"],
     ];
@@ -410,6 +419,21 @@ Deno.test(
       ["'x' > s", "string > Secret"],
       ["s <= s", "Secret <= Secret"],
       ["s >= b'x'", "Secret >= bytes"],
+      ["s + duration('1s')", "Secret + google.protobuf.Duration"],
+      ["duration('1s') + s", "google.protobuf.Duration + Secret"],
+      [
+        "s - timestamp('2020-01-01T00:00:00Z')",
+        "Secret - google.protobuf.Timestamp",
+      ],
+      [
+        "s < timestamp('2020-01-01T00:00:00Z')",
+        "Secret < google.protobuf.Timestamp",
+      ],
+      [
+        "timestamp('2020-01-01T00:00:00Z') > s",
+        "google.protobuf.Timestamp > Secret",
+      ],
+      ["s + true", "Secret + bool"],
       ["-s", "-Secret"],
       ["!s", "!Secret"],
     ];

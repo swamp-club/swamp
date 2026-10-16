@@ -61,6 +61,9 @@
  *
  * This module carries no test dependency on purpose: Phase 3 moves it to
  * `src/infrastructure/cel/` as the source of the production registrations.
+ * Until then the affected-commands rules (`scripts/affected_commands.ts`)
+ * read it as an unclassified `src/` file, so a change to it widens the UAT
+ * scope to every command. That is conservative and accepted.
  */
 
 import type { DefinitionFunction, Environment } from "cel-js";
@@ -80,10 +83,14 @@ export function isSecretCapableType(type: string): boolean {
 }
 
 /**
- * Every type name cel-js 7.6.1 accepts in an operator signature, `Secret`
- * among them. `null` is not here: `Secret == null` is in the allowed set and
- * answers `false`. Custom types an environment registers are appended by
- * {@link equalityTypes}.
+ * Every type name cel-js 7.6.1 can name in an operator signature, `Secret`
+ * among them: the scalar and aggregate types, the optional, the two protobuf
+ * well-known types it registers with their own `==`, `+`, `-` and comparison
+ * overloads, and the two namespace singletons bound as `cel` and `optional`.
+ * `null` is not here: `Secret == null` is in the allowed set and answers
+ * `false`. Custom types an environment registers are appended by
+ * {@link equalityTypes}. {@link typeNamesInDefinitions} pins this list
+ * against the names cel-js uses in its own definitions.
  */
 export const EQUALITY_TYPES: readonly string[] = [
   "string",
@@ -96,21 +103,53 @@ export const EQUALITY_TYPES: readonly string[] = [
   "list",
   "map",
   "optional",
+  "google.protobuf.Timestamp",
+  "google.protobuf.Duration",
+  "CelNamespace",
+  "OptionalNamespace",
   SECRET_TYPE_NAME,
 ];
 
-/** The operand types the arithmetic and comparison refusals pair with. */
-export const OPERAND_TYPES: readonly string[] = [
-  "string",
-  "bool",
-  "int",
-  "uint",
-  "double",
-  "bytes",
-  "list",
-  "map",
-  SECRET_TYPE_NAME,
-];
+/**
+ * The operand types the arithmetic and comparison refusals pair with: every
+ * equality type, so any binary operator with a `Secret` on one side records a
+ * fault whatever is on the other.
+ */
+export const OPERAND_TYPES: readonly string[] = EQUALITY_TYPES;
+
+/**
+ * Names that appear in cel-js's definitions without being types a `Secret`
+ * can be compared with: macro syntax, the dyn pseudo-type, `null` (the
+ * allowed set answers it) and type variables.
+ */
+export function isTypeWithoutEquality(name: string): boolean {
+  return name === "ast" || name === "dyn" || name === "null" ||
+    /^[A-Z]$/.test(name);
+}
+
+/**
+ * Every base type name cel-js uses in its function definitions on `env`
+ * (receivers, parameters and return types, with type arguments stripped),
+ * minus {@link isTypeWithoutEquality}. A test keeps this equal to
+ * {@link EQUALITY_TYPES} plus the environment's custom types, so a type a
+ * dependency bump adds fails a test instead of slipping past the refusals.
+ */
+export function typeNamesInDefinitions(env: Environment): string[] {
+  const names = new Set<string>();
+  for (const fn of env.getDefinitions().functions) {
+    const types = [
+      fn.receiverType,
+      fn.returnType,
+      ...fn.params.map((p) => p.type),
+    ];
+    for (const type of types) {
+      if (type === null) continue;
+      const base = type.replace(/<.*$/, "");
+      if (!isTypeWithoutEquality(base)) names.add(base);
+    }
+  }
+  return [...names].sort();
+}
 
 export const ARITHMETIC_OPERATORS: readonly string[] = [
   "+",
