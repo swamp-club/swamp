@@ -27,7 +27,9 @@ import {
   assertV3Hosting,
   missingV3Capabilities,
   V3_BUCKET_MIN_EXTENSION_VERSION,
+  V3_EXTENSION_TOO_OLD_CODE,
   V3_HOSTING_UNSUPPORTED_CODE,
+  V3BucketExtensionTooOldError,
   type V3HostingCapabilities,
   V3HostingUnsupportedError,
 } from "./v3_hosting.ts";
@@ -87,4 +89,24 @@ Deno.test("assertV3Hosting: refuses with the missing capabilities and the minimu
 
 Deno.test("assertV3Hosting: a capable provider passes", () => {
   assertV3Hosting(CAPABLE, "@swamp/gcs-datastore");
+});
+
+Deno.test("V3BucketExtensionTooOldError: names the version, its source, the minimum and the update", () => {
+  const err = new V3BucketExtensionTooOldError(
+    "@swamp/s3-datastore",
+    "2026.10.16.2",
+    "the repo's lockfile pins its extension at",
+  );
+  assertInstanceOf(err, UserError);
+  assertEquals(err.code, V3_EXTENSION_TOO_OLD_CODE);
+  assertEquals(err.version, "2026.10.16.2");
+  assertStringIncludes(
+    err.message,
+    "the repo's lockfile pins its extension at 2026.10.16.2",
+  );
+  assertStringIncludes(err.message, V3_BUCKET_MIN_EXTENSION_VERSION);
+  assertStringIncludes(
+    err.message,
+    "swamp extension update @swamp/s3-datastore",
+  );
 });

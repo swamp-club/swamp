@@ -36,6 +36,11 @@ export interface DatastoreTypeInfo {
   createProvider?: (config: Record<string, unknown>) => DatastoreProvider;
   /** Whether this is a built-in datastore type */
   isBuiltIn: boolean;
+  /**
+   * The source file the type's bundle was loaded from (user-defined types
+   * only), so the extension that ships it can be found (swamp-club#3567).
+   */
+  sourcePath?: string;
 }
 
 /**

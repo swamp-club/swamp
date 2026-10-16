@@ -28,7 +28,11 @@ import {
   EXPORT_DECLARATION_PATTERNS,
   sourceFromExportDeclaration,
 } from "./export_declaration.ts";
-import type { KindAdapter, ValidationResult } from "./kind_adapter.ts";
+import type {
+  KindAdapter,
+  RegistrationContext,
+  ValidationResult,
+} from "./kind_adapter.ts";
 
 const USER_DATASTORE_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
@@ -126,6 +130,7 @@ export const datastoreKindAdapter: KindAdapter = {
     _typeNormalized: string,
     validated: Record<string, unknown>,
     _module: Record<string, unknown>,
+    context: RegistrationContext,
   ): void {
     const v = validated as z.infer<typeof UserDatastoreSchema>;
     datastoreTypeRegistry.register({
@@ -135,6 +140,7 @@ export const datastoreKindAdapter: KindAdapter = {
       configSchema: v.configSchema,
       createProvider: wrapExtensionProvider(v.createProvider),
       isBuiltIn: false,
+      sourcePath: context.absolutePath,
     });
   },
 
@@ -151,6 +157,7 @@ export const datastoreKindAdapter: KindAdapter = {
     _typeNormalized: string,
     validated: Record<string, unknown>,
     _module: Record<string, unknown>,
+    context: RegistrationContext,
   ): void {
     const v = validated as z.infer<typeof UserDatastoreSchema>;
     datastoreTypeRegistry.promoteFromLazy({
@@ -160,6 +167,7 @@ export const datastoreKindAdapter: KindAdapter = {
       configSchema: v.configSchema,
       createProvider: wrapExtensionProvider(v.createProvider),
       isBuiltIn: false,
+      sourcePath: context.absolutePath,
     });
   },
 

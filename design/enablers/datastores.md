@@ -4207,10 +4207,7 @@ the default, and v2 datastores are untouched.
 
 **Setting it up.** `swamp extension pull @swamp/s3-datastore` (or
 `@swamp/gcs-datastore`) for the latest release, then `swamp datastore setup
-extension @swamp/s3-datastore --config '{...}' --format 3`. The minimum
-version is named in the refusal of an extension without the v3 capabilities,
-not checked against the repo's lockfile: a repo pinned to 2026.10.16.1–.4 can
-set up v3 without swamp-club#3549's guard, so pull the latest first. Setup
+extension @swamp/s3-datastore --config '{...}' --format 3`. Setup
 refuses, writing nothing, in this order:
 
 - a provider without every v3 capability: `datastoreWideLease`,
@@ -4220,6 +4217,16 @@ refuses, writing nothing, in this order:
   `V3_BUCKET_MIN_EXTENSION_VERSION` (2026.10.16.5, the first release whose v2
   sync also refuses a v3 bucket, swamp-club#3549; 2026.10.16.1 first declared
   the capabilities);
+- an extension older than `V3_BUCKET_MIN_EXTENSION_VERSION`
+  (swamp-club#3567): first the pulled extension the type was loaded from, by
+  the `manifest.yaml` of its directory under `.swamp/pulled-extensions` or
+  `.swamp/config/pulled-extensions` (recorded as `sourcePath` when the type
+  registers), then the version the committed lockfile
+  (`<modelsDir>/upstream_extensions.json`) pins that extension at, so
+  teammates who install from it get a release with swamp-club#3549's guard.
+  A type not loaded from a pulled extension (a local or mounted source, whose
+  version is not a published one) and a lockfile with no entry pass; a
+  managedConfig repo pins in its config tier, which setup does not read;
 - a platform Litestream cannot replicate on: Windows while the pin is below
   0.5.18 (`litestreamAvailability`);
 - a replica target the provider refuses, as it refuses it (GCS with a
@@ -4270,6 +4277,18 @@ when its provider can host it, and never as the other format:
   `.swamp.yaml` config with no format is v2: setup writes `format: 3` for
   every v3 datastore, clones carry it, and a v2 setup onto a v3 bucket is
   refused. So an offline v2 repo keeps reading from its cache.
+
+Whatever opens as v3 on a bucket is also refused, with
+`V3BucketExtensionTooOldError` naming `swamp extension update <type>`, when
+the pulled extension its type was loaded from is older than
+`V3_BUCKET_MIN_EXTENSION_VERSION` (swamp-club#3567), so a teammate on an old
+extension cannot write. Nothing that opens as v2 is checked: an old
+extension keeps reading a v2 repo, offline too. Known limit: a checkout of
+a commit from before setup recorded `format: 3`, still on an extension
+below the minimum, opens as v2 when the marker read fails, and only that
+extension's own refusal of a format-3 bucket would stop its v2 sync; setup
+now refuses a lockfile pinned below the minimum, so the setup commit and
+everything after it pins a release that refuses.
 
 **The binding.** `v3_datastore_binding.ts` says where a v3 datastore lives
 and whether it replicates. Every v3 helper is keyed by a local datastore

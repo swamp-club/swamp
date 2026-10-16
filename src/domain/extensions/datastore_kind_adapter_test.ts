@@ -155,6 +155,18 @@ for (
       datastoreTypeRegistry.invalidateType(type);
     }
   });
+  Deno.test(`datastoreKindAdapter.${path}: records the source the bundle was loaded from`, () => {
+    const type = uniqueType();
+    try {
+      registerType(type);
+      assertEquals(
+        datastoreTypeRegistry.get(type)?.sourcePath,
+        context.absolutePath,
+      );
+    } finally {
+      datastoreTypeRegistry.invalidateType(type);
+    }
+  });
 }
 
 Deno.test("datastoreKindAdapter.register: other provider members still reach the class instance", async () => {

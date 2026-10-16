@@ -94,6 +94,41 @@ export class V3HostingUnsupportedError extends UserError {
   }
 }
 
+/** Error code for a v3 bucket datastore whose extension is too old. */
+export const V3_EXTENSION_TOO_OLD_CODE = "datastore_v3_extension_too_old";
+
+/**
+ * Thrown when a v3 bucket datastore's extension, as loaded or as pinned in
+ * the repo's lockfile, is older than {@link V3_BUCKET_MIN_EXTENSION_VERSION}
+ * (swamp-club#3567).
+ */
+export class V3BucketExtensionTooOldError extends UserError {
+  readonly datastoreType: string;
+  readonly version: string;
+
+  /**
+   * @param extensionName - the extension that ships the type, named in the
+   *   update command; the type itself when unknown
+   */
+  constructor(
+    datastoreType: string,
+    version: string,
+    where: string,
+    extensionName: string = datastoreType,
+  ) {
+    super(
+      `The ${datastoreType} datastore cannot host a v3 datastore: ${where} ` +
+        `${version}, and v3 on S3 and GCS needs ` +
+        `${V3_BUCKET_MIN_EXTENSION_VERSION} or later. Run \`swamp extension ` +
+        `update ${extensionName}\` to update it. Nothing was changed.`,
+      V3_EXTENSION_TOO_OLD_CODE,
+    );
+    this.name = "V3BucketExtensionTooOldError";
+    this.datastoreType = datastoreType;
+    this.version = version;
+  }
+}
+
 /**
  * Throws unless `provider` declares every capability a v3 datastore needs.
  *
