@@ -625,6 +625,32 @@ Deno.test("Partition.restore: an empty partition round-trips", () => {
   assertEquals(restored.highestFence, undefined);
 });
 
+Deno.test("Partition.retainVersionsOf: keeps a later state's high-water marks and removed versions not live here", () => {
+  const earlier = Partition.empty(modelPartition());
+  earlier.append(modelCommit(1, [versionOp("vpc", 1), versionOp("vpc", 2)]));
+  const later = Partition.restore(modelPartition(), {
+    v: 1,
+    partition: modelPartition().toString(),
+    seq: 5,
+    records: [],
+    names: [
+      { name: "vpc", live: [5], highWater: 6, removed: [[2, 4]] },
+      { name: "subnet", live: [], highWater: 3, removed: [[1, 3]] },
+    ],
+  }, () => false);
+  assertEquals(earlier.retainVersionsOf(later), true);
+  assertEquals(earlier.versions("vpc"), [1, 2]);
+  assertEquals(earlier.highWater("vpc"), 6);
+  // Version 2 is live here, so it is not removed.
+  assertEquals(
+    [1, 2, 3, 4, 5].map((v) => earlier.removed("vpc", v)),
+    [false, false, true, true, false],
+  );
+  assertEquals(earlier.highWater("subnet"), 3);
+  assertEquals(earlier.removed("subnet", 2), true);
+  assertEquals(earlier.retainVersionsOf(later), false);
+});
+
 Deno.test("Partition.restore: round-trips removed and out-of-order versions", () => {
   const partition = Partition.empty(modelPartition());
   partition.append(

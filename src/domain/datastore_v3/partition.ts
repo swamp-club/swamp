@@ -143,10 +143,11 @@ type RecordState = string | null;
  *   Versions may still arrive out of order (swamp-club#3250): a deferred
  *   version promoted after a higher one, or parallel writers finishing out
  *   of order, records a version below the high-water mark that was never
- *   recorded. The one exception re-records a version: an append, whose
- *   `data.append` put for that name and version comes earlier in the commit
- *   than the data-version op; each such put lets one op through. Each name
- *   has exactly one latest, its greatest live version.
+ *   recorded. The one exception re-records a version, live or removed: an
+ *   append, whose `data.append` put for that name and version comes earlier
+ *   in the commit than the data-version op; each such put lets one op
+ *   through, and a removed version it re-records is no longer removed. Each
+ *   name has exactly one latest, its greatest live version.
  *
  *   Writers allocate above the high-water mark, so a refusal means a writer
  *   bypassed that: for example orphan reclaim re-staging, under a new
@@ -430,6 +431,35 @@ export class Partition {
       }
       if (!entry.live.has(version) && !entry.removed.has(version)) {
         entry.removed = entry.removed.add(version);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Keeps what `later`, a state of this partition past this one, knew of its
+   * names' versions: each high-water mark, and each removed version not live
+   * here. A truncation below the head of an earlier one uses it, so the
+   * versions that one retained are not lost (swamp-club#3532). Returns
+   * whether anything changed.
+   */
+  retainVersionsOf(later: Partition): boolean {
+    let changed = false;
+    for (const [name, theirs] of later.#names) {
+      let entry = this.#names.get(name);
+      if (entry === undefined) {
+        entry = { live: new Set(), highWater: 0, removed: VersionRanges.EMPTY };
+        this.#names.set(name, entry);
+      }
+      if (theirs.highWater > entry.highWater) {
+        entry.highWater = theirs.highWater;
+        changed = true;
+      }
+      let removed = entry.removed.union(theirs.removed);
+      for (const version of entry.live) removed = removed.delete(version);
+      if (!removed.equals(entry.removed)) {
+        entry.removed = removed;
         changed = true;
       }
     }

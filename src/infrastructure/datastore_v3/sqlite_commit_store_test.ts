@@ -601,6 +601,41 @@ Deno.test("SqliteCommitStore.truncateAfter: keeps the versions it removes from b
   });
 });
 
+Deno.test("SqliteCommitStore.truncateAfter: a second truncation below the first's head keeps the versions the first retained", async () => {
+  await withStore(async (store) => {
+    const versioned = async (seq: number, version: number) =>
+      modelCommit(seq, [await savePut("a", version), versionOp("a", version)], {
+        fence: 1,
+      });
+    await store.append(await save(1));
+    await store.append(await save(2));
+    const first = store.highWaterMark();
+    await store.append(await save(3));
+    await store.append(await save(4));
+    // Versions 3 and 4 survive only in the snapshot at seq 2.
+    await store.truncateAfter(first);
+
+    await store.append(await versioned(3, 5));
+    const second = store.highWaterMark();
+    // Seq 4 replaces the snapshot at seq 2 with one past the next mark.
+    await store.append(await versioned(4, 6));
+    await store.truncateAfter(second);
+
+    assertEquals(await store.dataHighWater("", modelPartition(), "a"), 6);
+    for (const version of [3, 4, 6]) {
+      const error = await assertRejects(
+        async () => store.append(await versioned(4, version)),
+        CommitRejectedError,
+      );
+      assertEquals(error.reason, "version-reused", `version ${version}`);
+    }
+    assertEquals(await store.append(await versioned(4, 7)), {
+      kind: "appended",
+      seq: 4,
+    });
+  }, { snapshotInterval: 2 });
+});
+
 Deno.test("SqliteCommitStore.truncateAfter: keeps the versions of a partition it removes whole", async () => {
   await withStore(async (store) => {
     await store.append(await save(1));

@@ -99,6 +99,21 @@ export class VersionRanges {
     return VersionRanges.of([...this.ranges, [version, version]]);
   }
 
+  /** Whether both sets hold the same versions. */
+  equals(other: VersionRanges): boolean {
+    return this.ranges.length === other.ranges.length &&
+      this.ranges.every(([first, last], i) =>
+        first === other.ranges[i][0] && last === other.ranges[i][1]
+      );
+  }
+
+  /** The versions in either set. */
+  union(other: VersionRanges): VersionRanges {
+    if (other.isEmpty) return this;
+    if (this.isEmpty) return other;
+    return VersionRanges.of([...this.ranges, ...other.ranges]);
+  }
+
   /** The set without `version`. */
   delete(version: number): VersionRanges {
     if (!this.has(version)) return this;

@@ -1409,13 +1409,23 @@ export class SqliteCommitStore implements CommitStore {
       for (const [name, versions] of droppedVersions(commits, cacheKey)) {
         if (rebuilt.retainDroppedVersions(name, versions)) retained = true;
       }
-      // The partition's one snapshot row is past the new head: put back the
-      // snapshot the appends up to it wrote last. A compacted partition's
-      // snapshot is never past it (checkMark refuses that).
       const stored = this.#selectSnapshot.get(
         first.namespace,
         first.partition.toString(),
-      ) as { seq: number } | undefined;
+      ) as { seq: number; body: string } | undefined;
+      // A snapshot past the new head may hold versions an earlier truncation
+      // retained, which no kept commit records: keep them too.
+      if (stored !== undefined && stored.seq > keep) {
+        const later = Partition.restore(
+          first.partition,
+          JSON.parse(stored.body),
+          () => false,
+        );
+        if (rebuilt.retainVersionsOf(later)) retained = true;
+      }
+      // The partition's one snapshot row is past the new head: put back the
+      // snapshot the appends up to it wrote last. A compacted partition's
+      // snapshot is never past it (checkMark refuses that).
       const at = keep - keep % this.#snapshotInterval;
       let snapshot: { seq: number; body: string } | undefined;
       if (retained) {

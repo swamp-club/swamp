@@ -99,3 +99,13 @@ Deno.test("VersionRanges: matches a plain set over random adds and deletes", () 
     { numRuns: 300 },
   );
 });
+
+Deno.test("VersionRanges.union: the versions in either set, merged", () => {
+  const a = VersionRanges.of([[1, 2], [7, 7]]);
+  const b = VersionRanges.of([[3, 4], [9, 10]]);
+  assertEquals(a.union(b).ranges, [[1, 4], [7, 7], [9, 10]]);
+  assertStrictEquals(a.union(VersionRanges.EMPTY), a);
+  assertStrictEquals(VersionRanges.EMPTY.union(b), b);
+  assertEquals(a.union(a).equals(a), true);
+  assertEquals(a.equals(b), false);
+});
