@@ -24,7 +24,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
-import { waitFor } from "@swamp-club/swamp-testing";
+import { waitFor, withMockedCommand } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { UserError } from "../errors.ts";
 import {
@@ -1331,6 +1331,100 @@ Deno.test("runFirstAlone: an abort ends a wait behind the first call", async () 
   assertEquals(ran, false);
   first.resolve();
   await a;
+});
+
+const RACE_OUTPUT =
+  "error: failed to copy esbuild binary from /c/npm/esbuild " +
+  "to /c/dl/esbuild-0.25.5-1/.esbuild-1.tmp (os error 2)";
+
+/**
+ * A fake `deno bundle`: writes the `-o` file, or answers with the esbuild
+ * install race while `loses()` holds. Records how many run at once.
+ */
+function fakeBundler(loses: () => boolean) {
+  const state = { running: 0, peak: 0, runs: 0 };
+  const handler = async (_cmd: string, args: string[]) => {
+    state.runs++;
+    state.running++;
+    state.peak = Math.max(state.peak, state.running);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    state.running--;
+    if (loses()) return { stdout: "", stderr: RACE_OUTPUT, code: 1 };
+    await Deno.writeTextFile(
+      args[args.indexOf("-o") + 1],
+      "export const bundled = 1;\n",
+    );
+    return { stdout: "", code: 0 };
+  };
+  return { state, handler };
+}
+
+Deno.test("bundleExtension: a bundle that loses an esbuild install race is retried once", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    let lost = 0;
+    const { state, handler } = fakeBundler(() => lost++ === 0);
+    const { result } = await withMockedCommand(
+      handler,
+      () =>
+        bundleExtension(path, DENO_PATH, {
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }),
+    );
+    assertStringIncludes(result, "bundled");
+    assertEquals(state.runs, 2);
+  });
+});
+
+Deno.test("bundleExtension: an error other than the esbuild race is not retried", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    const { calls } = await withMockedCommand(
+      [{ stdout: "", stderr: "error: Module not found", code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            bundleExtension(path, DENO_PATH, {
+              env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+            }),
+          Error,
+          "Module not found",
+        );
+      },
+    );
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("bundleExtension: no bundle on the same cache starts beside the first one or its retry", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    let lost = 0;
+    // The first run loses the race; its retry and every later run succeed.
+    const { state, handler } = fakeBundler(() => lost++ === 0);
+    const env = { DENO_DIR: `/cache-${crypto.randomUUID()}` };
+    await withMockedCommand(handler, async () => {
+      const first = bundleExtension(path, DENO_PATH, { env });
+      const second = bundleExtension(path, DENO_PATH, { env });
+      await Promise.all([first, second]);
+    });
+    assertEquals(state.runs, 3);
+    assertEquals(state.peak, 1, "the retry and the waiter never overlap");
+  });
+});
+
+Deno.test("bundleExtension: bundles on different caches do not wait for each other", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    const { state, handler } = fakeBundler(() => false);
+    await withMockedCommand(handler, async () => {
+      await Promise.all([
+        bundleExtension(path, DENO_PATH, {
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }),
+        bundleExtension(path, DENO_PATH, {
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }),
+      ]);
+    });
+    assertEquals(state.peak, 2);
+  });
 });
 
 Deno.test("isEsbuildInstallRace: matches only the esbuild copy failure", () => {

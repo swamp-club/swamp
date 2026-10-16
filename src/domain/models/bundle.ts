@@ -900,22 +900,28 @@ export async function bundleExtension(
         ...(options?.env ? { env: options.env } : {}),
       }).output();
 
+    // A bundle that lost an esbuild install race to another process is
+    // retried once, inside the gate: a waiter must not start beside it.
+    const runWithRetry = async () => {
+      const first = await runBundle();
+      if (first.success || !isEsbuildInstallRace(outputText(first))) {
+        return first;
+      }
+      logger
+        .debug`Retrying bundle of ${absolutePath} after an esbuild install race`;
+      return await runBundle();
+    };
+
     // The child's cache: options.env merges over this process's env.
     const denoDir = options?.env?.DENO_DIR ?? Deno.env.get("DENO_DIR") ??
       "";
-    let output = await runFirstAlone(firstBundles, denoDir, runBundle, {
+    const output = await runFirstAlone(firstBundles, denoDir, runWithRetry, {
       signal: options?.signal,
-      // A first bundle that lost an esbuild install race left the cache
-      // without esbuild: the next bundle installs it alone again.
+      // Still lost after the retry: the cache may lack esbuild, so the next
+      // bundle installs it alone again.
       succeeded: (result) =>
         result.success || !isEsbuildInstallRace(outputText(result)),
     });
-    // Another process may have been installing esbuild into the same cache.
-    if (!output.success && isEsbuildInstallRace(outputText(output))) {
-      logger
-        .debug`Retrying bundle of ${absolutePath} after an esbuild install race`;
-      output = await runBundle();
-    }
 
     if (!output.success) {
       const rawDetails = outputText(output).trim() ||
