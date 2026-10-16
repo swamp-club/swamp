@@ -19,6 +19,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
+import {
+  FAKE_REAPED_CUTOFF,
+  fakeWatermarks,
+} from "../retention/reaped_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   workflowHistorySearch,
@@ -464,4 +468,33 @@ Deno.test("workflowHistorySearch: invalid filter yields error event", async () =
   >;
   assertEquals(errorEvent.kind, "error");
   assertStringIncludes(errorEvent.error.message, "Invalid --filter expression");
+});
+
+Deno.test("workflowHistorySearch: the completed data says where retention reaped runs", async () => {
+  const deps = makeDeps({
+    retentionWatermarks: fakeWatermarks(["workflowRuns"]),
+  });
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {}),
+  );
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.reapedBefore, {
+    cutoff: FAKE_REAPED_CUTOFF,
+    retention: "14d",
+  });
+});
+
+Deno.test("workflowHistorySearch: no reaped marker without a runs watermark", async () => {
+  const deps = makeDeps({ retentionWatermarks: fakeWatermarks(["data"]) });
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {}),
+  );
+  const completed = events[1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals("reapedBefore" in completed.data, false);
 });

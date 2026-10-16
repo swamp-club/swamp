@@ -208,6 +208,20 @@ Deno.test("SqliteCommitStore.highWaterMark: is the compaction point once every c
   });
 });
 
+Deno.test("SqliteCommitStore.oldestStoredCommitAt: is the oldest commit above the compaction point", async () => {
+  await withStore(async (store, path) => {
+    assertEquals(await store.oldestStoredCommitAt(), null);
+    for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
+    const atOf = (cursor: number) =>
+      rawRows(path, `SELECT at FROM commits WHERE cursor = ${cursor}`)[0].at;
+    assertEquals(await store.oldestStoredCommitAt(), atOf(1));
+    await store.compactHistory(1);
+    assertEquals(await store.oldestStoredCommitAt(), atOf(2));
+    await store.compactHistory(3);
+    assertEquals(await store.oldestStoredCommitAt(), null);
+  });
+});
+
 Deno.test("SqliteCommitStore.checkMark: matches the store's own mark and any earlier commit", async () => {
   await withStore(async (store) => {
     assertEquals(store.checkMark({ cursor: 0 }), "match");

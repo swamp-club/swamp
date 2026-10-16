@@ -28,11 +28,13 @@ import {
 import type { Namespace } from "../../domain/data/namespace.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
+  type AgedDataVersionPage,
   type ContentAvailability,
   type DeferredWriteReceipt,
   EphemeralBudgetExceededError,
   type FindAllForTypeOptions,
   type FindAllGlobalOptions,
+  type FindVersionsCreatedBeforeOptions,
   type GarbageCollectionResult,
   OwnershipValidationError,
   type UnifiedDataRepository,
@@ -1091,6 +1093,83 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
           data.name === dataName &&
           data.tags["modelName"] === modelName &&
           !data.isRenamed && !data.isDeleted,
+      ),
+    );
+  }
+
+  /**
+   * A version is in flight when it is above the latest marker (or the name
+   * has none): this repository promotes a deferred write by moving the
+   * marker to it.
+   */
+  private isPendingVersion(
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): boolean {
+    const latest = this.latestVersionMap.get(
+      latestKey(typeNormalized, modelId, dataName),
+    );
+    return latest === undefined || version > latest;
+  }
+
+  findVersionsCreatedBefore(
+    cutoff: Date,
+    options: FindVersionsCreatedBeforeOptions,
+  ): Promise<AgedDataVersionPage> {
+    this.ensureNotDisposed();
+    const after = options.cursor === undefined
+      ? undefined
+      : JSON.parse(options.cursor) as { createdAt: number; key: string };
+    const excluded = new Set(options.excludeTypes ?? []);
+    const entries: Array<{ key: string; createdAt: number; data: Data }> = [];
+    for (const [key, data] of this.dataMap) {
+      const [typeNorm, modelId, dataName, version] = key.split(SEP);
+      const createdAt = data.createdAt.getTime();
+      if (createdAt >= cutoff.getTime() || excluded.has(typeNorm)) continue;
+      if (this.isPendingVersion(typeNorm, modelId, dataName, Number(version))) {
+        continue;
+      }
+      if (
+        after &&
+        (createdAt < after.createdAt ||
+          (createdAt === after.createdAt && key <= after.key))
+      ) continue;
+      entries.push({ key, createdAt, data });
+    }
+    entries.sort((a, b) =>
+      a.createdAt - b.createdAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+    );
+    const page = entries.slice(0, options.limit);
+    const last = page[page.length - 1];
+    return Promise.resolve({
+      versions: page.map(({ key, data }) => {
+        const [typeNorm, modelId, dataName, version] = key.split(SEP);
+        return {
+          type: ModelType.create(typeNorm),
+          modelId,
+          dataName,
+          version: Number(version),
+          createdAt: data.createdAt,
+          size: data.size ?? 0,
+        };
+      }),
+      cursor: last && entries.length > options.limit
+        ? JSON.stringify({ createdAt: last.createdAt, key: last.key })
+        : undefined,
+    });
+  }
+
+  hasPendingVersions(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<boolean> {
+    this.ensureNotDisposed();
+    return Promise.resolve(
+      this.listVersionsSync(type, modelId, dataName).some((version) =>
+        this.isPendingVersion(type.normalized, modelId, dataName, version)
       ),
     );
   }

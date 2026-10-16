@@ -21,6 +21,7 @@
  * Shared utilities for serve WebSocket request handlers: the connection context, response senders, error sanitization, and the authorization gate every handler routes through.
  */
 
+import type { GcMutex } from "../gc_mutex.ts";
 import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { GrantUsernameResolver } from "../../domain/access/grant_username_resolution.ts";
@@ -259,6 +260,38 @@ const CLIENT_ENTITY_TYPES: ReadonlySet<string> = new Set([
 export interface ClientErrorDetails {
   reason: ClientErrorReason;
   entityType?: string;
+  /**
+   * On a `not_found`: items of this kind before this ISO time have been
+   * reaped by retention (swamp-club#3473).
+   */
+  reapedBefore?: string;
+  /** On a `not_found` with `reapedBefore`: the retention timeframe. */
+  retention?: string;
+}
+
+// A retention timeframe as `.swamp.yaml` spells it (e.g. `14d`, `2w`).
+const RETENTION_TIMEFRAME = /^[0-9A-Za-z ]{1,32}$/;
+
+/**
+ * The retention watermark a libswamp not-found error carries, when both
+ * fields are well formed. Never user data: the cutoff is a timestamp and the
+ * timeframe comes from the repository's own configuration.
+ */
+function reapedDetails(
+  details: object,
+): { reapedBefore: string; retention: string } | undefined {
+  const { reapedBefore, retention } = details as {
+    reapedBefore?: unknown;
+    retention?: unknown;
+  };
+  if (typeof reapedBefore !== "string" || typeof retention !== "string") {
+    return undefined;
+  }
+  const cutoff = Date.parse(reapedBefore);
+  if (Number.isNaN(cutoff) || !RETENTION_TIMEFRAME.test(retention)) {
+    return undefined;
+  }
+  return { reapedBefore: new Date(cutoff).toISOString(), retention };
 }
 
 /**
@@ -277,9 +310,14 @@ export function clientErrorDetails(
       CLIENT_ENTITY_TYPES.has(details.entityType)
     ? details.entityType
     : undefined;
+  const reaped = code === "not_found" && details !== null &&
+      typeof details === "object"
+    ? reapedDetails(details)
+    : undefined;
   return {
     reason: code as ClientErrorReason,
     ...(entityType !== undefined && { entityType }),
+    ...reaped,
   };
 }
 
@@ -292,6 +330,11 @@ export const DEFAULT_QUERY_LIMIT = 1000;
 export interface ConnectionContext {
   repoDir: string;
   repoContext: RepositoryContext;
+  /**
+   * Serializes `run.gc` and `data.gc` with serve's retention pass
+   * (swamp-club#3473). Absent in contexts built without the retention timer.
+   */
+  gcMutex?: GcMutex;
   datastoreConfig: DatastoreConfig;
   datastoreResolver: DatastorePathResolver;
   /**
@@ -2487,6 +2530,19 @@ export function emitRunCancelAudit(
     requestId: audit.requestId,
     detail: audit.detail,
   }));
+}
+
+/**
+ * Runs `fn` under the context's gc mutex, when it has one: `run.gc` and
+ * `data.gc` run one at a time with serve's retention pass
+ * (swamp-club#3473). Taken outside the sync gate, as the pass takes the gate
+ * per batch while holding the mutex; the other order would stall both.
+ */
+export function withGcMutex<T>(
+  ctx: Pick<ConnectionContext, "gcMutex">,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return ctx.gcMutex ? ctx.gcMutex.run(fn) : fn();
 }
 
 export function emitSystemAuditEvent(

@@ -68,8 +68,10 @@ import { modelMethodRun } from "../src/libswamp/models/run.ts";
 import { workerQueueList } from "../src/libswamp/worker/queue_list.ts";
 import {
   createBookkeepingRecordQuery,
+  createWorkerTokenNameQuery,
   reapEndedBookkeepingRecords,
 } from "../src/serve/bookkeeping_gc.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../src/domain/models/worker/enrollment_token_model.ts";
 import {
   createSyncGate,
   gatedPull,
@@ -309,6 +311,7 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
       assertEquals(result, {
         leasesDeleted: 2,
         dispatchesDeleted: 1,
+        tokensDeleted: 0,
         failed: 0,
         unreadable: 0,
         batches: 1,
@@ -678,6 +681,81 @@ Deno.test("reapEndedBookkeepingRecords: on a v3 datastore the reap commits, and 
       assertEquals(await datastoreRecords(repoB, "team-a"), records);
     } finally {
       await closeV3Datastores();
+    }
+  });
+});
+
+Deno.test("reapEndedBookkeepingRecords: removes ended enrollment tokens no worker record references, from disk and catalog", async () => {
+  await withTempDir(async (dir) => {
+    const { service } = createRecordingSyncService();
+    const ctx = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+      namespace: "team-a",
+      markDirty: buildMarkDirtyHook(service, swampPath(dir), dir),
+    });
+    try {
+      const now = Date.now();
+      const old = new Date(now - 2 * GRACE_MS).toISOString();
+      const future = new Date(now + 2 * GRACE_MS).toISOString();
+      const token = (name: string, state: string, expiresAt: string) =>
+        saveRecord(
+          ctx,
+          ENROLLMENT_TOKEN_MODEL_TYPE,
+          `token-${name}`,
+          name,
+          "token-main",
+          {
+            name,
+            state,
+            createdAt: old,
+            expiresAt,
+            vaultName: "default",
+            secretKey: `worker-token-${name}`,
+            maxEnrollments: 1,
+            bindings: [],
+            ...(state === "revoked" ? { revokedAt: old } : {}),
+          },
+        );
+      await token("gone-revoked", "revoked", future);
+      await token("gone-expired", "expired", old);
+      await token("bound", "expired", old);
+      await token("live", "enrolled", future);
+      await saveRecord(
+        ctx,
+        WORKER_MODEL_TYPE,
+        "worker-w1",
+        "worker-w1",
+        "state-main",
+        { name: "w1", tokenName: "bound", status: "disconnected" },
+      );
+
+      const result = await withUnscopedWriteGuard(() =>
+        reapEndedBookkeepingRecords(
+          {
+            query: reaperQuery(ctx),
+            repo: ctx.unifiedDataRepo,
+            markDirty: ctx.markDirty,
+            syncService: service,
+            syncGate: createSyncGate(),
+            listWorkerTokenNames: createWorkerTokenNameQuery(
+              ctx.dataQueryService,
+              ctx.unifiedDataRepo.namespace,
+            ),
+          },
+          GRACE_MS,
+        )
+      );
+
+      assertEquals(result.tokensDeleted, 2);
+      assertEquals(result.failed, 0);
+      const remaining = await ctx.dataQueryService.query(
+        `modelType == "swamp/enrollment-token"`,
+        { select: "modelName" },
+      ) as string[];
+      assertEquals(remaining.sort(), ["bound", "live"]);
+    } finally {
+      ctx.catalogStore.close();
     }
   });
 });

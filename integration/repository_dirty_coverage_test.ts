@@ -105,12 +105,10 @@ await initializeLogging({});
  */
 const KNOWN_UNMARKED: readonly string[] = [
   // delete(version) marks only the version directory (:913). Removing the
-  // latest version rewrites `latest` (:940, via updateLatestMarker), and
-  // removing the last one removes the data-name directory with its `latest`
-  // (:954). src/infrastructure/persistence/unified_data_repository_test.ts:851-856
-  // pins exactly one mark call for this case.
+  // latest version rewrites `latest` (:940, via updateLatestMarker). Removing
+  // the last one marks `latest` too since swamp-club#3473, as retention
+  // empties names that way.
   "UnifiedData.delete(version,latest-of-two): data/command/shell/<id>/item/latest",
-  "UnifiedData.delete(version,last): data/command/shell/<id>/item/latest",
   // advanceLatestMarkers writes `latest` with no mark (:1352); it relies on
   // the saveDeferred mark of the same cycle.
   "UnifiedData.advanceLatestMarkers: data/command/shell/<id>/item/latest",

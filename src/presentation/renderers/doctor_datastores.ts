@@ -26,6 +26,7 @@ import type {
   RepairUnmigratedDataEvent,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
+import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -33,6 +34,87 @@ import type { OutputMode } from "../output/output.ts";
 // ============================================================================
 // Doctor datastores renderer (detection)
 // ============================================================================
+
+/** The per-kind lines of `doctor datastores --retention` in log mode. */
+export function retentionDetailLines(summary: RetentionCheckSummary): string[] {
+  const lines: string[] = [
+    "",
+    `${bold("Retention:")} ${
+      summary.configured
+        ? `automatic ${summary.automatic ? green("on") : yellow("off")}`
+        : dim("not configured")
+    }`,
+  ];
+  if (!summary.configured) return lines;
+  for (const kind of summary.kinds) {
+    const head = `  ${bold(kind.kind)}`;
+    if (kind.retention === null) {
+      lines.push(`${head} ${dim("no retention")}`);
+    } else if (!kind.scanned) {
+      lines.push(
+        `${head} ${kind.retention} ${
+          dim(
+            kind.kind === "bookkeeping"
+              ? "(serve bookkeeping, reaped by serve; not scanned)"
+              : "(not scanned)",
+          )
+        }`,
+      );
+    } else {
+      const status = kind.overdue > 0
+        ? red(`✗ ${kind.overdue.toLocaleString()} older than cutoff`)
+        : green("✓ none older than cutoff");
+      const kept = kind.kept > 0
+        ? dim(` (${kind.kept.toLocaleString()} kept by design)`)
+        : "";
+      lines.push(
+        `${head} ${kind.retention} ${
+          dim(`cutoff ${kind.cutoff}`)
+        } ${status}${kept}`,
+      );
+    }
+    if (kind.watermark) {
+      lines.push(
+        dim(
+          `    last pass ${kind.watermark.lastPassAt}, cutoff ${kind.watermark.cutoff}, ${
+            kind.watermark.complete ? "complete" : "incomplete"
+          }`,
+        ),
+      );
+    }
+    for (const item of kind.items) {
+      lines.push(`    ${red("•")} ${item.id} ${dim(item.at)}`);
+    }
+    if (kind.overdue > kind.items.length) {
+      lines.push(
+        dim(
+          `    … and ${
+            (kind.overdue - kind.items.length).toLocaleString()
+          } more`,
+        ),
+      );
+    }
+  }
+  const history = summary.v3History;
+  if (history) {
+    const oldest = history.oldestCommitAt ?? "none stored";
+    lines.push(
+      `  ${bold("v3 history")} oldest commit ${oldest} ${
+        history.overdue ? red("✗ older than the bound") : green("✓")
+      }`,
+    );
+    lines.push(
+      dim(
+        `    Content retention removed stays in v3 history until its removal is folded: ` +
+          `each pass folds only commits written before ${history.compactionBound} ` +
+          `(the 7-day outbox safety window), so removed content leaves history about 7 days ` +
+          `after it was removed, and its chunks about 24h after that. ` +
+          `This check fails only for history older than ${history.failBefore}.`,
+      ),
+    );
+  }
+  return lines;
+}
 
 export type DoctorDatastoresStatus = "pass" | "fail";
 
@@ -106,6 +188,10 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           );
         }
 
+        if (data.retentionFinding) {
+          writeOutput(retentionDetailLines(data.retentionFinding).join("\n"));
+        }
+
         // Render vault mismatch advisory (yellow, does not cause failure)
         if (data.vaultMismatchFindings.length > 0) {
           writeOutput(
@@ -159,6 +245,7 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               contaminationFinding: data.contaminationFinding ?? null,
               catalogCompletenessFinding: data.catalogCompletenessFinding ??
                 null,
+              retentionFinding: data.retentionFinding ?? null,
             },
             null,
             2,

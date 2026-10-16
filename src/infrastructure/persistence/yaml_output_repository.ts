@@ -496,16 +496,24 @@ export class YamlOutputRepository implements OutputRepository {
   async deleteOlderThan(
     cutoff: Date,
     options?: { dryRun?: boolean },
-  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+  ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
     const cutoffMs = cutoff.getTime();
+    // An unrepresentable cutoff deletes nothing rather than everything.
+    if (!Number.isFinite(cutoffMs)) {
+      return { deleted: 0, bytesReclaimed: 0, more: false };
+    }
     return await this.deleteExpired(() => cutoffMs, options);
   }
 
   async deleteByMethodLifetime(
     fallbackCutoff: Date,
-    options?: { dryRun?: boolean },
-  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    options?: { dryRun?: boolean; limit?: number },
+  ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
     const fallbackCutoffMs = fallbackCutoff.getTime();
+    // An unrepresentable cutoff deletes nothing rather than everything.
+    if (!Number.isFinite(fallbackCutoffMs)) {
+      return { deleted: 0, bytesReclaimed: 0, more: false };
+    }
     const nowMs = Date.now();
 
     const registeredTypes: {
@@ -549,15 +557,20 @@ export class YamlOutputRepository implements OutputRepository {
    * their method directory, together with each output's own run log, then
    * sweeps run logs no remaining output references. `cutoffFor` takes a path
    * relative to an outputs root and returns the cutoff in epoch ms.
+   *
+   * With `limit`, the scan stops at the first expired output past it and
+   * reports `more`; the orphaned-log sweep is then left to the final batch.
    */
   private async deleteExpired(
     cutoffFor: (relativePath: string) => number,
-    options?: { dryRun?: boolean },
-  ): Promise<{ deleted: number; bytesReclaimed: number }> {
+    options?: { dryRun?: boolean; limit?: number },
+  ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
     const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
     const dryRun = options?.dryRun ?? false;
+    const limit = options?.limit;
     let deleted = 0;
     let bytesReclaimed = 0;
+    let more = false;
     // Outputs this pass deletes (or would delete, on a dry run) and the logs
     // already counted with them, so the orphan sweep neither treats a doomed
     // output as a live reference nor counts its log twice.
@@ -586,6 +599,11 @@ export class YamlOutputRepository implements OutputRepository {
           ) continue;
         }
 
+        if (limit !== undefined && deleted >= limit) {
+          more = true;
+          break;
+        }
+
         const logPath = this.ownedLogPath(yamlPath, data);
         bytesReclaimed += await this.removeOutputFiles(
           yamlPath,
@@ -603,14 +621,19 @@ export class YamlOutputRepository implements OutputRepository {
       }
     }
 
-    bytesReclaimed += await this.sweepOrphanLogs(
-      cutoffFor,
-      deletedYamls,
-      countedLogs,
-      dryRun,
-    );
+    // A batch that stopped at its limit skips the orphaned-log sweep: it
+    // scans every repo-local log, the logs of the outputs this batch deleted
+    // went with them, and the final batch (no `more`) runs it.
+    if (!more) {
+      bytesReclaimed += await this.sweepOrphanLogs(
+        cutoffFor,
+        deletedYamls,
+        countedLogs,
+        dryRun,
+      );
+    }
 
-    return { deleted, bytesReclaimed };
+    return { deleted, bytesReclaimed, more };
   }
 
   /**

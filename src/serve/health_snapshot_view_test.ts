@@ -437,3 +437,14 @@ Deno.test("cachedHealthResourceResolver: stays bounded when every entry is fresh
 
   assertEquals(lookups("workflow:nightly"), 2);
 });
+
+Deno.test("healthSnapshotFor: retention is deployment detail only an admin sees", async () => {
+  const retention = { automatic: true, configured: true, kinds: [] };
+  const full = { ...snapshot(), retention };
+  assertEquals(
+    (await healthSnapshotFor(full, reader(true), RESOLVER)).retention,
+    retention,
+  );
+  const view = await healthSnapshotFor(full, reader(false), RESOLVER);
+  assertEquals("retention" in view, false);
+});

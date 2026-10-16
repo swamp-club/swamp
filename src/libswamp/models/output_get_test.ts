@@ -21,6 +21,10 @@ import { assertEquals } from "@std/assert";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
+import {
+  FAKE_REAPED_CUTOFF,
+  fakeWatermarks,
+} from "../retention/reaped_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   type GlobalOutputInfo,
@@ -223,4 +227,39 @@ Deno.test("modelOutputGet reports a passed model with no outputs as today", asyn
     error.error.message,
     "Output not found: no outputs for behavior: my-model",
   );
+});
+
+Deno.test("modelOutputGet: a model with no outputs left says outputs were reaped", async () => {
+  const deps = makeDeps({
+    isPartialId: () => false,
+    findLatestOutput: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["outputs"]),
+  });
+  const events = await collect<ModelOutputGetEvent>(
+    modelOutputGet(createLibSwampContext(), deps, "my-model"),
+  );
+  const last = events[1] as Extract<ModelOutputGetEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "not_found");
+  assertEquals(
+    last.error.message.endsWith(
+      `; outputs before ${FAKE_REAPED_CUTOFF} have been reaped by retention (14d)`,
+    ),
+    true,
+  );
+  assertEquals(
+    (last.error.details as Record<string, unknown>).retention,
+    "14d",
+  );
+});
+
+Deno.test("modelOutputGet: without a watermark repository the not-found is unchanged", async () => {
+  const deps = makeDeps({
+    isPartialId: () => false,
+    findDefinitionByIdOrName: () => Promise.resolve(null),
+  });
+  const events = await collect<ModelOutputGetEvent>(
+    modelOutputGet(createLibSwampContext(), deps, "unknown-model"),
+  );
+  const last = events[1] as Extract<ModelOutputGetEvent, { kind: "error" }>;
+  assertEquals(last.error.message.includes("reaped"), false);
 });

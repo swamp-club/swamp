@@ -216,6 +216,7 @@ import {
   sendError,
   setConnectionTeardown,
   subscribeUntilDetach,
+  withGcMutex,
 } from "./handlers/shared.ts";
 import { findActiveRunByRunId } from "./active_run_tracker.ts";
 import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
@@ -1436,7 +1437,7 @@ const DatastoreNamespaceListRequestSchema = z.object({
 const DoctorDatastoresRequestSchema = z.object({
   type: z.literal("doctor.datastores"),
   id: z.string().min(1).max(256),
-  payload: z.object({}).optional(),
+  payload: z.object({ retention: z.boolean().optional() }).optional(),
 });
 
 const ClusterInstancesRequestSchema = z.object({
@@ -3530,6 +3531,7 @@ export function handleMessage(
           request.id,
           controller,
           principal,
+          request.payload,
         ),
         auditOpts("admin", "doctor", "*"),
       );
@@ -4002,15 +4004,27 @@ export function handleMessage(
     case "data.gc":
       task = audited(
         confirmed(() =>
-          withSyncGate(ctx.syncGate, () =>
-            handleDataGc(
-              socket,
-              ctx,
-              request.id,
-              request.payload,
-              controller,
-              principal,
-            ))
+          withGcMutex(ctx, () =>
+            // A request cancelled while it waited behind a retention pass
+            // is answered as cancelled rather than run once the pass ends.
+            controller.signal.aborted
+              ? Promise.resolve(
+                sendError(
+                  socket,
+                  request.id,
+                  "cancelled",
+                  "Operation was cancelled",
+                ),
+              )
+              : withSyncGate(ctx.syncGate, () =>
+                handleDataGc(
+                  socket,
+                  ctx,
+                  request.id,
+                  request.payload,
+                  controller,
+                  principal,
+                )))
         ),
         auditOpts("admin", "data", "*"),
       );
@@ -4034,15 +4048,27 @@ export function handleMessage(
     case "run.gc":
       task = audited(
         confirmed(() =>
-          withSyncGate(ctx.syncGate, () =>
-            handleRunGc(
-              socket,
-              ctx,
-              request.id,
-              request.payload,
-              controller,
-              principal,
-            ))
+          withGcMutex(ctx, () =>
+            // A request cancelled while it waited behind a retention pass
+            // is answered as cancelled rather than run once the pass ends.
+            controller.signal.aborted
+              ? Promise.resolve(
+                sendError(
+                  socket,
+                  request.id,
+                  "cancelled",
+                  "Operation was cancelled",
+                ),
+              )
+              : withSyncGate(ctx.syncGate, () =>
+                handleRunGc(
+                  socket,
+                  ctx,
+                  request.id,
+                  request.payload,
+                  controller,
+                  principal,
+                )))
         ),
         auditOpts("admin", "run", "*"),
       );

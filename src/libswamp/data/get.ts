@@ -53,6 +53,8 @@ import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { behaviorNotFound, notFound, validationFailed } from "../errors.ts";
+import { withReapedHint } from "../retention/reaped.ts";
+import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { v3RunArtifactCheck } from "./run_artifact_check.ts";
@@ -293,6 +295,11 @@ export interface DataGetDeps {
     version: number,
   ) => string;
   toRelativePath: (repoDir: string, absolutePath: string) => string;
+  /**
+   * Where retention records how far it has reaped. With it a data item or
+   * run that is not found says what retention has reaped (swamp-club#3473).
+   */
+  retentionWatermarks?: RetentionWatermarkRepository;
 }
 
 /** Wires real infrastructure into DataGetDeps. */
@@ -427,10 +434,9 @@ export async function* dataGet(
         return;
       }
 
-      if (workflowName) {
-        yield* workflowScopedGet(deps, input, workflowName, repoDir, version);
-      } else {
-        yield* modelScopedGet(
+      const events = workflowName
+        ? workflowScopedGet(deps, input, workflowName, repoDir, version)
+        : modelScopedGet(
           deps,
           modelIdOrName!,
           dataName,
@@ -440,9 +446,40 @@ export async function* dataGet(
           input.byId ?? false,
           input.expectedName,
         );
+      for await (const event of events) {
+        yield event.kind === "error"
+          ? {
+            kind: "error",
+            error: await withReapedDataHint(deps, event.error),
+          }
+          : event;
       }
     })(),
   );
+}
+
+/**
+ * Says what retention has reaped on a not-found data item (kind `data`) or
+ * workflow run (kind `workflowRuns`). Other errors are returned unchanged.
+ */
+async function withReapedDataHint(
+  deps: DataGetDeps,
+  error: SwampError,
+): Promise<SwampError> {
+  if (error.code !== "not_found" || !deps.retentionWatermarks) return error;
+  const entityType = (error.details as { entityType?: unknown } | undefined)
+    ?.entityType;
+  if (entityType === "Data") {
+    return await withReapedHint(error, "data", deps.retentionWatermarks);
+  }
+  if (entityType === "Workflow run") {
+    return await withReapedHint(
+      error,
+      "workflowRuns",
+      deps.retentionWatermarks,
+    );
+  }
+  return error;
 }
 
 /** A workflow-scoped item, located but not yet read. */

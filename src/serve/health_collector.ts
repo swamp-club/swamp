@@ -56,6 +56,30 @@ export interface HealthSnapshotWebhook {
   readonly scheme: string;
 }
 
+/** One kind's last retention pass, from its watermark (swamp-club#3473). */
+export interface HealthSnapshotRetentionKind {
+  readonly kind: string;
+  /** The configured retention, or null when the kind has none. */
+  readonly retention: string | null;
+  /** The cutoff the last pass reaped before; null before any pass. */
+  readonly cutoff: string | null;
+  readonly lastPassAt: string | null;
+  /** False when the last pass stopped early; null before any pass. */
+  readonly complete: boolean | null;
+}
+
+/** The repository's retention as health reports it: never a storage scan. */
+export interface HealthSnapshotRetention {
+  readonly automatic: boolean;
+  readonly configured: boolean;
+  readonly kinds: HealthSnapshotRetentionKind[];
+}
+
+/** Gives health the retention component; cheap enough for every probe. */
+export interface RetentionHealthProvider {
+  retention(): Promise<HealthSnapshotRetention | null>;
+}
+
 export interface HealthSnapshot {
   readonly instanceId: string;
   readonly deploymentMode: string;
@@ -76,6 +100,8 @@ export interface HealthSnapshot {
   };
   readonly webhooks: HealthSnapshotWebhook[];
   readonly components: ComponentHealth[];
+  /** Present when serve was given a retention provider. */
+  readonly retention?: HealthSnapshotRetention;
 }
 
 export interface ScheduleProvider {
@@ -120,6 +146,8 @@ export interface HealthCollectorDeps {
   readonly scheduleEnabled: boolean;
   readonly webhookProvider: WebhookProvider | null;
   readonly remoteOnly: boolean;
+  /** Reports retention watermarks; absent, the snapshot has no retention. */
+  readonly retentionProvider?: RetentionHealthProvider | null;
   /**
    * How long, in milliseconds, one collected snapshot is served to every
    * caller before the next call collects again. Defaults to 0: every call
@@ -143,6 +171,27 @@ export function classifyHealthStatus(
   const allHealthy = components.every((c) => c.healthy);
   if (allHealthy) return "healthy";
   return "degraded";
+}
+
+/** How long a health snapshot waits for the retention watermarks. */
+export const RETENTION_HEALTH_READ_TIMEOUT_MS = 2_000;
+
+/** Resolves with the read, or null once `ms` pass first. */
+async function raceRetentionRead<T>(
+  read: Promise<T | null>,
+  ms: number,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export class HealthCollector {
@@ -225,6 +274,16 @@ export class HealthCollector {
 
     const components = await this.#deps.componentChecker.checkAll(signal);
 
+    // Retention is context, never a health verdict: a failed read leaves it
+    // out rather than failing the snapshot.
+    // Bounded: a stalled control plane must not hang health probes.
+    const retention = this.#deps.retentionProvider
+      ? await raceRetentionRead(
+        this.#deps.retentionProvider.retention().catch(() => null),
+        RETENTION_HEALTH_READ_TIMEOUT_MS,
+      )
+      : null;
+
     const ready = this.#deps.isReady();
     const currentStatus = classifyHealthStatus(ready, components);
 
@@ -253,6 +312,7 @@ export class HealthCollector {
       },
       webhooks,
       components,
+      ...(retention ? { retention } : {}),
     };
   }
 }

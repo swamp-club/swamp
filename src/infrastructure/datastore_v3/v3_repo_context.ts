@@ -44,6 +44,11 @@ import {
   type V3Datastore,
 } from "./v3_datastore.ts";
 import {
+  compactionBound,
+  DEFAULT_COMPACTION_POLICY,
+} from "../../domain/datastore_v3/compaction_policy.ts";
+import type { ChunkCollectionReport } from "../../domain/datastore_v3/chunk_collector.ts";
+import {
   acquireV3WriterLock,
   assertV3WriterCurrent,
   holdsV3WriterLock,
@@ -1068,17 +1073,22 @@ const deferredCollections = new Set<string>();
 
 /**
  * Sweeps `handle`'s unreferenced chunks, logging rather than throwing a
- * failure: the next sweep retries.
+ * failure: the next sweep retries. Resolves with the sweep's report, or
+ * undefined when it failed or was deferred.
  */
-export async function collectChunksQuietly(handle: V3Datastore): Promise<void> {
+export async function collectChunksQuietly(
+  handle: V3Datastore,
+  timeoutMs: number = SERVE_CHUNK_GC_TIMEOUT_MS,
+): Promise<ChunkCollectionReport | undefined> {
   try {
     const report = await handle.collectChunks(
-      AbortSignal.timeout(SERVE_CHUNK_GC_TIMEOUT_MS),
+      AbortSignal.timeout(timeoutMs),
     );
     if (report.deleted > 0) {
       logger
         .debug`Deleted ${report.deleted} unreferenced chunks of the v3 datastore at ${handle.datastorePath}`;
     }
+    return report;
   } catch (error) {
     if (error instanceof V3ChunkCollectionDeferredError) {
       // Waiting on another lineage is expected, not a failure
@@ -1093,11 +1103,120 @@ export async function collectChunksQuietly(handle: V3Datastore): Promise<void> {
         logger
           .info`Collecting chunks of the v3 datastore at ${handle.datastorePath} waits: ${error.message}`;
       }
-      return;
+      return undefined;
     }
     logger
       .warn`Collecting chunks of the v3 datastore at ${handle.datastorePath} failed; the next sweep retries: ${error}`;
+    return undefined;
   }
+}
+
+/** How long a retention pass's history compaction may run. */
+const RETENTION_COMPACTION_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** What {@link compactRetentionQuietly} did. */
+export interface RetentionCompaction {
+  /**
+   * Commits written before this instant are folded out of history: the
+   * earlier of the retention cutoff and the 7-day safety window.
+   */
+  readonly bound: Date;
+  /** The compaction point after it: the last commit cursor folded. */
+  readonly compactedThrough: number;
+  /** Commits folded by this call. */
+  readonly compacted: number;
+  /**
+   * Chunks the sweep after it deleted; 0 when the sweep failed or was
+   * deferred (logged), which the next sweep retries.
+   */
+  readonly chunksDeleted: number;
+}
+
+/**
+ * After a retention pass on a v3 datastore (swamp-club#3473): folds every
+ * commit written before `cutoff` out of history, however few, then sweeps
+ * the chunks no commit names any more. Logs rather than throws a failure,
+ * resolving with undefined when compaction failed; the next pass retries.
+ *
+ * The effective guarantee is weaker than the cutoff: the content a remove
+ * took away stays in history until the remove itself is folded, and no
+ * commit newer than the cutoff or inside the 7-day safety window (the
+ * outbox's retry bound) is folded. A released chunk is then deleted only
+ * past the sweep's 24-hour grace (`DEFAULT_CHUNK_GRACE_MS`). Content a
+ * remove at time T took away is gone from the datastore at the first pass
+ * after T + max(retention period, 7 days) + 24 hours, so call this on every
+ * pass, not only on those that deleted something: the pass that deletes an
+ * item can never fold its own remove.
+ *
+ * Run it only while this process holds the writer lock: compaction passes
+ * the writer's fence, which the commit store checks, and the sweep refuses
+ * a copy not made current under the lease.
+ */
+export async function compactRetentionQuietly(
+  handle: V3Datastore,
+  cutoff: Date,
+  /**
+   * How long compaction and the chunk sweep may each run; a CLI command
+   * passes a short one so its exit is not held up (the next pass resumes).
+   */
+  timeoutMs: number = RETENTION_COMPACTION_TIMEOUT_MS,
+): Promise<RetentionCompaction | undefined> {
+  let compaction;
+  try {
+    compaction = await handle.compactBefore(
+      cutoff,
+      AbortSignal.timeout(timeoutMs),
+    );
+  } catch (error) {
+    logger
+      .warn`Compacting the history of the v3 datastore at ${handle.datastorePath} before the retention cutoff failed; the next pass retries: ${error}`;
+    return undefined;
+  }
+  const compacted = compaction.report?.compacted ?? 0;
+  if (compacted > 0) {
+    logger
+      .debug`Compacted ${compacted} commits written before ${compaction.bound.toISOString()} of the v3 datastore at ${handle.datastorePath}`;
+  }
+  const sweep = await collectChunksQuietly(
+    handle,
+    Math.min(timeoutMs, SERVE_CHUNK_GC_TIMEOUT_MS),
+  );
+  return {
+    bound: compaction.bound,
+    compactedThrough: compaction.compactedThrough,
+    compacted,
+    chunksDeleted: sweep?.deleted ?? 0,
+  };
+}
+
+/** How far back a v3 datastore's history reaches (swamp-club#3473). */
+export interface V3RetentionHistory {
+  /** The write time of the oldest stored commit, or null when none is. */
+  readonly oldestCommitAt: string | null;
+  /**
+   * Commits written before this are folded by each retention pass
+   * ({@link compactRetentionQuietly} with the pass's own time): the 7-day
+   * safety window always binds.
+   */
+  readonly compactionBound: Date;
+}
+
+/**
+ * The oldest commit the v3 datastore at `config` still stores, and the bound
+ * retention compacts before at `now`, for `swamp doctor datastores
+ * --retention`. Read-only: call it after a repository context has made the
+ * checkout's copy current.
+ */
+export async function v3RetentionHistory(
+  repoDir: string,
+  config: FilesystemDatastoreConfig,
+  now: Date,
+): Promise<V3RetentionHistory> {
+  const handle = v3DatastoreFor(repoDir, config);
+  return {
+    oldestCommitAt: await handle.commitStore.oldestStoredCommitAt(),
+    compactionBound: compactionBound(DEFAULT_COMPACTION_POLICY, now, now),
+  };
 }
 
 /**
@@ -1155,6 +1274,22 @@ export class V3MaintenanceTimer {
     })().finally(() => {
       this.#running = undefined;
     });
+  }
+
+  /**
+   * Runs `fn` as this timer's maintenance run, once the one in flight ends,
+   * so other work on the same datastore (a retention pass's compaction and
+   * chunk sweep, swamp-club#3473) never overlaps a tick: the sweep marker
+   * is one row, and two sweeps at once hide a sweep from writers.
+   * Ticks while `fn` runs start nothing.
+   */
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    while (this.#running !== undefined) await this.#running;
+    const work = fn();
+    this.#running = work.then(() => {}, () => {}).finally(() => {
+      this.#running = undefined;
+    });
+    return await work;
   }
 
   async stop(): Promise<void> {

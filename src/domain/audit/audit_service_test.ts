@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { AuditService, isNoiseCommand } from "./audit_service.ts";
+import {
+  auditRetentionDays,
+  AuditService,
+  DEFAULT_AUDIT_RETENTION_DAYS,
+  isNoiseCommand,
+  resolveAuditStoreRetentionDays,
+  retentionMsToWholeDays,
+} from "./audit_service.ts";
 import type { AuditRepository } from "./audit_repository.ts";
 import type { BashCommandEntry } from "./audit_command_entry.ts";
 
@@ -326,4 +333,50 @@ Deno.test("AuditService.getTimeline excludes entries without sessionId when filt
 
   assertEquals(timeline.totalDirect, 1);
   assertEquals(timeline.entries[0].summary, "aws s3 ls");
+});
+
+const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+
+Deno.test("retentionMsToWholeDays: rounds partial days up", () => {
+  assertEquals(retentionMsToWholeDays(36 * HOUR_MS), 2);
+  assertEquals(retentionMsToWholeDays(DAY_MS), 1);
+  assertEquals(retentionMsToWholeDays(HOUR_MS), 1);
+  assertEquals(retentionMsToWholeDays(90 * DAY_MS), 90);
+});
+
+Deno.test("auditRetentionDays: falls back to 7 days when unset", () => {
+  assertEquals(DEFAULT_AUDIT_RETENTION_DAYS, 7);
+  assertEquals(auditRetentionDays(undefined), 7);
+  assertEquals(auditRetentionDays(36 * HOUR_MS), 2);
+});
+
+Deno.test("resolveAuditStoreRetentionDays: serve.yaml retention.days wins over the repo retention", () => {
+  assertEquals(resolveAuditStoreRetentionDays(30, 90 * DAY_MS), 30);
+  assertEquals(resolveAuditStoreRetentionDays(undefined, 36 * HOUR_MS), 2);
+  assertEquals(resolveAuditStoreRetentionDays(undefined, undefined), undefined);
+  assertEquals(resolveAuditStoreRetentionDays(0, undefined), undefined);
+});
+
+Deno.test("AuditService.cleanupOldAuditData: resolves only after the delete finishes", async () => {
+  let finished = false;
+  const repo = new MockAuditRepository();
+  repo.deleteOlderThan = async (date: Date) => {
+    repo.deletedBefore = date;
+    await Promise.resolve();
+    await Promise.resolve();
+    finished = true;
+    return 1;
+  };
+  const before = Date.now();
+  await new AuditService(repo).cleanupOldAuditData(3);
+  assertEquals(finished, true);
+  const ageDays = (before - repo.deletedBefore!.getTime()) / DAY_MS;
+  assertEquals(Math.round(ageDays), 3);
+});
+
+Deno.test("AuditService.cleanupOldAuditData: a failed delete is swallowed", async () => {
+  const repo = new MockAuditRepository();
+  repo.deleteOlderThan = () => Promise.reject(new Error("EACCES"));
+  await new AuditService(repo).cleanupOldAuditData();
 });

@@ -166,12 +166,22 @@ export interface WorkflowRunRepository {
    * cutoff. Running and suspended runs are never deleted regardless of age.
    * Returns the number of runs deleted and, when the implementation tracks
    * them, the IDs of the runs deleted (or that would be deleted on a dry run).
+   *
+   * With `limit`, stops once that many runs are deleted (or would be, on a
+   * dry run) and reports `more: true` when another collectible run remains;
+   * a later call continues where this one stopped. Implementations that do
+   * not batch may omit `more`.
    */
   deleteOlderThan(
     cutoff: Date,
-    options?: { dryRun?: boolean },
+    options?: { dryRun?: boolean; limit?: number },
   ): Promise<
-    { deleted: number; bytesReclaimed: number; deletedRunIds?: string[] }
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      deletedRunIds?: string[];
+      more?: boolean;
+    }
   >;
 }
 
@@ -187,8 +197,11 @@ export interface RunSnapshotInfo {
 /**
  * Repository interface for per-run evaluated-workflow snapshots.
  *
- * A snapshot shares its run's lifetime: it is removed when the run is
- * garbage-collected or its workflow is deleted.
+ * A snapshot is removed when its run is garbage-collected or its workflow is
+ * deleted. With an `evaluatedSnapshots` retention shorter than the run's, the
+ * snapshot of a finished (succeeded/failed/cancelled) run is removed earlier;
+ * a snapshot of a run that has not finished is kept, since cancel, reject and
+ * orphan settlement read it.
  */
 export interface RunSnapshotRepository {
   /**

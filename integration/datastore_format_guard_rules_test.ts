@@ -149,6 +149,9 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts:lockHeldByLiveProcess",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",
+  // swamp-club#3473: `doctor datastores --retention` reads the oldest
+  // stored commit, after a read-only repository context opened the repo.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RetentionHistory",
   // swamp-club#3300: config adoption reads partition heads through the
   // handle a checked context already opened; its callers (config migrate,
   // repo_context's context helpers) pass a config the helpers checked.
@@ -162,7 +165,13 @@ const GUARDED_PINNED = [
   "src/cli/commands/datastore_sync.ts:datastoreSyncCommand",
   "src/cli/commands/doctor_datastores.ts:createDoctorDatastoresDeps",
   "src/cli/commands/doctor_datastores.ts:createRepairDeps",
-  "src/cli/commands/serve.ts:serveCommand (x3)",
+  // swamp-club#3473: serve's retention pass compacts v3 history through the
+  // handle of the config requireInitializedRepoUnlocked checked.
+  "src/cli/commands/serve.ts:serveCommand (x4)",
+  // swamp-club#3473: the end-of-command retention pass opens the repository
+  // through requireInitializedRepo and resolveDatastoreForRepo, then
+  // compacts v3 history through that checked config.
+  "src/cli/retention_teardown.ts:runRetentionAtCommandEnd",
   "src/cli/managed_config_sync.ts:coordinatedGlobalLock",
   "src/cli/repo_context.ts:acquireModelLocks (x5)",
   "src/cli/repo_context.ts:createModelLock (x2)",

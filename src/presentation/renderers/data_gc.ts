@@ -30,10 +30,22 @@ class LogDataGcRenderer implements Renderer<DataGcEvent> {
     return {
       collecting: () => {},
       completed: (e) => {
+        // A server older than data retention sends no aged-out counts.
+        const agedOutVersions = e.data.agedOutVersions ?? 0;
+        const agedOutEntries = e.data.agedOutEntries ?? 0;
+        const agedOutBytes = e.data.agedOutBytes ?? 0;
         if (e.data.dryRun) {
+          if (agedOutVersions > 0) {
+            logger
+              .info`Data retention dry run: would delete ${agedOutVersions} versions older than the data retention period, ${agedOutEntries} items entirely (${agedOutBytes} bytes)`;
+          }
           logger
             .info`GC dry run: would delete ${e.data.dataEntriesExpired} expired items, would reclaim ${e.data.versionsDeleted} excess versions (${e.data.bytesReclaimed} bytes)`;
           return;
+        }
+        if (agedOutVersions > 0) {
+          logger
+            .info`Data retention: deleted ${agedOutVersions} versions older than the data retention period, ${agedOutEntries} items entirely (${agedOutBytes} bytes)`;
         }
         logger
           .info`GC complete: deleted ${e.data.dataEntriesExpired} expired items, ${e.data.versionsDeleted} excess versions reclaimed (${e.data.bytesReclaimed} bytes)`;
@@ -64,6 +76,9 @@ class JsonDataGcRenderer implements Renderer<DataGcEvent> {
             dataEntriesExpired: e.data.dataEntriesExpired,
             versionsDeleted: e.data.versionsDeleted,
             bytesReclaimed: e.data.bytesReclaimed,
+            agedOutEntries: e.data.agedOutEntries ?? 0,
+            agedOutVersions: e.data.agedOutVersions ?? 0,
+            agedOutBytes: e.data.agedOutBytes ?? 0,
             dryRun: e.data.dryRun,
             expiredEntries: e.data.expiredEntries,
             walPagesTotal: e.data.walPagesTotal,
@@ -108,6 +123,9 @@ export function renderDataGcPreview(
         versionGcModelCount: preview.versionGcItems.length,
         versionGcVersionCount: totalVersions,
         versionGcData: preview.versionGcItems,
+        agedOutEntryCount: preview.agedOut?.entries ?? 0,
+        agedOutVersionCount: preview.agedOut?.versions ?? 0,
+        agedOutBytes: preview.agedOut?.bytes ?? 0,
       },
       null,
       2,
@@ -115,6 +133,10 @@ export function renderDataGcPreview(
   } else {
     const logger = getSwampLogger(["data", "gc"]);
     logger.info`GC preview: ${preview.items.length} expired data items`;
+    if (preview.agedOut && preview.agedOut.versions > 0) {
+      logger
+        .info`Data retention: ${preview.agedOut.versions} versions older than the data retention period, ${preview.agedOut.entries} items entirely (${preview.agedOut.bytes} bytes)`;
+    }
     if (preview.versionGcItems.length > 0) {
       const totalVersions = preview.versionGcItems.reduce(
         (sum, item) => sum + item.versionsWouldBeRemoved,

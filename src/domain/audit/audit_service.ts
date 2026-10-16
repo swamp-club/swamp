@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import type { AuditRepository } from "./audit_repository.ts";
 import {
   type AuditEntry,
@@ -73,8 +74,46 @@ const NOISE_COMMAND_PREFIXES: string[] = [
   "git stash list",
 ];
 
+const logger = getLogger(["swamp", "audit"]);
+
 /** Default retention period in days for audit data */
-const DEFAULT_RETENTION_DAYS = 7;
+export const DEFAULT_AUDIT_RETENTION_DAYS = 7;
+
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Converts a retention in milliseconds to whole days, rounding up: audit
+ * files are named by day, so a partial day keeps that day's file.
+ */
+export function retentionMsToWholeDays(retentionMs: number): number {
+  return Math.ceil(retentionMs / MS_PER_DAY);
+}
+
+/**
+ * The number of days audit data is kept: the repo's audit retention
+ * (`garbageCollection.audit`, else `garbageCollection.retention`) rounded
+ * up to whole days, or {@link DEFAULT_AUDIT_RETENTION_DAYS} when unset.
+ */
+export function auditRetentionDays(retentionMs: number | undefined): number {
+  return retentionMs === undefined
+    ? DEFAULT_AUDIT_RETENTION_DAYS
+    : retentionMsToWholeDays(retentionMs);
+}
+
+/**
+ * The retention in days for a serve audit store: the store's own
+ * `retention.days` from serve.yaml when set, else the repo's audit retention
+ * rounded up to whole days, else undefined (the store is never pruned).
+ */
+export function resolveAuditStoreRetentionDays(
+  explicitDays: number | undefined,
+  repoRetentionMs: number | undefined,
+): number | undefined {
+  if (explicitDays) return explicitDays;
+  return repoRetentionMs === undefined
+    ? undefined
+    : retentionMsToWholeDays(repoRetentionMs);
+}
 
 /**
  * Merged audit timeline result.
@@ -198,19 +237,20 @@ export class AuditService {
   }
 
   /**
-   * Cleans up old audit data. Fire-and-forget.
+   * Deletes audit data older than `retentionDays`. Never rejects: a failed
+   * cleanup is only logged.
    */
-  cleanupOldAuditData(
-    retentionDays: number = DEFAULT_RETENTION_DAYS,
-  ): void {
+  async cleanupOldAuditData(
+    retentionDays: number = DEFAULT_AUDIT_RETENTION_DAYS,
+  ): Promise<void> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
 
-    this.auditRepository.deleteOlderThan(cutoffDate).catch((error) => {
-      if (Deno.env.get("SWAMP_DEBUG")) {
-        console.error("[Audit] Cleanup failed:", error);
-      }
-    });
+    try {
+      await this.auditRepository.deleteOlderThan(cutoffDate);
+    } catch (error) {
+      logger.debug`Audit cleanup failed: ${error}`;
+    }
   }
 }
 

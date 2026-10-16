@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { dirname, join, resolve } from "@std/path";
-import { recordHookEntry, resolveAuditRepoDir } from "./audit.ts";
+import {
+  recordHookEntry,
+  resolveAuditRepoDir,
+  resolveRepoAuditRetentionDays,
+} from "./audit.ts";
 import { createBashCommandEntry } from "../../domain/audit/audit_command_entry.ts";
 import { auditFilePathForTimestamp } from "../../domain/audit/audit_path.ts";
 import {
@@ -248,5 +252,87 @@ Deno.test("resolveAuditRepoDir: uses a hook cwd holding a marker without walking
 
     assertPathEquals(result!, repo);
     assertEquals(walked, false);
+  });
+});
+
+async function makeRepoWithMarker(
+  dir: string,
+  marker: string,
+): Promise<string> {
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), marker);
+  return dir;
+}
+
+Deno.test("resolveRepoAuditRetentionDays: unset garbageCollection keeps 7 days", async () => {
+  await withTempDir(async (root) => {
+    const repo = await makeRepo(join(root, "repo"));
+    assertEquals(await resolveRepoAuditRetentionDays(repo), 7);
+  });
+});
+
+Deno.test("resolveRepoAuditRetentionDays: audit key rounds up to whole days", async () => {
+  await withTempDir(async (root) => {
+    const repo = await makeRepoWithMarker(
+      join(root, "repo"),
+      "swampVersion: 1\ngarbageCollection:\n  automatic: true\n  retention: 90d\n  audit: 36h\n",
+    );
+    assertEquals(await resolveRepoAuditRetentionDays(repo), 2);
+  });
+});
+
+Deno.test("resolveRepoAuditRetentionDays: falls back to the retention key", async () => {
+  await withTempDir(async (root) => {
+    const repo = await makeRepoWithMarker(
+      join(root, "repo"),
+      "swampVersion: 1\ngarbageCollection:\n  automatic: true\n  retention: 90d\n",
+    );
+    assertEquals(await resolveRepoAuditRetentionDays(repo), 90);
+    // Without automatic, the repo's value is left to manual gc.
+    await Deno.writeTextFile(
+      join(repo, ".swamp.yaml"),
+      "swampVersion: 1\ngarbageCollection:\n  retention: 90d\n",
+    );
+    assertEquals(await resolveRepoAuditRetentionDays(repo), 7);
+  });
+});
+
+Deno.test("resolveRepoAuditRetentionDays: an invalid marker keeps 7 days", async () => {
+  await withTempDir(async (root) => {
+    const repo = await makeRepoWithMarker(
+      join(root, "repo"),
+      "swampVersion: 1\ngarbageCollection:\n  audit: forever\n",
+    );
+    assertEquals(await resolveRepoAuditRetentionDays(repo), 7);
+    const missing = join(root, "missing");
+    assertEquals(await resolveRepoAuditRetentionDays(missing), 7);
+  });
+});
+
+Deno.test("recordHookEntry: cleanup has removed files older than the repo's audit retention when it resolves", async () => {
+  await withTempDir(async (root) => {
+    const repo = await makeRepoWithMarker(
+      join(root, "repo"),
+      "swampVersion: 1\ngarbageCollection:\n  automatic: true\n  audit: 2d\n",
+    );
+    const auditDir = swampPath(repo, SWAMP_SUBDIRS.audit);
+    await Deno.mkdir(auditDir, { recursive: true });
+    const day = (offset: number) =>
+      new Date(Date.now() - offset * 86_400_000).toISOString();
+    const oldLog = auditFilePathForTimestamp(auditDir, day(5));
+    const keptLog = auditFilePathForTimestamp(auditDir, day(1));
+    await Deno.writeTextFile(oldLog, "{}\n");
+    await Deno.writeTextFile(keptLog, "{}\n");
+
+    const entry = createBashCommandEntry("session-1", "ls", repo);
+    const recorded = await recordHookEntry(entry, {
+      hookCwd: repo,
+      processCwd: root,
+      findRepo: findRepoWithin(root),
+    });
+
+    assertEquals(recorded, true);
+    assertEquals(await exists(oldLog), false);
+    assertEquals(await exists(keptLog), true);
   });
 });

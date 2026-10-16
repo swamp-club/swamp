@@ -21,6 +21,10 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
+import {
+  FAKE_REAPED_CUTOFF,
+  fakeWatermarks,
+} from "../retention/reaped_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createDataGetDeps,
@@ -952,5 +956,73 @@ Deno.test("dataGet: a binary workflow read's latest-run query selects content wi
       `"main" && stepName == "build" && name == "output" && version >= 0' ` +
       `--select '{"content": content, "contentEncoding": contentEncoding}' ` +
       `--json`,
+  );
+});
+
+Deno.test("dataGet: missing data says data before the retention cutoff was reaped", async () => {
+  const deps = makeDeps({
+    findDataByName: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["data"]),
+  });
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      dataName: "result",
+      includeContent: false,
+      repoDir: ".",
+    }),
+  );
+  const last = events[1] as Extract<DataGetEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "not_found");
+  assertStringIncludes(
+    last.error.message,
+    `; data before ${FAKE_REAPED_CUTOFF} has been reaped by retention (14d)`,
+  );
+  assertEquals(
+    (last.error.details as Record<string, unknown>).reapedBefore,
+    FAKE_REAPED_CUTOFF,
+  );
+});
+
+Deno.test("dataGet: a missing workflow run uses the runs watermark", async () => {
+  const deps = makeDeps({
+    findWorkflowRun: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["workflowRuns"]),
+  });
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      workflowName: "wf",
+      dataName: "result",
+      includeContent: false,
+      repoDir: ".",
+    }),
+  );
+  const last = events[1] as Extract<DataGetEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "not_found");
+  assertStringIncludes(
+    last.error.message,
+    `; runs before ${FAKE_REAPED_CUTOFF} have been reaped by retention (14d)`,
+  );
+});
+
+Deno.test("dataGet: without a data watermark the not-found is unchanged", async () => {
+  const deps = makeDeps({
+    findDataByName: () => Promise.resolve(null),
+    retentionWatermarks: fakeWatermarks(["workflowRuns"]),
+  });
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      dataName: "result",
+      includeContent: false,
+      repoDir: ".",
+    }),
+  );
+  const last = events[1] as Extract<DataGetEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "not_found");
+  assertEquals(last.error.message.includes("reaped"), false);
+  assertEquals(
+    "reapedBefore" in (last.error.details as Record<string, unknown>),
+    false,
   );
 });

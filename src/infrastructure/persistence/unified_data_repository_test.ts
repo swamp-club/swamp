@@ -31,6 +31,7 @@ import {
   ACCEPTED_SHORT_CONTENT_TTL_MS,
   FileSystemUnifiedDataRepository,
   sortedSubdirectoryNames,
+  VERSION_FLOOR_SUFFIX,
 } from "./unified_data_repository.ts";
 import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
@@ -1052,21 +1053,29 @@ Deno.test("mutations call markDirty before writing", async () => {
     }
     const afterRename = calls.length;
 
-    // delete with specific version → version directory
+    // delete with specific version → version directory; it is the name's
+    // last version, so its latest marker goes too (swamp-club#3473)
     await repo.delete(testType, "model-1", "mark-dirty-ren", 1);
-    assertEquals(calls.length, afterRename + 1);
+    assertEquals(calls.length, afterRename + 2);
     assertEquals(
       calls[afterRename],
       repo.getPath(testType, "model-1", "mark-dirty-ren", 1),
+    );
+    assertEquals(
+      calls[afterRename + 1],
+      join(
+        repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
+        "latest",
+      ),
     );
 
     // delete without version → latest marker file (data-name dir already
     // removed by the prior specific-version delete that left no versions;
     // listVersions returns [] so only the latest marker signal fires).
     await repo.delete(testType, "model-1", "mark-dirty-ren");
-    assertEquals(calls.length, afterRename + 2);
+    assertEquals(calls.length, afterRename + 3);
     assertEquals(
-      calls[afterRename + 1],
+      calls[afterRename + 2],
       join(
         repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
         "latest",
@@ -1077,7 +1086,7 @@ Deno.test("mutations call markDirty before writing", async () => {
     await repo.collectGarbage(testType, "model-1");
     assertEquals(
       calls.length,
-      afterRename + 2,
+      afterRename + 3,
       "collectGarbage with no excess versions must not call markDirty",
     );
 
@@ -1136,6 +1145,46 @@ Deno.test("delete: full delete emits per-version markDirty signals", async () =>
       );
     }
     assertEquals(calls[3], expectedLatest);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("delete: deleting the last version also signals the latest marker's removal", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
+      return Promise.resolve();
+    };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      markDirty,
+    );
+    const data = makeData("last-ver");
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v1"));
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v2"));
+    calls.length = 0;
+
+    await repo.delete(testType, "m1", "last-ver", 1);
+    // An older version leaves the marker in place.
+    const latest = join(
+      repo.getDataNameDir(testType, "m1", "last-ver"),
+      "latest",
+    );
+    assertEquals(calls.includes(latest), false);
+
+    await repo.delete(testType, "m1", "last-ver", 2);
+    // The last one removes it, and a synced datastore must hear of it.
+    assertEquals(calls.includes(latest), true);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
@@ -3228,4 +3277,72 @@ Deno.test("reassertLatestVersion: a version deleted on purpose changes nothing a
     assertEquals(paths, undefined);
     assertEquals(await Deno.readTextFile(latestPath), before);
   });
+});
+
+Deno.test("allocateVersion: never allocates at or below a raised version floor (swamp-club#3473)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: Array<string | undefined> = [];
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      (relPath?: string) => {
+        calls.push(relPath);
+        return Promise.resolve();
+      },
+    );
+    const enc = (s: string) => new TextEncoder().encode(s);
+
+    // Emptied as retention does: floor first, then each version.
+    for (const v of ["a", "b", "c"]) {
+      await repo.save(testType, "m1", makeData("reaped"), enc(v));
+    }
+    calls.length = 0;
+    await repo.raiseVersionFloor(testType, "m1", "reaped", 3);
+    const floorPath = `${
+      repo.getDataNameDir(testType, "m1", "reaped")
+    }${VERSION_FLOOR_SUFFIX}`;
+    // Marked for the push, so other clones get it.
+    assertEquals(calls, [floorPath]);
+    for (const v of [1, 2, 3]) {
+      await repo.delete(testType, "m1", "reaped", v);
+    }
+    assertEquals(await repo.listVersions(testType, "m1", "reaped"), []);
+    const next = await repo.save(testType, "m1", makeData("reaped"), enc("d"));
+    assertEquals(next.version, 4);
+
+    // A lower floor never lowers it.
+    await repo.raiseVersionFloor(testType, "m1", "reaped", 2);
+    assertEquals((await Deno.readTextFile(floorPath)).trim(), "3");
+
+    // A second repository over the same files (another clone after a pull)
+    // continues above the floor too.
+    const other = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      new CatalogStore(join(tmpDir, "_catalog_other.db")),
+    );
+    await repo.raiseVersionFloor(testType, "m1", "reaped", 4);
+    await repo.delete(testType, "m1", "reaped", 4);
+    const fromOther = await other.save(
+      testType,
+      "m1",
+      makeData("reaped"),
+      enc("e"),
+    );
+    assertEquals(fromOther.version, 5);
+    // The floor file is no data name.
+    assertEquals(
+      (await other.findAllForModel(testType, "m1")).map((d) => d.name),
+      ["reaped"],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
 });

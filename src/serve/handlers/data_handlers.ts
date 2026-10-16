@@ -122,22 +122,34 @@ import { latestRunForWorkflow } from "../../domain/workflows/workflow_lookup.ts"
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 
 export function resolveRunGcInput(
   payload: RunGcPayload | undefined,
   policy?: RunGcGarbageCollectionPolicy,
 ): RunGcInput {
+  // Resolved as the CLI's: a request value, then the kind's own key, then
+  // `retention`, then the built-in default.
   const configuredRetention = runGcRetentionFromPolicy(policy);
   const workflowRunRetentionDays = payload?.workflowRunRetentionDays ??
     configuredRetention.workflowRunRetentionDays ??
     DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
+  // A request's run retention overrides the snapshot retention too: the
+  // snapshots then go with their runs, as `--older-than` does.
+  const evaluatedSnapshotRetentionDays =
+    payload?.workflowRunRetentionDays === undefined
+      ? configuredRetention.evaluatedSnapshotRetentionDays
+      : undefined;
 
   return {
     dryRun: payload?.dryRun ?? false,
     workflowRunRetentionDays,
     outputRetentionDays: payload?.outputRetentionDays ??
       configuredRetention.outputRetentionDays ?? DEFAULT_OUTPUT_RETENTION_DAYS,
+    ...(evaluatedSnapshotRetentionDays === undefined
+      ? {}
+      : { evaluatedSnapshotRetentionDays }),
   };
 }
 
@@ -187,13 +199,16 @@ export async function handleDataGet(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = createDataGetDeps(
-      ctx.repoDir,
-      ctx.datastoreResolver,
-      ctx.repoContext.unifiedDataRepo,
-      ctx.repoContext.workflowRepo,
-      ctx.repoContext.definitionRepo,
-    );
+    const deps = {
+      ...createDataGetDeps(
+        ctx.repoDir,
+        ctx.datastoreResolver,
+        ctx.repoContext.unifiedDataRepo,
+        ctx.repoContext.workflowRepo,
+        ctx.repoContext.definitionRepo,
+      ),
+      retentionWatermarks: ctx.repoContext.retentionWatermarks,
+    };
 
     let expectedOwner: WorkflowDataPin | undefined;
     if (payload.workflowName) {
@@ -1181,9 +1196,20 @@ export async function handleDataGc(
           ctx.repoContext.markDirty,
         );
 
+        // Re-read so a retention edited while serve runs applies.
+        const marker = await new RepoMarkerRepository().read(
+          RepoPath.create(ctx.repoDir),
+        );
+        const dataRetentionMs = RetentionPolicy.fromConfig(
+          marker?.garbageCollection,
+        ).retentionMs("data");
+
         let result: Record<string, unknown> | undefined;
         await consumeStream(
-          dataGc(libCtx, deps, { dryRun: payload?.dryRun ?? false }),
+          dataGc(libCtx, deps, {
+            dryRun: payload?.dryRun ?? false,
+            dataRetentionMs,
+          }),
           {
             collecting: () => {},
             completed: (e) => {
@@ -1196,7 +1222,12 @@ export async function handleDataGc(
         );
 
         if (controller.signal.aborted) {
-          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          sendError(
+            socket,
+            requestId,
+            "cancelled",
+            "Operation was cancelled",
+          );
           return;
         }
 
@@ -1323,7 +1354,12 @@ export async function handleRunGc(
         );
 
         if (controller.signal.aborted) {
-          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          sendError(
+            socket,
+            requestId,
+            "cancelled",
+            "Operation was cancelled",
+          );
           return;
         }
 

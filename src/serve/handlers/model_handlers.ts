@@ -1663,11 +1663,14 @@ export async function handleModelOutputGet(
   const access = await resolveOutputAccess(
     ctx.repoContext.definitionRepo,
     async () => {
-      const deps = await createModelOutputGetDeps(
-        ctx.repoDir,
-        undefined,
-        ctx.repoContext.definitionRepo,
-      );
+      const deps = {
+        ...await createModelOutputGetDeps(
+          ctx.repoDir,
+          undefined,
+          ctx.repoContext.definitionRepo,
+        ),
+        retentionWatermarks: ctx.repoContext.retentionWatermarks,
+      };
       return {
         deps,
         reference: await resolveOutputReference(

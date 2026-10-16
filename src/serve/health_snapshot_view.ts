@@ -196,8 +196,10 @@ export async function healthSnapshotFor(
     keep(snapshot.webhooks, (webhook) => reads("workflow", webhook.workflow)),
   ]);
 
+  // Retention describes the deployment, like components: admins only.
+  const { retention: _retention, ...shared } = snapshot;
   return {
-    ...snapshot,
+    ...shared,
     activeRuns: activeRuns.map((run) => ({ ...run, principalId: null })),
     workers: [],
     // The scheduler's time zone is a deployment detail: only a reader who

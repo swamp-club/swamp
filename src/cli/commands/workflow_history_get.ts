@@ -93,13 +93,16 @@ export async function workflowHistoryGetAction(
     );
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createWorkflowHistoryGetDeps(
-    repoDir,
-    datastoreResolver,
-    repoContext.workflowRepo,
-    undefined,
-    signalWaitsOf(repoContext),
-  );
+  const deps = {
+    ...createWorkflowHistoryGetDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.workflowRepo,
+      undefined,
+      signalWaitsOf(repoContext),
+    ),
+    retentionWatermarks: repoContext.retentionWatermarks,
+  };
 
   const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
   await consumeStream(

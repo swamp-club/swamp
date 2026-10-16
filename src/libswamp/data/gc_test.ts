@@ -211,6 +211,102 @@ Deno.test("dataGc: passes dryRun flag through", async () => {
   assertEquals(receivedDryRun, true);
 });
 
+function retentionDeps(calls: Array<{ cutoff: Date; dryRun: boolean }>) {
+  const order: string[] = [];
+  const deps = makeDeps({
+    deleteDataOlderThan: (cutoff, opts) => {
+      order.push("retention");
+      calls.push({ cutoff, dryRun: opts.dryRun });
+      return Promise.resolve({
+        entriesDeleted: 2,
+        versionsDeleted: 7,
+        bytesReclaimed: 300,
+        more: false,
+        failed: 0,
+        dryRun: opts.dryRun,
+      });
+    },
+    deleteExpiredData: (opts) => {
+      order.push("expiry");
+      return Promise.resolve({
+        dataEntriesExpired: 0,
+        versionsDeleted: 0,
+        bytesReclaimed: 0,
+        dryRun: opts.dryRun,
+        expiredEntries: [],
+      });
+    },
+  });
+  return { deps, order };
+}
+
+Deno.test("dataGc: ages out data older than the retention before expiry when dataRetentionMs is set", async () => {
+  const calls: Array<{ cutoff: Date; dryRun: boolean }> = [];
+  const { deps, order } = retentionDeps(calls);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const before = Date.now();
+
+  const events = await collect<DataGcEvent>(
+    dataGc(createLibSwampContext(), deps, {
+      dryRun: false,
+      dataRetentionMs: dayMs,
+    }),
+  );
+
+  assertEquals(order, ["retention", "expiry"]);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].dryRun, false);
+  const cutoffMs = calls[0].cutoff.getTime();
+  assertEquals(
+    cutoffMs >= before - dayMs && cutoffMs <= Date.now() - dayMs,
+    true,
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed" && completed.data.agedOutEntries,
+    2,
+  );
+  assertEquals(
+    completed?.kind === "completed" && completed.data.agedOutVersions,
+    7,
+  );
+  assertEquals(
+    completed?.kind === "completed" && completed.data.agedOutBytes,
+    300,
+  );
+});
+
+Deno.test("dataGc: runs no data retention when dataRetentionMs is unset", async () => {
+  const calls: Array<{ cutoff: Date; dryRun: boolean }> = [];
+  const { deps, order } = retentionDeps(calls);
+
+  const events = await collect<DataGcEvent>(
+    dataGc(createLibSwampContext(), deps, { dryRun: false }),
+  );
+
+  assertEquals(order, ["expiry"]);
+  assertEquals(calls.length, 0);
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed" && completed.data.agedOutVersions,
+    0,
+  );
+});
+
+Deno.test("dataGcPreview: counts what data retention would age out, as a dry run", async () => {
+  const calls: Array<{ cutoff: Date; dryRun: boolean }> = [];
+  const { deps } = retentionDeps(calls);
+
+  const preview = await dataGcPreview(createLibSwampContext(), deps, {
+    dataRetentionMs: 1000,
+  });
+  const without = await dataGcPreview(createLibSwampContext(), deps);
+
+  assertEquals(calls.map((c) => c.dryRun), [true]);
+  assertEquals(preview.agedOut, { entries: 2, versions: 7, bytes: 300 });
+  assertEquals(without.agedOut, undefined);
+});
+
 // --- autoGc tests ---
 
 function makeFakeDataRepo(

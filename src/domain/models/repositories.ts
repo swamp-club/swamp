@@ -163,9 +163,14 @@ export interface OutputRepository {
    * lifetime (or from unregistered types) use the fallback cutoff. The effective
    * cutoff for a method is the more aggressive (more recent) of the two.
    * Run logs are removed and swept as in {@link deleteOlderThan}.
+   *
+   * With `limit`, stops once that many outputs are deleted (or would be, on
+   * a dry run) and reports `more: true` when another expired output remains;
+   * the orphaned run-log sweep is then left to the batch that reports no
+   * `more`. Implementations that do not batch may omit `more`.
    */
   deleteByMethodLifetime(
     fallbackCutoff: Date,
-    options?: { dryRun?: boolean },
-  ): Promise<{ deleted: number; bytesReclaimed: number }>;
+    options?: { dryRun?: boolean; limit?: number },
+  ): Promise<{ deleted: number; bytesReclaimed: number; more?: boolean }>;
 }

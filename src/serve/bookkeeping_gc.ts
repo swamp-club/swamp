@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reaps ended step-lease and pending-dispatch records (swamp-club#2262).
+ * Reaps ended step-lease and pending-dispatch records (swamp-club#2262), and
+ * revoked or expired enrollment tokens no worker record references
+ * (swamp-club#3473).
  *
  * Both models declare `lifetime: "infinite"` and hold one data name per
  * record under a single instance, so without reaping every remote step
@@ -41,8 +43,11 @@ import type {
 import type { ModelType } from "../domain/models/model_type.ts";
 import {
   isReapableDispatch,
+  isReapableEnrollmentToken,
   isReapableLease,
 } from "../domain/models/worker/bookkeeping_retention.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../domain/models/worker/enrollment_token_model.ts";
+import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import {
   PENDING_DISPATCH_INSTANCE_NAME,
   PENDING_DISPATCH_MODEL_TYPE,
@@ -64,6 +69,8 @@ export const DEFAULT_REAP_BATCH_SIZE = 100;
 export interface BookkeepingReapResult {
   readonly leasesDeleted: number;
   readonly dispatchesDeleted: number;
+  /** Revoked or expired enrollment tokens deleted. */
+  readonly tokensDeleted: number;
   /** Records whose local delete threw; they are retried next cycle. */
   readonly failed: number;
   /** Records skipped because their body could not be read or parsed. */
@@ -101,6 +108,14 @@ export interface BookkeepingGcDeps {
   readonly syncNamespace?: string;
   readonly syncGate?: SyncGate;
   readonly batchSize?: number;
+  /**
+   * Names of the enrollment tokens a worker record in this repo still
+   * references. Enrollment tokens are reaped only when this is wired, and
+   * a token any worker record names is kept. Wire it with
+   * {@link createWorkerTokenNameQuery}. When it throws, no token is reaped
+   * that cycle.
+   */
+  listWorkerTokenNames?(): Promise<ReadonlySet<string>>;
   now?(): number;
 }
 
@@ -125,8 +140,35 @@ export function createBookkeepingRecordQuery(
   };
 }
 
+/**
+ * Adapts a catalog query service to
+ * {@link BookkeepingGcDeps.listWorkerTokenNames}: the `tokenName` of every
+ * worker state record in `namespace`. Throws when a worker record has no
+ * readable token name, so an unknown reference never lets a token go.
+ */
+export function createWorkerTokenNameQuery(
+  dataQueryService: Pick<DataQueryService, "query">,
+  namespace: string,
+): () => Promise<ReadonlySet<string>> {
+  return async () => {
+    const rows = await dataQueryService.query(
+      `modelType == ${JSON.stringify(WORKER_MODEL_TYPE.normalized)} && ` +
+        `name == "state-main" && ${ownNamespaceTerm(namespace)}`,
+      { select: "attributes.tokenName" },
+    );
+    const names = new Set<string>();
+    for (const row of rows) {
+      if (typeof row !== "string" || row.length === 0) {
+        throw new Error("a worker record has no readable token name");
+      }
+      names.add(row);
+    }
+    return names;
+  };
+}
+
 interface ReapCandidate {
-  readonly kind: "lease" | "dispatch";
+  readonly kind: "lease" | "dispatch" | "token";
   readonly modelType: ModelType;
   readonly modelId: string;
   readonly dataName: string;
@@ -135,8 +177,21 @@ interface ReapCandidate {
 interface BatchOutcome {
   leasesDeleted: number;
   dispatchesDeleted: number;
+  tokensDeleted: number;
   failed: number;
   pushFailed: boolean;
+}
+
+/** Data name every enrollment-token instance stores its record under. */
+const ENROLLMENT_TOKEN_DATA_NAME = "token-main";
+
+/** Catalog predicate for every enrollment token in the repo's namespace. */
+export function enrollmentTokenListPredicate(namespace: string): string {
+  return `modelType == ${
+    JSON.stringify(ENROLLMENT_TOKEN_MODEL_TYPE.normalized)
+  } && ` +
+    `name == ${JSON.stringify(ENROLLMENT_TOKEN_DATA_NAME)} && ` +
+    ownNamespaceTerm(namespace);
 }
 
 /** Catalog predicate for one bookkeeping instance in the repo's namespace. */
@@ -182,7 +237,7 @@ async function readAttributes(
 interface BookkeepingKind {
   readonly kind: ReapCandidate["kind"];
   readonly modelType: ModelType;
-  readonly instanceName: string;
+  predicate(namespace: string): string;
   isReapable(attrs: unknown, gracePeriodMs: number, nowMs: number): boolean;
 }
 
@@ -190,16 +245,63 @@ const BOOKKEEPING_KINDS: readonly BookkeepingKind[] = [
   {
     kind: "lease",
     modelType: STEP_LEASE_MODEL_TYPE,
-    instanceName: STEP_LEASE_INSTANCE_NAME,
+    predicate: (namespace) =>
+      bookkeepingListPredicate(
+        STEP_LEASE_MODEL_TYPE,
+        STEP_LEASE_INSTANCE_NAME,
+        namespace,
+      ),
     isReapable: isReapableLease,
   },
   {
     kind: "dispatch",
     modelType: PENDING_DISPATCH_MODEL_TYPE,
-    instanceName: PENDING_DISPATCH_INSTANCE_NAME,
+    predicate: (namespace) =>
+      bookkeepingListPredicate(
+        PENDING_DISPATCH_MODEL_TYPE,
+        PENDING_DISPATCH_INSTANCE_NAME,
+        namespace,
+      ),
     isReapable: isReapableDispatch,
   },
 ];
+
+/** The token name a token record carries, or undefined when it has none. */
+function tokenNameOf(attrs: unknown): string | undefined {
+  if (typeof attrs !== "object" || attrs === null) return undefined;
+  const name = (attrs as { name?: unknown }).name;
+  return typeof name === "string" ? name : undefined;
+}
+
+/**
+ * The enrollment-token kind for this cycle, or null when tokens are not
+ * reaped: the worker reference lookup is not wired, or it failed.
+ */
+async function enrollmentTokenKind(
+  deps: BookkeepingGcDeps,
+): Promise<BookkeepingKind | null> {
+  if (!deps.listWorkerTokenNames) return null;
+  let referenced: ReadonlySet<string>;
+  try {
+    referenced = await deps.listWorkerTokenNames();
+  } catch (error) {
+    logger.warn(
+      "Skipping enrollment token reaping: cannot list worker token references: {error}",
+      { error: error instanceof Error ? error.message : String(error) },
+    );
+    return null;
+  }
+  return {
+    kind: "token",
+    modelType: ENROLLMENT_TOKEN_MODEL_TYPE,
+    predicate: enrollmentTokenListPredicate,
+    isReapable: (attrs, gracePeriodMs, nowMs) => {
+      const name = tokenNameOf(attrs);
+      if (name === undefined || referenced.has(name)) return false;
+      return isReapableEnrollmentToken(attrs, gracePeriodMs, nowMs);
+    },
+  };
+}
 
 async function listCandidates(
   deps: BookkeepingGcDeps,
@@ -209,14 +311,12 @@ async function listCandidates(
   const candidates: ReapCandidate[] = [];
   let unreadable = 0;
 
-  for (const spec of BOOKKEEPING_KINDS) {
-    const records = await deps.query(
-      bookkeepingListPredicate(
-        spec.modelType,
-        spec.instanceName,
-        deps.repo.namespace,
-      ),
-    );
+  const tokenKind = await enrollmentTokenKind(deps);
+  const kinds = tokenKind
+    ? [...BOOKKEEPING_KINDS, tokenKind]
+    : BOOKKEEPING_KINDS;
+  for (const spec of kinds) {
+    const records = await deps.query(spec.predicate(deps.repo.namespace));
     for (const record of records) {
       const attrs = await readAttributes(deps, spec.modelType, record);
       if (attrs === null) {
@@ -251,6 +351,7 @@ async function reapBatch(
   const outcome: BatchOutcome = {
     leasesDeleted: 0,
     dispatchesDeleted: 0,
+    tokensDeleted: 0,
     failed: 0,
     pushFailed: false,
   };
@@ -284,7 +385,8 @@ async function reapBatch(
         );
         if (versions.length === 0) continue;
         if (candidate.kind === "lease") outcome.leasesDeleted++;
-        else outcome.dispatchesDeleted++;
+        else if (candidate.kind === "dispatch") outcome.dispatchesDeleted++;
+        else outcome.tokensDeleted++;
       } catch (error) {
         outcome.failed++;
         logger.warn("Failed to reap {kind} {dataName}: {error}", {
@@ -298,7 +400,8 @@ async function reapBatch(
   logger.debug(
     "Reaped batch of {count} record(s), gate held {heldMs}ms",
     {
-      count: outcome.leasesDeleted + outcome.dispatchesDeleted,
+      count: outcome.leasesDeleted + outcome.dispatchesDeleted +
+        outcome.tokensDeleted,
       heldMs: Math.round(performance.now() - startedAt),
     },
   );
@@ -307,8 +410,10 @@ async function reapBatch(
 
 /**
  * Deletes every ended lease and dispatch whose `endedAt` is at least
- * `gracePeriodMs` old. Active leases and waiting dispatches are never
- * touched. Stops between records and batches once `isStopping` returns true.
+ * `gracePeriodMs` old, and — when `listWorkerTokenNames` is wired — every
+ * revoked or expired enrollment token that ended at least `gracePeriodMs`
+ * ago and no worker record references. Active leases, waiting dispatches
+ * and live tokens are never touched. Stops between records and batches once `isStopping` returns true.
  */
 export async function reapEndedBookkeepingRecords(
   deps: BookkeepingGcDeps,
@@ -325,6 +430,7 @@ export async function reapEndedBookkeepingRecords(
 
   let leasesDeleted = 0;
   let dispatchesDeleted = 0;
+  let tokensDeleted = 0;
   let failed = 0;
   let batches = 0;
   let pushFailures = 0;
@@ -339,6 +445,7 @@ export async function reapEndedBookkeepingRecords(
     batches++;
     leasesDeleted += outcome.leasesDeleted;
     dispatchesDeleted += outcome.dispatchesDeleted;
+    tokensDeleted += outcome.tokensDeleted;
     failed += outcome.failed;
     if (outcome.pushFailed) pushFailures++;
   }
@@ -346,6 +453,7 @@ export async function reapEndedBookkeepingRecords(
   return {
     leasesDeleted,
     dispatchesDeleted,
+    tokensDeleted,
     failed,
     unreadable,
     batches,

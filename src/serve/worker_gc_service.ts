@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
+import {
+  type RetentionConfig,
+  RetentionPolicy,
+} from "../domain/retention/retention_policy.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -31,9 +35,30 @@ const logger = getSwampLogger(["serve", "worker-gc"]);
 export const DEFAULT_WORKER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 export const DEFAULT_WORKER_GC_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+/**
+ * The worker GC grace period for a repo's `garbageCollection` block: its
+ * `bookkeeping` key when `automatic` is on (the shared `retention` never
+ * applies), else {@link DEFAULT_WORKER_GC_GRACE_PERIOD_MS}. A retention set
+ * only for manual gc never shortens how long serve keeps workers.
+ */
+export function bookkeepingGracePeriodMs(
+  config: RetentionConfig | undefined,
+): number {
+  const policy = RetentionPolicy.fromConfig(config);
+  if (!policy.automatic) return DEFAULT_WORKER_GC_GRACE_PERIOD_MS;
+  return policy.retentionMs("bookkeeping") ?? DEFAULT_WORKER_GC_GRACE_PERIOD_MS;
+}
+
 export interface WorkerGcDeps {
   readonly intervalMs: number;
+  /** Grace period used when `resolveGracePeriodMs` is absent or fails. */
   readonly gracePeriodMs: number;
+  /**
+   * Resolves the grace period at the start of each sweep, so a change to
+   * the repo's retention applies without a restart. A rejection falls back
+   * to `gracePeriodMs` for that sweep.
+   */
+  resolveGracePeriodMs?(): Promise<number>;
   runPrune(gracePeriodMs: number): Promise<WorkerPruneResult>;
   /** Reaps ended step leases and pending dispatches; gates its own batches. */
   reapBookkeeping?(
@@ -70,9 +95,10 @@ export function workerGcListPredicate(namespace: string): string {
  */
 async function pruneWorkersAndPush(
   deps: WorkerGcDeps,
+  gracePeriodMs: number,
 ): Promise<WorkerPruneResult> {
   try {
-    return await deps.runPrune(deps.gracePeriodMs);
+    return await deps.runPrune(gracePeriodMs);
   } finally {
     // Guarded so a push rejection never masks a prune error.
     try {
@@ -147,13 +173,30 @@ export class WorkerGcService {
     }
   }
 
+  async #resolveGracePeriodMs(): Promise<number> {
+    if (!this.#deps.resolveGracePeriodMs) return this.#deps.gracePeriodMs;
+    try {
+      return await this.#deps.resolveGracePeriodMs();
+    } catch (err) {
+      logger.warn(
+        "Worker GC: cannot resolve the bookkeeping retention, using {grace}ms: {error}",
+        {
+          grace: this.#deps.gracePeriodMs,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return this.#deps.gracePeriodMs;
+    }
+  }
+
   async #sweep(): Promise<WorkerGcSweepResult> {
+    const gracePeriodMs = await this.#resolveGracePeriodMs();
     // Each part runs on its own, so a failure in one never skips the other.
     let workers: WorkerPruneResult | null = null;
     try {
       workers = await withSyncGate(
         this.#deps.syncGate,
-        () => pruneWorkersAndPush(this.#deps),
+        () => pruneWorkersAndPush(this.#deps, gracePeriodMs),
       );
       if (workers.workersDeleted > 0 || workers.bindingsPruned > 0) {
         logger.info(
@@ -176,19 +219,21 @@ export class WorkerGcService {
     if (this.#deps.reapBookkeeping && !this.#disposed) {
       try {
         bookkeeping = await this.#deps.reapBookkeeping(
-          this.#deps.gracePeriodMs,
+          gracePeriodMs,
           () => this.#disposed,
         );
         if (
           bookkeeping.leasesDeleted > 0 || bookkeeping.dispatchesDeleted > 0 ||
-          bookkeeping.failed > 0 || bookkeeping.unreadable > 0 ||
+          bookkeeping.tokensDeleted > 0 || bookkeeping.failed > 0 ||
+          bookkeeping.unreadable > 0 ||
           bookkeeping.pushFailures > 0
         ) {
           logger.info(
-            "Worker GC: reaped {leases} lease(s), {dispatches} pending dispatch(es) in {batches} batch(es), {failed} failed, {unreadable} unreadable, {pushFailures} push failure(s)",
+            "Worker GC: reaped {leases} lease(s), {dispatches} pending dispatch(es), {tokens} enrollment token(s) in {batches} batch(es), {failed} failed, {unreadable} unreadable, {pushFailures} push failure(s)",
             {
               leases: bookkeeping.leasesDeleted,
               dispatches: bookkeeping.dispatchesDeleted,
+              tokens: bookkeeping.tokensDeleted,
               batches: bookkeeping.batches,
               failed: bookkeeping.failed,
               unreadable: bookkeeping.unreadable,

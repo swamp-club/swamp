@@ -27,6 +27,15 @@ import {
 } from "./run_gc.ts";
 import { createLibSwampContext } from "../context.ts";
 import { getLogger } from "@logtape/logtape";
+import { join } from "@std/path";
+import { createRunGcDeps } from "./run_gc.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
 
 function createMockCtx() {
   return createLibSwampContext({ logger: getLogger(["test"]) });
@@ -46,6 +55,7 @@ function createMockDeps(result: {
       Promise.resolve({
         snapshotsDeleted: 0,
         snapshotBytesReclaimed: 0,
+        more: false,
         ...result,
       }),
   };
@@ -125,6 +135,7 @@ Deno.test("runGc: uses default retention when not specified", async () => {
         snapshotsDeleted: 0,
         snapshotBytesReclaimed: 0,
         dryRun: true,
+        more: false,
       });
     },
   };
@@ -156,4 +167,173 @@ Deno.test("runGcInputFromPolicy: uses configured retention unless overridden", (
     runGcInputFromPolicy(false, { workflowRuns: "2w", outputs: "1d" }, 3),
     { dryRun: false, workflowRunRetentionDays: 3, outputRetentionDays: 3 },
   );
+});
+
+Deno.test("runGcRetentionFromPolicy: falls back to retention for kinds without their own key", () => {
+  assertEquals(
+    runGcRetentionFromPolicy({ retention: "1w", outputs: "1d" }),
+    // Snapshots without their own key go with their runs.
+    { workflowRunRetentionDays: 7, outputRetentionDays: 1 },
+  );
+});
+
+Deno.test("runGcRetentionFromPolicy: maps evaluatedSnapshots to the snapshot retention", () => {
+  assertEquals(
+    runGcRetentionFromPolicy({ workflowRuns: "2w", evaluatedSnapshots: "3d" }),
+    {
+      workflowRunRetentionDays: 14,
+      outputRetentionDays: undefined,
+      evaluatedSnapshotRetentionDays: 3,
+    },
+  );
+});
+
+Deno.test("runGcInputFromPolicy: the override wins over kind keys and retention, and drops the snapshot retention", () => {
+  assertEquals(
+    runGcInputFromPolicy(
+      true,
+      { retention: "1w", workflowRuns: "2w", evaluatedSnapshots: "3d" },
+      5,
+    ),
+    { dryRun: true, workflowRunRetentionDays: 5, outputRetentionDays: 5 },
+  );
+  assertEquals(
+    runGcInputFromPolicy(false, {
+      workflowRuns: "2w",
+      evaluatedSnapshots: "3d",
+    }),
+    {
+      dryRun: false,
+      workflowRunRetentionDays: 14,
+      outputRetentionDays: undefined,
+      evaluatedSnapshotRetentionDays: 3,
+    },
+  );
+});
+
+Deno.test("runGc: passes the snapshot retention to gcAll only when set", async () => {
+  const captured: Record<string, unknown>[] = [];
+  const deps: RunGcDeps = {
+    gcAll: (options) => {
+      captured.push(options);
+      return Promise.resolve({
+        workflowRunsDeleted: 0,
+        workflowRunBytesReclaimed: 0,
+        outputsDeleted: 0,
+        outputBytesReclaimed: 0,
+        snapshotsDeleted: 0,
+        snapshotBytesReclaimed: 0,
+        dryRun: false,
+        more: false,
+      });
+    },
+  };
+
+  for await (
+    const _event of runGc(createMockCtx(), deps, {
+      dryRun: false,
+      evaluatedSnapshotRetentionDays: 3,
+    })
+  ) {
+    // consume
+  }
+  for await (const _event of runGc(createMockCtx(), deps, { dryRun: false })) {
+    // consume
+  }
+
+  assertEquals(captured[0].snapshotRetentionDays, 3);
+  assertEquals("snapshotRetentionDays" in captured[1], false);
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("createRunGcDeps: a snapshot retention removes a finished run's old snapshot and keeps a running run's", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = Workflow.create({
+      id: crypto.randomUUID(),
+      name: "snapshot-retention",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const snapshotRepo = new YamlEvaluatedWorkflowRepository(dir);
+    // Finished ten days ago, as old as its snapshot: a run that finished
+    // recently keeps its snapshot however old (see run_lifecycle_service).
+    const base = WorkflowRun.create(workflow);
+    base.start();
+    const tenDaysAgoIso = new Date(Date.now() - 10 * 86_400_000)
+      .toISOString();
+    const finished = WorkflowRun.fromData({
+      ...base.toData(),
+      status: "cancelled",
+      startedAt: tenDaysAgoIso,
+      completedAt: tenDaysAgoIso,
+    });
+    await runRepo.save(workflow.id, finished);
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await runRepo.save(workflow.id, running);
+    const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000);
+    for (const run of [finished, running]) {
+      await snapshotRepo.saveForRun(run.id, workflow);
+    }
+    for (const snapshot of await snapshotRepo.listRunSnapshots()) {
+      await Deno.utime(
+        join(
+          dir,
+          ".swamp",
+          "workflows-evaluated",
+          "runs",
+          snapshot.runId,
+          "evaluated-workflow.yaml",
+        ),
+        tenDaysAgo,
+        tenDaysAgo,
+      );
+    }
+
+    const deps = createRunGcDeps(dir);
+    const keptByDefault = await deps.gcAll({
+      workflowRunRetentionDays: 30,
+      outputRetentionDays: 30,
+      dryRun: false,
+    });
+    assertEquals(keptByDefault.snapshotsDeleted, 0);
+
+    const result = await deps.gcAll({
+      workflowRunRetentionDays: 30,
+      outputRetentionDays: 30,
+      dryRun: false,
+      snapshotRetentionDays: 7,
+    });
+
+    assertEquals(result.workflowRunsDeleted, 0);
+    assertEquals(result.snapshotsDeleted, 1);
+    assertEquals(
+      (await snapshotRepo.listRunSnapshots()).map((s) => s.runId),
+      [running.id],
+    );
+  });
 });

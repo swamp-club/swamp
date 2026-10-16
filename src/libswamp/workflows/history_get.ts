@@ -55,6 +55,8 @@ import {
   type RunReference,
   type RunReferenceDeps,
 } from "./run_reference.ts";
+import { withReapedHint } from "../retention/reaped.ts";
+import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   isFinishedRun,
@@ -158,6 +160,11 @@ export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
   signalWaits?: SignalWaitSupport;
   /** Reads a run's step outputs back from the datastore. */
   resolveStepOutputs: (run: WorkflowRun) => Promise<RunStepOutputs>;
+  /**
+   * Where retention records how far it has reaped. With it a run that is not
+   * found says that runs before the cutoff have been reaped (swamp-club#3473).
+   */
+  retentionWatermarks?: RetentionWatermarkRepository;
 }
 
 /** Options for {@link workflowHistoryGet}. */
@@ -268,23 +275,32 @@ export async function* workflowHistoryGet(
         case "not_found":
           yield {
             kind: "error",
-            error: {
-              code: "not_found",
-              message: `No workflow run or workflow found: ${runIdOrWorkflow}`,
-              details: {
-                entityType: "Workflow run or workflow",
-                idOrName: runIdOrWorkflow,
+            error: await withReapedHint(
+              {
+                code: "not_found",
+                message:
+                  `No workflow run or workflow found: ${runIdOrWorkflow}`,
+                details: {
+                  entityType: "Workflow run or workflow",
+                  idOrName: runIdOrWorkflow,
+                },
               },
-            },
+              "workflowRuns",
+              deps.retentionWatermarks,
+            ),
           };
           return;
         case "workflow":
           if (!reference.latest) {
             yield {
               kind: "error",
-              error: notFound(
-                "Workflow run",
-                `no runs for workflow: ${reference.workflow.name}`,
+              error: await withReapedHint(
+                notFound(
+                  "Workflow run",
+                  `no runs for workflow: ${reference.workflow.name}`,
+                ),
+                "workflowRuns",
+                deps.retentionWatermarks,
               ),
             };
             return;

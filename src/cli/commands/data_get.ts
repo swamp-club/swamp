@@ -159,12 +159,15 @@ export const dataGetCommand = withRemoteOptions(
       });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDataGetDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.unifiedDataRepo,
-      repoContext.workflowRepo,
-    );
+    const deps = {
+      ...createDataGetDeps(
+        repoDir,
+        datastoreResolver,
+        repoContext.unifiedDataRepo,
+        repoContext.workflowRepo,
+      ),
+      retentionWatermarks: repoContext.retentionWatermarks,
+    };
 
     const renderer = createDataGetRenderer(cliCtx.outputMode, {
       commandTarget: formatCommandTarget({

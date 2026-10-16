@@ -179,6 +179,7 @@ import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
 import type {
   AuditTimelinePayload,
   DatastoreSetupExtensionPayload,
+  DoctorDatastoresPayload,
   ExtensionInfoPayload,
   ExtensionPullPayload,
   ExtensionRmPayload,
@@ -194,6 +195,11 @@ import type {
   WorkerVerifyPayload,
 } from "../protocol.ts";
 import { dispatchFleetProbe } from "../fleet_probe_dispatch.ts";
+import {
+  retentionScanSourcesFor,
+  scanRetention,
+} from "../../libswamp/datastores/retention_check.ts";
+import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
 import { ownerGoneDecider } from "../suspended_run_cancel.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { isExtensionBackedDatastore } from "../../infrastructure/persistence/managed_config_lockfile.ts";
@@ -1620,6 +1626,7 @@ export async function handleDoctorDatastores(
   requestId: string,
   controller: AbortController,
   principal: Principal | null,
+  payload?: DoctorDatastoresPayload,
 ): Promise<void> {
   if (
     !authorizeOrReject(socket, requestId, principal, "admin", {
@@ -1670,11 +1677,30 @@ export async function handleDoctorDatastores(
           return [];
         }
       },
+      // Read through serve's own repository context: its data repository,
+      // and the watermarks its retention timer writes.
+      checkRetention: async () =>
+        await scanRetention(
+          retentionScanSourcesFor({
+            repoDir,
+            datastoreConfig: ctx.datastoreConfig,
+            datastoreResolver: ctx.datastoreResolver,
+            dataRepo: ctx.repoContext.unifiedDataRepo,
+            watermarks: ctx.repoContext.retentionWatermarks,
+          }),
+          RetentionPolicy.fromConfig(
+            (await new RepoMarkerRepository().read(RepoPath.create(repoDir)))
+              ?.garbageCollection,
+          ),
+          new Date(),
+        ),
     };
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
-      doctorDatastores(libCtx, deps),
+      doctorDatastores(libCtx, deps, {
+        retention: payload?.retention === true,
+      }),
       {
         scanning: () => {},
         completed: (e) => {

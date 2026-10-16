@@ -843,6 +843,33 @@ Deno.test("clientErrorDetails: never forwards the identifier", () => {
   assertEquals(JSON.stringify(details).includes("secret"), false);
 });
 
+Deno.test("clientErrorDetails: forwards the retention watermark of a not_found", () => {
+  const base = notFound("Workflow run", "abc");
+  const error = new LibSwampStreamError({
+    ...base,
+    details: {
+      ...(base.details as Record<string, unknown>),
+      reapedBefore: "2026-10-01T00:00:00.000Z",
+      retention: "14d",
+    },
+  });
+  assertEquals(clientErrorDetails(error), {
+    reason: "not_found",
+    entityType: "Workflow run",
+    reapedBefore: "2026-10-01T00:00:00.000Z",
+    retention: "14d",
+  });
+});
+
+Deno.test("clientErrorDetails: drops a malformed retention watermark", () => {
+  const error = new LibSwampStreamError({
+    code: "not_found",
+    message: "gone",
+    details: { reapedBefore: "/Users/me/secret", retention: "14d" },
+  });
+  assertEquals(clientErrorDetails(error), { reason: "not_found" });
+});
+
 Deno.test("clientErrorDetails: drops entity types outside the allow-list", () => {
   const error = new LibSwampStreamError(notFound("Vault", "x"));
   assertEquals(clientErrorDetails(error), { reason: "not_found" });

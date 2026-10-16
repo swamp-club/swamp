@@ -22,7 +22,7 @@ import type { DataGetData, DataGetEvent } from "../../libswamp/data/get.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { UserError } from "../../domain/errors.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import {
   getSwampLogger,
   writeOutput,
@@ -144,7 +144,7 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }
@@ -173,7 +173,7 @@ class JsonDataGetRenderer implements Renderer<DataGetEvent> {
         console.log(JSON.stringify(jsonOutput, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }

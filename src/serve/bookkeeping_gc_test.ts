@@ -17,13 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import type { DataRecord } from "../domain/data/data_record.ts";
 import type { Namespace } from "../domain/data/namespace.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 import {
   type BookkeepingGcDeps,
   bookkeepingListPredicate,
+  createWorkerTokenNameQuery,
+  enrollmentTokenListPredicate,
   reapEndedBookkeepingRecords,
 } from "./bookkeeping_gc.ts";
 import { createSyncGate } from "./sync_gate.ts";
@@ -72,6 +74,27 @@ function dispatchRecord(
   } as unknown as DataRecord;
 }
 
+function tokenRecord(
+  name: string,
+  fields: { state: string; expiresAt: string; revokedAt?: string },
+): DataRecord {
+  return {
+    name: "token-main",
+    modelId: `token-model-${name}`,
+    attributes: {
+      name,
+      state: fields.state,
+      createdAt: "2026-09-01T00:00:00.000Z",
+      expiresAt: fields.expiresAt,
+      vaultName: "default",
+      secretKey: `worker-token-${name}`,
+      maxEnrollments: 1,
+      bindings: [],
+      ...(fields.revokedAt ? { revokedAt: fields.revokedAt } : {}),
+    },
+  } as unknown as DataRecord;
+}
+
 interface Harness {
   deps: BookkeepingGcDeps;
   /**
@@ -86,6 +109,9 @@ interface Harness {
 function harness(opts: {
   leases?: DataRecord[];
   dispatches?: DataRecord[];
+  tokens?: DataRecord[];
+  /** Wires `listWorkerTokenNames`; an Error makes it reject. */
+  workerTokenNames?: string[] | Error;
   sync?: boolean;
   batchSize?: number;
   failDelete?: Set<string>;
@@ -102,8 +128,16 @@ function harness(opts: {
   const gated = (event: string) =>
     events.push(gate.exclusiveHeld ? event : `UNGATED ${event}`);
   const bodies = new Map<string, unknown>();
-  for (const r of [...(opts.leases ?? []), ...(opts.dispatches ?? [])]) {
-    bodies.set(r.name, r.attributes);
+  // Keyed by modelId + name: every token record shares the data name.
+  const key = (id: string, name: string) => `${id}/${name}`;
+  for (
+    const r of [
+      ...(opts.leases ?? []),
+      ...(opts.dispatches ?? []),
+      ...(opts.tokens ?? []),
+    ]
+  ) {
+    bodies.set(key(r.modelId, r.name), r.attributes);
   }
   const deps: BookkeepingGcDeps = {
     // References only, as serve wires it: bodies come from getContent.
@@ -111,6 +145,8 @@ function harness(opts: {
       predicates.push(predicate);
       const records = predicate.includes("swamp/step-lease")
         ? opts.leases ?? []
+        : predicate.includes("swamp/enrollment-token")
+        ? opts.tokens ?? []
         : opts.dispatches ?? [];
       return Promise.resolve(
         records.map((r) => ({ modelId: r.modelId, name: r.name })),
@@ -118,14 +154,14 @@ function harness(opts: {
     },
     repo: {
       namespace: "team-a" as Namespace,
-      getContent: (_type: ModelType | string, _id: string, name: string) => {
+      getContent: (_type: ModelType | string, id: string, name: string) => {
         if (opts.unreadableBody?.has(name)) {
           return Promise.reject(new Error(`EIO reading ${name}`));
         }
         if (opts.corruptBody?.has(name)) {
           return Promise.resolve(new TextEncoder().encode("{not json"));
         }
-        const body = bodies.get(name);
+        const body = bodies.get(key(id, name));
         return Promise.resolve(
           body === undefined
             ? null
@@ -134,11 +170,15 @@ function harness(opts: {
       },
       listVersions: (_type: ModelType, _id: string, name: string) =>
         Promise.resolve(opts.missingOnDisk?.has(name) ? [] : [1, 2]),
-      delete: (_type: ModelType, _id: string, name: string) => {
+      delete: (type: ModelType, id: string, name: string) => {
         if (opts.failDelete?.has(name)) {
           return Promise.reject(new Error(`cannot delete ${name}`));
         }
-        gated(`delete:${name}`);
+        gated(
+          type.normalized === "swamp/enrollment-token"
+            ? `delete:${id}`
+            : `delete:${name}`,
+        );
         return Promise.resolve();
       },
     },
@@ -152,6 +192,14 @@ function harness(opts: {
     },
     syncGate: gate,
     batchSize: opts.batchSize,
+    ...(opts.workerTokenNames === undefined ? {} : {
+      listWorkerTokenNames: () => {
+        const names = opts.workerTokenNames;
+        return names instanceof Error
+          ? Promise.reject(names)
+          : Promise.resolve(new Set(names));
+      },
+    }),
     now: () => NOW,
   };
   return { deps, events, predicates };
@@ -201,6 +249,7 @@ Deno.test("reapEndedBookkeepingRecords: deletes only ended records past grace", 
   assertEquals(result, {
     leasesDeleted: 2,
     dispatchesDeleted: 1,
+    tokensDeleted: 0,
     failed: 0,
     unreadable: 0,
     batches: 1,
@@ -336,4 +385,120 @@ Deno.test("reapEndedBookkeepingRecords: an unreadable or corrupt record is skipp
   assertEquals(result.unreadable, 2);
   assertEquals(result.leasesDeleted, 1);
   assertEquals(result.dispatchesDeleted, 1);
+});
+
+const FUTURE = new Date(NOW + 10 * GRACE).toISOString();
+
+Deno.test("enrollmentTokenListPredicate: scopes to token records in the own namespace", () => {
+  assertEquals(
+    enrollmentTokenListPredicate("team-a"),
+    'modelType == "swamp/enrollment-token" && name == "token-main" && ns == "team-a"',
+  );
+});
+
+Deno.test("reapEndedBookkeepingRecords: reaps revoked and expired tokens past grace, keeps live, young and referenced ones", async () => {
+  const h = harness({
+    tokens: [
+      tokenRecord("revoked-old", {
+        state: "revoked",
+        expiresAt: FUTURE,
+        revokedAt: OLD,
+      }),
+      tokenRecord("expired-old", { state: "expired", expiresAt: OLD }),
+      // Never marked expired, but its lifetime ended long ago.
+      tokenRecord("lapsed-old", { state: "enrolled", expiresAt: OLD }),
+      tokenRecord("active", { state: "enrolled", expiresAt: FUTURE }),
+      tokenRecord("unused", { state: "unused", expiresAt: FUTURE }),
+      tokenRecord("revoked-young", {
+        state: "revoked",
+        expiresAt: FUTURE,
+        revokedAt: RECENT,
+      }),
+      tokenRecord("expired-young", { state: "expired", expiresAt: RECENT }),
+      tokenRecord("bound", {
+        state: "revoked",
+        expiresAt: OLD,
+        revokedAt: OLD,
+      }),
+    ],
+    workerTokenNames: ["bound"],
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(h.events, [
+    "delete:token-model-revoked-old",
+    "delete:token-model-expired-old",
+    "delete:token-model-lapsed-old",
+    "push",
+  ]);
+  assertEquals(result.tokensDeleted, 3);
+  assertEquals(result.leasesDeleted, 0);
+  assertEquals(result.batches, 1);
+});
+
+Deno.test("reapEndedBookkeepingRecords: tokens are not reaped without the worker reference lookup", async () => {
+  const h = harness({
+    tokens: [tokenRecord("expired-old", { state: "expired", expiresAt: OLD })],
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(h.events, []);
+  assertEquals(result.tokensDeleted, 0);
+  assertEquals(
+    h.predicates.some((p) => p.includes("swamp/enrollment-token")),
+    false,
+  );
+});
+
+Deno.test("reapEndedBookkeepingRecords: a failed worker reference lookup skips tokens, leases are still reaped", async () => {
+  const h = harness({
+    leases: [leaseRecord("old-done", "completed", OLD)],
+    tokens: [tokenRecord("expired-old", { state: "expired", expiresAt: OLD })],
+    workerTokenNames: new Error("catalog down"),
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(h.events, ["delete:lease-old-done", "push"]);
+  assertEquals(result.tokensDeleted, 0);
+  assertEquals(result.leasesDeleted, 1);
+});
+
+Deno.test("reapEndedBookkeepingRecords: tokens are reaped in gated batches", async () => {
+  const h = harness({
+    tokens: [
+      tokenRecord("a", { state: "expired", expiresAt: OLD }),
+      tokenRecord("b", { state: "expired", expiresAt: OLD }),
+      tokenRecord("c", { state: "expired", expiresAt: OLD }),
+    ],
+    workerTokenNames: [],
+    batchSize: 2,
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(h.events, [
+    "delete:token-model-a",
+    "delete:token-model-b",
+    "push",
+    "delete:token-model-c",
+    "push",
+  ]);
+  assertEquals(result.tokensDeleted, 3);
+  assertEquals(result.batches, 2);
+});
+
+Deno.test("createWorkerTokenNameQuery: collects worker token names from the own namespace", async () => {
+  const seen: Array<{ predicate: string; select?: string }> = [];
+  const list = createWorkerTokenNameQuery({
+    query: (predicate, options) => {
+      seen.push({ predicate, select: options?.select });
+      return Promise.resolve(["fleet", "solo", "fleet"]);
+    },
+  }, "team-a");
+  assertEquals([...await list()].sort(), ["fleet", "solo"]);
+  assertStringIncludes(seen[0].predicate, '"swamp/worker"');
+  assertStringIncludes(seen[0].predicate, 'ns == "team-a"');
+  assertEquals(seen[0].select, "attributes.tokenName");
+});
+
+Deno.test("createWorkerTokenNameQuery: a worker without a readable token name fails the lookup", async () => {
+  const list = createWorkerTokenNameQuery({
+    query: () => Promise.resolve(["fleet", undefined]),
+  }, "team-a");
+  await assertRejects(() => list());
 });

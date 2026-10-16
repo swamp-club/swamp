@@ -20,6 +20,10 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
 import { collect } from "../testing.ts";
+import {
+  FAKE_REAPED_CUTOFF,
+  fakeWatermarks,
+} from "../retention/reaped_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   parseRunTimeBound,
@@ -628,4 +632,33 @@ Deno.test("workflowRunSearch: a fractional offset and limit cut the page as slic
   // Newest first: run-1, run-3, run-2; slice(1.5, 3.5) is slice(1, 3).
   assertEquals(completed.data.results.map((r) => r.runId), ["run-3", "run-2"]);
   assertEquals(completed.total, 3);
+});
+
+Deno.test("workflowRunSearch: the completed data says where retention reaped runs", async () => {
+  const deps = makeDeps({
+    retentionWatermarks: fakeWatermarks(["workflowRuns"]),
+  });
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {}),
+  );
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.reapedBefore, {
+    cutoff: FAKE_REAPED_CUTOFF,
+    retention: "14d",
+  });
+});
+
+Deno.test("workflowRunSearch: no reaped marker without a runs watermark", async () => {
+  const deps = makeDeps({ retentionWatermarks: fakeWatermarks(["data"]) });
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {}),
+  );
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals("reapedBefore" in completed.data, false);
 });

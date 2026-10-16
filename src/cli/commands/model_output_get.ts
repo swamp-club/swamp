@@ -84,15 +84,19 @@ export async function modelOutputGetAction(
 
   cliCtx.logger.debug`Getting output: ${outputIdOrModelName}`;
 
-  const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-    {
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    },
-  );
+  const { repoDir, repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly(
+      {
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      },
+    );
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await createModelOutputGetDeps(repoDir, datastoreResolver);
+  const deps = {
+    ...await createModelOutputGetDeps(repoDir, datastoreResolver),
+    retentionWatermarks: repoContext.retentionWatermarks,
+  };
 
   const renderer = createModelOutputGetRenderer(cliCtx.outputMode);
   await consumeStream(

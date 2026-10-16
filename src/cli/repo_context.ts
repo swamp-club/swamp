@@ -25,6 +25,9 @@
  * - Throwing clear errors when not initialized
  */
 
+import { noteRetentionCandidate } from "./retention_candidate.ts";
+import type { RetentionWatermarkRepository } from "../domain/retention/retention_watermark.ts";
+import { ControlPlaneRetentionWatermarkRepository } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
 import {
   dirname,
   isAbsolute,
@@ -448,6 +451,13 @@ export interface RequireRepoOptions {
    * instead (swamp-club#3359).
    */
   retakeLostV3Lease?: boolean;
+  /**
+   * Give up after this long, instead of the lock timeout, when the datastore
+   * lock or a per-model lock another process holds is not free. The
+   * end-of-command retention pass sets it so a busy repository skips the
+   * pass rather than holding up the command (swamp-club#3473).
+   */
+  lockWaitMs?: number;
   /**
    * Skip the coordinator's implicit pull-at-startup and push-at-flush.
    * The lock is still acquired (so concurrent writers are blocked), but
@@ -1100,6 +1110,9 @@ export async function requireInitializedRepoReadOnly(
   // so the context writes no wait record.
   if (!isCustomDatastoreConfig(datastoreConfig)) {
     repoContext.signalWaits = resolveSignalWaitSupport(datastoreConfig);
+    repoContext.retentionWatermarks = resolveRetentionWatermarks(
+      datastoreConfig,
+    );
   }
 
   if (
@@ -1238,6 +1251,9 @@ export function requireInitializedRepo(
       await resolveDatastoreForRepo(
         options.repoDir,
       );
+    // Teardown may run a retention pass on a repository opened to write
+    // (swamp-club#3473).
+    noteRetentionCandidate(repoDir);
     // A v3 datastore takes one writing process at a time; join this
     // process's hold before any other lock (swamp-club#3279).
     if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
@@ -1275,7 +1291,7 @@ export function requireInitializedRepo(
         datastoreConfig.datastorePath,
         {
           ...datastoreGlobalLockOptions(datastoreConfig),
-          maxWaitMs: resolveLockTimeoutMs(),
+          maxWaitMs: resolveLockTimeoutMs(options.lockWaitMs),
         },
       );
 
@@ -1349,6 +1365,7 @@ export function requireInitializedRepo(
       await waitForPerModelLocks(
         datastoreConfig.path,
         datastoreConfig.namespace,
+        { maxWaitMs: options.lockWaitMs },
       );
 
       // Acquire the global lock. From here on, any writer that inspects
@@ -1360,7 +1377,7 @@ export function requireInitializedRepo(
         datastoreConfig.path,
         {
           ...datastoreGlobalLockOptions(datastoreConfig),
-          maxWaitMs: resolveLockTimeoutMs(),
+          maxWaitMs: resolveLockTimeoutMs(options.lockWaitMs),
         },
       );
       await registerDatastoreSync({
@@ -1387,7 +1404,10 @@ export function requireInitializedRepo(
       await waitForPerModelLocks(
         datastoreConfig.path,
         datastoreConfig.namespace,
-        { publishSkipping: (lockIds) => lock.publishSkipping(lockIds) },
+        {
+          publishSkipping: (lockIds) => lock.publishSkipping(lockIds),
+          maxWaitMs: options.lockWaitMs,
+        },
       );
 
       if (datastoreConfig.namespace) {
@@ -1471,6 +1491,10 @@ export function requireInitializedRepo(
         runsInDatastore: runsLiveInDatastore(datastoreResolver),
       }),
     );
+    repoContext.retentionWatermarks = resolveRetentionWatermarks(
+      datastoreConfig,
+      syncService,
+    );
     repoContext.continuationClaims = resolveContinuationClaims(
       datastoreConfig,
       repoPath.value,
@@ -1542,6 +1566,9 @@ export async function requireInitializedRepoUnlocked(
     await resolveDatastoreForRepo(
       options.repoDir,
     );
+  // Teardown may run a retention pass on a repository opened to write
+  // (swamp-club#3473).
+  noteRetentionCandidate(repoDir);
   // A v3 datastore takes one writing process at a time; join this process's
   // hold before any model lock (swamp-club#3279).
   if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
@@ -1677,6 +1704,10 @@ export async function requireInitializedRepoUnlocked(
     resolveSignalWaitSupport(datastoreConfig, syncService, {
       runsInDatastore: runsLiveInDatastore(datastoreResolver),
     }),
+  );
+  repoContext.retentionWatermarks = resolveRetentionWatermarks(
+    datastoreConfig,
+    syncService,
   );
   repoContext.continuationClaims = resolveContinuationClaims(
     datastoreConfig,
@@ -1999,6 +2030,44 @@ export function runsLiveInDatastore(resolver: DatastorePathResolver): boolean {
 }
 
 /**
+ * The retention watermarks of a datastore (swamp-club#3473). Like signal
+ * waits they live with the datastore, never under the repository, so every
+ * process sharing it sees the same records:
+ *
+ * - A filesystem datastore keeps them under its own path, below the
+ *   namespace when one is set.
+ * - A custom datastore keeps them in its extension's control-plane store,
+ *   opened on first use after a namespaced pull.
+ * - A custom datastore without an atomic control-plane store has none:
+ *   retention still runs, and lookups give the plain not-found answer.
+ */
+export function resolveRetentionWatermarks(
+  config: DatastoreConfig,
+  syncService?: DatastoreSyncService,
+  options?: { namespaceBound?: boolean },
+): RetentionWatermarkRepository | undefined {
+  if (!isCustomDatastoreConfig(config)) {
+    return new ControlPlaneRetentionWatermarkRepository(
+      new FileSystemControlPlaneStore(
+        config.namespace ? join(config.path, config.namespace) : config.path,
+      ),
+    );
+  }
+  if (
+    !syncService?.capabilities?.().controlPlane ||
+    !syncService.controlPlaneStore
+  ) {
+    return undefined;
+  }
+  const remote = lazyRemoteStore(
+    syncService,
+    config.namespace && !options?.namespaceBound ? config.namespace : undefined,
+    `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent)`,
+  );
+  return new ControlPlaneRetentionWatermarkRepository(remote.store);
+}
+
+/**
  * Gives a repository context its wait support. With a store, every run its
  * repository saves as ended closes its waits first, so no path that ends a
  * run leaves a wait accepting signals.
@@ -2124,6 +2193,8 @@ export interface WaitForPerModelLocksOptions {
   drainWaits?: DrainWaits;
   /** Test seam: how long to pause between scans. */
   pollIntervalMs?: number;
+  /** How long to wait before giving up; defaults to the lock timeout. */
+  maxWaitMs?: number;
   /**
    * Records the nonces of the locks the drain skips; the drain under the
    * global lock passes that lock's `publishSkipping`. The drain then ends
@@ -2262,7 +2333,7 @@ export async function waitForPerModelLocks(
     return false;
   };
 
-  const maxWaitMs = resolveLockTimeoutMs();
+  const maxWaitMs = resolveLockTimeoutMs(options.maxWaitMs);
   const first = await findModelLocks();
   if (await confirm(first) && first.held === 0) {
     return first.skippedLockIds;

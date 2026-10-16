@@ -3356,3 +3356,92 @@ Deno.test("runIndexSnapshot: an aborted signal stops a repair before it writes t
     assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), before);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: a limit stops early with more, and the next call continues", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      finished.push((await saveFinishedRun(repo, workflow)).id);
+    }
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+
+    const preview = await repo.deleteOlderThan(FUTURE_CUTOFF(), {
+      dryRun: true,
+      limit: 2,
+    });
+    assertEquals(preview.deleted, 2);
+    assertEquals(preview.more, true);
+    assertEquals((await repo.listRunIds()).size, 4);
+
+    const first = await repo.deleteOlderThan(FUTURE_CUTOFF(), { limit: 2 });
+    assertEquals(first.deleted, 2);
+    assertEquals(first.deletedRunIds.length, 2);
+    assertEquals(first.more, true);
+    assertEquals((await repo.listRunIds()).size, 2);
+    // The index no longer lists the runs the batch deleted.
+    assertEquals(
+      (await repo.findAllSummariesFromIndex(workflow.id)).map((s) => s.id)
+        .sort(),
+      [...await repo.listRunIds()].sort(),
+    );
+
+    const second = await repo.deleteOlderThan(FUTURE_CUTOFF(), { limit: 2 });
+    assertEquals(second.deleted, 1);
+    assertEquals(second.more, false);
+    assertEquals(
+      [...first.deletedRunIds, ...second.deletedRunIds].sort(),
+      finished.sort(),
+    );
+    assertEquals(await repo.listRunIds(), new Set([running.id]));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: a limit equal to the collectible runs reports no more", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    await saveFinishedRun(repo, workflow);
+    await saveFinishedRun(repo, workflow);
+
+    const result = await repo.deleteOlderThan(FUTURE_CUTOFF(), { limit: 2 });
+
+    assertEquals(result.deleted, 2);
+    assertEquals(result.more, false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: without a limit deletes every collectible run and reports no more", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    for (let i = 0; i < 3; i++) await saveFinishedRun(repo, workflow);
+
+    const result = await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(result.deleted, 3);
+    assertEquals(result.more, false);
+    assertEquals((await repo.listRunIds()).size, 0);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: an invalid cutoff deletes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.endAsCancelled("test");
+    await repo.save(workflow.id, finished);
+
+    // A retention too long for a date gives an invalid cutoff, against
+    // which every age check fails.
+    const result = await repo.deleteOlderThan(new Date(Number.NaN));
+
+    assertEquals(result.deleted, 0);
+    assertEquals(await repo.listRunIds(), new Set([finished.id]));
+  });
+});

@@ -996,6 +996,22 @@ export class SqliteCommitStore implements CommitStore {
     }));
   }
 
+  /**
+   * The write time (`at`, ISO-8601) of the oldest commit stored above the
+   * compaction point, or null when none is stored: how far back the history
+   * that still holds removed content reaches, for `swamp doctor datastores
+   * --retention` (swamp-club#3473).
+   */
+  oldestStoredCommitAt(): Promise<string | null> {
+    if (this.#closed) return Promise.reject(closedError());
+    return Promise.resolve(this.#readTransaction(() => {
+      const row = this.#db.prepare(
+        "SELECT MIN(at) AS at FROM commits WHERE cursor > ?",
+      ).get(this.#point()) as { at: string | null };
+      return row.at;
+    }));
+  }
+
   compactionStatus(
     retention: CompactionRetention,
   ): Promise<CompactionCandidate> {

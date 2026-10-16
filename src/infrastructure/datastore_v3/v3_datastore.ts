@@ -65,6 +65,7 @@ import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import { COMPACTED_TXN_RETENTION_MS } from "../../domain/datastore_v3/commit_outbox.ts";
 import type { CompactionReport } from "../../domain/datastore_v3/commit_store.ts";
 import {
+  compactionBound,
   compactionTarget,
   DEFAULT_COMPACTION_POLICY,
   retentionOf,
@@ -239,6 +240,24 @@ export interface OpenV3DatastoreOptions {
    * `assertCopyCurrent`.
    */
   readonly assertCollectable?: () => Promise<void>;
+  /**
+   * The clock compaction and chunk collection read "now" from; the wall
+   * clock by default. Tests pass one to age history without sleeping.
+   */
+  readonly clock?: () => Date;
+}
+
+/** What {@link V3Datastore.compactBefore} did. */
+export interface CutoffCompaction {
+  /**
+   * Commits written before this instant are folded: the earlier of the
+   * cutoff and the policy's safety window (`compactionBound`).
+   */
+  readonly bound: Date;
+  /** The compaction point after it: the last cursor folded. */
+  readonly compactedThrough: number;
+  /** What was folded, or undefined when nothing older than `bound` was stored. */
+  readonly report: CompactionReport | undefined;
 }
 
 /**
@@ -332,6 +351,18 @@ export interface V3Datastore {
    * writer lock: compaction is the single writer's (swamp-club#3258).
    */
   compactIfDue(signal: AbortSignal): Promise<CompactionReport | undefined>;
+  /**
+   * Folds every commit written before `cutoff` into the compacted base,
+   * however few (swamp-club#3473): retention's deletes leave the content
+   * they removed in history until it is folded. Never folds a commit newer
+   * than `cutoff`, nor one inside the default policy's 7-day safety window
+   * (the outbox's retry bound): the bound is the earlier of the two. A
+   * remove is folded, and the chunks its content held released, only once
+   * the remove itself is older than the bound; a chunk sweep then deletes
+   * them past its grace period. Run it only while this process holds the
+   * writer lock: like {@link compactIfDue} it passes the writer's fence.
+   */
+  compactBefore(cutoff: Date, signal: AbortSignal): Promise<CutoffCompaction>;
   /** How much history the commit log stores, for `datastore status`. */
   describe(): Promise<{ storedCommits: number; compactedThrough: number }>;
   /** Aborts in-flight commits and closes the stores. */
@@ -399,6 +430,33 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ? SOLO_NAMESPACE
     : restoreNamespace(namespace);
   let closed = false;
+  const clock = options.clock ?? (() => new Date());
+
+  /**
+   * Compacts what the default policy no longer retains at `now`, before
+   * `before` when given; undefined when nothing was due.
+   */
+  const compact = async (
+    signal: AbortSignal,
+    now: Date,
+    before?: Date,
+  ): Promise<CompactionReport | undefined> => {
+    const policy = DEFAULT_COMPACTION_POLICY;
+    const through = compactionTarget(
+      await commitStore.compactionStatus(retentionOf(policy, now, before)),
+      policy,
+      before,
+    );
+    if (through === undefined) return undefined;
+    const fence = options.writerFence?.();
+    return await commitStore.compactHistory(through, {
+      signal,
+      clock,
+      ...(fence !== undefined ? { fence } : {}),
+      // No retry, from a unit or the outbox, is older than the bound.
+      pruneTxnsBefore: new Date(now.getTime() - COMPACTED_TXN_RETENTION_MS),
+    });
+  };
 
   return {
     // The path as configured: the writer lock and callers key on it.
@@ -508,22 +566,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ...(options.assertCopyCurrent !== undefined
           ? { assertMayDelete: options.assertCopyCurrent }
           : {}),
+        clock,
       }).collect(unitNamespace, { signal });
     },
-    async compactIfDue(signal) {
-      const policy = DEFAULT_COMPACTION_POLICY;
-      const through = compactionTarget(
-        await commitStore.compactionStatus(retentionOf(policy, new Date())),
-        policy,
-      );
-      if (through === undefined) return undefined;
-      const fence = options.writerFence?.();
-      return await commitStore.compactHistory(through, {
-        signal,
-        ...(fence !== undefined ? { fence } : {}),
-        // No retry, from a unit or the outbox, is older than the bound.
-        pruneTxnsBefore: new Date(Date.now() - COMPACTED_TXN_RETENTION_MS),
-      });
+    compactIfDue(signal) {
+      return compact(signal, clock());
+    },
+    async compactBefore(cutoff, signal) {
+      const now = clock();
+      const bound = compactionBound(DEFAULT_COMPACTION_POLICY, now, cutoff);
+      const report = await compact(signal, now, cutoff);
+      return {
+        bound,
+        compactedThrough: report?.point ??
+          (await commitStore.history()).compactedThrough,
+        report,
+      };
     },
     describe() {
       return commitStore.history();

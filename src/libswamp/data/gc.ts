@@ -18,11 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type DataRetentionResult,
+  type DataRetentionScan,
   DefaultDataLifecycleService,
   type ExpiredDataInfo,
   type LifecycleGCResult,
   type VersionGcPreviewInfo,
 } from "../../domain/data/data_lifecycle_service.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import {
+  isRetentionExempt,
+  RETENTION_EXEMPT_MODEL_TYPES,
+} from "../../domain/retention/retention_exemptions.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
@@ -30,8 +37,12 @@ import {
   createCatalogStore,
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
-import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import {
+  type DatastorePathResolver,
+  resolverEngine,
+} from "../../domain/datastore/datastore_path_resolver.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
@@ -60,10 +71,19 @@ export interface VersionGcPreviewItem {
   bytesWouldBeReclaimed: number;
 }
 
+/** What data retention would age out (see DataGcInput.dataRetentionMs). */
+export interface DataGcAgedOutPreview {
+  entries: number;
+  versions: number;
+  bytes: number;
+}
+
 /** Preview data returned before confirmation. */
 export interface DataGcPreview {
   items: DataGcPreviewItem[];
   versionGcItems: VersionGcPreviewItem[];
+  /** Present when the repository configures a data retention. */
+  agedOut?: DataGcAgedOutPreview;
 }
 
 /** Data structure for the data gc completed event. */
@@ -73,6 +93,14 @@ export interface DataGcData {
   walPagesTotal: number;
   walPagesCheckpointed: number;
   bytesReclaimed: number;
+  // The aged-out counts are always set by dataGc; a server older than data
+  // retention (swamp-club#3473) omits them from its data.gc response.
+  /** Data names deleted whole by data retention. */
+  agedOutEntries?: number;
+  /** Versions deleted by data retention, counting those of whole names. */
+  agedOutVersions?: number;
+  /** Bytes the versions deleted by data retention held. */
+  agedOutBytes?: number;
   dryRun: boolean;
   expiredEntries: Array<{
     type: string;
@@ -90,6 +118,12 @@ export type DataGcEvent =
 /** Input for the data gc operation. */
 export interface DataGcInput {
   dryRun: boolean;
+  /**
+   * The repository's data retention (`garbageCollection.data` or
+   * `retention` in `.swamp.yaml`). When set, every version of model data
+   * older than this is deleted first, latest versions included.
+   */
+  dataRetentionMs?: number;
 }
 
 /** Dependencies for the data gc operation. */
@@ -99,6 +133,11 @@ export interface DataGcDeps {
   deleteExpiredData: (opts: {
     dryRun: boolean;
   }) => Promise<LifecycleGCResult>;
+  /** Deletes model data created before `cutoff` (data retention). */
+  deleteDataOlderThan?: (
+    cutoff: Date,
+    opts: { dryRun: boolean; limit?: number; scan?: DataRetentionScan },
+  ) => Promise<DataRetentionResult>;
   /** Checkpoints the catalog WAL. Omit in tests that don't need compaction. */
   compactCatalog?: () => {
     walPagesTotal: number;
@@ -128,6 +167,29 @@ export function createDataGcDeps(
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
   );
+  return createDataGcDepsFrom(catalogStore, unifiedDataRepo, workflowRunRepo, {
+    keepLatestVersion: resolverEngine(datastoreResolver) === "v3",
+  });
+}
+
+/**
+ * Wires DataGcDeps over repositories that already exist, such as a
+ * repository context's, so a caller that runs often (serve's retention
+ * timer) opens no catalog connection of its own.
+ */
+export function createDataGcDepsFrom(
+  catalogStore: CatalogStore,
+  unifiedDataRepo: FileSystemUnifiedDataRepository,
+  workflowRunRepo: YamlWorkflowRunRepository,
+  options: {
+    /**
+     * Data retention keeps each name's latest version: a v3 datastore does
+     * not yet keep a deleted name's version numbers from being reused
+     * (swamp-club#3473).
+     */
+    keepLatestVersion?: boolean;
+  } = {},
+): DataGcDeps {
   const service = new DefaultDataLifecycleService(
     unifiedDataRepo,
     workflowRunRepo,
@@ -136,6 +198,18 @@ export function createDataGcDeps(
     findExpiredData: () => service.findExpiredData(),
     previewVersionGarbage: () => service.previewVersionGarbage(),
     deleteExpiredData: (opts) => service.deleteExpiredData(opts),
+    deleteDataOlderThan: async (cutoff, opts) => {
+      // Retention reads its candidates from the catalog, so a catalog not
+      // yet filled from disk is filled first.
+      await new DataQueryService(catalogStore, unifiedDataRepo)
+        .ensurePopulated();
+      return await service.deleteDataOlderThan(cutoff, {
+        ...opts,
+        isExempt: isRetentionExempt,
+        exemptTypes: [...RETENTION_EXEMPT_MODEL_TYPES],
+        ...(options.keepLatestVersion ? { keepLatestVersion: true } : {}),
+      });
+    },
     compactCatalog: () => catalogStore.checkpoint(),
   };
 }
@@ -144,13 +218,16 @@ export function createDataGcDeps(
 export async function dataGcPreview(
   ctx: LibSwampContext,
   deps: DataGcDeps,
+  input?: Pick<DataGcInput, "dataRetentionMs">,
 ): Promise<DataGcPreview> {
   ctx.logger.debug`Finding expired data and previewing version GC`;
+  const agedOut = await previewAgedOut(deps, input?.dataRetentionMs);
   const [expired, versionGc] = await Promise.all([
     deps.findExpiredData(),
     deps.previewVersionGarbage(),
   ]);
   return {
+    ...(agedOut ? { agedOut } : {}),
     items: expired.map((item) => ({
       type: item.type.toDirectoryPath(),
       modelId: item.modelId,
@@ -166,6 +243,24 @@ export async function dataGcPreview(
   };
 }
 
+async function previewAgedOut(
+  deps: DataGcDeps,
+  dataRetentionMs: number | undefined,
+): Promise<DataGcAgedOutPreview | undefined> {
+  if (dataRetentionMs === undefined || !deps.deleteDataOlderThan) {
+    return undefined;
+  }
+  const result = await deps.deleteDataOlderThan(
+    new Date(Date.now() - dataRetentionMs),
+    { dryRun: true },
+  );
+  return {
+    entries: result.entriesDeleted,
+    versions: result.versionsDeleted,
+    bytes: result.bytesReclaimed,
+  };
+}
+
 /** Runs garbage collection on expired data. */
 export async function* dataGc(
   ctx: LibSwampContext,
@@ -175,9 +270,22 @@ export async function* dataGc(
   yield* withUnitOfWork(ctx, () =>
     withGeneratorSpan(
       "swamp.data.gc",
-      { "gc.dry_run": input.dryRun },
+      {
+        "gc.dry_run": input.dryRun,
+        "gc.data_retention": input.dataRetentionMs !== undefined,
+      },
       (async function* () {
         yield { kind: "collecting" } as const;
+
+        // Retention runs first and unbounded: the manual command applies
+        // the whole policy, and expiry then sees only what is left.
+        const agedOut =
+          input.dataRetentionMs !== undefined && deps.deleteDataOlderThan
+            ? await deps.deleteDataOlderThan(
+              new Date(Date.now() - input.dataRetentionMs),
+              { dryRun: input.dryRun },
+            )
+            : undefined;
 
         const result = await deps.deleteExpiredData({ dryRun: input.dryRun });
 
@@ -189,6 +297,9 @@ export async function* dataGc(
             dataEntriesExpired: result.dataEntriesExpired,
             versionsDeleted: result.versionsDeleted,
             bytesReclaimed: result.bytesReclaimed,
+            agedOutEntries: agedOut?.entriesDeleted ?? 0,
+            agedOutVersions: agedOut?.versionsDeleted ?? 0,
+            agedOutBytes: agedOut?.bytesReclaimed ?? 0,
             dryRun: result.dryRun,
             expiredEntries: result.expiredEntries,
             walPagesTotal: compact?.walPagesTotal ?? 0,

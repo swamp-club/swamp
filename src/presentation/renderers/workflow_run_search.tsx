@@ -31,6 +31,24 @@ import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { dim } from "@std/fmt/colors";
+
+/** Where retention has reaped runs up to, as a listing reports it. */
+type ReapedBefore = NonNullable<WorkflowRunSearchData["reapedBefore"]>;
+
+/**
+ * The marker a run listing ends with when retention has reaped older runs
+ * (swamp-club#3473).
+ */
+export function reapedRunsLine(reaped: ReapedBefore): string {
+  return `Older runs reaped by retention before ${reaped.cutoff} (${reaped.retention})`;
+}
+
+/** Ends a log-mode run listing with the reaped marker, when there is one. */
+export function writeReapedRunsLine(reaped: ReapedBefore | undefined): void {
+  if (reaped) writeOutput(dim(reapedRunsLine(reaped)));
+}
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "gray",
@@ -77,6 +95,7 @@ class JsonWorkflowRunSearchRenderer implements WorkflowRunSearchRenderer {
         const output: WorkflowRunSearchData = {
           query: e.data.query,
           results: e.data.results,
+          ...(e.data.reapedBefore ? { reapedBefore: e.data.reapedBefore } : {}),
         };
         console.log(JSON.stringify(output, null, 2));
       },
@@ -134,6 +153,7 @@ class InkWorkflowRunSearchRenderer implements WorkflowRunSearchRenderer {
         if (result) {
           this._selected = result.item;
         }
+        writeReapedRunsLine(e.data.reapedBefore);
       },
       error: (e) => {
         throw new UserError(e.error.message);

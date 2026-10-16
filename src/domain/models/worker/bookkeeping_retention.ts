@@ -29,7 +29,9 @@
  * (active leases, waiting dispatches) are never reapable at any age.
  */
 
+import { minOf } from "../../array_extrema.ts";
 import { StepLeaseSchema, TERMINAL_LEASE_STATES } from "./step_lease_model.ts";
+import { EnrollmentTokenSchema } from "./enrollment_token_model.ts";
 import {
   PendingDispatchSchema,
   TERMINAL_PENDING_DISPATCH_STATES,
@@ -68,4 +70,41 @@ export function isReapableDispatch(
   if (!parsed.success) return false;
   if (!TERMINAL_PENDING_DISPATCH_STATES.has(parsed.data.state)) return false;
   return endedLongEnoughAgo(parsed.data.endedAt, gracePeriodMs, nowMs);
+}
+
+/**
+ * The instant an enrollment token stopped admitting workers, in ms: its
+ * `expiresAt`, or its `revokedAt` when revoked earlier. Undefined while it
+ * can still admit workers (not revoked and not yet expired).
+ */
+function enrollmentTokenEndedMs(
+  token: { state: string; expiresAt: string; revokedAt?: string },
+  nowMs: number,
+): number | undefined {
+  const expiresMs = Date.parse(token.expiresAt);
+  const revokedMs = token.state === "revoked" && token.revokedAt !== undefined
+    ? Date.parse(token.revokedAt)
+    : Number.NaN;
+  const ends = [expiresMs, revokedMs].filter((ms) =>
+    !Number.isNaN(ms) && ms <= nowMs
+  );
+  if (ends.length === 0) return undefined;
+  return minOf(ends);
+}
+
+/**
+ * True when an enrollment-token record has stopped admitting workers
+ * (revoked, or past `expiresAt`) and that happened at least the grace period
+ * ago. Whether a worker still references the token is checked by the caller.
+ */
+export function isReapableEnrollmentToken(
+  attrs: unknown,
+  gracePeriodMs: number,
+  nowMs: number,
+): boolean {
+  const parsed = EnrollmentTokenSchema.safeParse(attrs);
+  if (!parsed.success) return false;
+  const endedMs = enrollmentTokenEndedMs(parsed.data, nowMs);
+  if (endedMs === undefined) return false;
+  return nowMs - endedMs >= gracePeriodMs;
 }

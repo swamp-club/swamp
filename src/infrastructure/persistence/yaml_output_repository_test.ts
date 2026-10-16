@@ -1716,3 +1716,108 @@ Deno.test("YamlOutputRepository.findAll: outputs with one startedAt come back in
     );
   });
 });
+
+Deno.test(
+  "deleteByMethodLifetime: a limit stops early with more, leaves the orphan-log sweep to the final batch, and the next call continues",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+      const made = [];
+      for (let i = 0; i < 3; i++) {
+        made.push(
+          await makeOutputWithRunLog(
+            repo,
+            dir,
+            new Date(tenDaysAgo.getTime() - i * 1000),
+          ),
+        );
+      }
+      const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
+      await writeAgedLog(orphan, tenDaysAgo);
+      const cutoff = new Date(Date.now() - DAY_MS);
+
+      const preview = await repo.deleteByMethodLifetime(cutoff, {
+        dryRun: true,
+        limit: 2,
+      });
+      assertEquals(preview.deleted, 2);
+      assertEquals(preview.more, true);
+      for (const { yamlPath } of made) {
+        assertEquals(await pathExists(yamlPath), true);
+      }
+
+      const first = await repo.deleteByMethodLifetime(cutoff, { limit: 2 });
+      assertEquals(first.deleted, 2);
+      assertEquals(first.more, true);
+      const gone = [];
+      for (const { yamlPath, logPath } of made) {
+        const exists = await pathExists(yamlPath);
+        // An output's own log goes with it, even in a batch.
+        assertEquals(await pathExists(logPath), exists);
+        if (!exists) gone.push(yamlPath);
+      }
+      assertEquals(gone.length, 2);
+      assertEquals(await pathExists(orphan), true);
+
+      const second = await repo.deleteByMethodLifetime(cutoff, { limit: 2 });
+      assertEquals(second.deleted, 1);
+      assertEquals(second.more, false);
+      for (const { yamlPath, logPath } of made) {
+        assertEquals(await pathExists(yamlPath), false);
+        assertEquals(await pathExists(logPath), false);
+      }
+      assertEquals(await pathExists(orphan), false);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: without a limit deletes every expired output and reports no more",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+      for (let i = 0; i < 3; i++) {
+        await makeOutputWithRunLog(
+          repo,
+          dir,
+          new Date(tenDaysAgo.getTime() - i * 1000),
+        );
+      }
+
+      const result = await repo.deleteByMethodLifetime(
+        new Date(Date.now() - DAY_MS),
+      );
+
+      assertEquals(result.deleted, 3);
+      assertEquals(result.more, false);
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: an invalid fallback cutoff deletes nothing",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const old = await makeOutputForMethod(
+        repo,
+        registeredType,
+        "run",
+        twoDaysAgo,
+      );
+      const oldPath = repo.getPath(registeredType, "run", old);
+      await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
+
+      // A retention too long for a date gives an invalid cutoff.
+      const result = await repo.deleteByMethodLifetime(new Date(Number.NaN));
+      assertEquals(result.deleted, 0);
+      assertEquals(
+        (await Deno.stat(oldPath)).isFile,
+        true,
+      );
+    });
+  },
+);

@@ -45,31 +45,48 @@ export interface RunGcResult {
   snapshotsDeleted: number;
   snapshotBytesReclaimed: number;
   dryRun: boolean;
+  /**
+   * True when the run or output collection stopped at its `limit` with more
+   * left to collect; a later call continues where this one stopped.
+   */
+  more: boolean;
 }
 
 export interface RunLifecycleService {
   gcWorkflowRuns(options: {
     retentionDays: number;
     dryRun: boolean;
+    limit?: number;
   }): Promise<
-    { deleted: number; bytesReclaimed: number; deletedRunIds?: string[] }
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      deletedRunIds?: string[];
+      more?: boolean;
+    }
   >;
 
   gcOutputs(options: {
     retentionDays: number;
     dryRun: boolean;
-  }): Promise<{ deleted: number; bytesReclaimed: number }>;
+    limit?: number;
+  }): Promise<{ deleted: number; bytesReclaimed: number; more?: boolean }>;
 
   gcRunSnapshots(options: {
     retentionDays: number;
     deletedRunIds: readonly string[];
     dryRun: boolean;
+    snapshotRetentionDays?: number;
   }): Promise<{ deleted: number; bytesReclaimed: number }>;
 
   gcAll(options: {
     workflowRunRetentionDays: number;
     outputRetentionDays: number;
     dryRun: boolean;
+    /** Most runs, and most outputs, one call collects. */
+    limit?: number;
+    /** How long a finished run's evaluated snapshot is kept. */
+    snapshotRetentionDays?: number;
   }): Promise<RunGcResult>;
 }
 
@@ -87,18 +104,35 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
     private readonly collectWaitRecords?: (
       deletedRunIds: readonly string[],
     ) => Promise<void>,
+    /**
+     * The IDs of the stored runs that have finished (succeeded, failed or
+     * cancelled). Read only when a snapshot retention is given; absent, no
+     * snapshot of an existing run is removed before its run.
+     */
+    private readonly listTerminalRunIds?: () => Promise<
+      ReadonlyMap<string, number | undefined>
+    >,
   ) {}
 
   async gcWorkflowRuns(options: {
     retentionDays: number;
     dryRun: boolean;
+    limit?: number;
   }): Promise<
-    { deleted: number; bytesReclaimed: number; deletedRunIds?: string[] }
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      deletedRunIds?: string[];
+      more?: boolean;
+    }
   > {
     const cutoffMs = Date.now() - options.retentionDays * 86_400_000;
-    return await this.workflowRunRepo.deleteOlderThan(new Date(cutoffMs), {
-      dryRun: options.dryRun,
-    });
+    return await this.workflowRunRepo.deleteOlderThan(
+      new Date(cutoffMs),
+      options.limit === undefined
+        ? { dryRun: options.dryRun }
+        : { dryRun: options.dryRun, limit: options.limit },
+    );
   }
 
   /**
@@ -108,28 +142,55 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
    * {@link MIN_ORPHAN_SNAPSHOT_AGE_MS}. The age guard matters: a snapshot is
    * written before its run record's first save, so a snapshot with no run
    * record may belong to a run that is starting.
+   *
+   * With `snapshotRetentionDays`, the snapshot of an existing run is also
+   * collected once it is older than that retention, but only when the run
+   * has finished (succeeded, failed or cancelled): cancel, reject and orphan
+   * settlement read the snapshot of a run that has not.
    */
   async gcRunSnapshots(options: {
     retentionDays: number;
     deletedRunIds: readonly string[];
     dryRun: boolean;
+    snapshotRetentionDays?: number;
   }): Promise<{ deleted: number; bytesReclaimed: number }> {
     const now = Date.now();
     const cutoffMs = Math.min(
       now - options.retentionDays * 86_400_000,
       now - MIN_ORPHAN_SNAPSHOT_AGE_MS,
     );
+    const snapshotCutoffMs = options.snapshotRetentionDays === undefined
+      ? undefined
+      : now - options.snapshotRetentionDays * 86_400_000;
     const collectedRuns = new Set(options.deletedRunIds);
     const snapshots = await this.runSnapshotRepo.listRunSnapshots();
     if (snapshots.length === 0) return { deleted: 0, bytesReclaimed: 0 };
     const existingRuns = await this.listRunIds();
+    // Read run statuses only when some snapshot is old enough to need one.
+    const finishedRuns = snapshotCutoffMs !== undefined &&
+        this.listTerminalRunIds !== undefined &&
+        snapshots.some((snapshot) =>
+          snapshot.modifiedAt.getTime() < snapshotCutoffMs
+        )
+      ? await this.listTerminalRunIds()
+      : new Map<string, number | undefined>();
 
     let deleted = 0;
     let bytesReclaimed = 0;
     for (const snapshot of snapshots) {
+      const modifiedMs = snapshot.modifiedAt.getTime();
       const orphaned = !existingRuns.has(snapshot.runId) &&
-        snapshot.modifiedAt.getTime() < cutoffMs;
-      if (!collectedRuns.has(snapshot.runId) && !orphaned) continue;
+        modifiedMs < cutoffMs;
+      // A snapshot is written when its run starts; a run suspended for long
+      // finishes much later, so its snapshot is aged from whichever is
+      // later, never before the run itself finished.
+      const finishedAt = finishedRuns.get(snapshot.runId);
+      const expired = snapshotCutoffMs !== undefined &&
+        existingRuns.has(snapshot.runId) && finishedRuns.has(snapshot.runId) &&
+        Math.max(modifiedMs, finishedAt ?? modifiedMs) < snapshotCutoffMs;
+      if (!collectedRuns.has(snapshot.runId) && !orphaned && !expired) {
+        continue;
+      }
       if (!options.dryRun) {
         await this.runSnapshotRepo.deleteForRun(snapshot.runId);
       }
@@ -139,26 +200,75 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
     return { deleted, bytesReclaimed };
   }
 
+  /**
+   * One batch of run retention (swamp-club#3473): removes up to `limit`
+   * finished runs older than `cutoff`, with the snapshots and signal wait
+   * records of exactly those runs. Orphaned and expired snapshots are left
+   * to {@link gcRunSnapshots}, which lists every snapshot and so runs once
+   * per pass rather than once per batch.
+   */
+  async gcWorkflowRunBatch(options: {
+    cutoff: Date;
+    limit: number;
+  }): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
+    const runs = await this.workflowRunRepo.deleteOlderThan(options.cutoff, {
+      limit: options.limit,
+    });
+    const deletedRunIds = runs.deletedRunIds ?? [];
+    for (const runId of deletedRunIds) {
+      try {
+        await this.runSnapshotRepo.deleteForRun(runId);
+      } catch (error) {
+        logger
+          .warn`Could not remove the snapshot of run ${runId}; it is swept as an orphan later: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+    }
+    if (this.collectWaitRecords && deletedRunIds.length > 0) {
+      try {
+        await this.collectWaitRecords(deletedRunIds);
+      } catch (error) {
+        logger
+          .warn`Signal wait record cleanup failed; leftover records are swept by a later pass: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+    }
+    return {
+      deleted: runs.deleted,
+      bytesReclaimed: runs.bytesReclaimed,
+      more: runs.more ?? false,
+    };
+  }
+
   async gcOutputs(options: {
     retentionDays: number;
     dryRun: boolean;
-  }): Promise<{ deleted: number; bytesReclaimed: number }> {
+    limit?: number;
+  }): Promise<{ deleted: number; bytesReclaimed: number; more?: boolean }> {
     const cutoffMs = Date.now() - options.retentionDays * 86_400_000;
-    return await this.outputRepo.deleteByMethodLifetime(new Date(cutoffMs), {
-      dryRun: options.dryRun,
-    });
+    return await this.outputRepo.deleteByMethodLifetime(
+      new Date(cutoffMs),
+      options.limit === undefined
+        ? { dryRun: options.dryRun }
+        : { dryRun: options.dryRun, limit: options.limit },
+    );
   }
 
   async gcAll(options: {
     workflowRunRetentionDays: number;
     outputRetentionDays: number;
     dryRun: boolean;
+    limit?: number;
+    snapshotRetentionDays?: number;
   }): Promise<RunGcResult> {
     const [[workflowRuns, snapshots], outputs] = await Promise.all([
       (async () => {
         const runs = await this.gcWorkflowRuns({
           retentionDays: options.workflowRunRetentionDays,
           dryRun: options.dryRun,
+          limit: options.limit,
         });
         // Runs first: the snapshot pass needs the IDs of the runs collected.
         // A failing snapshot pass must not fail a run collection that already
@@ -169,6 +279,7 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
             retentionDays: options.workflowRunRetentionDays,
             deletedRunIds: runs.deletedRunIds ?? [],
             dryRun: options.dryRun,
+            snapshotRetentionDays: options.snapshotRetentionDays,
           });
         } catch (error) {
           logger
@@ -192,6 +303,7 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
       this.gcOutputs({
         retentionDays: options.outputRetentionDays,
         dryRun: options.dryRun,
+        limit: options.limit,
       }),
     ]);
 
@@ -203,6 +315,7 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
       snapshotsDeleted: snapshots.deleted,
       snapshotBytesReclaimed: snapshots.bytesReclaimed,
       dryRun: options.dryRun,
+      more: (workflowRuns.more ?? false) || (outputs.more ?? false),
     };
   }
 }

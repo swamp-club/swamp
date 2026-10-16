@@ -33,6 +33,10 @@ import type { SwampError } from "../errors.ts";
 
 import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  retentionCheckFailed,
+  type RetentionCheckSummary,
+} from "./retention_check.ts";
 
 /** Result of a single health check within the datastore doctor scan. */
 export interface DatastoreHealthFinding {
@@ -81,6 +85,17 @@ export interface DoctorDatastoresData {
   vaultMismatchFindings: VaultMismatchFinding[];
   contaminationFinding?: NamespaceContaminationFinding;
   catalogCompletenessFinding?: CatalogCompletenessSummary;
+  /** Present when the scan ran with `retention` (swamp-club#3473). */
+  retentionFinding?: RetentionCheckSummary;
+}
+
+/** Options for a `doctor datastores` scan. */
+export interface DoctorDatastoresOptions {
+  /**
+   * Also scan storage for items older than each kind's retention
+   * (`--retention`).
+   */
+  retention?: boolean;
 }
 
 export type DoctorDatastoresEvent =
@@ -109,6 +124,40 @@ export interface DoctorDatastoresDeps {
    * measures always reports health.
    */
   checkCatalogCompleteness?: () => Promise<CatalogCompletenessSummary | null>;
+  /**
+   * Scans storage for items older than each kind's retention; run only with
+   * the `retention` option. Read-only.
+   */
+  checkRetention?: () => Promise<RetentionCheckSummary>;
+}
+
+/** The one-line message of the retention check. */
+export function retentionFindingMessage(
+  summary: RetentionCheckSummary,
+): string {
+  if (!summary.configured) {
+    return "Retention is not configured (no garbageCollection retention in .swamp.yaml); nothing to check";
+  }
+  const overdue = summary.kinds.reduce((n, kind) => n + kind.overdue, 0);
+  const historyOverdue = summary.v3History?.overdue === true;
+  if (overdue === 0 && !historyOverdue) {
+    return "No stored item is older than its retention";
+  }
+  const parts: string[] = [];
+  if (overdue > 0) {
+    parts.push(`${overdue} item(s) are older than their retention`);
+  }
+  if (historyOverdue) {
+    parts.push(
+      `v3 commit history reaches back to ${
+        summary.v3History!.oldestCommitAt
+      }, past ${summary.v3History!.failBefore}`,
+    );
+  }
+  return `${parts.join("; ")}. ` +
+    (summary.automatic
+      ? "Automatic retention has not removed them yet: check that a retention pass runs (serve, or a CLI command that writes)."
+      : "Retention is not automatic: set garbageCollection.automatic: true, or run 'swamp run gc' and 'swamp data gc' (audit logs are pruned only automatically).");
 }
 
 /**
@@ -122,6 +171,7 @@ export interface DoctorDatastoresDeps {
 export async function* doctorDatastores(
   _ctx: LibSwampContext,
   deps: DoctorDatastoresDeps,
+  options: DoctorDatastoresOptions = {},
 ): AsyncGenerator<DoctorDatastoresEvent> {
   yield* withGeneratorSpan(
     "swamp.doctor.datastores",
@@ -135,6 +185,7 @@ export async function* doctorDatastores(
       const vaultMismatchFindings: VaultMismatchFinding[] = [];
       let contaminationFinding: NamespaceContaminationFinding | undefined;
       let catalogCompletenessFinding: CatalogCompletenessSummary | undefined;
+      let retentionFinding: RetentionCheckSummary | undefined;
 
       // Health check
       const { healthy, message } = await deps.checkHealth(config);
@@ -240,6 +291,16 @@ export async function* doctorDatastores(
         }
       }
 
+      // Retention check — only on request: it reads every stored record.
+      if (options.retention && deps.checkRetention) {
+        retentionFinding = await deps.checkRetention();
+        healthFindings.push({
+          check: "retention",
+          passed: !retentionCheckFailed(retentionFinding),
+          message: retentionFindingMessage(retentionFinding),
+        });
+      }
+
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {
         const vaults = await deps.getVaultConfigs();
@@ -262,6 +323,7 @@ export async function* doctorDatastores(
           vaultMismatchFindings,
           contaminationFinding,
           catalogCompletenessFinding,
+          ...(retentionFinding ? { retentionFinding } : {}),
         },
       };
     })(),

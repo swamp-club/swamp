@@ -49,6 +49,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { DataGcResponse } from "../../serve/protocol.ts";
+import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -98,7 +99,7 @@ export const dataGcCommand = withRemoteOptions(
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,
   };
-  const { repoDir, repoContext, datastoreResolver } = options.dryRun
+  const { repoDir, repoContext, datastoreResolver, marker } = options.dryRun
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
@@ -111,15 +112,19 @@ export const dataGcCommand = withRemoteOptions(
       datastoreResolver,
       repoContext.markDirty,
     );
+    const dataRetentionMs = RetentionPolicy.fromConfig(
+      marker?.garbageCollection,
+    ).retentionMs("data");
 
     // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
     if (
       cliCtx.outputMode === "log" && !options.yes && !options.force &&
       !options.dryRun
     ) {
-      const preview = await dataGcPreview(ctx, deps);
+      const preview = await dataGcPreview(ctx, deps, { dataRetentionMs });
       if (
-        preview.items.length === 0 && preview.versionGcItems.length === 0
+        preview.items.length === 0 && preview.versionGcItems.length === 0 &&
+        (preview.agedOut?.versions ?? 0) === 0
       ) {
         console.log("Nothing to clean up.");
         return;
@@ -138,7 +143,7 @@ export const dataGcCommand = withRemoteOptions(
     // Phase 2: Execute GC
     const renderer = createDataGcRenderer(cliCtx.outputMode);
     await consumeStream(
-      dataGc(ctx, deps, { dryRun: !!options.dryRun }),
+      dataGc(ctx, deps, { dryRun: !!options.dryRun, dataRetentionMs }),
       renderer.handlers(),
     );
   });
