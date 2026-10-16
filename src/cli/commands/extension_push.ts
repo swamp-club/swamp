@@ -22,6 +22,8 @@ import { dirname } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
+  logicalCwd,
+  repoDirAsGiven,
   resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
@@ -30,7 +32,10 @@ import {
   createModuleGraphReader,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
-import { resolveManifestArgument } from "../resolve_manifest_path.ts";
+import {
+  resolveManifestArgument,
+  respellUnderRepoDir,
+} from "../resolve_manifest_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   REGISTRY_FORBIDDEN_CODE,
@@ -361,11 +366,8 @@ export const extensionPushCommand = new Command()
     // leaves exactly one document on stdout: a render that ended the run
     // wrote it, or renderUnfinished writes it with status failed. Paths are
     // filled in once the repo and manifest directories are resolved.
-    const renderPaths = {
-      cwd: Deno.cwd(),
-      repoDir: Deno.cwd(),
-      manifestDir: Deno.cwd(),
-    };
+    const cwd = logicalCwd();
+    const renderPaths = { cwd, repoDir: cwd, manifestDir: cwd };
     const renderer = createExtensionPushRenderer(
       cliCtx.outputMode,
       renderPaths,
@@ -392,17 +394,31 @@ export const extensionPushCommand = new Command()
         );
       }
 
-      // 1. Validate repo
-      const repoDir = resolveRepoDir(options.repoDir);
-      const extensionsDir = resolveExtensionsDir(options.extensionsDir);
-      const { absoluteManifestPath } = await resolveManifestArgument({
-        argument: manifestPath,
-        cwd: Deno.cwd(),
+      // 1. Validate repo. The repo context and the package cache open the
+      // resolved repo dir; the extension's files resolve and report under
+      // the spelling the user gave (swamp-club#3536).
+      const storageRepoDir = resolveRepoDir(options.repoDir);
+      const repoDir = repoDirAsGiven(options.repoDir, storageRepoDir);
+      // Arguments resolve as before, against the process cwd and the
+      // resolved repo dir, so `..` means what it means to every other tool;
+      // the results are then spelled under the given repo dir.
+      const resolvedExtensionsDir = resolveExtensionsDir(options.extensionsDir);
+      const extensionsDir = resolvedExtensionsDir === undefined
+        ? undefined
+        : await respellUnderRepoDir(resolvedExtensionsDir, repoDir);
+      const { absoluteManifestPath: manifestArgumentPath } =
+        await resolveManifestArgument({
+          argument: manifestPath,
+          cwd: Deno.cwd(),
+          repoDir: storageRepoDir,
+          extensionsDir: resolvedExtensionsDir,
+        });
+      const absoluteManifestPath = await respellUnderRepoDir(
+        manifestArgumentPath,
         repoDir,
-        extensionsDir,
-      });
+      );
       const { repoContext } = await requireInitializedRepoReadOnly({
-        repoDir,
+        repoDir: storageRepoDir,
         outputMode: cliCtx.outputMode,
       });
 
@@ -473,7 +489,7 @@ export const extensionPushCommand = new Command()
       renderPaths.manifestDir = manifestDir;
       const registryChecks = options.dryRun ? "collect" : "enforce";
       const cache = new ExtensionPackageCache(
-        defaultPackageCacheRoot(repoDir),
+        defaultPackageCacheRoot(storageRepoDir),
         VERSION,
       );
 

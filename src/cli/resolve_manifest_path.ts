@@ -17,7 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { extname, isAbsolute, join, resolve } from "@std/path";
+import {
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
 
 /** Manifest file names a directory argument may hold, in lookup order. */
@@ -153,5 +161,46 @@ async function statOrNull(path: string): Promise<Deno.FileInfo | null> {
     // absent too; anything else (permissions) is the caller's problem.
     if (error instanceof Deno.errors.NotADirectory) return null;
     throw error;
+  }
+}
+
+/**
+ * `path` spelled under `repoDir` when it reaches the same repository through
+ * another spelling, such as the real path of a repo the user entered through
+ * a symlink (swamp-club#3536). Only the prefix naming the repository is
+ * swapped: the shallowest ancestor of `path` whose real path is the repo
+ * dir's is replaced by `repoDir`, and every component below it is kept as
+ * written, so a symlink inside the repository, even one back to its root,
+ * is never resolved away and the symlink check still sees it
+ * (swamp-club#3421). A path already under `repoDir`, or
+ * outside the repository, is returned unchanged.
+ */
+export async function respellUnderRepoDir(
+  path: string,
+  repoDir: string,
+): Promise<string> {
+  const target = resolve(path);
+  if (!escapes(relative(repoDir, target))) return path;
+  const realRepoDir = await realPathOrNull(repoDir);
+  if (realRepoDir === null) return path;
+  let repoRoot: string | undefined;
+  for (let ancestor = target;; ancestor = dirname(ancestor)) {
+    if (await realPathOrNull(ancestor) === realRepoDir) repoRoot = ancestor;
+    if (dirname(ancestor) === ancestor) break;
+  }
+  return repoRoot === undefined
+    ? path
+    : join(repoDir, relative(repoRoot, target));
+}
+
+function escapes(rel: string): boolean {
+  return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
+}
+
+async function realPathOrNull(path: string): Promise<string | null> {
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    return null;
   }
 }

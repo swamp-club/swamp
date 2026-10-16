@@ -2028,6 +2028,38 @@ Deno.test("planWorkflowArchiveNames: directory grouping ignores ./ prefixes", ()
   assertEquals(planned.map((p) => p.lookupName), ["a", "b"]);
 });
 
+Deno.test("planWorkflowArchiveNames: the source path keeps the entry's spelling; duplicates and archive names follow the real path", () => {
+  const planned = planWorkflowArchiveNames([
+    {
+      ref: "deploy.yaml",
+      realPath: "/private/repo/workflows/deploy.yaml",
+      path: "/repo/workflows/deploy.yaml",
+    },
+  ]);
+  assertEquals(planned.map((p) => [p.sourcePath, p.archiveName]), [
+    ["/repo/workflows/deploy.yaml", "deploy.yaml"],
+  ]);
+
+  // The same file through two spellings is still one file listed twice.
+  const err = assertThrows(
+    () =>
+      planWorkflowArchiveNames([
+        {
+          ref: "deploy.yaml",
+          realPath: "/private/repo/deploy.yaml",
+          path: "/repo/deploy.yaml",
+        },
+        {
+          ref: "./deploy.yaml",
+          realPath: "/private/repo/deploy.yaml",
+          path: "/private/repo/deploy.yaml",
+        },
+      ]),
+    UserError,
+  );
+  assertStringIncludes(err.message, "listed twice");
+});
+
 Deno.test("planWorkflowArchiveNames: a .yml entry is looked up without its extension", () => {
   const [planned] = planWorkflowArchiveNames([
     { ref: "deploy_stack.yml", realPath: "/repo/deploy_stack.yml" },
