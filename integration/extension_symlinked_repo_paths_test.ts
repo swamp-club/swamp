@@ -21,14 +21,16 @@
 // `/private/var`) reports its extension files under the spelling the user
 // gave. This wires manifest re-spelling, the file resolver (with the real
 // module graph reader) and the push prepare step over a real temp tree whose
-// parent is a symlink, and checks every path stays in the link spelling.
+// parent is a symlink, and checks every path stays in the link spelling,
+// and that a symlinked workflow found by dependency resolution, whose path
+// the repo context reports in the real spelling, is still refused.
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import { resolveExtensionFiles } from "../src/cli/resolve_extension_files.ts";
-import { manifestPathUnderRepo } from "../src/cli/resolve_manifest_path.ts";
+import { respellUnderRepoDir } from "../src/cli/resolve_manifest_path.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
@@ -84,7 +86,7 @@ const prepareDeps: ExtensionPushPrepareDeps = {
  * model that imports a local helper and a listed workflow.
  */
 async function withLinkedRepo(
-  fn: (paths: { real: string; link: string }) => Promise<void>,
+  fn: (paths: { real: string; link: string; tmp: string }) => Promise<void>,
 ): Promise<void> {
   const tmp = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-symlinked-repo-" }),
@@ -123,7 +125,7 @@ async function withLinkedRepo(
         workflows: ["deploy.yaml"],
       }),
     );
-    await fn({ real, link });
+    await fn({ real, link, tmp });
   } finally {
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }
@@ -135,7 +137,7 @@ for (
   Deno.test(`extension push: a repo reached through a symlink reports its files in that spelling, with the manifest given under the ${manifestSpelling} spelling (swamp-club#3536)`, async () => {
     await withLinkedRepo(async ({ real, link }) => {
       const repoDir = link;
-      const manifestPath = await manifestPathUnderRepo(
+      const manifestPath = await respellUnderRepoDir(
         join(manifestSpelling === "link" ? link : real, "manifest.yaml"),
         repoDir,
       );
@@ -207,6 +209,81 @@ for (
       assertEquals(prepared.resolvedData.workflowFiles, [
         "workflows/deploy.yaml",
       ]);
+    });
+  });
+}
+
+/**
+ * A repo context whose `deploy` workflow runs the `shared` workflow, which
+ * the context reports at `sharedPath`, as the workflow repository of a repo
+ * opened on its resolved path does.
+ */
+function repoContextWithSharedWorkflow(sharedPath: string): RepositoryContext {
+  const workflowStep = {
+    task: {
+      isModelMethod: () => false,
+      isWorkflow: () => true,
+      data: { type: "workflow", workflowIdOrName: "shared" },
+    },
+  };
+  const workflows: Record<string, { id: string; jobs: unknown[] }> = {
+    deploy: { id: "deploy", jobs: [{ steps: [workflowStep] }] },
+    shared: { id: "shared", jobs: [] },
+  };
+  return {
+    workflowRepo: {
+      findByName: (name: string) => Promise.resolve(workflows[name] ?? null),
+      getPath: (id: string) =>
+        id === "shared" ? sharedPath : "/nonexistent/deploy.yaml",
+    },
+    definitionRepo: { findByNameGlobal: () => Promise.resolve(null) },
+  } as unknown as RepositoryContext;
+}
+
+for (
+  const layout of [
+    { name: "a symlinked workflow file", dir: "workflows", linkDir: false },
+    {
+      name: "a workflow under a symlinked directory",
+      dir: "wfs",
+      linkDir: true,
+    },
+  ]
+) {
+  Deno.test(`extension push: ${layout.name} found by dependency resolution in a symlinked repo is listed in the link spelling and refused as a symlink (swamp-club#3536, swamp-club#3421)`, async () => {
+    await withLinkedRepo(async ({ real, link, tmp }) => {
+      const outside = join(tmp, "outside");
+      await Deno.mkdir(outside, { recursive: true });
+      await Deno.writeTextFile(
+        join(outside, "shared.yaml"),
+        'name: "@test/shared"\njobs: {}\n',
+      );
+      if (layout.linkDir) {
+        await Deno.symlink(outside, join(real, layout.dir), { type: "dir" });
+      } else {
+        await Deno.symlink(
+          join(outside, "shared.yaml"),
+          join(real, layout.dir, "shared.yaml"),
+          { type: "file" },
+        );
+      }
+
+      const resolved = await resolveExtensionFiles({
+        repoDir: link,
+        manifestPath: join(link, "manifest.yaml"),
+        repoContext: repoContextWithSharedWorkflow(
+          join(real, layout.dir, "shared.yaml"),
+        ),
+        logger,
+        moduleGraphReader: graphReader,
+      });
+
+      const shared = join(link, layout.dir, "shared.yaml");
+      assertEquals(
+        resolved.workflowFiles.map((w) => w.sourcePath),
+        [join(link, "workflows", "deploy.yaml"), shared],
+      );
+      assertEquals(resolved.symlinkedPaths.has(shared), true);
     });
   });
 }

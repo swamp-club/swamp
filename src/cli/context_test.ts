@@ -1068,13 +1068,3 @@ Deno.test("repoDirAsGivenFrom: a spelling that is not the repo gives the repo di
     repoDir,
   );
 });
-
-Deno.test("resolveExtensionsDir: a relative value resolves against the cwd passed", () => {
-  withMockedEnv({ SWAMP_EXTENSIONS_DIR: undefined }, () => {
-    const cwd = resolve("/home/me/link/repo");
-    assertPathEquals(
-      resolveExtensionsDir("ext", cwd)!,
-      join(cwd, "ext"),
-    );
-  });
-});

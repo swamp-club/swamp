@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
-  basename,
   dirname,
   extname,
   isAbsolute,
@@ -166,25 +165,29 @@ async function statOrNull(path: string): Promise<Deno.FileInfo | null> {
 }
 
 /**
- * `manifestPath` re-spelled under `repoDir` when it reaches the same
- * repository through another spelling, such as the real path of a repo the
- * user entered through a symlink (swamp-club#3536). The extension files
- * resolve under `repoDir`, so a manifest left in the other spelling would
- * report them through a path that climbs to the root and back. A manifest
- * already under `repoDir` is returned unchanged, so a symlink inside the
- * repository is never resolved away, and so is one outside the repository.
+ * `path` spelled under `repoDir` when it reaches the same repository through
+ * another spelling, such as the real path of a repo the user entered through
+ * a symlink (swamp-club#3536). Only the prefix naming the repository is
+ * swapped: the deepest ancestor of `path` whose real path is the repo dir's
+ * is replaced by `repoDir`, and every component below it is kept as written,
+ * so a symlink inside the repository is never resolved away and the symlink
+ * check still sees it (swamp-club#3421). A path already under `repoDir`, or
+ * outside the repository, is returned unchanged.
  */
-export async function manifestPathUnderRepo(
-  manifestPath: string,
+export async function respellUnderRepoDir(
+  path: string,
   repoDir: string,
 ): Promise<string> {
-  if (!escapes(relative(repoDir, manifestPath))) return manifestPath;
-  const realDir = await realPathOrNull(dirname(manifestPath));
+  const target = resolve(path);
+  if (!escapes(relative(repoDir, target))) return path;
   const realRepoDir = await realPathOrNull(repoDir);
-  if (realDir === null || realRepoDir === null) return manifestPath;
-  const rel = relative(realRepoDir, realDir);
-  if (escapes(rel)) return manifestPath;
-  return join(repoDir, rel, basename(manifestPath));
+  if (realRepoDir === null) return path;
+  for (let ancestor = target;; ancestor = dirname(ancestor)) {
+    if (await realPathOrNull(ancestor) === realRepoDir) {
+      return join(repoDir, relative(ancestor, target));
+    }
+    if (dirname(ancestor) === ancestor) return path;
+  }
 }
 
 function escapes(rel: string): boolean {

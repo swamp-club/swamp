@@ -650,19 +650,16 @@ function declaresClubApiKeyFile(
  * Priority: --extensions-dir flag > SWAMP_EXTENSIONS_DIR env var > undefined.
  *
  * When undefined, callers should fall back to repoDir for extension scanning.
- * A relative value resolves against `cwd`, the process cwd unless the
- * caller passes the {@link logicalCwd}.
  */
 export function resolveExtensionsDir(
   cliValue: string | undefined,
-  cwd: string = Deno.cwd(),
 ): string | undefined {
   if (cliValue !== undefined) {
-    return resolve(cwd, cliValue);
+    return resolve(cliValue);
   }
   const envDir = Deno.env.get("SWAMP_EXTENSIONS_DIR");
   if (envDir && envDir.length > 0) {
-    return resolve(cwd, envDir);
+    return resolve(envDir);
   }
   return undefined;
 }

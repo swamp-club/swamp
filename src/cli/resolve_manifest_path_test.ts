@@ -22,8 +22,8 @@ import { join } from "@std/path";
 import { UserError } from "../domain/errors.ts";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 import {
-  manifestPathUnderRepo,
   resolveManifestArgument,
+  respellUnderRepoDir,
 } from "./resolve_manifest_path.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -234,11 +234,11 @@ async function withLinkedRepo(
   });
 }
 
-Deno.test("manifestPathUnderRepo: a manifest under another spelling of the repo is re-spelled under the repo dir", async () => {
+Deno.test("respellUnderRepoDir: a path under another spelling of the repo is re-spelled under the repo dir", async () => {
   await withLinkedRepo(async ({ real, link }) => {
     await writeManifest(join(real, "extensions", "models", "x"));
     assertEquals(
-      await manifestPathUnderRepo(
+      await respellUnderRepoDir(
         join(real, "extensions", "models", "x", "manifest.yaml"),
         link,
       ),
@@ -246,7 +246,7 @@ Deno.test("manifestPathUnderRepo: a manifest under another spelling of the repo 
     );
     // And the other way round.
     assertEquals(
-      await manifestPathUnderRepo(
+      await respellUnderRepoDir(
         join(link, "extensions", "models", "x", "manifest.yaml"),
         real,
       ),
@@ -255,13 +255,31 @@ Deno.test("manifestPathUnderRepo: a manifest under another spelling of the repo 
   });
 });
 
-Deno.test("manifestPathUnderRepo: a manifest already under the repo dir, or outside the repo, is unchanged", async () => {
+Deno.test("respellUnderRepoDir: a path already under the repo dir, or outside the repo, is unchanged", async () => {
   await withLinkedRepo(async ({ link }) => {
     const inside = join(link, "extensions", "manifest.yaml");
     await writeManifest(join(link, "extensions"));
-    assertEquals(await manifestPathUnderRepo(inside, link), inside);
+    assertEquals(await respellUnderRepoDir(inside, link), inside);
 
     const outside = await writeManifest(join(link, "..", "..", "elsewhere"));
-    assertEquals(await manifestPathUnderRepo(outside, link), outside);
+    assertEquals(await respellUnderRepoDir(outside, link), outside);
+  });
+});
+
+Deno.test("respellUnderRepoDir: only the repository prefix is swapped, so a symlink inside the repo stays on the path", async () => {
+  await withLinkedRepo(async ({ real, link }) => {
+    await writeManifest(join(real, "extensions", "other"));
+    await Deno.symlink(
+      join(real, "extensions", "other"),
+      join(real, "extensions", "alias"),
+      { type: "dir" },
+    );
+    assertEquals(
+      await respellUnderRepoDir(
+        join(real, "extensions", "alias", "manifest.yaml"),
+        link,
+      ),
+      join(link, "extensions", "alias", "manifest.yaml"),
+    );
   });
 });

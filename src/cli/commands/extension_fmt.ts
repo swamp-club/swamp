@@ -29,15 +29,14 @@ import { createExtensionFmtRenderer } from "../../presentation/renderers/extensi
 import {
   createContext,
   type GlobalOptions,
-  logicalCwd,
   repoDirAsGiven,
   resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
-  manifestPathUnderRepo,
   resolveManifestArgument,
+  respellUnderRepoDir,
 } from "../resolve_manifest_path.ts";
 import {
   createModuleGraphReader,
@@ -84,16 +83,21 @@ export const extensionFmtCommand = new Command()
     // quality do (swamp-club#3536).
     const storageRepoDir = resolveRepoDir(options.repoDir);
     const repoDir = repoDirAsGiven(options.repoDir, storageRepoDir);
-    const cwd = logicalCwd();
-    const extensionsDir = resolveExtensionsDir(options.extensionsDir, cwd);
+    // Arguments resolve as before, against the process cwd and the
+    // resolved repo dir, so `..` means what it means to every other tool;
+    // the results are then spelled under the given repo dir.
+    const resolvedExtensionsDir = resolveExtensionsDir(options.extensionsDir);
+    const extensionsDir = resolvedExtensionsDir === undefined
+      ? undefined
+      : await respellUnderRepoDir(resolvedExtensionsDir, repoDir);
     const { absoluteManifestPath: manifestArgumentPath } =
       await resolveManifestArgument({
         argument: manifestPath,
-        cwd,
-        repoDir,
-        extensionsDir,
+        cwd: Deno.cwd(),
+        repoDir: storageRepoDir,
+        extensionsDir: resolvedExtensionsDir,
       });
-    const absoluteManifestPath = await manifestPathUnderRepo(
+    const absoluteManifestPath = await respellUnderRepoDir(
       manifestArgumentPath,
       repoDir,
     );

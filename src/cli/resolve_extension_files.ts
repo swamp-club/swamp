@@ -23,7 +23,6 @@ import {
   extname,
   isAbsolute,
   join,
-  relative,
   resolve,
   SEPARATOR,
 } from "@std/path";
@@ -71,7 +70,10 @@ import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
 import { resolveWebhooksDir } from "./resolve_webhooks_dir.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
-import { resolveManifestArgument } from "./resolve_manifest_path.ts";
+import {
+  resolveManifestArgument,
+  respellUnderRepoDir,
+} from "./resolve_manifest_path.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -358,11 +360,6 @@ function typedEntries(
 
 function isSameOrUnder(path: string, root: string): boolean {
   return path === root || path.startsWith(root + SEPARATOR);
-}
-
-/** Whether a `relative()` result leaves the directory it was taken from. */
-function isOutside(rel: string): boolean {
-  return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
 }
 
 /**
@@ -1015,26 +1012,29 @@ export async function resolveExtensionFiles(
       }
     }
 
-    // Merge workflow files from dependency resolution.
-    // Compare real paths so a dep-resolver path matches a manifest entry
-    // however either is spelled (e.g. /tmp → /private/tmp on macOS). The
-    // dep resolver reads the resolved repo dir, so a file under it is
-    // reported under the repo dir's own spelling (swamp-club#3536).
-    const realRepoDir = await realPathOr(resolve(repoDir));
+    // Merge workflow files from dependency resolution. The dep resolver
+    // reads the resolved repo dir, so each path is first spelled under the
+    // repo dir push was given (swamp-club#3536) and only then probed: the
+    // symlink check must see the path that is listed and packaged, with
+    // every component below the repo root, or a symlinked workflow would be
+    // read through (swamp-club#3421). Real paths match a dep-resolver path
+    // to a manifest entry however either is spelled (e.g. /tmp →
+    // /private/tmp on macOS).
     const wfSet = new Set<string>();
     for (const wf of depResult.workflowFiles) {
+      const spelled = resolve(await respellUnderRepoDir(wf, repoDir));
       let realWf: string;
       try {
-        realWf = await Deno.realPath(wf);
+        realWf = await Deno.realPath(spelled);
       } catch {
         continue; // Skip if the file doesn't exist
       }
       if (manifestWfReal.has(realWf)) continue;
       // A symlinked workflow is listed by its own path, never followed.
-      if (await probe.check(wf) !== undefined) realWf = resolve(wf);
-      const rel = relative(realRepoDir, realWf);
-      const sourcePath = rel !== "" && !isOutside(rel)
-        ? join(repoDir, rel)
+      const symlinked = await probe.check(spelled) !== undefined;
+      if (symlinked) realWf = spelled;
+      const sourcePath = symlinked || isSameOrUnder(spelled, resolve(repoDir))
+        ? spelled
         : realWf;
       if (!wfSet.has(realWf)) {
         const archiveName = basename(realWf);
