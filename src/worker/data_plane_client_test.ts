@@ -238,3 +238,120 @@ Deno.test("dataPlaneUrlFromConnectUrl: maps ws→http and wss→https", () => {
     "https://orch.internal:4443/",
   );
 });
+
+/**
+ * A data plane that answers every request `answerAfterMs` after it arrives,
+ * or rejects with the abort reason as soon as the request's signal aborts —
+ * a serve that is slow or stalled, not down.
+ */
+function slowClient(options: {
+  answerAfterMs: number;
+  timeoutMs: number;
+  writeTimeoutMs: number;
+}): DataPlaneClient {
+  const handle = JSON.stringify({
+    writerId: "w-1",
+    dataId: "d",
+    name: "result",
+    specName: "result",
+    kind: "resource",
+    version: 1,
+    size: 2,
+    tags: {},
+  });
+  return new DataPlaneClient({
+    baseUrl: "http://orchestrator.test",
+    credential: () => "cred-1",
+    timeoutMs: options.timeoutMs,
+    writeTimeoutMs: options.writeTimeoutMs,
+    fetchImpl: ((_input: URL | Request | string, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal ?? undefined;
+        const timer = setTimeout(
+          () =>
+            resolve(new Response(handle)),
+          options.answerAfterMs,
+        );
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        }, { once: true });
+      })) as typeof fetch,
+  });
+}
+
+Deno.test("DataPlaneClient: a write serve answers after the read timeout still succeeds", async () => {
+  // The read bound fires long before serve answers; writes must not use it,
+  // or a step whose data serve saved fails (swamp-club#3519).
+  const client = slowClient({
+    answerAfterMs: 50,
+    timeoutMs: 5,
+    writeTimeoutMs: 60_000,
+  });
+  const written = await client.writeResource({
+    specName: "result",
+    name: "result",
+    data: { ok: true },
+  });
+  assertEquals(written.version, 1);
+  const opened = await client.openWriter({ specName: "log", name: "log" });
+  assertEquals(opened.writerId, "w-1");
+  await client.writeLine("w-1", "a line");
+  const finalized = await client.finalizeWriter("w-1");
+  assertEquals(finalized.dataId, "d");
+  await client.deleteResource({ name: "result" });
+});
+
+Deno.test("DataPlaneClient: a write past the write timeout names the route and that serve may have saved it", async () => {
+  const client = slowClient({
+    answerAfterMs: 60_000,
+    timeoutMs: 60_000,
+    writeTimeoutMs: 5,
+  });
+  const error = await assertRejects(
+    () =>
+      client.writeResource({
+        specName: "result",
+        name: "result",
+        data: { ok: true },
+      }),
+    Error,
+  );
+  assertEquals(
+    error.message,
+    "Serve did not answer POST /data/resource within 0.005s; serve may still have saved this write",
+  );
+});
+
+Deno.test("DataPlaneClient: a read past the read timeout fails at the read bound", async () => {
+  const client = slowClient({
+    answerAfterMs: 60_000,
+    timeoutMs: 5,
+    writeTimeoutMs: 60_000,
+  });
+  const error = await assertRejects(
+    () => client.readArtifact("/data/t/m/result/1"),
+    Error,
+  );
+  assertEquals(
+    error.message,
+    "Serve did not answer GET /data/t/m/result/1 within 0.005s",
+  );
+});
+
+Deno.test("DataPlaneClient: a cancelled write keeps the caller's abort reason", async () => {
+  const client = slowClient({
+    answerAfterMs: 60_000,
+    timeoutMs: 60_000,
+    writeTimeoutMs: 60_000,
+  });
+  const controller = new AbortController();
+  const pending = client.writeResource(
+    { specName: "result", name: "result", data: { ok: true } },
+    controller.signal,
+  );
+  const reason = new Error("step cancelled");
+  controller.abort(reason);
+  const error = await assertRejects(() => pending, Error);
+  assertEquals(error, reason);
+});
