@@ -187,6 +187,7 @@ export async function pullExtension(
     noticesShown.add(key);
     renderer.renderUnoptedPrerelease(n);
   };
+  const pulledBefore = new Set(deps.alreadyPulled);
 
   try {
     await consumeStream(
@@ -222,8 +223,11 @@ export async function pullExtension(
         renderExtensionPullCancelled(outputMode);
         return;
       }
-      // Retry with force, reset alreadyPulled so the extension can be retried
-      deps.alreadyPulled.delete(ref.name);
+      // Retry with force. The first attempt marked every extension it
+      // reached, dependencies included; the conflict may be a dependency's,
+      // so the retry starts from the marks made before it (swamp-club#3313).
+      deps.alreadyPulled.clear();
+      for (const name of pulledBefore) deps.alreadyPulled.add(name);
       await consumeStream(
         extensionPull(libCtx, deps, {
           ref,

@@ -36,7 +36,11 @@ import {
 import "../../domain/models/models.ts";
 import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { UserError } from "../../domain/errors.ts";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 
 await initializeLogging({});
 
@@ -368,4 +372,197 @@ Deno.test("pullExtension: a dependency's conflict states each replacement once a
   assertEquals(out.split(HEADLINE).length - 1, 1);
   assertEquals(out.split("@test/dep: installed unknown").length - 1, 1);
   assertEquals(out.split("is a beta release").length - 1, 1);
+});
+
+Deno.test("pullExtension: the forced retry after a dependency's conflict starts from the extensions marked before the pull (swamp-club#3313)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_pull_retry_" });
+  const retrySeen: string[][] = [];
+  try {
+    await pullExtension({ name: "@test/ext", version: null }, {
+      getExtension: () => Promise.resolve(null),
+      downloadArchive: () => Promise.reject(new Error("unused")),
+      getChecksum: () => Promise.resolve(null),
+      logger: getSwampLogger(["extension", "pull"]),
+      lockfileRepository: await LockfileRepository.create(
+        join(dir, "upstream_extensions.json"),
+      ),
+      skillsDirs: [],
+      repoDir: dir,
+      force: false,
+      outputMode: "log",
+      alreadyPulled: new Set(["@test/before"]),
+      depth: 0,
+      confirm: () => Promise.resolve(true),
+      // The parent and its dependency are both reached before the
+      // dependency's files conflict.
+      installExtensionFn: (_ref, c: InstallContext) => {
+        if (!c.force) {
+          c.alreadyPulled.add("@test/ext");
+          c.alreadyPulled.add("@test/dep");
+          return Promise.reject(new ConflictError(["d.ts"], []));
+        }
+        retrySeen.push([...c.alreadyPulled].sort());
+        return Promise.resolve(stubResult());
+      },
+    });
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+  assertEquals(retrySeen, [["@test/before"]]);
+});
+
+const PULL_VERSION = "2026.01.01.1";
+
+// The zod swamp provides to extensions, so no npm download is needed.
+function modelSource(typeId: string): string {
+  return `// deno-lint-ignore no-explicit-any
+const { z } = (globalThis as any).__swamp_zod;
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.05.05.1",
+  globalArguments: z.object({}),
+  resources: {
+    "data": {
+      description: "x",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 1,
+    },
+  },
+  methods: {
+    noop: {
+      description: "noop",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+}
+
+/** An extension archive shipping one model file, as the registry serves it. */
+async function buildArchive(
+  name: string,
+  modelFile: string,
+  typeId: string,
+  dependencies: string[],
+): Promise<Uint8Array> {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_pull_arc_" });
+  try {
+    const extDir = join(tmp, "extension");
+    await ensureDir(join(extDir, "models"));
+    const lines = [
+      "manifestVersion: 1",
+      `name: "${name}"`,
+      `version: "${PULL_VERSION}"`,
+      "models:",
+      `  - ${modelFile}`,
+    ];
+    if (dependencies.length > 0) {
+      lines.push("dependencies:", ...dependencies.map((d) => `  - "${d}"`));
+    }
+    await Deno.writeTextFile(join(extDir, "manifest.yaml"), lines.join("\n"));
+    await Deno.writeTextFile(
+      join(extDir, "models", modelFile),
+      modelSource(typeId),
+    );
+    await createTarGz(extDir, join(tmp, "a.tar.gz"));
+    return await Deno.readFile(join(tmp, "a.tar.gz"));
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("pullExtension: answering y to a dependency's conflict installs the dependency over its files (swamp-club#3313)", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const parent = `@t/p-${id}`;
+  const dep = `@t/d-${id}`;
+  const archives = new Map([
+    [parent, await buildArchive(parent, "p.ts", `@t/own-p-${id}`, [dep])],
+    [dep, await buildArchive(dep, "d.ts", `@t/own-d-${id}`, [])],
+  ]);
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_pull_dep_" });
+  const lockfilePath = join(
+    repoDir,
+    "extensions",
+    "models",
+    "upstream_extensions.json",
+  );
+  await ensureDir(join(repoDir, "extensions", "models"));
+  await Deno.writeTextFile(lockfilePath, "{}");
+  // The dependency's files are on disk with no lockfile entry.
+  const depFile = join(
+    repoDir,
+    ".swamp",
+    "pulled-extensions",
+    dep,
+    "models",
+    "d.ts",
+  );
+  await ensureDir(dirname(depFile));
+  await Deno.writeTextFile(depFile, "local\n");
+  const catalog = new ExtensionCatalogStore(
+    join(repoDir, ".swamp", "_extension_catalog.db"),
+  );
+  let asked = 0;
+  try {
+    const lockfileRepository = await LockfileRepository.create(lockfilePath);
+    await pullExtension({ name: parent, version: null }, {
+      getExtension: (name) =>
+        Promise.resolve({
+          name,
+          description: "",
+          latestVersion: PULL_VERSION,
+        }),
+      downloadArchive: (name) => {
+        const archive = archives.get(name);
+        return archive
+          ? Promise.resolve(archive)
+          : Promise.reject(new Error(`cannot download ${name}`));
+      },
+      getChecksum: () => Promise.resolve(null),
+      logger: getSwampLogger(["extension", "pull"]),
+      lockfileRepository,
+      skillsDirs: [],
+      repoDir,
+      force: false,
+      outputMode: "log",
+      alreadyPulled: new Set(),
+      depth: 0,
+      denoRuntime: {
+        ensureDeno: () => Promise.resolve(Deno.execPath()),
+        getDenoEnv: () => Deno.env.toObject(),
+      },
+      repository: new ExtensionRepository({
+        catalog,
+        lockfileRepository,
+        repoRoot: repoDir,
+      }),
+      confirm: () => {
+        asked++;
+        return Promise.resolve(true);
+      },
+    });
+
+    assertEquals(asked, 1);
+    const lockfile = JSON.parse(await Deno.readTextFile(lockfilePath));
+    assertEquals(lockfile[parent]?.version, PULL_VERSION);
+    assertEquals(lockfile[dep]?.version, PULL_VERSION);
+    assertEquals(
+      await Deno.readTextFile(depFile),
+      modelSource(`@t/own-d-${id}`),
+    );
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
 });
