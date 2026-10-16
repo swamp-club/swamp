@@ -1291,6 +1291,48 @@ Deno.test("runFirstAlone: a failed first call lets the next caller go first", as
   assertEquals(started, ["b", "c"]);
 });
 
+Deno.test("runFirstAlone: a first result that succeeded rejects lets the next caller go first", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<string>();
+  const a = runFirstAlone(gates, "cache", () => first.promise, {
+    succeeded: (result) => result === "installed",
+  });
+  const second = Promise.withResolvers<string>();
+  const started: string[] = [];
+  const b = runFirstAlone(gates, "cache", async () => {
+    started.push("b");
+    return await second.promise;
+  });
+  const c = runFirstAlone(gates, "cache", () => {
+    started.push("c");
+    return Promise.resolve("installed");
+  });
+  first.resolve("lost the race");
+  assertEquals(await a, "lost the race", "the caller still gets its result");
+  await waitFor(() => started.length > 0, "a caller to start");
+  assertEquals(started, ["b"], "b runs alone in the failed call's place");
+  second.resolve("installed");
+  await Promise.all([b, c]);
+  assertEquals(started, ["b", "c"]);
+});
+
+Deno.test("runFirstAlone: an abort ends a wait behind the first call", async () => {
+  const gates = new Map<string, Promise<boolean>>();
+  const first = Promise.withResolvers<void>();
+  const a = runFirstAlone(gates, "cache", () => first.promise);
+  const controller = new AbortController();
+  let ran = false;
+  const b = runFirstAlone(gates, "cache", () => {
+    ran = true;
+    return Promise.resolve();
+  }, { signal: controller.signal });
+  controller.abort(new Error("shutting down"));
+  await assertRejects(() => b, Error, "shutting down");
+  assertEquals(ran, false);
+  first.resolve();
+  await a;
+});
+
 Deno.test("isEsbuildInstallRace: matches only the esbuild copy failure", () => {
   assertEquals(
     isEsbuildInstallRace(

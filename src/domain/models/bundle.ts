@@ -761,28 +761,43 @@ export function isEsbuildInstallRace(output: string): boolean {
 
 /**
  * Runs `fn` alone for the first call per `key`; later calls wait for it to
- * settle, then run side by side. A failed first call clears the key, so
- * the next caller goes first in its place.
+ * settle, then run side by side. A first call that throws, or whose result
+ * `succeeded` rejects, clears the key, so the next caller goes first in its
+ * place. An abort of `signal` ends the wait with its reason.
  */
 export async function runFirstAlone<T>(
   gates: Map<string, Promise<boolean>>,
   key: string,
   fn: () => Promise<T>,
+  options: { signal?: AbortSignal; succeeded?: (result: T) => boolean } = {},
 ): Promise<T> {
   for (let gate = gates.get(key); gate; gate = gates.get(key)) {
-    if (await gate) return await fn();
+    if (await abortable(gate, options.signal)) return await fn();
   }
   let settle!: (ok: boolean) => void;
   gates.set(key, new Promise<boolean>((resolve) => settle = resolve));
+  let ok = false;
   try {
     const result = await fn();
-    settle(true);
+    ok = options.succeeded?.(result) ?? true;
     return result;
-  } catch (error) {
-    gates.delete(key);
-    settle(false);
-    throw error;
+  } finally {
+    if (!ok) gates.delete(key);
+    settle(ok);
   }
+}
+
+/** `promise`, or a rejection with the abort reason once `signal` aborts. */
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() =>
+      signal.removeEventListener("abort", onAbort)
+    );
+  });
 }
 
 /**
@@ -871,33 +886,35 @@ export async function bundleExtension(
 
     args.push("--platform", "deno", "-o", tempFile, absolutePath);
 
-    const signal = options?.signal ??
-      AbortSignal.timeout(BUNDLE_TIMEOUT_MS);
-
-    const command = new Deno.Command(denoPath, {
-      args,
-      stdout: "piped",
-      stderr: "piped",
-      signal,
-      // For package.json projects, set cwd so Deno auto-detects package.json
-      // and resolves bare specifiers from node_modules/.
-      ...(options?.packageJsonDir ? { cwd: options.packageJsonDir } : {}),
-      ...(options?.env ? { env: options.env } : {}),
-    });
+    // Each run gets its own timeout, started when it runs: never spent
+    // waiting behind the first bundle.
+    const runBundle = () =>
+      new Deno.Command(denoPath, {
+        args,
+        stdout: "piped",
+        stderr: "piped",
+        signal: options?.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
+        // For package.json projects, set cwd so Deno auto-detects package.json
+        // and resolves bare specifiers from node_modules/.
+        ...(options?.packageJsonDir ? { cwd: options.packageJsonDir } : {}),
+        ...(options?.env ? { env: options.env } : {}),
+      }).output();
 
     // The child's cache: options.env merges over this process's env.
     const denoDir = options?.env?.DENO_DIR ?? Deno.env.get("DENO_DIR") ??
       "";
-    let output = await runFirstAlone(
-      firstBundles,
-      denoDir,
-      async () => await command.output(),
-    );
+    let output = await runFirstAlone(firstBundles, denoDir, runBundle, {
+      signal: options?.signal,
+      // A first bundle that lost an esbuild install race left the cache
+      // without esbuild: the next bundle installs it alone again.
+      succeeded: (result) =>
+        result.success || !isEsbuildInstallRace(outputText(result)),
+    });
     // Another process may have been installing esbuild into the same cache.
     if (!output.success && isEsbuildInstallRace(outputText(output))) {
       logger
         .debug`Retrying bundle of ${absolutePath} after an esbuild install race`;
-      output = await command.output();
+      output = await runBundle();
     }
 
     if (!output.success) {
