@@ -823,14 +823,28 @@ async function anotherProcessWritesCheckout(
   ) {
     return false;
   }
-  // Judged before the lease is read: a writer's own sidecar, or a gone
-  // writer's, costs no read of the lease's records.
+  // This process's own sidecar, known by the fence it wrote it with: never
+  // judged by liveness, which may not place this process when its boot id
+  // cannot be read.
+  if (isOwnWriterCheckout(datastorePath, recorded)) return false;
+  // Judged before the lease is read: a gone writer's sidecar costs no read
+  // of the lease's records.
   if (!mayBeAnotherWriter(recorded, await localProcess())) return false;
   const holder = await v3WriterLeaseHolder(datastorePath);
   if (holder === null) return false;
   return recorded.fence === undefined
     ? legacyWriterWritesCheckout(recorded, holder)
     : holder.fence === recorded.fence;
+}
+
+/** Whether `recorded` is the sidecar this process wrote for its current hold. */
+function isOwnWriterCheckout(
+  datastorePath: string,
+  recorded: WriterCheckoutRecord,
+): boolean {
+  const mine = recordedCheckouts.get(resolve(datastorePath));
+  return mine !== undefined && recorded.pid === Deno.pid &&
+    recorded.hostname === Deno.hostname() && recorded.fence === mine.fence;
 }
 
 /**

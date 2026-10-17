@@ -58,6 +58,11 @@ import {
 import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { writerMarkerPath } from "./interrupted_writer_recovery.ts";
+import {
+  localProcess,
+  probeProcess,
+  setLocalProcessForTesting,
+} from "./process_identity.ts";
 import { FileLock } from "../persistence/file_lock.ts";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -855,5 +860,27 @@ Deno.test("holdV3Writer: a fenced command's retention pass does not join its los
     assertEquals(await Deno.readTextFile(sidecar), before);
     await closeV3Datastores();
     assertEquals(await Deno.readTextFile(sidecar), before);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a writer whose boot id cannot be read still catches up its own checkout (swamp-club#3564)", async () => {
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    // Linux or macOS with no readable boot id: every record, this
+    // process's own sidecar included, is one liveness cannot place.
+    const { bootId: _, ...noBoot } = (await localProcess()).identity;
+    setLocalProcessForTesting({
+      pid: Deno.pid,
+      identity: noBoot,
+      probe: probeProcess,
+      bootIdRequired: true,
+    });
+    try {
+      await commitFromElsewhere(dir, datastorePath);
+      await holdV3Writer(config(datastorePath), repoDir);
+      await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+      assertEquals(await caughtUp(repoDir), true);
+    } finally {
+      setLocalProcessForTesting(undefined);
+    }
   });
 });
