@@ -3896,7 +3896,8 @@ identity and its fence; a reader in that same checkout does not catch up
 while the writer runs, because the writer's files there are newer than its
 last commit and replaying older commits over them would undo its work. The
 sidecar is written when a hold takes its fence (the first hold, and serve's
-retake of a lost one), never by a join, and removed at close only while it
+retake of a lost one), never by a join for the same checkout, and removed
+at close only while it
 still names this process's fence. It protects its writer while the
 sidecar's fence is the lease's highest (a force-released one included,
 since `commits.db` takes the released holder's commits until a new writer
@@ -4445,8 +4446,11 @@ process's start time (`/proc/<pid>/stat` field 22 on Linux, `kern.proc`'s
   swamp from before it), is **unknown**: never gone, so the caller falls
   back to the lease's TTL plus skew and the fence. A boot id that differs is
   unknown rather than proof of a reboot, since two machines can share a
-  hostname and the root pid namespace's id. On a bucket datastore this is
-  the normal case;
+  hostname and the root pid namespace's id. So is a boot id missing on
+  either side on Linux and macOS (a failed read, an image without `cat`):
+  only Windows, which has no boot id, judges by hostname and pid, as
+  before, so two Windows machines with one hostname on one datastore behave
+  as they did. On a bucket datastore this is the normal case;
 - on this kernel, a pid that is absent, a zombie, or started at another
   time than recorded is **gone**, as is this process's own pid in a record
   whose token is not this process's;
