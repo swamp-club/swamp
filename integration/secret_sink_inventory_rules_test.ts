@@ -323,6 +323,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: commitsIn":
       READ_ONLY_DB,
+    "src/infrastructure/datastore_v3/litestream/v3_copy.ts: droppedCommits":
+      READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: txnAt":
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/v3_datastore.ts: listV3Namespaces":

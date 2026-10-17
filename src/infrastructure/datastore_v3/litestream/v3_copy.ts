@@ -51,6 +51,7 @@ import {
   decideLocalCopy,
   type HighWaterMark,
   mayContinueLineage,
+  newestStartedFence,
   type PublishedLineage,
   restartLineage,
 } from "../../../domain/datastore_v3/published_lineage.ts";
@@ -113,6 +114,22 @@ let restoreDeadlineMs = DEFAULT_RESTORE_DEADLINE_MS;
 /** Test seam: the restore deadline, or undefined for the default. */
 export function setV3RestoreDeadlineForTesting(ms: number | undefined): void {
   restoreDeadlineMs = ms ?? DEFAULT_RESTORE_DEADLINE_MS;
+}
+
+/**
+ * A writer at `fence` would start a lineage below one another writer
+ * already started (swamp-club#3565): a lease newer than this writer's was
+ * taken, so its copy may lack that writer's commits, and readers follow the
+ * newer lineage. Nothing is started.
+ */
+export class V3LineageOutrankedError extends Error {
+  constructor(readonly fence: number, readonly newest: number) {
+    super(
+      `replication lineage ${padFence(newest)} was started by a newer ` +
+        `writer than this one, at fence ${fence}`,
+    );
+    this.name = "V3LineageOutrankedError";
+  }
 }
 
 /** A checkout's copy of a datastore's `commits.db`. */
@@ -261,11 +278,25 @@ export async function makeV3CopyCurrent(
     // A missing copy is linked into place, never over a file: a reader that
     // stopped waiting for the restore may have created an empty one, which
     // is then updated in place instead.
-    const install = openStore !== undefined
+    const replace = openStore !== undefined
       ? (temp: string) => openStore.replaceContentFrom(temp)
       : async (temp: string) => {
         if (!await installByLink(temp, target)) await intoExisting(temp);
       };
+    // The copy's commits the restored lineage lacks are lost: its own,
+    // never confirmed, when another checkout wrote first (swamp-club#3565).
+    let dropped = 0;
+    const install = async (temp: string) => {
+      // Only a warning depends on it: a copy that cannot be read (an empty
+      // file a reader created) never stops the restore.
+      try {
+        dropped = droppedCommits(target, temp);
+      } catch (error) {
+        logger
+          .debug`Counting the commits a restore drops from ${target} failed: ${error}`;
+      }
+      await replace(temp);
+    };
     // The first-clone cost, visible (swamp-club#3534): a restore downloads
     // the whole lineage before the command runs.
     logger
@@ -311,6 +342,12 @@ export async function makeV3CopyCurrent(
       .info`Restored this checkout's copy of the v3 datastore at ${copy.datastorePath} from replication lineage ${
       padFence(decision.lineage.fence)
     } (${decision.kind}) in ${restoreMs} ms`;
+    if (dropped > 0) {
+      logger
+        .warn`The restore of this checkout's copy of the v3 datastore at ${copy.datastorePath} from replication lineage ${
+        padFence(decision.lineage.fence)
+      } dropped ${dropped} commit(s) the replica never confirmed: another checkout wrote to the datastore first, so they are lost`;
+    }
     return {
       restored: {
         ...restored,
@@ -523,6 +560,57 @@ function readModelCursor(repoDir: string): number {
   }
 }
 
+/**
+ * How many commits of the copy at `before` the restored copy at `after`
+ * lacks: those above the last cursor both hold the same commit at, walking
+ * down from the copy's newest. Cursors below the restored copy's oldest
+ * (compacted away there) count as shared. Zero when there is no copy.
+ */
+function droppedCommits(before: string, after: string): number {
+  try {
+    Deno.statSync(before);
+  } catch {
+    return 0;
+  }
+  const old = new DatabaseSync(before, { readOnly: true });
+  const restored = new DatabaseSync(after, { readOnly: true });
+  try {
+    old.exec("PRAGMA busy_timeout=5000");
+    restored.exec("PRAGMA busy_timeout=5000");
+    const oldest = (restored.prepare("SELECT MIN(cursor) AS c FROM commits")
+      .get() as { c: number | null }).c;
+    const same = restored.prepare(
+      "SELECT 1 FROM commits WHERE cursor = ? AND namespace = ? " +
+        "AND partition = ? AND txn_id = ?",
+    );
+    let dropped = 0;
+    for (
+      const row of old.prepare(
+        "SELECT cursor, namespace, partition, txn_id FROM commits " +
+          "ORDER BY cursor DESC",
+      ).iterate() as Iterable<{
+        cursor: number;
+        namespace: string;
+        partition: string;
+        txn_id: string;
+      }>
+    ) {
+      if (oldest !== null && row.cursor < oldest) break;
+      if (
+        same.get(row.cursor, row.namespace, row.partition, row.txn_id) !==
+          undefined
+      ) {
+        break;
+      }
+      dropped++;
+    }
+    return dropped;
+  } finally {
+    restored.close();
+    old.close();
+  }
+}
+
 /** The txnId of the commit at `cursor`, or undefined when none is stored. */
 function txnAt(path: string, cursor: number): string | undefined {
   try {
@@ -635,14 +723,15 @@ export async function prepareV3WriterLineage(
         }
         return;
       }
-      if (
-        !options.restored &&
-        mayContinueLineage(previous, await registry.read(root), root)
-      ) {
-        const decided = decideLineage(previous, root, fence);
-        if (decided.kind === "continue") {
-          await writeLineage(paths, decided.lineage);
-          return;
+      let lineages: PublishedLineage[] | undefined;
+      if (!options.restored) {
+        lineages = await registry.read(root);
+        if (mayContinueLineage(previous, lineages, root)) {
+          const decided = decideLineage(previous, root, fence);
+          if (decided.kind === "continue") {
+            await writeLineage(paths, decided.lineage);
+            return;
+          }
         }
       }
       if (decideLineage(previous, root, fence).kind === "conflict") {
@@ -653,6 +742,15 @@ export async function prepareV3WriterLineage(
             `${previous?.lastFence}): the lease's records were recreated. ` +
             `Nothing was written`,
         );
+      }
+      // Never below a lineage a newer lease started: readers would follow
+      // that one, and this writer's commits would reach none of them.
+      const newest = newestStartedFence(
+        lineages ?? await registry.read(root),
+        root,
+      );
+      if (newest !== undefined && newest > fence) {
+        throw new V3LineageOutrankedError(fence, newest);
       }
       await claim();
       await writeLineage(paths, restartLineage(previous, root, fence));

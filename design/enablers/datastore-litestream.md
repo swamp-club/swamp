@@ -774,10 +774,13 @@ stop gets the lock once the sidecar has gone.
 runs `checkV3WriterLease`. Only then does it close the stores, release the
 sidecar, and release the lease. A failed or timed-out sync fails the command
 with `datastore_v3_replication_unconfirmed` and exit code 75: the commits are
-kept in `commits.db`, and the next write replicates them. A definite failure (an
-error answer, or a socket that refuses) marks the sidecar for replacement, while
-a timeout leaves it running so a large first snapshot can finish. The default
-deadline is 60 s.
+kept in `commits.db` and replicate when this checkout writes next. If another
+checkout writes to the datastore first, this copy's next refresh restores the
+newer lineage over them and they are lost; the message says so, and that
+restore logs a warning naming how many commits it dropped (swamp-club#3565).
+A definite failure (an error answer, or a socket that refuses) marks the sidecar
+for replacement, while a timeout leaves it running so a large first snapshot can
+finish. The default deadline is 60 s.
 
 > **Decision:** in D1 the sync runs at teardown, after the command has printed
 > its result, so `--json` stdout can hold a success document while stderr holds
@@ -800,8 +803,10 @@ and it never costs the lease. Abandoned lineages are kept in
 `previousLineages` for a later garbage collection.
 
 **Serve** keeps its sidecar for as long as it holds the lease. A retake at a new
-fence, or a 30 s probe that finds the sidecar not answering, replaces it through
-one tracked replacement at a time, which shutdown waits for. The closing sync
+fence, or a 30 s probe that finds the sidecar not answering or the copy not
+current, replaces it through one tracked replacement at a time, which shutdown
+waits for. A replacement asked for while one runs is not dropped: it runs once
+the running one settles (swamp-club#3565). The closing sync
 gets what the drain left, and at least 10 s, so `--shutdown-drain-timeout 0`
 still syncs. Commits between drains replicate within Litestream's 1–2 s lag,
 and since Phase 4D3 a write request waits for its own confirmation before it
@@ -964,7 +969,10 @@ then raises `writer_fence` in it, then decides the lineage:
   Litestream must never continue a path over a different database;
 - otherwise it restarts at its fence, claims the lineage (`putIfAbsent`; a
   claim that exists refuses), and its sidecar uploads a full first snapshot
-  to the new path.
+  to the new path. It never starts one below a lineage already started under
+  the same root: a newer lease exists, readers follow that lineage, and this
+  writer's copy may lack its commits, so the start is refused
+  (swamp-club#3565).
 
 A lineage this hold already began at its own fence is kept: in serve, the
 retake and a writer's hold at the same fence both decide it, so decisions on
@@ -1008,7 +1016,15 @@ current: serve's commits are refused as fenced (the message says this process
 holds the lease again and its copy is being brought up to date), and chunks
 are not collected,
 so nothing lands on, or is collected from, a copy that lacks the other
-writer's commits.
+writer's commits. A retake while a replacement runs makes that replacement
+stale (swamp-club#3565): what it restored may predate the other writer's
+latest commits, so it does not mark the copy current, start a lineage or hold
+a sidecar at the fence it began with; the next replacement restores again at
+the retake's fence. Its read model is still rebuilt from what it restored, since
+the copy's state already names that lineage and the next refresh may restore
+nothing. A replacement whose lineage start was refused leaves the copy not
+current, and the probe replaces it, except while the lease is lost and no
+retake replaced it: the retake asks for its own replacement.
 
 **Garbage collection.** After a lineage's first confirmation, once the
 writer's lease check passed, the lineages below it under the current replica
@@ -1122,7 +1138,8 @@ replication:
 - **It settles on landing, not on confirmation.** Replication is unchanged:
   a recovered commit is replicated like any other, and a command's success
   still waits for the confirmed sync. A commit that landed locally and was
-  dropped by a later restore before its confirmation is lost, as before.
+  dropped by a later restore before its confirmation is lost, as before; the
+  restore warns with the number dropped (swamp-club#3565).
 - **Turning replication on** drops, and reports, what the shared
   `commits.db`'s outbox still holds when a copy is first seeded from it: no
   fence is raised on the shared store once replication is on, so nothing can

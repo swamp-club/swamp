@@ -1046,3 +1046,55 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "LitestreamReplicator.acquire: an acquire that overlaps the last release still holds the sidecar (swamp-club#3565)",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      let gate: Promise<void> | undefined;
+      let probing = false;
+      const replicator = new LitestreamReplicator(world.deps({
+        control: {
+          ...world.control,
+          info: async (socket, timeoutMs) => {
+            if (gate !== undefined) {
+              probing = true;
+              await gate;
+            }
+            return await world.control.info(socket, timeoutMs);
+          },
+        },
+      }));
+      const first = await replicator.acquire(world.request(db, 1));
+      let open!: () => void;
+      gate = new Promise((done) => open = done);
+      // The second acquire probes the held sidecar, and the last hold is
+      // released meanwhile.
+      const second = replicator.acquire(world.request(db, 1));
+      await waitFor(() => probing, "the second acquire to probe");
+      await first.release();
+      gate = undefined;
+      open();
+      const held = await second;
+      try {
+        const probe = await Deno.open(world.paths.useLock, {
+          read: true,
+          write: true,
+        });
+        try {
+          assertEquals(
+            await probe.tryLock(true),
+            false,
+            "the view still holds use.lock shared",
+          );
+        } finally {
+          probe.close();
+        }
+      } finally {
+        await held.release();
+      }
+    });
+  },
+});
