@@ -290,6 +290,107 @@ Deno.test("SqliteCommitOutbox: refuses a file written by a newer schema", async 
       (error as { code?: string }).code,
       COMMIT_OUTBOX_SCHEMA_NEWER_CODE,
     );
+    // An upgrade, never corruption: what a swamp at schema 1 also says of a
+    // schema 2 outbox (swamp-club#3564).
+    assertEquals(
+      (error as Error).message,
+      `The v3 commit outbox at ${path} is at schema version ` +
+        `${COMMIT_OUTBOX_SCHEMA_VERSION + 1}, newer than this swamp's ` +
+        `${COMMIT_OUTBOX_SCHEMA_VERSION}: upgrade swamp.`,
+    );
     await outbox.close();
+  });
+});
+
+/**
+ * An outbox file as a swamp at schema 1 left it, holding one entry with no
+ * identity (swamp-club#3564).
+ */
+async function schemaOneOutbox(path: string): Promise<void> {
+  const outbox = new SqliteCommitOutbox(path);
+  await outbox.prepare({
+    commit: modelCommit(1, [await savePut("a", 1)]),
+    unitId: "u",
+    base: { seq: 0, txnId: undefined },
+  });
+  await outbox.close();
+  const db = new DatabaseSync(path);
+  db.exec(
+    "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
+      "ALTER TABLE outbox_entries DROP COLUMN left_at_fence; " +
+      "PRAGMA user_version=1",
+  );
+  db.close();
+}
+
+function schemaOf(path: string): number {
+  const db = new DatabaseSync(path);
+  try {
+    return (db.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    }).user_version;
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("SqliteCommitOutbox: a schema 1 outbox migrates to 2, its entries read as prepared by no identity (swamp-club#3564)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    await schemaOneOutbox(path);
+    const outbox = new SqliteCommitOutbox(path);
+    try {
+      const { entries } = await outbox.entries();
+      assertEquals(entries.length, 1);
+      assertEquals(entries[0].writerProcess, undefined);
+      assertEquals(entries[0].leftAtFence, undefined);
+      assertEquals(schemaOf(path), COMMIT_OUTBOX_SCHEMA_VERSION);
+      assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 2);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: a read alone migrates a schema 1 outbox", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    await schemaOneOutbox(path);
+    const outbox = new SqliteCommitOutbox(path);
+    try {
+      assertEquals(await outbox.hasEntries(), true);
+      assertEquals(schemaOf(path), 2);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: records the preparing process's identity, and a left mark until the entry is prepared again", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const process = { host: "h#pid:[1]", bootId: "b", startTime: "t" };
+    const outbox = new SqliteCommitOutbox(path, {
+      writerProcess: () => Promise.resolve(process),
+    });
+    try {
+      const commit = modelCommit(1, [await savePut("a", 1)]);
+      const preparation = {
+        commit,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      };
+      await outbox.prepare(preparation);
+      await outbox.markLeft([outboxKeyOf(commit)], 4);
+      // A second mark keeps the first recovery's fence.
+      await outbox.markLeft([outboxKeyOf(commit)], 5);
+      let [entry] = (await outbox.entries()).entries;
+      assertEquals([entry.writerProcess, entry.leftAtFence], [process, 4]);
+      await outbox.prepare(preparation);
+      [entry] = (await outbox.entries()).entries;
+      assertEquals(entry.leftAtFence, undefined);
+    } finally {
+      await outbox.close();
+    }
   });
 });

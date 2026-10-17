@@ -30,7 +30,9 @@ import {
   readWriterLeaseRecords,
   releasedKey,
 } from "../../domain/datastore_v3/writer_lease.ts";
+import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
 import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
+import { localProcess } from "./process_identity.ts";
 
 /** Who the planted holder is. */
 export interface PlantedV3WriterLease {
@@ -41,6 +43,31 @@ export interface PlantedV3WriterLease {
   /** When it took or last renewed the lease; now by default. */
   readonly acquiredAt?: Date;
   readonly ttlMs?: number;
+  /**
+   * The identity the record names its process by (swamp-club#3564). By
+   * default, for a holder on this host, this kernel's with no start time,
+   * so the pid is judged by presence; for another host, that host's. Null
+   * leaves it out, as a swamp from before identities would.
+   */
+  readonly process?: ProcessIdentity | null;
+}
+
+/**
+ * The identity a holder on `hostname` names itself by: on this host, this
+ * kernel's with no start time (a pid judged by presence), else that host's.
+ */
+export async function plantedIdentity(
+  hostname: string,
+): Promise<ProcessIdentity> {
+  return hostname === Deno.hostname()
+    ? await thisKernelIdentity()
+    : { host: hostname };
+}
+
+/** This kernel's identity with no start time: a pid judged by presence. */
+export async function thisKernelIdentity(): Promise<ProcessIdentity> {
+  const { startTime: _, ...kernel } = (await localProcess()).identity;
+  return kernel;
 }
 
 /** A planted holder of the lease. */
@@ -63,6 +90,9 @@ export async function plantV3WriterLease(
   const fence = ((await readWriterLeaseRecords(store)).fence ?? 0) + 1;
   const hostname = holder.hostname ?? Deno.hostname();
   const nonce = crypto.randomUUID();
+  const process = holder.process === undefined
+    ? await plantedIdentity(hostname)
+    : holder.process;
   const created = await store.putIfAbsent(
     fenceKey(fence),
     new TextEncoder().encode(JSON.stringify({
@@ -70,6 +100,7 @@ export async function plantV3WriterLease(
       holder: `test@${hostname}`,
       hostname,
       pid: holder.pid,
+      ...(process !== null ? { process } : {}),
       nonce,
       ttlMs: holder.ttlMs ?? 60_000,
       acquiredAt: (holder.acquiredAt ?? new Date()).toISOString(),

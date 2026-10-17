@@ -230,6 +230,7 @@ When --json is set, errors are written to stderr as a JSON envelope:
 The "code" field is a stable, machine-readable identifier. Callers should match on "code" rather than parsing the error message. Known codes for this command:
 
     lock_timeout             Another invocation holds the ${syntax.surface} lock (exit 75)
+    datastore_v3_writer_busy Another process is writing the v3 datastore (exit 75)
     model_not_found          No ${syntax.surface} matches the given name
     unknown_model_type       The @type prefix does not match any installed type
     unknown_method           The ${syntax.surface} does not define the requested method

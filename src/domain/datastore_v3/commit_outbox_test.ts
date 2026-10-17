@@ -210,3 +210,29 @@ Deno.test("sweepMayOverlap: only a quiet, unmoved epoch skips the check", () => 
   assert(sweepMayOverlap({ epoch: 2, active: true }, quiet));
   assert(sweepMayOverlap(quiet, { epoch: 2, active: true }));
 });
+
+Deno.test("planOutboxRecovery: an entry a recovery left for its live writer is not overtaken by the floor that recovery raised (swamp-club#3564)", async () => {
+  const left = { ...await entry(1, { fence: 3 }), leftAtFence: 4 };
+  const overtaken = await entry(2, { fence: 3 });
+  const process = { host: "h#pid:[1]", bootId: "b", startTime: "t" };
+  const stillAlive = planOutboxRecovery([left, overtaken], {
+    ...judge(),
+    writerAlive: (_writer, recorded) => recorded === process,
+  });
+  assertEquals(stillAlive.skipped, []);
+  assertEquals(stillAlive.sends, [left]);
+  assertEquals(
+    stillAlive.drops.map((drop) => [drop.entry.sequence, drop.reason]),
+    [[2, "overtaken"]],
+  );
+  // While its writer, named by the identity it prepared under, runs, it is
+  // left again.
+  const live = { ...left, writerProcess: process };
+  assertEquals(
+    planOutboxRecovery([live], {
+      ...judge(),
+      writerAlive: (_writer, recorded) => recorded === process,
+    }).skipped,
+    [live],
+  );
+});

@@ -40,7 +40,10 @@
  *   chain's start was prepared before another copy took the lease, and is
  *   dropped. The floor is the fence of the last completed recovery: an entry
  *   below it was prepared by a writer that lost its lease after its
- *   successor recovered, and is dropped too.
+ *   successor recovered, and is dropped too, unless a recovery left it for
+ *   its writer, which was then alive (swamp-club#3564): such an entry
+ *   existed before the floor rose, and lands once its writer is gone. An
+ *   entry prepared again since is no longer one a recovery left.
  * - **Retry age.** An entry older than {@link OUTBOX_RETRY_BOUND_MS} is
  *   dropped, and no retry, in memory or from the outbox, is appended past
  *   it. `compacted_txns` keeps a compacted commit's txnId for
@@ -54,6 +57,7 @@
  */
 
 import type { Commit, CommitWriter } from "./commit.ts";
+import type { ProcessIdentity } from "./process_liveness.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -140,6 +144,16 @@ export interface OutboxEntry extends OutboxPreparation {
   readonly sequence: number;
   /** When the entry was first prepared, epoch milliseconds. */
   readonly createdAt: number;
+  /**
+   * The preparing process's identity (swamp-club#3564), by which its
+   * liveness is judged; undefined in an entry from a swamp before it.
+   */
+  readonly writerProcess?: ProcessIdentity;
+  /**
+   * The fence of the recovery that left this entry for its live writer,
+   * since it was last prepared: the floor does not drop it.
+   */
+  readonly leftAtFence?: number;
 }
 
 /** The fences a copy of `commits.db` took, as {@link decideFenceChain} keeps them. */
@@ -217,9 +231,13 @@ export interface OutboxRecoveryJudgement {
   readonly now: number;
   /**
    * Whether the entry's writer may still be running: this process, or one
-   * on this host that is not gone. Its entries are left alone.
+   * judged alive by the identity it prepared the entry under. Its entries
+   * are left alone.
    */
-  readonly writerAlive: (writer: CommitWriter) => boolean;
+  readonly writerAlive: (
+    writer: CommitWriter,
+    process: ProcessIdentity | undefined,
+  ) => boolean;
 }
 
 /** The outcome of {@link planOutboxRecovery}. */
@@ -294,8 +312,10 @@ function dropReason(
 ): OutboxDropReason | "skip" | undefined {
   const fence = entry.commit.fence;
   if (fence === undefined || fence < chain.chainStart) return "stale-fence";
-  if (fence < chain.floor) return "overtaken";
-  if (writerAlive(entry.commit.writer)) return "skip";
+  if (fence < chain.floor && entry.leftAtFence === undefined) {
+    return "overtaken";
+  }
+  if (writerAlive(entry.commit.writer, entry.writerProcess)) return "skip";
   if (now - entry.createdAt > OUTBOX_RETRY_BOUND_MS) return "expired";
   return undefined;
 }
@@ -364,6 +384,11 @@ export interface CommitOutbox {
   chain(): Promise<FenceChain | undefined>;
   /** Moves the floor to `fence` once a recovery under it completed. */
   raiseFloor(fence: number): Promise<void>;
+  /**
+   * Marks entries a recovery at `fence` left for their live writer, so a
+   * later floor does not drop them; a later prepare clears the mark.
+   */
+  markLeft(keys: readonly OutboxKey[], fence: number): Promise<void>;
   /** The subset of `hashes` an entry of `namespace` names as a chunk. */
   referencedChunks(
     namespace: string,

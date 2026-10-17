@@ -657,10 +657,10 @@ Deno.test({
       const handle = v3WriterLockHandle(location.path);
       assertEquals(await handle.inspect(), null);
       // Another machine holds the lease.
-      const hold = await v3WriterLease(
+      const hold = await (await v3WriterLease(
         datastoreWriterLeaseStore(bucket.provider(), bucket.typeName),
         60_000,
-      ).acquire({ maxWaitMs: 0 });
+      )).acquire({ maxWaitMs: 0 });
       const held = await handle.inspect();
       assertEquals(held?.pid, Deno.pid);
       assertEquals(held?.fence, hold.fence);

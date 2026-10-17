@@ -175,8 +175,10 @@ async function main() {
       // libc/libproc for the auth gate's nested-run ancestry check
       // (src/infrastructure/runtime/process_ancestry.ts), and libc for the
       // /proc reads that find a deferred write whose process died
-      // (src/infrastructure/runtime/process.ts). Without it every nested
-      // swamp in a shell step is blocked.
+      // (src/infrastructure/runtime/process.ts), and libc /proc reads and
+      // the macOS kern.proc sysctl that judge whether a v3 writer still
+      // runs (processStateOf in process_ancestry.ts). Without it every
+      // nested swamp in a shell step is blocked.
       "--allow-ffi",
       "--include",
       ".claude/skills",

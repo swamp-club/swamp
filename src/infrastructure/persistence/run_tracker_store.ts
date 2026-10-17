@@ -29,7 +29,7 @@ import {
 } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { OwnerLiveness } from "../../domain/workflows/orphaned_run_reaper.ts";
-import { isProcessDead } from "../runtime/process.ts";
+import { isProcessGone } from "../runtime/process.ts";
 
 import { join } from "@std/path";
 
@@ -45,7 +45,7 @@ export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active
  * a pid check against the local process table.
  */
 export function localOwnerLiveness(): OwnerLiveness {
-  return { hostname: hostname(), isDead: isProcessDead };
+  return { hostname: hostname(), isDead: isProcessGone };
 }
 const RETENTION_DAYS = 7;
 /**
@@ -426,7 +426,7 @@ export class RunTrackerStore implements RunTrackerRepository {
     for (const run of stale) {
       const isLocal = run.isLocalTo(currentHostname, instanceId);
 
-      const shouldReap = isLocal ? isProcessDead(run.pid) : true;
+      const shouldReap = isLocal ? isProcessGone(run.pid) : true;
 
       if (shouldReap) {
         this.complete(run.id, "interrupted");
@@ -446,7 +446,7 @@ export class RunTrackerStore implements RunTrackerRepository {
     return this.findAllRunning().filter((run) =>
       run.isLocalTo(currentHostname, instanceId) &&
       run.pid !== Deno.pid &&
-      isProcessDead(run.pid)
+      isProcessGone(run.pid)
     );
   }
 

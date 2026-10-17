@@ -46,14 +46,29 @@ import {
   v3RetentionHistory,
 } from "./v3_repo_context.ts";
 import {
+  acquireV3WriterLock,
+  checkV3WriterLease,
   holdsV3WriterLock,
+  tryAcquireV3WriterLock,
   V3_LEGACY_WRITER_LOCK_KEY,
   V3WriterBusyError,
   v3WriterFence,
+  v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
+import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
+import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import { writerMarkerPath } from "./interrupted_writer_recovery.ts";
+import {
+  localProcess,
+  probeProcess,
+  setLocalProcessForTesting,
+} from "./process_identity.ts";
 import { FileLock } from "../persistence/file_lock.ts";
 import { DatabaseSync } from "node:sqlite";
-import { plantV3WriterLease } from "./v3_writer_lock_test_helpers.ts";
+import {
+  plantV3WriterLease,
+  thisKernelIdentity,
+} from "./v3_writer_lock_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-context-" });
@@ -613,3 +628,259 @@ async function commitOneDefinition(
     await writer.close();
   }
 }
+
+/** Commits one auto-definition from another checkout, for a catch-up to materialise. */
+async function commitFromElsewhere(
+  dir: string,
+  datastorePath: string,
+): Promise<void> {
+  const writer = openV3Datastore({
+    repoDir: join(dir, "writer"),
+    datastorePath,
+  });
+  try {
+    const engine = writer.engineFor(() => Promise.resolve(), () => {
+      throw new Error("no run repository needed");
+    });
+    await engine.runRoot({}, async () => {
+      const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+      await unit.stageOps([
+        new AutoDefinitionChanges(crypto.randomUUID()).write(
+          recordKeyOf(["auto-definitions", "x.yaml"]),
+          new TextEncoder().encode("x"),
+        ),
+      ]);
+      await unit.commit();
+    });
+  } finally {
+    await writer.close();
+  }
+}
+
+function caughtUp(repoDir: string): Promise<boolean> {
+  return Deno.stat(swampPath(repoDir, "auto-definitions", "x.yaml")).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** The writer checkout sidecar as a writer at `fence` records it. */
+async function plantSidecar(
+  datastorePath: string,
+  repoDir: string,
+  writer: { pid: number; process: ProcessIdentity; fence: number },
+): Promise<void> {
+  await Deno.writeTextFile(
+    join(datastorePath, "_control", "writer.checkout.json"),
+    JSON.stringify({
+      repoDir: await Deno.realPath(repoDir),
+      hostname: Deno.hostname(),
+      ...writer,
+    }),
+  );
+}
+
+/** A datastore and checkout with a commit the checkout has not caught up. */
+async function withUncaughtCheckout(
+  fn: (
+    paths: { dir: string; datastorePath: string; repoDir: string },
+  ) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir);
+    await fn({ dir, datastorePath, repoDir });
+  });
+}
+
+const config = (datastorePath: string) => ({
+  type: "filesystem" as const,
+  path: datastorePath,
+});
+
+Deno.test("v3RepositoryFactoryConfig: a reader does not catch up over a live writer on this kernel past its TTL (swamp-club#3564)", async () => {
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    // A live writer whose renewals stalled for longer than its TTL.
+    const planted = await plantV3WriterLease(datastorePath, {
+      pid: Deno.ppid,
+      acquiredAt: new Date(Date.now() - 600_000),
+      ttlMs: 30_000,
+    });
+    await plantSidecar(datastorePath, repoDir, {
+      pid: Deno.ppid,
+      process: await thisKernelIdentity(),
+      fence: planted.fence,
+    });
+    await commitFromElsewhere(dir, datastorePath);
+    await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+    assertEquals(await caughtUp(repoDir), false);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a writer this process cannot judge is protected until a higher fence, then the reader's recovery fences it first (swamp-club#3564)", async () => {
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    // A container sharing this hostname, in another pid namespace.
+    const kernel = await thisKernelIdentity();
+    const elsewhere = { ...kernel, host: `${kernel.host}#pid:[4026532999]` };
+    const planted = await plantV3WriterLease(datastorePath, {
+      pid: 4242,
+      process: elsewhere,
+    });
+    await plantSidecar(datastorePath, repoDir, {
+      pid: 4242,
+      process: elsewhere,
+      fence: planted.fence,
+    });
+    await commitFromElsewhere(dir, datastorePath);
+    // Within its TTL, and with its pid absent here: still protected.
+    await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+    assertEquals(await caughtUp(repoDir), false);
+    await closeV3Datastores();
+
+    // Past its TTL, with no marker to recover: protected until a higher
+    // fence exists.
+    const expired = await plantV3WriterLease(datastorePath, {
+      pid: 4242,
+      process: elsewhere,
+      acquiredAt: new Date(Date.now() - 600_000),
+      ttlMs: 30_000,
+    });
+    await plantSidecar(datastorePath, repoDir, {
+      pid: 4242,
+      process: elsewhere,
+      fence: expired.fence,
+    });
+    await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+    assertEquals(await caughtUp(repoDir), false);
+    await closeV3Datastores();
+
+    // Its marker, which a writer leaves while it writes: the reader's
+    // recovery takes the lease, raising the fence the writer would commit
+    // under, and only then catches up.
+    await Deno.mkdir(join(writerMarkerPath(repoDir), ".."), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      writerMarkerPath(repoDir),
+      JSON.stringify({
+        hostname: Deno.hostname(),
+        pid: 4242,
+        process: elsewhere,
+        since: 0,
+      }),
+    );
+    await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+    assertEquals(await caughtUp(repoDir), true);
+    const stalled = openV3Datastore({ repoDir, datastorePath });
+    try {
+      assert((stalled.commitStore.writerFence() ?? 0) > expired.fence);
+    } finally {
+      await stalled.close();
+    }
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a force-released fence keeps its live writer's checkout protected until a higher fence (swamp-club#3564)", async () => {
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    const planted = await plantV3WriterLease(datastorePath, { pid: Deno.ppid });
+    await plantSidecar(datastorePath, repoDir, {
+      pid: Deno.ppid,
+      process: await thisKernelIdentity(),
+      fence: planted.fence,
+    });
+    await commitFromElsewhere(dir, datastorePath);
+    const handle = v3WriterLockHandle(datastorePath);
+    assert(await handle.forceRelease((await handle.inspect())!.nonce!));
+    assertEquals(await handle.inspect(), null);
+    await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+    assertEquals(await caughtUp(repoDir), false);
+  });
+});
+
+Deno.test("holdV3Writer: serve's retake of a lost hold records its checkout under the new fence (swamp-club#3564)", async () => {
+  await withUncaughtCheckout(async ({ datastorePath, repoDir }) => {
+    const sidecar = join(datastorePath, "_control", "writer.checkout.json");
+    const recordedFence = async () =>
+      JSON.parse(await Deno.readTextFile(sidecar)).fence;
+    await holdV3Writer(config(datastorePath), repoDir, { retakeLost: true });
+    assertEquals(await recordedFence(), 1);
+    const handle = v3WriterLockHandle(datastorePath);
+    assert(await handle.forceRelease((await handle.inspect())!.nonce!));
+    await assertRejects(
+      () => checkV3WriterLease(datastorePath),
+      WriterFencedError,
+    );
+    // A caller joining the lost hold makes serve take the lease again.
+    const release = await acquireV3WriterLock(datastorePath);
+    try {
+      assertEquals(v3WriterFence(datastorePath), 2);
+      assertEquals(await recordedFence(), 2);
+    } finally {
+      await release();
+    }
+  });
+});
+
+Deno.test("tryAcquireV3WriterLock: a read-only recovery's hold records no writer checkout", async () => {
+  await withUncaughtCheckout(async ({ datastorePath }) => {
+    const release = await tryAcquireV3WriterLock(datastorePath);
+    assert(release !== undefined);
+    await release();
+    await assertRejects(
+      () => Deno.stat(join(datastorePath, "_control", "writer.checkout.json")),
+      Deno.errors.NotFound,
+    );
+  });
+});
+
+Deno.test("holdV3Writer: a fenced command's retention pass does not join its lost hold, and its close leaves the new writer's checkout record (swamp-club#3564)", async () => {
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    const sidecar = join(datastorePath, "_control", "writer.checkout.json");
+    // The command's own hold.
+    await holdV3Writer(config(datastorePath), repoDir);
+    // `lock release --force`, then another process writes another checkout.
+    const handle = v3WriterLockHandle(datastorePath);
+    assert(await handle.forceRelease((await handle.inspect())!.nonce!));
+    const otherCheckout = join(dir, "other");
+    await Deno.mkdir(otherCheckout);
+    const other = await plantV3WriterLease(datastorePath, { pid: Deno.ppid });
+    await plantSidecar(datastorePath, otherCheckout, {
+      pid: Deno.ppid,
+      process: await thisKernelIdentity(),
+      fence: other.fence,
+    });
+    const before = await Deno.readTextFile(sidecar);
+    // The retention pass at teardown opens the repository again.
+    await assertRejects(
+      () => holdV3Writer(config(datastorePath), repoDir),
+      WriterFencedError,
+    );
+    assertEquals(await Deno.readTextFile(sidecar), before);
+    await closeV3Datastores();
+    assertEquals(await Deno.readTextFile(sidecar), before);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a writer whose boot id cannot be read still catches up its own checkout (swamp-club#3564)", async () => {
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    // Linux or macOS with no readable boot id: every record, this
+    // process's own sidecar included, is one liveness cannot place.
+    const { bootId: _, ...noBoot } = (await localProcess()).identity;
+    setLocalProcessForTesting({
+      pid: Deno.pid,
+      identity: noBoot,
+      probe: probeProcess,
+      bootIdRequired: true,
+    });
+    try {
+      await commitFromElsewhere(dir, datastorePath);
+      await holdV3Writer(config(datastorePath), repoDir);
+      await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+      assertEquals(await caughtUp(repoDir), true);
+    } finally {
+      setLocalProcessForTesting(undefined);
+    }
+  });
+});

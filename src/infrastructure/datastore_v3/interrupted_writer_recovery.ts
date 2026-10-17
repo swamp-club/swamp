@@ -30,13 +30,17 @@
  *   in the checkout's read-model state directory; teardown removes it once
  *   every unit has ended. A marker that outlives its process means the
  *   process ended without teardown.
- * - **Liveness.** A marker names its process by a token as well as its pid,
- *   since a restarted container reuses both hostname and pid. A marker from
- *   this host is interrupted once its pid is gone (`isProcessGone`), or is
- *   this process's pid under another token, whatever the writer lock's TTL
- *   says, so a live
- *   writer whose heartbeat stalled is never mistaken for a dead one. A
- *   marker from another host is never recovered here; it is logged.
+ * - **Liveness.** A marker names its process by a token, its pid and its
+ *   process identity (swamp-club#3564), since a restarted container reuses
+ *   both hostname and pid, and a container sharing the hostname has pids of
+ *   its own. A marker written on this kernel is interrupted once its process
+ *   is gone (absent, a zombie, or started at another time), or is this
+ *   process's pid under another token, whatever the writer lock's TTL says,
+ *   so a live writer whose heartbeat stalled is never mistaken for a dead
+ *   one. A marker this process cannot judge (another host, namespace or
+ *   boot, or a swamp from before identities) is left to the lease: its
+ *   writer writes only while it holds the lease, so it is interrupted once
+ *   the lease is free, expired by its TTL and skew, or held by this process.
  * - **Recovery** holds the writer lock: a writing command recovers under the
  *   lock it has just taken, a read-only command only when it can take the
  *   lock without waiting. The read model then empties the catalog, replays
@@ -54,12 +58,18 @@
 import { dirname, join } from "@std/path";
 import { getSwampLogger } from "../logging/logger.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
-import { isProcessGone } from "../runtime/process.ts";
+import {
+  judgeRecordedProcess,
+  type LocalProcess,
+  parseProcessIdentity,
+  type ProcessIdentity,
+} from "../../domain/datastore_v3/process_liveness.ts";
+import { localProcess } from "./process_identity.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
 import type { V3Datastore } from "./v3_datastore.ts";
 import {
   tryAcquireV3WriterLock,
-  v3WriterLockHandle,
+  v3WriterLeaseHolder,
 } from "./v3_writer_lock.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -92,18 +102,17 @@ export interface WriterMarker {
    * Undefined in a marker that names none, which is never this process's.
    */
   readonly instance?: string;
+  /**
+   * The writer's process identity. Undefined in a marker from a swamp before
+   * swamp-club#3564, which is left to the lease.
+   */
+  readonly process?: ProcessIdentity;
   /** Epoch milliseconds, floored to the second less a slack. */
   readonly since: number;
 }
 
 /** This process's token in the markers it writes. */
 const PROCESS_INSTANCE = crypto.randomUUID();
-
-/** Foreign-host markers already reported by this process. */
-const warnedForeignMarkers = new Set<string>();
-
-/** Whether a process is gone; {@link isProcessGone} outside tests. */
-export type ProcessGoneProbe = (pid: number) => boolean;
 
 /** The marker's path for the checkout at `repoDir`. */
 export function writerMarkerPath(repoDir: string): string {
@@ -112,10 +121,12 @@ export function writerMarkerPath(repoDir: string): string {
 
 /** Records that this process writes the checkout at `repoDir` from now on. */
 export async function writeWriterMarker(repoDir: string): Promise<void> {
+  const local = await localProcess();
   const marker: WriterMarker = {
     hostname: Deno.hostname(),
-    pid: Deno.pid,
+    pid: local.pid,
     instance: PROCESS_INSTANCE,
+    process: local.identity,
     since: recoverySince(Date.now()),
   };
   const path = writerMarkerPath(repoDir);
@@ -158,10 +169,12 @@ export async function readWriterMarker(
       Number.isSafeInteger(value?.since) &&
       (value.instance === undefined || typeof value.instance === "string")
     ) {
+      const process = parseProcessIdentity(value.process);
       return {
         hostname: value.hostname,
         pid: value.pid,
         ...(value.instance !== undefined ? { instance: value.instance } : {}),
+        ...(process !== undefined ? { process } : {}),
         since: value.since,
       };
     }
@@ -174,18 +187,28 @@ export async function readWriterMarker(
 
 /**
  * What a marker says about its writer: this process (`own`), a live process
- * on this host (`live`), a process on another host (`foreign`), or a process
- * on this host that is gone (`interrupted`).
+ * on this kernel (`live`), one on this kernel that is gone (`interrupted`),
+ * or one this process cannot judge (`unknown`), which the lease decides.
  */
 export function writerMarkerState(
   marker: WriterMarker,
-  processGone: ProcessGoneProbe = isProcessGone,
-): "own" | "live" | "foreign" | "interrupted" {
+  local: LocalProcess,
+): "own" | "live" | "interrupted" | "unknown" {
   if (isOwn(marker)) return "own";
-  if (marker.hostname !== Deno.hostname()) return "foreign";
-  // This pid is this process's, so the one that wrote the marker is gone.
-  if (marker.pid === Deno.pid) return "interrupted";
-  return processGone(marker.pid) ? "interrupted" : "live";
+  // Not this process's token: a marker with this pid is a predecessor's.
+  const verdict = judgeRecordedProcess(
+    {
+      pid: marker.pid,
+      ...(marker.process !== undefined ? { process: marker.process } : {}),
+      notThisProcess: true,
+    },
+    local,
+  );
+  return verdict === "gone"
+    ? "interrupted"
+    : verdict === "alive"
+    ? "live"
+    : "unknown";
 }
 
 /** Options for {@link recoverInterruptedWriter}. */
@@ -196,38 +219,34 @@ export interface RecoverInterruptedWriterOptions {
    * it cannot.
    */
   readonly holdsWriterLock: boolean;
-  readonly processGone?: ProcessGoneProbe;
   readonly signal?: AbortSignal;
 }
 
 /**
- * Recovers the checkout at `repoDir` when its marker names a writer on this
- * host that is gone. Resolves with the record keys of the files removed, or
- * undefined when nothing was recovered.
+ * Recovers the checkout at `repoDir` when its marker names a writer that is
+ * gone, or one this process cannot judge whose lease no live process holds.
+ * Resolves with the record keys of the files removed, or undefined when
+ * nothing was recovered.
  */
 export async function recoverInterruptedWriter(
   handle: V3Datastore,
   repoDir: string,
   options: RecoverInterruptedWriterOptions,
 ): Promise<string[] | undefined> {
-  const processGone = options.processGone ?? isProcessGone;
   const marker = await readWriterMarker(repoDir);
   if (marker === undefined) return undefined;
-  const state = writerMarkerState(marker, processGone);
-  if (state === "foreign") {
-    const path = writerMarkerPath(repoDir);
-    if (!warnedForeignMarkers.has(path)) {
-      warnedForeignMarkers.add(path);
-      logger
-        .warn`The v3 writer marker at ${path} names ${marker.hostname} (pid ${marker.pid}); this checkout is recovered only on that host. Run a swamp command there, or delete the marker to keep this checkout's files as they are`;
-    }
-    return undefined;
-  }
-  if (state !== "interrupted") return undefined;
+  const state = writerMarkerState(marker, await localProcess());
+  if (state === "own" || state === "live") return undefined;
+  // A writer writes only while it holds the lease: one this process holds
+  // now has no other writer.
   if (options.holdsWriterLock) {
-    return await recover(handle, repoDir, marker, options.signal);
+    return await recover(handle, repoDir, marker, state, options.signal);
   }
-  if (await lockHeldByLiveProcess(handle.datastorePath, processGone)) {
+  if (await lockHeldByLiveProcess(handle.datastorePath)) {
+    if (state === "unknown") {
+      logger
+        .debug`Not recovering ${repoDir} yet: its v3 writer marker names ${marker.hostname} (pid ${marker.pid}), which this process cannot judge, and the writer lease is held`;
+    }
     return undefined;
   }
   let release: (() => Promise<void>) | undefined;
@@ -252,7 +271,7 @@ export async function recoverInterruptedWriter(
     ) {
       return undefined;
     }
-    return await recover(handle, repoDir, marker, options.signal);
+    return await recover(handle, repoDir, marker, state, options.signal);
   } finally {
     await release();
   }
@@ -262,8 +281,15 @@ async function recover(
   handle: V3Datastore,
   repoDir: string,
   marker: WriterMarker,
+  state: "interrupted" | "unknown",
   signal: AbortSignal | undefined,
 ): Promise<string[]> {
+  if (state === "unknown") {
+    // Its process could not be judged from here (another host, pid
+    // namespace or boot): the lease alone says it no longer writes.
+    logger
+      .info`Recovering ${repoDir}: its v3 writer marker names ${marker.hostname} (pid ${marker.pid}), which this process cannot judge, and the writer lease is no longer that writer's`;
+  }
   const removed = await handle.recoverInterruptedWriter(marker.since, signal);
   if (removed.length > 0) {
     const files = removed.length === 1 ? "file" : "files";
@@ -279,20 +305,14 @@ async function recover(
 
 /**
  * Whether the writer lock is held by a process that may still be writing:
- * one on this host whose pid is not gone, or one on another host within its
- * TTL. A same-host holder past its TTL with a live pid counts as live, so the
- * try-acquire, which would clear it as stale, never runs against it.
+ * one judged alive, whatever its TTL, so the try-acquire, which would take
+ * over a stale-looking lease, never runs against it; otherwise while the
+ * lease keeps writers out by its TTL and skew (swamp-club#3564).
  */
-async function lockHeldByLiveProcess(
-  datastorePath: string,
-  processGone: ProcessGoneProbe,
-): Promise<boolean> {
-  const holder = await v3WriterLockHandle(datastorePath).inspect();
-  if (holder === null) return false;
-  if (holder.hostname === Deno.hostname()) {
-    return holder.pid === Deno.pid || !processGone(holder.pid);
-  }
-  return Date.parse(holder.acquiredAt) + holder.ttlMs >= Date.now();
+async function lockHeldByLiveProcess(datastorePath: string): Promise<boolean> {
+  const holder = await v3WriterLeaseHolder(datastorePath);
+  if (holder === null || holder.state === "released") return false;
+  return holder.process === "alive" || holder.state === "held";
 }
 
 function isOwn(marker: WriterMarker): boolean {

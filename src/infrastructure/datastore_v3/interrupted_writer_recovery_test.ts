@@ -19,6 +19,11 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { dirname } from "@std/path";
+import type {
+  LocalProcess,
+  ProcessIdentity,
+} from "../../domain/datastore_v3/process_liveness.ts";
+import { localProcess } from "./process_identity.ts";
 import {
   readWriterMarker,
   removeOwnWriterMarker,
@@ -106,36 +111,61 @@ Deno.test("readWriterMarker: a marker that names no process reads as none", asyn
   });
 });
 
-Deno.test("writerMarkerState: knows this process by its token, judges another same-host process by its pid, and never recovers another host's", async () => {
-  const host = Deno.hostname();
-  const gone = () => true;
-  const alive = () => false;
+Deno.test("writerMarkerState: knows this process by its token, judges a process on this kernel by its identity, and leaves the rest to the lease", async () => {
+  const kernel = { host: "host#pid:[1]", bootId: "boot-id:a" };
+  const local = (present: boolean, startTime?: string): LocalProcess => ({
+    pid: Deno.pid,
+    identity: { ...kernel, startTime: "t-self" },
+    probe: () => ({
+      present,
+      zombie: false,
+      ...(startTime !== undefined ? { startTime } : {}),
+    }),
+    bootIdRequired: true,
+  });
+  const alive = local(true, "t1");
+  const gone = local(false);
   await withTempDir(async (dir) => {
     await writeWriterMarker(dir);
     const own = await readWriterMarker(dir);
     assert(own !== undefined && own.instance !== undefined);
+    assertEquals(own.process, (await localProcess()).identity);
     assertEquals(writerMarkerState(own, alive), "own");
     // A restarted container: same host and pid, another process's token.
     assertEquals(
-      writerMarkerState({ ...own, instance: crypto.randomUUID() }, alive),
+      writerMarkerState(
+        { ...own, instance: crypto.randomUUID(), process: kernel },
+        alive,
+      ),
       "interrupted",
     );
   });
+  const marker = (process?: ProcessIdentity) => ({
+    hostname: "host",
+    pid: 4242,
+    since: 0,
+    ...(process !== undefined ? { process } : {}),
+  });
   assertEquals(
-    writerMarkerState({ hostname: host, pid: Deno.pid, since: 0 }, alive),
+    writerMarkerState(
+      { hostname: "host", pid: Deno.pid, since: 0, process: kernel },
+      alive,
+    ),
     "interrupted",
-    "a marker without a token is never this process's",
+    "a marker without this process's token is never this process's",
   );
+  assertEquals(writerMarkerState(marker(kernel), gone), "interrupted");
+  assertEquals(writerMarkerState(marker(kernel), alive), "live");
+  // A pid reused by a process started later (swamp-club#3564).
   assertEquals(
-    writerMarkerState({ hostname: host, pid: 4242, since: 0 }, gone),
+    writerMarkerState(marker({ ...kernel, startTime: "t0" }), alive),
     "interrupted",
   );
+  // Another pid namespace with the same hostname, or a marker from a swamp
+  // before identities: the lease decides, whatever the pid here.
   assertEquals(
-    writerMarkerState({ hostname: host, pid: 4242, since: 0 }, alive),
-    "live",
+    writerMarkerState(marker({ ...kernel, host: "host#pid:[2]" }), gone),
+    "unknown",
   );
-  assertEquals(
-    writerMarkerState({ hostname: `${host}-other`, pid: 4242, since: 0 }, gone),
-    "foreign",
-  );
+  assertEquals(writerMarkerState(marker(), gone), "unknown");
 });

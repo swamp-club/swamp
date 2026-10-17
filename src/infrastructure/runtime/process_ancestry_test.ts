@@ -26,8 +26,10 @@ import {
   parentPidOf,
   parseProcBootTime,
   parseProcCmdline,
+  parseProcStatExited,
   parseProcStatParentPid,
   parseProcStatStartTicks,
+  processStateOf,
   startTimeOf,
   stripDeletedSuffix,
 } from "./process_ancestry.ts";
@@ -60,6 +62,15 @@ Deno.test("parseProcStatStartTicks: reads field 22, past a tricky name", () => {
     "123456 1000 50";
   assertEquals(parseProcStatStartTicks(stat), 123456);
   assertEquals(parseProcStatStartTicks("9 (x) S 1"), undefined);
+});
+
+Deno.test("parseProcStatExited: reads the state after a tricky name", () => {
+  assertEquals(parseProcStatExited("9 (a) b (c)) Z 1 9"), true);
+  assertEquals(parseProcStatExited("9 (x) X 1"), true);
+  assertEquals(parseProcStatExited("9 (x) S 1"), false);
+  assertEquals(parseProcStatExited("9 (x) T 1"), false);
+  assertEquals(parseProcStatExited("9 (x)"), undefined);
+  assertEquals(parseProcStatExited("no name"), undefined);
 });
 
 Deno.test("parseProcBootTime: reads the btime line", () => {
@@ -193,5 +204,33 @@ Deno.test({
   ignore: Deno.build.os === "linux",
   fn() {
     assertEquals(commandLineOf(Deno.pid), undefined);
+  },
+});
+
+Deno.test({
+  name:
+    "processStateOf: this process runs, with a start time that does not change",
+  ignore: !inspectable,
+  fn() {
+    const state = processStateOf(Deno.pid);
+    assert(state !== undefined);
+    assertEquals(state.zombie, false);
+    assertEquals(processStateOf(Deno.pid), state);
+  },
+});
+
+Deno.test({
+  name: "processStateOf: a pid no process has reads as unknown",
+  ignore: !inspectable,
+  fn() {
+    assertEquals(processStateOf(2147483646), undefined);
+  },
+});
+
+Deno.test({
+  name: "processStateOf: unsupported platforms answer unknown",
+  ignore: inspectable,
+  fn() {
+    assertEquals(processStateOf(Deno.pid), undefined);
   },
 });

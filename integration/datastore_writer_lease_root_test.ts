@@ -74,7 +74,7 @@ Deno.test("v3 writer lease: binds at the datastore root through the provider whi
     try {
       const provider = datastoreTypeRegistry.get(type.typeName)!
         .createProvider!({});
-      const lease = v3WriterLease(
+      const lease = await v3WriterLease(
         datastoreWriterLeaseStore(provider, type.typeName),
         TTL_MS,
       );
@@ -113,7 +113,7 @@ Deno.test("v3 writer lease: binds at the datastore root through the provider whi
 
         // A second process on the same datastore meets the same lease,
         // whichever namespace it would sync.
-        const other = v3WriterLease(
+        const other = await v3WriterLease(
           datastoreWriterLeaseStore(
             datastoreTypeRegistry.get(type.typeName)!.createProvider!({}),
             type.typeName,

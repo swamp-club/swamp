@@ -82,7 +82,7 @@ import { handleWorkflowResume } from "../src/serve/handlers/workflow_handlers.ts
 import { isServeOwnedRun } from "../src/cli/commands/workflow_cancel.ts";
 import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
 import { reapOrphanedWorkflowRuns } from "../src/domain/workflows/orphaned_run_reaper.ts";
-import { isProcessDead } from "../src/infrastructure/runtime/process.ts";
+import { isProcessGone } from "../src/infrastructure/runtime/process.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
@@ -480,7 +480,7 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
                   return Promise.resolve();
                 },
                 lookup,
-                isProcessDead,
+                isProcessGone,
                 instanceId ?? crypto.randomUUID(),
               );
               assertEquals(reaped, { reaped: 0, skipped: 1 });

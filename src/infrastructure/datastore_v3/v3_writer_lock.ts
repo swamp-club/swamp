@@ -55,16 +55,25 @@ import {
   LockTimeoutError,
 } from "../../domain/datastore/distributed_lock.ts";
 import {
+  type FenceRecord,
+  V3_WRITER_BUSY_CODE,
+  WriterFencedError,
   WriterLease,
   WriterLeaseBusyError,
   type WriterLeaseHold,
   type WriterLeaseInspection,
+  type WriterLeaseState,
   type WriterLeaseStore,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_LOCK_TTL_MS, FileLock } from "../persistence/file_lock.ts";
 import { v3BucketBindingAt, v3ControlPlaneAt } from "./v3_datastore_binding.ts";
-import { isProcessDead } from "../runtime/process.ts";
+import {
+  judgeRecordedProcess,
+  type ProcessVerdict,
+} from "../../domain/datastore_v3/process_liveness.ts";
+import { isProcessGone } from "../runtime/process.ts";
+import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -79,8 +88,7 @@ export const V3_WRITER_LEASE_DIR = join("_control", "writer");
  */
 export const V3_LEGACY_WRITER_LOCK_KEY = join("_control", "writer.lock");
 
-/** Error code for a second process refused as a v3 datastore's writer. */
-export const V3_WRITER_BUSY_CODE = "datastore_v3_writer_busy";
+export { V3_WRITER_BUSY_CODE };
 
 /** Thrown when another process holds a v3 datastore's writer lease. */
 export class V3WriterBusyError extends UserError {
@@ -160,8 +168,14 @@ export interface AcquireV3WriterLockOptions {
  * Taking the lease and raising the fence in `commits.db` are one step: when
  * either fails, the lease is released and nothing in the process holds it.
  *
+ * A one-shot hold that was lost is never joined (swamp-club#3564): its
+ * commits are refused anyway, and a caller that joined it would act as the
+ * writer of a checkout another process now writes. The join checks the
+ * lease's records too, since the renewal may not have noticed the loss.
+ *
  * @throws V3WriterBusyError when another process holds it past the wait
- * @throws WriterFencedError when `commits.db` has seen a higher fence
+ * @throws WriterFencedError when `commits.db` has seen a higher fence, or
+ *   this process's one-shot hold was lost
  */
 export async function acquireV3WriterLock(
   datastorePath: string,
@@ -170,6 +184,7 @@ export async function acquireV3WriterLock(
   const key = resolve(datastorePath);
   const maxWaitMs = options.maxWaitMs ?? 60_000;
   let entry = held.get(key);
+  const joining = entry !== undefined;
   if (entry === undefined) {
     const created: Held = {
       refs: 0,
@@ -208,6 +223,7 @@ export async function acquireV3WriterLock(
         if (!(joined && error instanceof V3WriterBusyError)) throw error;
       }
     }
+    if (joining && !entry.retakeLost) await assertJoinable(entry);
   } catch (error) {
     entry.refs--;
     // Every other caller may have released while this one waited: nothing
@@ -224,6 +240,26 @@ export async function acquireV3WriterLock(
     if (holding.refs > 0) return;
     await endHold(key, holding);
   };
+}
+
+/**
+ * Throws when a one-shot hold a caller would join is lost: known lost, or
+ * its fence overtaken or released in the lease's records. A check that
+ * cannot read the records joins anyway: a fenced commit is still refused.
+ *
+ * @throws WriterFencedError
+ */
+async function assertJoinable(entry: Held): Promise<void> {
+  const hold = entry.hold;
+  if (hold === undefined) return;
+  if (hold.lost !== undefined) throw hold.lost;
+  try {
+    await hold.assertCurrent();
+  } catch (error) {
+    if (error instanceof WriterFencedError) throw error;
+    logger
+      .debug`Could not check the v3 writer lease before joining this process's hold: ${error}`;
+  }
 }
 
 /** Ends the process's hold once no caller holds it. */
@@ -270,6 +306,43 @@ async function retakeLease(
       .info`This process took the writer lease of the v3 datastore at ${datastorePath} again, at fence ${hold.fence}`;
     // A lost hold writes no released marker; this removes its heartbeat.
     await lost.release().catch(() => {});
+    await notifyHoldRetaken(datastorePath, hold.fence);
+  }
+}
+
+/** Called once this process's shared hold is the lease again, at `fence`. */
+export type V3HoldRetakenListener = (
+  datastorePath: string,
+  fence: number,
+) => Promise<void> | void;
+
+const holdRetakenListeners = new Set<V3HoldRetakenListener>();
+
+/**
+ * Calls `listener` each time this process's shared hold, lost to another
+ * writer, takes the lease again (serve's retake), once the new hold has
+ * replaced the lost one: unlike {@link onV3LeaseTaken}, never for a first
+ * take or a read-only recovery's. One that throws is logged and the lease
+ * is kept. Returns the unsubscribe.
+ */
+export function onV3HoldRetaken(listener: V3HoldRetakenListener): () => void {
+  holdRetakenListeners.add(listener);
+  return () => {
+    holdRetakenListeners.delete(listener);
+  };
+}
+
+async function notifyHoldRetaken(
+  datastorePath: string,
+  fence: number,
+): Promise<void> {
+  for (const listener of [...holdRetakenListeners]) {
+    try {
+      await listener(datastorePath, fence);
+    } catch (error) {
+      logger
+        .warn`A listener for the writer lease of the v3 datastore at ${datastorePath} failed: ${error}`;
+    }
   }
 }
 
@@ -360,6 +433,56 @@ export async function checkV3WriterLease(datastorePath: string): Promise<void> {
   await held.get(resolve(datastorePath))?.hold?.assertCurrent();
 }
 
+/** Who holds the highest fence of a v3 datastore's lease, and is it alive. */
+export interface V3WriterLeaseHolder {
+  readonly fence: number;
+  /** Undefined while the fence record cannot be read. */
+  readonly record?: FenceRecord;
+  /**
+   * Whether the holder's process runs, judged from this process
+   * (swamp-club#3564); undefined with no record to judge.
+   */
+  readonly process?: ProcessVerdict;
+  /** Whether the fence still keeps other writers out. */
+  readonly state: WriterLeaseState;
+}
+
+/**
+ * The highest fence of the lease on the v3 datastore at `datastorePath`,
+ * whatever its state (a released fence included), or null when none was
+ * ever taken. Unlike {@link v3WriterLockHandle}'s inspect, which reports
+ * only a lease that keeps writers out, it lets a caller protect a released
+ * holder's checkout until a higher fence exists.
+ */
+export async function v3WriterLeaseHolder(
+  datastorePath: string,
+): Promise<V3WriterLeaseHolder | null> {
+  const inspection = await (await writerLease(
+    datastorePath,
+    DEFAULT_LOCK_TTL_MS,
+  )).inspect();
+  if (inspection === null) return null;
+  const record = inspection.record;
+  return {
+    fence: inspection.fence,
+    ...(record !== undefined
+      ? {
+        record,
+        process: judgeRecordedProcess(
+          {
+            pid: record.pid,
+            ...(record.process !== undefined
+              ? { process: record.process }
+              : {}),
+          },
+          await localProcess(),
+        ),
+      }
+      : {}),
+    state: inspection.state,
+  };
+}
+
 /** What `swamp datastore lock status|release` act on. */
 export type V3WriterLockHandle = Pick<
   DistributedLock,
@@ -373,23 +496,24 @@ export type V3WriterLockHandle = Pick<
  * handle acts on that lock instead.
  */
 export function v3WriterLockHandle(datastorePath: string): V3WriterLockHandle {
-  const lease = writerLease(datastorePath, DEFAULT_LOCK_TTL_MS);
+  const lease = () => writerLease(datastorePath, DEFAULT_LOCK_TTL_MS);
   // A bucket datastore never had a Phase 3 writer lock.
   const legacy = v3BucketBindingAt(datastorePath) === undefined
     ? legacyLock(datastorePath)
     : undefined;
   return {
     async inspect(): Promise<LockInfo | null> {
-      const inspection = await lease.inspect();
+      const inspection = await (await lease()).inspect();
       if (inspection !== null && inspection.state !== "released") {
         return lockInfoOf(inspection);
       }
       return await legacy?.inspect() ?? null;
     },
     async forceRelease(nonce: string): Promise<boolean> {
-      const inspection = await lease.inspect();
+      const current = await lease();
+      const inspection = await current.inspect();
       if (inspection !== null && inspection.state !== "released") {
-        return await lease.forceRelease(nonce);
+        return await current.forceRelease(nonce);
       }
       return await legacy?.forceRelease(nonce) ?? false;
     },
@@ -411,7 +535,7 @@ async function takeLease(
   let hold: WriterLeaseHold;
   try {
     const floor = options.fenceStore?.writerFence();
-    hold = await writerLease(datastorePath, options.ttlMs).acquire({
+    hold = await (await writerLease(datastorePath, options.ttlMs)).acquire({
       maxWaitMs: options.maxWaitMs,
       ...(floor !== undefined ? { floor } : {}),
     });
@@ -513,7 +637,10 @@ function startRenewal(
   }, Math.max(1, Math.floor(ttlMs / 3)));
 }
 
-function writerLease(datastorePath: string, ttlMs: number): WriterLease {
+function writerLease(
+  datastorePath: string,
+  ttlMs: number,
+): Promise<WriterLease> {
   return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs);
 }
 
@@ -524,19 +651,33 @@ function writerLease(datastorePath: string, ttlMs: number): WriterLease {
  * datastore-wide control plane (`datastoreWriterLeaseStore`), so the lease
  * is one per datastore whatever namespace a checkout syncs.
  */
-export function v3WriterLease(
+export async function v3WriterLease(
   store: WriterLeaseStore,
   ttlMs: number,
-): WriterLease {
+): Promise<WriterLease> {
   const host = Deno.hostname();
   const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
+  const local = await localProcess();
   return new WriterLease({
     store,
-    holder: { holder: `${user}@${host}`, hostname: host, pid: Deno.pid },
+    holder: {
+      holder: `${user}@${host}`,
+      hostname: host,
+      pid: local.pid,
+      process: local.identity,
+    },
     ttlMs,
     now: () => Date.now(),
     delay: (ms) => new Promise((done) => setTimeout(done, ms)),
-    processGone: isProcessDead,
+    // A holder is gone only when its own kernel says so (swamp-club#3564).
+    judgeHolder: (record) =>
+      judgeRecordedProcess(
+        {
+          pid: record.pid,
+          ...(record.process !== undefined ? { process: record.process } : {}),
+        },
+        local,
+      ),
     nonce: () => crypto.randomUUID(),
   });
 }
@@ -590,7 +731,7 @@ export async function refuseLiveV3LegacyWriter(
   const fresh = Date.parse(holder.acquiredAt) + holder.ttlMs >= Date.now();
   const alive = holder.holderUnknown === true ||
     (fresh &&
-      (holder.hostname !== Deno.hostname() || !isProcessDead(holder.pid)));
+      (holder.hostname !== Deno.hostname() || !isProcessGone(holder.pid)));
   if (alive) {
     throw new V3WriterBusyError(
       datastorePath,

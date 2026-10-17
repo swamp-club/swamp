@@ -47,33 +47,10 @@ export function processHostIdentity(): string {
 let cachedHostIdentity: string | undefined;
 
 /**
- * Check if a process with the given PID is no longer running.
- *
- * POSIX hosts use `Deno.kill(pid, "SIGCONT")` — a no-op for live
- * processes, `NotFound` when the PID is gone. Windows shells out to
- * `tasklist`. Returns `false` (not dead) on any unexpected error so
- * TTL-based detection remains the fallback and a busted probe never
- * clobbers a valid lock or tracker row.
- */
-export function isProcessDead(pid: number): boolean {
-  if (Deno.build.os === "windows") {
-    return isProcessDeadWindows(pid);
-  }
-  try {
-    Deno.kill(pid, "SIGCONT");
-    return false;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      return true;
-    }
-    return false;
-  }
-}
-
-/**
- * Like {@link isProcessDead}, but never resumes or otherwise disturbs the
- * process it probes, for pids read from persisted data that may since have
- * been reused. POSIX hosts send SIGURG, whose default action is to ignore
+ * Whether the process with `pid` is no longer running, without resuming or
+ * otherwise disturbing it: every pid swamp probes is read from persisted
+ * data (a lock, a tracker row, a writer record) and may since have been
+ * reused, or stopped by its user (swamp-club#3564). POSIX hosts send SIGURG, whose default action is to ignore
  * it; unlike SIGCONT it does not resume a stopped process, and a process of
  * another user is not signalled at all (permission denied reads as alive).
  * Linux first checks `/proc/<pid>`, which sends nothing, and only probes

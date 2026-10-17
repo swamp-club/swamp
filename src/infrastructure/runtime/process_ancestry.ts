@@ -130,6 +130,33 @@ export function startTimeOf(pid: number): number | undefined {
   }
 }
 
+/** What {@link processStateOf} reads about a running or unreaped process. */
+export interface ProcessState {
+  /** Whether it has exited and waits to be reaped. */
+  readonly zombie: boolean;
+  /**
+   * When it started, exactly enough to tell it from a later process given
+   * the same pid: clock ticks after boot on Linux, microseconds on macOS.
+   */
+  readonly startTime: string;
+}
+
+/**
+ * Whether `pid` is a zombie, and when it started, or undefined when either
+ * cannot be read (no such process, a hidden or unreadable /proc entry, an
+ * unsupported platform). It sends no signal.
+ */
+export function processStateOf(pid: number): ProcessState | undefined {
+  switch (Deno.build.os) {
+    case "linux":
+      return withLibc((lib) => linuxProcessState(lib, pid));
+    case "darwin":
+      return withSysctl((lib) => darwinProcessState(lib, pid));
+    default:
+      return undefined;
+  }
+}
+
 /**
  * The arguments `pid` was started with, its executable first, or undefined
  * when they cannot be read. Linux only, from /proc/<pid>/cmdline; other
@@ -182,6 +209,17 @@ export function parseProcStatParentPid(stat: string): number | undefined {
  */
 export function parseProcStatStartTicks(stat: string): number | undefined {
   return procStatField(stat, 22);
+}
+
+/**
+ * Whether the state (field 3) in the text of /proc/<pid>/stat is a process
+ * that has exited: `Z` (zombie) or `X` (dead), or undefined when the field
+ * is missing.
+ */
+export function parseProcStatExited(stat: string): boolean | undefined {
+  const state = procStatFieldsAfterName(stat)?.[0];
+  if (state === undefined || state === "") return undefined;
+  return state === "Z" || state === "X";
 }
 
 /** The boot time (`btime`, Unix seconds) from the text of /proc/stat. */
@@ -293,6 +331,15 @@ function linuxStartTime(lib: Libc, pid: number): number | undefined {
     return undefined;
   }
   return bootTime + Math.floor(ticks / ticksPerSecond);
+}
+
+function linuxProcessState(lib: Libc, pid: number): ProcessState | undefined {
+  const stat = readProcFile(lib, `/proc/${pid}/stat`, PROC_STAT_MAXSIZE);
+  if (stat === undefined) return undefined;
+  const zombie = parseProcStatExited(stat);
+  const ticks = parseProcStatStartTicks(stat);
+  if (zombie === undefined || ticks === undefined) return undefined;
+  return { zombie, startTime: `linux-ticks:${ticks}` };
 }
 
 function linuxExecutablePath(lib: Libc, pid: number): string | undefined {
@@ -413,4 +460,75 @@ function resolveIfPossible(path: string): string {
   } catch {
     return path;
   }
+}
+
+// sysctl (macOS): <sys/sysctl.h>. KERN_PROC_PID answers for every user's
+// processes and for zombies, which proc_pidinfo answers for neither.
+const CTL_KERN = 1;
+const KERN_PROC = 14;
+const KERN_PROC_PID = 1;
+/** sizeof(struct kinfo_proc) on x86_64 and arm64. */
+const KINFO_PROC_SIZE = 648;
+/** offsetof(struct kinfo_proc, kp_proc.p_starttime.tv_sec). */
+const P_STARTTIME_SEC_OFFSET = 0;
+/** offsetof(struct kinfo_proc, kp_proc.p_starttime.tv_usec). */
+const P_STARTTIME_USEC_OFFSET = 8;
+/** offsetof(struct kinfo_proc, kp_proc.p_stat). */
+const P_STAT_OFFSET = 36;
+/** offsetof(struct kinfo_proc, kp_proc.p_pid). */
+const P_PID_OFFSET = 40;
+/** SZOMB in <sys/proc.h>. */
+const SZOMB = 5;
+
+const SYSCTL_SYMBOLS = {
+  sysctl: {
+    parameters: ["buffer", "u32", "buffer", "buffer", "buffer", "usize"],
+    result: "i32",
+  },
+} as const;
+
+type Sysctl = Deno.DynamicLibrary<typeof SYSCTL_SYMBOLS>;
+
+function withSysctl<T>(use: (lib: Sysctl) => T | undefined): T | undefined {
+  let lib: Sysctl;
+  try {
+    lib = Deno.dlopen("libSystem.B.dylib", SYSCTL_SYMBOLS);
+  } catch {
+    return undefined;
+  }
+  try {
+    return use(lib);
+  } catch {
+    return undefined;
+  } finally {
+    lib.close();
+  }
+}
+
+function darwinProcessState(
+  lib: Sysctl,
+  pid: number,
+): ProcessState | undefined {
+  const mib = new Int32Array([CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]);
+  const info = new Uint8Array(KINFO_PROC_SIZE);
+  const length = new BigUint64Array([BigInt(KINFO_PROC_SIZE)]);
+  const result = lib.symbols.sysctl(
+    new Uint8Array(mib.buffer),
+    mib.length,
+    info,
+    new Uint8Array(length.buffer),
+    null,
+    0n,
+  );
+  // No such process fills nothing.
+  if (result !== 0 || length[0] !== BigInt(KINFO_PROC_SIZE)) return undefined;
+  const view = new DataView(info.buffer);
+  if (view.getInt32(P_PID_OFFSET, true) !== pid) return undefined;
+  const seconds = view.getBigInt64(P_STARTTIME_SEC_OFFSET, true);
+  const micros = view.getInt32(P_STARTTIME_USEC_OFFSET, true);
+  if (seconds <= 0n) return undefined;
+  return {
+    zombie: view.getUint8(P_STAT_OFFSET) === SZOMB,
+    startTime: `darwin-us:${seconds * 1_000_000n + BigInt(micros)}`,
+  };
 }

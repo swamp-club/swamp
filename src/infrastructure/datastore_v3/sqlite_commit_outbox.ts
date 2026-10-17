@@ -47,6 +47,10 @@ import {
   type SweepState,
 } from "../../domain/datastore_v3/commit_outbox.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  parseProcessIdentity,
+  type ProcessIdentity,
+} from "../../domain/datastore_v3/process_liveness.ts";
 
 /** Error code for an outbox file written by a newer swamp. */
 export const COMMIT_OUTBOX_SCHEMA_NEWER_CODE =
@@ -92,6 +96,15 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT;
   INSERT INTO outbox_sweep (id, epoch) VALUES (1, 0);
   `,
+  // 1 → 2 (swamp-club#3564): the preparing process's identity, by which a
+  // recovery judges whether it still runs, and the fence of the recovery
+  // that left an entry for its live writer, which the floor does not drop.
+  // A swamp at schema 1 refuses the outbox as newer: it would judge entries
+  // by hostname and drop left ones.
+  `
+  ALTER TABLE outbox_entries ADD COLUMN writer_process TEXT;
+  ALTER TABLE outbox_entries ADD COLUMN left_at_fence INTEGER;
+  `,
 ];
 
 /** The schema version this outbox writes. */
@@ -110,6 +123,11 @@ export interface SqliteCommitOutboxOptions {
    * writes are fsynced through it.
    */
   readonly onWrite?: (synchronous: number) => void;
+  /**
+   * This process's identity, recorded with each entry it prepares
+   * (swamp-club#3564); none by default.
+   */
+  readonly writerProcess?: () => Promise<ProcessIdentity | undefined>;
 }
 
 interface EntryRow {
@@ -122,6 +140,8 @@ interface EntryRow {
   readonly base_txn_id: string | null;
   readonly created_at: number;
   readonly body: string;
+  readonly writer_process: string | null;
+  readonly left_at_fence: number | null;
 }
 
 /**
@@ -133,6 +153,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
   readonly #path: string;
   readonly #clock: () => Date;
   readonly #onWrite: ((synchronous: number) => void) | undefined;
+  readonly #writerProcess:
+    | (() => Promise<ProcessIdentity | undefined>)
+    | undefined;
   #db: DatabaseSync | undefined;
   #closed = false;
 
@@ -140,6 +163,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     this.#path = path;
     this.#clock = options.clock ?? (() => new Date());
     this.#onWrite = options.onWrite;
+    this.#writerProcess = options.writerProcess;
   }
 
   /** The outbox file's path. */
@@ -147,14 +171,17 @@ export class SqliteCommitOutbox implements CommitOutbox {
     return this.#path;
   }
 
-  prepare(preparation: OutboxPreparation): Promise<void> {
-    return this.#write((db) => {
+  async prepare(preparation: OutboxPreparation): Promise<void> {
+    const process = await this.#writerProcess?.();
+    return await this.#write((db) => {
       const { commit, unitId, base } = preparation;
+      // A prepare again is a new preparation: no recovery left it since.
       const row = db.prepare(
-        "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+        "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT (namespace, partition, txn_id) DO UPDATE SET unit_id = excluded.unit_id, " +
-          "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body " +
+          "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body, " +
+          "writer_process = excluded.writer_process, left_at_fence = NULL " +
           "RETURNING sequence",
       ).get(
         commit.namespace,
@@ -165,6 +192,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
         base.txnId ?? null,
         this.#clock().getTime(),
         JSON.stringify(commit.toJSON()),
+        process !== undefined ? JSON.stringify(process) : null,
       ) as { sequence: number };
       db.prepare("DELETE FROM outbox_chunks WHERE sequence = ?").run(
         row.sequence,
@@ -216,8 +244,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
   async entries(): Promise<OutboxListing> {
     const rows = this.#read((db) =>
       db.prepare(
-        "SELECT sequence, namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body " +
-          "FROM outbox_entries ORDER BY sequence",
+        "SELECT sequence, namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, " +
+          "writer_process, left_at_fence FROM outbox_entries ORDER BY sequence",
       ).all() as unknown as EntryRow[]
     ) ?? [];
     const entries: OutboxEntry[] = [];
@@ -237,12 +265,17 @@ export class SqliteCommitOutbox implements CommitOutbox {
         ) {
           throw new Error("its body is another commit's");
         }
+        const writerProcess = readWriterProcess(row.writer_process);
         entries.push({
           sequence: row.sequence,
           createdAt: row.created_at,
           commit,
           unitId: row.unit_id,
           base: { seq: row.base_seq, txnId: row.base_txn_id ?? undefined },
+          ...(writerProcess !== undefined ? { writerProcess } : {}),
+          ...(row.left_at_fence !== null
+            ? { leftAtFence: row.left_at_fence }
+            : {}),
         });
       } catch (error) {
         unreadable.push({
@@ -284,6 +317,19 @@ export class SqliteCommitOutbox implements CommitOutbox {
       db.prepare(
         "UPDATE outbox_chain SET floor = ? WHERE id = 1 AND floor < ? AND last_fence >= ?",
       ).run(fence, fence, fence);
+    }, { create: false });
+  }
+
+  markLeft(keys: readonly OutboxKey[], fence: number): Promise<void> {
+    if (keys.length === 0) return Promise.resolve();
+    return this.#write((db) => {
+      const mark = db.prepare(
+        "UPDATE outbox_entries SET left_at_fence = ? " +
+          "WHERE namespace = ? AND partition = ? AND txn_id = ? AND left_at_fence IS NULL",
+      );
+      for (const key of keys) {
+        mark.run(fence, key.namespace, key.partition, key.txnId);
+      }
     }, { create: false });
   }
 
@@ -505,5 +551,17 @@ function rollbackQuietly(db: DatabaseSync): void {
     db.exec("ROLLBACK");
   } catch {
     // The caller rethrows the original error.
+  }
+}
+
+/** An entry's recorded identity, or undefined when it has none it can read. */
+function readWriterProcess(
+  text: string | null,
+): ProcessIdentity | undefined {
+  if (text === null) return undefined;
+  try {
+    return parseProcessIdentity(JSON.parse(text));
+  } catch {
+    return undefined;
   }
 }

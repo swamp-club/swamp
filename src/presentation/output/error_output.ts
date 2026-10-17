@@ -29,6 +29,7 @@ import type { CommandSurface } from "../command_surface.ts";
 import { messageFor } from "../../domain/behavior_wording.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
+import { V3_WRITER_BUSY_CODE } from "../../domain/datastore_v3/writer_lease.ts";
 
 const logger = getSwampLogger(["error"]);
 
@@ -122,6 +123,11 @@ export function buildErrorJson(
  * - `75` for `datastore_v3_replication_unconfirmed`: the command's commits
  *   are saved but a sync did not confirm them in the replica, and the next
  *   write replicates them.
+ * - `75` for `datastore_v3_writer_busy`: another process holds the v3
+ *   datastore's writer lease, and the command changed nothing
+ *   (swamp-club#3564). `datastore_v3_writer_fenced` stays `1`: a command
+ *   whose lease was taken over may have landed some of its commits, so a
+ *   blind retry is not safe.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -136,6 +142,8 @@ export function exitCodeForError(error: unknown): number {
   // Commits a sync could not confirm are saved, and the next write
   // replicates them (swamp-club#3416): a temporary failure.
   if (code === V3_REPLICATION_UNCONFIRMED_CODE) return 75;
+  // Writer lease contention: nothing changed, so a retry is safe.
+  if (code === V3_WRITER_BUSY_CODE) return 75;
   return 1;
 }
 
