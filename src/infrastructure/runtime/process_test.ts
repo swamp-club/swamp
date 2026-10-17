@@ -22,7 +22,6 @@ import { hostname } from "node:os";
 import {
   checkOpenFileLimit,
   getOpenFileSoftLimit,
-  isProcessDead,
   isProcessGone,
   processHostIdentity,
   tryRaiseOpenFileLimit,
@@ -47,15 +46,6 @@ Deno.test("processHostIdentity: is the hostname, plus the pid namespace on Linux
     assertEquals(identity, hostname());
   }
   assertEquals(processHostIdentity(), identity, "stable within a process");
-});
-
-Deno.test("isProcessDead: returns false for the current process", () => {
-  assertEquals(isProcessDead(Deno.pid), false);
-});
-
-Deno.test("isProcessDead: returns true for a non-existent PID", () => {
-  // PID 2147483647 is the max 32-bit signed int — extremely unlikely to be in use
-  assertEquals(isProcessDead(2147483647), true);
 });
 
 Deno.test("getOpenFileSoftLimit: returns a positive number or null on POSIX", () => {

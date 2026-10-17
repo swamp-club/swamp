@@ -37,7 +37,7 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { hostname } from "node:os";
-import { isProcessDead } from "../infrastructure/runtime/process.ts";
+import { isProcessGone } from "../infrastructure/runtime/process.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   createRepositoryContext,
@@ -2705,7 +2705,7 @@ export async function reclaimModelLocks(
 
   const write = options.progressWriter ?? defaultLockWriter;
   const timeoutMs = options.timeoutMs ?? resolveLockTimeoutMs();
-  const processDead = options.isProcessDead ?? isProcessDead;
+  const processDead = options.isProcessDead ?? isProcessGone;
   const start = Date.now();
   let announced = false;
   while (true) {

@@ -2301,7 +2301,7 @@ Deno.test("save: the write-time version cap neither counts nor prunes an in-flig
   }, true);
 });
 
-/** A pid no process can hold, so isProcessDead reports it gone. */
+/** A pid no process can hold, so isProcessGone reports it gone. */
 const DEAD_PID = 2147483647;
 
 /** Rewrites the writer identity of a pending catalog row. */

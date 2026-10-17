@@ -34,8 +34,10 @@ import { runPartition, runPut } from "./commit_log_test_helpers.ts";
 import {
   CommitOutboxUnreadableError,
   recoverCommitOutbox,
+  type RecoverCommitOutboxOptions,
 } from "./commit_outbox_recovery.ts";
 import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
+import { setLocalProcessForTesting } from "./process_identity.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
 const DEAD: CommitWriter = { host: "host-a", pid: 4242, instance: "dead" };
@@ -56,7 +58,7 @@ interface Fixture {
   /** Takes the lease at `fence`, as a writer start does, and recovers. */
   recover(
     fence: number,
-    writerAlive?: (writer: CommitWriter) => boolean,
+    writerAlive?: RecoverCommitOutboxOptions["writerAlive"] | "default",
   ): ReturnType<typeof recoverCommitOutbox>;
 }
 
@@ -87,7 +89,12 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>) {
       await outbox.recordFence(fence);
       return await recoverCommitOutbox(
         { outbox, commitStore: store, chunkStore },
-        { fence, writer: RECOVERER, writerAlive, clock: () => NOW },
+        {
+          fence,
+          writer: RECOVERER,
+          ...(writerAlive !== "default" ? { writerAlive } : {}),
+          clock: () => NOW,
+        },
       );
     },
   };
@@ -245,16 +252,94 @@ Deno.test("recoverCommitOutbox: drops an entry another copy's lease came after, 
   });
 });
 
-Deno.test("recoverCommitOutbox: leaves a live writer's entry, and the floor drops it at the next recovery", async () => {
+Deno.test("recoverCommitOutbox: leaves a live writer's entry past the floor, and lands it once the writer is gone (swamp-club#3564)", async () => {
   await withFixture(async ({ store, outbox, prepare, recover }) => {
     await prepare(prepared(1, [await savePut("a", 1)], "t1"));
-    const report = await recover(2, (writer) => writer.instance === "dead");
+    const alive = (writer: CommitWriter) => writer.instance === "dead";
+    const report = await recover(2, alive);
     assertEquals([report.landed, report.skipped], [0, 1]);
     assertEquals(await outbox.hasEntries(), true);
-    // The writer lost its lease at fence 2; the next recovery is past it.
-    const next = await recover(3, (writer) => writer.instance === "dead");
+    // The floor rose past it, but a recovery left it: still left alone.
+    const next = await recover(3, alive);
+    assertEquals([next.skipped, next.drops.length], [1, 0]);
+    // Its writer is gone now: it lands.
+    const last = await recover(4);
+    assertEquals([last.landed, last.drops.length], [1, 0]);
+    assertEquals((await commitsOf(store)).map((c) => c.txnId), ["t1"]);
+  });
+});
+
+Deno.test("recoverCommitOutbox: an entry prepared again after a recovery left it is overtaken like any other", async () => {
+  await withFixture(async ({ store, outbox, prepare, recover }) => {
+    const entry = prepared(1, [await savePut("a", 1)], "t1");
+    await prepare(entry);
+    const alive = (writer: CommitWriter) => writer.instance === "dead";
+    await recover(2, alive);
+    // The writer, fenced, prepares it again after the recovery, then dies.
+    await prepare(entry);
+    assertEquals(
+      (await outbox.entries()).entries.map((e) => e.leftAtFence),
+      [undefined],
+    );
+    const next = await recover(3);
     assertEquals(next.drops.map((drop) => drop.reason), ["overtaken"]);
     assertEquals(await commitsOf(store), []);
+  });
+});
+
+Deno.test("recoverCommitOutbox: judges a writer by the identity it prepared under, landing a reused pid's entry and leaving a live one's (swamp-club#3564)", async () => {
+  const kernel = { host: "host-a#pid:[1]", bootId: "boot-id:a" };
+  setLocalProcessForTesting({
+    pid: 7,
+    identity: { ...kernel, startTime: "t-recoverer" },
+    // pid 4242 runs, started at t-live.
+    probe: (pid) =>
+      pid === 4242
+        ? { present: true, zombie: false, startTime: "t-live" }
+        : { present: false, zombie: false },
+  });
+  try {
+    for (
+      const [startTime, landed] of [["t-dead", 1], ["t-live", 0]] as const
+    ) {
+      await withFixture(async ({ store, outbox, recover }) => {
+        const prepping = new SqliteCommitOutbox(outbox.path, {
+          clock: () => NOW,
+          writerProcess: () => Promise.resolve({ ...kernel, startTime }),
+        });
+        try {
+          const commit = prepared(1, [await savePut("a", 1)], "t1");
+          await prepping.prepare({
+            commit,
+            unitId: "unit",
+            base: await store.headIdentity(commit.namespace, commit.partition),
+          });
+        } finally {
+          await prepping.close();
+        }
+        const report = await recover(2, "default");
+        assertEquals([report.landed, report.skipped], [landed, 1 - landed]);
+      });
+    }
+  } finally {
+    setLocalProcessForTesting(undefined);
+  }
+});
+
+Deno.test("recoverCommitOutbox: an entry from a swamp before identities is recovered under the lease, not dropped", async () => {
+  await withFixture(async ({ store, prepare, recover }) => {
+    // Prepared with no identity, by a writer on this host that still runs.
+    await prepare(
+      modelCommit(1, [await savePut("a", 1)], {
+        txnId: "t1",
+        writer: { host: Deno.hostname(), pid: Deno.ppid, instance: "old" },
+        fence: 1,
+        at: NOW.toISOString(),
+      }),
+    );
+    const report = await recover(2, "default");
+    assertEquals([report.landed, report.drops.length], [1, 0]);
+    assertEquals((await commitsOf(store)).map((c) => c.txnId), ["t1"]);
   });
 });
 

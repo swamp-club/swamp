@@ -52,8 +52,7 @@ function judgement(
 ): WriterLeaseJudgement {
   return {
     now: NOW,
-    hostname: "host-b",
-    processGone: () => false,
+    judgeHolder: () => "unknown",
     ttlMs: TTL,
     ...overrides,
   };
@@ -85,20 +84,42 @@ Deno.test("judgeWriterLease: a released fence is expired, whoever holds it", () 
   );
 });
 
-Deno.test("judgeWriterLease: a holder on the judging host whose process is gone is expired at once", () => {
-  const gone = judgement({ hostname: "host-a", processGone: () => true });
+Deno.test("judgeWriterLease: a holder judged gone is expired at once", () => {
+  const gone = judgement({ judgeHolder: () => "gone" });
   assertEquals(
     judgeWriterLease({ fence: 3, record: record(), released: false }, gone),
     { kind: "expired", reason: "process-gone" },
   );
-  // Another host's pid means nothing here.
-  assertEquals(
-    judgeWriterLease(
-      { fence: 3, record: record(), released: false },
-      judgement({ processGone: () => true }),
-    ),
-    { kind: "held", holderUnknown: false },
+});
+
+Deno.test("judgeWriterLease: a holder judged alive or unknown is held until its TTL plus skew (swamp-club#3564)", () => {
+  for (const verdict of ["alive", "unknown"] as const) {
+    const judge = (now: number) =>
+      judgeWriterLease(
+        { fence: 3, record: record(), released: false },
+        judgement({ now, judgeHolder: () => verdict }),
+      );
+    // Renewed 5 s before NOW.
+    assertEquals(judge(NOW).kind, "held");
+    const expiry = NOW - 5_000 + TTL + WRITER_LEASE_CLOCK_SKEW_MS;
+    assertEquals(judge(expiry).kind, "held");
+    assertEquals(judge(expiry + 1), { kind: "expired", reason: "ttl" });
+  }
+});
+
+Deno.test("judgeWriterLease: the holder is judged by the record it took the fence with", () => {
+  const seen: FenceRecord[] = [];
+  const process = { host: "shared-host#pid:[4026532001]", bootId: "b" };
+  judgeWriterLease(
+    { fence: 3, record: record({ process }), released: false },
+    judgement({
+      judgeHolder: (r) => {
+        seen.push(r);
+        return "unknown";
+      },
+    }),
   );
+  assertEquals(seen.map((r) => r.process), [process]);
 });
 
 Deno.test("judgeWriterLease: expiry is the TTL plus the clock-skew allowance after the last renewal", () => {

@@ -50,6 +50,8 @@ import {
   InvalidDatastoreFormatMarkerError,
   UnsupportedDatastoreFormatError,
 } from "../../domain/datastore/datastore_format.ts";
+import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import {
   flushAuthGateWarning,
   renderAuthGateWarning,
@@ -650,6 +652,26 @@ Deno.test("exitCodeForError: returns 75 for commits a sync did not confirm, 1 fo
     exitCodeForError(new V3ReplicationUnavailableError("busy")),
     1,
   );
+});
+
+Deno.test("exitCodeForError: returns 75 for v3 writer lease contention, 1 for a fenced writer (swamp-club#3564)", () => {
+  const busy = new V3WriterBusyError(
+    "/ds",
+    new LockTimeoutError(
+      "_control/writer",
+      {
+        holder: "u@h",
+        hostname: "h",
+        pid: 1,
+        acquiredAt: new Date().toISOString(),
+        ttlMs: 30_000,
+      },
+      0,
+    ),
+  );
+  assertEquals(exitCodeForError(busy), 75);
+  assertEquals(buildErrorJson(busy).code, "datastore_v3_writer_busy");
+  assertEquals(exitCodeForError(new WriterFencedError(1, 2)), 1);
 });
 
 Deno.test("buildErrorJson: reports an extension LOCK_TIMEOUT code as lock_timeout", () => {

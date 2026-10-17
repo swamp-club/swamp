@@ -34,9 +34,10 @@
  *   now could overwrite what was committed since.
  *
  * A refusal drops the entry; with either, the unit's run entries go too
- * (decision 7). Each drop is logged once. The floor then rises to this
- * writer's fence. Entries of a writer that may still be running are left
- * for it.
+ * (decision 7). Each drop is logged once. Entries of a writer that may
+ * still be running are left for it, and marked so: the floor, which then
+ * rises to this writer's fence, does not drop them (swamp-club#3564), and a
+ * later recovery lands them once their writer is gone.
  *
  * @module
  */
@@ -60,7 +61,12 @@ import {
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../logging/logger.ts";
-import { isProcessGone } from "../runtime/process.ts";
+import {
+  judgeRecordedProcess,
+  type LocalProcess,
+  type ProcessIdentity,
+} from "../../domain/datastore_v3/process_liveness.ts";
+import { localProcess } from "./process_identity.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -83,9 +89,13 @@ export interface RecoverCommitOutboxOptions {
   readonly writer: CommitWriter;
   /**
    * Whether an entry's writer may still be running; by default this
-   * process's own writers, and processes on this host that are not gone.
+   * process's own writers, and processes judged alive by the identity they
+   * prepared it under.
    */
-  readonly writerAlive?: (writer: CommitWriter) => boolean;
+  readonly writerAlive?: (
+    writer: CommitWriter,
+    process: ProcessIdentity | undefined,
+  ) => boolean;
   readonly clock?: () => Date;
   readonly signal?: AbortSignal;
 }
@@ -131,17 +141,28 @@ export function registerOwnCommitWriter(writer: CommitWriter): void {
 }
 
 /**
- * Whether `writer` may still be running: one of this process's, or a
- * process on this host that is not gone. A process on this host with this
- * process's pid but another instance is a predecessor (a restarted
- * container) and is gone. A process on another host whose lease expired is
- * taken as gone: the lease was taken over from it.
+ * Whether `writer`, which prepared an entry under `process`, may still be
+ * running, judged from `local`: one of this process's, or a process judged
+ * alive (swamp-club#3564). A process with this process's pid but another
+ * instance is a predecessor (a restarted container) and is gone. One this
+ * process cannot judge (another host, namespace or boot, or an entry from a
+ * swamp before identities) is taken as gone: the recovery runs under a
+ * newer lease, so that writer is fenced already.
  */
-export function defaultWriterAlive(writer: CommitWriter): boolean {
-  if (ownInstances.has(writer.instance)) return true;
-  if (writer.host !== Deno.hostname()) return false;
-  if (writer.pid === Deno.pid) return false;
-  return !isProcessGone(writer.pid);
+export function writerAliveFrom(
+  local: LocalProcess,
+): (writer: CommitWriter, process: ProcessIdentity | undefined) => boolean {
+  return (writer, process) => {
+    if (ownInstances.has(writer.instance)) return true;
+    return judgeRecordedProcess(
+      {
+        pid: writer.pid,
+        ...(process !== undefined ? { process } : {}),
+        notThisProcess: true,
+      },
+      local,
+    ) === "alive";
+  };
 }
 
 /**
@@ -187,8 +208,15 @@ export async function recoverCommitOutbox(
   const plan = planOutboxRecovery(listing.entries, {
     chain,
     now: clock().getTime(),
-    writerAlive: options.writerAlive ?? defaultWriterAlive,
+    writerAlive: options.writerAlive ?? writerAliveFrom(await localProcess()),
   });
+  // Left before anything lands and before the floor rises past them: a
+  // writer that prepares one again from now on clears its mark, so a later
+  // floor drops it as any entry prepared after a recovery.
+  await outbox.markLeft(
+    plan.skipped.map((entry) => outboxKeyOf(entry.commit)),
+    options.fence,
+  );
   const drop = async (
     entry: OutboxEntry,
     reason: OutboxDropReason,

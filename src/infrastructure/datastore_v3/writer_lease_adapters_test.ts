@@ -75,7 +75,10 @@ function writers(store: WriterLeaseStore, clock: Clock, host = "host-a") {
             clock.advance(ms);
             return Promise.resolve();
           },
-          processGone: (other) => gone.has(other),
+          judgeHolder: (record) =>
+            record.hostname === hostname && gone.has(record.pid)
+              ? "gone"
+              : "unknown",
           nonce: () => crypto.randomUUID(),
         }),
       };

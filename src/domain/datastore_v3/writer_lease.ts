@@ -35,8 +35,11 @@
  *   `swamp datastore lock release --force`. Created once, never changed.
  *
  * The highest fence is held until it is released, its holder's process is
- * gone (same host only), or its last renewal is older than its TTL plus
- * {@link WRITER_LEASE_CLOCK_SKEW_MS}. Expiry only decides when another
+ * gone (judged only on the kernel that ran it, by the identity the record
+ * names: swamp-club#3564), or its last renewal is older than its TTL plus
+ * {@link WRITER_LEASE_CLOCK_SKEW_MS}. A holder judged alive is taken over
+ * after its TTL too: the takeover fences it, so it can land nothing more,
+ * and a stopped or hung writer does not keep every writer out. Expiry only decides when another
  * writer may take over. Safety never depends on clocks: a holder that finds
  * a higher fence, or its own fence released, is fenced, and the commit store
  * refuses any commit whose fence is below the highest it has seen.
@@ -51,6 +54,11 @@
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
 import { FENCE_DIGITS, MAX_FENCE } from "../datastore/replica_path_store.ts";
 import { UserError } from "../errors.ts";
+import {
+  parseProcessIdentity,
+  type ProcessIdentity,
+  type ProcessVerdict,
+} from "./process_liveness.ts";
 
 /** The control-plane prefix of the lease's records. */
 export const WRITER_LEASE_PREFIX = "writer/";
@@ -65,6 +73,12 @@ export const WRITER_LEASE_CLOCK_SKEW_MS = 10_000;
 /** Error code for a writer whose lease another writer took over. */
 export const WRITER_FENCED_CODE = "datastore_v3_writer_fenced";
 
+/**
+ * Error code for a second process refused as a v3 datastore's writer: a
+ * temporary failure, so it exits 75 (EX_TEMPFAIL) as lock contention does.
+ */
+export const V3_WRITER_BUSY_CODE = "datastore_v3_writer_busy";
+
 /** The store the lease's records live in: create-only puts are required. */
 export type WriterLeaseStore =
   & Pick<ControlPlaneStore, "put" | "get" | "delete" | "list">
@@ -76,6 +90,12 @@ export interface WriterLeaseHolder {
   readonly holder: string;
   readonly hostname: string;
   readonly pid: number;
+  /**
+   * The holder's process identity, by which its liveness is judged.
+   * Undefined in a record from a swamp before swamp-club#3564, which is
+   * judged by its TTL alone.
+   */
+  readonly process?: ProcessIdentity;
 }
 
 /** A fence's record, written once when it is taken. */
@@ -134,10 +154,11 @@ export type WriterLeaseVerdict =
 export interface WriterLeaseJudgement {
   /** Now, epoch milliseconds, on the judging host's clock. */
   readonly now: number;
-  /** The judging host's name. */
-  readonly hostname: string;
-  /** Whether a pid on the judging host is gone. */
-  readonly processGone: (pid: number) => boolean;
+  /**
+   * Whether the process a fence record names still runs, as the judging
+   * process can tell: only `gone` ends the lease before its TTL.
+   */
+  readonly judgeHolder: (record: FenceRecord) => ProcessVerdict;
   /**
    * The TTL to judge a fence by when its record cannot be read: the judging
    * writer's own.
@@ -171,10 +192,7 @@ export function judgeWriterLease(
       ? { kind: "held", holderUnknown: true }
       : { kind: "expired", reason: "unreadable" };
   }
-  if (
-    record.hostname === judgement.hostname &&
-    judgement.processGone(record.pid)
-  ) {
+  if (judgement.judgeHolder(record) === "gone") {
     return { kind: "expired", reason: "process-gone" };
   }
   const renewedAt = Math.max(
@@ -326,8 +344,8 @@ export interface WriterLeaseOptions {
   readonly now: () => number;
   /** Waits between attempts while another writer holds the lease. */
   readonly delay: (ms: number) => Promise<void>;
-  /** Whether a pid on this host is gone. */
-  readonly processGone: (pid: number) => boolean;
+  /** Whether the process a fence record names still runs. */
+  readonly judgeHolder: (record: FenceRecord) => ProcessVerdict;
   /** A fresh nonce for each acquisition. */
   readonly nonce: () => string;
   readonly clockSkewMs?: number;
@@ -484,8 +502,7 @@ export class WriterLease {
     const o = this.#options;
     return judgeWriterLease(records, {
       now: o.now(),
-      hostname: o.holder.hostname,
-      processGone: o.processGone,
+      judgeHolder: o.judgeHolder,
       ttlMs: o.ttlMs,
       ...(o.clockSkewMs !== undefined ? { clockSkewMs: o.clockSkewMs } : {}),
     });
@@ -671,11 +688,13 @@ function parseFenceRecord(
   ) {
     return undefined;
   }
+  const process = parseProcessIdentity(value.process);
   return {
     fence,
     holder: value.holder,
     hostname: value.hostname,
     pid: value.pid as number,
+    ...(process !== undefined ? { process } : {}),
     nonce: value.nonce,
     ttlMs: value.ttlMs as number,
     acquiredAt: value.acquiredAt,

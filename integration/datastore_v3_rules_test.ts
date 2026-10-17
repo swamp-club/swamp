@@ -233,6 +233,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // after a pass, as the writer, before teardown closes the hold.
   "src/cli/retention_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/litestream_replication.ts",
+  // swamp-club#3564: lease contention gets the temporary-failure exit code.
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/writer_lease.ts",
   // swamp-club#3489: serve answers a write whose commits a sync did not
   // confirm, or whose lease was fenced, with the CLI's error codes.
   "src/serve/handlers/shared.ts -> src/domain/datastore_v3/litestream_replication.ts",
@@ -959,9 +961,10 @@ Deno.test("datastore v3: a bucket datastore's marker is confirmed before every l
       takeLease.indexOf("confirmMarker()") < takeLease.indexOf(".acquire("),
     "takeLease must confirm a bucket datastore's marker before the lease",
   );
-  // Every lease is taken through takeLease.
+  // Every lease is taken through takeLease. Building the lease resolves this
+  // process's identity (swamp-club#3564), so it is awaited first.
   assertEquals(
-    [...lock.matchAll(/writerLease\([^)]*\)\.acquire\(/g)].length,
+    [...lock.matchAll(/\(await writerLease\([^)]*\)\)\.acquire\(/g)].length,
     1,
     "a lease is acquired outside takeLease",
   );

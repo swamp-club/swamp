@@ -646,13 +646,16 @@ Deno.test({
   },
 });
 
-Deno.test("v3 interrupted run: a writing command keeps another host's marker, and its teardown leaves it", async () => {
+Deno.test("v3 interrupted run: a writing command recovers another host's marker under its lease, and marks the checkout its own (swamp-club#3564)", async () => {
   await withV3RowRepos({}, async (repos) => {
     const config = filesystemConfig(repos);
     await closeV3Datastores();
+    // Another host, or a container sharing this hostname: its writer writes
+    // only under the lease, which this process now holds.
     const foreign = {
       hostname: `${Deno.hostname()}-elsewhere`,
       pid: 4242,
+      process: { host: `${Deno.hostname()}-elsewhere` },
       since: 0,
     };
     await Deno.writeTextFile(
@@ -660,9 +663,9 @@ Deno.test("v3 interrupted run: a writing command keeps another host's marker, an
       JSON.stringify(foreign),
     );
     await holdV3Writer(config, repos.repoA);
-    assertEquals(await readWriterMarker(repos.repoA), foreign);
+    assertEquals((await readWriterMarker(repos.repoA))?.pid, Deno.pid);
     await closeV3Datastores();
-    assertEquals(await readWriterMarker(repos.repoA), foreign);
+    assertEquals(await readWriterMarker(repos.repoA), undefined);
   });
 });
 

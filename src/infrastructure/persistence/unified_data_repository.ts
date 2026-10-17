@@ -40,6 +40,7 @@ import {
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { verifiedContentStream } from "./verified_content_stream.ts";
 import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
@@ -307,14 +308,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const metadataBytes = await Deno.readFile(
       this.getMetadataPath(type, modelId, dataName, version),
     );
+    const metadata = parseYaml(new TextDecoder().decode(metadataBytes));
     return changes.writeVersion(why, {
       name: dataName,
       version,
-      metadata: parseYaml(new TextDecoder().decode(metadataBytes)),
+      metadata,
       metadataBytes,
       metadataExpect,
       raw: await this.rawSource(
         this.getContentPath(type, modelId, dataName, version),
+        metadata,
       ),
     });
   }
@@ -322,12 +325,31 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   /**
    * A content file as a put's source: its bytes when they inline, otherwise
    * a stream that opens the file at commit, so large content is never held
-   * in memory until then.
+   * in memory until then. The stream is checked against the file's size
+   * now, and against the metadata's checksum when it has one for this size
+   * (an append drops it), so a file changed before the commit is never
+   * committed under metadata that does not describe it (swamp-club#3564).
    */
-  private async rawSource(contentPath: string): Promise<ContentSource> {
+  private async rawSource(
+    contentPath: string,
+    metadata: unknown,
+  ): Promise<ContentSource> {
     const { size } = await Deno.stat(contentPath);
     if (size <= MAX_INLINE_BYTES) return await Deno.readFile(contentPath);
-    return async () => (await Deno.open(contentPath)).readable;
+    const recorded = metadata as { size?: unknown; checksum?: unknown } | null;
+    const sha256 = recorded?.size === size &&
+        typeof recorded.checksum === "string"
+      ? recorded.checksum
+      : undefined;
+    return async () =>
+      verifiedContentStream(
+        (await Deno.open(contentPath)).readable,
+        contentPath,
+        {
+          size,
+          ...(sha256 !== undefined ? { sha256 } : {}),
+        },
+      );
   }
 
   /** The latest marker's bytes, or undefined when there is none. */
@@ -454,7 +476,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             why,
             dataName,
             version,
-            await this.rawSource(contentPath),
+            // No metadata: checked against its size alone.
+            await this.rawSource(contentPath, undefined),
           ),
         ]
         : [];

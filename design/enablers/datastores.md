@@ -3891,11 +3891,19 @@ v2. Read-only commands take it only to recover a checkout whose writer
 ended without tearing down, without waiting, and release it before they read
 (see **Interrupted runs**); a root that stages nothing (a dry-run `data gc`)
 commits nothing and needs no lease. The writer also records
-which checkout it writes (`_control/writer.checkout.json`); a reader in that
-same checkout does not catch up while the writer runs, because the writer's
-files there are newer than its last commit and replaying older commits over
-them would undo its work; a recorded writer on this host whose pid is gone
-writes nothing, whatever its TTL says. `swamp datastore lock
+which checkout it writes (`_control/writer.checkout.json`), with its process
+identity and its fence; a reader in that same checkout does not catch up
+while the writer runs, because the writer's files there are newer than its
+last commit and replaying older commits over them would undo its work. The
+sidecar is written when a hold takes its fence (the first hold, and serve's
+retake of a lost one), never by a join, and removed at close only while it
+still names this process's fence. It protects its writer while the
+sidecar's fence is the lease's highest (a force-released one included,
+since `commits.db` takes the released holder's commits until a new writer
+raises its fence), judged by **Writer liveness** below: a writer judged gone
+writes nothing, whatever its TTL says; one judged alive is protected
+whatever its TTL says; one this process cannot judge is protected until a
+higher fence fences it. `swamp datastore lock
 status|release --force` act on the writer lease on v3, and on Phase 3's lock
 while a swamp from before the lease still holds it. A read-only context stages nothing: any change
 staged through it is refused (`ReadOnlyV3WriteError`), so a read-only command
@@ -4090,13 +4098,18 @@ leave every checkout with the same records.
   leftovers are removed rather than committed as recovered outputs, and the
   checkouts agree without the user doing anything: detection alone would
   leave them disagreeing. The next command in that checkout recovers when the
-  marker names a process on this host that is gone (`isProcessGone`), or names this process's own pid under another token, as a restarted container's predecessor does (a
-  zombie reads as alive, so the killed process must have been reaped). A
+  marker names a writer judged gone by **Writer liveness** (absent, a zombie,
+  started at another time than the marker says, or this process's own pid
+  under another token, as a restarted container's predecessor does), or a
+  writer this process cannot judge (another host, pid namespace or boot, or
+  a marker from before swamp-club#3564) once the lease is free, expired, or
+  held by this process: a writer writes only while it holds the lease. A
   writing command recovers under the writer lock it has just taken; a
   read-only command takes the lock without waiting (`tryAcquireV3WriterLock`)
-  and skips recovery when a live process holds it, or when it holds it past
-  its TTL; while it recovers it holds the lock, so a writer that starts then
-  waits for the replay. Under the read model's lock, recovery deletes the
+  and skips recovery when a live process holds it, whatever its TTL, or
+  when the lease still keeps writers out; while it recovers it holds the
+  lock, so a writer that starts then waits for the replay, and a stalled
+  writer the recovery takes over is fenced before any file is touched. Under the read model's lock, recovery deletes the
   catalog rows of the data commits carry, keeping the rows of data the
   datastore's `directories` or `exclude` keep local, which no replay could
   rebuild, and keeping the catalog marked populated, so no reader backfills
@@ -4409,12 +4422,46 @@ so a fence is not reused even if `_control/writer/` is lost.
 **Expiry.** The highest fence keeps other writers out until:
 
 - it is released; or
-- its holder is on this host and its process is gone (taken over at once,
-  as Phase 3 did); or
+- its holder is judged gone by **Writer liveness** (taken over at once, as
+  Phase 3 did on the same host); or
 - its last renewal (or its `acquiredAt`) is older than its TTL plus
   `WRITER_LEASE_CLOCK_SKEW_MS` (10 s), judged on the taker's clock. With the
   default 30 s TTL, a crashed holder on another host is taken over after
-  40 s.
+  40 s. A holder judged alive is taken over after its TTL too: the takeover
+  fences it, so it can land nothing more, and a stopped or hung writer does
+  not keep every writer out until someone runs `lock release --force`. Its
+  checkout stays protected until a higher fence exists (see **One writer
+  per datastore**).
+
+**Writer liveness (swamp-club#3564).** The fence record, the writer marker,
+the checkout sidecar and each outbox entry name their writer by pid and by
+its process identity: `processHostIdentity()` (the hostname, and on Linux
+the pid namespace's id), the kernel's boot id (`boot_identity.ts`), and the
+process's start time (`/proc/<pid>/stat` field 22 on Linux, `kern.proc`'s
+`p_starttime` on macOS, read over FFI since the compiled binary may not read
+`/proc` directly). `judgeRecordedProcess` (`process_liveness.ts`) decides:
+
+- a record from another host, pid namespace or boot, or with no identity (a
+  swamp from before it), is **unknown**: never gone, so the caller falls
+  back to the lease's TTL plus skew and the fence. A boot id that differs is
+  unknown rather than proof of a reboot, since two machines can share a
+  hostname and the root pid namespace's id. On a bucket datastore this is
+  the normal case;
+- on this kernel, a pid that is absent, a zombie, or started at another
+  time than recorded is **gone**, as is this process's own pid in a record
+  whose token is not this process's;
+- any other present pid is **alive**. When the start time cannot be read on
+  either side (Windows, another user's process, a failed probe), presence
+  alone decides, as before identities were recorded; it never makes a
+  record unknown, which would let outbox recovery land a live writer's
+  entry.
+
+Probes never signal beyond `isProcessGone`'s SIGURG: `isProcessDead`, whose
+SIGCONT resumed a stopped process (a Ctrl-Z'd writer probed by `lock
+status`), is gone, and every lock and tracker probe uses `isProcessGone`.
+The fence record, marker and sidecar fields are JSON that older parsers
+drop, so they need no format bump; an older swamp judges those records by
+hostname as before.
 
 A fence record that cannot be read is held by an unknown holder only while a
 heartbeat for that fence was written within the taker's TTL plus the
@@ -4468,9 +4515,18 @@ run where no other lock is held, so taking the lease again never waits behind
 a model lock. Only serve's lifetime hold does this (`retakeLostV3Lease`): a
 one-shot CLI command that loses the lease keeps refusing its later commits, so
 it fails as a whole, as its error says, rather than landing part of itself.
+Nothing in such a command joins its lost hold either (swamp-club#3564): a
+later `acquireV3WriterLock`, such as the retention pass's at teardown, is
+refused with the hold's `WriterFencedError`, found in memory or in the
+lease's records when the renewal has not noticed yet, so it never rewrites
+or removes the new writer's checkout sidecar. A check that cannot read the
+records lets the join go ahead: the fence still refuses its commits.
 
 **Refusals change nothing.** A command v3 refuses must leave the datastore
-byte-identical. `datastore sync` and `datastore migrate-index` open a v3
+byte-identical. Lease contention (`datastore_v3_writer_busy`) exits 75, as
+v2's `lock_timeout` does: nothing changed, so a retry with backoff is safe.
+`datastore_v3_writer_fenced` exits 1: a command whose lease was taken over
+may have landed some of its commits, so it is not blindly retried. `datastore sync` and `datastore migrate-index` open a v3
 datastore read-only before libswamp refuses them, so they take no lease;
 `integration/datastore_v3_writer_lease_test.ts` checks every refusal.
 
@@ -4544,6 +4600,13 @@ it. An unsent commit must not count as a commit; Litestream replicates only
 replaces `commits.db`'s content without touching the outbox, whose entries
 the fence chain then judges. The file is created by the first lease taken
 on the copy, never by setup, and with `synchronous=FULL`, like `commits.db`.
+Schema 2 (swamp-club#3564) adds each entry's `writer_process`, the preparing
+process's identity, and `left_at_fence`; the commit body's `CommitWriter` is
+unchanged, so `commits.db` needs no bump. The bump is a one-way upgrade: an
+older swamp refuses a schema 2 outbox with `commit_outbox_schema_newer`
+("upgrade swamp"). Without replication the outbox sits beside the shared
+`commits.db`, so the first new swamp to open it, a read-only command
+included, upgrades it for every checkout of that datastore.
 
 **Lifecycle.** For each group a flush appends, under the partition's lock:
 
@@ -4600,9 +4663,14 @@ whose fence is below the chain's start was prepared before another copy
 took the lease, and is dropped (`stale-fence`). The **floor** is the fence of
 the last completed recovery; an entry below it was prepared by a writer
 that had lost the lease after its successor recovered (`overtaken`). An
-entry whose writer may still be running (this process's units, or a process
-on this host that is not gone) is left for it; a writer on another host
-whose lease expired counts as gone. In shared (non-replicated) mode every
+entry whose writer may still be running (this process's units, or a writer
+judged alive by **Writer liveness** from the identity it prepared the entry
+under) is left for it, and marked with the fence of the recovery that left
+it: the floor does not drop a left entry, which existed before the floor
+rose, so a later recovery lands it once its writer is gone. Preparing the
+entry again clears the mark. A writer this process cannot judge (another
+host or namespace, or an entry from before schema 2) counts as gone: the
+recovery runs under a newer lease, so that writer is fenced already. In shared (non-replicated) mode every
 writer start recovers before it writes, so no writer can come between a
 dead writer and its recovery; the stale-fence drop applies across copies.
 Turning replication on drops and reports what the shared `commits.db`'s

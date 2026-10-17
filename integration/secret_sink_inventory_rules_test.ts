@@ -469,7 +469,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/v3_config_adoption.ts: commitConfigAdoption":
       CONFIG_WRITE,
-    "src/infrastructure/datastore_v3/v3_repo_context.ts: holdV3Writer":
+    "src/infrastructure/datastore_v3/v3_repo_context.ts: recordWriterCheckout":
       CONFIG_WRITE,
     "src/infrastructure/persistence/auth_repository.ts: AuthRepository":
       CONFIG_WRITE,

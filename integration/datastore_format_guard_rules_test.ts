@@ -39,10 +39,11 @@ const SRC_DIR = join(ROOT, "src");
 /**
  * A call that opens a datastore: a sync service, one of its locks, the
  * provider's datastore-wide control-plane store, or a v3 datastore's commit
- * log or writer lock (swamp-club#3279).
+ * log or writer lock (swamp-club#3279), or its lease's holder
+ * (swamp-club#3564).
  */
 const DATASTORE_OPEN =
-  /\.createSyncService(\?\.)?\s*\(|\.createLock\s*\(|\bcreateDatastoreLock\s*\(|\bcreateServerTokenLock\s*\(|\bresolveCustomProvider\s*\(|\.datastoreControlPlaneStore(\?\.)?\s*\(|\bopenV3Datastore\s*\(|\bv3DatastoreFor\s*\(|\bacquireV3WriterLock\s*\(|\bv3WriterLockHandle\s*\(/;
+  /\.createSyncService(\?\.)?\s*\(|\.createLock\s*\(|\bcreateDatastoreLock\s*\(|\bcreateServerTokenLock\s*\(|\bresolveCustomProvider\s*\(|\.datastoreControlPlaneStore(\?\.)?\s*\(|\bopenV3Datastore\s*\(|\bv3DatastoreFor\s*\(|\bacquireV3WriterLock\s*\(|\bv3WriterLockHandle\s*\(|\bv3WriterLeaseHolder\s*\(/;
 
 /** A function declaration, which names the call without making it. */
 const DECLARATION = /^\s*(export\s+)?(async\s+)?function\b/;
@@ -149,8 +150,9 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/v3_repo_context.ts:ensureV3CopyCurrent",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:startV3ReplicationUpkeep",
   // swamp-club#3299: interrupted-writer recovery opens the handle and
-  // inspects the writer lock of the datastore v3RepositoryFactoryConfig or
-  // holdV3Writer passes it, after the same check.
+  // inspects the writer lock (the lease's holder since swamp-club#3564) of
+  // the datastore v3RepositoryFactoryConfig or holdV3Writer passes it, after
+  // the same check.
   "src/infrastructure/datastore_v3/v3_repo_context.ts:recoverAndMark",
   "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts:lockHeldByLiveProcess",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",

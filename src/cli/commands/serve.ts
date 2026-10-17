@@ -488,7 +488,7 @@ import type { ControlPlaneStore } from "../../domain/datastore/control_plane_sto
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
 import {
   checkOpenFileLimit,
-  isProcessDead,
+  isProcessGone,
   tryRaiseOpenFileLimit,
 } from "../../infrastructure/runtime/process.ts";
 import {
@@ -4641,7 +4641,7 @@ export const serveCommand = new Command()
             const tracked = runTracker.findById(runId);
             return tracked ? { status: tracked.status } : null;
           },
-          isProcessDead,
+          isProcessGone,
           instanceId,
           hasRemoteControlPlane
             ? async (id) => {

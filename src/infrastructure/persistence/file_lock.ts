@@ -40,7 +40,7 @@ import {
 } from "../../domain/datastore/distributed_lock.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampLogger } from "../logging/logger.ts";
-import { isProcessDead } from "../runtime/process.ts";
+import { isProcessGone } from "../runtime/process.ts";
 
 /** TTL of a {@link FileLock} created without a `ttlMs` option. */
 export const DEFAULT_LOCK_TTL_MS = 30_000;
@@ -543,7 +543,7 @@ export class FileLock implements DistributedLock {
       const existing = state.info;
       const pidDead = this.sameHostPidCheck && existing.hostname !== hostname()
         ? false
-        : isProcessDead(existing.pid);
+        : isProcessGone(existing.pid);
       const isStale = pidDead ||
         Date.now() - new Date(existing.acquiredAt).getTime() > existing.ttlMs;
       if (!isStale) return existing;

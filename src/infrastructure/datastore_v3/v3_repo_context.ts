@@ -64,12 +64,20 @@ import {
   acquireV3WriterLock,
   assertV3WriterCurrent,
   holdsV3WriterLock,
+  onV3HoldRetaken,
   onV3LeaseTaken,
   refuseLiveV3LegacyWriter,
   tryAcquireV3WriterLock,
   v3WriterFence,
-  v3WriterLockHandle,
+  type V3WriterLeaseHolder,
+  v3WriterLeaseHolder,
 } from "./v3_writer_lock.ts";
+import {
+  judgeRecordedProcess,
+  parseProcessIdentity,
+  type ProcessIdentity,
+} from "../../domain/datastore_v3/process_liveness.ts";
+import { localProcess } from "./process_identity.ts";
 import {
   acquireV3Replication,
   type ReplicationHandle,
@@ -89,9 +97,7 @@ import {
   V3LineageOutrankedError,
 } from "./litestream/v3_copy.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
-import { isProcessGone } from "../runtime/process.ts";
 import {
-  type ProcessGoneProbe,
   readWriterMarker,
   recoverInterruptedWriter,
   removeOwnWriterMarker,
@@ -219,8 +225,19 @@ let keepMarkers = false;
  */
 const keptMarkers = new Set<string>();
 
-/** The liveness probe for recorded pids. */
-const processGone: ProcessGoneProbe = isProcessGone;
+/**
+ * The writer checkout this process last recorded for each datastore, by
+ * resolved datastore path: which checkout, at which fence. Set once the
+ * sidecar is written; a hold at the same fence for the same checkout does
+ * not write it again (swamp-club#3564).
+ */
+const recordedCheckouts = new Map<
+  string,
+  { readonly repoDir: string; readonly fence: number }
+>();
+
+/** Whether the sidecar is kept current across serve's retakes. */
+let retakeListening = false;
 
 /**
  * Tells this process's next {@link closeV3Datastores} to keep the writer
@@ -522,7 +539,6 @@ export async function holdV3Writer(
       throw error;
     }
   }
-  const sidecar = writerCheckoutPath(config.path);
   const checkout = handleKey(repoDir, config);
   let marking = markedCheckouts.get(checkout);
   const marks = marking === undefined;
@@ -537,17 +553,7 @@ export async function holdV3Writer(
     markedCheckouts.set(checkout, marking);
   }
   try {
-    // A bucket datastore's local root has no _control/ of its own until
-    // this first write (swamp-club#3534).
-    await Deno.mkdir(dirname(sidecar), { recursive: true });
-    await atomicWriteTextFile(
-      sidecar,
-      JSON.stringify({
-        repoDir: await canonicalPath(repoDir),
-        hostname: Deno.hostname(),
-        pid: Deno.pid,
-      }),
-    );
+    await recordWriterCheckout(config.path, repoDir);
     await marking;
     // Once the checkout is recovered and marked: a sidecar for this hold's
     // fence, when replication is on (swamp-club#3416).
@@ -601,9 +607,55 @@ export async function holdV3Writer(
           .warn`Removing the v3 writer marker of ${repoDir} failed; the next command will run an unnecessary recovery: ${error}`;
       }
     }
-    await removeOwnWriterCheckout(sidecar);
+    await removeOwnWriterCheckout(config.path);
     await release();
   });
+}
+
+/**
+ * Records that this process writes the checkout at `repoDir` under its
+ * current hold, unless it already recorded that checkout at that fence. A
+ * hold that was lost records nothing: its sidecar is the new writer's now.
+ *
+ * @throws WriterFencedError when the hold was lost
+ */
+async function recordWriterCheckout(
+  datastorePath: string,
+  repoDir: string,
+): Promise<void> {
+  assertV3WriterCurrent(datastorePath);
+  const fence = v3WriterFence(datastorePath);
+  if (fence === undefined) return;
+  const datastore = resolve(datastorePath);
+  const canonical = await canonicalPath(repoDir);
+  const recorded = recordedCheckouts.get(datastore);
+  if (recorded?.fence === fence && recorded.repoDir === canonical) return;
+  const sidecar = writerCheckoutPath(datastorePath);
+  // A bucket datastore's local root has no _control/ of its own until
+  // this first write (swamp-club#3534).
+  await Deno.mkdir(dirname(sidecar), { recursive: true });
+  const local = await localProcess();
+  await atomicWriteTextFile(
+    sidecar,
+    JSON.stringify({
+      repoDir: canonical,
+      hostname: Deno.hostname(),
+      pid: local.pid,
+      process: local.identity,
+      fence,
+    }),
+  );
+  recordedCheckouts.set(datastore, { repoDir: canonical, fence });
+  if (!retakeListening) {
+    retakeListening = true;
+    // Serve's retake writes the checkout under its new fence, so readers
+    // there stay out (swamp-club#3564).
+    onV3HoldRetaken(async (path, retaken) => {
+      const previous = recordedCheckouts.get(resolve(path));
+      if (previous === undefined || previous.fence === retaken) return;
+      await recordWriterCheckout(path, previous.repoDir);
+    });
+  }
 }
 
 /**
@@ -624,7 +676,6 @@ async function recoverAndMark(
   try {
     await recoverInterruptedWriter(handle, repoDir, {
       holdsWriterLock: true,
-      processGone,
     });
   } catch (error) {
     const markerPath = writerMarkerPath(repoDir);
@@ -684,14 +735,60 @@ function writerCheckoutPath(datastorePath: string): string {
   return join(datastorePath, "_control", "writer.checkout.json");
 }
 
-async function removeOwnWriterCheckout(path: string): Promise<void> {
+/** What the sidecar records. Older swamps wrote no identity or fence. */
+interface WriterCheckoutRecord {
+  readonly repoDir: string;
+  readonly hostname: string;
+  readonly pid: number;
+  readonly process?: ProcessIdentity;
+  readonly fence?: number;
+}
+
+async function readWriterCheckout(
+  datastorePath: string,
+): Promise<WriterCheckoutRecord | undefined> {
   try {
-    const recorded = JSON.parse(await Deno.readTextFile(path));
-    if (recorded?.pid === Deno.pid && recorded?.hostname === Deno.hostname()) {
-      await Deno.remove(path);
+    const value = JSON.parse(
+      await Deno.readTextFile(writerCheckoutPath(datastorePath)),
+    );
+    if (
+      typeof value?.repoDir !== "string" ||
+      typeof value?.hostname !== "string" || !Number.isSafeInteger(value?.pid)
+    ) {
+      return undefined;
+    }
+    const process = parseProcessIdentity(value.process);
+    return {
+      repoDir: value.repoDir,
+      hostname: value.hostname,
+      pid: value.pid,
+      ...(process !== undefined ? { process } : {}),
+      ...(Number.isSafeInteger(value.fence) ? { fence: value.fence } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Removes the sidecar when it is still this process's record at the fence
+ * it wrote it with: a writer that took over since wrote its own.
+ */
+async function removeOwnWriterCheckout(datastorePath: string): Promise<void> {
+  const datastore = resolve(datastorePath);
+  const mine = recordedCheckouts.get(datastore);
+  if (mine === undefined) return;
+  recordedCheckouts.delete(datastore);
+  try {
+    const recorded = await readWriterCheckout(datastorePath);
+    if (
+      recorded !== undefined && recorded.pid === Deno.pid &&
+      recorded.hostname === Deno.hostname() && recorded.fence === mine.fence
+    ) {
+      await Deno.remove(writerCheckoutPath(datastorePath));
     }
   } catch {
-    // Gone already, or another writer's: either way not ours to remove.
+    // Gone already: nothing to remove.
   }
 }
 
@@ -705,38 +802,69 @@ async function canonicalPath(path: string): Promise<string> {
 }
 
 /**
- * Whether another process on this host holds the datastore's writer lock and
- * writes the checkout at `repoDir`.
+ * Whether another process writes the checkout at `repoDir` under the
+ * datastore's lease, so a reader there must not catch up (swamp-club#3279):
+ * the sidecar names the checkout, and its fence is still the lease's
+ * highest. Its writer is then protected while it runs, whatever its TTL,
+ * and until a higher fence fences it when this process cannot judge it
+ * (another namespace, host or boot: swamp-club#3564). A released fence
+ * keeps the protection too: the commit store takes the released holder's
+ * commits until a new writer raises its fence. A sidecar from a swamp
+ * before identities is judged by the lease record as it was.
  */
 async function anotherProcessWritesCheckout(
   repoDir: string,
   datastorePath: string,
 ): Promise<boolean> {
-  let recorded: { repoDir?: string; hostname?: string; pid?: number };
-  try {
-    recorded = JSON.parse(
-      await Deno.readTextFile(writerCheckoutPath(datastorePath)),
-    );
-  } catch {
-    return false;
-  }
+  const recorded = await readWriterCheckout(datastorePath);
   if (
-    recorded.repoDir !== await canonicalPath(repoDir) ||
-    recorded.hostname !== Deno.hostname() || recorded.pid === Deno.pid
+    recorded === undefined || recorded.repoDir !== await canonicalPath(repoDir)
   ) {
     return false;
   }
-  const holder = await v3WriterLockHandle(datastorePath).inspect();
+  const local = await localProcess();
+  if (recorded.fence === undefined) {
+    // This process's own: it is the writer, not another.
+    if (recorded.pid === local.pid && recorded.hostname === Deno.hostname()) {
+      return false;
+    }
+    const holder = await v3WriterLeaseHolder(datastorePath);
+    return holder !== null && legacyWriterWritesCheckout(recorded, holder);
+  }
+  // Judged before the lease is read: a writer's own sidecar, or a gone
+  // writer's, costs no read of the lease's records.
+  const verdict = judgeRecordedProcess(
+    {
+      pid: recorded.pid,
+      ...(recorded.process !== undefined ? { process: recorded.process } : {}),
+    },
+    local,
+  );
+  if (verdict === "gone") return false;
+  // This process's own record: it is the writer, not another.
+  if (verdict === "alive" && recorded.pid === local.pid) return false;
+  const holder = await v3WriterLeaseHolder(datastorePath);
+  return holder !== null && holder.fence === recorded.fence;
+}
+
+/**
+ * A sidecar from a swamp before swamp-club#3564, judged by the lease record
+ * of the same process: on this host by its pid, else within its TTL.
+ */
+function legacyWriterWritesCheckout(
+  recorded: WriterCheckoutRecord,
+  holder: V3WriterLeaseHolder,
+): boolean {
+  const record = holder.record;
   if (
-    holder === null || holder.pid !== recorded.pid ||
-    holder.hostname !== Deno.hostname()
+    record === undefined || record.pid !== recorded.pid ||
+    record.hostname !== recorded.hostname ||
+    (recorded.pid === Deno.pid && recorded.hostname === Deno.hostname())
   ) {
     return false;
   }
-  // A holder on this host whose process is gone writes nothing, whatever
-  // its TTL says (swamp-club#3299).
-  if (processGone(recorded.pid)) return false;
-  return Date.parse(holder.acquiredAt) + holder.ttlMs >= Date.now();
+  if (holder.process === "gone") return false;
+  return holder.process === "alive" || holder.state === "held";
 }
 
 /**
@@ -796,7 +924,6 @@ export async function v3RepositoryFactoryConfig(
     try {
       await recoverInterruptedWriter(handle, repoDir, {
         holdsWriterLock: false,
-        processGone,
       });
     } catch (error) {
       logger

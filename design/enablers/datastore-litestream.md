@@ -960,8 +960,12 @@ reader that cannot take the lease only replays, and the dropped commits'
 files stay until a rebuild. A cursor whose commit the copy no longer stores
 counts as moved. Otherwise the read model catches up incrementally.
 
-**Takeover.** `holdV3Writer` takes the lease, then makes the copy current,
-then raises `writer_fence` in it, then decides the lineage:
+**Takeover.** Whether a holder may be taken over is decided by
+`datastores.md`'s **Writer liveness** (swamp-club#3564): on a bucket, another
+machine's holder is one this process cannot judge, so it is taken over only
+after its TTL plus skew, and fenced. `holdV3Writer` takes the lease, then
+makes the copy current, then raises `writer_fence` in it, then decides the
+lineage:
 
 - it continues only while its lineage was published (`started.json`) and no
   lineage was started after it (`mayContinueLineage`), the fence rule holds,

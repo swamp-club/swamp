@@ -21,7 +21,11 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { plantV3WriterLease } from "./v3_writer_lock_test_helpers.ts";
+import {
+  plantedIdentity,
+  plantV3WriterLease,
+} from "./v3_writer_lock_test_helpers.ts";
+import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
 import { FileLock } from "../persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
 import {
@@ -82,8 +86,13 @@ async function plantFence(
   dir: string,
   fence: number,
   host: string,
-  options: { acquiredAt?: Date } = {},
+  options: { acquiredAt?: Date; process?: ProcessIdentity | null } = {},
 ): Promise<void> {
+  // By default as a process on `host` names itself; null as a swamp from
+  // before identities.
+  const process = options.process === undefined
+    ? await plantedIdentity(host)
+    : options.process;
   await new FileSystemControlPlaneStore(dir).put(
     fenceKey(fence),
     new TextEncoder().encode(JSON.stringify({
@@ -92,6 +101,7 @@ async function plantFence(
       hostname: host,
       // No process here has this pid.
       pid: 2147483647,
+      ...(process !== null ? { process } : {}),
       nonce: crypto.randomUUID(),
       ttlMs: 60_000,
       acquiredAt: (options.acquiredAt ?? new Date()).toISOString(),
@@ -215,6 +225,52 @@ Deno.test("acquireV3WriterLock: another host's holder whose lease expired is tak
     } finally {
       await release();
     }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a holder in another pid namespace with this hostname is refused, not taken over (swamp-club#3564)", async () => {
+  await withTempDir(async (dir) => {
+    // A container sharing this hostname: its pid means nothing here.
+    const kernel = await plantedIdentity(hostname());
+    await plantFence(dir, 1, hostname(), {
+      process: { ...kernel, host: `${kernel.host}#pid:[4026532999]` },
+    });
+    await assertRejects(
+      () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+      V3WriterBusyError,
+    );
+    assertEquals(holdsV3WriterLock(dir), false);
+  });
+});
+
+Deno.test("acquireV3WriterLock: a record from a swamp before identities is judged by its TTL alone, even naming a pid gone here", async () => {
+  await withTempDir(async (dir) => {
+    await plantFence(dir, 1, hostname(), { process: null });
+    await assertRejects(
+      () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+      V3WriterBusyError,
+    );
+    await plantFence(dir, 2, hostname(), {
+      process: null,
+      acquiredAt: new Date(Date.now() - 600_000),
+    });
+    const release = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+    try {
+      assertEquals(v3WriterFence(dir), 3);
+    } finally {
+      await release();
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a fence record naming this process's own pid is alive, not a predecessor's", async () => {
+  await withTempDir(async (dir) => {
+    // As another hold this process took (a read-only recovery's) names it.
+    await plantV3WriterLease(dir, { pid: Deno.pid });
+    await assertRejects(
+      () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+      V3WriterBusyError,
+    );
   });
 });
 
@@ -413,17 +469,62 @@ Deno.test("acquireV3WriterLock: a one-shot command's lost hold is not taken agai
     try {
       await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
       await other.release();
-      // Free again, yet the command does not take it back: every later
-      // commit it tries is refused, as its error says.
-      const joined = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+      // Free again, yet the command does not take it back, and nothing in
+      // it joins the lost hold (swamp-club#3564): every later commit and
+      // join is refused, as its error says.
+      await assertRejects(
+        () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+        WriterFencedError,
+      );
       assertThrows(() => assertV3WriterCurrent(dir), WriterFencedError);
-      await joined();
       assertEquals(v3WriterFence(dir), 1);
     } finally {
       await other.release();
       await command();
     }
   });
+});
+
+Deno.test("acquireV3WriterLock: a join finds a loss its renewal has not noticed yet in the lease's records (swamp-club#3564)", async () => {
+  await withTempDir(async (dir) => {
+    const command = await acquireV3WriterLock(dir);
+    try {
+      // `lock release --force`, then another writer's fence: the hold's
+      // renewal has not run since.
+      await new FileSystemControlPlaneStore(dir).putIfAbsent(
+        releasedKey(1),
+        new TextEncoder().encode(JSON.stringify({ fence: 1, by: "force" })),
+      );
+      await plantV3WriterLease(dir, { pid: Deno.ppid });
+      await assertRejects(
+        () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+        WriterFencedError,
+      );
+    } finally {
+      await command();
+    }
+  });
+});
+
+Deno.test({
+  name:
+    "acquireV3WriterLock: a join goes ahead when the lease's records cannot be read",
+  // Root reads a directory whatever its mode.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const command = await acquireV3WriterLock(dir);
+      const leaseDir = join(dir, V3_WRITER_LEASE_DIR);
+      await Deno.chmod(leaseDir, 0o000);
+      try {
+        const joined = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+        await joined();
+      } finally {
+        await Deno.chmod(leaseDir, 0o755);
+        await command();
+      }
+    });
+  },
 });
 
 Deno.test("tryAcquireV3WriterLock: the recovery's hold is renewed until it is released", async () => {

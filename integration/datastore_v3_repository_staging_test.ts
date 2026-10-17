@@ -65,6 +65,7 @@ import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlOutputRepository } from "../src/infrastructure/persistence/yaml_output_repository.ts";
 import { UnscopedWriteRefusedError } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
+import { StagedContentChangedError } from "../src/infrastructure/persistence/verified_content_stream.ts";
 import { processHostIdentity } from "../src/infrastructure/runtime/process.ts";
 import {
   catalogV3Path,
@@ -645,11 +646,46 @@ Deno.test("v3 staging: a changed file cannot restore a deleted chunk, and the co
             await Deno.writeFile(contentPath, large("changed"));
           }),
         ),
-      Error,
-      "no longer gives content",
+      // The repair reads the file again, which no longer holds what was
+      // staged (swamp-club#3564).
+      StagedContentChangedError,
     );
   });
 });
+
+for (
+  const [what, changed] of [
+    ["changed in place", () => large("changed")],
+    ["shrunk below the inline limit", () => text("small now")],
+    ["grown", () => new Uint8Array([...large("b1"), ...text("more")])],
+  ] as const
+) {
+  Deno.test(`v3 staging: a saved version's file ${what} before its unit commits is refused, and nothing lands (swamp-club#3564)`, async () => {
+    await withV3Env(async (env) => {
+      const writer = new V3Writer(env, "");
+      const contentPath = join(
+        writer.data.getDataNameDir(MODEL_TYPE, MODEL_ID, "big"),
+        "1",
+        "raw",
+      );
+      await assertRejects(
+        () =>
+          writer.run(async () => {
+            await writer.data.save(
+              MODEL_TYPE,
+              MODEL_ID,
+              data("big"),
+              large("b1"),
+            );
+            // A reader catching up over this checkout rewinds the file.
+            await Deno.writeFile(contentPath, changed());
+          }),
+        StagedContentChangedError,
+      );
+      assertEquals(await writer.commitSizes(), []);
+    });
+  });
+}
 
 /** A catalog whose pending-row writes fail, so a deferred save fails. */
 class FailingPendingCatalog extends CatalogStore {

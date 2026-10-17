@@ -131,7 +131,7 @@ async function run(writerCount: number, commands: readonly Command[]) {
           ttlMs: TTL,
           now: () => now,
           delay: () => Promise.resolve(),
-          processGone: (other) => gone.has(other),
+          judgeHolder: (record) => gone.has(record.pid) ? "gone" : "unknown",
           nonce: () => crypto.randomUUID(),
         }),
       });

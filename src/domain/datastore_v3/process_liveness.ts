@@ -1,0 +1,168 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+/**
+ * Whether the process a v3 writer record names is still running
+ * (swamp-club#3564): one rule for the writer lease, the writer marker, the
+ * checkout sidecar and the commit outbox.
+ *
+ * A record names its writer by pid and {@link ProcessIdentity}: the host
+ * and pid namespace, the kernel's boot id and the process's start time. A
+ * pid means something only on the kernel that assigned it, so a record is
+ * judged by its pid only when it was written on this kernel: the same host
+ * and namespace, and the same boot. Otherwise it is **unjudgeable**, and the
+ * verdict is `unknown`: the caller falls back to the lease's TTL and fence,
+ * never to "gone". A boot id that differs is unjudgeable too, never proof
+ * of a reboot: two machines can share a hostname and the root pid
+ * namespace's id.
+ *
+ * On this kernel, a pid that is absent, a zombie, or started at another
+ * time than the record says is `gone`; any other present pid is `alive`.
+ * When either side has no start time (the **start time is unreadable**:
+ * Windows, another user's process, a failed probe), presence alone decides,
+ * as it did before identities were recorded. The two cases are kept apart:
+ * an unreadable start time never makes a record unjudgeable, since mapping
+ * a live writer to `unknown` would let outbox recovery land its entry.
+ *
+ * @module
+ */
+
+/** The longest string an identity field may hold. */
+const MAX_IDENTITY_FIELD_LENGTH = 1024;
+
+/** Which process a record's pid belongs to, as recorded where it ran. */
+export interface ProcessIdentity {
+  /**
+   * The host and pid namespace (`processHostIdentity()`): the hostname, and
+   * on Linux the pid namespace's id.
+   */
+  readonly host: string;
+  /** The kernel's boot id, where the platform gives one. */
+  readonly bootId?: string;
+  /** The process's start time, an opaque per-platform stamp. */
+  readonly startTime?: string;
+}
+
+/** What a probe of a pid on this kernel finds, without disturbing it. */
+export interface ProcessProbe {
+  /** Whether a process with the pid exists, zombies included. */
+  readonly present: boolean;
+  /** Whether it has exited and waits to be reaped. */
+  readonly zombie: boolean;
+  /** Its start time, undefined when it cannot be read. */
+  readonly startTime?: string;
+}
+
+/** Gone, alive, or not judgeable from this kernel. */
+export type ProcessVerdict = "gone" | "alive" | "unknown";
+
+/** The writer a record names. */
+export interface RecordedProcess {
+  readonly pid: number;
+  /** Undefined in a record from a swamp before identities were recorded. */
+  readonly process?: ProcessIdentity;
+  /**
+   * Whether the caller knows the record is not this process's, from a
+   * token only this process holds (a marker's or an outbox entry's
+   * instance). A record with this process's pid that is not its own was
+   * written by a predecessor whose pid this process reuses.
+   */
+  readonly notThisProcess?: boolean;
+}
+
+/** This process, and how it probes another pid. */
+export interface LocalProcess {
+  readonly pid: number;
+  readonly identity: ProcessIdentity;
+  readonly probe: (pid: number) => ProcessProbe;
+}
+
+/** Decides whether the writer `recorded` names is still running. */
+export function judgeRecordedProcess(
+  recorded: RecordedProcess,
+  local: LocalProcess,
+): ProcessVerdict {
+  if (unjudgeable(recorded.process, local.identity)) return "unknown";
+  const identity = recorded.process!;
+  if (recorded.pid === local.pid) {
+    // This pid on this kernel is this process's. The record is a
+    // predecessor's when a token says so, or when its start time is not
+    // this process's.
+    return recorded.notThisProcess === true ||
+        startTimesDiffer(identity.startTime, local.identity.startTime)
+      ? "gone"
+      : "alive";
+  }
+  const probe = local.probe(recorded.pid);
+  if (!probe.present || probe.zombie) return "gone";
+  return startTimesDiffer(identity.startTime, probe.startTime)
+    ? "gone"
+    : "alive";
+}
+
+/**
+ * Whether a recorded identity cannot be judged from this kernel: missing,
+ * or from another host, namespace or boot. One side having a boot id and
+ * the other not is another boot as far as anyone can tell.
+ */
+function unjudgeable(
+  recorded: ProcessIdentity | undefined,
+  local: ProcessIdentity,
+): boolean {
+  return recorded === undefined || recorded.host !== local.host ||
+    recorded.bootId !== local.bootId;
+}
+
+/**
+ * Whether two start times prove two processes. When either is unreadable,
+ * nothing is proved and presence decides.
+ */
+function startTimesDiffer(
+  recorded: string | undefined,
+  probed: string | undefined,
+): boolean {
+  const startTimeUnreadable = recorded === undefined || probed === undefined;
+  return !startTimeUnreadable && recorded !== probed;
+}
+
+/**
+ * Reads a record's `process` field, or undefined when it is missing or
+ * malformed: such a record is judged as one from an older swamp.
+ */
+export function parseProcessIdentity(
+  value: unknown,
+): ProcessIdentity | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const { host, bootId, startTime } = value as Record<string, unknown>;
+  if (!isField(host)) return undefined;
+  if (bootId !== undefined && !isField(bootId)) return undefined;
+  if (startTime !== undefined && !isField(startTime)) return undefined;
+  return {
+    host,
+    ...(bootId !== undefined ? { bootId } : {}),
+    ...(startTime !== undefined ? { startTime } : {}),
+  };
+}
+
+function isField(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 &&
+    value.length <= MAX_IDENTITY_FIELD_LENGTH;
+}

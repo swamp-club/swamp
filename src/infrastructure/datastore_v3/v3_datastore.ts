@@ -95,6 +95,7 @@ import {
 } from "./outbox_commit_sink.ts";
 import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { registerOwnCommitWriter } from "./commit_outbox_recovery.ts";
+import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { reconcileRefusedRuns } from "./refused_run_records.ts";
@@ -455,7 +456,11 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const commitsDbPath = v3CommitsDbPath(datastorePath, repoDir);
   ensureDirSync(dirname(commitsDbPath));
   const commitStore = SqliteCommitStore.open(commitsDbPath);
-  const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath));
+  const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath), {
+    // Recovery judges whether this process still runs by it
+    // (swamp-club#3564).
+    writerProcess: async () => (await localProcess()).identity,
+  });
   const bucket = v3BucketBindingAt(datastorePath);
   // A filesystem datastore's storage also sweeps its stale temp files; a
   // provider's storage has none to sweep.
