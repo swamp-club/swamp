@@ -74,6 +74,7 @@ import {
 } from "./v3_writer_lock.ts";
 import {
   judgeRecordedProcess,
+  type LocalProcess,
   parseProcessIdentity,
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
@@ -822,17 +823,29 @@ async function anotherProcessWritesCheckout(
   ) {
     return false;
   }
-  const local = await localProcess();
-  if (recorded.fence === undefined) {
-    // This process's own: it is the writer, not another.
-    if (recorded.pid === local.pid && recorded.hostname === Deno.hostname()) {
-      return false;
-    }
-    const holder = await v3WriterLeaseHolder(datastorePath);
-    return holder !== null && legacyWriterWritesCheckout(recorded, holder);
-  }
   // Judged before the lease is read: a writer's own sidecar, or a gone
   // writer's, costs no read of the lease's records.
+  if (!mayBeAnotherWriter(recorded, await localProcess())) return false;
+  const holder = await v3WriterLeaseHolder(datastorePath);
+  if (holder === null) return false;
+  return recorded.fence === undefined
+    ? legacyWriterWritesCheckout(recorded, holder)
+    : holder.fence === recorded.fence;
+}
+
+/**
+ * Whether the sidecar may name another process that still writes: not this
+ * process's own record, and, for a record with an identity, not one judged
+ * gone.
+ */
+function mayBeAnotherWriter(
+  recorded: WriterCheckoutRecord,
+  local: LocalProcess,
+): boolean {
+  if (recorded.fence === undefined) {
+    return !(recorded.pid === local.pid &&
+      recorded.hostname === Deno.hostname());
+  }
   const verdict = judgeRecordedProcess(
     {
       pid: recorded.pid,
@@ -842,9 +855,7 @@ async function anotherProcessWritesCheckout(
   );
   if (verdict === "gone") return false;
   // This process's own record: it is the writer, not another.
-  if (verdict === "alive" && recorded.pid === local.pid) return false;
-  const holder = await v3WriterLeaseHolder(datastorePath);
-  return holder !== null && holder.fence === recorded.fence;
+  return !(verdict === "alive" && recorded.pid === local.pid);
 }
 
 /**

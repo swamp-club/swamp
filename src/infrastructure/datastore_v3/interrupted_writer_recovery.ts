@@ -240,7 +240,7 @@ export async function recoverInterruptedWriter(
   // A writer writes only while it holds the lease: one this process holds
   // now has no other writer.
   if (options.holdsWriterLock) {
-    return await recover(handle, repoDir, marker, options.signal);
+    return await recover(handle, repoDir, marker, state, options.signal);
   }
   if (await lockHeldByLiveProcess(handle.datastorePath)) {
     if (state === "unknown") {
@@ -271,7 +271,7 @@ export async function recoverInterruptedWriter(
     ) {
       return undefined;
     }
-    return await recover(handle, repoDir, marker, options.signal);
+    return await recover(handle, repoDir, marker, state, options.signal);
   } finally {
     await release();
   }
@@ -281,8 +281,15 @@ async function recover(
   handle: V3Datastore,
   repoDir: string,
   marker: WriterMarker,
+  state: "interrupted" | "unknown",
   signal: AbortSignal | undefined,
 ): Promise<string[]> {
+  if (state === "unknown") {
+    // Its process could not be judged from here (another host, pid
+    // namespace or boot): the lease alone says it no longer writes.
+    logger
+      .info`Recovering ${repoDir}: its v3 writer marker names ${marker.hostname} (pid ${marker.pid}), which this process cannot judge, and the writer lease is no longer that writer's`;
+  }
   const removed = await handle.recoverInterruptedWriter(marker.since, signal);
   if (removed.length > 0) {
     const files = removed.length === 1 ? "file" : "files";
