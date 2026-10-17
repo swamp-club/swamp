@@ -97,6 +97,7 @@ Deno.test("commit outbox: openers racing on a schema 1 outbox all end on schema 
     );
     const check = new DatabaseSync(path);
     try {
+      check.exec("PRAGMA busy_timeout=5000");
       assertEquals(
         (check.prepare("PRAGMA user_version").get() as {
           user_version: number;

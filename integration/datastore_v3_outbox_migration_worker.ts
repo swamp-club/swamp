@@ -47,15 +47,19 @@ scope.onmessage = async (event) => {
   scope.postMessage({ kind: "ready" });
   Atomics.wait(flag, 0, 0);
   const outbox = new SqliteCommitOutbox(path);
+  let result: OutboxOpenResult;
   try {
     const { entries } = await outbox.entries();
-    scope.postMessage({ kind: "opened", entries: entries.length });
+    result = { kind: "opened", entries: entries.length };
   } catch (error) {
-    scope.postMessage({
+    result = {
       kind: "failed",
       message: error instanceof Error ? error.message : String(error),
-    });
+    };
   } finally {
     await outbox.close();
   }
+  // Reported once the connection is closed, so the test reads the file after
+  // every opener let go of it.
+  scope.postMessage(result);
 };
