@@ -22,7 +22,11 @@ import { join } from "@std/path";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { Commit, CommitWriter } from "../../domain/datastore_v3/commit.ts";
-import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
+import {
+  type HeadIdentity,
+  outboxKeyOf,
+} from "../../domain/datastore_v3/commit_outbox.ts";
+import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   blobPut,
   MemoryStorage,
@@ -269,6 +273,33 @@ Deno.test("recoverCommitOutbox: leaves a live writer's entry past the floor, and
   });
 });
 
+Deno.test("recoverCommitOutbox: a left entry whose writer resumes and is refused is gone once it discards, and a later recovery lands nothing", async () => {
+  await withFixture(async ({ store, outbox, prepare, recover }) => {
+    const entry = prepared(1, [await savePut("a", 1)], "t1");
+    await prepare(entry);
+    const alive = (writer: CommitWriter) => writer.instance === "dead";
+    // Its writer was alive at the recovery: left, and the floor rose.
+    assertEquals((await recover(2, alive)).skipped, 1);
+    assertEquals(
+      (await outbox.entries()).entries.map((e) => e.leftAtFence),
+      [2],
+    );
+    // The writer resumes; the store refuses its fenced append, and it
+    // discards the entry, as a refused unit does (swamp-club#3506). Left
+    // entries rely on this discard: one that failed would leave a landable
+    // entry, the V3-08 case.
+    await assertRejects(() => store.append(entry), WriterFencedError);
+    await outbox.discard([outboxKeyOf(entry)]);
+    // The writer is gone now: nothing is left to land.
+    const later = await recover(3);
+    assertEquals(
+      [later.landed, later.settled, later.skipped, later.drops.length],
+      [0, 0, 0, 0],
+    );
+    assertEquals(await commitsOf(store), []);
+  });
+});
+
 Deno.test("recoverCommitOutbox: an entry prepared again after a recovery left it is overtaken like any other", async () => {
   await withFixture(async ({ store, outbox, prepare, recover }) => {
     const entry = prepared(1, [await savePut("a", 1)], "t1");
@@ -297,6 +328,7 @@ Deno.test("recoverCommitOutbox: judges a writer by the identity it prepared unde
       pid === 4242
         ? { present: true, zombie: false, startTime: "t-live" }
         : { present: false, zombie: false },
+    bootIdRequired: true,
   });
   try {
     for (

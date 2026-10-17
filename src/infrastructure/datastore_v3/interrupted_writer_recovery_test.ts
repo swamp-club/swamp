@@ -121,6 +121,7 @@ Deno.test("writerMarkerState: knows this process by its token, judges a process 
       zombie: false,
       ...(startTime !== undefined ? { startTime } : {}),
     }),
+    bootIdRequired: true,
   });
   const alive = local(true, "t1");
   const gone = local(false);

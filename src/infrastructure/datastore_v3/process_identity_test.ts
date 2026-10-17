@@ -86,6 +86,7 @@ Deno.test("setLocalProcessForTesting: plays another process until cleared", asyn
     pid: 7,
     identity: { host: "played" },
     probe: () => ({ present: true, zombie: false }),
+    bootIdRequired: true,
   };
   setLocalProcessForTesting(played);
   try {

@@ -30,7 +30,10 @@
  * verdict is `unknown`: the caller falls back to the lease's TTL and fence,
  * never to "gone". A boot id that differs is unjudgeable too, never proof
  * of a reboot: two machines can share a hostname and the root pid
- * namespace's id.
+ * namespace's id. So is a boot id missing on either side where the platform
+ * has one (Linux, macOS: a read that failed, an image without `cat`), since
+ * the same hostname in the root namespace then names nothing. Only where no
+ * boot id exists (Windows) do the host and pid alone decide, as before.
  *
  * On this kernel, a pid that is absent, a zombie, or started at another
  * time than the record says is `gone`; any other present pid is `alive`.
@@ -91,6 +94,11 @@ export interface LocalProcess {
   readonly pid: number;
   readonly identity: ProcessIdentity;
   readonly probe: (pid: number) => ProcessProbe;
+  /**
+   * Whether the platform has a boot id, so a record or this process lacking
+   * one cannot be placed on this kernel: false only on Windows.
+   */
+  readonly bootIdRequired: boolean;
 }
 
 /** Decides whether the writer `recorded` names is still running. */
@@ -98,7 +106,7 @@ export function judgeRecordedProcess(
   recorded: RecordedProcess,
   local: LocalProcess,
 ): ProcessVerdict {
-  if (unjudgeable(recorded.process, local.identity)) return "unknown";
+  if (unjudgeable(recorded.process, local)) return "unknown";
   const identity = recorded.process!;
   if (recorded.pid === local.pid) {
     // This pid on this kernel is this process's. The record is a
@@ -119,14 +127,18 @@ export function judgeRecordedProcess(
 /**
  * Whether a recorded identity cannot be judged from this kernel: missing,
  * or from another host, namespace or boot. One side having a boot id and
- * the other not is another boot as far as anyone can tell.
+ * the other not is another boot as far as anyone can tell, and where the
+ * platform has boot ids, neither side having one places nothing.
  */
 function unjudgeable(
   recorded: ProcessIdentity | undefined,
-  local: ProcessIdentity,
+  local: LocalProcess,
 ): boolean {
-  return recorded === undefined || recorded.host !== local.host ||
-    recorded.bootId !== local.bootId;
+  if (recorded === undefined || recorded.host !== local.identity.host) {
+    return true;
+  }
+  if (recorded.bootId !== local.identity.bootId) return true;
+  return local.bootIdRequired && recorded.bootId === undefined;
 }
 
 /**

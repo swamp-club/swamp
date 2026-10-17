@@ -35,11 +35,13 @@ const HERE: ProcessIdentity = {
 function local(
   probes: Record<number, ProcessProbe> = {},
   identity: ProcessIdentity = HERE,
+  bootIdRequired = true,
 ): LocalProcess {
   return {
     pid: 10,
     identity,
     probe: (pid) => probes[pid] ?? { present: false, zombie: false },
+    bootIdRequired,
   };
 }
 
@@ -79,6 +81,27 @@ Deno.test("judgeRecordedProcess: another boot is unknown, never proof the writer
   assertEquals(
     judgeRecordedProcess({ pid: 42, process: HERE }, local({}, noBoot)),
     "unknown",
+  );
+});
+
+Deno.test("judgeRecordedProcess: with no boot id on either side, the pid is judged only where the platform has none (Windows)", () => {
+  const { bootId: _, ...noBoot } = HERE;
+  const recorded = { pid: 42, process: noBoot };
+  // Linux and macOS: two machines may share the hostname and the root pid
+  // namespace's id, so nothing places the record on this kernel.
+  assertEquals(judgeRecordedProcess(recorded, local({}, noBoot)), "unknown");
+  assertEquals(
+    judgeRecordedProcess(recorded, local({ 42: running() }, noBoot)),
+    "unknown",
+  );
+  // Windows: the host and pid decide, as before.
+  assertEquals(
+    judgeRecordedProcess(recorded, local({}, noBoot, false)),
+    "gone",
+  );
+  assertEquals(
+    judgeRecordedProcess(recorded, local({ 42: running() }, noBoot, false)),
+    "alive",
   );
 });
 

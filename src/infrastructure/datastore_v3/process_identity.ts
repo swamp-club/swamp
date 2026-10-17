@@ -68,7 +68,13 @@ export function localProcess(): Promise<LocalProcess> {
       ...(bootId !== undefined ? { bootId } : {}),
       ...(startTime !== undefined ? { startTime } : {}),
     };
-    return { pid: Deno.pid, identity, probe: probeProcess };
+    return {
+      pid: Deno.pid,
+      identity,
+      probe: probeProcess,
+      // Windows has no boot id; everywhere else one missing places nothing.
+      bootIdRequired: Deno.build.os !== "windows",
+    };
   });
   return resolved;
 }

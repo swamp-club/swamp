@@ -43,6 +43,7 @@ const arbCase = fc.record({
   notThisProcess: fc.boolean(),
   here: arbIdentity,
   probe: arbProbe,
+  bootIdRequired: fc.boolean(),
 });
 
 Deno.test("judgeRecordedProcess: a record not written on this kernel is never judged gone", () => {
@@ -54,10 +55,18 @@ Deno.test("judgeRecordedProcess: a record not written on this kernel is never ju
           ...(c.recorded !== undefined ? { process: c.recorded } : {}),
           notThisProcess: c.notThisProcess,
         },
-        { pid: 1, identity: c.here, probe: () => c.probe },
+        {
+          pid: 1,
+          identity: c.here,
+          probe: () => c.probe,
+          bootIdRequired: c.bootIdRequired,
+        },
       );
+      // Where the platform has boot ids, none on both sides places nothing.
       const sameKernel = c.recorded !== undefined &&
-        c.recorded.host === c.here.host && c.recorded.bootId === c.here.bootId;
+        c.recorded.host === c.here.host &&
+        c.recorded.bootId === c.here.bootId &&
+        (!c.bootIdRequired || c.here.bootId !== undefined);
       if (!sameKernel) assert(verdict === "unknown", `got ${verdict}`);
       else assert(verdict !== "unknown", "a same-kernel record is judged");
     }),
@@ -70,7 +79,10 @@ Deno.test("judgeRecordedProcess: an unreadable start time never turns a present 
       arbIdentity,
       arbProbe,
       fc.boolean(),
-      (here, probe, recordedSide) => {
+      fc.boolean(),
+      (here, probe, recordedSide, bootIdRequired) => {
+        // A kernel judged by pid: where boot ids exist, it has one.
+        fc.pre(!bootIdRequired || here.bootId !== undefined);
         // Same kernel; one side's start time unreadable.
         const { startTime: _, ...unstamped } = here;
         const verdict = judgeRecordedProcess(
@@ -85,6 +97,7 @@ Deno.test("judgeRecordedProcess: an unreadable start time never turns a present 
                 ? { startTime: probe.startTime }
                 : {}),
             }),
+            bootIdRequired,
           },
         );
         assert(verdict === "alive", `got ${verdict}`);
