@@ -3433,3 +3433,57 @@ Deno.test("validateModel: refuseLiteralSensitiveGlobals does not refuse an expre
     [],
   );
 });
+
+Deno.test("findLiteralSensitiveGlobals: does not refuse a default an upgrade fills only when a vault-referenced key is dropped (swamp-club#3555)", () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token ?? "none" };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+    },
+  );
+  // The run upgrades this file as stored, so apiKey keeps the reference.
+  const definition = Definition.create({
+    name: "stale-token-vault",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobals: catches a moved literal when the upgrade also reads an expression-valued global (swamp-club#3555)", () => {
+  const modelDef = renamingModel(
+    (old) => ({
+      apiKey: old.token,
+      region: (old.region as string).toLowerCase(),
+    }),
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token-region",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY", region: "${{ inputs.region }}" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    ["apiKey"],
+  );
+});

@@ -21,7 +21,8 @@ import type { z } from "zod";
 import type { MethodContext, ModelDefinition } from "./model.ts";
 import { modelRegistry } from "./model.ts";
 import { buildMethodContext } from "./method_context.ts";
-import { Definition, DefinitionSchema } from "../definitions/definition.ts";
+import type { Definition } from "../definitions/definition.ts";
+import { DefinitionSchema } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import {
@@ -490,43 +491,28 @@ export function expressionPathErrorInModelWords(
 export class DefaultModelValidationService implements ModelValidationService {
   /**
    * Paths of sensitive global arguments that hold a literal secret in a
-   * stored definition, as stored and after its upgrade chain: a run saves the
-   * upgraded copy, and an upgrade can move a literal into a sensitive field.
-   * Pass only a definition as stored (see
+   * stored definition, as stored and after its upgrade chain: a run upgrades
+   * the stored file, expressions included, and saves the result, and an
+   * upgrade can move a literal into a sensitive field. Both copies are read,
+   * so a key an upgrade drops is still refused; when the upgrade throws, only
+   * the stored copy is. Pass only a definition as stored (see
    * {@link ModelValidationOptions.refuseLiteralSensitiveGlobals}).
    */
   findLiteralSensitiveGlobals(
     definition: Definition,
     modelDef: ModelDefinition,
   ): string[] {
-    return this.literalSensitiveGlobals(
-      definition,
-      this.upgradeInMemory(definition, modelDef).definition,
-      modelDef,
-    );
-  }
-
-  /**
-   * A literal secret in a sensitive field sits in cleartext in the stored
-   * file; a hand-edited one never met the save-time refusal. Both copies are
-   * read, so a key an upgrade drops or overwrites is still refused. Without an
-   * upgrade, or when it fails, the two are the same definition.
-   */
-  private literalSensitiveGlobals(
-    stored: Definition,
-    upgraded: Definition,
-    modelDef: ModelDefinition,
-  ): string[] {
     const paths = findLiteralSensitiveGlobalArgs(
       modelDef.globalArguments,
-      stored.globalArguments,
+      definition.globalArguments,
     );
-    if (
-      upgraded === stored && containsSwampExpression(stored.globalArguments)
-    ) {
-      upgraded = this.upgradeLiteralGlobals(stored, modelDef);
+    let upgraded: Definition;
+    try {
+      upgraded = new DefinitionUpgradeService().upgrade(definition, modelDef)
+        .definition;
+    } catch {
+      return paths;
     }
-    if (upgraded === stored) return paths;
     return [
       ...new Set([
         ...paths,
@@ -536,33 +522,6 @@ export class DefaultModelValidationService implements ModelValidationService {
         ),
       ]),
     ];
-  }
-
-  /**
-   * Upgrades a copy holding only the global arguments with no expression in
-   * them, since upgradeInMemory declines a definition with any. A literal is
-   * never an expression, so the copy answers for every literal, and an
-   * expression is never mistaken for one. Returns the definition when the
-   * upgrade throws.
-   */
-  private upgradeLiteralGlobals(
-    definition: Definition,
-    modelDef: ModelDefinition,
-  ): Definition {
-    const data = definition.toData();
-    const literalGlobals = Object.fromEntries(
-      Object.entries(data.globalArguments ?? {}).filter(([, value]) =>
-        !containsSwampExpression(value)
-      ),
-    );
-    try {
-      return new DefinitionUpgradeService().upgrade(
-        Definition.fromData({ ...data, globalArguments: literalGlobals }),
-        modelDef,
-      ).definition;
-    } catch {
-      return definition;
-    }
   }
 
   async validateModel(
@@ -577,7 +536,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     // (swamp-club#3196). Every other check reads the definition as authored.
     const upgrade = this.upgradeInMemory(definition, modelDef);
     const leakedArgs = options?.refuseLiteralSensitiveGlobals
-      ? this.literalSensitiveGlobals(definition, upgrade.definition, modelDef)
+      ? this.findLiteralSensitiveGlobals(definition, modelDef)
       : [];
     const globalArgsResult = upgrade.failure
       ? Promise.resolve(upgrade.failure)
