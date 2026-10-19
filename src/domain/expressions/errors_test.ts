@@ -19,11 +19,15 @@
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { modelWording } from "../behavior_wording.ts";
+import { UserError } from "../errors.ts";
 import {
   CyclicDependencyError,
   ExpressionError,
   InvalidExpressionError,
   ModelNotFoundError,
+  SECRET_DESTINATION_REFUSED,
+  SECRET_OPERATION_UNSUPPORTED,
+  SecretRefusedError,
   UnresolvedExpressionError,
 } from "./errors.ts";
 
@@ -134,4 +138,26 @@ Deno.test("UnresolvedExpressionError: builds its model spelling from a worded ca
 Deno.test("UnresolvedExpressionError: a cause without a model spelling leaves none", () => {
   const error = new UnresolvedExpressionError("e", "p", new Error("boom"));
   assertEquals(modelWording(error), undefined);
+});
+
+Deno.test("SecretRefusedError: a UserError carrying its stable code, the operation and the expression, with no cause", () => {
+  const error = new SecretRefusedError(
+    SECRET_OPERATION_UNSUPPORTED,
+    "Secret == string",
+    "inputs.token == 'x'",
+  );
+  assertInstanceOf(error, UserError);
+  assertEquals(error.code, "secret_operation_unsupported");
+  assertEquals(error.operation, "Secret == string");
+  assertEquals(error.expression, "inputs.token == 'x'");
+  assertEquals(error.cause, undefined);
+  assertEquals(error.name, "SecretRefusedError");
+  assertEquals(
+    error.message,
+    "Expression refused a secret (secret_operation_unsupported): Secret == string, in inputs.token == 'x'",
+  );
+  assertEquals(
+    new SecretRefusedError(SECRET_DESTINATION_REFUSED, "a", "b").code,
+    "secret_destination_refused",
+  );
 });

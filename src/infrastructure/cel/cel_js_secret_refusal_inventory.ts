@@ -35,6 +35,9 @@
  * - `named-delivery`: the value is passed along by design and the callee owns
  *   it (`dyn(dyn)`, `cel.bind`, `optional.of`, `optional.value`,
  *   `optional.orValue`, and the `inputs` of `CelModelNamespace.method`).
+ *   Until `model.method` converts its inputs at the boundary (Section 4.5),
+ *   the internal environment walks them and refuses a `Secret` there with
+ *   `secret_destination_refused`, so none reaches the method.
  * - `argument-walk`: the position takes a list a `Secret` may sit in, and the
  *   handler walks it at run time (`secret_destination_refused` for the vary
  *   list of the data accessors). No signature can refuse an element.
@@ -63,11 +66,9 @@
  *   `integration/cel_secret_refusal_coverage_rules_test.ts` fails when they
  *   drift from the source.
  *
- * This module carries no test dependency on purpose: Phase 3 moves it to
- * `src/infrastructure/cel/` as the source of the production registrations.
- * Until then the affected-commands rules (`scripts/affected_commands.ts`)
- * read it as an unclassified `src/` file, so a change to it widens the UAT
- * scope to every command. That is conservative and accepted.
+ * It is the source of the production registrations
+ * (`secret_registrations.ts`), and the Phase 1.2 pins in `cel_js_pins/`
+ * observe cel-js against it.
  */
 
 import type { DefinitionFunction, Environment } from "cel-js";
@@ -183,10 +184,10 @@ export const ALLOWED_OPERATOR_SIGNATURES: readonly string[] = [
 
 /**
  * swamp's own registrations in the internal environment (cel_evaluator.ts and
- * cel_grammar.ts) and the query view (data_query_service.ts), as cel-js
- * signatures. The fitness test keeps this list equal to the source.
+ * cel_grammar.ts), as cel-js signatures. The internal environment registers
+ * the refusals these yield.
  */
-export const SWAMP_FUNCTION_SIGNATURES: readonly string[] = [
+export const INTERNAL_FUNCTION_SIGNATURES: readonly string[] = [
   "literal(string): string",
   "CelFileNamespace.contents(string, string): dyn",
   "CelDataNamespace.latest(string, string): dyn",
@@ -202,9 +203,25 @@ export const SWAMP_FUNCTION_SIGNATURES: readonly string[] = [
   "CelWorkersNamespace.connected(): dyn",
   "CelModelNamespace.method(string, string): dyn",
   "CelModelNamespace.method(string, string, dyn): dyn",
+];
+
+/**
+ * swamp's own registrations in the query view (data_query_service.ts). Its
+ * refusals arrive with the query view (design Section 6.2, Phase 4).
+ */
+export const QUERY_VIEW_FUNCTION_SIGNATURES: readonly string[] = [
   "latestRun(string): dyn",
   "model(string): bool",
   "behavior(string): bool",
+];
+
+/**
+ * Every function swamp registers, in the internal environment and the query
+ * view. The fitness test keeps this list equal to the source.
+ */
+export const SWAMP_FUNCTION_SIGNATURES: readonly string[] = [
+  ...INTERNAL_FUNCTION_SIGNATURES,
+  ...QUERY_VIEW_FUNCTION_SIGNATURES,
 ];
 
 /**

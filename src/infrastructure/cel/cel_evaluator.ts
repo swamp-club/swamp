@@ -30,6 +30,27 @@ import {
   LITERAL_FUNCTION_SIGNATURE,
 } from "../../domain/expressions/cel_grammar.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
+import {
+  SECRET_OPERATION_UNSUPPORTED,
+  SecretRefusedError,
+} from "../../domain/expressions/errors.ts";
+import type { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
+import {
+  INTERNAL_FUNCTION_SIGNATURES,
+  SWAMP_NAMESPACE_TYPES,
+} from "./cel_js_secret_refusal_inventory.ts";
+import { hasContainerComparison } from "./container_comparison.ts";
+import {
+  detachForDestination,
+  refuseUnboundSecrets,
+  SecretBoundary,
+} from "./secret_boundary.ts";
+import { type FaultScope, runInFaultScope } from "./secret_fault_context.ts";
+import {
+  registerAllowedSet,
+  registerSecretRefusals,
+  registerSecretType,
+} from "./secret_registrations.ts";
 
 /**
  * Result of expression validation.
@@ -517,6 +538,233 @@ export async function prepareExpressionsIn(
 }
 
 /**
+ * The internal environment's options. Internal: only tests set them until
+ * typed-secrets Phase 4 turns the path on for every entry point
+ * (design/enablers/typed-secrets.md Section 10.3).
+ */
+export interface CelEvaluatorOptions {
+  /**
+   * The `Secret` value: its type, the allowed set and every refusal the
+   * inventory yields, the fault context, the container rule and the boundary
+   * conversion. Off, the environment is exactly what it was before them: a
+   * custom binary overload marks every use of its operator maybe-async
+   * (fact 4), so nothing is registered.
+   */
+  readonly typedSecrets?: boolean;
+}
+
+/** What one evaluation runs with. */
+export interface EvaluationScope {
+  /**
+   * The run's issuing bag (a delivery view cannot issue). With typed
+   * secrets on, sentinels it issued read as a `Secret`, and a `Secret`
+   * result leaves as a sentinel issued into it.
+   */
+  readonly secretBag?: VaultSecretBag;
+}
+
+/**
+ * Builds the internal environment: the extension baseline plus swamp's
+ * namespace types and their receiver methods.
+ */
+export function createInternalCelEnvironment(
+  options: CelEvaluatorOptions = {},
+): Environment {
+  const env = createExtensionCelEnvironment();
+  // Destinations that take no secret: with typed secrets on, a value bound
+  // for one is walked and copied, and a Secret in it is refused.
+  const toDestination: <T>(value: T, operation: string) => T =
+    options.typedSecrets
+      ? <T>(value: T, operation: string) =>
+        detachForDestination(value, operation) as T
+      : <T>(value: T) => value;
+
+  // Register namespace types so cel-js recognizes them via constructor
+  // matching instead of trying to infer them as maps.
+  env.registerType("CelFileNamespace", CelFileNamespace);
+  env.registerType("CelDataNamespace", CelDataNamespace);
+  env.registerType("CelWorkersNamespace", CelWorkersNamespace);
+  env.registerType("CelModelNamespace", CelModelNamespace);
+
+  // literal('...') returns its string unchanged, so one value can mix a
+  // swamp expression with another service's template text:
+  // `${{ inputs.env }} on ${{ literal('{{host.name}}') }}`.
+  env.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);
+
+  // Register receiver methods for file namespace
+  env.registerFunction(
+    "CelFileNamespace.contents(string, string): dyn",
+    (receiver: CelFileNamespace, modelName: string, specName: string) =>
+      receiver.contents(modelName, specName),
+  );
+
+  // Register receiver methods for data namespace
+  env.registerFunction(
+    "CelDataNamespace.latest(string, string): dyn",
+    (receiver: CelDataNamespace, modelName: string, dataName: string) =>
+      receiver.latest(modelName, dataName),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.version(string, string, int): dyn",
+    (
+      receiver: CelDataNamespace,
+      modelName: string,
+      dataName: string,
+      version: unknown,
+    ) => receiver.version(modelName, dataName, version),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.listVersions(string, string): dyn",
+    (receiver: CelDataNamespace, modelName: string, dataName: string) =>
+      receiver.listVersions(modelName, dataName),
+  );
+
+  // Register vary-aware overloads (3rd arg is list<dyn>)
+  env.registerFunction(
+    "CelDataNamespace.latest(string, string, list<dyn>): dyn",
+    (
+      receiver: CelDataNamespace,
+      modelName: string,
+      dataName: string,
+      varyValues: unknown[],
+    ) =>
+      receiver.latest(
+        modelName,
+        dataName,
+        toDestination(varyValues, "the vary values of data.latest"),
+      ),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.version(string, string, list<dyn>, int): dyn",
+    (
+      receiver: CelDataNamespace,
+      modelName: string,
+      dataName: string,
+      varyValues: unknown[],
+      version: unknown,
+    ) =>
+      receiver.version(
+        modelName,
+        dataName,
+        toDestination(varyValues, "the vary values of data.version"),
+        version,
+      ),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.listVersions(string, string, list<dyn>): dyn",
+    (
+      receiver: CelDataNamespace,
+      modelName: string,
+      dataName: string,
+      varyValues: unknown[],
+    ) =>
+      receiver.listVersions(
+        modelName,
+        dataName,
+        toDestination(varyValues, "the vary values of data.listVersions"),
+      ),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.findByTag(string, string): dyn",
+    (receiver: CelDataNamespace, tagKey: string, tagValue: string) =>
+      receiver.findByTag(tagKey, tagValue),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.findBySpec(string, string): dyn",
+    (receiver: CelDataNamespace, modelName: string, specName: string) =>
+      receiver.findBySpec(modelName, specName),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.query(string): dyn",
+    (receiver: CelDataNamespace, predicate: string) =>
+      receiver.query(predicate),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.query(string, string): dyn",
+    (receiver: CelDataNamespace, predicate: string, select: string) =>
+      receiver.query(predicate, select),
+  );
+
+  // Register receiver methods for workers namespace
+  env.registerFunction(
+    "CelWorkersNamespace.connected(): dyn",
+    (receiver: CelWorkersNamespace) => receiver.connected(),
+  );
+
+  // Register receiver methods for model namespace
+  env.registerFunction(
+    "CelModelNamespace.method(string, string): dyn",
+    (
+      receiver: CelModelNamespace,
+      modelName: string,
+      methodName: string,
+    ) => receiver.method(modelName, methodName),
+  );
+
+  env.registerFunction(
+    "CelModelNamespace.method(string, string, dyn): dyn",
+    (
+      receiver: CelModelNamespace,
+      modelName: string,
+      methodName: string,
+      inputs: unknown,
+    ) =>
+      receiver.method(
+        modelName,
+        methodName,
+        // Until model.method delivers its inputs through the boundary
+        // conversion (typed-secrets 3.5), a secret in them is refused.
+        toDestination(inputs, "the inputs of model.method") as Record<
+          string,
+          unknown
+        >,
+      ),
+  );
+
+  if (options.typedSecrets) {
+    registerSecretType(env);
+    registerAllowedSet(env);
+    registerSecretRefusals(env, {
+      customTypes: SWAMP_NAMESPACE_TYPES,
+      swampSignatures: INTERNAL_FUNCTION_SIGNATURES,
+    });
+  }
+  return env;
+}
+
+/** The error for a Promise the synchronous path cannot await. */
+function unresolvedPromiseError(expression: string): InvalidExpressionError {
+  return new InvalidExpressionError(
+    "Expression returned an unresolved Promise. " +
+      "Async CEL functions (data.latest, data.findByTag, " +
+      "data.findBySpec, data.query) cannot be used in " +
+      "synchronously-evaluated contexts like forEach.in. " +
+      "Move the async call into a parent workflow's task.inputs " +
+      "(which IS awaited) and pass the resolved value to a child " +
+      "workflow. See: .claude/skills/swamp/references/workflow/" +
+      "references/nested-workflows.md#when-to-use-nested-workflows",
+    expression,
+  );
+}
+
+/** One evaluation with typed secrets on, parsed and bound. */
+interface SecretEvaluation {
+  readonly evaluate: () => unknown;
+  /** Whether the expression holds a container comparison. */
+  readonly containerComparison: boolean;
+  /** The conversion, when the evaluation has a run's bag. */
+  readonly boundary?: SecretBoundary;
+}
+
+/**
  * CEL evaluator that wraps the cel-js library.
  *
  * Uses the cel-js Environment class with registered types and receiver methods
@@ -526,138 +774,11 @@ export async function prepareExpressionsIn(
 export class CelEvaluator {
   private readonly env: Environment;
   private readonly warnedPatterns = new Set<string>();
+  private readonly typedSecrets: boolean;
 
-  constructor() {
-    this.env = createExtensionCelEnvironment();
-
-    // Register namespace types so cel-js recognizes them via constructor
-    // matching instead of trying to infer them as maps.
-    this.env.registerType("CelFileNamespace", CelFileNamespace);
-    this.env.registerType("CelDataNamespace", CelDataNamespace);
-    this.env.registerType("CelWorkersNamespace", CelWorkersNamespace);
-    this.env.registerType("CelModelNamespace", CelModelNamespace);
-
-    // literal('...') returns its string unchanged, so one value can mix a
-    // swamp expression with another service's template text:
-    // `${{ inputs.env }} on ${{ literal('{{host.name}}') }}`.
-    this.env.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);
-
-    // Register receiver methods for file namespace
-    this.env.registerFunction(
-      "CelFileNamespace.contents(string, string): dyn",
-      (receiver: CelFileNamespace, modelName: string, specName: string) =>
-        receiver.contents(modelName, specName),
-    );
-
-    // Register receiver methods for data namespace
-    this.env.registerFunction(
-      "CelDataNamespace.latest(string, string): dyn",
-      (receiver: CelDataNamespace, modelName: string, dataName: string) =>
-        receiver.latest(modelName, dataName),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.version(string, string, int): dyn",
-      (
-        receiver: CelDataNamespace,
-        modelName: string,
-        dataName: string,
-        version: unknown,
-      ) => receiver.version(modelName, dataName, version),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.listVersions(string, string): dyn",
-      (receiver: CelDataNamespace, modelName: string, dataName: string) =>
-        receiver.listVersions(modelName, dataName),
-    );
-
-    // Register vary-aware overloads (3rd arg is list<dyn>)
-    this.env.registerFunction(
-      "CelDataNamespace.latest(string, string, list<dyn>): dyn",
-      (
-        receiver: CelDataNamespace,
-        modelName: string,
-        dataName: string,
-        varyValues: unknown[],
-      ) => receiver.latest(modelName, dataName, varyValues),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.version(string, string, list<dyn>, int): dyn",
-      (
-        receiver: CelDataNamespace,
-        modelName: string,
-        dataName: string,
-        varyValues: unknown[],
-        version: unknown,
-      ) => receiver.version(modelName, dataName, varyValues, version),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.listVersions(string, string, list<dyn>): dyn",
-      (
-        receiver: CelDataNamespace,
-        modelName: string,
-        dataName: string,
-        varyValues: unknown[],
-      ) => receiver.listVersions(modelName, dataName, varyValues),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.findByTag(string, string): dyn",
-      (receiver: CelDataNamespace, tagKey: string, tagValue: string) =>
-        receiver.findByTag(tagKey, tagValue),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.findBySpec(string, string): dyn",
-      (receiver: CelDataNamespace, modelName: string, specName: string) =>
-        receiver.findBySpec(modelName, specName),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.query(string): dyn",
-      (receiver: CelDataNamespace, predicate: string) =>
-        receiver.query(predicate),
-    );
-
-    this.env.registerFunction(
-      "CelDataNamespace.query(string, string): dyn",
-      (receiver: CelDataNamespace, predicate: string, select: string) =>
-        receiver.query(predicate, select),
-    );
-
-    // Register receiver methods for workers namespace
-    this.env.registerFunction(
-      "CelWorkersNamespace.connected(): dyn",
-      (receiver: CelWorkersNamespace) => receiver.connected(),
-    );
-
-    // Register receiver methods for model namespace
-    this.env.registerFunction(
-      "CelModelNamespace.method(string, string): dyn",
-      (
-        receiver: CelModelNamespace,
-        modelName: string,
-        methodName: string,
-      ) => receiver.method(modelName, methodName),
-    );
-
-    this.env.registerFunction(
-      "CelModelNamespace.method(string, string, dyn): dyn",
-      (
-        receiver: CelModelNamespace,
-        modelName: string,
-        methodName: string,
-        inputs: unknown,
-      ) =>
-        receiver.method(
-          modelName,
-          methodName,
-          inputs as Record<string, unknown>,
-        ),
-    );
+  constructor(options: CelEvaluatorOptions = {}) {
+    this.typedSecrets = options.typedSecrets === true;
+    this.env = createInternalCelEnvironment(options);
   }
 
   /**
@@ -665,10 +786,18 @@ export class CelEvaluator {
    *
    * @param expression - The CEL expression to evaluate
    * @param context - The context object containing model, self, workflow data
+   * @param scope - What the evaluation runs with, read with typed secrets on
    * @returns The evaluated result
    * @throws InvalidExpressionError if evaluation fails
    */
-  evaluate(expression: string, context: Record<string, unknown>): unknown {
+  evaluate(
+    expression: string,
+    context: Record<string, unknown>,
+    scope: EvaluationScope = {},
+  ): unknown {
+    if (this.typedSecrets) {
+      return this.evaluateWithSecrets(expression, context, scope);
+    }
     // Wrap file/data namespace objects in registered types so cel-js can
     // resolve receiver methods instead of treating them as maps. Hoisted out
     // of the try so the catch can read back which data lookups missed.
@@ -695,17 +824,7 @@ export class CelEvaluator {
         // rejection in the runtime.
         result.catch(() => {});
 
-        throw new InvalidExpressionError(
-          "Expression returned an unresolved Promise. " +
-            "Async CEL functions (data.latest, data.findByTag, " +
-            "data.findBySpec, data.query) cannot be used in " +
-            "synchronously-evaluated contexts like forEach.in. " +
-            "Move the async call into a parent workflow's task.inputs " +
-            "(which IS awaited) and pass the resolved value to a child " +
-            "workflow. See: .claude/skills/swamp/references/workflow/" +
-            "references/nested-workflows.md#when-to-use-nested-workflows",
-          expression,
-        );
+        throw unresolvedPromiseError(expression);
       }
 
       return coerceBigInts(result);
@@ -740,7 +859,11 @@ export class CelEvaluator {
   async evaluateAsync(
     expression: string,
     context: Record<string, unknown>,
+    scope: EvaluationScope = {},
   ): Promise<unknown> {
+    if (this.typedSecrets) {
+      return await this.evaluateWithSecretsAsync(expression, context, scope);
+    }
     const wrappedContext = this.wrapNamespaces(context);
     try {
       // Prepare what the expression reads synchronously first: the
@@ -766,6 +889,161 @@ export class CelEvaluator {
         error instanceof Error ? error : undefined,
       );
     }
+  }
+
+  /**
+   * {@link evaluate} with typed secrets on: the bindings read through the
+   * boundary conversion, the evaluation runs in a fault scope, and a
+   * refusal decides the outcome before anything else does.
+   */
+  private evaluateWithSecrets(
+    expression: string,
+    context: Record<string, unknown>,
+    scope: EvaluationScope,
+  ): unknown {
+    const wrappedContext = this.wrapNamespaces(context);
+    return runInFaultScope((faults) => {
+      let run: SecretEvaluation | undefined;
+      let result: unknown;
+      try {
+        run = this.beginWithSecrets(expression, wrappedContext, scope);
+        result = run.evaluate();
+      } catch (error) {
+        faults.recording = false;
+        this.refuseFaulted(faults, run, expression);
+        if (error instanceof InvalidExpressionError) throw error;
+        throw this.evaluationError(error, expression, wrappedContext);
+      }
+      // Handle a Promise the synchronous path cannot await before anything
+      // can throw: a refusal absorbed beside an async call rejects it.
+      if (result instanceof Promise) result.catch(() => {});
+      faults.recording = false;
+      this.refuseFaulted(faults, run, expression);
+      if (result instanceof Promise) throw unresolvedPromiseError(expression);
+      return this.releaseWithSecrets(result, run, expression);
+    });
+  }
+
+  /** {@link evaluateAsync} with typed secrets on, as {@link evaluateWithSecrets}. */
+  private async evaluateWithSecretsAsync(
+    expression: string,
+    context: Record<string, unknown>,
+    scope: EvaluationScope,
+  ): Promise<unknown> {
+    const wrappedContext = this.wrapNamespaces(context);
+    return await runInFaultScope(async (faults) => {
+      let run: SecretEvaluation | undefined;
+      let result: unknown;
+      try {
+        await prepareExpressionContext(expression, context);
+        run = this.beginWithSecrets(expression, wrappedContext, scope);
+        result = await run.evaluate();
+      } catch (error) {
+        faults.recording = false;
+        this.refuseFaulted(faults, run, expression);
+        throw this.evaluationError(error, expression, wrappedContext);
+      }
+      faults.recording = false;
+      this.refuseFaulted(faults, run, expression);
+      return this.releaseWithSecrets(result, run, expression);
+    });
+  }
+
+  /**
+   * Parses the expression once, scans it for a container comparison, and
+   * binds the context through the boundary conversion. Calling the parsed
+   * program is what `env.evaluate` does, so no state lands on a shared
+   * program (fact 7).
+   */
+  private beginWithSecrets(
+    expression: string,
+    wrappedContext: Record<string, unknown>,
+    scope: EvaluationScope,
+  ): SecretEvaluation {
+    const transformedExpr = transformHyphenatedModelRefs(expression);
+    this.warnDeprecatedPatterns(transformedExpr);
+    const program = this.env.parse(transformedExpr);
+    const boundary = scope.secretBag === undefined
+      ? undefined
+      : new SecretBoundary(scope.secretBag);
+    const bindings = boundary?.bind(wrappedContext) ?? wrappedContext;
+    return {
+      evaluate: () => program(bindings),
+      containerComparison: hasContainerComparison(program.ast),
+      boundary,
+    };
+  }
+
+  /**
+   * Fails the evaluation on what its fault scope recorded, whatever cel-js
+   * answered: a binding the conversion could not read, a refusal (the first
+   * one decides the code), or a container comparison in an expression that
+   * read a secret (design/enablers/typed-secrets.md Section 4.3).
+   */
+  private refuseFaulted(
+    faults: FaultScope,
+    run: SecretEvaluation | undefined,
+    expression: string,
+  ): void {
+    if (faults.boundaryFailure !== undefined) {
+      throw new InvalidExpressionError(
+        faults.boundaryFailure.message,
+        expression,
+      );
+    }
+    const fault = faults.faults[0];
+    if (fault !== undefined) {
+      throw new SecretRefusedError(fault.code, fault.operation, expression);
+    }
+    if (run?.containerComparison && faults.secretsRead > 0) {
+      throw new SecretRefusedError(
+        SECRET_OPERATION_UNSUPPORTED,
+        "a container comparison (in, or == or != with no scalar literal " +
+          "or null operand) in an expression that reads a secret",
+        expression,
+      );
+    }
+  }
+
+  /**
+   * Converts a result at the boundary, before the adapter's own
+   * post-processing: each `Secret` leaves as its sentinel, and with no
+   * run's bag to issue into, a `Secret` result is refused.
+   */
+  private releaseWithSecrets(
+    result: unknown,
+    run: SecretEvaluation,
+    expression: string,
+  ): unknown {
+    try {
+      if (run.boundary === undefined) {
+        refuseUnboundSecrets(result, expression);
+        return coerceBigInts(unwrapOptional(result));
+      }
+      return coerceBigInts(unwrapOptional(run.boundary.release(result)));
+    } catch (error) {
+      if (error instanceof SecretRefusedError) throw error;
+      throw new InvalidExpressionError(
+        error instanceof Error ? error.message : String(error),
+        expression,
+      );
+    }
+  }
+
+  private evaluationError(
+    error: unknown,
+    expression: string,
+    wrappedContext: Record<string, unknown>,
+  ): InvalidExpressionError {
+    return new InvalidExpressionError(
+      this.explainMissedLookups(
+        error instanceof Error ? error.message : String(error),
+        wrappedContext,
+      ),
+      expression,
+      undefined,
+      error instanceof Error ? error : undefined,
+    );
   }
 
   /**

@@ -21,15 +21,17 @@
 // CEL environment and the query view has a disposition in the refusal
 // inventory (design/enablers/typed-secrets.md Section 4.3).
 //
-// What this proves, and what it does not. It proves that the inventory in
-// src/infrastructure/cel/cel_js_pins/cel_js_secret_refusal_inventory.ts
-// classifies every secret-capable position of every cel-js built-in and of
-// every function swamp registers, that its equality type list names every
-// type cel-js uses in its own definitions, and that its maintained list of
-// swamp's registrations equals what the source registers. It does not prove
-// that the production environments register the refusals: Phase 3 adds that
-// half, by checking that getDefinitions() on the real internal environment
-// and the query view contains every refusal signature the inventory yields.
+// What this proves. The inventory in
+// src/infrastructure/cel/cel_js_secret_refusal_inventory.ts classifies every
+// secret-capable position of every cel-js built-in and of every function
+// swamp registers, its equality type list names every type cel-js uses in its
+// own definitions, and its maintained list of swamp's registrations equals
+// what the source registers. The production half: getDefinitions() on the
+// internal environment with typed secrets on holds exactly the function
+// refusals the inventory yields for it, and with typed secrets off holds what
+// it held before them. getDefinitions() lists no operators, so the operator
+// refusals are proven through CelEvaluator in cel_evaluator_secret_test.ts.
+// The query view's half moves with it (design Section 6.2) into Phase 4.
 //
 // Two sources, deliberately, as in expression_accessors_rules_test.ts:
 //
@@ -42,7 +44,10 @@
 //     comment. A string literal, a template literal built from the exported
 //     constants, and a bare constant are all read; any other form fails the
 //     test. The set of registering files is itself pinned against a walk of
-//     src/, so a registration in a fourth file cannot hide either.
+//     src/, so a registration in another file cannot hide either. The one
+//     file that registers the inventory's own output, signatures it computes,
+//     is pinned as an inventory registrar and proven by the production half
+//     instead.
 //
 // Every assertion is set equality, never containment, so an extraction that
 // matches nothing fails loudly instead of passing vacuously.
@@ -61,22 +66,28 @@ import {
   MODEL_FUNCTIONS,
 } from "../src/domain/data/query_predicate.ts";
 import { LITERAL_FUNCTION_SIGNATURE } from "../src/domain/expressions/cel_grammar.ts";
-import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
+import {
+  createExtensionCelEnvironment,
+  createInternalCelEnvironment,
+} from "../src/infrastructure/cel/cel_evaluator.ts";
 import {
   classifyPositions,
   type Disposition,
   equalityTypes,
   functionRefusalSignatures,
+  INTERNAL_FUNCTION_SIGNATURES,
   isSecretCapableType,
   parseSignature,
   qualifiedName,
+  QUERY_VIEW_FUNCTION_SIGNATURES,
+  SECRET_TYPE_NAME,
   secretCapableBuiltins,
   specialDispositionNames,
   SWAMP_FUNCTION_SIGNATURES,
   SWAMP_NAMESPACE_TYPES,
   SWAMP_OPERATOR_SIGNATURES,
   typeNamesInDefinitions,
-} from "../src/infrastructure/cel/cel_js_pins/cel_js_secret_refusal_inventory.ts";
+} from "../src/infrastructure/cel/cel_js_secret_refusal_inventory.ts";
 
 /** What a `${name}` placeholder or a bare constant stands for, per file. */
 type Bindings = ReadonlyMap<string, readonly string[]>;
@@ -104,6 +115,15 @@ const REGISTERING_FILES: ReadonlyMap<string, Bindings> = new Map([
     new Map([["LITERAL_FUNCTION_SIGNATURE", [LITERAL_FUNCTION_SIGNATURE]]]),
   ],
 ]);
+
+/**
+ * The files that register the inventory's own output: refusal and allowed-set
+ * signatures computed from it, which no source scan can read. The production
+ * half below proves what they register instead.
+ */
+const INVENTORY_REGISTRARS: readonly string[] = [
+  "src/infrastructure/cel/secret_registrations.ts",
+];
 
 const METHODS = ["registerFunction", "registerOperator", "registerType"];
 const REGISTRATION = new RegExp(`\\b(?:${METHODS.join("|")})\\(`);
@@ -193,7 +213,7 @@ Deno.test("REGISTERING_FILES equals the production files under src/ that registe
   }
   assertEquals(
     found.sort(),
-    [...REGISTERING_FILES.keys()].sort(),
+    [...REGISTERING_FILES.keys(), ...INVENTORY_REGISTRARS].sort(),
     "A production file calls registerFunction, registerOperator or " +
       "registerType but is not scanned. If the call is on a cel-js " +
       "Environment, add the file to REGISTERING_FILES and give each of its " +
@@ -266,6 +286,60 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
     functionRefusalSignatures([...SWAMP_FUNCTION_SIGNATURES]).length,
     41,
   );
+  assertEquals(
+    functionRefusalSignatures(INTERNAL_FUNCTION_SIGNATURES).length,
+    38,
+  );
+  assertEquals(
+    functionRefusalSignatures(QUERY_VIEW_FUNCTION_SIGNATURES).length,
+    3,
+  );
+});
+
+/** The signatures of the functions an environment defines. */
+function definedFunctions(
+  env: ReturnType<typeof createInternalCelEnvironment>,
+): string[] {
+  return env.getDefinitions().functions.map((fn) => fn.signature).sort();
+}
+
+Deno.test("production half: with typed secrets on, the internal environment defines exactly the function refusals the inventory yields for it", () => {
+  const swamp = new Set(SWAMP_FUNCTION_SIGNATURES);
+  const builtins = secretCapableBuiltins(createExtensionCelEnvironment())
+    .map((fn) => fn.signature)
+    .filter((signature) => !swamp.has(signature));
+  const expected = [
+    ...functionRefusalSignatures(builtins),
+    ...functionRefusalSignatures(INTERNAL_FUNCTION_SIGNATURES),
+  ].sort();
+  assertEquals(expected.length, 94);
+  const secretBearing = definedFunctions(
+    createInternalCelEnvironment({ typedSecrets: true }),
+  ).filter((signature) => {
+    const parsed = parseSignature(signature);
+    // cel-js registers type(Secret) itself when the type is registered.
+    if (qualifiedName(parsed) === "type") return false;
+    return parsed.receiverType === SECRET_TYPE_NAME ||
+      parsed.params.includes(SECRET_TYPE_NAME);
+  });
+  assertEquals(secretBearing, expected);
+});
+
+Deno.test("production half: with typed secrets off, the internal environment defines what it defined before them", () => {
+  const baseline = createExtensionCelEnvironment().getDefinitions();
+  const off = createInternalCelEnvironment().getDefinitions();
+  assertEquals(
+    definedFunctions(createInternalCelEnvironment()),
+    [
+      ...baseline.functions.map((fn) => fn.signature),
+      ...INTERNAL_FUNCTION_SIGNATURES,
+      // cel-js defines type(T) for every type an environment registers.
+      ...SWAMP_NAMESPACE_TYPES.map((type) => `type(${type}): type`),
+    ].sort(),
+  );
+  assertEquals(off.variables, baseline.variables);
+  const everything = JSON.stringify(off);
+  assertEquals(everything.includes(SECRET_TYPE_NAME), false);
 });
 
 Deno.test("EQUALITY_TYPES equals the type names cel-js uses in its own definitions", () => {

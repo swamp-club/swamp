@@ -30,28 +30,32 @@
 // reads a container's first entry. The rule therefore records a little more
 // than its first draft said, and over-refuses accordingly.
 //
-// The fixture puts each secret behind an enumerable getter, the way the
-// accessor adapter and the boundary conversion will (Section 6.1). A `Map`
-// instance cannot carry a getter, so the adapter builds plain objects.
+// The recording helpers put each secret behind an enumerable getter, the way
+// the boundary conversion's views do (secret_boundary.ts) and the accessor
+// adapter will (Section 6.1). A `Map` instance cannot carry a getter, so the
+// adapter builds plain objects.
 import {
   assert,
   assertEquals,
   assertInstanceOf,
   assertStrictEquals,
 } from "@std/assert";
-import { type ASTNode, Environment, Optional } from "cel-js";
-import { pin } from "./cel_js_pin_test_helpers.ts";
+import { Environment, Optional } from "cel-js";
 import {
   createSecret,
-  type Fault,
+  pin,
   recordingList,
   recordingObject,
+  secretEnvironmentOptions,
+  withFaultContext,
+} from "./cel_js_pin_test_helpers.ts";
+import {
   registerAllowedSet,
   registerSecretRefusals,
   registerSecretType,
-  secretEnvironmentOptions,
-  withFaultContext,
-} from "./cel_js_secret_test_helpers.ts";
+} from "../secret_registrations.ts";
+import { hasContainerComparison } from "../container_comparison.ts";
+import type { Fault } from "../secret_fault_context.ts";
 
 const s = createSecret("v/k");
 const t = createSecret("v/k2");
@@ -85,36 +89,6 @@ function observe(env: Environment, expression: string): Observation {
     const result = env.evaluate(expression, context);
     return { result, reads: [...reads], faults: [...faults] };
   });
-}
-
-/**
- * The static half of the container rule: an `in`, or an `==` or `!=` with no
- * operand that is a scalar literal or `null`. List and map literals are not
- * scalars, so `s in [1]` and `1 in lst` count and `x == 'a'` does not.
- *
- * A pin heuristic only: it treats every non-literal node as non-scalar, so
- * `x == -1` would count if the minus parses as an operator. The Phase 3
- * production scan must decide scalar-ness properly rather than copy this.
- */
-function hasContainerComparison(node: ASTNode): boolean {
-  const { op, args } = node as { op: string; args: unknown };
-  if (op === "in") return true;
-  if (
-    (op === "==" || op === "!=") && Array.isArray(args) &&
-    args.every((arg) => (arg as { op?: string }).op !== "value")
-  ) {
-    return true;
-  }
-  const children = Array.isArray(args) ? args : [];
-  return children.some((child) =>
-    typeof child === "object" && child !== null && "op" in child
-      ? hasContainerComparison(child as ASTNode)
-      : Array.isArray(child) &&
-        child.some((grandchild) =>
-          typeof grandchild === "object" && grandchild !== null &&
-          "op" in grandchild && hasContainerComparison(grandchild as ASTNode)
-        )
-  );
 }
 
 Deno.test(

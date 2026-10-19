@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../errors.ts";
 import {
   markModelWording,
   modelWording,
@@ -102,6 +103,41 @@ export class UnresolvedExpressionError extends ExpressionError {
         `Expression in ${path} could not be evaluated: ${causeModelText}`,
       );
     }
+  }
+}
+
+/** An expression applied an operation outside a secret's allowed set. */
+export const SECRET_OPERATION_UNSUPPORTED = "secret_operation_unsupported";
+
+/** An expression sent a secret where secrets are not accepted. */
+export const SECRET_DESTINATION_REFUSED = "secret_destination_refused";
+
+/** The stable codes an expression's secret refusal carries. */
+export type SecretRefusalCode =
+  | typeof SECRET_OPERATION_UNSUPPORTED
+  | typeof SECRET_DESTINATION_REFUSED;
+
+/**
+ * An expression refused an operation on a secret
+ * (design/enablers/typed-secrets.md Section 4). The message names the refused
+ * operation, the code and the expression, never a value, and the error
+ * carries no cause: a cel-js error or the refusing handler's own error can
+ * name an operand.
+ */
+export class SecretRefusedError extends UserError {
+  declare readonly code: SecretRefusalCode;
+
+  constructor(
+    code: SecretRefusalCode,
+    /** What was refused: an operator or function signature, or a rule. */
+    readonly operation: string,
+    readonly expression: string,
+  ) {
+    super(
+      `Expression refused a secret (${code}): ${operation}, in ${expression}`,
+      code,
+    );
+    this.name = "SecretRefusedError";
   }
 }
 

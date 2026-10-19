@@ -37,17 +37,20 @@ import {
   assertThrows,
 } from "@std/assert";
 import { Environment, EvaluationError, Optional } from "cel-js";
-import { assertCelError, pin } from "./cel_js_pin_test_helpers.ts";
 import {
+  assertCelError,
   createSecret,
+  fault,
+  pin,
+  secretEnvironmentOptions,
+  withFaultContext,
+} from "./cel_js_pin_test_helpers.ts";
+import {
   registerAllowedSet,
   registerSecretType,
-  Secret,
-  secretEnvironmentOptions,
-  SecretRefusedError,
-  secretState,
-  withFaultContext,
-} from "./cel_js_secret_test_helpers.ts";
+} from "../secret_registrations.ts";
+import { SecretRefusal } from "../secret_fault_context.ts";
+import { Secret, secretParts } from "../secret_value.ts";
 
 function secretEnvironment(): Environment {
   return registerSecretType(new Environment(secretEnvironmentOptions()));
@@ -74,7 +77,11 @@ Deno.test(
         "variable_type_mismatch",
       );
       assertEquals(s instanceof Secret, true);
-      assertEquals(secretState(s), { parts: [{ reference: "v/k" }] });
+      assertEquals(secretParts(s), [{
+        reference: { vaultName: "v", key: "k" },
+        dataOrigin: false,
+        location: "pin",
+      }]);
       assertEquals(faults, []);
     });
   },
@@ -98,12 +105,12 @@ Deno.test(
       withFaultContext((faults) => {
         const error = assertThrows(
           () => secretEnvironment().evaluate(expression, { s }),
-          SecretRefusedError,
-          "Secret refuses ownKeys",
+          SecretRefusal,
+          "secret refuses ownKeys",
           expression,
         );
         assertEquals(error.operation, "ownKeys");
-        assertEquals(faults, [{ operation: "ownKeys" }], expression);
+        assertEquals(faults, [fault("ownKeys")], expression);
       });
     }
   },
@@ -131,7 +138,7 @@ Deno.test(
         );
         assertEquals(
           faults,
-          Array.from({ length: ranges }, () => ({ operation: "ownKeys" })),
+          Array.from({ length: ranges }, () => (fault("ownKeys"))),
           expression,
         );
       });
@@ -148,10 +155,10 @@ Deno.test(
     withFaultContext((faults) => {
       assertThrows(
         () => secretEnvironment().evaluate("s.exists(x, true) || false", { s }),
-        SecretRefusedError,
-        "Secret refuses ownKeys",
+        SecretRefusal,
+        "secret refuses ownKeys",
       );
-      assertEquals(faults, [{ operation: "ownKeys" }]);
+      assertEquals(faults, [fault("ownKeys")]);
     });
   },
 );
@@ -223,11 +230,11 @@ Deno.test(
       withFaultContext((faults) => {
         assertThrows(
           fn,
-          SecretRefusedError,
-          `Secret refuses ${operation}`,
+          SecretRefusal,
+          `secret refuses ${operation}`,
           label,
         );
-        assertEquals(faults, [{ operation }], label);
+        assertEquals(faults, [fault(operation)], label);
       });
     }
   },
@@ -247,7 +254,7 @@ Deno.test(
       assertStrictEquals(Object.getPrototypeOf(s), Secret.prototype);
       assertEquals(faults, []);
       Deno.inspect(s, { showProxy: true });
-      assertEquals(faults, [{ operation: "getOwnPropertyDescriptor" }]);
+      assertEquals(faults, [fault("getOwnPropertyDescriptor")]);
     });
   },
 );
@@ -266,10 +273,10 @@ Deno.test(
       assertEquals(faults, []);
       assertThrows(
         () => assertEquals(s, t),
-        SecretRefusedError,
-        "Secret refuses ownKeys",
+        SecretRefusal,
+        "secret refuses ownKeys",
       );
-      assertEquals(faults, [{ operation: "ownKeys" }]);
+      assertEquals(faults, [fault("ownKeys")]);
     });
   },
 );
