@@ -32,6 +32,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
+  isManagedLockfile,
   ManagedLockfileUnpublishedError,
   refreshManagedLockfile,
 } from "./managed_lockfile_transaction.ts";
@@ -353,6 +354,14 @@ export async function* extensionInstall(
           });
           failed++;
         }
+      }
+
+      // A lockfile written on another OS reads the same, but its paths
+      // still differ from what this checkout writes. Rewrite it once so
+      // the committed file stops changing between checkouts. The managed
+      // lockfile is not committed, and the datastore holds its copy.
+      if (!isManagedLockfile(deps.lockfilePath)) {
+        await lockfileRepository.normalize();
       }
 
       yield {

@@ -137,6 +137,30 @@ Deno.test("computeOrphanDiff: empty inputs yield empty diff", () => {
   assertEquals(computeOrphanDiff([], ["a.ts"]), []);
 });
 
+// On Windows the lockfile reads with forward slashes while the new
+// version's paths come from relative() with backslashes (swamp-club#3569).
+Deno.test("computeOrphanDiff: a path differing only in separator is not an orphan", () => {
+  assertEquals(
+    computeOrphanDiff(
+      [
+        ".claude/skills/foo",
+        ".swamp/pulled-extensions/@a/b/models/x.ts",
+        ".swamp/pulled-extensions/@a/b/models/gone.ts",
+      ],
+      [
+        ".claude\\skills\\foo",
+        ".swamp\\pulled-extensions\\@a\\b\\models\\x.ts",
+      ],
+    ),
+    [".swamp/pulled-extensions/@a/b/models/gone.ts"],
+  );
+  // A case-only change is still a rename.
+  assertEquals(
+    computeOrphanDiff([".claude/skills/Foo"], [".claude\\skills\\foo"]),
+    [".claude/skills/Foo"],
+  );
+});
+
 Deno.test("computeOrphanDiff: identical sets yield no orphans", () => {
   const files = [
     ".swamp/pulled-extensions/@x/y/models/a.ts",
@@ -1847,16 +1871,15 @@ Deno.test(
       );
       assertEquals(await installedTree(repoDir), freshTree);
       assertEquals(entryWithoutTimes(lockfile, name), freshEntry);
-      assertEquals(
-        [...(result?.pruned ?? [])].sort(),
-        [
-          relative(
-            repoDir,
-            join(extRootOf(repoDir, name), "models", "old_only.ts"),
-          ),
-          vaultBundle,
-        ].sort(),
-      );
+      // The lockfile does not list bundle cache files, so the swap
+      // removes v1's bundle without reporting it.
+      assertEquals(result?.pruned, [
+        relative(
+          repoDir,
+          join(extRootOf(repoDir, name), "models", "old_only.ts"),
+        ),
+      ]);
+      assertEquals(await exists(join(repoDir, vaultBundle)), false);
     });
   },
 );

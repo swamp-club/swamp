@@ -365,6 +365,22 @@ explicit installs and removals.
 
 ### Lockfile
 
+A team commits `upstream_extensions.json`, and checkouts on different OSes
+share it, so an entry holds only what is the same on every checkout. Its
+`files` and `include` paths are repo-relative and use forward slashes. `files`
+lists source paths only: bundle cache paths are left out, because a bundle
+namespace is a hash of an OS-separated path, so its directory differs between
+Windows and POSIX checkouts. `extension rm` deletes the extension's bundle
+namespaces itself. `filesChecksum` hashes forward-slash paths, so it matches
+across OSes, and a same-version reinstall keeps `pulledAt`. Reads accept a
+lockfile an older swamp wrote on Windows (backslash paths, bundle paths) and
+treat it as the canonical form (`canonicalLockfileEntry` in
+`src/infrastructure/persistence/upstream_extensions.ts`), so it raises no
+missing-files warning. Reads never rewrite it: the next lockfile write does,
+and `swamp extension install` rewrites it even when every extension is up to
+date. The managed lockfile is not committed, so install leaves it as the
+datastore holds it.
+
 The `upstream_extensions.json` entry records the install channel in a `channel`
 field. It is written only for non-stable installs, so entries without it read
 as `"stable"` (`src/infrastructure/persistence/lockfile_repository.ts`). The

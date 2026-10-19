@@ -41,6 +41,7 @@ import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cle
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import {
+  canonicalLockfilePath,
   readPublishedChannel,
   type UpstreamExtensionEntry,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
@@ -970,10 +971,12 @@ export function computeOrphanDiff(
   oldFiles: ReadonlyArray<string>,
   extractedFiles: ReadonlyArray<string>,
 ): string[] {
-  const newFilesSet = new Set(extractedFiles);
+  // The lockfile reads with forward slashes; `relative()` gives the new
+  // paths the OS separator, so compare both in the lockfile's form.
+  const newFilesSet = new Set(extractedFiles.map(canonicalLockfilePath));
   const newCanonical = extractedFiles.map(canonicalClaimPath);
   return oldFiles.filter((f) => {
-    if (newFilesSet.has(f)) return false;
+    if (newFilesSet.has(canonicalLockfilePath(f))) return false;
     // Strict containment only: an exact match that differs just in case
     // is a rename, and on a case-sensitive filesystem the old file is a
     // real orphan.

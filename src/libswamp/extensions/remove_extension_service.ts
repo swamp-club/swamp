@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join, relative, resolve } from "@std/path";
 import {
   assertContainedPath,
   PathTraversalError,
@@ -309,12 +309,12 @@ export class RemoveExtensionService {
       parentDirs.push(join(extensionRoot, scaffoldDir));
     }
 
-    // 6. Add the bundle namespace dirs that `pull` creates
-    //    unconditionally for each per-extension kind dir. These are
-    //    never recorded as tracked files when the extension ships no
-    //    content for that bundle kind — same shape as the scaffold-dir
-    //    fix above. Maps source kind → top-level bundle kind, matching
-    //    the bundle mkdir+copyDir pairs in pull.ts.
+    // 6. Delete the bundle namespace dirs that `pull` creates for each
+    //    per-extension kind dir. The lockfile does not list bundle files
+    //    (their namespace hash differs between OSes), and each namespace
+    //    holds only this extension's bundles: `pull` replaces it whole.
+    //    Maps source kind → top-level bundle kind, matching the bundle
+    //    mkdir+copyDir pairs in pull.ts.
     const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
       ["models", "bundles"],
       ["vaults", "vault-bundles"],
@@ -322,18 +322,32 @@ export class RemoveExtensionService {
       ["reports", "report-bundles"],
       ["webhooks", "webhook-bundles"],
     ];
+    let bundleDirsRemoved = 0;
     for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
-      parentDirs.push(
-        join(
-          swampPath(this.repoDir, bundleKind),
-          bundleNamespace(join(extensionRoot, sourceKind), this.repoDir),
-        ),
+      const kindDir = swampPath(this.repoDir, bundleKind);
+      const namespaceDir = join(
+        kindDir,
+        bundleNamespace(join(extensionRoot, sourceKind), this.repoDir),
       );
+      try {
+        const stat = await Deno.lstat(namespaceDir);
+        await this.removePath(namespaceDir, { recursive: stat.isDirectory });
+        bundleDirsRemoved++;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          failedFiles.push({
+            path: relative(this.repoDir, namespaceDir),
+            reason: error instanceof Error ? error.name : "Error",
+          });
+        }
+      }
+      parentDirs.push(kindDir);
     }
 
     // 7. Prune empty parent directories up to (but not including)
     //    the repo root.
-    const dirsRemoved = await pruneEmptyDirs(parentDirs, this.repoDir);
+    const dirsRemoved = bundleDirsRemoved +
+      await pruneEmptyDirs(parentDirs, this.repoDir);
 
     return {
       name,

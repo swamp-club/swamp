@@ -770,7 +770,7 @@ Deno.test("classifyExtensionFile: mixed separators classify by structure", () =>
   );
 });
 
-Deno.test("detectLegacyExtensionLayout: detects backslash legacy paths and keeps the native string", async () => {
+Deno.test("detectLegacyExtensionLayout: detects backslash legacy paths and reports them with forward slashes", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
@@ -793,12 +793,12 @@ Deno.test("detectLegacyExtensionLayout: detects backslash legacy paths and keeps
     assertEquals(legacy, [
       {
         extensionName: "@scope/ext",
-        file: "extensions\\models\\ext.ts",
+        file: "extensions/models/ext.ts",
         generation: "gen-1",
       },
       {
         extensionName: "@scope/ext",
-        file: ".swamp\\pulled-extensions\\models\\other.ts",
+        file: ".swamp/pulled-extensions/models/other.ts",
         generation: "gen-2",
       },
     ]);

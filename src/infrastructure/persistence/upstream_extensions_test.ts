@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
+  canonicalLockfileEntry,
   readPublishedChannel,
   readUpstreamExtensions,
 } from "./upstream_extensions.ts";
@@ -105,5 +106,61 @@ Deno.test("readPublishedChannel: an absent or hand-edited value reads as null", 
   assertEquals(
     readPublishedChannel({ publishedChannel: 7 as unknown as string }),
     null,
+  );
+});
+
+Deno.test("readUpstreamExtensions: reads a lockfile written on Windows with forward slashes and no bundle paths (swamp-club#3569)", async () => {
+  const written = {
+    "@ns/ext": {
+      version: "2026.01.01.1",
+      pulledAt: "2026-01-01",
+      files: [
+        ".swamp\\bundles\\2f6574ec\\ext.js",
+        ".swamp\\pulled-extensions\\@ns\\ext\\models\\ext.ts",
+        ".swamp/vault-bundles/464e926c/v.js",
+      ],
+      include: ["models\\_lib\\x.ts"],
+      futureField: ["a\\b"],
+    },
+  };
+  await withLockfile(JSON.stringify(written), async (lockfilePath) => {
+    const read: Record<string, unknown> = await readUpstreamExtensions(
+      lockfilePath,
+    );
+    assertEquals(read, {
+      "@ns/ext": {
+        version: "2026.01.01.1",
+        pulledAt: "2026-01-01",
+        files: [".swamp/pulled-extensions/@ns/ext/models/ext.ts"],
+        include: ["models/_lib/x.ts"],
+        futureField: ["a\\b"],
+      },
+    });
+    assertEquals(
+      Object.keys(read["@ns/ext"] as object),
+      Object.keys(written["@ns/ext"]),
+    );
+  });
+});
+
+Deno.test("canonicalLockfileEntry: keeps non-string items, array order and non-object entries", () => {
+  assertEquals(
+    canonicalLockfileEntry({ files: ["b\\x", 7, "a/y", null] }),
+    { files: ["b/x", 7, "a/y", null] },
+  );
+  assertEquals(canonicalLockfileEntry({ files: "a\\b" }), { files: "a\\b" });
+  assertEquals(canonicalLockfileEntry(null), null);
+  assertEquals(canonicalLockfileEntry(["a\\b"]), ["a\\b"]);
+});
+
+Deno.test("readUpstreamExtensions: a __proto__ key stays data", async () => {
+  await withLockfile(
+    '{"__proto__": {"version": "1", "files": ["a\\\\b"]}}',
+    async (lockfilePath) => {
+      const read = await readUpstreamExtensions(lockfilePath);
+      assertEquals(Object.getPrototypeOf(read), Object.prototype);
+      assertEquals(Object.hasOwn(read, "__proto__"), true);
+      assertEquals(read["__proto__"].files, ["a/b"]);
+    },
   );
 });
