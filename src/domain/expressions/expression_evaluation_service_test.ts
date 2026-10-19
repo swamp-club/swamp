@@ -22,6 +22,7 @@ import { attachSensitiveValues } from "./sensitive_context.ts";
 import { SplicePair } from "./splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { VaultService } from "../vaults/vault_service.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -2064,5 +2065,151 @@ Deno.test("resolveRuntimeExpressionsInData: a sentinel an earlier pass issued re
         ),
     ) as { run: string };
     assertEquals(result.run, `/tmp/early:${SENSITIVE}`);
+  });
+});
+
+// ============================================================================
+// Loading at delivery (typed-secrets 2.3): the runtime pass checks and
+// issues references; each inline destination loads what it receives.
+// ============================================================================
+
+/**
+ * An evaluator over a mock vault `v` holding `secrets`, which answers has(),
+ * recording every value read and existence check its vault service serves.
+ */
+function countingEvaluator(
+  repoDir: string,
+  secrets: Record<string, string>,
+) {
+  const reads: string[] = [];
+  const checks: string[] = [];
+  const vaultService = new class extends VaultService {
+    override async get(vaultName: string, key: string, caller?: string) {
+      const value = await super.get(vaultName, key, caller);
+      reads.push(key);
+      return value;
+    }
+    override async has(vaultName: string, key: string) {
+      checks.push(key);
+      return await super.has(vaultName, key);
+    }
+  }();
+  vaultService.registerVault({ name: "v", type: "mock", config: secrets });
+  const service = new ExpressionEvaluationService(
+    new YamlDefinitionRepository(repoDir),
+    repoDir,
+    { vaultService },
+  );
+  return { service, reads, checks };
+}
+
+Deno.test("resolveRuntimeExpressionsInDefinition: checks each vault.get reference and issues a sentinel, reading no value", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret",
+    });
+    const definition = Definition.create({
+      name: "runtime-def",
+      globalArguments: { token: "${{ vault.get('v', 'token') }}" },
+      methods: {
+        run: { arguments: { cmd: "echo ${{ vault.get('v', 'token') }}" } },
+      },
+    });
+    const { definition: executed, secretBag } = await service
+      .resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        "unrestricted",
+      );
+    assertEquals(reads, []);
+    assertEquals(checks, ["token"]);
+    const entries = [...secretBag.registry.all()];
+    assertEquals(entries.length, 2);
+    for (const entry of entries) {
+      assertEquals("value" in entry, false);
+    }
+    assertEquals(
+      entries.map((entry) => "location" in entry && entry.location),
+      ["globalArguments.token", "methods.run.arguments.cmd"],
+    );
+    // Delivery loads them, once per reference.
+    const loaded = await service.secretLoader(undefined).load(
+      secretBag,
+      executed.toData(),
+    );
+    assertEquals(
+      loaded.resolveRaw(executed.getMethodArguments("run").cmd as string),
+      "echo s3cret",
+    );
+    assertEquals(reads, ["token"]);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a missing key fails at evaluation with secret_reference_unavailable", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads } = countingEvaluator(repoDir, {});
+    const definition = Definition.create({
+      name: "runtime-def",
+      methods: {
+        run: { arguments: { cmd: "${{ vault.get('v', 'missing') }}" } },
+      },
+    });
+    const error = await assertRejects(
+      () =>
+        service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          undefined,
+          "unrestricted",
+        ),
+      Error,
+      "(at methods.run.arguments.cmd): Secret 'missing' not found in vault 'v'",
+    );
+    assertEquals(
+      (error as { code?: string }).code,
+      "secret_reference_unavailable",
+    );
+    assertEquals(reads, []);
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: an inline destination receives the loaded value, as it did from the eager read", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      host: "worker-7",
+    });
+    const redactor = new SecretRedactor();
+    const data = {
+      target: "${{ vault.get('v', 'host') }}",
+      labels: { pool: "pool-${{ vault.get('v', 'host') }}" },
+    };
+    const result = await service.resolveAllExpressionsInData(
+      data,
+      makeContext(),
+      redactor,
+      collectAuthoredExpressions(data),
+    );
+    assertEquals(result, {
+      target: "worker-7",
+      labels: { pool: "pool-worker-7" },
+    });
+    assertEquals(checks, ["host"]);
+    assertEquals(reads, ["host"]);
+    assertEquals(redactor.redact("worker-7"), "***");
+  });
+});
+
+Deno.test("resolveVaultExpressionsInDefinition: the deprecated seam loads the values its callers expect", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads } = countingEvaluator(repoDir, { token: "s3cret" });
+    const resolved = await service.resolveVaultExpressionsInDefinition(
+      Definition.create({
+        name: "legacy-def",
+        globalArguments: { token: "${{ vault.get('v', 'token') }}" },
+      }),
+    );
+    assertEquals(resolved.globalArguments.token, "s3cret");
+    assertEquals(reads, ["token"]);
   });
 });

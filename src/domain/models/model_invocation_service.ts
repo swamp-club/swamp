@@ -95,6 +95,7 @@ export interface ModelInvocationServiceDeps {
     | "evaluateDefinition"
     | "buildRuntimeContext"
     | "resolveRuntimeExpressionsInDefinition"
+    | "secretLoader"
   >;
   repoDir: string;
   pulledExtensionsRoot?: string;
@@ -389,6 +390,7 @@ export class ModelInvocationService {
         modelDef,
         methodName,
         childContext,
+        { secretLoader: this.#deps.evaluationService.secretLoader(redactor) },
       );
 
       return { ok: true, resources: result.dataHandles ?? [] };

@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import {
+  holdsValue,
+  type SecretBagRegistry,
+} from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 /** A `[start, end)` character range of a string that came from data. */
@@ -475,14 +478,22 @@ export function prefix(root: string, path: string): string {
 export type SentinelResolver = (sentinel: string) => string | undefined;
 
 /**
- * Resolves every sentinel of the run `bag` is a view of. Pass it for both
- * copies of an alignment: a raw copy can carry a sentinel from an earlier
- * pass, and resolving it on one side only would make the copies differ.
+ * Stands each sentinel `registry` issued in for what the other copy of an
+ * alignment holds in its place, without reading a vault: a data entry for
+ * its value, which the data read put into the raw copy, and a vault
+ * reference for its identity ({@link sentinelIdentityOf}), since no copy
+ * holds a vault.get() value. Pass it for both copies: a raw copy can carry
+ * a sentinel from an earlier pass, or its rehomed twin, and standing it in
+ * on one side only would make the copies differ.
  */
-export function sentinelResolverOf(bag: VaultSecretBag): SentinelResolver {
+export function sentinelStandInOf(
+  registry: SecretBagRegistry,
+): SentinelResolver {
+  const identity = sentinelIdentityOf(registry);
   return (sentinel) => {
-    const value = bag.resolveRaw(sentinel);
-    return value === sentinel ? undefined : value;
+    const entry = registry.entryOf(sentinel);
+    if (entry === undefined) return undefined;
+    return holdsValue(entry) ? entry.value : identity(sentinel);
   };
 }
 

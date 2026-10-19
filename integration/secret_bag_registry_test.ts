@@ -311,7 +311,7 @@ Deno.test(
       assertEquals(prefixesOf(values).size, 3);
       for (const entry of entries) {
         assert(isIssuedEntry(entry));
-        assertEquals(entry.value, SECRET);
+        assertEquals(entry.dataOrigin && entry.value, SECRET);
         assertEquals(entry.dataOrigin, true);
         assertEquals(entry.encoding, "raw");
         assertEquals(values.sourceOf(SECRET), entry.reference);

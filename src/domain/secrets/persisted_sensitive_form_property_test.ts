@@ -49,11 +49,17 @@ Deno.test("toPersistedForm: every sentinel of the run persists as its entry's re
         const values = new RunSensitiveValues();
         const bag = new VaultSecretBag(values.sentinels);
         const vault = new Map<string, string>();
+        // What a load at delivery reads for each vault.get sentinel.
+        const loads = new Map<string, string>();
         const sentinels = secrets.map((secret, i) => {
           const key = `${secret.key}${i}`;
           const reference = { vaultName: "prod", key };
           vault.set(key, secret.value);
-          if (!secret.dataOrigin) return bag.addSecret(secret.value, reference);
+          if (!secret.dataOrigin) {
+            const sentinel = bag.addSecret(reference, "data");
+            loads.set(sentinel, secret.value);
+            return sentinel;
+          }
           const form = secret.json
             ? JSON.stringify(secret.value).slice(1, -1)
             : secret.value;
@@ -111,7 +117,7 @@ Deno.test("toPersistedForm: every sentinel of the run persists as its entry's re
         );
         assertEquals(
           JSON.stringify(restored.raw),
-          JSON.stringify(bag.resolveDeep(data)),
+          JSON.stringify(bag.withLoaded(loads).resolveDeep(data)),
         );
       },
     ),

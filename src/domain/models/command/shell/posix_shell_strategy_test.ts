@@ -51,9 +51,10 @@ Deno.test("PosixShellStrategy.buildInvocation: passes command through verbatim (
 Deno.test("PosixShellStrategy.resolveSecrets: delegates to VaultSecretBag.resolveForShell", () => {
   const strategy = new PosixShellStrategy();
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const sentinel = bag.addSecret("secret-value", REF);
+  const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+  const loaded = bag.withLoaded(new Map([[sentinel, "secret-value"]]));
 
-  const resolved = strategy.resolveSecrets(`echo ${sentinel}`, bag);
+  const resolved = strategy.resolveSecrets(`echo ${sentinel}`, loaded);
 
   // POSIX strategy emits ${__SWAMP_VAULT_N} references and quotes them
   // when not already inside double quotes.

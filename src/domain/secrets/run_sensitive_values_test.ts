@@ -162,8 +162,11 @@ Deno.test("RunSensitiveValues.sentinels: one registry per run, shared by every b
   const values = new RunSensitiveValues();
   const a = new VaultSecretBag(values.sentinels);
   const b = new VaultSecretBag(values.sentinels);
-  const sentinel = a.addSecret("value", { vaultName: "v", key: "k" });
-  assertEquals(b.resolveRaw(sentinel), "value");
+  const sentinel = a.addSecret({ vaultName: "v", key: "k" }, "loc");
+  assertEquals(
+    b.withLoaded(new Map([[sentinel, "value"]])).resolveRaw(sentinel),
+    "value",
+  );
   assertEquals(values.sentinels.issuedEntryOf(sentinel)?.reference, {
     vaultName: "v",
     key: "k",

@@ -20,7 +20,7 @@
 import { assertEquals, assertStrictEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { getQuoteContext } from "./vault_secret_bag.ts";
-import { SecretBagRegistry } from "./secret_bag_registry.ts";
+import { isIssuedEntry, SecretBagRegistry } from "./secret_bag_registry.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 
 /** The reference every secret of these tests stands for. */
@@ -29,6 +29,29 @@ const REF = { vaultName: "v", key: "k" };
 /** Recorded sensitive values, each from {@link REF}. */
 const entries = (...values: string[]) =>
   values.map((value) => ({ value, source: REF }));
+
+/**
+ * Issues a vault.get() reference from `bag` whose key is the value a load
+ * reads for it (see {@link loaded}).
+ */
+const issue = (bag: VaultSecretBag, value: string) =>
+  bag.addSecret({ vaultName: "v", key: value }, "test.location");
+
+/**
+ * `bag`'s delivery view, loaded as from a vault that holds each key as its
+ * own value, so a test reads which value a sentinel delivers. Every vault
+ * reference of the run is loaded, as a load of arguments carrying them all
+ * would.
+ */
+function loaded(bag: VaultSecretBag): VaultSecretBag {
+  const values = new Map<string, string>();
+  for (const entry of bag.registry.all()) {
+    if (isIssuedEntry(entry) && !entry.dataOrigin) {
+      values.set(entry.sentinel, entry.reference.key);
+    }
+  }
+  return bag.withLoaded(values);
+}
 
 Deno.test("getQuoteContext", async (t) => {
   await t.step("returns 'unquoted' for position outside any quotes", () => {
@@ -81,8 +104,8 @@ Deno.test("getQuoteContext", async (t) => {
 Deno.test("VaultSecretBag", async (t) => {
   await t.step("addSecret: returns unique sentinel tokens", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const s1 = bag.addSecret("secret1", REF);
-    const s2 = bag.addSecret("secret2", REF);
+    const s1 = issue(bag, "secret1");
+    const s2 = issue(bag, "secret2");
     assertEquals(s1 !== s2, true);
     assertEquals(s1.startsWith("__SWAMP_VSEC_"), true);
     assertEquals(s1.endsWith("__"), true);
@@ -91,7 +114,7 @@ Deno.test("VaultSecretBag", async (t) => {
 
   await t.step("addSecret: sentinel matches pattern", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const sentinel = bag.addSecret("test", REF);
+    const sentinel = issue(bag, "test");
     const matches = sentinel.match(VaultSecretBag.SENTINEL_PATTERN);
     assertEquals(matches !== null, true);
     assertEquals(matches![0], sentinel);
@@ -104,42 +127,45 @@ Deno.test("VaultSecretBag", async (t) => {
 
   await t.step("isEmpty: false after adding a secret", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    bag.addSecret("test", REF);
+    issue(bag, "test");
     assertEquals(bag.isEmpty, false);
   });
 
   await t.step("resolveRaw: replaces sentinel with raw value", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const sentinel = bag.addSecret("my-secret-value", REF);
+    const sentinel = issue(bag, "my-secret-value");
     assertEquals(
-      bag.resolveRaw(`prefix ${sentinel} suffix`),
+      loaded(bag).resolveRaw(`prefix ${sentinel} suffix`),
       "prefix my-secret-value suffix",
     );
   });
 
   await t.step("resolveRaw: replaces multiple sentinels", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const s1 = bag.addSecret("val1", REF);
-    const s2 = bag.addSecret("val2", REF);
-    assertEquals(bag.resolveRaw(`${s1}-${s2}`), "val1-val2");
+    const s1 = issue(bag, "val1");
+    const s2 = issue(bag, "val2");
+    assertEquals(loaded(bag).resolveRaw(`${s1}-${s2}`), "val1-val2");
   });
 
   await t.step("resolveRaw: preserves strings without sentinels", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    bag.addSecret("unused", REF);
-    assertEquals(bag.resolveRaw("no sentinels here"), "no sentinels here");
+    issue(bag, "unused");
+    assertEquals(
+      loaded(bag).resolveRaw("no sentinels here"),
+      "no sentinels here",
+    );
   });
 
   await t.step("resolveRaw: handles secrets with shell metacharacters", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const sentinel = bag.addSecret("pass;rm -rf /", REF);
-    assertEquals(bag.resolveRaw(sentinel), "pass;rm -rf /");
+    const sentinel = issue(bag, "pass;rm -rf /");
+    assertEquals(loaded(bag).resolveRaw(sentinel), "pass;rm -rf /");
   });
 
   await t.step("resolveDeep: resolves strings in nested objects", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const s1 = bag.addSecret("secret-value", REF);
-    const s2 = bag.addSecret("other-value", REF);
+    const s1 = issue(bag, "secret-value");
+    const s2 = issue(bag, "other-value");
     const data = {
       simple: s1,
       nested: { deep: s2 },
@@ -148,7 +174,7 @@ Deno.test("VaultSecretBag", async (t) => {
       bool: true,
       nullVal: null,
     };
-    const resolved = bag.resolveDeep(data);
+    const resolved = loaded(bag).resolveDeep(data);
     assertEquals(resolved, {
       simple: "secret-value",
       nested: { deep: "other-value" },
@@ -161,7 +187,7 @@ Deno.test("VaultSecretBag", async (t) => {
 
   await t.step("resolveDeep: preserves __proto__ key", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const sentinel = bag.addSecret("proto-secret", REF);
+    const sentinel = issue(bag, "proto-secret");
     const data = Object.create(null) as Record<string, unknown>;
     Object.defineProperty(data, "__proto__", {
       value: sentinel,
@@ -175,7 +201,7 @@ Deno.test("VaultSecretBag", async (t) => {
       enumerable: true,
       configurable: true,
     });
-    const resolved = bag.resolveDeep(data) as Record<string, unknown>;
+    const resolved = loaded(bag).resolveDeep(data) as Record<string, unknown>;
     assertStrictEquals(Object.hasOwn(resolved, "__proto__"), true);
     assertEquals(resolved["__proto__"], "proto-secret");
     assertEquals(resolved["normal"], "plain");
@@ -185,8 +211,8 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell: replaces sentinel with env var reference",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("my-password", REF);
-      const result = bag.resolveForShell(`echo ${sentinel}`);
+      const sentinel = issue(bag, "my-password");
+      const result = loaded(bag).resolveForShell(`echo ${sentinel}`);
       assertEquals(result.command, 'echo "${__SWAMP_VAULT_0}"');
       assertEquals(result.env, { __SWAMP_VAULT_0: "my-password" });
     },
@@ -194,10 +220,10 @@ Deno.test("VaultSecretBag", async (t) => {
 
   await t.step("resolveForShell: handles multiple secrets", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const s1 = bag.addSecret("user", REF);
-    const s2 = bag.addSecret("pass", REF);
+    const s1 = issue(bag, "user");
+    const s2 = issue(bag, "pass");
     const cmd = "echo " + s1 + ":" + s2;
-    const result = bag.resolveForShell(cmd);
+    const result = loaded(bag).resolveForShell(cmd);
     assertEquals(
       result.command,
       'echo "${__SWAMP_VAULT_0}":"${__SWAMP_VAULT_1}"',
@@ -212,11 +238,8 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell: secret with shell metacharacters goes to env",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret(
-        "pass;rm -rf /|cat /etc/passwd&whoami",
-        REF,
-      );
-      const result = bag.resolveForShell(`echo ${sentinel}`);
+      const sentinel = issue(bag, "pass;rm -rf /|cat /etc/passwd&whoami");
+      const result = loaded(bag).resolveForShell(`echo ${sentinel}`);
       assertEquals(result.command, 'echo "${__SWAMP_VAULT_0}"');
       assertEquals(
         result.env.__SWAMP_VAULT_0,
@@ -227,16 +250,16 @@ Deno.test("VaultSecretBag", async (t) => {
 
   await t.step("resolveForShell: skips secrets not in command", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    bag.addSecret("unused-secret", REF);
-    const s2 = bag.addSecret("used-secret", REF);
-    const result = bag.resolveForShell(`echo ${s2}`);
+    issue(bag, "unused-secret");
+    const s2 = issue(bag, "used-secret");
+    const result = loaded(bag).resolveForShell(`echo ${s2}`);
     assertEquals(result.command, 'echo "${__SWAMP_VAULT_0}"');
     assertEquals(Object.keys(result.env).length, 1);
   });
 
   await t.step("resolveForShell: no secrets returns original command", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const result = bag.resolveForShell("echo hello world");
+    const result = loaded(bag).resolveForShell("echo hello world");
     assertEquals(result.command, "echo hello world");
     assertEquals(result.env, {});
   });
@@ -245,10 +268,10 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell: inside double quotes uses bare env var ref",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("my-token", REF);
+      const sentinel = issue(bag, "my-token");
       const cmd = 'curl -H "Authorization: Bearer ' + sentinel +
         '" https://api.example.com';
-      const result = bag.resolveForShell(cmd);
+      const result = loaded(bag).resolveForShell(cmd);
       assertEquals(
         result.command,
         'curl -H "Authorization: Bearer ${__SWAMP_VAULT_0}" https://api.example.com',
@@ -261,9 +284,9 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell: after closed double quotes uses quoted env var ref",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("value", REF);
+      const sentinel = issue(bag, "value");
       const cmd = 'echo "hello" ' + sentinel;
-      const result = bag.resolveForShell(cmd);
+      const result = loaded(bag).resolveForShell(cmd);
       assertEquals(
         result.command,
         'echo "hello" "${__SWAMP_VAULT_0}"',
@@ -275,10 +298,10 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell: respects escaped quotes",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("val", REF);
+      const sentinel = issue(bag, "val");
       // \" does not open a quoted section
       const cmd = 'echo \\"' + sentinel;
-      const result = bag.resolveForShell(cmd);
+      const result = loaded(bag).resolveForShell(cmd);
       assertEquals(
         result.command,
         'echo \\"' + '"${__SWAMP_VAULT_0}"',
@@ -290,8 +313,10 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForPowerShell: replaces sentinel with $env: reference",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("my-password", REF);
-      const result = bag.resolveForPowerShell(`Write-Output ${sentinel}`);
+      const sentinel = issue(bag, "my-password");
+      const result = loaded(bag).resolveForPowerShell(
+        `Write-Output ${sentinel}`,
+      );
       assertEquals(result.command, 'Write-Output "$env:__SWAMP_VAULT_0"');
       assertEquals(result.env, { __SWAMP_VAULT_0: "my-password" });
     },
@@ -299,10 +324,10 @@ Deno.test("VaultSecretBag", async (t) => {
 
   await t.step("resolveForPowerShell: handles multiple secrets", () => {
     const bag = new VaultSecretBag(new SecretBagRegistry());
-    const s1 = bag.addSecret("user", REF);
-    const s2 = bag.addSecret("pass", REF);
+    const s1 = issue(bag, "user");
+    const s2 = issue(bag, "pass");
     const cmd = `Connect-Service -User ${s1} -Pass ${s2}`;
-    const result = bag.resolveForPowerShell(cmd);
+    const result = loaded(bag).resolveForPowerShell(cmd);
     assertEquals(
       result.command,
       'Connect-Service -User "$env:__SWAMP_VAULT_0" -Pass "$env:__SWAMP_VAULT_1"',
@@ -319,9 +344,9 @@ Deno.test("VaultSecretBag", async (t) => {
       // PowerShell interpolates `$env:VAR` inside double quotes natively;
       // adding extra quotes would yield broken syntax.
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("token", REF);
+      const sentinel = issue(bag, "token");
       const cmd = `Write-Output "auth: ${sentinel}"`;
-      const result = bag.resolveForPowerShell(cmd);
+      const result = loaded(bag).resolveForPowerShell(cmd);
       assertEquals(
         result.command,
         'Write-Output "auth: $env:__SWAMP_VAULT_0"',
@@ -333,10 +358,10 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForPowerShell: skips secrets not in command",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      bag.addSecret("unused", REF);
-      const sentinel = bag.addSecret("present", REF);
+      issue(bag, "unused");
+      const sentinel = issue(bag, "present");
       const cmd = `Write-Output ${sentinel}`;
-      const result = bag.resolveForPowerShell(cmd);
+      const result = loaded(bag).resolveForPowerShell(cmd);
       // The unused secret never gets a __SWAMP_VAULT_N slot.
       assertEquals(result.command, 'Write-Output "$env:__SWAMP_VAULT_0"');
       assertEquals(result.env, { __SWAMP_VAULT_0: "present" });
@@ -347,7 +372,7 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForPowerShell: no secrets returns original command",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const result = bag.resolveForPowerShell("Write-Output hello");
+      const result = loaded(bag).resolveForPowerShell("Write-Output hello");
       assertEquals(result.command, "Write-Output hello");
       assertEquals(result.env, {});
     },
@@ -357,9 +382,9 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell singleQuoted: detects sentinel inside single quotes",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("secret", REF);
+      const sentinel = issue(bag, "secret");
       const cmd = `S='${sentinel}'`;
-      const found = bag.resolveForShell(cmd).singleQuoted;
+      const found = loaded(bag).resolveForShell(cmd).singleQuoted;
       assertEquals(found, [sentinel]);
     },
   );
@@ -368,9 +393,9 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell singleQuoted: does not flag sentinel in double quotes",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("secret", REF);
+      const sentinel = issue(bag, "secret");
       const cmd = `D="${sentinel}"`;
-      const found = bag.resolveForShell(cmd).singleQuoted;
+      const found = loaded(bag).resolveForShell(cmd).singleQuoted;
       assertEquals(found, []);
     },
   );
@@ -379,9 +404,9 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell singleQuoted: does not flag unquoted sentinel",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("secret", REF);
+      const sentinel = issue(bag, "secret");
       const cmd = `echo ${sentinel}`;
-      const found = bag.resolveForShell(cmd).singleQuoted;
+      const found = loaded(bag).resolveForShell(cmd).singleQuoted;
       assertEquals(found, []);
     },
   );
@@ -390,10 +415,10 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell singleQuoted: detects only the single-quoted one among mixed",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const s1 = bag.addSecret("good", REF);
-      const s2 = bag.addSecret("bad", REF);
+      const s1 = issue(bag, "good");
+      const s2 = issue(bag, "bad");
       const cmd = `D="${s1}"\nS='${s2}'`;
-      const found = bag.resolveForShell(cmd).singleQuoted;
+      const found = loaded(bag).resolveForShell(cmd).singleQuoted;
       assertEquals(found, [s2]);
     },
   );
@@ -402,7 +427,7 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell singleQuoted: returns empty when no secrets exist",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const found = bag.resolveForShell("echo 'hello'").singleQuoted;
+      const found = loaded(bag).resolveForShell("echo 'hello'").singleQuoted;
       assertEquals(found, []);
     },
   );
@@ -411,9 +436,9 @@ Deno.test("VaultSecretBag", async (t) => {
     "resolveForShell singleQuoted: handles multi-line scripts",
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const sentinel = bag.addSecret("secret", REF);
+      const sentinel = issue(bag, "secret");
       const cmd = `#!/bin/sh\necho "safe"\nBROKEN='${sentinel}'\necho done`;
-      const found = bag.resolveForShell(cmd).singleQuoted;
+      const found = loaded(bag).resolveForShell(cmd).singleQuoted;
       assertEquals(found, [sentinel]);
     },
   );
@@ -426,7 +451,7 @@ Deno.test("VaultSecretBag.sentinelizeText: replaces data secrets with one reused
   assertEquals(sentinels.length, 2);
   assertEquals(sentinels[0], sentinels[1]);
   assertEquals(bag.entryOf(sentinels[0] ?? "")?.dataOrigin, true);
-  assertEquals(bag.resolveRaw(text), "a=s3cret b=s3cret");
+  assertEquals(loaded(bag).resolveRaw(text), "a=s3cret b=s3cret");
 });
 
 Deno.test("VaultSecretBag.sentinelizeText: JSON-escaped forms restore the escaped text", () => {
@@ -436,21 +461,21 @@ Deno.test("VaultSecretBag.sentinelizeText: JSON-escaped forms restore the escape
   const text = bag.sentinelizeText(json, entries(secret));
   assertEquals(text.includes("pa\\"), false);
   // Restoring yields valid JSON carrying the original secret.
-  assertEquals(JSON.parse(bag.resolveRaw(text)).p, secret);
+  assertEquals(JSON.parse(loaded(bag).resolveRaw(text)).p, secret);
 });
 
 Deno.test("VaultSecretBag.sentinelizeText: never searches inside existing sentinels", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const vaultSentinel = bag.addSecret("from-vault", REF);
+  const vaultSentinel = issue(bag, "from-vault");
   const text = bag.sentinelizeText(`${vaultSentinel} VSE`, entries("VSE"));
   assertEquals(text.startsWith(vaultSentinel), true);
-  assertEquals(bag.resolveRaw(text), "from-vault VSE");
+  assertEquals(loaded(bag).resolveRaw(text), "from-vault VSE");
 });
 
 Deno.test("VaultSecretBag.sentinelizeText: longer secrets are replaced before shorter overlaps", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const text = bag.sentinelizeText("abcdef abc", entries("abcdef", "abc"));
-  assertEquals(bag.resolveRaw(text), "abcdef abc");
+  assertEquals(loaded(bag).resolveRaw(text), "abcdef abc");
   assertEquals((text.match(VaultSecretBag.SENTINEL_PATTERN) ?? []).length, 2);
 });
 
@@ -471,7 +496,7 @@ Deno.test("VaultSecretBag.sentinelizeValues: resolveDeep round-trips any structu
           entries(...sorted),
         );
         assertEquals(
-          JSON.stringify(bag.resolveDeep(sentinelized)),
+          JSON.stringify(loaded(bag).resolveDeep(sentinelized)),
           JSON.stringify(embedded),
         );
       },
@@ -482,7 +507,7 @@ Deno.test("VaultSecretBag.sentinelizeValues: resolveDeep round-trips any structu
 Deno.test("VaultSecretBag.resolveForShell: places data-origin references per occurrence", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const s = bag.addDataSecret("s3cret", REF);
-  const resolved = bag.resolveForShell(
+  const resolved = loaded(bag).resolveForShell(
     `echo ${s} "${s}" '${s}' $'a${s}'\ncat <<EOF\n${s}\nEOF`,
   );
   assertEquals(
@@ -497,7 +522,7 @@ Deno.test("VaultSecretBag.resolveForShell: places data-origin references per occ
 Deno.test("VaultSecretBag.resolveForShell: a quoted heredoc keeps the data value and says so", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const s = bag.addDataSecret("s3cret", REF);
-  const resolved = bag.resolveForShell(`cat <<'EOF'\n${s}\nEOF`);
+  const resolved = loaded(bag).resolveForShell(`cat <<'EOF'\n${s}\nEOF`);
   assertEquals(resolved.command, "cat <<'EOF'\ns3cret\nEOF");
   assertEquals(resolved.env, {});
   assertEquals(resolved.dataInCommandLine, true);
@@ -505,7 +530,7 @@ Deno.test("VaultSecretBag.resolveForShell: a quoted heredoc keeps the data value
 
 Deno.test("VaultSecretBag.resolveForShell: places vault.get references per occurrence", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("two  words *", REF);
+  const s = issue(bag, "two  words *");
   const ref = "${__SWAMP_VAULT_0}";
   const cases: [string, string][] = [
     // Single-quoted first: the double-quoted use still expands as one word.
@@ -520,7 +545,7 @@ Deno.test("VaultSecretBag.resolveForShell: places vault.get references per occur
     ],
   ];
   for (const [command, expected] of cases) {
-    const resolved = bag.resolveForShell(command);
+    const resolved = loaded(bag).resolveForShell(command);
     assertEquals(resolved.command, expected);
     assertEquals(resolved.env, { __SWAMP_VAULT_0: "two  words *" });
   }
@@ -528,21 +553,21 @@ Deno.test("VaultSecretBag.resolveForShell: places vault.get references per occur
 
 Deno.test("VaultSecretBag.resolveForPowerShell: places vault.get references per occurrence", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("two  words *", REF);
+  const s = issue(bag, "two  words *");
   assertEquals(
-    bag.resolveForPowerShell(`$b='${s}'; Write-Output "${s}"`).command,
+    loaded(bag).resolveForPowerShell(`$b='${s}'; Write-Output "${s}"`).command,
     `$b='"$env:__SWAMP_VAULT_0"'; Write-Output "$env:__SWAMP_VAULT_0"`,
   );
   assertEquals(
-    bag.resolveForPowerShell(`Write-Output "${s}" ${s}`).command,
+    loaded(bag).resolveForPowerShell(`Write-Output "${s}" ${s}`).command,
     `Write-Output "$env:__SWAMP_VAULT_0" "$env:__SWAMP_VAULT_0"`,
   );
 });
 
 Deno.test("VaultSecretBag.resolveForShell: an apostrophe in a comment does not change a later vault.get placement", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("two  words *", REF);
-  const resolved = bag.resolveForShell(
+  const s = issue(bag, "two  words *");
+  const resolved = loaded(bag).resolveForShell(
     `printf '[%s]\\n' "A=${s}"\n# don't log it\nprintf '[%s]\\n' "B=${s}"`,
   );
   assertEquals(
@@ -555,8 +580,8 @@ Deno.test("VaultSecretBag.resolveForShell: an apostrophe in a comment does not c
 
 Deno.test("VaultSecretBag.resolveForShell: vault.get in a here-document body follows the quotes before it", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
-  const resolved = bag.resolveForShell(
+  const s = issue(bag, "v");
+  const resolved = loaded(bag).resolveForShell(
     `cat <<EOF\n{"k": "${s}"}\nraw ${s}\nEOF\ncat <<'END'\n${s}\nEND`,
   );
   assertEquals(
@@ -569,8 +594,8 @@ Deno.test("VaultSecretBag.resolveForShell: vault.get in a here-document body fol
 
 Deno.test("VaultSecretBag.resolveForShell: vault.get on a continuation line of a here-document string stays bare", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
-  const resolved = bag.resolveForShell(
+  const s = issue(bag, "v");
+  const resolved = loaded(bag).resolveForShell(
     `cat <<EOF > run.sh\necho "line1\n${s}"\nEOF`,
   );
   assertEquals(
@@ -582,7 +607,7 @@ Deno.test("VaultSecretBag.resolveForShell: vault.get on a continuation line of a
 
 Deno.test("VaultSecretBag.resolveForShell: quotes before a here-document do not change placement in its body", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
+  const s = issue(bag, "v");
   const ref = "${__SWAMP_VAULT_0}";
   const cases: [string, string][] = [
     [
@@ -599,7 +624,7 @@ Deno.test("VaultSecretBag.resolveForShell: quotes before a here-document do not 
     ],
   ];
   for (const [command, expected] of cases) {
-    const resolved = bag.resolveForShell(command);
+    const resolved = loaded(bag).resolveForShell(command);
     assertEquals(resolved.command, expected);
     assertEquals(resolved.singleQuoted, []);
   }
@@ -607,7 +632,7 @@ Deno.test("VaultSecretBag.resolveForShell: quotes before a here-document do not 
 
 Deno.test("VaultSecretBag.resolveForShell: apostrophes in here-document prose do not change placement", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
+  const s = issue(bag, "v");
   const ref = "${__SWAMP_VAULT_0}";
   const cases: [string, string][] = [
     [
@@ -624,7 +649,7 @@ Deno.test("VaultSecretBag.resolveForShell: apostrophes in here-document prose do
     ],
   ];
   for (const [command, expected] of cases) {
-    const resolved = bag.resolveForShell(command);
+    const resolved = loaded(bag).resolveForShell(command);
     assertEquals(resolved.command, expected);
     assertEquals(resolved.singleQuoted, []);
   }
@@ -632,7 +657,7 @@ Deno.test("VaultSecretBag.resolveForShell: apostrophes in here-document prose do
 
 Deno.test("VaultSecretBag.resolveForShell: a double quote inside single quotes on a here-document line opens no string", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
+  const s = issue(bag, "v");
   const quoted = `"\${__SWAMP_VAULT_0}"`;
   for (
     const line of [
@@ -644,7 +669,9 @@ Deno.test("VaultSecretBag.resolveForShell: a double quote inside single quotes o
     ]
   ) {
     assertEquals(
-      bag.resolveForShell(`cat <<EOF > gen.sh\n${line}\nset -- ${s}\nEOF`)
+      loaded(bag).resolveForShell(
+        `cat <<EOF > gen.sh\n${line}\nset -- ${s}\nEOF`,
+      )
         .command,
       `cat <<EOF > gen.sh\n${line}\nset -- ${quoted}\nEOF`,
     );
@@ -653,7 +680,7 @@ Deno.test("VaultSecretBag.resolveForShell: a double quote inside single quotes o
 
 Deno.test("VaultSecretBag.resolveForShell: mid-word quotes in here-document prose open no string", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
+  const s = issue(bag, "v");
   const ref = "\${__SWAMP_VAULT_0}";
   const cases: [string, string][] = [
     [
@@ -666,13 +693,13 @@ Deno.test("VaultSecretBag.resolveForShell: mid-word quotes in here-document pros
     ],
   ];
   for (const [command, expected] of cases) {
-    assertEquals(bag.resolveForShell(command).command, expected);
+    assertEquals(loaded(bag).resolveForShell(command).command, expected);
   }
 });
 
 Deno.test("VaultSecretBag.resolveForShell: here-document strings attached to other text pair up on their line", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
+  const s = issue(bag, "v");
   const ref = "${__SWAMP_VAULT_0}";
   for (
     const [line, expected] of [
@@ -687,7 +714,7 @@ Deno.test("VaultSecretBag.resolveForShell: here-document strings attached to oth
     ]
   ) {
     assertEquals(
-      bag.resolveForShell(`cat <<EOF > gen.sh\n${line}\nEOF`).command,
+      loaded(bag).resolveForShell(`cat <<EOF > gen.sh\n${line}\nEOF`).command,
       `cat <<EOF > gen.sh\n${expected}\nEOF`,
     );
   }
@@ -695,9 +722,9 @@ Deno.test("VaultSecretBag.resolveForShell: here-document strings attached to oth
 
 Deno.test("VaultSecretBag.resolveForShell: a vault.get use inside single quotes in a here-document stays bare", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
+  const s = issue(bag, "v");
   assertEquals(
-    bag.resolveForShell(`cat <<EOF > gen.sh\nPASS='${s}'\nEOF`).command,
+    loaded(bag).resolveForShell(`cat <<EOF > gen.sh\nPASS='${s}'\nEOF`).command,
     `cat <<EOF > gen.sh\nPASS='\${__SWAMP_VAULT_0}'\nEOF`,
   );
 });
@@ -706,9 +733,9 @@ Deno.test("VaultSecretBag.resolveForShell: a single quote attached mid-word does
   // Known limit (swamp-club#3106): -F'"' starts no single-quoted span, so its
   // double quote opens a string for the rest of that line only.
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("v", REF);
+  const s = issue(bag, "v");
   assertEquals(
-    bag.resolveForShell(
+    loaded(bag).resolveForShell(
       `cat <<EOF > gen.sh\nawk -F'"' -v k=${s} f\nset -- ${s}\nEOF`,
     )
       .command,
@@ -719,40 +746,50 @@ Deno.test("VaultSecretBag.resolveForShell: a single quote attached mid-word does
 Deno.test("VaultSecretBag.resolveForShell: singleQuoted leaves out data-origin sentinels", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const data = bag.addDataSecret("from-data", REF);
-  const vault = bag.addSecret("from-vault", REF);
+  const vault = issue(bag, "from-vault");
   assertEquals(
-    bag.resolveForShell(`echo '${data}' '${vault}'`).singleQuoted,
+    loaded(bag).resolveForShell(`echo '${data}' '${vault}'`).singleQuoted,
     [vault],
   );
 });
 
 Deno.test("VaultSecretBag.resolveForPowerShell: singleQuoted lists a single-quoted vault.get use", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("from-vault", REF);
+  const s = issue(bag, "from-vault");
   assertEquals(
-    bag.resolveForPowerShell(`Write-Output "${s}" '${s}'`).singleQuoted,
+    loaded(bag).resolveForPowerShell(`Write-Output "${s}" '${s}'`).singleQuoted,
     [s],
   );
   assertEquals(
-    bag.resolveForPowerShell(`Write-Output "${s}"`).singleQuoted,
+    loaded(bag).resolveForPowerShell(`Write-Output "${s}"`).singleQuoted,
     [],
   );
 });
 
 Deno.test("VaultSecretBag.resolveForShell: singleQuoted finds a single-quoted use after a double-quoted one", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s = bag.addSecret("from-vault", REF);
-  assertEquals(bag.resolveForShell(`a="${s}"; b='${s}'`).singleQuoted, [s]);
-  assertEquals(bag.resolveForShell(`echo ${s} '${s}' '${s}'`).singleQuoted, [
+  const s = issue(bag, "from-vault");
+  assertEquals(loaded(bag).resolveForShell(`a="${s}"; b='${s}'`).singleQuoted, [
     s,
   ]);
-  assertEquals(bag.resolveForShell(`echo ${s} "${s}"`).singleQuoted, []);
+  assertEquals(
+    loaded(bag).resolveForShell(`echo ${s} '${s}' '${s}'`).singleQuoted,
+    [
+      s,
+    ],
+  );
+  assertEquals(
+    loaded(bag).resolveForShell(`echo ${s} "${s}"`).singleQuoted,
+    [],
+  );
 });
 
 Deno.test("VaultSecretBag.resolveForPowerShell: single-quoted data values stay in place", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const s = bag.addDataSecret("s3cret", REF);
-  const resolved = bag.resolveForPowerShell(`Write-Output '${s}' "${s}"`);
+  const resolved = loaded(bag).resolveForPowerShell(
+    `Write-Output '${s}' "${s}"`,
+  );
   assertEquals(
     resolved.command,
     `Write-Output 's3cret' "$env:__SWAMP_VAULT_0"`,
@@ -772,7 +809,7 @@ Deno.test("VaultSecretBag.resolveForShell: drops the env entry of a value kept i
     .filter((_, i) => i !== 1)
     .map((s) => `echo "${s}"`)
     .join("; ") + `\ncat <<'EOF'\n${sentinels[1]}\nEOF`;
-  const resolved = bag.resolveForShell(command);
+  const resolved = loaded(bag).resolveForShell(command);
   assertEquals(resolved.dataInCommandLine, true);
   assertEquals(
     Object.values(resolved.env).includes("secret-value-1"),
@@ -783,26 +820,26 @@ Deno.test("VaultSecretBag.resolveForShell: drops the env entry of a value kept i
 
 Deno.test("VaultSecretBag.fromEntries: a rebuilt bag resolves exactly like the original", () => {
   const original = new VaultSecretBag(new SecretBagRegistry());
-  const vaultSentinel = original.addSecret("vault-pa$$ word", REF);
+  const vaultSentinel = issue(original, "vault-pa$$ word");
   const dataSentinel = original.addDataSecret("data-secret", REF);
   const escaped = original.sentinelizeText('{"k":"a\\"b"}', entries('a"b'));
   const command =
     `echo "${vaultSentinel}" ${dataSentinel} '${vaultSentinel}'\ncat <<'EOF'\n${dataSentinel}\nEOF\necho ${escaped}`;
 
-  const rebuilt = VaultSecretBag.fromEntries(original.toEntries());
+  const rebuilt = VaultSecretBag.fromEntries(loaded(original).toEntries());
 
-  assertEquals(rebuilt.toEntries(), original.toEntries());
+  assertEquals(loaded(rebuilt).toEntries(), loaded(original).toEntries());
   assertEquals(
-    rebuilt.resolveForShell(command),
-    original.resolveForShell(command),
+    loaded(rebuilt).resolveForShell(command),
+    loaded(original).resolveForShell(command),
   );
   assertEquals(
-    rebuilt.resolveForPowerShell(command),
-    original.resolveForPowerShell(command),
+    loaded(rebuilt).resolveForPowerShell(command),
+    loaded(original).resolveForPowerShell(command),
   );
   assertEquals(
-    rebuilt.resolveDeep({ run: command, list: [dataSentinel] }),
-    original.resolveDeep({ run: command, list: [dataSentinel] }),
+    loaded(rebuilt).resolveDeep({ run: command, list: [dataSentinel] }),
+    loaded(original).resolveDeep({ run: command, list: [dataSentinel] }),
   );
   assertEquals(rebuilt.entryOf(dataSentinel)?.dataOrigin, true);
   assertEquals(rebuilt.entryOf(vaultSentinel)?.dataOrigin, false);
@@ -811,9 +848,9 @@ Deno.test("VaultSecretBag.fromEntries: a rebuilt bag resolves exactly like the o
 Deno.test("VaultSecretBag.fromEntries: reuses a shipped data sentinel for the same value", () => {
   const original = new VaultSecretBag(new SecretBagRegistry());
   const sentinel = original.addDataSecret("data-secret", REF);
-  const rebuilt = VaultSecretBag.fromEntries(original.toEntries());
+  const rebuilt = VaultSecretBag.fromEntries(loaded(original).toEntries());
   assertEquals(rebuilt.addDataSecret("data-secret", REF), sentinel);
-  assertEquals(rebuilt.toEntries().length, 1);
+  assertEquals(loaded(rebuilt).toEntries().length, 1);
 });
 
 Deno.test("VaultSecretBag.fromEntries: rejects a malformed sentinel", () => {
@@ -839,20 +876,22 @@ Deno.test("VaultSecretBag: a view resolves a sentinel another bag of the run iss
   const early = runStart.addDataSecret("early-secret", REF);
   assertEquals(step.isEmpty, true);
   assertEquals(step.resolvesAny, true);
-  assertEquals(step.resolveRaw(`echo ${early}`), "echo early-secret");
-  assertEquals(step.resolveDeep({ a: [early] }), { a: ["early-secret"] });
-  assertEquals(step.resolveForShell(`echo ${early}`).env, {
+  assertEquals(loaded(step).resolveRaw(`echo ${early}`), "echo early-secret");
+  assertEquals(loaded(step).resolveDeep({ a: [early] }), {
+    a: ["early-secret"],
+  });
+  assertEquals(loaded(step).resolveForShell(`echo ${early}`).env, {
     __SWAMP_VAULT_0: "early-secret",
   });
-  assertEquals(step.toEntries(), []);
-  assertEquals(step.rawValues, []);
-  const own = step.addSecret("own-secret", REF);
-  assertEquals(step.toEntries(), [{
+  assertEquals(loaded(step).toEntries(), []);
+  assertEquals(loaded(step).rawValues, []);
+  const own = issue(step, "own-secret");
+  assertEquals(loaded(step).toEntries(), [{
     sentinel: own,
     value: "own-secret",
     dataOrigin: false,
   }]);
-  assertEquals(runStart.resolveRaw(own), "own-secret");
+  assertEquals(loaded(runStart).resolveRaw(own), "own-secret");
 });
 
 Deno.test("VaultSecretBag.entriesFor: the bag's own entries, then the run's entries the arguments carry", () => {
@@ -860,10 +899,10 @@ Deno.test("VaultSecretBag.entriesFor: the bag's own entries, then the run's entr
   const runStart = new VaultSecretBag(registry);
   const step = new VaultSecretBag(registry);
   const early = runStart.addDataSecret("early-secret", REF);
-  const unused = runStart.addSecret("unused-secret", REF);
-  const own = step.addSecret("own-secret", REF);
+  const unused = issue(runStart, "unused-secret");
+  const own = issue(step, "own-secret");
   assertEquals(
-    step.entriesFor({
+    loaded(step).entriesFor({
       run: `echo ${early}`,
       nested: [{ x: `${own} ${early}` }],
     }),
@@ -872,9 +911,12 @@ Deno.test("VaultSecretBag.entriesFor: the bag's own entries, then the run's entr
       { sentinel: early, value: "early-secret", dataOrigin: true },
     ],
   );
-  assertEquals(step.entriesFor({ run: "plain" }), step.toEntries());
   assertEquals(
-    step.entriesFor(unused).some((entry) => entry.sentinel === unused),
+    loaded(step).entriesFor({ run: "plain" }),
+    loaded(step).toEntries(),
+  );
+  assertEquals(
+    loaded(step).entriesFor(unused).some((entry) => entry.sentinel === unused),
     true,
   );
   assertEquals(new VaultSecretBag(registry).entriesFor({}), []);
@@ -883,8 +925,12 @@ Deno.test("VaultSecretBag.entriesFor: the bag's own entries, then the run's entr
 Deno.test("VaultSecretBag.toEntries: ships no reference and no encoding", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const sentinel = bag.addDataSecret('a"b', REF, "json");
-  assertEquals(bag.toEntries(), [{ sentinel, value: 'a"b', dataOrigin: true }]);
-  assertEquals(Object.keys(bag.toEntries()[0]).sort(), [
+  assertEquals(loaded(bag).toEntries(), [{
+    sentinel,
+    value: 'a"b',
+    dataOrigin: true,
+  }]);
+  assertEquals(Object.keys(loaded(bag).toEntries()[0]).sort(), [
     "dataOrigin",
     "sentinel",
     "value",
@@ -898,12 +944,12 @@ Deno.test("VaultSecretBag.rehomeSentinels: vault-origin entries are re-issued on
   const registry = new SecretBagRegistry();
   const source = new VaultSecretBag(registry);
   const target = new VaultSecretBag(registry);
-  const vault = source.addSecret("vault-secret", REF);
+  const vault = issue(source, "vault-secret");
   const data = source.addDataSecret("data-secret", {
     vaultName: "v",
     key: "d",
   });
-  const other = new VaultSecretBag(registry).addSecret("other", REF);
+  const other = issue(new VaultSecretBag(registry), "other");
   const rehomed = source.rehomeSentinels(
     { run: `${vault} ${vault} ${data} ${data} ${other}` },
     target,
@@ -913,7 +959,7 @@ Deno.test("VaultSecretBag.rehomeSentinels: vault-origin entries are re-issued on
   assertEquals(d1, d2);
   assertEquals(o, other);
   assertEquals(v1 !== vault && d1 !== data, true);
-  assertEquals(target.toEntries().length, 2);
+  assertEquals(loaded(target).toEntries().length, 2);
   assertEquals(target.entryOf(v1)?.dataOrigin, false);
   assertEquals(target.entryOf(d1)?.dataOrigin, true);
   assertEquals(registry.issuedEntryOf(d1)?.reference, {
@@ -921,10 +967,10 @@ Deno.test("VaultSecretBag.rehomeSentinels: vault-origin entries are re-issued on
     key: "d",
   });
   assertEquals(
-    target.resolveRaw(rehomed.run),
-    source.resolveRaw(`${vault} ${vault} ${data} ${data} ${other}`),
+    loaded(target).resolveRaw(rehomed.run),
+    loaded(source).resolveRaw(`${vault} ${vault} ${data} ${data} ${other}`),
   );
-  assertEquals(target.resolveForShell(rehomed.run).env, {
+  assertEquals(loaded(target).resolveForShell(rehomed.run).env, {
     __SWAMP_VAULT_0: "other",
     __SWAMP_VAULT_1: "vault-secret",
     __SWAMP_VAULT_2: "data-secret",
@@ -947,6 +993,101 @@ Deno.test("VaultSecretBag.rehomeSentinels: a shipped entry without a reference c
     Error,
     "without a reference",
   );
+});
+
+Deno.test("VaultSecretBag.addSecret: a vault reference holds no value, only its reference and location", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(REF, "methods.run.arguments.cmd");
+  assertEquals(bag.registry.entryOf(sentinel), {
+    sentinel,
+    reference: REF,
+    encoding: "raw",
+    dataOrigin: false,
+    location: "methods.run.arguments.cmd",
+  });
+});
+
+Deno.test("VaultSecretBag: an unloaded vault reference fails delivery instead of passing its sentinel", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(REF, "methods.run.arguments.cmd");
+  const deliveries: [string, () => unknown][] = [
+    ["resolveRaw", () => bag.resolveRaw(`x ${sentinel}`)],
+    ["resolveDeep", () => bag.resolveDeep({ a: [sentinel] })],
+    ["resolveForShell", () => bag.resolveForShell(`echo ${sentinel}`)],
+    ["resolveForPowerShell", () => bag.resolveForPowerShell(sentinel)],
+    ["entriesFor", () => bag.entriesFor({ a: sentinel })],
+  ];
+  for (const [name, deliver] of deliveries) {
+    const error = assertThrows(deliver, Error, "was not loaded", name);
+    assertEquals(error.message.includes("'k'"), true, name);
+    assertEquals(error.message.includes("methods.run.arguments.cmd"), true);
+  }
+  // Nothing of it is delivered or shipped while it is unloaded.
+  assertEquals(bag.toEntries(), []);
+  assertEquals(bag.rawValues, []);
+});
+
+Deno.test("VaultSecretBag.withLoaded: the view delivers the loaded value, and the bag stays unloaded", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(REF, "loc");
+  const data = bag.addDataSecret("from-data", REF);
+  const view = bag.withLoaded(new Map([[sentinel, "loaded-value"]]));
+  assertEquals(
+    view.resolveRaw(`${sentinel} ${data}`),
+    "loaded-value from-data",
+  );
+  assertEquals(view.toEntries(), [
+    { sentinel, value: "loaded-value", dataOrigin: false },
+    { sentinel: data, value: "from-data", dataOrigin: true },
+  ]);
+  assertEquals(view.isEmpty, false);
+  assertThrows(() => bag.resolveRaw(sentinel), Error, "was not loaded");
+  // A second attempt's view loads its own value.
+  assertEquals(
+    bag.withLoaded(new Map([[sentinel, "rotated"]])).resolveRaw(sentinel),
+    "rotated",
+  );
+  assertThrows(() => view.addSecret(REF, "loc"), Error, "issues no sentinels");
+  assertThrows(
+    () => view.addDataSecret("new", REF),
+    Error,
+    "issues no sentinels",
+  );
+});
+
+Deno.test("VaultSecretBag.entriesFor: an own vault reference the attempt did not load is not shipped", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const delivered = bag.addSecret({ vaultName: "v", key: "used" }, "a");
+  bag.addSecret({ vaultName: "v", key: "other-method" }, "b");
+  const view = bag.withLoaded(new Map([[delivered, "used-value"]]));
+  assertEquals(view.entriesFor({ run: delivered }), [
+    { sentinel: delivered, value: "used-value", dataOrigin: false },
+  ]);
+});
+
+Deno.test("VaultSecretBag.rehomeSentinels: a vault reference moves with its location and no value", () => {
+  const registry = new SecretBagRegistry();
+  const source = new VaultSecretBag(registry);
+  const target = new VaultSecretBag(registry);
+  const sentinel = source.addSecret(REF, "inputs.token");
+  const rehomed = source.rehomeSentinels(sentinel, target) as string;
+  assertEquals(registry.entryOf(rehomed), {
+    sentinel: rehomed,
+    reference: REF,
+    encoding: "raw",
+    dataOrigin: false,
+    location: "inputs.token",
+  });
+});
+
+Deno.test("VaultSecretBag: a bag draws its prefix when it first issues", () => {
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const sentinel = bag.addSecret(REF, "loc");
+  assertEquals(registry.drewPrefixOf(sentinel), true);
+  // A delivery view issues nothing, so it draws no prefix of its own.
+  bag.withLoaded(new Map());
+  assertEquals(registry.drewPrefixOf(sentinel), true);
 });
 
 Deno.test("VaultSecretBag.addDataSecret: two references with one value share the first reference", () => {

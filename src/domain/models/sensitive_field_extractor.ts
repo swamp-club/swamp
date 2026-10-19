@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { z } from "zod";
+import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
 import { freeRoots, isBlankConstant } from "../expressions/cel_grammar.ts";
 import {
   isExpressionsOnly,
@@ -489,14 +490,16 @@ export function redactAllValues(
 
 /**
  * Recursively collects all string values from a value tree into `out`.
- * Handles strings, arrays, and plain objects (records/maps).
+ * Handles strings, arrays, and plain objects (records/maps). A string that
+ * is exactly a vault secret sentinel is skipped: it stands for a reference,
+ * and the load that delivers its value registers that value.
  */
 function collectSecretStrings(value: unknown, out: string[]): void {
   if (value === undefined || value === null) {
     return;
   }
   if (typeof value === "string") {
-    out.push(value);
+    if (!SENTINEL_EXACT.test(value)) out.push(value);
     return;
   }
   if (Array.isArray(value)) {

@@ -276,12 +276,14 @@ export class VaultService {
               return freshValue;
             }
           } else {
+            // Never the command's output or a cause: a refresh command
+            // prints the secret it mints, so its stderr can carry one.
             getLogger("vaults")
-              .warn`Refresh command failed for ${secretKey} in vault ${vaultName}: ${result.stderr}. Returning stale value.`;
+              .warn`Refresh command failed for ${secretKey} in vault ${vaultName}. Returning stale value; run the refresh command by hand to see its output.`;
           }
-        } catch (error) {
+        } catch {
           getLogger("vaults")
-            .warn`Refresh command error for ${secretKey} in vault ${vaultName}: ${error}. Returning stale value.`;
+            .warn`Refresh command error for ${secretKey} in vault ${vaultName}. Returning stale value; run the refresh command by hand to see why it failed.`;
         }
       }
     }
@@ -437,6 +439,16 @@ export class VaultService {
     await authorizeVaultAction(vaultName, "read", secretKey);
     const provider = this.requireExistenceProvider(vaultName);
     return await provider.has(secretKey);
+  }
+
+  /**
+   * Holds a read of the key to the run vault access scope, as {@link get}
+   * and {@link has} do, without touching any provider. The existence check
+   * calls it for a reference it already confirmed, because a grant can be
+   * revoked mid-run. Without a scope it does nothing.
+   */
+  async authorizeRead(vaultName: string, secretKey: string): Promise<void> {
+    await authorizeVaultAction(vaultName, "read", secretKey);
   }
 
   /**

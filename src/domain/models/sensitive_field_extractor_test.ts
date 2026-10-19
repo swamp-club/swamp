@@ -161,6 +161,24 @@ Deno.test("extractSensitiveFieldValues: string field", () => {
   assertEquals(extractSensitiveFieldValues(schema, data), ["s3cr3t"]);
 });
 
+Deno.test("extractSensitiveFieldValues: a vault secret sentinel is skipped, because its load registers the value", () => {
+  const sentinel = `__SWAMP_VSEC_${"ab".repeat(16)}_0__`;
+  const schema = z.object({
+    password: z.string().meta({ sensitive: true }),
+    header: z.string().meta({ sensitive: true }),
+    keys: z.array(z.string()).meta({ sensitive: true }),
+  });
+  const data = {
+    password: sentinel,
+    header: `Bearer ${sentinel}`,
+    keys: [sentinel, "literal-s3cret"],
+  };
+  assertEquals(extractSensitiveFieldValues(schema, data), [
+    `Bearer ${sentinel}`,
+    "literal-s3cret",
+  ]);
+});
+
 Deno.test("extractSensitiveFieldValues: array field collects each element", () => {
   const schema = z.object({
     command: z.array(z.string()).meta({ sensitive: true }),

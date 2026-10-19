@@ -51,7 +51,13 @@ Then set `defaultVault: default` in `.swamp.yaml`.
 
 ### "Secret not found"
 
-**Symptom**: `Error: Secret 'API_KEY' not found in vault 'dev-secrets'`
+**Symptom**:
+`Failed to resolve vault expression vault.get(dev-secrets, API_KEY) (at globalArguments.apiKey): Secret 'API_KEY' not found in vault 'dev-secrets'`
+(code `secret_reference_unavailable` in `--json`), or, for a vault without an
+existence check, the same `... (at ...)` prefix with the provider's own
+`Secret 'API_KEY' not found ...` message. The check runs when the expression is
+evaluated, before any value is read; the `(at ...)` path names the argument that
+references the key.
 
 **Causes and solutions**:
 

@@ -6,8 +6,9 @@ last-verified: 2026-10-16 @ 051bfb0e
 
 # Typed Secrets for Expressions
 
-**Status:** implementation plan. Phase 0 and Phase 1.1 have shipped
-(swamp-club#3510, swamp-club#3511, swamp-club#3512). This revision replaces the
+**Status:** implementation plan. Phases 0, 1 and 2 have shipped
+(swamp-club#3510, swamp-club#3511, swamp-club#3512, swamp-club#3551,
+swamp-club#3557, swamp-club#3558, swamp-club#3562). This revision replaces the
 earlier engine-2 plan, and [Why this design](#why-this-design) says what
 changed. Until Phase 4 ships, [expressions](./expressions.md) describes current
 behavior.
@@ -283,9 +284,13 @@ outside the passes in Section 5, needs a row here.
 A load calls `VaultService.get(vault, key, "expression:vault-resolve")` inside
 the run's ambient `RunVaultAccess`. The principal's grants and the workflow's
 `vaults:` list both apply. A sentinel is not a grant. The reserved
-`_token-secrets` vault is refused, as rehydration refuses it today. A retry is a
-new attempt and loads again. Each loaded value is registered with the run's
-`SecretRedactor`.
+`_token-secrets` vault answers to that access as it did to the eager read: serve
+refuses it to a principal that is not an access admin before any provider call,
+and only rehydration refuses it by name. A load reads through the vault service
+the existence check asked, the evaluator's, so a refresh hook refreshes on load
+as it did on the eager read. One attempt is one call of the method execution
+service; a retry is a new attempt and loads again. Each loaded value is
+registered with the run's `SecretRedactor`.
 
 A load failure fails the step before any check or method runs. The error names
 the vault, the key and the authored location, never a value. Vault refresh keeps
@@ -313,7 +318,9 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   accessor adapter records the references in each record it returns, and after
   evaluation, before the result is used, each is authorized under the run's
   `RunVaultAccess` with no provider call. A missing key fails only if the
-  reference is delivered, at its load (Section 10.1).
+  reference is delivered, at its load (Section 10.1). Until the adapter ships
+  (Phase 3) the accessors still read tagged fields, and that read authorizes
+  each reference under the run's `RunVaultAccess` and re-throws a denial.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key
   under the run's `RunVaultAccess`, as a load would, so a grant revoked mid-run
   fails the next check. It then asks the provider:
@@ -327,8 +334,11 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
      today. This probe registers the value with the run's `SecretRedactor` and
      drops it. The value never enters a bag, CEL or a delivery.
 
-  Only a positive answer is cached, for the run and per reference. A key removed
-  later fails at load. Authorization is never cached.
+  Only a positive answer is cached, for the run and per reference, on the run's
+  `SecretBagRegistry`: a child workflow shares it, while a resume and
+  `context.runModel` ask again. Checks of one reference in flight at once
+  share one answer, so parallel steps probe once. A key removed later fails at
+  load. Authorization is never cached.
 - **Failure.** A missing key fails with `secret_reference_unavailable`, naming
   the vault, the key and the authored location. An unauthorized key fails with
   the access error a load would raise. A probe that fails fails the step with
@@ -345,8 +355,14 @@ without `has` sees one extra read per delivered reference per run. That matters
 when a read has an effect, such as minting a dynamic credential. Such a provider
 should implement `has`, and the release notes say so (Section 10.3).
 
-Every CEL entry point runs the check, including `swamp behavior evaluate` and
-`swamp workflow evaluate`, so they still report a missing or unauthorized key.
+The check runs wherever a `vault.get` call is evaluated
+(`checkSecretReference`, from `resolveVaultExpressions`): the runtime pass that
+behavior runs, workflow steps, `context.runModel` and the inline resolutions in
+Section 3.3 go through. `swamp behavior evaluate` and `swamp workflow evaluate`
+defer `vault.get` as a runtime expression and evaluate none, so they read
+nothing, as before, and guards, asserts and `forEach` bind no `vault` in the
+current engine. From Phase 3, where `vault.get` is a CEL function, every entry
+point that evaluates one runs the check.
 
 ## 4. CEL semantics
 
@@ -969,6 +985,16 @@ sentinel format, so `REMOTE_PROTOCOL_VERSION` went to 5 with the longer
 prefix, while the dispatch fields stayed as they are (Section 9). The load
 step, the inline resolutions as loads and the existence check are 2.1 and 2.3.
 
+Phase 2.3 (swamp-club#3562, shipped) is the behavioral half:
+`resolveVaultExpressions` checks each reference and issues a sentinel that holds
+no value; `SecretLoader` loads at delivery, in the method execution service once
+per attempt and at each inline resolution; `sentinelResolverOf` gave way to
+`sentinelStandInOf`, which stands a vault reference in for its identity and a
+data entry for its value. "No bag holds plaintext before delivery" covers
+`vault.get` values: a data entry keeps the value a data read brought into CEL
+until Phase 4 makes data reads return references. The evaluate commands evaluate
+no `vault.get`, so they read nothing (Section 3.4).
+
 - `VaultSecretBag` entries hold a reference, an encoding and a data-origin flag.
   A load step fills values at delivery (Section 3.3).
 - `resolveVaultExpressions` issues a sentinel for the reference and stops
@@ -983,8 +1009,8 @@ step, the inline resolutions as loads and the existence check are 2.1 and 2.3.
 - The sentinel prefix grows to 128 random bits.
 - The run-scoped bag registry (Section 3.2). `toPersistedForm` callers pass it.
 - Provenance alignment (`alignProvenance`, `SplicePair`) compares sentinels, not
-  values, and `sentinelResolverOf` goes, because no bag holds a value before
-  delivery.
+  values, and `sentinelResolverOf` goes, because no `vault.get` entry holds a
+  value before delivery.
 - Each load registers its value with the run's log redactor.
   `extractSensitiveFieldValues` keeps registering every resolved string under a
   sensitive field, because literal values, `env.*` values and, until Phase 4,
@@ -994,8 +1020,9 @@ step, the inline resolutions as loads and the existence check are 2.1 and 2.3.
   for plaintext that data reads still bring into CEL.
 - Until Phase 5, the orchestrator loads the bag before a remote dispatch.
 
-**Exit:** no bag holds plaintext before delivery. A counting vault sees one load
-per reference per attempt, and at most one probe per reference per run. A step
+**Exit:** no bag holds a `vault.get` value before delivery. A counting vault sees
+one load per reference per delivery per attempt, and at most one probe per
+reference per run. A step
 that a guard skips makes no load. A missing or unauthorized key fails at
 evaluation exactly where the eager read failed it, including a key a principal
 can list but not read. A key that `has` confirms is checked with no value read.
@@ -1123,7 +1150,8 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Vault rewrite and dynamic arguments  | `src/domain/expressions/model_resolver.ts` (`resolveVaultExpressions`), `vault_reference_extractor.ts`                                                                                                                           |
 | Sentinels and shell placement        | `src/domain/vaults/secret_bag_registry.ts`, `vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                  |
 | Vault access scope                   | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                      |
-| Existence check (Section 3.4)        | `src/domain/vaults/vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`)                |
+| Existence check (Section 3.4)        | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
+| Loading at delivery (Section 3.3)    | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`) |
 | Sensitive values and persisted form  | `src/domain/secrets/run_sensitive_values.ts`, `persisted_sensitive_form.ts`, `secret_redactor.ts`, `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts`                                |
 | Sensitive fields and schema metadata | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                |
 | Queries                              | `src/domain/data/data_query_service.ts`                                                                                                                                                                                          |

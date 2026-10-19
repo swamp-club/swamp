@@ -1851,6 +1851,8 @@ function createVaultResolver(
   for (const [vaultName, vaultSecrets] of Object.entries(secrets)) {
     providers.set(vaultName, new MockVaultProvider(vaultName, vaultSecrets));
   }
+  // It offers no existence check, so each reference is checked with one
+  // probe read through get().
   const vaultService = {
     async get(
       vaultName: string,
@@ -1862,12 +1864,24 @@ function createVaultResolver(
       }
       return await provider.get(secretKey);
     },
+    authorizeRead: () => Promise.resolve(),
+    supportsExistenceCheck: () => false,
   } as unknown as VaultService;
 
   const defRepo = {
     findAllGlobal: () => Promise.resolve([]),
   } as unknown as YamlDefinitionRepository;
   return new ModelResolver(defRepo, { vaultService });
+}
+
+/** The value a load at delivery reads for the one sentinel `cel` holds. */
+async function deliver(
+  resolver: ModelResolver,
+  bag: VaultSecretBag,
+  cel: string,
+): Promise<string> {
+  const loaded = await resolver.secretLoader().load(bag, cel);
+  return loaded.resolveRaw(cel.slice(1, -1));
 }
 
 function makeCelOptions(
@@ -1890,11 +1904,11 @@ Deno.test("resolveVaultExpressions: quoted args used verbatim (existing behaviou
   const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const result = await resolver.resolveVaultExpressions(
     `vault.get('my-vault', 'api-key')`,
-    undefined,
     secretBag,
+    { location: "test" },
   );
   assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(secretBag.resolveRaw(result.slice(1, -1)), "secret-123");
+  assertEquals(await deliver(resolver, secretBag, result), "secret-123");
 });
 
 Deno.test("resolveVaultExpressions: bare-token args CEL-evaluated from inputs", async () => {
@@ -1908,12 +1922,11 @@ Deno.test("resolveVaultExpressions: bare-token args CEL-evaluated from inputs", 
   });
   const result = await resolver.resolveVaultExpressions(
     `vault.get(inputs.vaultName, inputs.secretKey)`,
-    undefined,
     secretBag,
-    celOptions,
+    { location: "test", celOptions },
   );
   assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(secretBag.resolveRaw(result.slice(1, -1)), "prod-pass-42");
+  assertEquals(await deliver(resolver, secretBag, result), "prod-pass-42");
 });
 
 Deno.test("resolveVaultExpressions: mixed literal/dynamic args", async () => {
@@ -1924,12 +1937,11 @@ Deno.test("resolveVaultExpressions: mixed literal/dynamic args", async () => {
   const celOptions = makeCelOptions({ secretKey: "prod-key" });
   const result = await resolver.resolveVaultExpressions(
     `vault.get('infra', inputs.secretKey)`,
-    undefined,
     secretBag,
-    celOptions,
+    { location: "test", celOptions },
   );
   assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(secretBag.resolveRaw(result.slice(1, -1)), "infra-secret");
+  assertEquals(await deliver(resolver, secretBag, result), "infra-secret");
 });
 
 Deno.test("resolveVaultExpressions: bare-token fallback for non-CEL tokens", async () => {
@@ -1941,12 +1953,11 @@ Deno.test("resolveVaultExpressions: bare-token fallback for non-CEL tokens", asy
   // "my-vault" contains a hyphen — not valid CEL — should fall back to verbatim
   const result = await resolver.resolveVaultExpressions(
     `vault.get(my-vault, my-key)`,
-    undefined,
     secretBag,
-    celOptions,
+    { location: "test", celOptions },
   );
   assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(secretBag.resolveRaw(result.slice(1, -1)), "fallback-secret");
+  assertEquals(await deliver(resolver, secretBag, result), "fallback-secret");
 });
 
 Deno.test("resolveVaultExpressions: hard error for valid CEL with missing input", async () => {
@@ -1959,9 +1970,8 @@ Deno.test("resolveVaultExpressions: hard error for valid CEL with missing input"
     () =>
       resolver.resolveVaultExpressions(
         `vault.get(inputs.missingVault, 'key')`,
-        undefined,
         secretBag,
-        celOptions,
+        { location: "test", celOptions },
       ),
     Error,
     "Failed to resolve dynamic vault name",
@@ -1978,9 +1988,8 @@ Deno.test("resolveVaultExpressions: non-string CEL result throws", async () => {
     () =>
       resolver.resolveVaultExpressions(
         `vault.get(inputs.vaultNum, 'key')`,
-        undefined,
         secretBag,
-        celOptions,
+        { location: "test", celOptions },
       ),
     Error,
     "must resolve to a string",
@@ -1995,11 +2004,11 @@ Deno.test("resolveVaultExpressions: without celOptions bare tokens used verbatim
   // No celOptions — bare tokens should be used verbatim (backwards compat)
   const result = await resolver.resolveVaultExpressions(
     `vault.get(my-vault, my-key)`,
-    undefined,
     secretBag,
+    { location: "test" },
   );
   assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(secretBag.resolveRaw(result.slice(1, -1)), "plain-secret");
+  assertEquals(await deliver(resolver, secretBag, result), "plain-secret");
 });
 
 // --- resolveModel gates its exact-ID fallback on UUID syntax ---
@@ -2694,8 +2703,8 @@ Deno.test("resolveVaultExpressions: vault.get text inside a literal() is left as
   const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const result = await resolver.resolveVaultExpressions(
     `literal('{{ vault.get("v", "decoy") }}') + vault.get('v', 'real')`,
-    undefined,
     secretBag,
+    { location: "test" },
   );
   assertEquals(fetched, ["real"]);
   assertEquals(
@@ -2711,8 +2720,8 @@ Deno.test("resolveVaultExpressions: a call that starts inside a string does not 
   const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const result = await resolver.resolveVaultExpressions(
     `literal('vault.get(') + vault.get('a','b')`,
-    undefined,
     secretBag,
+    { location: "test" },
   );
   assertEquals(
     result.startsWith(`literal('vault.get(') + "__SWAMP_VSEC_`),
@@ -2726,8 +2735,8 @@ Deno.test("resolveVaultExpressions: a vault form only a direct call resolves is 
     () =>
       resolver.resolveVaultExpressions(
         `cel.bind(v, vault, v.get('a', 'b'))`,
-        undefined,
         new VaultSecretBag(new SecretBagRegistry()),
+        { location: "test" },
       ),
     Error,
     "Unsupported vault expression",
@@ -2740,8 +2749,8 @@ Deno.test("resolveVaultExpressions: ignores member access and comments", async (
   assertEquals(
     await resolver.resolveVaultExpressions(
       value,
-      undefined,
       new VaultSecretBag(new SecretBagRegistry()),
+      { location: "test" },
     ),
     value,
   );
@@ -2753,8 +2762,8 @@ Deno.test("resolveVaultExpressions: a member reached across whitespace is not th
   assertEquals(
     await resolver.resolveVaultExpressions(
       value,
-      undefined,
       new VaultSecretBag(new SecretBagRegistry()),
+      { location: "test" },
     ),
     value,
   );
@@ -2768,8 +2777,8 @@ Deno.test("resolveVaultExpressions: a call inside another call's argument is not
     () =>
       resolver.resolveVaultExpressions(
         `vault.get(vault.get('a','b'), 'c')`,
-        undefined,
         new VaultSecretBag(new SecretBagRegistry()),
+        { location: "test" },
       ),
     Error,
   );
@@ -3658,22 +3667,22 @@ Deno.test("data.latest(): attributes come from content a metadata-only pull left
   });
 });
 
-Deno.test("resolveVaultExpressions: the issued entry carries the vault name and key it was read from", async () => {
+Deno.test("resolveVaultExpressions: the issued entry carries the vault name, key and location, and no value", async () => {
   const resolver = createVaultResolver({
     "my-vault": { "api-key": "secret-123" },
   });
   const secretBag = new VaultSecretBag(new SecretBagRegistry());
   const result = await resolver.resolveVaultExpressions(
     `vault.get('my-vault', 'api-key')`,
-    undefined,
     secretBag,
+    { location: "test" },
   );
   const sentinel = result.slice(1, -1);
   assertEquals(secretBag.registry.issuedEntryOf(sentinel), {
     sentinel,
-    value: "secret-123",
     reference: { vaultName: "my-vault", key: "api-key" },
     encoding: "raw",
     dataOrigin: false,
+    location: "test",
   });
 });

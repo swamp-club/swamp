@@ -1458,9 +1458,13 @@ credentials and extensions onto workers:
   step that needs them, as in the out-of-process resolution pattern of the
   removed execution-drivers design.
 
-  **Secret delivery on the worker.** Beside the resolved args, the dispatch
-  carries the step's `VaultSecretBag` entries (`secretBag`: sentinel, value,
-  data-origin flag) and its method args with the sentinels intact
+  **Secret delivery on the worker.** The orchestrator loads the step's
+  `vault.get()` values once per attempt before it dispatches
+  (design/enablers/typed-secrets.md Section 3.3, until Phase 5 moves the load to
+  the worker); a re-dispatch of the same request after a lost worker reuses
+  them. Beside the resolved args, the dispatch carries the step's
+  `VaultSecretBag` entries (`secretBag`: sentinel, value, data-origin flag) that
+  the attempt holds values for, and its method args with the sentinels intact
   (`unresolvedMethodArgs`). A worker that receives both rebuilds the bag
   (`VaultSecretBag.fromEntries`) as `context.vaultSecrets` and builds the step
   from the unresolved args, so the method execution service resolves them on the

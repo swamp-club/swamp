@@ -63,6 +63,8 @@ import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_ref
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { attachSensitiveValues } from "./sensitive_context.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { checkSecretReference } from "../vaults/secret_reference_check.ts";
+import { SecretLoader } from "../vaults/secret_loader.ts";
 
 /**
  * Minimal CEL evaluator interface for resolving dynamic vault.get()
@@ -1761,31 +1763,37 @@ export class ModelResolver {
   }
 
   /**
-   * Resolves vault expressions in a string by evaluating vault.get() calls.
+   * Replaces each vault.get() call in a CEL string with a sentinel token
+   * that stands for its reference, issued from `secretBag`. No value is
+   * read: a load at delivery reads it (see {@link secretLoader}).
    *
-   * Secret values are replaced with sentinel tokens in the CEL expression.
-   * The sentinel-to-value mapping is stored in the provided VaultSecretBag,
-   * allowing callers to resolve sentinels later — either to raw values
-   * (non-shell contexts) or to environment variable references (shell commands).
+   * Before a call is replaced, its reference is checked
+   * ({@link checkSecretReference}), so a missing or unreadable key fails
+   * here, where the eager read used to fail it, whichever branch of the
+   * expression would run.
    *
    * When `celOptions` is provided, unquoted (bare-token) arguments are
-   * CEL-evaluated against the supplied context before the vault lookup.
-   * This enables `vault.get(inputs.vaultName, inputs.secretKey)` where the
+   * CEL-evaluated against the supplied context before the check. This
+   * enables `vault.get(inputs.vaultName, inputs.secretKey)` where the
    * argument values are determined at runtime. Quoted arguments are always
    * used verbatim. A bare token with no `.` (e.g. `my-vault`) is a literal
    * name and is used verbatim too; see `isDynamicVaultArgument`.
    *
    * @param value - The string that may contain vault expressions
-   * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
-   * @param secretBag - VaultSecretBag to store sentinel-to-value mappings
-   * @param celOptions - Optional CEL evaluator and context for resolving dynamic arguments
+   * @param secretBag - The bag the sentinels are issued from
+   * @param options.location - Where the author wrote the expression
+   * @param options.redactor - The run's redactor, for a probe's value
+   * @param options.celOptions - CEL evaluator and context for dynamic arguments
    * @returns The string with vault.get() calls replaced by sentinel tokens wrapped as CEL strings
    */
   async resolveVaultExpressions(
     value: string,
-    redactor?: SecretRedactor,
-    secretBag?: VaultSecretBag,
-    celOptions?: VaultArgCelOptions,
+    secretBag: VaultSecretBag,
+    options: {
+      location: string;
+      redactor?: SecretRedactor;
+      celOptions?: VaultArgCelOptions;
+    },
   ): Promise<string> {
     // Only calls written as code are resolved; see findVaultGetCalls.
     const matches = findVaultGetCalls(value);
@@ -1814,62 +1822,43 @@ export class ModelResolver {
         vaultNameIsQuoted,
         "vault name",
         fullMatch,
-        celOptions,
+        options.celOptions,
       );
       const secretKey = this.resolveVaultArg(
         rawSecretKey,
         secretKeyIsQuoted,
         "secret key",
         fullMatch,
-        celOptions,
+        options.celOptions,
       );
 
-      try {
-        const secretValue = await vaultService.get(
-          vaultName,
-          secretKey,
-          "expression:vault-resolve",
-        );
-        redactor?.addSecret(secretValue);
-
-        let celReplacement: string;
-        if (secretBag) {
-          // Sentinel-based resolution: the value and its reference go into
-          // the bag, the sentinel token goes into the CEL expression.
-          const sentinel = secretBag.addSecret(secretValue, {
-            vaultName,
-            key: secretKey,
-          });
-          celReplacement = `"${sentinel}"`;
-        } else {
-          // Legacy fallback: escape for CEL string safety only.
-          // No shell-specific escaping — shell safety is handled by the
-          // shell model via VaultSecretBag.resolveForShell().
-          const escapedValue = secretValue
-            .replace(/\\/g, "\\\\")
-            .replace(/"/g, '\\"')
-            .replace(/'/g, "\\'")
-            .replace(/\n/g, "\\n")
-            .replace(/\r/g, "\\r")
-            .replace(/\t/g, "\\t");
-          celReplacement = `"${escapedValue}"`;
-        }
-
-        // Replace by position, so the same text inside a string is untouched.
-        resolvedValue += value.slice(last, match.index) + celReplacement;
-        last = match.index + fullMatch.length;
-      } catch (error) {
-        const msg = (error instanceof Error ? error.message : String(error))
-          .replace(/\n\s*/g, " — ");
-        throw new Error(
-          `Failed to resolve vault expression ${fullMatch}: ${msg}`,
-        );
-      }
+      const reference = { vaultName, key: secretKey };
+      await checkSecretReference(vaultService, reference, {
+        registry: secretBag.registry,
+        redactor: options.redactor,
+        call: fullMatch,
+        location: options.location,
+      });
+      // The reference goes into the bag, the sentinel token into the CEL
+      // expression. Replace by position, so the same text inside a string
+      // is untouched.
+      const sentinel = secretBag.addSecret(reference, options.location);
+      resolvedValue += value.slice(last, match.index) + `"${sentinel}"`;
+      last = match.index + fullMatch.length;
     }
     resolvedValue += value.slice(last);
 
     assertNoUnresolvedVault(resolvedValue, value);
     return resolvedValue;
+  }
+
+  /**
+   * A loader that reads vault.get() values at delivery through this
+   * resolver's vault service, the one its existence checks ask, so a refresh
+   * hook refreshes on load as it did on the eager read.
+   */
+  secretLoader(redactor?: SecretRedactor): SecretLoader {
+    return new SecretLoader(() => this.getVaultService(), redactor);
   }
 
   /**

@@ -230,6 +230,7 @@ import {
   SplicePair,
 } from "../expressions/splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import type { SecretLoader } from "../vaults/secret_loader.ts";
 import {
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
@@ -284,7 +285,7 @@ import {
   ProvenanceMap,
   routedGlobalProvenance,
   sentinelIdentityOf,
-  sentinelResolverOf,
+  sentinelStandInOf,
 } from "../expressions/provenance_map.ts";
 import {
   attachBindingProvenance,
@@ -1929,8 +1930,8 @@ export class DefaultStepExecutor implements StepExecutor {
           inputs: taskArgs.sanitized.inputs,
           globalArgs: taskArgs.sanitized.globalArgs,
         },
-        sentinelResolverOf(stepSecretBag),
-        sentinelResolverOf(stepSecretBag),
+        sentinelStandInOf(stepSecretBag.registry),
+        sentinelStandInOf(stepSecretBag.registry),
       ),
     );
     taskProvenance = taskProvenance
@@ -2286,8 +2287,8 @@ export class DefaultStepExecutor implements StepExecutor {
           cachedProvenance,
           evaluatedDefinition.toData(),
           executedDefinition.toData(),
-          sentinelResolverOf(stepSecretBag),
-          sentinelResolverOf(stepSecretBag),
+          sentinelStandInOf(stepSecretBag.registry),
+          sentinelStandInOf(stepSecretBag.registry),
         ),
       };
       if (ctx.expressionContext) {
@@ -2614,6 +2615,7 @@ export class DefaultStepExecutor implements StepExecutor {
             evaluatedDefinition,
             runLogger,
             secretBag,
+            secretLoader: expressionEvaluator.secretLoader(ctx.secretRedactor),
             resolvedPlacement,
           });
         const result = heldLockIds === undefined
@@ -2728,6 +2730,8 @@ export class DefaultStepExecutor implements StepExecutor {
       ExpressionEvaluationService["resolveRuntimeExpressionsInDefinition"]
     > extends Promise<infer R> ? R extends { secretBag: infer S } ? S : never
       : never;
+    /** Loads `secretBag`'s vault references at delivery. */
+    secretLoader: SecretLoader;
     resolvedPlacement?: {
       target?: string;
       labels?: Record<string, string>;
@@ -2750,6 +2754,7 @@ export class DefaultStepExecutor implements StepExecutor {
       evaluatedDefinition,
       runLogger,
       secretBag,
+      secretLoader,
       resolvedPlacement,
     } = args;
 
@@ -2923,6 +2928,7 @@ export class DefaultStepExecutor implements StepExecutor {
             : undefined,
         },
       ),
+      { secretLoader },
     );
   }
 
@@ -3736,10 +3742,10 @@ export class WorkflowExecutionService {
               workflow.toData(),
               sanitizedTasks?.sanitizedData ?? workflow.toData(),
               sanitizedTasks
-                ? sentinelResolverOf(sanitizedTasks.bag)
+                ? sentinelStandInOf(sanitizedTasks.bag.registry)
                 : undefined,
               sanitizedTasks
-                ? sentinelResolverOf(sanitizedTasks.bag)
+                ? sentinelStandInOf(sanitizedTasks.bag.registry)
                 : undefined,
             ),
           );

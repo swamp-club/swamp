@@ -17,13 +17,44 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
-import { SecretBagRegistry, SENTINEL_EXACT } from "./secret_bag_registry.ts";
+import {
+  holdsValue,
+  isIssuedEntry,
+  type RegistryEntry,
+  SecretBagRegistry,
+  SENTINEL_EXACT,
+} from "./secret_bag_registry.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
+
+/**
+ * Issues a vault.get() reference from `bag` whose key is the value a load
+ * reads for it (see {@link loaded}).
+ */
+const issue = (bag: VaultSecretBag, value: string, vaultName = "v") =>
+  bag.addSecret({ vaultName, key: value }, "test.location");
+
+/**
+ * `bag`'s delivery view, loaded as from a vault that holds each key as its
+ * own value. Every vault reference of the run is loaded.
+ */
+function loaded(bag: VaultSecretBag): VaultSecretBag {
+  const values = new Map<string, string>();
+  for (const entry of bag.registry.all()) {
+    if (isIssuedEntry(entry) && !entry.dataOrigin) {
+      values.set(entry.sentinel, entry.reference.key);
+    }
+  }
+  return bag.withLoaded(values);
+}
+
+/** An entry's own value: a data or shipped entry's, never a reference's. */
+const ownValue = (entry: RegistryEntry) =>
+  holdsValue(entry) ? entry.value : undefined;
 
 type Quote = "unquoted" | "double" | "single";
 
@@ -57,15 +88,16 @@ Deno.test("VaultSecretBag.resolveForShell: a vault.get reference depends only on
   fc.assert(
     fc.property(arbQuotes, arbSeparator, (quotes, separator) => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const s = bag.addSecret("two  words *", REF);
+      const s = issue(bag, "two  words *");
+      const view = loaded(bag);
       const uses = quotes.map((quote) => use(s, quote));
       assertEquals(
-        bag.resolveForShell(uses.join(separator)).command,
-        uses.map((u) => bag.resolveForShell(u).command).join(separator),
+        view.resolveForShell(uses.join(separator)).command,
+        uses.map((u) => view.resolveForShell(u).command).join(separator),
       );
       assertEquals(
-        bag.resolveForPowerShell(uses.join("; ")).command,
-        uses.map((u) => bag.resolveForPowerShell(u).command).join("; "),
+        view.resolveForPowerShell(uses.join("; ")).command,
+        uses.map((u) => view.resolveForPowerShell(u).command).join("; "),
       );
     }),
   );
@@ -75,10 +107,10 @@ Deno.test("VaultSecretBag.resolveForShell: singleQuoted reports a vault.get sent
   fc.assert(
     fc.property(arbQuotes, arbSeparator, (quotes, separator) => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
-      const s = bag.addSecret("from-vault", REF);
+      const s = issue(bag, "from-vault");
       const command = quotes.map((quote) => use(s, quote)).join(separator);
       assertEquals(
-        bag.resolveForShell(command).singleQuoted,
+        loaded(bag).resolveForShell(command).singleQuoted,
         quotes.includes("single") ? [s] : [],
       );
     }),
@@ -139,7 +171,7 @@ Deno.test("VaultSecretBag.resolveForShell: a vault.get use in a here-document bo
       fc.array(arbBodyFragment, { minLength: 1, maxLength: 7 }),
       (fragments) => {
         const bag = new VaultSecretBag(new SecretBagRegistry());
-        const s = bag.addSecret("two  words *", REF);
+        const s = issue(bag, "two  words *");
         const body = fragments.flatMap((f) => f.lines).join("\n");
         const inString = fragments.flatMap((f) => f.inString);
         let use = 0;
@@ -148,8 +180,9 @@ Deno.test("VaultSecretBag.resolveForShell: a vault.get use in a here-document bo
           () => inString[use++] ? "${__SWAMP_VAULT_0}" : '"${__SWAMP_VAULT_0}"',
         );
         assertEquals(
-          bag.resolveForShell(`cat <<EOF\n${body.replaceAll(USE, s)}\nEOF`)
-            .command,
+          loaded(bag).resolveForShell(
+            `cat <<EOF\n${body.replaceAll(USE, s)}\nEOF`,
+          ).command,
           `cat <<EOF\n${expected}\nEOF`,
         );
       },
@@ -166,7 +199,10 @@ const arbEntry = fc.record({
   }),
 });
 
-/** Issues each entry from `bag` as vault.get or data origin, by `data`. */
+/**
+ * Issues each entry from `bag` as vault.get or data origin, by `data`. A
+ * vault.get entry is a reference whose key {@link loaded} reads as `value`.
+ */
 function issueAll(
   bag: VaultSecretBag,
   secrets: readonly {
@@ -176,7 +212,9 @@ function issueAll(
   data: readonly boolean[],
 ): string[] {
   return secrets.map(({ value, source }, i) =>
-    data[i] ? bag.addDataSecret(value, source) : bag.addSecret(value, source)
+    data[i]
+      ? bag.addDataSecret(value, source)
+      : issue(bag, value, source.vaultName)
   );
 }
 
@@ -191,7 +229,7 @@ Deno.test("VaultSecretBag: every sentinel has a 32-hex prefix and is unique acro
         const registry = new SecretBagRegistry();
         const issued = valuesPerBag.flatMap((values) => {
           const bag = new VaultSecretBag(registry);
-          return values.map((value) => bag.addSecret(value, REF));
+          return values.map(() => bag.addSecret(REF, "test.location"));
         });
         for (const sentinel of issued) {
           assertEquals(SENTINEL_EXACT.test(sentinel), true);
@@ -225,7 +263,7 @@ Deno.test("VaultSecretBag: a sentinel issued by any bag of a registry resolves f
         const text = sentinels.map((s) => `<${s}>`).join("|");
         const expected = secrets.map((s) => `<${s.value}>`).join("|");
         for (const view of views) {
-          assertEquals(view.resolveRaw(text), expected);
+          assertEquals(loaded(view).resolveRaw(text), expected);
           assertEquals(view.resolvesAny, true);
         }
         assertEquals(
@@ -256,7 +294,10 @@ Deno.test("VaultSecretBag.rehomeSentinels: one target sentinel per source sentin
           target,
         ) as { text: string; list: string[] };
         assertEquals(rehomed.list[0], rehomed.text);
-        assertEquals(target.resolveRaw(rehomed.text), source.resolveRaw(text));
+        assertEquals(
+          loaded(target).resolveRaw(rehomed.text),
+          loaded(source).resolveRaw(text),
+        );
         const pairs = new Map<string, string>();
         const before = text.split(" ");
         const after = rehomed.text.split(" ");
@@ -271,14 +312,18 @@ Deno.test("VaultSecretBag.rehomeSentinels: one target sentinel per source sentin
           assertEquals(copy.reference, original.reference);
           assertEquals(copy.encoding, original.encoding);
           assertEquals(copy.dataOrigin, original.dataOrigin);
-          assertEquals(copy.value, original.value);
+          assertEquals(ownValue(copy), ownValue(original));
+          assertEquals(
+            "location" in copy && copy.location,
+            "location" in original && original.location,
+          );
         });
         assertEquals(
-          target.toEntries().length,
+          loaded(target).toEntries().length,
           new Set(
             before.map((s) =>
               registry.entryOf(s)!.dataOrigin
-                ? `data:${registry.entryOf(s)!.value}`
+                ? `data:${ownValue(registry.entryOf(s)!)}`
                 : s
             ),
           ).size,
@@ -297,17 +342,53 @@ Deno.test("VaultSecretBag: sentinel-shaped text with a prefix no bag of the run 
       (prefix, n, value) => {
         const registry = new SecretBagRegistry();
         const bag = new VaultSecretBag(registry);
-        const own = bag.addSecret(value, REF);
+        const own = issue(bag, value);
         const foreign = `__SWAMP_VSEC_${prefix}_${n}__`;
         fc.pre(foreign !== own);
         const text = `${foreign} ${own}`;
-        assertEquals(bag.resolveRaw(text), `${foreign} ${value}`);
+        assertEquals(loaded(bag).resolveRaw(text), `${foreign} ${value}`);
         assertEquals(bag.entryOf(foreign), undefined);
         assertEquals(
           registry.drewPrefixOf(foreign),
           own.includes(`_${prefix}_`),
         );
         assertEquals(bag.resolveForShell(`echo ${foreign}`).env, {});
+      },
+    ),
+  );
+});
+
+Deno.test("VaultSecretBag.withLoaded: a vault reference resolves only through a view that loaded it, and loading never changes the bag", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbEntry, { minLength: 1, maxLength: 4 }),
+      fc.array(fc.boolean(), { minLength: 4, maxLength: 4 }),
+      (secrets, loads) => {
+        const registry = new SecretBagRegistry();
+        const bag = new VaultSecretBag(registry);
+        const sentinels = secrets.map(({ value, source }) =>
+          issue(bag, value, source.vaultName)
+        );
+        const values = new Map(
+          sentinels.flatMap((s, i) =>
+            loads[i] ? [[s, secrets[i].value] as const] : []
+          ),
+        );
+        const view = bag.withLoaded(values);
+        sentinels.forEach((s, i) => {
+          assertEquals(ownValue(registry.entryOf(s)!), undefined);
+          assertThrows(() => bag.resolveRaw(s), Error, "was not loaded");
+          if (values.has(s)) {
+            assertEquals(view.resolveRaw(s), secrets[i].value);
+          } else {
+            assertThrows(() => view.resolveRaw(s), Error, "was not loaded");
+          }
+        });
+        assertEquals(
+          view.toEntries().map((entry) => entry.sentinel),
+          sentinels.filter((s) => values.has(s)),
+        );
+        assertEquals(bag.toEntries(), []);
       },
     ),
   );

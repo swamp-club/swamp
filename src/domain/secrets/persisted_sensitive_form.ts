@@ -304,9 +304,9 @@ export async function rehydratePersistedForm<T>(
       // Every restored reference becomes a data-origin sentinel. The flag
       // cannot choose the origin yet: an entry the value search wrote
       // carries `dataOrigin: false` for plaintext a data read brought into
-      // CEL, and no vault.get sentinel reaches a persisted position before
-      // typed-secrets 2.3 (the caches are written before the runtime pass,
-      // and the overlay holds only data-origin entries).
+      // CEL, and no vault.get sentinel reaches a persisted position (the
+      // caches are written before the runtime pass, and the overlay holds
+      // only data-origin entries).
       restore(
         sanitized,
         bag && sanitizes(entry.path)

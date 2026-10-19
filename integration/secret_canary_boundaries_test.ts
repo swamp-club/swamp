@@ -358,16 +358,20 @@ Deno.test(
         kindsByClass(canaries, seen.method?.globalArgs, "g"),
         globalsOf(canaries, "plaintext"),
       );
-      // Engine 1 reads the vault once per reference: each key is referenced
-      // by the global argument of both steps and by one method argument. The
-      // fields `create` stored are read twice in the run.
+      // Values load at delivery (typed-secrets 2.3): each step's attempt
+      // loads each key its arguments reference once, and the run checks each
+      // key exists once. This vault has no has(), so the check is a probe
+      // read. A key in the global arguments of both steps (and one method
+      // argument) is one probe and two loads; a key only in a method argument
+      // is one probe and one load. The fields `create` stored are read twice
+      // in the run.
       assertEquals(
         readCounts(vault),
         Object.fromEntries([
           ...canaries.map((
             c,
             i,
-          ) => [keyOf(i), NOT_GLOBAL.has(c.class) ? 1 : 3]),
+          ) => [keyOf(i), NOT_GLOBAL.has(c.class) ? 2 : 3]),
           ...canaries.map((_, i) => [`stored-s${i}`, 2]),
         ]),
       );

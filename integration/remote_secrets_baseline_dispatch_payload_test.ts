@@ -60,6 +60,8 @@ import {
 } from "../src/domain/remote/stdio_transport.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
+import { SecretLoader } from "../src/domain/vaults/secret_loader.ts";
+import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
 import {
   buildRunnerBootstrapParams,
@@ -109,7 +111,9 @@ interface Captured {
  * Runs one remotely placed step through the real
  * MethodExecutionService → DispatchService → WorkerGateway path, with the
  * method arg holding a vault sentinel the way model_resolver leaves it, and
- * captures the dispatch at an in-memory worker.
+ * captures the dispatch at an in-memory worker. The orchestrator loads the
+ * sentinel's value from a mock vault before the dispatch, as the step's
+ * evaluator's loader does.
  */
 async function dispatchStepWithSecret(
   o: BaselineOrchestrator,
@@ -133,7 +137,13 @@ async function dispatchStepWithSecret(
   });
 
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const sentinel = bag.addSecret(secret, REF);
+  const sentinel = bag.addSecret(REF, "methods.run.arguments.note");
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: REF.vaultName,
+    type: "mock",
+    config: { [REF.key]: secret },
+  });
   const model = payloadModel();
   const definition = Definition.create({
     name: `payload-${crypto.randomUUID().slice(0, 8)}`,
@@ -173,6 +183,9 @@ async function dispatchStepWithSecret(
       model,
       "run",
       context,
+      {
+        secretLoader: new SecretLoader(() => Promise.resolve(vaultService)),
+      },
     );
   } finally {
     setRemoteStepDispatcher(null);

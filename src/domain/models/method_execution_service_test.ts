@@ -61,6 +61,7 @@ import { createModelOutputId, type ModelOutput } from "./model_output.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import { SecretLoader } from "../vaults/secret_loader.ts";
 import {
   RunVaultAccess,
   runWithVaultAccess,
@@ -68,6 +69,27 @@ import {
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
+
+/**
+ * A loader over a mock vault `v` holding `secrets`, as the evaluator's
+ * loader reads them at delivery, with the keys each read asked for.
+ */
+function mockLoader(
+  secrets: Record<string, string>,
+): { loader: SecretLoader; reads: string[] } {
+  const reads: string[] = [];
+  const vaultService = new class extends VaultService {
+    override get(vaultName: string, key: string, caller?: string) {
+      reads.push(key);
+      return super.get(vaultName, key, caller);
+    }
+  }();
+  vaultService.registerVault({ name: "v", type: "mock", config: secrets });
+  return {
+    loader: new SecretLoader(() => Promise.resolve(vaultService)),
+    reads,
+  };
+}
 
 /**
  * Test model that mimics the echo model's write method.
@@ -2747,7 +2769,10 @@ Deno.test(
     // tokens in place of vault expressions (as happens in run.ts after
     // resolveRuntimeExpressionsInDefinition).
     const secretBag = new VaultSecretBag(new SecretBagRegistry());
-    const sentinel = secretBag.addSecret("sk-test-secret-12345", REF);
+    const sentinel = secretBag.addSecret(
+      { vaultName: "v", key: "my-api-key" },
+      "globalArguments.apiKey",
+    );
 
     const definition = Definition.create({
       name: "test-vault-def",
@@ -2782,7 +2807,10 @@ Deno.test(
       vaultSecrets: secretBag,
     });
 
-    await service.executeWorkflow(definition, model, "check", context);
+    await service.executeWorkflow(definition, model, "check", context, {
+      secretLoader: mockLoader({ "my-api-key": "sk-test-secret-12345" })
+        .loader,
+    });
 
     // The persisted definition must have the original vault expression,
     // not the sentinel token.
@@ -4393,6 +4421,7 @@ Deno.test("executeWorkflow - a method's marked paths survive the in-process reth
 async function captureRemoteRequest(
   secretBag: VaultSecretBag | undefined,
   methodArgs: Record<string, unknown>,
+  secretLoader?: SecretLoader,
 ): Promise<RemoteStepRequest> {
   const service = new DefaultMethodExecutionService();
   const model = createTestModel({});
@@ -4419,7 +4448,9 @@ async function captureRemoteRequest(
       placement: { labels: { tier: "remote" } },
       vaultSecrets: secretBag,
     });
-    await service.executeWorkflow(definition, model, "start", context);
+    await service.executeWorkflow(definition, model, "start", context, {
+      secretLoader,
+    });
   } finally {
     setRemoteStepDispatcher(null);
   }
@@ -4429,12 +4460,18 @@ async function captureRemoteRequest(
 
 Deno.test("executeWorkflow - placed step ships its secret bag and unresolved args (swamp-club#2760)", async () => {
   const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const sentinel = secretBag.addSecret("s3cret-value", REF);
+  const sentinel = secretBag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.start.arguments.value",
+  );
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
 
   const request = await captureRemoteRequest(secretBag, {
     value: `token ${sentinel}`,
-  });
+  }, loader);
 
+  // The orchestrator loads the bag before dispatch, once.
+  assertEquals(reads, ["token"]);
   // Resolved args still travel for workers that predate the bag fields.
   assertEquals(request.methodArgs.value, "token s3cret-value");
   assertEquals(request.unresolvedMethodArgs?.value, `token ${sentinel}`);
@@ -4869,13 +4906,16 @@ Deno.test("executeWorkflow - a placed step ships the run's entries its arguments
   const registry = new SecretBagRegistry();
   const runStart = new VaultSecretBag(registry);
   const early = runStart.addDataSecret("early-s3cret", REF);
-  runStart.addSecret("unrelated-s3cret", REF);
+  runStart.addSecret({ vaultName: "v", key: "unrelated" }, "loc");
   const stepBag = new VaultSecretBag(registry);
+  const { loader, reads } = mockLoader({ unrelated: "unrelated-s3cret" });
 
   const request = await captureRemoteRequest(stepBag, {
     value: `token ${early}`,
-  });
+  }, loader);
 
+  // A reference the step's arguments do not carry is never loaded.
+  assertEquals(reads, []);
   assertEquals(request.methodArgs.value, "token early-s3cret");
   assertEquals(request.unresolvedMethodArgs?.value, `token ${early}`);
   assertEquals(request.secretBag, [{
@@ -4885,4 +4925,177 @@ Deno.test("executeWorkflow - a placed step ships the run's entries its arguments
   }]);
   assertEquals(request.secretValues?.includes("early-s3cret"), true);
   assertEquals(request.secretValues?.includes("unrelated-s3cret"), false);
+});
+
+// ---------- Loading vault references at delivery (typed-secrets 2.3) ----------
+
+/** What a delivery reached: the check's context and the method's inputs. */
+interface Delivered {
+  check?: MethodContext;
+  args?: Record<string, unknown>;
+  globalArgs?: Record<string, unknown>;
+}
+
+/** A model whose pre-flight check and `create` method record what they get. */
+function createDeliveryModel(delivered: Delivered): ModelDefinition {
+  const schema = z.object({
+    token: z.string().optional(),
+    note: z.string().optional(),
+  });
+  return {
+    type: ModelType.create("test/delivery"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      create: {
+        description: "Records its arguments",
+        arguments: schema,
+        execute: (args, context) => {
+          delivered.args = args as Record<string, unknown>;
+          delivered.globalArgs = { ...context.globalArgs };
+          return Promise.resolve({});
+        },
+      },
+    },
+    checks: {
+      recorder: {
+        description: "Records its context",
+        execute: (context) => {
+          delivered.check = context;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+}
+
+/** A definition whose global and method arguments carry `sentinel`. */
+const deliveryDefinition = (sentinel: string) =>
+  Definition.create({
+    name: "delivery-def",
+    globalArguments: { token: sentinel },
+    methods: { create: { arguments: { note: `uses ${sentinel}` } } },
+  });
+
+Deno.test("executeWorkflow - loads a vault reference once per attempt, before pre-flight checks, and the checks and the method share the loaded view", async () => {
+  const service = new DefaultMethodExecutionService();
+  const delivered: Delivered = {};
+  const model = createDeliveryModel(delivered);
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "token" },
+    "globalArguments.token",
+  );
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+
+  await service.executeWorkflow(
+    deliveryDefinition(sentinel),
+    model,
+    "create",
+    context,
+    { secretLoader: loader },
+  );
+
+  // One read for a reference carried by two arguments.
+  assertEquals(reads, ["token"]);
+  assertEquals(delivered.globalArgs?.token, "s3cret-value");
+  assertEquals(delivered.args?.note, "uses s3cret-value");
+  // The check sees the method arguments with sentinels, and the loaded bag.
+  assertEquals(delivered.check?.unresolvedMethodArgs?.note, `uses ${sentinel}`);
+  assertEquals(
+    delivered.check?.vaultSecrets?.resolveRaw(sentinel),
+    "s3cret-value",
+  );
+  // The step's own bag still holds no value.
+  assertEquals(
+    (() => {
+      try {
+        return bag.resolveRaw(sentinel);
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })().includes("was not loaded"),
+    true,
+  );
+
+  // A retry is a new attempt, from a freshly evaluated definition: it loads
+  // again.
+  await service.executeWorkflow(
+    deliveryDefinition(sentinel),
+    model,
+    "create",
+    context,
+    { secretLoader: loader },
+  );
+  assertEquals(reads, ["token", "token"]);
+});
+
+Deno.test("executeWorkflow - a load failure fails the step before any check or method runs, naming no value", async () => {
+  const service = new DefaultMethodExecutionService();
+  const delivered: Delivered = {};
+  const model = createDeliveryModel(delivered);
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "missing" },
+    "globalArguments.token",
+  );
+  const { loader } = mockLoader({ other: "other-s3cret" });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        deliveryDefinition(sentinel),
+        model,
+        "create",
+        context,
+        { secretLoader: loader },
+      ),
+    Error,
+    "Failed to load secret 'missing' from vault 'v' (at globalArguments.token)",
+  );
+  assertEquals(error.message.includes("other-s3cret"), false);
+  assertEquals(delivered.check, undefined);
+  assertEquals(delivered.args, undefined);
+});
+
+Deno.test("executeWorkflow - a vault reference with no loader fails closed instead of delivering its sentinel", async () => {
+  const service = new DefaultMethodExecutionService();
+  const delivered: Delivered = {};
+  const model = createDeliveryModel(delivered);
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.create.arguments.note",
+  );
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+
+  await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({
+          name: "delivery-def",
+          methods: { create: { arguments: { note: sentinel } } },
+        }),
+        model,
+        "create",
+        context,
+      ),
+    Error,
+    "was not loaded before delivery",
+  );
+  assertEquals(delivered.args, undefined);
 });

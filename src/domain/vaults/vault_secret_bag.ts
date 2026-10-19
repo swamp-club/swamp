@@ -18,14 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type DataSecretEntry,
+  holdsValue,
   isIssuedEntry,
-  type IssuedSecretBagEntry,
+  type RegistryEntry,
   type SecretBagEntry,
   SecretBagRegistry,
   type SecretEncoding,
   type SecretReference,
   SENTINEL_EXACT,
   SENTINEL_SOURCE,
+  type VaultReferenceEntry,
 } from "./secret_bag_registry.ts";
 import {
   classifyShellPositions,
@@ -216,13 +219,15 @@ function splitOnSentinels(
  * sentinels under its own prefix and resolves any sentinel the registry
  * holds.
  *
- * During vault expression resolution, secret values are replaced with unique
- * sentinel tokens (safe alphanumeric strings). Each entry carries the
- * reference its value came from, so sentinels can be resolved later — either
- * to raw values (for non-shell contexts) or to environment variable
- * references (for shell commands) — and persisted as references. What the
- * bag ships to a remote worker and reports as its own stays the entries it
- * issued, so one step's dispatch carries nothing from another step.
+ * During vault expression resolution, each vault.get() call is replaced with
+ * a unique sentinel token (a safe alphanumeric string) that stands for its
+ * reference. The bag holds no vault value: a load at delivery reads them and
+ * returns a delivery view ({@link withLoaded}) that resolves sentinels —
+ * either to raw values (for non-shell contexts) or to environment variable
+ * references (for shell commands). Sentinels are persisted as references.
+ * What the bag ships to a remote worker and reports as its own stays the
+ * entries it issued, so one step's dispatch carries nothing from another
+ * step.
  */
 export class VaultSecretBag {
   /** Sentinels this bag issued, in issue order. */
@@ -230,7 +235,13 @@ export class VaultSecretBag {
   /** Sentinel per value for secrets read through data, reused on repeat. */
   private readonly dataSentinels = new Map<string, string>();
   private counter = 0;
-  private readonly prefix: string;
+  /** Drawn on the first issue, so a delivery view draws none. */
+  private prefix: string | undefined;
+  /**
+   * The values one delivery attempt loaded for vault references, keyed by
+   * sentinel. Set only on a delivery view.
+   */
+  private loaded: ReadonlyMap<string, string> | undefined;
 
   /** Pattern that matches any sentinel produced by this bag or any other. */
   static readonly SENTINEL_PATTERN = new RegExp(SENTINEL_SOURCE, "g");
@@ -238,14 +249,25 @@ export class VaultSecretBag {
   constructor(
     /** The run's registry this bag is a view of. */
     readonly registry: SecretBagRegistry,
-  ) {
-    this.prefix = crypto.getRandomValues(new Uint8Array(16))
-      .reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
-    registry.drawPrefix(this.prefix);
-  }
+  ) {}
 
   /** Issues the next sentinel of this bag for `entry` into the registry. */
-  private issue(entry: Omit<IssuedSecretBagEntry, "sentinel">): string {
+  private issue(
+    entry:
+      | Omit<VaultReferenceEntry, "sentinel">
+      | Omit<
+        DataSecretEntry,
+        "sentinel"
+      >,
+  ): string {
+    if (this.loaded !== undefined) {
+      throw new Error("A delivery view of a secret bag issues no sentinels");
+    }
+    if (this.prefix === undefined) {
+      this.prefix = crypto.getRandomValues(new Uint8Array(16))
+        .reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
+      this.registry.drawPrefix(this.prefix);
+    }
     const sentinel = `__SWAMP_VSEC_${this.prefix}_${this.counter++}__`;
     this.registry.register({ sentinel, ...entry });
     this.issued.push(sentinel);
@@ -253,12 +275,18 @@ export class VaultSecretBag {
   }
 
   /**
-   * Adds a vault.get() secret, read from `reference`, and returns a unique
-   * sentinel token. The sentinel is alphanumeric + underscores, safe in CEL
-   * strings and shell.
+   * Adds a vault.get() reference, written at `location`, and returns a
+   * unique sentinel token that stands for it. No value is read: a load at
+   * delivery reads it. The sentinel is alphanumeric + underscores, safe in
+   * CEL strings and shell.
    */
-  addSecret(value: string, reference: SecretReference): string {
-    return this.issue({ value, reference, encoding: "raw", dataOrigin: false });
+  addSecret(reference: SecretReference, location: string): string {
+    return this.issue({
+      reference,
+      encoding: "raw",
+      dataOrigin: false,
+      location,
+    });
   }
 
   /**
@@ -286,8 +314,48 @@ export class VaultSecretBag {
   }
 
   /** The entry behind a sentinel the run issued, if it is one. */
-  entryOf(sentinel: string): SecretBagEntry | undefined {
+  entryOf(sentinel: string): RegistryEntry | undefined {
     return this.registry.entryOf(sentinel);
+  }
+
+  /**
+   * A delivery view of this bag: the same registry and the same issued
+   * sentinels, with `values` loaded for vault references, keyed by
+   * sentinel. Only a load builds one, for one delivery attempt; this bag is
+   * left as it is, so the next attempt loads again. A view issues nothing.
+   */
+  withLoaded(values: ReadonlyMap<string, string>): VaultSecretBag {
+    const view = new VaultSecretBag(this.registry);
+    for (const sentinel of this.issued) view.issued.push(sentinel);
+    view.loaded = new Map([...(this.loaded ?? []), ...values]);
+    return view;
+  }
+
+  /**
+   * The value `sentinel` stands for: a data entry's or a shipped entry's
+   * own, or the value this delivery view loaded for a vault reference.
+   * Undefined for text that is not a sentinel of the run. A vault reference
+   * no load filled throws, so its sentinel is never delivered as a value.
+   */
+  private valueOf(sentinel: string): string | undefined {
+    const entry = this.registry.entryOf(sentinel);
+    if (entry === undefined) return undefined;
+    if (holdsValue(entry)) return entry.value;
+    const value = this.loaded?.get(sentinel);
+    if (value === undefined) {
+      const { vaultName, key } = entry.reference;
+      throw new Error(
+        `The secret '${key}' in vault '${vaultName}' (at ${entry.location}) was not loaded before delivery`,
+      );
+    }
+    return value;
+  }
+
+  /** Whether a sentinel this bag issued has its value in hand. */
+  private inHand(sentinel: string): boolean {
+    const entry = this.registry.entryOf(sentinel);
+    return entry !== undefined &&
+      (holdsValue(entry) || this.loaded?.has(sentinel) === true);
   }
 
   /**
@@ -358,8 +426,9 @@ export class VaultSecretBag {
    * `target`, so a value sanitized before a step started (at workflow
    * evaluation) is delivered through that step's own bag and ships with it.
    * Each source sentinel maps to one target sentinel, whatever its origin,
-   * with the same reference, encoding and origin. Other text is left as it
-   * is; a sentinel from another bag still resolves through the registry.
+   * with the same reference, encoding and origin; a vault reference moves
+   * as a reference, with no value. Other text is left as it is; a sentinel
+   * from another bag still resolves through the registry.
    */
   rehomeSentinels(data: unknown, target: VaultSecretBag): unknown {
     const rehomed = new Map<string, string>();
@@ -375,7 +444,7 @@ export class VaultSecretBag {
       }
       const issued = entry.dataOrigin
         ? target.addDataSecret(entry.value, entry.reference, entry.encoding)
-        : target.addSecret(entry.value, entry.reference);
+        : target.addSecret(entry.reference, entry.location);
       rehomed.set(sentinel, issued);
       return issued;
     };
@@ -405,43 +474,49 @@ export class VaultSecretBag {
     return walk(data);
   }
 
-  /** The entries this bag issued, in the shape a dispatch ships. */
-  private ownEntries(): SecretBagEntry[] {
-    return this.issued.map((sentinel) => this.registry.entryOf(sentinel)!);
+  /**
+   * The sentinels this bag issued whose values are in hand, in issue order:
+   * every data entry, and each vault reference this delivery view loaded. A
+   * vault reference of a method the attempt does not run is never loaded.
+   */
+  private ownInHand(): string[] {
+    return this.issued.filter((sentinel) => this.inHand(sentinel));
   }
 
-  /** `entry` in the shape a dispatch ships: no reference, no encoding. */
-  private static shipped(
-    { sentinel, value, dataOrigin }: SecretBagEntry,
-  ): SecretBagEntry {
-    return { sentinel, value, dataOrigin };
+  /** `sentinel`'s entry in the shape a dispatch ships, with its value. */
+  private shipped(sentinel: string): SecretBagEntry {
+    return {
+      sentinel,
+      value: this.valueOf(sentinel)!,
+      dataOrigin: this.registry.entryOf(sentinel)!.dataOrigin,
+    };
   }
 
   /**
-   * The sentinels this bag issued with their values, so a remote worker can
-   * rebuild the bag with {@link VaultSecretBag.fromEntries} and deliver the
-   * step's secrets the way a local run does.
+   * The sentinels this bag issued with their values in hand, so a remote
+   * worker can rebuild the bag with {@link VaultSecretBag.fromEntries} and
+   * deliver the step's secrets the way a local run does.
    */
   toEntries(): SecretBagEntry[] {
-    return this.ownEntries().map(VaultSecretBag.shipped);
+    return this.ownInHand().map((sentinel) => this.shipped(sentinel));
   }
 
   /**
-   * The entries a dispatch of `args` needs: the ones this bag issued, then
-   * any other entry of the run whose sentinel occurs in `args`, so a worker
-   * delivers what the step's arguments reference and nothing else.
+   * The entries a dispatch of `args` needs: the ones this bag issued with
+   * their values in hand, then any other entry of the run whose sentinel
+   * occurs in `args`, so a worker delivers what the step's arguments
+   * reference and nothing else. A sentinel in `args` no load filled throws.
    */
   entriesFor(args: unknown): SecretBagEntry[] {
-    const entries = this.ownEntries();
-    const seen = new Set(this.issued);
+    const sentinels = this.ownInHand();
+    const seen = new Set(sentinels);
     const walk = (value: unknown): void => {
       if (typeof value === "string") {
         for (const match of value.matchAll(VaultSecretBag.SENTINEL_PATTERN)) {
           if (seen.has(match[0])) continue;
-          const entry = this.registry.entryOf(match[0]);
-          if (entry) {
+          if (this.registry.entryOf(match[0])) {
             seen.add(match[0]);
-            entries.push(entry);
+            sentinels.push(match[0]);
           }
         }
       } else if (Array.isArray(value)) {
@@ -451,7 +526,7 @@ export class VaultSecretBag {
       }
     };
     walk(args);
-    return entries.map(VaultSecretBag.shipped);
+    return sentinels.map((sentinel) => this.shipped(sentinel));
   }
 
   /**
@@ -466,7 +541,8 @@ export class VaultSecretBag {
       if (!SENTINEL_EXACT.test(entry.sentinel)) {
         throw new Error("Malformed vault secret sentinel in secret bag entry");
       }
-      bag.registry.register(VaultSecretBag.shipped(entry));
+      const { sentinel, value, dataOrigin } = entry;
+      bag.registry.register({ sentinel, value, dataOrigin });
       bag.issued.push(entry.sentinel);
       if (entry.dataOrigin) bag.dataSentinels.set(entry.value, entry.sentinel);
     }
@@ -487,20 +563,21 @@ export class VaultSecretBag {
     return !this.registry.isEmpty;
   }
 
-  /** The raw values of the secrets this bag issued. */
+  /** The raw values of the secrets this bag issued that are in hand. */
   get rawValues(): string[] {
-    return this.ownEntries().map((entry) => entry.value);
+    return this.ownInHand().map((sentinel) => this.valueOf(sentinel)!);
   }
 
   /**
    * Replaces every sentinel the run issued in a string with its raw secret
    * value. Sentinel-shaped text with another prefix stays as it is. Use this
-   * for non-shell contexts where the value should be literal.
+   * for non-shell contexts where the value should be literal. A vault
+   * reference resolves only through a delivery view that loaded it.
    */
   resolveRaw(str: string): string {
     return str.replace(
       VaultSecretBag.SENTINEL_PATTERN,
-      (sentinel) => this.registry.entryOf(sentinel)?.value ?? sentinel,
+      (sentinel) => this.valueOf(sentinel) ?? sentinel,
     );
   }
 
@@ -589,7 +666,7 @@ export class VaultSecretBag {
   ): ShellSecretResolution {
     const env: Record<string, string> = {};
     const envNames = new Map<string, string>();
-    const entries = new Map<string, SecretBagEntry>();
+    const dataOrigin = new Map<string, boolean>();
     // Only the sentinels present are looked up, never the whole registry;
     // environment names then follow issue order across the run, so a
     // step's own sentinels are numbered as they were added.
@@ -602,11 +679,10 @@ export class VaultSecretBag {
         this.registry.sequenceOf(a)! - this.registry.sequenceOf(b)!
       );
     present.forEach((sentinel, envIdx) => {
-      const entry = this.registry.entryOf(sentinel)!;
       const envName = `__SWAMP_VAULT_${envIdx}`;
       envNames.set(sentinel, envName);
-      entries.set(sentinel, entry);
-      env[envName] = entry.value;
+      dataOrigin.set(sentinel, this.registry.entryOf(sentinel)!.dataOrigin);
+      env[envName] = this.valueOf(sentinel)!;
     });
     if (envNames.size === 0) {
       return { command, env, dataInCommandLine: false, singleQuoted: [] };
@@ -628,11 +704,11 @@ export class VaultSecretBag {
       const sentinel = match[0];
       const start = match.index ?? 0;
       result += command.slice(last, start);
-      if (entries.get(sentinel)!.dataOrigin) {
+      if (dataOrigin.get(sentinel)) {
         const ref = dataRef(envNames.get(sentinel)!, contexts[i]);
         if (ref === undefined) {
           dataInCommandLine = true;
-          result += entries.get(sentinel)!.value;
+          result += env[envNames.get(sentinel)!];
         } else {
           result += ref;
           referenced.add(sentinel);

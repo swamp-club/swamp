@@ -26,6 +26,8 @@ import {
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { VaultService } from "./vault_service.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import type { VaultAuditEntry } from "./vault_audit_entry.ts";
@@ -585,6 +587,79 @@ Deno.test("VaultService - refresh-aware get", async (t) => {
       assertEquals(commandCalled, false);
     },
   );
+});
+
+/** Runs `fn` with the vaults warnings captured, as messages. */
+async function capturingVaultWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      { category: ["vaults"], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+Deno.test("VaultService.get: refresh warnings carry neither the command's output nor the cause", async () => {
+  const LEAK = "minted-secret-canary";
+  for (
+    const runCommand of [
+      () => Promise.resolve({ success: false, stdout: LEAK, stderr: LEAK }),
+      () => Promise.reject(new Error(`spawn failed: ${LEAK}`)),
+    ]
+  ) {
+    const svc = new VaultService({ runCommand });
+    svc.registerVault({
+      name: "v",
+      type: "local_encryption",
+      config: { auto_generate: true },
+    });
+    await svc.put("v", "TOKEN", "stale-value");
+    const { RefreshHook } = await import("./refresh_hook.ts");
+    await svc.putRefreshHook(
+      "v",
+      "TOKEN",
+      RefreshHook.create("refresh-cmd", 60000),
+    );
+
+    const messages = await capturingVaultWarnings(async () => {
+      assertEquals(await svc.get("v", "TOKEN"), "stale-value");
+    });
+    assertEquals(messages.length, 1);
+    assertStringIncludes(messages[0], "TOKEN");
+    assertStringIncludes(messages[0], "Returning stale value");
+    assertStringIncludes(messages[0], "run the refresh command by hand");
+    assertEquals(messages[0].includes(LEAK), false);
+  }
+});
+
+Deno.test("VaultService.authorizeRead: holds a read to the run scope with no provider call", async () => {
+  const svc = new VaultService();
+  svc.registerVault({ name: "v", type: "mock", config: {} });
+  // No scope: nothing to refuse, and an unknown vault is not looked up.
+  await svc.authorizeRead("unregistered", "KEY");
+  const denied = RunVaultAccess.create({
+    allowedVaults: ["other"],
+    allowListSource: "wf",
+  });
+  await runWithVaultAccess(denied, async () => {
+    const error = await assertRejects(
+      () => svc.authorizeRead("v", "KEY"),
+      VaultAccessDeniedError,
+    );
+    assertEquals(error.code, "vault_access_denied");
+  });
 });
 
 Deno.test("VaultService - fromRepository continues loading after a bad vault config", async () => {
