@@ -29,6 +29,7 @@
  */
 
 import type { UnitOfWork } from "../datastore/unit_of_work.ts";
+import { UserError } from "../errors.ts";
 import type { Intent } from "./intent.ts";
 import type { Op, PutExpect } from "./op.ts";
 import { CommitRejectedError, type CommitRejection } from "./partition.ts";
@@ -172,4 +173,35 @@ export class PartitionsRefusedError extends CommitRejectedError {
     this.name = "PartitionsRefusedError";
     if (cause !== undefined) this.cause = cause;
   }
+}
+
+/** Error code for {@link MayLandLaterError}. */
+export const COMMIT_MAY_LAND_CODE = "datastore_v3_commit_may_land";
+
+/**
+ * A v3 unit's commit failed, or was given up, and swamp could not record that
+ * it must not land (swamp-club#3586): the commit outbox, which would let the
+ * next writer land it, could be neither cleared nor marked, and nothing could
+ * read whether it had landed. The change may already be in the datastore, or
+ * be landed by the next swamp command that writes it, so running the command
+ * again blindly could make it twice. `cause` is the failure the unit met, if
+ * any; `reason` why it could not be recorded.
+ */
+export class MayLandLaterError extends UserError {
+  constructor(cause: unknown, reason: unknown) {
+    const failed = cause === undefined ? "" : `${messageOf(cause)}. `;
+    super(
+      `${failed}Swamp could not record that this change must not be ` +
+        `committed (${messageOf(reason)}), so it may already be in the v3 ` +
+        `datastore, or be committed by the next swamp command that writes ` +
+        `it. Check the datastore before running this command again.`,
+      COMMIT_MAY_LAND_CODE,
+    );
+    this.name = "MayLandLaterError";
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -27,16 +27,23 @@
  *   it, under the partition's lock, with the partition head it was built on
  *   (its base). It settles the entry once the commit has landed and passed
  *   the post-commit chunk check. A refusal, an abandon or a unit that ends
- *   with the commit still failing discards it: that failure was reported.
- *   Only a process that dies leaves entries.
+ *   with the commit still failing first marks the entry **abandoned**, then
+ *   discards it: that failure was reported (swamp-club#3586). A discard that
+ *   fails leaves the abandoned entry, which recovery drops whatever its
+ *   writer's state; a unit that could write neither says its change may
+ *   still land. So a process that dies, or a failure whose mark could not be
+ *   written, leaves entries recovery may land.
  * - **Recovery** runs under the next writer hold of the same copy of
  *   `commits.db`. An entry lands only when its txnId is already stored (it
  *   settles as a duplicate) or the partition head still is its base, under
  *   the current writer's fence. Everything else is dropped and reported.
  * - **Fences.** Every CLI write takes a new fence, so an entry's own fence
  *   is always below its recoverer's. The copy records the fences it took as
- *   a chain, by the rule replication lineages use: a fence one above the
- *   last continues it, anything else restarts it. An entry from before the
+ *   a chain: a fence one above the last continues it, and so does a fence
+ *   noted as taken whose record was lost (swamp-club#3586). In shared mode,
+ *   where the datastore has one copy, any higher fence continues it; while
+ *   replicating, a gap restarts it, as another copy may have taken the
+ *   fences between. An entry from before the
  *   chain's start was prepared before another copy took the lease, and is
  *   dropped. The floor is the fence of the last completed recovery: an entry
  *   below it was prepared by a writer that lost its lease after its
@@ -154,6 +161,12 @@ export interface OutboxEntry extends OutboxPreparation {
    * since it was last prepared: the floor does not drop it.
    */
   readonly leftAtFence?: number;
+  /**
+   * When its unit gave it up (swamp-club#3586), epoch milliseconds: the unit
+   * reported the failure, so recovery drops the entry whatever its writer's
+   * state, a left entry included.
+   */
+  readonly abandonedAt?: number;
 }
 
 /** The fences a copy of `commits.db` took, as {@link decideFenceChain} keeps them. */
@@ -169,35 +182,63 @@ export interface FenceChain {
   readonly floor: number;
 }
 
+/** What {@link decideFenceChain} knows besides the chain and the fence. */
+export interface FenceChainContext {
+  /**
+   * The highest fence this copy noted as taken before raising it
+   * (swamp-club#3586). A note one above the last fence is this copy's own
+   * fence whose record was lost (its writer was killed, or failed, between
+   * the note and the record): the chain counts it as taken.
+   */
+  readonly pendingFence?: number;
+  /**
+   * Whether the datastore is replicated, each checkout keeping its own copy.
+   * Only then can a gap in the fences be another copy's. Taken as true when
+   * not given.
+   */
+  readonly replicated?: boolean;
+}
+
 /**
  * The chain once this copy took `fence`. Equal to the last fence (another
  * hold in the process seen again) or one above it (no other writer took the
- * lease in between) continues it; anything else restarts it at `fence`.
- * A fence lower than the last means the lease's records were recreated, and
- * restarts the chain and the floor.
+ * lease in between) continues it; a pending note one above the last fence
+ * counts as the last fence first. A higher fence continues it too in shared
+ * mode, where every writer uses this copy and recovers before it writes, and
+ * restarts it at `fence` while replicating: another copy may have taken the
+ * fences between. A fence lower than the last means the lease's records were
+ * recreated, and restarts the chain and the floor.
  */
 export function decideFenceChain(
   previous: FenceChain | undefined,
   fence: number,
+  context: FenceChainContext = {},
 ): FenceChain {
   if (!Number.isSafeInteger(fence) || fence < 1) {
     throw new Error(`A writer fence must be an integer from 1: ${fence}`);
   }
-  if (previous === undefined) {
+  // A chain at fence 0 only holds a note: no fence was recorded yet.
+  if (previous === undefined || previous.lastFence === 0) {
     return { lastFence: fence, chainStart: fence, floor: 0 };
   }
-  if (fence === previous.lastFence || fence === previous.lastFence + 1) {
+  if (fence < previous.lastFence) {
+    return { lastFence: fence, chainStart: fence, floor: 0 };
+  }
+  const last = context.pendingFence === previous.lastFence + 1
+    ? context.pendingFence
+    : previous.lastFence;
+  if (
+    fence === last || fence === last + 1 || context.replicated === false
+  ) {
     return { ...previous, lastFence: fence };
   }
-  return {
-    lastFence: fence,
-    chainStart: fence,
-    floor: fence < previous.lastFence ? 0 : previous.floor,
-  };
+  return { lastFence: fence, chainStart: fence, floor: previous.floor };
 }
 
 /** Why recovery dropped an entry instead of landing it. */
 export type OutboxDropReason =
+  /** Its unit gave it up and reported the failure (swamp-club#3586). */
+  | "abandoned"
   /** Another copy took the lease after it was prepared. */
   | "stale-fence"
   /** Its writer lost the lease, and prepared it after a later recovery. */
@@ -221,6 +262,12 @@ export interface OutboxDrop {
   readonly reason: OutboxDropReason;
   /** The error behind a `refused`, `missing-chunk` or `unreadable` drop. */
   readonly detail?: string;
+  /**
+   * Whether it may have landed after all: an `expired` entry older than
+   * {@link COMPACTED_TXN_RETENTION_MS}, whose txnId compaction may have
+   * pruned, so its landing can no longer be seen.
+   */
+  readonly uncertain?: boolean;
 }
 
 /** What {@link planOutboxRecovery} judges with. */
@@ -238,10 +285,18 @@ export interface OutboxRecoveryJudgement {
     writer: CommitWriter,
     process: ProcessIdentity | undefined,
   ) => boolean;
+  /**
+   * Whether the entry's txnId is stored already (swamp-club#3586): such an
+   * entry settles, whatever drop reason it would otherwise meet. None
+   * landed when not given.
+   */
+  readonly landed?: (entry: OutboxEntry) => boolean;
 }
 
 /** The outcome of {@link planOutboxRecovery}. */
 export interface OutboxRecoveryPlan {
+  /** Entries whose commit landed already: settled, not sent. */
+  readonly settles: readonly OutboxEntry[];
   /** Entries to land, in order. Run entries of a unit come last. */
   readonly sends: readonly OutboxEntry[];
   readonly drops: readonly OutboxDrop[];
@@ -250,7 +305,9 @@ export interface OutboxRecoveryPlan {
 }
 
 /**
- * Decides which entries a recovery lands, drops or leaves. Entries are
+ * Decides which entries a recovery lands, settles, drops or leaves. An
+ * abandoned entry is dropped first; one whose commit landed already settles
+ * before any other drop reason is judged (swamp-club#3586). Entries are
  * taken in preparation order; a unit's run entries go after its others,
  * and are dropped when one of them is (decision 7: a run record never names
  * data that did not land). The live checks, the head and the store's own
@@ -263,12 +320,16 @@ export function planOutboxRecovery(
 ): OutboxRecoveryPlan {
   const ordered = [...entries].sort((a, b) => a.sequence - b.sequence);
   const skipped: OutboxEntry[] = [];
+  const settles: OutboxEntry[] = [];
   const drops: OutboxDrop[] = [];
   const kept: OutboxEntry[] = [];
   for (const entry of ordered) {
     const reason = dropReason(entry, judgement);
     if (reason === "skip") skipped.push(entry);
-    else if (reason !== undefined) drops.push({ entry, reason });
+    else if (reason === "settle") settles.push(entry);
+    else if (reason === "expired" && mayBePruned(entry, judgement.now)) {
+      drops.push({ entry, reason, uncertain: true });
+    } else if (reason !== undefined) drops.push({ entry, reason });
     else kept.push(entry);
   }
   const droppedUnits = new Set(
@@ -284,7 +345,7 @@ export function planOutboxRecovery(
       drops.push({ entry, reason: "unit-dropped" });
     } else runs.push(entry);
   }
-  return { sends: [...sends, ...runs], drops, skipped };
+  return { settles, sends: [...sends, ...runs], drops, skipped };
 }
 
 /**
@@ -308,8 +369,11 @@ export function isRunEntry(entry: OutboxPreparation): boolean {
 
 function dropReason(
   entry: OutboxEntry,
-  { chain, now, writerAlive }: OutboxRecoveryJudgement,
-): OutboxDropReason | "skip" | undefined {
+  { chain, now, writerAlive, landed }: OutboxRecoveryJudgement,
+): OutboxDropReason | "skip" | "settle" | undefined {
+  if (entry.abandonedAt !== undefined) return "abandoned";
+  // Landed already: settling it can lose nothing, whoever wrote it.
+  if (landed?.(entry) === true) return "settle";
   const fence = entry.commit.fence;
   if (fence === undefined || fence < chain.chainStart) return "stale-fence";
   if (fence < chain.floor && entry.leftAtFence === undefined) {
@@ -318,6 +382,14 @@ function dropReason(
   if (writerAlive(entry.commit.writer, entry.writerProcess)) return "skip";
   if (now - entry.createdAt > OUTBOX_RETRY_BOUND_MS) return "expired";
   return undefined;
+}
+
+/**
+ * Whether compaction may have pruned the txnId of `entry`, so recovery cannot
+ * tell whether it landed.
+ */
+function mayBePruned(entry: OutboxEntry, now: number): boolean {
+  return now - entry.createdAt > COMPACTED_TXN_RETENTION_MS;
 }
 
 /** A sweep's state, as a writer reads it before and after preparing. */
@@ -374,12 +446,31 @@ export interface CommitOutbox {
    * an entry back from one could be landed by the next recovery.
    */
   discard(keys: readonly OutboxKey[]): Promise<void>;
+  /**
+   * Marks entries their unit gave up (swamp-club#3586), durably, before they
+   * are discarded: recovery drops a marked entry, so a discard that then
+   * fails cannot let a reported failure land. A later prepare clears it.
+   */
+  abandon(keys: readonly OutboxKey[]): Promise<void>;
   /** Every entry, in preparation order, and those that cannot be read. */
   entries(): Promise<OutboxListing>;
   /** Whether any entry is held. */
   hasEntries(): Promise<boolean>;
-  /** Records that this copy took `fence`, by {@link decideFenceChain}. */
-  recordFence(fence: number): Promise<FenceChain>;
+  /**
+   * Notes, durably, that this copy took `fence` and is about to raise and
+   * record it (swamp-club#3586); the note only ever rises. A note left one
+   * above the chain's last fence, by a writer that died before its record,
+   * joins the chain first.
+   */
+  notePendingFence(fence: number): Promise<void>;
+  /**
+   * Records that this copy took `fence`, by {@link decideFenceChain} with
+   * the pending note and whether the datastore replicates.
+   */
+  recordFence(
+    fence: number,
+    options?: { readonly replicated?: boolean },
+  ): Promise<FenceChain>;
   /** The copy's chain, or undefined before any fence was recorded. */
   chain(): Promise<FenceChain | undefined>;
   /** Moves the floor to `fence` once a recovery under it completed. */

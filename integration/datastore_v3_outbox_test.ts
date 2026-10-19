@@ -29,7 +29,7 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { walk } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
@@ -296,21 +296,65 @@ Deno.test("v3 outbox: a writer killed after its append lands settles as a duplic
   });
 });
 
-Deno.test("v3 outbox: an entry from before another writer's lease is dropped and the killed writer's file removed", async () => {
+Deno.test("v3 outbox: a fence another writer took and gave up without writing does not drop a killed writer's commit in shared mode (swamp-club#3586)", async () => {
   await withV3RowRepos({}, async (repos, datastorePath) => {
     const killed = await killWriter(repos, datastorePath, {
       pauses: ["after-prepare"],
       killAt: "after-prepare",
     });
-    // Another copy takes the next fence, writes nothing here, and lets go:
-    // this copy never records that fence.
+    // A writer takes the next fence and dies before raising it: the chain
+    // never records that fence. Shared mode has one copy, and every writer
+    // recovers before it writes, so the gap is no other copy's.
     const other = await plantV3WriterLease(datastorePath, { pid: GONE_PID });
     await other.release();
     await startWriter(repos);
-    assertEquals(await commitsOf(datastorePath, killed.id), []);
+    assertEquals((await commitsOf(datastorePath, killed.id)).length, 1);
     assertEquals(await outboxHasEntries(datastorePath), false);
-    assertEquals(await exists(killed.checkoutFile), false);
+    assertEquals(await exists(killed.checkoutFile), true);
   });
+});
+
+Deno.test("v3 outbox: a writer start whose outbox record or store raise fails does not drop a killed writer's commit (swamp-club#3586)", async () => {
+  for (const failing of ["record", "raise"] as const) {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      const killed = await killWriter(repos, datastorePath, {
+        pauses: ["after-prepare"],
+        killAt: "after-prepare",
+      });
+      // The next writer takes a fence, and its start fails between the
+      // store's raise and the outbox's record, or on the raise itself.
+      const next = await plantV3WriterLease(datastorePath, { pid: GONE_PID });
+      const handle = openV3Datastore({ repoDir: repos.repoA, datastorePath });
+      try {
+        const target = failing === "record"
+          ? handle.outbox
+          : handle.commitStore;
+        Object.defineProperty(
+          target,
+          failing === "record" ? "recordFence" : "raiseWriterFence",
+          {
+            configurable: true,
+            value: () => Promise.reject(new Error("database or disk is full")),
+          },
+        );
+        await assertRejects(
+          () => handle.raiseWriterFence(next.fence),
+          Error,
+          "disk is full",
+        );
+      } finally {
+        await handle.close();
+      }
+      await next.release();
+      await startWriter(repos);
+      assertEquals(
+        (await commitsOf(datastorePath, killed.id)).length,
+        1,
+        failing,
+      );
+      assertEquals(await outboxHasEntries(datastorePath), false);
+    });
+  }
 });
 
 Deno.test("v3 outbox: an entry whose partition was committed since is dropped, never landed over it", async () => {

@@ -1305,7 +1305,7 @@ Deno.test("createCommitLogUnitOfWork: a retried commit that lands as a duplicate
   );
 });
 
-Deno.test("createCommitLogUnitOfWork: a source that changed cannot restore a deleted chunk, and says so", async () => {
+Deno.test("createCommitLogUnitOfWork: a source that changed cannot restore a deleted chunk; the landed commit stands, with a warning (swamp-club#3586)", async () => {
   const sink = new MemorySink();
   const options = unitOptions(sink, memory());
   let calls = 0;
@@ -1316,11 +1316,8 @@ Deno.test("createCommitLogUnitOfWork: a source that changed cannot restore a del
   await uow.stageOp(
     pendingPut("x", () => streamOf(bytesOf(100 * 1024, ++calls))),
   );
-  await assertRejects(
-    () => uow.commit(),
-    Error,
-    "no longer gives content",
-  );
+  // It landed: failing the unit would drop work that is committed.
+  await uow.commit();
   assertEquals(sink.landed.length, 1);
 });
 

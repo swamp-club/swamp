@@ -42,9 +42,14 @@ import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 export interface OutboxCommitSinkOptions {
   readonly commitStore: Pick<
     SqliteCommitStore,
-    "append" | "head" | "headIdentity" | "dataHighWater"
+    "append" | "head" | "headIdentity" | "dataHighWater" | "landedSeq"
   >;
   readonly outbox: CommitOutbox;
+  /**
+   * The chunk sweep batch this process is running on the outbox's copy, if
+   * any (swamp-club#3586): resolves once it has deleted and re-checked.
+   */
+  readonly sweepBatch?: () => Promise<void>;
   /**
    * Throws once this process's writer lease was taken over or released:
    * checked before each prepare and each append.
@@ -58,7 +63,8 @@ export interface OutboxCommitSink extends CommitSink {
   /**
    * Retries the removals of entries that failed (a unit's discard after a
    * failure, usually for the same cause): called when the handle closes.
-   * Rejects when one still fails.
+   * An entry that cannot be removed is marked abandoned instead, which
+   * recovery honours (swamp-club#3586). Rejects when neither can be written.
    */
   retryOwedRemovals(): Promise<void>;
 }
@@ -104,14 +110,27 @@ export function createOutboxCommitSink(
       },
       settle: (keys) => removeOwing(keys, (owing) => outbox.settle(owing)),
       discard: (keys) => removeOwing(keys, (owing) => outbox.discard(owing)),
+      abandon: (keys) => outbox.abandon(keys),
+      landedSeq: (namespace, partition, txnId) =>
+        commitStore.landedSeq(namespace, partition, txnId),
       sweepState: () => outbox.sweepState(clock().getTime()),
+      sweepBatch: () => options.sweepBatch?.() ?? Promise.resolve(),
     },
     async retryOwedRemovals() {
       if (owed.size === 0) return;
       const keys = [...owed.values()];
       // Most owed removals are discards, whose failure was reported: retried
-      // durably, as a settle may be too.
-      await outbox.discard(keys);
+      // durably, as a settle may be too. An abandoned mark is enough when
+      // the removal fails again: recovery drops the entry.
+      try {
+        await outbox.discard(keys);
+      } catch (error) {
+        try {
+          await outbox.abandon(keys);
+        } catch {
+          throw error;
+        }
+      }
       owed.clear();
     },
   };

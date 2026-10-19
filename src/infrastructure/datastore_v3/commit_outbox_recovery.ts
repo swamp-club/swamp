@@ -23,7 +23,10 @@
  * (swamp-club#3299), which then keeps the files the landed commits own and
  * removes the rest.
  *
- * For each entry {@link planOutboxRecovery} keeps, in preparation order:
+ * An entry its unit abandoned is dropped quietly: the unit reported its
+ * failure. One whose txnId landed already settles, whatever drop reason it
+ * would otherwise meet (swamp-club#3586). For each entry
+ * {@link planOutboxRecovery} keeps, in preparation order:
  *
  * - its txnId already landed (the writer died before settling): the chunk
  *   check runs again and the entry settles;
@@ -205,10 +208,26 @@ export async function recoverCommitOutbox(
     logger
       .warn`Dropped an unreadable v3 commit outbox entry for partition ${key.partition}: ${detail}`;
   }
+  // Read before judging: a landed entry settles, never drops (swamp-club#3586).
+  const landedKeys = new Set<OutboxEntry>();
+  for (const entry of listing.entries) {
+    if (entry.abandonedAt !== undefined) continue;
+    const { commit } = entry;
+    if (
+      await target.commitStore.landedSeq(
+        commit.namespace,
+        commit.partition,
+        commit.txnId,
+      ) !== undefined
+    ) {
+      landedKeys.add(entry);
+    }
+  }
   const plan = planOutboxRecovery(listing.entries, {
     chain,
     now: clock().getTime(),
     writerAlive: options.writerAlive ?? writerAliveFrom(await localProcess()),
+    landed: (entry) => landedKeys.has(entry),
   });
   // Left before anything lands and before the floor rises past them: a
   // writer that prepares one again from now on clears its mark, so a later
@@ -221,22 +240,42 @@ export async function recoverCommitOutbox(
     entry: OutboxEntry,
     reason: OutboxDropReason,
     detail?: string,
+    uncertain = false,
   ) => {
     // A drop is reported, so it is fsynced: a run entry whose drop a power
     // cut undid could land after its unit's dropped data commit.
     await outbox.discard([outboxKeyOf(entry.commit)]);
-    const recorded: OutboxDrop = detail === undefined
-      ? { entry, reason }
-      : { entry, reason, detail };
+    const recorded: OutboxDrop = {
+      entry,
+      reason,
+      ...(detail !== undefined ? { detail } : {}),
+      ...(uncertain ? { uncertain } : {}),
+    };
     drops.push(recorded);
     reportDrop(recorded);
   };
-  for (const planned of plan.drops) {
-    await drop(planned.entry, planned.reason, planned.detail);
-  }
-
   let landed = 0;
   let settled = 0;
+  for (const entry of plan.settles) {
+    // It landed before its writer died: run the check it never ran.
+    await warnMissingChunks(
+      target.chunkStore,
+      entry.commit.namespace as Namespace,
+      entry.commit,
+      signal,
+    );
+    await outbox.settle([outboxKeyOf(entry.commit)]);
+    settled++;
+  }
+  for (const planned of plan.drops) {
+    await drop(
+      planned.entry,
+      planned.reason,
+      planned.detail,
+      planned.uncertain === true,
+    );
+  }
+
   let remaining = [...plan.sends];
   while (remaining.length > 0) {
     signal.throwIfAborted();
@@ -371,7 +410,8 @@ async function missingChunks(
 
 /**
  * The post-commit check for a commit that has landed. Nothing can store a
- * missing chunk again (its writer is gone), so it is reported.
+ * missing chunk again (its writer is gone), so it is reported; a check that
+ * fails is reported too, and never fails the recovery (swamp-club#3586).
  */
 async function warnMissingChunks(
   chunkStore: Pick<ChunkStore, "missing">,
@@ -379,7 +419,14 @@ async function warnMissingChunks(
   commit: Commit,
   signal: AbortSignal,
 ): Promise<void> {
-  const missing = await missingChunks(chunkStore, namespace, commit, signal);
+  let missing: string[];
+  try {
+    missing = await missingChunks(chunkStore, namespace, commit, signal);
+  } catch (error) {
+    logger
+      .warn`Checking the content v3 commit ${commit.seq} of partition ${commit.partition.toString()} names failed; reads of that content may fail: ${error}`;
+    return;
+  }
   if (missing.length === 0) return;
   logger
     .warn`Commit ${commit.seq} of v3 partition ${commit.partition.toString()} names chunk ${
@@ -388,7 +435,9 @@ async function warnMissingChunks(
 }
 
 const REASONS: Record<OutboxDropReason, string> = {
-  "stale-fence": "another writer took the datastore after it was prepared",
+  "abandoned": "its command gave it up and reported the failure",
+  "stale-fence":
+    "another writer may have taken the datastore after it was prepared",
   "overtaken": "its writer had lost the datastore's writer lease",
   "expired": "it is older than the retry bound",
   "unit-dropped":
@@ -401,7 +450,20 @@ const REASONS: Record<OutboxDropReason, string> = {
 
 function reportDrop(drop: OutboxDrop): void {
   const { commit } = drop.entry;
+  if (drop.reason === "abandoned") {
+    // Its failure was reported when its command ended.
+    logger
+      .debug`Dropped an abandoned v3 commit outbox entry for partition ${commit.partition.toString()}`;
+    return;
+  }
   const detail = drop.detail === undefined ? "" : ` (${drop.detail})`;
+  if (drop.uncertain === true) {
+    logger
+      .warn`Dropped a v3 commit to partition ${commit.partition.toString()} that swamp process ${commit.writer.pid} on ${commit.writer.host} prepared: ${
+      REASONS[drop.reason]
+    }${detail}. Its record of landing has been pruned, so its changes may or may not be in the datastore`;
+    return;
+  }
   logger
     .warn`Dropped a v3 commit to partition ${commit.partition.toString()} that swamp process ${commit.writer.pid} on ${commit.writer.host} prepared but did not land: ${
     REASONS[drop.reason]

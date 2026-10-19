@@ -332,3 +332,22 @@ Deno.test("ChunkStore.write: an abort interrupts a source stream that has stalle
   queueMicrotask(() => controller.abort(new Error("stop")));
   await assertRejects(() => write, Error, "stop");
 });
+
+Deno.test("ChunkStore.refresh: touches the chunks it holds and returns the missing ones; checks only on a storage that cannot touch (swamp-club#3586)", async () => {
+  for (const touch of [true, false]) {
+    const storage = new MemoryStorage({ maxChunkBytes: 4, touch });
+    const store = new ChunkStore(storage);
+    const ref = await store.write(SOLO_NAMESPACE, bytesOf(10), live());
+    const [first, ...rest] = ref.chunkHashes();
+    await storage.delete("_default", first, live());
+    const callsBefore = storage.calls.length;
+    assertEquals(await store.refresh(SOLO_NAMESPACE, ref, live()), [first]);
+    const calls = storage.calls.slice(callsBefore);
+    assertEquals(
+      calls.some((call) => call.startsWith("touch")),
+      touch,
+      `touch: ${touch}`,
+    );
+    assert(rest.length > 0);
+  }
+});
