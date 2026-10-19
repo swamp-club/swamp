@@ -306,7 +306,8 @@ export class LockfileRepository {
    * cache paths (see {@link canonicalLockfileEntry}). Reads accept both,
    * so this only stops a lockfile written on another OS from showing as
    * changed. Leaves the file alone, and returns false, when it is missing
-   * or already canonical.
+   * or already canonical; a canonical file whose `files` are out of order
+   * (hand-edited) is not re-sorted.
    */
   async normalize(): Promise<boolean> {
     // No lockfile, nothing to rewrite: don't create the lock's dir for it.
