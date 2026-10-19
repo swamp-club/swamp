@@ -53,24 +53,19 @@ export function recordableEvaluatedInputs(
 
 /**
  * The inputs an evaluated cache resolved into its steps when it was written:
- * every name read by an authored expression the cache no longer holds, raw in
- * its workflow or among its deferred expressions. The rest resolve when the
- * cache is replayed, against the replaying run's inputs. `all` when a resolved
- * expression read `inputs` whole, by a computed key, or does not parse.
+ * every name read by an expression evaluation substituted. The rest resolve
+ * when the cache is replayed, against the replaying run's inputs. A cache that
+ * did not record what was substituted counts every authored expression as
+ * resolved. `all` when a resolved expression read `inputs` whole, by a
+ * computed key, or does not parse.
  */
 function inputsResolvedIntoCache(cache: {
-  workflow: Workflow;
   authoredExpressions: ReadonlySet<string>;
-  deferredExpressions: readonly DeferredExpression[];
+  resolvedExpressions?: ReadonlySet<string>;
 }): { names: Set<string>; all: boolean } {
-  const remaining = new Set([
-    ...extractExpressions(cache.workflow.toData()).map((e) => e.raw),
-    ...cache.deferredExpressions.map((d) => d.expression),
-  ]);
   const names = new Set<string>();
   let all = false;
-  for (const raw of cache.authoredExpressions) {
-    if (remaining.has(raw)) continue;
+  for (const raw of cache.resolvedExpressions ?? cache.authoredExpressions) {
     for (const { celExpression } of extractExpressions(raw)) {
       const reads = inputNamesRead(celExpression);
       for (const name of reads.names) names.add(name);
@@ -91,9 +86,8 @@ function inputsResolvedIntoCache(cache: {
 export function inputsConflictingWithCache(
   supplied: Record<string, unknown>,
   cache: {
-    workflow: Workflow;
     authoredExpressions: ReadonlySet<string>;
-    deferredExpressions: readonly DeferredExpression[];
+    resolvedExpressions?: ReadonlySet<string>;
     evaluatedInputs?: Record<string, unknown>;
   },
 ): string[] {

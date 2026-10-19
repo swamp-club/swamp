@@ -257,10 +257,10 @@ import {
 import {
   extractCelExpression,
   extractExpressions,
-  extractInputReferencesFromCel,
   replaceExpressions,
   replaceExpressionsTracked,
 } from "../expressions/expression_parser.ts";
+import { inputNamesRead } from "../expressions/cel_grammar.ts";
 import { replaceExpressionSpans } from "../expressions/expression_scanner.ts";
 import { requiresModelNamespace } from "../expressions/dependency_extractor.ts";
 import { extractStepDefinitionReferences } from "./model_reference_extractor.ts";
@@ -3812,13 +3812,27 @@ export class WorkflowExecutionService {
             lastEvaluated,
           );
           if (conflicting.length > 0) {
-            const keys = conflicting.map((k) => `"${k}"`).join(", ");
+            const recorded = lastEvaluated.evaluatedInputs;
+            const quote = (ks: string[]) => ks.map((k) => `"${k}"`).join(", ");
+            const unchecked = conflicting.filter((k) =>
+              recorded === undefined || !Object.hasOwn(recorded, k)
+            );
+            const differing = conflicting.filter((k) => !unchecked.includes(k));
+            const why = [
+              differing.length > 0
+                ? `was evaluated with other values for --input ${
+                  quote(differing)
+                }, and its steps run with those`
+                : "",
+              unchecked.length > 0
+                ? `recorded no value for --input ${
+                  quote(unchecked)
+                }, which its steps were evaluated with, so it cannot be checked`
+                : "",
+            ].filter((part) => part !== "").join("; it ");
             throw new UserError(
-              lastEvaluated.evaluatedInputs === undefined
-                ? `The evaluated workflow cached for "${workflow.name}" recorded no inputs, so --input ${keys}, which its steps were evaluated with, cannot be checked. ` +
-                  `Evaluate it again with these inputs (swamp workflow evaluate ${workflow.name} --input ...), or run it without --last-evaluated.`
-                : `The evaluated workflow cached for "${workflow.name}" was evaluated with other values for --input ${keys}, and its steps run with those. ` +
-                  `Evaluate it again with these inputs (swamp workflow evaluate ${workflow.name} --input ...), or run it without --last-evaluated.`,
+              `The evaluated workflow cached for "${workflow.name}" ${why}. ` +
+                `Evaluate it again with these inputs (swamp workflow evaluate ${workflow.name} --input ...), or run it without --last-evaluated.`,
             );
           }
           // Sensitive values are cached as vault references: restore real
@@ -3964,6 +3978,7 @@ export class WorkflowExecutionService {
             persistedWorkflow.deferredExpressions,
             persistedWorkflow.writtenReferences,
             recordableEvaluatedInputs(options?.inputs ?? {}, sensitiveValues),
+            evaluation.resolvedExpressions,
           );
           evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
             persistedWorkflow.workflow,
@@ -4674,9 +4689,10 @@ export class WorkflowExecutionService {
         existingRun.resumeFromSuspended(owner);
       }
 
-      // Record the key names of any resume-time inputs for audit (never the
-      // values — they may be secrets such as a freshly minted auth key). Done
-      // before the save below so the audit trail persists immediately.
+      // Record the key names of any resume-time inputs for audit. Done before
+      // the save below so the audit trail persists immediately. The values
+      // reach the run's inputs once the resume prepares, as inputs do; a
+      // secret is passed as a vault key name, never as an input value.
       if (Object.keys(resumeInputs).length > 0) {
         existingRun.recordResumeInputs(Object.keys(resumeInputs));
       }
@@ -5921,10 +5937,14 @@ export class WorkflowExecutionService {
       const resumeKeys = (options.resumeDerived ?? [])
         .filter((path) => path.startsWith("inputs."))
         .map((path) => path.slice("inputs.".length));
-      const inRefs = extractInputReferencesFromCel(
+      // Read as `inputs.X` or `run.inputs.X`: both hold resume-time values.
+      const inRefs = inputNamesRead(
         extractCelExpression(step.forEach?.in ?? "") ?? "",
       );
-      if (resumeKeys.some((key) => inRefs.has(key))) {
+      if (
+        resumeKeys.length > 0 &&
+        (inRefs.opaque || resumeKeys.some((key) => inRefs.names.has(key)))
+      ) {
         options = {
           ...options,
           resumeDerived: [

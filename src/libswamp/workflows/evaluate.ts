@@ -194,6 +194,8 @@ export interface WorkflowEvaluateDeps {
     writtenReferences?: readonly WrittenReference[],
     /** The inputs the workflow was evaluated with (swamp-club#3583). */
     evaluatedInputs?: Record<string, unknown>,
+    /** The authored expressions evaluation substituted (swamp-club#3583). */
+    resolvedExpressions?: ReadonlySet<string>,
   ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
@@ -268,6 +270,7 @@ export function createWorkflowEvaluateDeps(
       authoredExpressions,
       writtenReferences,
       evaluatedInputs,
+      resolvedExpressions,
     ) =>
       evaluatedWorkflowRepo.save(
         workflow,
@@ -276,6 +279,7 @@ export function createWorkflowEvaluateDeps(
         undefined,
         writtenReferences,
         evaluatedInputs,
+        resolvedExpressions,
       ),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
@@ -307,6 +311,7 @@ async function evaluateWorkflowInternal(
       authoredExpressions,
       undefined,
       inputs,
+      new Set(),
     );
     return {
       id: workflow.id,
@@ -633,6 +638,7 @@ async function evaluateWorkflowInternal(
     authoredExpressions,
     persisted.writtenReferences,
     recordableEvaluatedInputs(coercedInputs, sensitiveValues),
+    new Set(evaluatedValues.keys()),
   );
 
   return {

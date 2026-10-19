@@ -159,6 +159,13 @@ export interface WorkflowEvaluationResult {
    * the same way if it fails there.
    */
   foreignTaskArguments: ForeignTaskArgument[];
+  /**
+   * The raw `${{ }}` texts evaluation substituted somewhere in the workflow.
+   * A text can be substituted at one location and kept raw at another (a
+   * guard, or a guarded step's target), so this is not what the evaluated
+   * workflow no longer holds (swamp-club#3583).
+   */
+  resolvedExpressions: ReadonlySet<string>;
 }
 
 /**
@@ -456,6 +463,7 @@ export class WorkflowExpressionEvaluator {
         ),
         provenance: sourceProvenance,
         foreignTaskArguments: [],
+        resolvedExpressions: new Set(),
       };
     }
 
@@ -617,6 +625,7 @@ export class WorkflowExpressionEvaluator {
       ),
       provenance: tracked.provenance,
       foreignTaskArguments,
+      resolvedExpressions: new Set(evaluatedValues.keys()),
     };
   }
 }

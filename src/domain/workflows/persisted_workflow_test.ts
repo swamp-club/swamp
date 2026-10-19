@@ -213,31 +213,17 @@ Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are not r
 });
 
 Deno.test("inputsConflictingWithCache: names supplied inputs the cache resolved into its steps with other values (swamp-club#3583)", () => {
-  // The source read target in a step input (resolved into the cache) and
-  // suffix in an env expression (left to resolve at run time).
+  // The source read target in a step input and creds.key (substituted), and
+  // suffix in an env expression left to resolve at run time.
   const authored = new Set([
     "${{ inputs.target }}",
     "${{ inputs.creds.key }}",
     '${{ env["HOME"] + inputs.suffix }}',
   ]);
-  const cached = Workflow.create({
-    name: "cached",
-    jobs: [Job.create({
-      name: "main",
-      steps: [Step.create({
-        name: "s",
-        task: StepTask.model("m", "run", {
-          target: "scratch",
-          key: "k",
-          home: '${{ env["HOME"] + inputs.suffix }}',
-        }),
-      })],
-    })],
-  });
+  const resolved = new Set(["${{ inputs.target }}", "${{ inputs.creds.key }}"]);
   const cache = (evaluatedInputs?: Record<string, unknown>) => ({
-    workflow: cached,
     authoredExpressions: authored,
-    deferredExpressions: [],
+    resolvedExpressions: resolved,
     evaluatedInputs,
   });
   const recorded = cache({
@@ -276,8 +262,31 @@ Deno.test("inputsConflictingWithCache: names supplied inputs the cache resolved 
   assertEquals(
     inputsConflictingWithCache({ suffix: "x" }, {
       ...cache(),
-      authoredExpressions: new Set(["${{ inputs }}"]),
+      resolvedExpressions: new Set(["${{ inputs }}"]),
     }),
     ["suffix"],
+  );
+});
+
+Deno.test("inputsConflictingWithCache: an expression substituted in one place counts though the cache keeps it raw in another", () => {
+  // Evaluation keeps a guard, and a guarded step's target, raw by location:
+  // the same text substituted into the gate still resolved target.
+  const cache = {
+    authoredExpressions: new Set(["${{ inputs.target }}"]),
+    resolvedExpressions: new Set(["${{ inputs.target }}"]),
+    evaluatedInputs: { target: "scratch" },
+  };
+  assertEquals(
+    inputsConflictingWithCache({ target: "protected" }, cache),
+    ["target"],
+  );
+  // A cache that did not record what was substituted counts every authored
+  // expression as resolved.
+  assertEquals(
+    inputsConflictingWithCache({ target: "protected" }, {
+      authoredExpressions: cache.authoredExpressions,
+      evaluatedInputs: cache.evaluatedInputs,
+    }),
+    ["target"],
   );
 });

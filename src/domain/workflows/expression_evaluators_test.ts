@@ -1442,3 +1442,45 @@ Deno.test("DefinitionExpressionEvaluator: splices the sanitized copy into a dist
     "eu",
   );
 });
+
+Deno.test("WorkflowExpressionEvaluator: resolvedExpressions names a text substituted in one place and kept raw at a guarded step's target (swamp-club#3583)", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const workflow = Workflow.create({
+    name: "collision",
+    jobs: [
+      Job.create({
+        name: "j",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.model("m", "run", {
+              target: "${{ inputs.target }}",
+            }),
+          }),
+          // A guarded step's target is resolved when the step runs.
+          Step.create({
+            name: "destroy",
+            task: StepTask.model("${{ inputs.target }}", "delete"),
+            guard: "${{ false }}",
+          }),
+        ],
+      }),
+    ],
+  });
+  const result = await evaluator.evaluate(
+    workflow,
+    { ...emptyContext(), inputs: { target: "scratch" } },
+    "unrestricted",
+  );
+  const [gate, destroy] = result.workflow.jobs[0].steps;
+  assertEquals(
+    (gate.task.data as { inputs?: Record<string, unknown> }).inputs?.target,
+    "scratch",
+  );
+  assertEquals(
+    (destroy.task.data as { modelIdOrName?: string }).modelIdOrName,
+    "${{ inputs.target }}",
+  );
+  // Substituted at the gate, so target resolved into the evaluated workflow.
+  assertEquals(result.resolvedExpressions.has("${{ inputs.target }}"), true);
+});
