@@ -793,6 +793,7 @@ function lockOf(
 ): LockedDependencyVersions {
   return {
     source: "deno.lock",
+    resolvedFor: () => undefined,
     versionsFor: (registry, name) => versions[`${registry}:${name}`] ?? [],
   };
 }
@@ -1063,8 +1064,6 @@ Deno.test("checkDependencyTrust: an invalid npm name is not audited and never fe
 
 // ── JSR ──────────────────────────────────────────────────────────────────
 
-const JSR_URL = "jsr.io/";
-
 function jsrSpec(name: string, version: string | null): DependencySpecifier {
   return { name, version, registry: "jsr", sourceFile: "model.ts" };
 }
@@ -1257,3 +1256,35 @@ for (
     assertEquals(notAuditedCount(result), 1);
   });
 }
+
+Deno.test("checkDependencyTrust: an npm pin the packument does not list is not audited and borrows nothing from latest", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("pkg", "9.9.9")],
+    routedFetcher(healthyRoutes(DEPRECATION_BODY)),
+  );
+  assertEquals(result.audited[0].passed, false);
+  assertEquals(result.audited[0].reason, "npm lists no version 9.9.9");
+  assertEquals(result.audited[0].license, null);
+});
+
+Deno.test("checkDependencyTrust: a deprecation notice loses bidi and zero-width characters", async () => {
+  const body = {
+    ...DEPRECATION_BODY,
+    versions: {
+      ...DEPRECATION_BODY.versions,
+      "1.0.0": {
+        license: "MIT",
+        maintainers: [{ name: "a" }],
+        deprecated: "safe\u202egnp.exe\u200b end",
+      },
+    },
+  };
+  const result = await checkDependencyTrust(
+    [npmSpec("pkg", "1.0.0")],
+    routedFetcher(healthyRoutes(body)),
+  );
+  assertEquals(
+    result.warnings.find((w) => w.cause === "deprecated-version")?.message,
+    "version 1.0.0 is deprecated: safe gnp.exe end",
+  );
+});

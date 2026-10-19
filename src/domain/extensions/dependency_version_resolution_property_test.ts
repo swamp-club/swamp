@@ -47,6 +47,7 @@ Deno.test("resolveShippedVersion: a resolved range version satisfies the range a
       (registry, spec, locked, published, yanked) => {
         const lock: LockedDependencyVersions = {
           source: "deno.lock",
+          resolvedFor: () => undefined,
           versionsFor: () => locked,
         };
         const shipped = resolveShippedVersion(registry, "p", spec, lock, {

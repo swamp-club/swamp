@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { basename, dirname, join, resolve } from "@std/path";
+import { formatRange, tryParseRange } from "@std/semver";
 import type {
   DependencyRegistry,
   LockedDependencyVersions,
@@ -53,7 +54,11 @@ export async function lockfilePathFor(
     try {
       lock = JSON.parse(await Deno.readTextFile(project.denoConfigPath)).lock;
     } catch {
-      // An unreadable config leaves Deno's default.
+      // A config this reader cannot parse (comments, trailing commas) may
+      // set its own lock; assume none rather than a lock that may not apply.
+      logger
+        .debug`Config ${project.denoConfigPath} is not plain JSON; no lockfile read`;
+      return undefined;
     }
     if (lock === false) return undefined;
     if (typeof lock === "string") return resolve(configDir, lock);
@@ -69,14 +74,27 @@ export async function lockfilePathFor(
   return undefined;
 }
 
-/** `npm:@scope/name@range` or `jsr:@scope/name@range` → its package. */
+/** `npm:@scope/name@range` or `jsr:@scope/name@range` → its parts. */
 function packageOfSpecifier(
   key: string,
-): { registry: DependencyRegistry; name: string } | null {
-  const match = /^(npm|jsr):((?:@[^/@]+\/)?[^/@]+)/.exec(key);
+): { registry: DependencyRegistry; name: string; range: string | null } | null {
+  const match = /^(npm|jsr):((?:@[^/@]+\/)?[^/@]+)(?:@([^/]+))?/.exec(key);
   return match
-    ? { registry: match[1] as DependencyRegistry, name: match[2] }
+    ? {
+      registry: match[1] as DependencyRegistry,
+      name: match[2],
+      range: match[3] ?? null,
+    }
     : null;
+}
+
+/** Two ranges admit the same versions, e.g. `^2.0.0` and `2`. */
+function sameRange(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  const ra = tryParseRange(a ?? "*");
+  const rb = tryParseRange(b ?? "*");
+  return ra !== undefined && rb !== undefined &&
+    formatRange(ra) === formatRange(rb);
 }
 
 /** `name@version` or `name@version_peer…` → its name and bare version. */
@@ -90,9 +108,9 @@ function packageOfEntry(key: string): { name: string; version: string } | null {
 }
 
 /**
- * The versions a Deno lockfile (format 4 or 5) records, read as data: the
- * resolved value of each top-level specifier and every key of the `npm` and
- * `jsr` sections. Undefined when the file is missing, too large, not JSON
+ * What a Deno lockfile (format 4 or 5) records, read as data: the resolved
+ * value of each import specifier, and every version of each package from
+ * the specifiers and the keys of the `npm` and `jsr` sections. Undefined when the file is missing, too large, not JSON
  * or another format, so the audit resolves from the registry instead.
  */
 export async function readDenoLockfile(
@@ -126,6 +144,11 @@ export async function readDenoLockfile(
   }
 
   const versions = new Map<string, Set<string>>();
+  const direct: {
+    key: string;
+    range: string | null;
+    version: string;
+  }[] = [];
   const record = (registry: DependencyRegistry, name: string, v: string) => {
     const key = `${registry}:${name}`;
     const set = versions.get(key) ?? new Set<string>();
@@ -138,7 +161,13 @@ export async function readDenoLockfile(
     for (const [key, value] of Object.entries(specifiers)) {
       const pkg = packageOfSpecifier(key);
       if (pkg && typeof value === "string") {
-        record(pkg.registry, pkg.name, value.split("_")[0]);
+        const version = value.split("_")[0];
+        record(pkg.registry, pkg.name, version);
+        direct.push({
+          key: `${pkg.registry}:${pkg.name}`,
+          range: pkg.range,
+          version,
+        });
       }
     }
   }
@@ -153,6 +182,13 @@ export async function readDenoLockfile(
 
   return {
     source: basename(path),
+    // Deno writes each import's specifier as a key, sometimes in a shorter
+    // equivalent form (`npm:ms@2` for `^2.0.0`), so match by the versions
+    // the range admits rather than by text.
+    resolvedFor: (registry, name, specVersion) =>
+      direct.find((d) =>
+        d.key === `${registry}:${name}` && sameRange(d.range, specVersion)
+      )?.version,
     versionsFor: (registry, name) => [
       ...(versions.get(`${registry}:${name}`) ?? []),
     ],

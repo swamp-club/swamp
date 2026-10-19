@@ -76,6 +76,19 @@ Deno.test("readDenoLockfile: reads specifier values and section keys of a v5 loc
   });
 });
 
+Deno.test("readDenoLockfile: resolves an import through its own specifier entry, matching equivalent ranges", async () => {
+  await withTempDir(async (dir) => {
+    const lock = await readDenoLockfile(await writeLock(dir, V5_LOCK));
+    // `npm:ms@2` is how Deno writes `^2.0.0`; ms@2.1.3 is a transitive copy.
+    assertEquals(lock?.resolvedFor("npm", "ms", "^2.0.0"), "2.0.0");
+    assertEquals(lock?.resolvedFor("npm", "ms", "2"), "2.0.0");
+    assertEquals(lock?.resolvedFor("npm", "ms", "^2.1.0"), undefined);
+    assertEquals(lock?.resolvedFor("npm", "@scope/pkg", "^1.1.0"), "1.1.4");
+    assertEquals(lock?.resolvedFor("jsr", "@std/path", "^1.0.0"), "1.1.4");
+    assertEquals(lock?.resolvedFor("npm", "ms", null), undefined);
+  });
+});
+
 Deno.test("readDenoLockfile: reads a v4 lock the same way", async () => {
   await withTempDir(async (dir) => {
     const lock = await readDenoLockfile(
@@ -116,6 +129,14 @@ Deno.test("lockfilePathFor: a deno.json without a lock setting uses the deno.loc
       await lockfilePathFor({ denoConfigPath: config }),
       join(dir, "deno.lock"),
     );
+  });
+});
+
+Deno.test("lockfilePathFor: a config that is not plain JSON reads no lock", async () => {
+  await withTempDir(async (dir) => {
+    const config = join(dir, "deno.json");
+    await Deno.writeTextFile(config, '{ // comment\n "lock": false }');
+    assertEquals(await lockfilePathFor({ denoConfigPath: config }), undefined);
   });
 });
 

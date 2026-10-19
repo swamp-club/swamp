@@ -119,11 +119,19 @@ Deno.test("push dependency audit: package.json mode reads the deno.lock in that 
   );
 });
 
-Deno.test("push dependency audit: a deno.lock with no deno.json is ignored, as the bundler ignores it", async () => {
-  await withProject({ "deno.lock": LOCK }, async () => {
-    const result = await deps.checkDependencyTrust([MS_RANGE], {});
-    assertEquals(result.audited[0].version, "2.1.3");
-    assertEquals(result.audited[0].resolvedFrom, "registry");
+Deno.test("push dependency audit: the import's own lock entry decides, not a higher transitive copy", async () => {
+  await withProject({
+    "deno.json": "{}",
+    "deno.lock": {
+      ...LOCK,
+      npm: { "ms@2.0.0": { integrity: "x" }, "ms@2.1.3": { integrity: "x" } },
+    },
+  }, async (dir) => {
+    const result = await deps.checkDependencyTrust([MS_RANGE], {
+      denoConfigPath: join(dir, "deno.json"),
+    });
+    assertEquals(result.audited[0].version, "2.0.0");
+    assertEquals(result.audited[0].resolvedFrom, "lockfile");
   });
 });
 

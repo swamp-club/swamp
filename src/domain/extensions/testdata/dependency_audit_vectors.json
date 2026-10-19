@@ -1,5 +1,5 @@
 {
-  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard). Copy verbatim; the swamp copy is the source. `resolution`: the version that ships for a specifier. `findings`: the exact findings push reports for one specifier, given the registry's answer; `scorecardMessage`, where present, is the scorecard's wording of the same finding.",
+  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard). Copy verbatim; the swamp copy is the source. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier, given the registry's answer; `scorecardMessage`, where present, is the scorecard's wording of the same finding.",
   "resolution": [
     {
       "name": "exact pin",
@@ -117,6 +117,18 @@
         "distTags": { "latest": "1.2.5" }
       },
       "expect": { "version": "1.2.5", "from": "registry", "kind": "range" }
+    },
+    {
+      "name": "lock entry for the specifier beats a higher transitive copy",
+      "registry": "npm",
+      "spec": "^1.0.0",
+      "locked": ["1.0.0", "1.2.5"],
+      "lockedFor": "1.0.0",
+      "published": {
+        "versions": ["1.0.0", "1.2.5"],
+        "distTags": { "latest": "1.2.5" }
+      },
+      "expect": { "version": "1.0.0", "from": "lockfile", "kind": "range" }
     },
     {
       "name": "jsr range skips yanked",

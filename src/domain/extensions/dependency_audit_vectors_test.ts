@@ -41,6 +41,7 @@ interface ResolutionVector {
   registry: DependencyRegistry;
   spec: string | null;
   locked?: string[];
+  lockedFor?: string;
   published: {
     versions: string[];
     distTags: Record<string, string>;
@@ -67,10 +68,11 @@ const vectors = JSON.parse(await Deno.readTextFile(VECTORS_PATH)) as {
   findings: FindingVector[];
 };
 
-function lockOf(versions: string[] | undefined) {
+function lockOf(versions: string[] | undefined, lockedFor?: string) {
   if (!versions) return undefined;
   const lock: LockedDependencyVersions = {
     source: "deno.lock",
+    resolvedFor: () => lockedFor,
     versionsFor: () => versions,
   };
   return lock;
@@ -82,7 +84,7 @@ for (const v of vectors.resolution) {
       v.registry,
       "pkg",
       v.spec,
-      lockOf(v.locked),
+      lockOf(v.locked, v.lockedFor),
       { ...v.published, yanked: new Set(v.published.yanked ?? []) },
     );
     assertEquals(shipped?.version ?? null, v.expect.version);

@@ -29,13 +29,23 @@ import {
 export type DependencyRegistry = "npm" | "jsr";
 
 /**
- * The versions a package manager's lockfile records for a package. The
- * port between the dependency audit and whichever lockfile the bundler
- * honours, so another platform's lockfile can plug in.
+ * What a package manager's lockfile records for a package. The port between
+ * the dependency audit and whichever lockfile the bundler honours, so
+ * another platform's lockfile can plug in.
  */
 export interface LockedDependencyVersions {
   /** Names the lockfile in findings, e.g. "deno.lock". */
   readonly source: string;
+  /**
+   * The version the lockfile resolves this import specifier to, when it
+   * records the specifier itself (`null` for an unpinned import).
+   */
+  resolvedFor(
+    registry: DependencyRegistry,
+    name: string,
+    specVersion: string | null,
+  ): string | undefined;
+  /** Every version the lockfile records for the package, transitive too. */
   versionsFor(registry: DependencyRegistry, name: string): readonly string[];
 }
 
@@ -128,11 +138,13 @@ function resolveJsrVersion(
 }
 
 /**
- * The version push ships for a specifier: an exact pin; else the highest
- * version the lockfile records that satisfies the specifier (Deno reuses a
- * locked version that does); else what the registry resolves today. A stale
- * lock that satisfies nothing falls through to the registry, as Deno
- * re-resolves it. Null when nothing resolves.
+ * The version push ships for a specifier: an exact pin; else the version
+ * the lockfile resolves that specifier to; else, when the lockfile does not
+ * record the specifier, the highest version it records for the package that
+ * satisfies it (Deno reuses a locked version that does); else what the
+ * registry resolves today. A stale lock that satisfies nothing falls
+ * through to the registry, as Deno re-resolves it. Null when nothing
+ * resolves.
  */
 export function resolveShippedVersion(
   registry: DependencyRegistry,
@@ -149,9 +161,12 @@ export function resolveShippedVersion(
     const range = specVersion === null
       ? tryParseRange("*")
       : tryParseRange(specVersion);
-    const locked = range
-      ? highestSatisfying(lock.versionsFor(registry, name), range)
-      : null;
+    const direct = lock.resolvedFor(registry, name, specVersion);
+    const locked = !range
+      ? null
+      : direct !== undefined && highestSatisfying([direct], range) !== null
+      ? direct
+      : highestSatisfying(lock.versionsFor(registry, name), range);
     if (locked !== null) return { version: locked, from: "lockfile" };
   }
 

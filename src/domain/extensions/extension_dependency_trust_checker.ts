@@ -459,9 +459,13 @@ function deprecationOf(raw: unknown): string | null {
 
 /** A third-party notice made safe for one terminal line. */
 function sanitiseNotice(notice: string): string {
-  // deno-lint-ignore no-control-regex
-  const flat = notice.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
-    .trim();
+  // Control characters, and the bidi and zero-width format characters that
+  // could reorder or hide part of the line.
+  const flat = notice.replace(
+    // deno-lint-ignore no-control-regex
+    /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]+/g,
+    " ",
+  ).replace(/\s+/g, " ").trim();
   return flat.length > MAX_DEPRECATION_REASON
     ? `${flat.slice(0, MAX_DEPRECATION_REASON - 1)}…`
     : flat;
@@ -469,14 +473,16 @@ function sanitiseNotice(notice: string): string {
 
 /**
  * The facts for the version that ships: license, maintainers and
- * deprecation from its own manifest, falling back to the package level
- * when the packument does not list it. The age stays the package's latest
+ * deprecation from its own manifest. The age stays the package's latest
  * publish: it measures whether the package is maintained, not the pin.
+ * The caller reports a version the packument does not list as not audited;
+ * its facts then come from the package level only, never from latest.
  */
 function factsFor(packument: NpmPackument, version: string): NpmPackageFacts {
   const pkg = packument.packageLevel;
   const latest = packument.manifests[packument.latestVersion];
-  const shipped = packument.manifests[version] ?? latest;
+  const shipped: Record<string, unknown> | undefined =
+    packument.manifests[version];
   const latestNotice = deprecationOf(latest?.deprecated ?? pkg.deprecated);
   const notice = deprecationOf(shipped?.deprecated ?? pkg.deprecated);
   const maintainers = shipped?.maintainers ?? pkg.maintainers;
@@ -755,6 +761,10 @@ async function auditNpmPackage(
     const failures: string[] = [];
     if (npm.kind === "unavailable") {
       failures.push(`npm registry lookup failed (${npm.reason})`);
+    } else if (
+      version !== null && !Object.hasOwn(npm.value.manifests, version)
+    ) {
+      failures.push(`npm lists no version ${version}`);
     }
     if (osv === null) {
       failures.push(

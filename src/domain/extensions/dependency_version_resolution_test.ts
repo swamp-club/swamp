@@ -32,7 +32,11 @@ const NPM: PublishedPackage = {
 };
 
 function lockOf(versions: string[]): LockedDependencyVersions {
-  return { source: "deno.lock", versionsFor: () => versions };
+  return {
+    source: "deno.lock",
+    resolvedFor: () => undefined,
+    versionsFor: () => versions,
+  };
 }
 
 Deno.test("exactVersion: a plain, = or v version is exact", () => {
@@ -136,5 +140,22 @@ Deno.test("resolveShippedVersion: JSR prefers a version that is not yanked", () 
   assertEquals(
     resolveShippedVersion("jsr", "@s/p", null, undefined, jsr),
     { version: "1.0.0", from: "registry" },
+  );
+});
+
+Deno.test("resolveShippedVersion: the lock's entry for the specifier beats a higher transitive copy", () => {
+  const lock: LockedDependencyVersions = {
+    source: "deno.lock",
+    resolvedFor: (_r, _n, spec) => spec === "^1.0.0" ? "1.0.0" : undefined,
+    versionsFor: () => ["1.0.0", "1.2.0"],
+  };
+  assertEquals(
+    resolveShippedVersion("npm", "x", "^1.0.0", lock, NPM),
+    { version: "1.0.0", from: "lockfile" },
+  );
+  // A specifier the lock does not record takes the highest locked match.
+  assertEquals(
+    resolveShippedVersion("npm", "x", "~1.2.0", lock, NPM),
+    { version: "1.2.0", from: "lockfile" },
   );
 });
