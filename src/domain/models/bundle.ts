@@ -350,8 +350,8 @@ export function staleLockfileError(
   const changes = changesAt >= 0 ? `\n${plain.slice(changesAt).trimEnd()}` : "";
   return markErrorPaths(
     new UserError(
-      `${lockPath} is out of date with ${projectFile}, and push does not ` +
-        `rewrite your lockfile. Run \`deno install --entrypoint ` +
+      `${lockPath} is out of date with ${projectFile}, and push and quality ` +
+        `never rewrite your lockfile. Run \`deno install --entrypoint ` +
         `${entryPoint}\` in ${projectDir}, commit the updated lock, and try ` +
         `again.${changes}`,
     ),
