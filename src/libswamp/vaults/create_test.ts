@@ -31,6 +31,10 @@ import {
   type VaultCreateEvent,
 } from "./create.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import {
+  localEncryptionSecretsDir,
+  LocalEncryptionVaultProvider,
+} from "../../domain/vaults/local_encryption_vault_provider.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 function makeDeps(overrides: Partial<VaultCreateDeps> = {}): VaultCreateDeps {
@@ -45,6 +49,7 @@ function makeDeps(overrides: Partial<VaultCreateDeps> = {}): VaultCreateDeps {
         isBuiltIn: true,
       }) as unknown as ReturnType<VaultCreateDeps["getVaultTypeInfo"]>,
     findByName: () => Promise.resolve(false),
+    findLeftoverSecrets: () => Promise.resolve(undefined),
     save: () => Promise.resolve(),
     listAvailableTypes: () => ["local_encryption", "aws_secrets_manager"],
     ...overrides,
@@ -300,6 +305,170 @@ Deno.test("createVaultCreateDeps: without an injected repository, saves under th
         "vault-1",
       ))?.name,
       "v1",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Leftover local_encryption storage (swamp-club#3614)
+// ---------------------------------------------------------------------------
+
+Deno.test("vaultCreate: refuses a local_encryption vault whose storage an earlier vault left, and saves nothing", async () => {
+  const saved: VaultConfig[] = [];
+  const checked: Array<[string, Record<string, unknown>]> = [];
+  const deps = makeDeps({
+    findLeftoverSecrets: (name, config) => {
+      checked.push([name, config]);
+      return Promise.resolve(
+        join("/repo", ".swamp", "secrets", "local_encryption", name),
+      );
+    },
+    save: (config) => {
+      saved.push(config);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultCreateEvent>(
+    vaultCreate(createLibSwampContext(), deps, {
+      vaultType: "local_encryption",
+      name: "old",
+      repoDir: "/repo",
+    }),
+  );
+
+  const last = events.at(-1) as Extract<VaultCreateEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "already_exists");
+  assertStringIncludes(
+    last.error.message,
+    `Cannot create vault 'old': ${
+      join(".swamp", "secrets", "local_encryption", "old")
+    } already holds a key or secrets`,
+  );
+  assertStringIncludes(last.error.message, "remove the directory");
+  assertEquals(last.error.message.includes("/repo"), false);
+  assertEquals(checked, [["old", { auto_generate: true }]]);
+  assertEquals(saved, []);
+});
+
+Deno.test("vaultCreate: names a leftover directory outside the repository in full", async () => {
+  const outside = join("/elsewhere", ".swamp", "secrets", "local_encryption");
+  const deps = makeDeps({
+    findLeftoverSecrets: (name) => Promise.resolve(join(outside, name)),
+  });
+
+  const events = await collect<VaultCreateEvent>(
+    vaultCreate(createLibSwampContext(), deps, {
+      vaultType: "local_encryption",
+      name: "old",
+      config: { auto_generate: true, base_dir: "/elsewhere" },
+      repoDir: "/repo",
+      trustKeySource: true,
+    }),
+  );
+
+  const last = events.at(-1) as Extract<VaultCreateEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertStringIncludes(last.error.message, join(outside, "old"));
+});
+
+Deno.test("vaultCreate: other vault types never look for local_encryption storage", async () => {
+  let checked = false;
+  const deps = makeDeps({
+    getVaultTypeInfo: () => ({
+      type: "@swamp/other",
+      name: "Other",
+      description: "other vault",
+      isBuiltIn: false,
+      createProvider: (name: string) => new MockVaultProvider(name),
+    }),
+    findLeftoverSecrets: () => {
+      checked = true;
+      return Promise.resolve("/repo/leftover");
+    },
+  });
+
+  const events = await collect<VaultCreateEvent>(
+    vaultCreate(createLibSwampContext(), deps, {
+      vaultType: "@swamp/other",
+      name: "old",
+      repoDir: "/repo",
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(checked, false);
+});
+
+Deno.test("vaultCreate: a vault whose config was deleted leaves storage a new vault of that name may not adopt", async () => {
+  await withTempDir(async (dir) => {
+    // The reporter's scenario: an earlier vault 'old' stored a secret, then
+    // its config went away and its secrets directory stayed.
+    await new LocalEncryptionVaultProvider("old", {
+      auto_generate: true,
+      base_dir: dir,
+    }).put("API_TOKEN", "s3cret-from-old");
+    const deps = await createVaultCreateDeps(dir);
+
+    const events = await collect<VaultCreateEvent>(
+      vaultCreate(createLibSwampContext(), deps, {
+        vaultType: "local_encryption",
+        name: "old",
+        repoDir: dir,
+      }),
+    );
+
+    const last = events.at(-1) as Extract<VaultCreateEvent, { kind: "error" }>;
+    assertEquals(last.kind, "error");
+    assertEquals(last.error.code, "already_exists");
+    assertStringIncludes(
+      last.error.message,
+      join(".swamp", "secrets", "local_encryption", "old"),
+    );
+    assertEquals(await deps.findByName("old"), false);
+  });
+});
+
+Deno.test("vaultCreate: an empty storage directory left behind does not block a new vault", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(localEncryptionSecretsDir(dir, "old"), {
+      recursive: true,
+    });
+    const deps = await createVaultCreateDeps(dir);
+
+    const events = await collect<VaultCreateEvent>(
+      vaultCreate(createLibSwampContext(), deps, {
+        vaultType: "local_encryption",
+        name: "old",
+        repoDir: dir,
+      }),
+    );
+
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(await deps.findByName("old"), true);
+  });
+});
+
+Deno.test("createVaultCreateDeps: looks for leftover storage under a custom base_dir", async () => {
+  await withTempDir(async (dir) => {
+    const elsewhere = join(dir, "elsewhere");
+    await new LocalEncryptionVaultProvider("old", {
+      auto_generate: true,
+      base_dir: elsewhere,
+    }).put("K", "v");
+    const deps = await createVaultCreateDeps(dir);
+
+    assertEquals(
+      await deps.findLeftoverSecrets("old", { auto_generate: true }),
+      undefined,
+    );
+    assertEquals(
+      await deps.findLeftoverSecrets("old", {
+        auto_generate: true,
+        base_dir: elsewhere,
+      }),
+      localEncryptionSecretsDir(elsewhere, "old"),
     );
   });
 });

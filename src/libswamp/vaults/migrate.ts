@@ -31,6 +31,10 @@ import {
   withRuntimeBaseDir,
   withServerDefaultKeySource,
 } from "../../domain/vaults/local_encryption_key_source.ts";
+import {
+  findLocalEncryptionLeftovers,
+  secretsDirForDisplay,
+} from "../../domain/vaults/local_encryption_vault_provider.ts";
 import { createVaultProvider } from "../../domain/vaults/vault_provider_factory.ts";
 import {
   describeVaultConfigFields,
@@ -50,6 +54,7 @@ import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
+import { leftoverSecretsError } from "./create.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
@@ -112,6 +117,15 @@ export interface VaultMigrateDeps {
     name: string,
     config: Record<string, unknown>,
   ) => VaultProvider;
+  /**
+   * The storage directory a local_encryption vault of this name and config
+   * would read, when an earlier vault left a key or secrets there
+   * (swamp-club#3614).
+   */
+  findLeftoverSecrets: (
+    name: string,
+    config: Record<string, unknown>,
+  ) => Promise<string | undefined>;
   loadSourceVaultService: () => Promise<VaultService>;
   saveConfig: (config: VaultConfig) => Promise<void>;
   deleteConfig: (config: VaultConfig) => Promise<void>;
@@ -153,6 +167,12 @@ export async function createVaultMigrateDeps(
     },
     getVaultTypeInfo: (type) => vaultTypeRegistry.get(type),
     createProvider: createVaultProvider,
+    findLeftoverSecrets: (name, config) =>
+      findLocalEncryptionLeftovers(
+        withRuntimeBaseDir("local_encryption", config, repoDir)
+          .base_dir as string,
+        name,
+      ),
     loadSourceVaultService: () =>
       VaultService.fromRepository(repoDir, {
         vaultsDir: options?.vaultsDir,
@@ -245,6 +265,9 @@ export async function vaultMigratePreview(
     withRuntimeBaseDir(input.targetType, targetConfig, input.repoDir),
   );
 
+  const leftover = await findLeftoverTarget(deps, input, targetConfig);
+  if (leftover) throw leftover;
+
   // Get current type info
   const currentTypeInfo = deps.getVaultTypeInfo(config.type);
   const currentTypeName = currentTypeInfo?.name ?? config.type;
@@ -261,6 +284,28 @@ export async function vaultMigratePreview(
     targetTypeName: targetTypeInfo.name,
     secretCount: keys.length,
   };
+}
+
+/**
+ * The refusal for a migration into local_encryption whose storage directory
+ * already holds an earlier vault's key or secrets: the copied secrets would
+ * land beside them under the old key (swamp-club#3614).
+ */
+async function findLeftoverTarget(
+  deps: VaultMigrateDeps,
+  input: VaultMigrateInput,
+  targetConfig: Record<string, unknown>,
+): Promise<SwampError | undefined> {
+  if (!isLocalEncryptionType(input.targetType)) return undefined;
+  const leftover = await deps.findLeftoverSecrets(
+    input.vaultName,
+    targetConfig,
+  );
+  return leftover === undefined ? undefined : leftoverSecretsError(
+    "migrate",
+    input.vaultName,
+    secretsDirForDisplay(leftover, input.repoDir),
+  );
 }
 
 /** Resolves and validates target config for the migration. */
@@ -376,6 +421,12 @@ export async function* vaultMigrate(
           input.vaultName,
           rerunHint,
         );
+
+        const leftover = await findLeftoverTarget(deps, input, targetConfig);
+        if (leftover) {
+          yield { kind: "error", error: leftover };
+          return;
+        }
 
         // Create target provider
         const targetProvider = deps.createProvider(

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, join } from "@std/path";
+import { dirname, isAbsolute, join, relative } from "@std/path";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type {
   VaultDeleteProvider,
@@ -128,6 +128,39 @@ export async function moveLocalEncryptionSecrets(
 
   await Deno.rename(fromDir, toDir);
   return true;
+}
+
+/**
+ * The vault's storage directory when something is already stored there: a
+ * key, secrets, annotations, refresh hooks, or a file or symlink in the
+ * directory's place. Undefined when the directory is missing or empty.
+ *
+ * Storage is keyed on the vault name, so whatever is there was left by an
+ * earlier vault of that name, and a new vault would adopt its key and secrets
+ * (swamp-club#3614). The rule is the one {@link moveLocalEncryptionSecrets}
+ * applies to a rename target.
+ */
+export async function findLocalEncryptionLeftovers(
+  baseDir: string,
+  vaultName: string,
+): Promise<string | undefined> {
+  const directory = localEncryptionSecretsDirFor(baseDir, vaultName);
+  return (await isAbsentOrEmptyDir(directory)) ? undefined : directory;
+}
+
+/**
+ * A secrets directory as an error message names it: relative to `repoDir`
+ * when it is inside, so a refusal sent to a serve client carries no host
+ * path. A `base_dir` outside the repository is named in full.
+ */
+export function secretsDirForDisplay(
+  directory: string,
+  repoDir: string,
+): string {
+  const rel = relative(repoDir, directory);
+  return rel === "" || rel.startsWith("..") || isAbsolute(rel)
+    ? directory
+    : rel;
 }
 
 /** What {@link removeLocalEncryptionSecrets} found and removed. */
