@@ -72,6 +72,11 @@ export interface ModelCreateInput {
   typeArg: string;
   name: string;
   globalArguments?: Record<string, unknown>;
+  /**
+   * The principal that sent the request, as `kind:id`. It is recorded on the
+   * span as `auth.principal.id` and is never used to authorize the create.
+   */
+  principalId?: string;
 }
 
 /** Dependencies for the model create operation. */
@@ -139,7 +144,13 @@ export async function* modelCreate(
   yield* withUnitOfWork(ctx, () =>
     withGeneratorSpan(
       "swamp.model.create",
-      { "model.type": input.typeArg, "model.name": input.name },
+      {
+        "model.type": input.typeArg,
+        "model.name": input.name,
+        ...(input.principalId
+          ? { "auth.principal.id": input.principalId }
+          : {}),
+      },
       (async function* () {
         yield { kind: "creating" };
 

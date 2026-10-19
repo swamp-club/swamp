@@ -22,6 +22,7 @@ import { z } from "zod";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
 import {
+  handleModelCreate,
   handleModelDelete,
   handleModelEdit,
   handleModelMethodHistorySearch,
@@ -29,6 +30,10 @@ import {
   isMethodMutating,
   redactWorkflowLinks,
 } from "./model_handlers.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -1129,5 +1134,97 @@ Deno.test("handleModelEdit: an allowed rename onto another model's name leaves b
       (await repo.findByNameGlobal("holder"))?.definition.id,
       holder.id,
     );
+  });
+});
+
+// --- principal on the libswamp spans (swamp-club#3593) ---
+
+Deno.test("handleModelEdit: records the edited model and the requesting principal on the span", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "traced-model");
+    await withCapturedSpans(async (spans) => {
+      await handleModelEdit(
+        createMockSocket(),
+        createPolicyEditCtx(dir, repo, [grant({})]),
+        "req-edit-traced",
+        { modelIdOrName: definition.id, content: editYaml(definition) },
+        new AbortController(),
+        EDITOR,
+      );
+      const span = findSpan(spans, "swamp.model.edit");
+      assertEquals(span.attributes["model.name"], "traced-model");
+      assertEquals(span.attributes["model.id"], definition.id);
+      assertEquals(span.attributes["auth.principal.id"], "user:editor");
+    });
+  });
+});
+
+Deno.test("handleModelEdit: records no principal on the span for an unauthenticated request", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "anonymous-model");
+    await withCapturedSpans(async (spans) => {
+      await handleModelEdit(
+        createMockSocket(),
+        createEditCtx(dir, repo),
+        "req-edit-anonymous",
+        { modelIdOrName: definition.id, content: editYaml(definition) },
+        new AbortController(),
+        null,
+      );
+      const span = findSpan(spans, "swamp.model.edit");
+      assertEquals(span.attributes["model.name"], "anonymous-model");
+      assertEquals(span.attributes["auth.principal.id"], undefined);
+    });
+  });
+});
+
+Deno.test("handleModelCreate: records the requesting principal on the span", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    await withCapturedSpans(async (spans) => {
+      await handleModelCreate(
+        createMockSocket(),
+        createEditCtx(dir, repo),
+        "req-create-traced",
+        { typeArg: "command/shell", name: "created-model" },
+        new AbortController(),
+        EDITOR,
+      );
+      const span = findSpan(spans, "swamp.model.create");
+      assertEquals(span.attributes["model.name"], "created-model");
+      assertEquals(span.attributes["auth.principal.id"], "user:editor");
+    });
+  });
+});
+
+Deno.test("handleModelDelete: records the deleted model and the requesting principal on the span", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "doomed-model");
+    const base = createDeleteCtx(dir);
+    const ctx = {
+      ...base,
+      repoContext: {
+        ...base.repoContext,
+        // The model has no data, so only the lookup is ever called.
+        unifiedDataRepo: { findAllForModel: () => Promise.resolve([]) },
+      },
+    } as unknown as ConnectionContext;
+    await withCapturedSpans(async (spans) => {
+      await handleModelDelete(
+        createMockSocket(),
+        ctx,
+        "req-delete-traced",
+        { modelIdOrName: definition.id },
+        new AbortController(),
+        EDITOR,
+      );
+      const span = findSpan(spans, "swamp.model.delete");
+      assertEquals(span.attributes["model.name"], "doomed-model");
+      assertEquals(span.attributes["model.id"], definition.id);
+      assertEquals(span.attributes["auth.principal.id"], "user:editor");
+    });
   });
 });

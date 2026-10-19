@@ -42,7 +42,10 @@ import type { SwampError } from "../errors.ts";
 import { behaviorNotFound, wordedSwampError } from "../errors.ts";
 import { wordedText } from "../../domain/behavior_wording.ts";
 
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+} from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the model edit output.
  */
@@ -120,6 +123,11 @@ export interface ModelEditInput {
    * unique, so only a definition with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * The principal that sent the request, as `kind:id`. It is recorded on the
+   * span as `auth.principal.id` and is never used to authorize the edit.
+   */
+  principalId?: string;
   /**
    * Lets a stdin update change the model's name. Without it an update whose
    * `name` differs from the stored one is refused, so a content patch cannot
@@ -216,7 +224,7 @@ export async function* modelEdit(
   yield* withUnitOfWork(ctx, () =>
     withGeneratorSpan(
       "swamp.model.edit",
-      {},
+      input.principalId ? { "auth.principal.id": input.principalId } : {},
       (async function* () {
         yield { kind: "resolving" };
 
@@ -236,6 +244,11 @@ export async function* modelEdit(
             definition = result.definition;
             modelType = result.type;
             filePath = deps.getDefinitionPath(modelType, definition.id);
+            setActiveSpanAttributes({
+              "model.name": definition.name,
+              "model.type": modelType.normalized,
+              "model.id": definition.id,
+            });
           }
         } catch (error) {
           ctx.logger
@@ -332,6 +345,10 @@ export async function* modelEdit(
                 ),
               };
               return;
+            }
+
+            if (updated.name !== stored.name) {
+              setActiveSpanAttributes({ "model.renamed_to": updated.name });
             }
 
             const warning = typeVersionWarning(updated);

@@ -42,7 +42,10 @@ import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+} from "../../infrastructure/tracing/mod.ts";
 
 /** Preview data returned before confirmation. */
 export interface WorkflowDeletePreview {
@@ -79,6 +82,11 @@ export interface WorkflowDeleteInput {
    * unique, so only a workflow with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * The principal that sent the request, as `kind:id`. It is recorded on the
+   * span as `auth.principal.id` and is never used to authorize the delete.
+   */
+  principalId?: string;
 }
 
 /** Dependencies for the workflow delete operation. */
@@ -243,7 +251,12 @@ export async function* workflowDelete(
   yield* withUnitOfWork(ctx, () =>
     withGeneratorSpan(
       "swamp.workflow.delete",
-      { "workflow.id_or_name": input.workflowIdOrName },
+      {
+        "workflow.id_or_name": input.workflowIdOrName,
+        ...(input.principalId
+          ? { "auth.principal.id": input.principalId }
+          : {}),
+      },
       (async function* () {
         yield { kind: "deleting" };
 
@@ -255,6 +268,10 @@ export async function* workflowDelete(
           };
           return;
         }
+        setActiveSpanAttributes({
+          "workflow.name": workflow.name,
+          "workflow.id": workflow.id,
+        });
 
         const workflowPath = deps.getPath(workflow.id);
 

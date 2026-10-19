@@ -19,6 +19,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   workflowCreate,
@@ -127,4 +131,27 @@ Deno.test("workflowCreate: yields validation error for an invalid name without s
     assertStringIncludes(last.error.message, rule);
     assertEquals(calls, [], name);
   }
+});
+
+Deno.test("workflowCreate: records the principal on the span only when given", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowCreateEvent>(
+      workflowCreate(createLibSwampContext(), makeDeps(), {
+        name: "my-workflow",
+        principalId: "user:alice",
+      }),
+    );
+    const span = findSpan(spans, "swamp.workflow.create");
+    assertEquals(span.attributes["workflow.name"], "my-workflow");
+    assertEquals(span.attributes["auth.principal.id"], "user:alice");
+  });
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowCreateEvent>(
+      workflowCreate(createLibSwampContext(), makeDeps(), {
+        name: "my-workflow",
+      }),
+    );
+    const span = findSpan(spans, "swamp.workflow.create");
+    assertEquals(span.attributes["auth.principal.id"], undefined);
+  });
 });

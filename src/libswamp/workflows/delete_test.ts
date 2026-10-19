@@ -19,6 +19,10 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   workflowDelete,
@@ -307,4 +311,39 @@ Deno.test("workflowDelete: an unreachable wait store does not leave the workflow
 
   assertEquals(calls, ["evaluated", "workflow"]);
   assertEquals(events.at(-1)?.kind, "completed");
+});
+
+Deno.test("workflowDelete: records the deleted workflow and the principal on the span", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect(
+      workflowDelete(createLibSwampContext(), makeDeps(), {
+        workflowIdOrName: testWorkflow.id,
+        principalId: "user:alice",
+      }),
+    );
+    const span = findSpan(spans, "swamp.workflow.delete");
+    assertEquals(span.attributes["workflow.id_or_name"], testWorkflow.id);
+    assertEquals(span.attributes["workflow.name"], "deploy-workflow");
+    assertEquals(span.attributes["workflow.id"], testWorkflow.id);
+    assertEquals(span.attributes["auth.principal.id"], "user:alice");
+  });
+});
+
+Deno.test("workflowDelete: records no target or principal on the span when neither is known", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect(
+      workflowDelete(
+        createLibSwampContext(),
+        makeDeps({
+          findById: () => Promise.resolve(null),
+          findByName: () => Promise.resolve(null),
+        }),
+        { workflowIdOrName: "missing-workflow" },
+      ),
+    );
+    const span = findSpan(spans, "swamp.workflow.delete");
+    assertEquals(span.attributes["workflow.id_or_name"], "missing-workflow");
+    assertEquals(span.attributes["workflow.name"], undefined);
+    assertEquals(span.attributes["auth.principal.id"], undefined);
+  });
 });

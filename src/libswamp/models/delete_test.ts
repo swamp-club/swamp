@@ -19,6 +19,10 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createModelDeleteDeps,
@@ -448,4 +452,38 @@ Deno.test("modelDelete: byId without lookupDefinitionById fails and deletes noth
   );
   assertEquals(nameLookups, 0);
   assertEquals(deletes, 0);
+});
+
+Deno.test("modelDelete: records the deleted model and the principal on the span", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect(
+      modelDelete(createLibSwampContext(), makeDeps(), {
+        modelIdOrName: testDefinition.id,
+        force: false,
+        principalId: "user:alice",
+      }),
+    );
+    const span = findSpan(spans, "swamp.model.delete");
+    assertEquals(span.attributes["model.id_or_name"], testDefinition.id);
+    assertEquals(span.attributes["model.name"], "my-model");
+    assertEquals(span.attributes["model.type"], "aws/s3-bucket");
+    assertEquals(span.attributes["model.id"], testDefinition.id);
+    assertEquals(span.attributes["auth.principal.id"], "user:alice");
+  });
+});
+
+Deno.test("modelDelete: records no target or principal on the span when neither is known", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect(
+      modelDelete(
+        createLibSwampContext(),
+        makeDeps({ lookupDefinition: () => Promise.resolve(null) }),
+        { modelIdOrName: "missing-model", force: false },
+      ),
+    );
+    const span = findSpan(spans, "swamp.model.delete");
+    assertEquals(span.attributes["model.id_or_name"], "missing-model");
+    assertEquals(span.attributes["model.name"], undefined);
+    assertEquals(span.attributes["auth.principal.id"], undefined);
+  });
 });

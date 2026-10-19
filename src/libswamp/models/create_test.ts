@@ -20,6 +20,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { collect } from "../testing.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   modelCreate,
@@ -714,4 +718,29 @@ Deno.test("modelCreate: yields validation error for an invalid name without reso
     assertStringIncludes(last.error.message, rule);
     assertEquals(calls, [], name);
   }
+});
+
+Deno.test("modelCreate: records the principal on the span only when given", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<ModelCreateEvent>(
+      modelCreate(createLibSwampContext(), makeDeps(), {
+        typeArg: "aws/s3-bucket",
+        name: "my-model",
+        principalId: "user:alice",
+      }),
+    );
+    const span = findSpan(spans, "swamp.model.create");
+    assertEquals(span.attributes["model.name"], "my-model");
+    assertEquals(span.attributes["auth.principal.id"], "user:alice");
+  });
+  await withCapturedSpans(async (spans) => {
+    await collect<ModelCreateEvent>(
+      modelCreate(createLibSwampContext(), makeDeps(), {
+        typeArg: "aws/s3-bucket",
+        name: "my-model",
+      }),
+    );
+    const span = findSpan(spans, "swamp.model.create");
+    assertEquals(span.attributes["auth.principal.id"], undefined);
+  });
 });

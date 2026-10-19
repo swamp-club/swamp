@@ -42,7 +42,10 @@ import {
   workflowsDirFor,
 } from "./broken_workflow.ts";
 
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+} from "../../infrastructure/tracing/mod.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 
@@ -87,6 +90,11 @@ export interface WorkflowEditInput {
    * unique, so only a workflow with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * The principal that sent the request, as `kind:id`. It is recorded on the
+   * span as `auth.principal.id` and is never used to authorize the edit.
+   */
+  principalId?: string;
   /**
    * Lets a stdin update change the workflow's name. Without it an update
    * whose `name` differs from the stored one is refused, so a content patch
@@ -192,7 +200,7 @@ export async function* workflowEdit(
   yield* withUnitOfWork(ctx, () =>
     withGeneratorSpan(
       "swamp.workflow.edit",
-      {},
+      input.principalId ? { "auth.principal.id": input.principalId } : {},
       (async function* () {
         yield { kind: "resolving" };
 
@@ -230,6 +238,10 @@ export async function* workflowEdit(
 
         if (workflow) {
           filePath = deps.getPath(workflow.id);
+          setActiveSpanAttributes({
+            "workflow.name": workflow.name,
+            "workflow.id": workflow.id,
+          });
         } else {
           const resolvedPath = input.byId
             ? null
@@ -335,6 +347,10 @@ export async function* workflowEdit(
                 ),
               };
               return;
+            }
+
+            if (updated.name !== stored.name) {
+              setActiveSpanAttributes({ "workflow.renamed_to": updated.name });
             }
 
             yield {

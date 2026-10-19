@@ -63,6 +63,11 @@ export type WorkflowCreateEvent =
 /** Input for the workflow create operation. */
 export interface WorkflowCreateInput {
   name: string;
+  /**
+   * The principal that sent the request, as `kind:id`. It is recorded on the
+   * span as `auth.principal.id` and is never used to authorize the create.
+   */
+  principalId?: string;
 }
 
 /** Dependencies for the workflow create operation. */
@@ -94,7 +99,12 @@ export async function* workflowCreate(
   yield* withUnitOfWork(ctx, () =>
     withGeneratorSpan(
       "swamp.workflow.create",
-      { "workflow.name": input.name },
+      {
+        "workflow.name": input.name,
+        ...(input.principalId
+          ? { "auth.principal.id": input.principalId }
+          : {}),
+      },
       (async function* () {
         yield { kind: "creating" };
 

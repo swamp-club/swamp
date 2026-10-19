@@ -19,6 +19,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createWorkflowEditDeps,
@@ -732,4 +736,56 @@ Deno.test("workflowEdit: allowRename refuses a name another workflow holds", asy
   assertEquals(error.code, "validation_failed");
   assertStringIncludes(error.message, "already has that name");
   assertEquals(saved, []);
+});
+
+Deno.test("workflowEdit: records the edited workflow and the principal on the span", async () => {
+  const { deps } = makeAuthorizeDeps(testWorkflow);
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowEditEvent>(
+      workflowEdit(createLibSwampContext(), deps, {
+        workflowIdOrName: "deploy-workflow",
+        stdinContent: "name: deploy-workflow\n",
+        principalId: "user:alice",
+      }),
+    );
+    const span = findSpan(spans, "swamp.workflow.edit");
+    assertEquals(span.attributes["workflow.name"], "deploy-workflow");
+    assertEquals(span.attributes["workflow.id"], testWorkflow.id);
+    assertEquals(span.attributes["auth.principal.id"], "user:alice");
+    assertEquals(span.attributes["workflow.renamed_to"], undefined);
+  });
+});
+
+Deno.test("workflowEdit: records the new name on the span after an allowed rename", async () => {
+  const candidate = {
+    ...testWorkflow,
+    name: "renamed-workflow",
+  } as unknown as Workflow;
+  const { deps } = makeAuthorizeDeps(candidate);
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowEditEvent>(
+      workflowEdit(createLibSwampContext(), deps, {
+        workflowIdOrName: "deploy-workflow",
+        stdinContent: "name: renamed-workflow\n",
+        allowRename: true,
+      }),
+    );
+    const span = findSpan(spans, "swamp.workflow.edit");
+    assertEquals(span.attributes["workflow.name"], "deploy-workflow");
+    assertEquals(span.attributes["workflow.renamed_to"], "renamed-workflow");
+    assertEquals(span.attributes["auth.principal.id"], undefined);
+  });
+});
+
+Deno.test("workflowEdit: records no target on the span when the workflow is not found", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowEditEvent>(
+      workflowEdit(createLibSwampContext(), makeDeps(), {
+        workflowIdOrName: "missing-workflow",
+      }),
+    );
+    const span = findSpan(spans, "swamp.workflow.edit");
+    assertEquals(span.attributes["workflow.name"], undefined);
+    assertEquals(span.attributes["workflow.id"], undefined);
+  });
 });

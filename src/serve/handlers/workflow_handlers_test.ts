@@ -19,13 +19,15 @@
 
 import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
 import { assertEquals, assertThrows } from "@std/assert";
-import { dirname } from "@std/path";
+import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import {
   applyTriggerOverrides,
   handleWorkflowCancel,
+  handleWorkflowCreate,
+  handleWorkflowDelete,
   handleWorkflowEdit,
   handleWorkflowHistoryGet,
   handleWorkflowRunSearch,
@@ -34,6 +36,10 @@ import {
   WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
 import "../../domain/models/models.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -1764,5 +1770,99 @@ Deno.test("handleWorkflowEdit: an allowed rename onto another workflow's name le
     assertEquals(sent[0].type, "error");
     assertEquals((await repo.findByName("mover-wf"))?.id, mover.id);
     assertEquals((await repo.findByName("holder-wf"))?.id, holder.id);
+  });
+});
+
+// --- principal on the libswamp spans (swamp-club#3593) ---
+
+const TRACED_EDITOR: Principal = { kind: "user", id: "editor" };
+
+/** A context whose datastore paths resolve under `repoDir`, for deletes. */
+function tracedWorkflowCtx(
+  repoDir: string,
+  workflowRepo: YamlWorkflowRepository,
+): ConnectionContext {
+  return {
+    ...workflowEditCtx(repoDir, workflowRepo),
+    datastoreResolver: {
+      resolvePath: (subdir: string) => join(repoDir, ".swamp", subdir),
+    },
+  } as unknown as ConnectionContext;
+}
+
+Deno.test("handleWorkflowEdit: records the edited workflow and the requesting principal on the span", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "traced-wf");
+    await withCapturedSpans(async (spans) => {
+      await handleWorkflowEdit(
+        editSocket(),
+        workflowEditCtx(dir, repo),
+        "req-edit-traced",
+        { workflowIdOrName: workflow.id, content: workflowYaml(workflow) },
+        new AbortController(),
+        TRACED_EDITOR,
+      );
+      const span = findSpan(spans, "swamp.workflow.edit");
+      assertEquals(span.attributes["workflow.name"], "traced-wf");
+      assertEquals(span.attributes["workflow.id"], workflow.id);
+      assertEquals(span.attributes["auth.principal.id"], "user:editor");
+    });
+  });
+});
+
+Deno.test("handleWorkflowEdit: records no principal on the span for an unauthenticated request", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "anonymous-wf");
+    await withCapturedSpans(async (spans) => {
+      await handleWorkflowEdit(
+        editSocket(),
+        workflowEditCtx(dir, repo),
+        "req-edit-anonymous",
+        { workflowIdOrName: workflow.id, content: workflowYaml(workflow) },
+        new AbortController(),
+        null,
+      );
+      const span = findSpan(spans, "swamp.workflow.edit");
+      assertEquals(span.attributes["workflow.name"], "anonymous-wf");
+      assertEquals(span.attributes["auth.principal.id"], undefined);
+    });
+  });
+});
+
+Deno.test("handleWorkflowCreate: records the requesting principal on the span", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await withCapturedSpans(async (spans) => {
+      await handleWorkflowCreate(
+        editSocket(),
+        workflowEditCtx(dir, repo),
+        "req-create-traced",
+        { name: "created-wf" },
+        new AbortController(),
+        TRACED_EDITOR,
+      );
+      const span = findSpan(spans, "swamp.workflow.create");
+      assertEquals(span.attributes["workflow.name"], "created-wf");
+      assertEquals(span.attributes["auth.principal.id"], "user:editor");
+    });
+  });
+});
+
+Deno.test("handleWorkflowDelete: records the deleted workflow and the requesting principal on the span", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "doomed-wf");
+    await withCapturedSpans(async (spans) => {
+      await handleWorkflowDelete(
+        editSocket(),
+        tracedWorkflowCtx(dir, repo),
+        "req-delete-traced",
+        { workflowIdOrName: workflow.id },
+        new AbortController(),
+        TRACED_EDITOR,
+      );
+      const span = findSpan(spans, "swamp.workflow.delete");
+      assertEquals(span.attributes["workflow.name"], "doomed-wf");
+      assertEquals(span.attributes["workflow.id"], workflow.id);
+      assertEquals(span.attributes["auth.principal.id"], "user:editor");
+    });
   });
 });

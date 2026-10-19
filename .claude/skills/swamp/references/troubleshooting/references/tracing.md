@@ -141,6 +141,18 @@ Every libswamp generator is traced. Key span names:
 - `swamp.datastore.sync` — S3 pull/push (attributes: direction, file count)
 - `swamp.lock.acquire` — distributed lock acquisition
 - `swamp.vault.put` / `.get` — secret storage/retrieval
+- `swamp.model.create` / `.edit` / `.delete` — definition changes (attributes:
+  `model.name`, `model.type`; edit and delete add `model.id`, and a renaming
+  edit adds `model.renamed_to`)
+- `swamp.workflow.create` / `.edit` / `.delete` — workflow changes (attributes:
+  `workflow.name`; edit and delete add `workflow.id`, and a renaming edit adds
+  `workflow.renamed_to`)
+
+On `swamp serve`, the create, edit and delete spans also carry
+`auth.principal.id` (for example `user:alice`) when the request was
+authenticated, so a person's change can be told apart from an automated one.
+Edit and delete record the target only once it resolves; a not-found request has
+no target attributes.
 
 ## Diagnosing Common Issues
 

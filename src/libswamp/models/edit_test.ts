@@ -19,6 +19,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import { modelEdit, type ModelEditDeps, type ModelEditEvent } from "./edit.ts";
 
@@ -696,4 +700,57 @@ Deno.test("modelEdit: stdin update that keeps the name needs no allowRename", as
 
   assertEquals(events[events.length - 1].kind, "completed");
   assertEquals(saved.length, 1);
+});
+
+Deno.test("modelEdit: records the edited model and the principal on the span", async () => {
+  const { deps } = makeAuthorizeDeps(testDefinition);
+  await withCapturedSpans(async (spans) => {
+    await collect<ModelEditEvent>(
+      modelEdit(createLibSwampContext(), deps, {
+        modelIdOrName: "my-model",
+        stdinContent: "name: my-model\n",
+        principalId: "user:alice",
+      }),
+    );
+    const span = findSpan(spans, "swamp.model.edit");
+    assertEquals(span.attributes["model.name"], "my-model");
+    assertEquals(span.attributes["model.type"], "aws/s3-bucket");
+    assertEquals(span.attributes["model.id"], testDefinition.id);
+    assertEquals(span.attributes["auth.principal.id"], "user:alice");
+    assertEquals(span.attributes["model.renamed_to"], undefined);
+  });
+});
+
+Deno.test("modelEdit: records the new name on the span after an allowed rename", async () => {
+  const candidate = {
+    ...testDefinition,
+    name: "renamed-model",
+  } as unknown as TestDefinition;
+  const { deps } = makeAuthorizeDeps(candidate);
+  await withCapturedSpans(async (spans) => {
+    await collect<ModelEditEvent>(
+      modelEdit(createLibSwampContext(), deps, {
+        modelIdOrName: "my-model",
+        stdinContent: "name: renamed-model\n",
+        allowRename: true,
+      }),
+    );
+    const span = findSpan(spans, "swamp.model.edit");
+    assertEquals(span.attributes["model.name"], "my-model");
+    assertEquals(span.attributes["model.renamed_to"], "renamed-model");
+    assertEquals(span.attributes["auth.principal.id"], undefined);
+  });
+});
+
+Deno.test("modelEdit: records no target on the span when the model is not found", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<ModelEditEvent>(
+      modelEdit(createLibSwampContext(), makeDeps(), {
+        modelIdOrName: "missing-model",
+      }),
+    );
+    const span = findSpan(spans, "swamp.model.edit");
+    assertEquals(span.attributes["model.name"], undefined);
+    assertEquals(span.attributes["model.id"], undefined);
+  });
 });

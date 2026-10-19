@@ -23,6 +23,7 @@ import {
   bindGeneratorToSpan,
   getTracer,
   runDetached,
+  setActiveSpanAttributes,
   SpanStatusCode,
   withActiveSpan,
   withGeneratorSpan,
@@ -268,6 +269,30 @@ Deno.test("withGeneratorSpan: forwards an early break with no tracer registered"
   }
 
   assertEquals(unwound, ["inner", "middle"]);
+});
+
+// ── setActiveSpanAttributes tests ──────────────────────────────────
+
+Deno.test("setActiveSpanAttributes: sets attributes on the span of a withGeneratorSpan body", async () => {
+  await withCapturedSpans(async (spans) => {
+    async function* inner() {
+      yield { kind: "resolving" };
+      setActiveSpanAttributes({ "model.name": "late" });
+      yield { kind: "done" };
+    }
+    for await (
+      const _ of withGeneratorSpan("test.late", { "early": 1 }, inner())
+    ) {
+      // drain
+    }
+    const span = findSpan(spans, "test.late");
+    assertEquals(span.attributes["early"], 1);
+    assertEquals(span.attributes["model.name"], "late");
+  });
+});
+
+Deno.test("setActiveSpanAttributes: does nothing when no span is active", () => {
+  setActiveSpanAttributes({ "model.name": "none" });
 });
 
 // ── withServerSpan tests ────────────────────────────────────────────

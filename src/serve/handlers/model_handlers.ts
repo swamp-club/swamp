@@ -1468,6 +1468,7 @@ export async function handleModelCreate(
             typeArg: payload.typeArg,
             name: payload.name ?? "",
             globalArguments: payload.globalArguments,
+            principalId: principal ? principalToString(principal) : undefined,
           }),
           {
             creating: () => {},
@@ -1599,6 +1600,7 @@ export async function handleModelDelete(
             byId: model.byId,
             expectedName: model.expectedName,
             force: payload.force ?? false,
+            principalId: principal ? principalToString(principal) : undefined,
           }),
           {
             deleting: () => {},
@@ -2602,6 +2604,7 @@ export async function handleModelEdit(
             modelIdOrName: resolved.definition.id,
             byId: true,
             expectedName: resolved.definition.name,
+            principalId: principal ? principalToString(principal) : undefined,
             stdinContent: payload.content,
             allowRename: payload.allowRename === true,
             // Every save is authorized against the edited model too, so a
