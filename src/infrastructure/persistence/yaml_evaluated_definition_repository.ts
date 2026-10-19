@@ -64,7 +64,7 @@ import {
   WrittenReferenceSchema,
 } from "../../domain/secrets/mod.ts";
 
-interface EvaluatedDefinitionCache {
+export interface EvaluatedDefinitionCache {
   definition: Definition;
   /**
    * Where data sits in the definition, in the coordinates of the raw copy
@@ -82,6 +82,16 @@ interface EvaluatedDefinitionCache {
    * absent in caches written before that, which may hold plaintext.
    */
   sensitiveFormat?: number;
+  /**
+   * The inputs `inputs.*` resolved against when the definition was
+   * evaluated: a workflow step's inputs merged over the run's
+   * (swamp-club#3583). Absent in caches written before they were recorded,
+   * or by a writer that does not record them. Kept apart from the
+   * definition's `inputs`, its schema.
+   */
+  evaluatedInputs?: Record<string, unknown>;
+  /** The authored expressions evaluation substituted into the definition. */
+  resolvedExpressions?: ReadonlySet<string>;
 }
 
 // Cache metadata is deliberately separate from the source Definition schema.
@@ -91,6 +101,8 @@ const CacheMetadataSchema = z.object({
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
+  evaluatedInputs: z.record(z.string(), z.unknown()).optional(),
+  resolvedExpressions: z.array(z.string()).optional(),
 });
 
 function parseCache(content: string): EvaluatedDefinitionCache | null {
@@ -105,9 +117,18 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
       provenance = "unreadable";
     }
   }
-  const { provenance: _provenance, ...definitionData } = data as
+  const {
+    provenance: _provenance,
+    evaluatedInputs: _evaluatedInputs,
+    resolvedExpressions: _resolvedExpressions,
+    ...definitionData
+  } = data as
     & DefinitionData
-    & { provenance?: unknown };
+    & {
+      provenance?: unknown;
+      evaluatedInputs?: unknown;
+      resolvedExpressions?: unknown;
+    };
   return {
     definition: Definition.fromData(definitionData),
     provenance,
@@ -115,6 +136,10 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
     deferredExpressions: metadata.deferredExpressions ?? [],
     writtenReferences: metadata.writtenReferences ?? [],
     sensitiveFormat: metadata.sensitiveFormat,
+    evaluatedInputs: metadata.evaluatedInputs,
+    resolvedExpressions: metadata.resolvedExpressions === undefined
+      ? undefined
+      : new Set(metadata.resolvedExpressions),
   };
 }
 
@@ -428,6 +453,8 @@ export class YamlEvaluatedDefinitionRepository {
    *
    * @param type - The model type
    * @param definition - The evaluated definition to save
+   * @param evaluated - The inputs it was evaluated with and the authored
+   *   expressions evaluation substituted (swamp-club#3583)
    */
   async save(
     type: ModelType,
@@ -441,6 +468,10 @@ export class YamlEvaluatedDefinitionRepository {
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
+    evaluated?: {
+      inputs?: Record<string, unknown>;
+      resolvedExpressions: ReadonlySet<string>;
+    },
   ): Promise<void> {
     const targetPath = this.resolveWritePath(type, definition);
     await signalChange(this.markDirty, { kind: "write", path: targetPath }, {
@@ -464,6 +495,10 @@ export class YamlEvaluatedDefinitionRepository {
         : undefined,
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
       provenance: provenance?.toData(),
+      evaluatedInputs: evaluated?.inputs,
+      resolvedExpressions: evaluated === undefined
+        ? undefined
+        : [...evaluated.resolvedExpressions],
     };
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;

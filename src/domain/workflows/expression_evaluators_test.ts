@@ -1484,3 +1484,28 @@ Deno.test("WorkflowExpressionEvaluator: resolvedExpressions names a text substit
   // Substituted at the gate, so target resolved into the evaluated workflow.
   assertEquals(result.resolvedExpressions.has("${{ inputs.target }}"), true);
 });
+
+Deno.test("DefinitionExpressionEvaluator: resolvedExpressions names what it evaluated, not runtime env or vault text (swamp-club#3583)", async () => {
+  const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
+  const definition = Definition.create({
+    name: "gate-check",
+    methods: {
+      run: {
+        arguments: {
+          value: "${{ inputs.target }}",
+          home: "${{ env.HOME }}",
+        },
+      },
+    },
+  });
+  const result = await evaluator.evaluate(
+    definition,
+    { ...emptyContext(), inputs: { target: "scratch" } },
+    "unrestricted",
+  );
+  assertEquals(
+    result.definition.getMethodArguments("run").value,
+    "scratch",
+  );
+  assertEquals([...result.resolvedExpressions], ["${{ inputs.target }}"]);
+});

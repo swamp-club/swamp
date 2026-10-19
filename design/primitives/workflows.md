@@ -763,6 +763,21 @@ value to compare with, and the way out is to cancel the run and start a new one.
 Superseding matches a `--last-evaluated` run on the same set it records, the
 cache's evaluation inputs under the supplied ones (`supersedeMatchInputs`).
 
+Each model step of such a run also replays its behavior's evaluated definition
+cache, which resolved `inputs.*` against the run's inputs when it was written.
+That cache records the run inputs it was evaluated with and the expressions it
+resolved (`evaluatedInputs` and `resolvedExpressions` on the evaluated
+definition, written by a workflow step's fresh evaluation). Before the step
+runs, every run input a resolved expression read must have the same value now,
+or be absent both times; an input the step supplies itself is the step's and is
+not compared (`inputsConflictingWithCachedDefinition`). Otherwise the step is
+refused, so a gate checked inside a definition cannot pass on one value while
+the run records another. A definition cache that recorded no inputs (written
+before they were recorded, or by `swamp model method run` or `model evaluate`,
+which do not record them) cannot be checked, so a step whose definition read an
+input is refused; running the workflow once without `--last-evaluated` rewrites
+it.
+
 The run records the merged inputs it resumes with (`captureInputs` in
 `resumeWorkflow`, after the resume's provenance is derived), so the run record,
 its summary and the history index show the values the remaining steps ran with.

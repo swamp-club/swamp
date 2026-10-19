@@ -103,6 +103,48 @@ export function inputsConflictingWithCache(
   );
 }
 
+/**
+ * The run inputs a cached evaluated definition resolved that the replaying
+ * run holds otherwise (swamp-club#3583). A `--last-evaluated` step runs the
+ * definition as cached, with `inputs.*` resolved against the run's inputs it
+ * was evaluated with, while the run records its own: a gate checked inside a
+ * definition would otherwise pass on one value while the run records another
+ * that a later resume acts on. Every run input a resolved expression read must
+ * have the same value now, or be absent both times. An input the step
+ * supplies itself (`stepInputKeys`) is the step's, evaluated whenever it runs,
+ * and not compared. A cache that recorded no inputs cannot be checked, so
+ * every such input conflicts.
+ */
+export function inputsConflictingWithCachedDefinition(
+  runInputs: Record<string, unknown>,
+  stepInputKeys: readonly string[],
+  cache: {
+    authoredExpressions: ReadonlySet<string>;
+    resolvedExpressions?: ReadonlySet<string>;
+    evaluatedInputs?: Record<string, unknown>;
+  },
+): string[] {
+  const resolved = inputsResolvedIntoCache(cache);
+  const recorded = cache.evaluatedInputs;
+  const stepKeys = new Set(stepInputKeys);
+  if (resolved.all && recorded === undefined) {
+    // Read whole, and nothing to compare it with.
+    return ["*"];
+  }
+  const names = resolved.all
+    ? new Set([...Object.keys(runInputs), ...Object.keys(recorded ?? {})])
+    : resolved.names;
+  return [...names].filter((name) => {
+    if (stepKeys.has(name)) return false;
+    if (recorded === undefined) return true;
+    const had = Object.hasOwn(recorded, name);
+    const has = Object.hasOwn(runInputs, name);
+    if (had !== has) return true;
+    return had &&
+      canonicalJson(runInputs[name]) !== canonicalJson(recorded[name]);
+  });
+}
+
 /** An evaluated workflow as it is written to the evaluated cache. */
 export interface PersistedEvaluatedWorkflow {
   workflow: Workflow;

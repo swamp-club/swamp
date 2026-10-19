@@ -28,6 +28,7 @@ import { StepTask } from "./step_task.ts";
 import {
   forEachNameWithoutSecrets,
   inputsConflictingWithCache,
+  inputsConflictingWithCachedDefinition,
   isIdentifierMapPath,
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
@@ -288,5 +289,75 @@ Deno.test("inputsConflictingWithCache: an expression substituted in one place co
       evaluatedInputs: cache.evaluatedInputs,
     }),
     ["target"],
+  );
+});
+
+Deno.test("inputsConflictingWithCachedDefinition: compares the run inputs a cached definition resolved (swamp-club#3583)", () => {
+  const cache = {
+    authoredExpressions: new Set([
+      "${{ inputs.target }}",
+      "${{ inputs.id }}",
+      "${{ env.HOME + inputs.suffix }}",
+    ]),
+    // suffix is read only by a runtime (env) expression.
+    resolvedExpressions: new Set(["${{ inputs.target }}", "${{ inputs.id }}"]),
+    evaluatedInputs: { target: "scratch", suffix: "a" },
+  };
+  assertEquals(
+    inputsConflictingWithCachedDefinition(
+      { target: "scratch", suffix: "b" },
+      [],
+      cache,
+    ),
+    [],
+  );
+  assertEquals(
+    inputsConflictingWithCachedDefinition({ target: "protected" }, [], cache),
+    ["target"],
+  );
+  // Absent then, present now (or the other way round) is a change.
+  assertEquals(
+    inputsConflictingWithCachedDefinition(
+      { target: "scratch", id: "x" },
+      [],
+      cache,
+    ),
+    ["id"],
+  );
+  assertEquals(inputsConflictingWithCachedDefinition({}, [], cache), [
+    "target",
+  ]);
+  // An input the step supplies is the step's, evaluated whenever it runs.
+  assertEquals(
+    inputsConflictingWithCachedDefinition(
+      { target: "protected" },
+      ["target"],
+      cache,
+    ),
+    [],
+  );
+});
+
+Deno.test("inputsConflictingWithCachedDefinition: a cache that recorded no inputs cannot be checked", () => {
+  const legacy = {
+    authoredExpressions: new Set(["${{ inputs.target }}", "${{ self.name }}"]),
+  };
+  assertEquals(
+    inputsConflictingWithCachedDefinition({ target: "scratch" }, [], legacy),
+    ["target"],
+  );
+  // One whose expressions read no input has nothing to check.
+  assertEquals(
+    inputsConflictingWithCachedDefinition({ target: "scratch" }, [], {
+      authoredExpressions: new Set(["${{ self.name }}"]),
+    }),
+    [],
+  );
+  // One that read inputs whole cannot be checked at all.
+  assertEquals(
+    inputsConflictingWithCachedDefinition({}, [], {
+      authoredExpressions: new Set(["${{ inputs }}"]),
+    }),
+    ["*"],
   );
 });

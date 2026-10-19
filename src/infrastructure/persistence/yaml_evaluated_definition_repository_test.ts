@@ -492,3 +492,45 @@ Deno.test("YamlEvaluatedDefinitionRepository: findByNameGlobal of a name the loo
     assertStringIncludes(warnings[1], lost);
   });
 });
+
+Deno.test("YamlEvaluatedDefinitionRepository: the inputs a definition was evaluated with round-trip apart from its input schema (swamp-club#3583)", async () => {
+  await withTempDir(async (dir) => {
+    const definition = Definition.create({
+      type: testType.normalized,
+      typeVersion: "1",
+      name: "gate-check",
+      inputs: { type: "object", properties: { target: { type: "string" } } },
+    });
+    await new YamlEvaluatedDefinitionRepository(dir).save(
+      testType,
+      definition,
+      undefined,
+      new Set(["${{ inputs.target }}"]),
+      undefined,
+      [],
+      {
+        inputs: { target: "scratch" },
+        resolvedExpressions: new Set(["${{ inputs.target }}"]),
+      },
+    );
+    const cached = await new YamlEvaluatedDefinitionRepository(dir)
+      .findByNameWithProvenance(testType, "gate-check");
+    assertEquals(cached?.evaluatedInputs, { target: "scratch" });
+    assertEquals(
+      cached?.resolvedExpressions,
+      new Set(["${{ inputs.target }}"]),
+    );
+    assertEquals(cached?.definition.inputs, definition.inputs);
+
+    // Written without them, as before they were recorded.
+    await new YamlEvaluatedDefinitionRepository(dir).save(
+      testType,
+      definition,
+      undefined,
+    );
+    const legacy = await new YamlEvaluatedDefinitionRepository(dir)
+      .findByNameWithProvenance(testType, "gate-check");
+    assertEquals(legacy?.evaluatedInputs, undefined);
+    assertEquals(legacy?.resolvedExpressions, undefined);
+  });
+});

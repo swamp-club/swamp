@@ -723,6 +723,11 @@ export class DefinitionExpressionEvaluator {
     failedExpressions: FailedExpressions;
     /** Where data sits in `definition`'s and `sanitizedDefinition`'s data. */
     provenance: DefinitionPassProvenance;
+    /**
+     * The authored expressions this pass evaluated into the definition
+     * (swamp-club#3583); runtime ones (vault, env) are left for the step.
+     */
+    resolvedExpressions: ReadonlySet<string>;
   }> {
     const definitionData = definition.toData();
     const expressions = partitionAuthoredAt(
@@ -737,6 +742,7 @@ export class DefinitionExpressionEvaluator {
         sanitizedDefinition: sanitizedBase,
         failedExpressions: new Map(),
         provenance,
+        resolvedExpressions: new Set(),
       };
     }
 
@@ -773,6 +779,7 @@ export class DefinitionExpressionEvaluator {
         raw: rawOut,
         sanitized: sanitizedData ? sanitizedProvenance ?? rawOut : rawOut,
       },
+      resolvedExpressions: new Set(expressions.map((e) => e.raw)),
     };
   }
 }

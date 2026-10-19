@@ -249,6 +249,7 @@ import {
 } from "../expressions/persisted_evaluation.ts";
 import {
   inputsConflictingWithCache,
+  inputsConflictingWithCachedDefinition,
   type PersistedEvaluatedWorkflow,
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
@@ -2269,6 +2270,15 @@ export class DefaultStepExecutor implements StepExecutor {
     let executedDefinition = executedBase ?? originalDefinition;
     let failedExpressions: FailedExpressions = new Map();
     let stepInputs = SplicePair.of<Record<string, unknown>>({});
+    // What the evaluated definition cache records about this evaluation
+    // (swamp-club#3583): the inputs `inputs.*` resolved against and what was
+    // substituted. Undefined when nothing can vouch for them.
+    let definitionEvaluation:
+      | {
+        inputs?: Record<string, unknown>;
+        resolvedExpressions: ReadonlySet<string>;
+      }
+      | undefined;
     // Provenance for every pass from here on. Union the workflow source's
     // authored expressions with the model's own, where the model has an
     // authored source at all. Anything else in task.inputs or the evaluated
@@ -2363,6 +2373,34 @@ export class DefaultStepExecutor implements StepExecutor {
       } else if (task.inputs) {
         stepInputs = stepInputPair(taskArgs);
       }
+
+      // The cached definition runs with `inputs.*` resolved against the
+      // inputs it was evaluated with. A step seeing other values would run a
+      // check (a gate in the definition) on one value while the run records
+      // another, which a later resume acts on (swamp-club#3583).
+      const conflicting = inputsConflictingWithCachedDefinition(
+        ctx.expressionContext?.inputs ?? {},
+        Object.keys(stepInputs.raw ?? {}),
+        lastEvaluated,
+      );
+      if (conflicting.length > 0) {
+        const keys = conflicting.includes("*")
+          ? "its inputs"
+          : `input ${conflicting.map((k) => `"${k}"`).join(", ")}`;
+        throw new UserError(
+          `The evaluated definition cached for "${originalDefinition.name}" ` +
+            (lastEvaluated.evaluatedInputs === undefined
+              ? `did not record the inputs it was evaluated with, so ${keys} cannot be checked against this run. `
+              : `was evaluated with other values for ${keys} than this run has. `) +
+            `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
+        );
+      }
+      if (lastEvaluated.resolvedExpressions !== undefined) {
+        definitionEvaluation = {
+          inputs: lastEvaluated.evaluatedInputs,
+          resolvedExpressions: lastEvaluated.resolvedExpressions,
+        };
+      }
     } else if (ctx.expressionContext) {
       runLogger.debug("Evaluating expressions");
       // Set self context for this specific model before evaluating
@@ -2427,11 +2465,13 @@ export class DefaultStepExecutor implements StepExecutor {
         inputs: inputsProvenance,
       });
 
+      let resolvedExpressions: ReadonlySet<string>;
       ({
         definition: evaluatedDefinition,
         sanitizedDefinition: executedDefinition,
         failedExpressions,
         provenance: definitionProvenance,
+        resolvedExpressions,
       } = await new DefinitionExpressionEvaluator(
         new CelEvaluator(),
       ).evaluate(
@@ -2442,6 +2482,15 @@ export class DefaultStepExecutor implements StepExecutor {
         executedDefinition,
         definitionProvenance,
       ));
+      // The run's own inputs, not the step's: those the step supplies are
+      // evaluated again whenever it runs, and never recorded on the run.
+      definitionEvaluation = {
+        inputs: recordableEvaluatedInputs(
+          { ...originalInputs },
+          ctx.sensitiveValues,
+        ),
+        resolvedExpressions,
+      };
     }
 
     // Forward all step inputs as method arguments.
@@ -2531,6 +2580,7 @@ export class DefaultStepExecutor implements StepExecutor {
         authoredExpressions,
         persisted.deferredExpressions,
         persisted.writtenReferences,
+        definitionEvaluation,
       );
 
       // Capture pre-vault args for report context (so vault secrets stay as expressions)
