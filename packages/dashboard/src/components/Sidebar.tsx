@@ -263,7 +263,11 @@ interface SidebarProps {
   onToggleCollapsed: () => void;
   drawerOpen: boolean;
   onCloseDrawer: () => void;
-  /** Test-only: render with the Logout confirm already open. */
+  /**
+   * Test-only: render with the Logout confirm already open. App never
+   * passes it, and the rail-toggle effect closes the confirm on mount, so
+   * it shapes only a static render.
+   */
   initialLogoutStep?: LogoutStep;
 }
 
@@ -291,8 +295,14 @@ export function Sidebar({
   const keepButtonRef = useRef<HTMLButtonElement>(null);
   const logoutButtonRef = useRef<HTMLButtonElement>(null);
 
+  // Set when Keep closes the confirm, so focus goes back to Logout rather
+  // than falling to the page when Keep unmounts. A click elsewhere leaves
+  // focus where that click put it.
+  const refocusLogout = useRef(false);
+
   const sendLogout = (event: LogoutEvent) => {
     if (logoutConfirmed(logoutStep, event)) onLogout();
+    if (event === "keep") refocusLogout.current = true;
     setLogoutStep((step) => nextLogoutStep(step, event));
   };
 
@@ -308,7 +318,11 @@ export function Sidebar({
   // short sidebar, so bring all of it, Log out included, into view first.
   // The flyout is fixed beside the rail and needs no scroll.
   useEffect(() => {
-    if (logoutStep !== "confirming") return;
+    if (logoutStep !== "confirming") {
+      if (refocusLogout.current) logoutButtonRef.current?.focus();
+      refocusLogout.current = false;
+      return;
+    }
     const confirm = confirmRef.current;
     if (confirm && getComputedStyle(confirm).position !== "fixed") {
       footerRef.current?.scrollIntoView({ block: "end" });
@@ -632,6 +646,14 @@ export function Sidebar({
             role="group"
             aria-label="Confirm logout"
             style={flyout ?? undefined}
+            onKeyDown={(e) => {
+              if (e.key !== "Escape") return;
+              // Back out of the confirm only; the page's Escape (close the
+              // drawer, leave a detail view) must not run.
+              e.preventDefault();
+              e.stopPropagation();
+              sendLogout("keep");
+            }}
           >
             <span className="sidebar-logout-confirm-prompt">
               Log out of the dashboard?
