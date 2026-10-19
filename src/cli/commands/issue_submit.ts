@@ -108,6 +108,14 @@ export function resolveReportText(
         "--title requires --body with --json (interactive mode is not available).",
       );
     }
+    // The report parsers read the title from one line that can't start with
+    // "#" or "<", so such a title would make the edited report unreadable and
+    // lose the body typed in the editor.
+    if (title.includes("\n") || /^\s*[#<]/.test(title)) {
+      throw new UserError(
+        '--title without --body must be one line that does not start with "#" or "<". Pass --body as well, or type the title in the editor.',
+      );
+    }
     return { kind: "editor", prefilledTitle: title };
   }
   if (outputMode === "json") {

@@ -105,6 +105,27 @@ Deno.test("resolveReportText: a blank --title alone is refused before the editor
   }
 });
 
+Deno.test("resolveReportText: --title alone that the editor can't read back is refused", () => {
+  for (
+    const title of ["#123 crash", "  # heading", "<Command> fails", "a\nb"]
+  ) {
+    const error = assertThrows(
+      () => resolveReportText({ title }, "log"),
+      UserError,
+    );
+    assertEquals(
+      error.message,
+      '--title without --body must be one line that does not start with "#" or "<". Pass --body as well, or type the title in the editor.',
+    );
+  }
+  // With --body the editor is skipped, so the same title is accepted.
+  assertEquals(resolveReportText({ title: "#123 crash", body: "b" }, "log"), {
+    kind: "flags",
+    title: "#123 crash",
+    body: "b",
+  });
+});
+
 Deno.test("resolveReportText: no flags opens the editor, or refuses with --json", () => {
   assertEquals(resolveReportText({}, "log"), { kind: "editor" });
   const error = assertThrows(
