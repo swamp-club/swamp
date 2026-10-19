@@ -572,21 +572,37 @@ Only `never-published` means a first publish; the others are transient or
 credential problems, and note that the version-bump upgrade check was skipped
 too. A real drift finding has no `cause`. None of these block the push.
 
-### Unaudited dependencies
+### The version that ships, and unaudited dependencies
 
-The dependency trust audit queries OSV.dev and the npm registry for each `npm:`
-import, asking OSV about the exact version the specifier resolves to (a range
-resolves to its highest published match). When either lookup fails, or no
-published version matches the specifier, the dependency is **not audited**,
-never passed: its `warnings.dependencyTrust` entry carries
-`cause: "not-audited"` and a message naming the failed lookup (with the HTTP
-status or network error) or the unmatched specifier, and in
-`swamp extension quality` it is marked `?` and loses the `dependency-trust`
-factor. Unaudited dependencies are gated like safety and review warnings: an
-interactive push prompts, `--yes` waives them, and the summaries list them under
+The dependency trust audit checks each `npm:` and `jsr:` import at the version
+the push ships: an exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version;
+otherwise the highest version the `deno.lock` records that satisfies the
+specifier, when the bundler honours that lock (a `deno.json` was found, or
+package.json mode); otherwise what the registry resolves today (a range to its
+highest published match, no version to `latest`). npm license, maintainers and
+deprecation are read from that version; OSV is asked about it. A JSR import's
+package and version must exist on jsr.io.
+
+Findings with a `cause` in `warnings.dependencyTrust`:
+
+| Cause                | Means                                                                           | Severity |
+| -------------------- | ------------------------------------------------------------------------------- | -------- |
+| `not-audited`        | an OSV, npm or JSR lookup failed, or no published version matches the specifier | warning  |
+| `deprecated-version` | the shipped npm version is deprecated while the package's latest is not         | warning  |
+| `loose-specifier`    | unpinned, range or dist-tag; names the version this push resolves               | warning  |
+| `jsr-yanked`         | the shipped JSR version is yanked                                               | warning  |
+| `jsr-missing`        | the JSR package or version does not exist (or the name is invalid)              | error    |
+
+A deprecated package (the shipped version and latest both deprecated) stays an
+error. Pin exact versions to clear `loose-specifier`.
+
+An unaudited dependency is never passed; in `swamp extension quality` it is
+marked `?` and loses the `dependency-trust` factor. Every warning with a cause
+is gated like safety and review warnings: an interactive push prompts, `--yes`
+waives them, and the summaries list them under
 `acceptedWarnings.dependencyTrust`. A log-mode push without a terminal and
-without `--yes` fails at the prompt while OSV or npm is unreachable. Re-run when
-both are reachable.
+without `--yes` fails at the prompt. Re-run an unaudited push when OSV, npm and
+JSR are reachable.
 
 The version-drift check is **not** run during `swamp extension fmt` — it
 requires registry access that the fmt command does not use.

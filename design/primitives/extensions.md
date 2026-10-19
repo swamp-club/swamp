@@ -1354,11 +1354,13 @@ acceptable and the push should happen.
 - A log-mode run without a terminal and without `--yes` fails in the prompt,
   whose error names the flag.
 
-Unaudited dependencies (see [Not audited](#not-audited)) are gated like the
-safety and review warnings and recorded under `acceptedWarnings.dependencyTrust`,
-a list present only when there is at least one. The other advisory warnings
-(the rest of dependency trust, version drift, missing upgrade entries) never
-gate a push and are outside the record.
+Dependency trust warnings that carry a `cause` (unaudited dependencies, see
+[Not audited](#not-audited), and the shipped-version findings, see
+[The version that ships](#the-version-that-ships)) are gated like the safety
+and review warnings and recorded under `acceptedWarnings.dependencyTrust`, a
+list present only when there is at least one. The other advisory warnings (the
+rest of dependency trust, version drift, missing upgrade entries) never gate a
+push and are outside the record.
 
 History: swamp 20261005.154947.0 (issue #3015) split the two consents, made
 `--accept-warnings` the only waiver and had non-interactive runs refuse
@@ -1868,23 +1870,58 @@ from `@bixu/wheelshop`:
 - Weekly downloads below 1,000
 - Last publish more than 24 months ago
 
+### The version that ships
+
+Each `npm:` and `jsr:` specifier is audited at the version the push ships
+(swamp-club#3352), resolved in `src/domain/extensions/dependency_version_resolution.ts`
+without running Deno tooling, so the rule outlives the runtime:
+
+1. An exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version.
+2. Otherwise, the highest version the lockfile records that satisfies the
+   specifier. The lockfile is the one the bundler honours: with a `deno.json`,
+   its `lock` setting or the `deno.lock` beside it; in package.json mode, the
+   `deno.lock` there; otherwise none, since the bundler runs with `--no-lock`.
+   The lockfile is read behind the `LockedDependencyVersions` port; the Deno
+   adapter (`src/infrastructure/runtime/deno_lockfile_reader.ts`) reads lock
+   formats 4 and 5 as data, capped at 16 MiB. A lock entry that no longer
+   satisfies the specifier falls through, as Deno re-resolves it.
+3. Otherwise, the registry: npm resolves the way the registry's scorecard does
+   (a range to the highest published release that satisfies it, a dist-tag
+   through `dist-tags`, no version to `latest`); JSR takes the highest version
+   that is neither yanked nor a prerelease, falling back to a yanked match as
+   Deno does, and `latest` for no version.
+
+The audit summary carries the source text (`specifier`), the resolved
+`version` and `resolvedFrom` (`exact`, `lockfile` or `registry`). npm license,
+maintainers and deprecation come from that version's manifest; the age warning
+keeps the package's latest publish, since it measures maintenance. Each
+package is fetched once however many specifiers name it, and OSV is asked once
+per shipped version.
+
+| Finding                                                          | Severity | Cause                |
+| ---------------------------------------------------------------- | -------- | -------------------- |
+| Shipped version and latest both deprecated (`package is deprecated`) | error    | —                    |
+| Shipped version deprecated, latest not                           | warning  | `deprecated-version` |
+| Unpinned, range or dist-tag specifier, naming the resolved version | warning  | `loose-specifier`    |
+| Shipped JSR version yanked                                       | warning  | `jsr-yanked`         |
+| JSR package or version missing, or an invalid JSR name           | error    | `jsr-missing`        |
+
+The exact wording is pinned by `src/domain/extensions/testdata/dependency_audit_vectors.json`,
+which swamp-club's scorecard (swamp-club#3353) copies. swamp-club#3354 makes
+deprecated pins and loose specifiers errors after a two-week window.
+
 ### Not audited
 
-OSV is asked about one exact version, resolved from the specifier the way the
-registry's scorecard resolves it: an exact version as-is, a range to the highest
-published version that satisfies it, a dist-tag through the packument's
-`dist-tags`, and no version to `latest`. The audit summary's `version` is that
-resolved version.
-
-A dependency whose npm registry or OSV.dev lookup fails (an error status, no
-network, a timeout), or whose specifier no published version matches, is **not
+A dependency whose npm registry, OSV.dev or JSR lookup fails (an error status,
+no network, a timeout, or for JSR a reply that is not JSON or lists no
+versions), or whose specifier no published version matches, is **not
 audited**. It is never reported as passed: its audit summary has
 `passed: false`, `cause: "not-audited"` and a `reason` naming each failed lookup
 (or `OSV not queried (no published version matches <spec>)`), and a warning
 with the same cause joins `warnings.dependencyTrust`. When npm fails but the
-specifier is an exact version, OSV is still queried, so a HIGH or CRITICAL
-vulnerability still blocks; a range, dist-tag or missing version cannot be
-resolved without npm and is not queried. A failed weekly-downloads lookup alone
+specifier is an exact version or the lockfile resolves it, OSV is still
+queried, so a HIGH or CRITICAL vulnerability still blocks; otherwise a range,
+dist-tag or missing version cannot be resolved without npm and is not queried. A failed weekly-downloads lookup alone
 leaves the dependency audited. Unaudited dependencies join the push warnings
 gate (an interactive push prompts; `--yes` waives them), never block on their
 own, and never change the exit code. `DependencyTrustResult.passed` keeps
@@ -1892,15 +1929,21 @@ meaning "no blockers".
 
 ### jsr Dependencies
 
-jsr packages rely on jsr's own enforcement (SPDX license requirement,
-provenance, no install scripts) and skip gates that lack data.
+Each jsr package is looked up once at `https://jsr.io/<name>/meta.json` with
+`Accept: application/json`; its name is checked locally first and an invalid
+one is never fetched. The shipped version must exist (a missing package or
+version is an error) and a yanked one warns. OSV has no JSR data, so there is
+no vulnerability check, and the npm-specific gates (license, maintainers,
+downloads, age) do not apply.
 
 ### Quality Rubric Factor
 
 Dependency trust is a rubric factor (`dependency-trust`, worth 2 points) in both
 `swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores
 when every dependency passes the trust gates with no hard errors. In the CLI an
-unaudited dependency loses the factor the same way a hard error does.
+unaudited dependency loses the factor the same way a hard error does; the
+`deprecated-version`, `loose-specifier` and `jsr-yanked` warnings do not cost
+it.
 
 ## Registry
 
