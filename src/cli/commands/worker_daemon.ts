@@ -32,9 +32,21 @@ import {
 } from "../../presentation/output/worker_daemon_output.ts";
 import { toServiceMode } from "../../presentation/output/serve_daemon_output.ts";
 import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { parseTimerDuration } from "../duration_parser.ts";
+import { parseExtraHeaders } from "../../domain/auth/extra_headers.ts";
+import {
+  parseCommaSeparatedLabels,
+  parseConcurrency,
+  parseLabels,
+  validateMaxDispatches,
+  validateOrchestratorUrl,
+} from "./worker_shared.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+const logger = getSwampLogger(["worker", "daemon"]);
 
 export function collectWorkerExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
@@ -69,6 +81,85 @@ export async function validateCacheDir(
     throw err;
   }
   return resolved;
+}
+
+export async function validateCaCertFile(rawPath: string): Promise<string> {
+  const resolved = isAbsolute(rawPath) ? rawPath : resolve(rawPath);
+  try {
+    const stat = await Deno.stat(resolved);
+    if (!stat.isFile) {
+      throw new UserError(`--ca-cert is not a file: ${resolved}`);
+    }
+  } catch (err: unknown) {
+    if (err instanceof Deno.errors.NotFound) {
+      throw new UserError(`--ca-cert does not exist: ${resolved}`);
+    }
+    throw err;
+  }
+  return resolved;
+}
+
+/**
+ * Refuses, before anything is written, every value `swamp worker connect`
+ * would refuse when the service starts — otherwise the service restarts
+ * on the same error forever. Labels are checked in the comma-joined form
+ * the service reads back from SWAMP_WORKER_LABELS. Returns the --label
+ * values the service will read as different labels than `worker connect`
+ * would (a comma inside a value starts another label), so the caller can
+ * warn about them.
+ */
+export function validateWorkerDaemonOptions(
+  url: string,
+  options: AnyOptions,
+): string[] {
+  validateOrchestratorUrl(url);
+  if (options.maxDispatches !== undefined) {
+    validateMaxDispatches(options.maxDispatches as number);
+  }
+  if (options.idleTimeout) {
+    parseTimerDuration(options.idleTimeout as string, "--idle-timeout");
+  }
+  if (options.concurrency !== undefined) {
+    parseConcurrency(options.concurrency as string);
+  }
+  const changedLabels: string[] = [];
+  for (const label of (options.label as string[] | undefined) ?? []) {
+    const asFlag = parseLabels([label]);
+    let asService: Record<string, string>;
+    try {
+      asService = parseCommaSeparatedLabels(label);
+    } catch (err: unknown) {
+      if (label.includes(",")) {
+        throw new UserError(
+          `--label '${label}' cannot be read back by the service — it ` +
+            "receives labels comma-separated, so each comma must start " +
+            "another key=value",
+        );
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new UserError(
+        `--label '${label}' cannot be read back by the service: ${detail}`,
+      );
+    }
+    if (JSON.stringify(asService) !== JSON.stringify(asFlag)) {
+      changedLabels.push(label);
+    }
+  }
+  return changedLabels;
+}
+
+/**
+ * SWAMP_SERVE_EXTRA_HEADERS from the shell running `daemon enable`. swamp
+ * takes pass-through headers from this variable only, never a flag, so the
+ * service gets the value `worker connect` would read in the same shell.
+ */
+export function captureExtraHeaders(
+  getEnv: () => string | undefined = () =>
+    Deno.env.get("SWAMP_SERVE_EXTRA_HEADERS"),
+): { raw: string; names: string[] } | undefined {
+  const raw = getEnv();
+  if (!raw) return undefined;
+  return { raw, names: Object.keys(parseExtraHeaders(raw)) };
 }
 
 /**
@@ -130,12 +221,29 @@ export function collectWorkerEnv(options: AnyOptions): Record<string, string> {
     env["SWAMP_WORKER_IDLE_TIMEOUT"] = idleTimeout;
   }
 
+  const concurrency = options.concurrency as string | undefined;
+  if (concurrency !== undefined) {
+    env["SWAMP_WORKER_CONCURRENCY"] = concurrency;
+  }
+
+  const caCert = options.caCert as string | undefined;
+  if (caCert) {
+    env["SWAMP_CA_CERT"] = caCert;
+  }
+
+  const extraHeaders = options.extraHeaders as string | undefined;
+  if (extraHeaders) {
+    env["SWAMP_SERVE_EXTRA_HEADERS"] = extraHeaders;
+  }
+
   return env;
 }
 
-const daemonEnableCommand = new Command()
+export const workerDaemonEnableCommand = new Command()
   .name("enable")
-  .description("Enable swamp worker as a system daemon (launchd/systemd)")
+  .description(
+    "Enable swamp worker as a system daemon (launchd/systemd). SWAMP_SERVE_EXTRA_HEADERS set in this shell is written into the service, as worker connect would read it.",
+  )
   .arguments("[url:string]")
   .option(
     "--user",
@@ -179,6 +287,14 @@ const daemonEnableCommand = new Command()
     "Drain and exit 0 after being continuously idle for this duration (e.g. 30s, 5m, 1h)",
   )
   .option("--no-reconnect", "Exit when the control socket closes")
+  .option(
+    "--concurrency <n:string>",
+    'Number of concurrent dispatch slots ("auto" = CPU count of the machine running the service, min 1). Default: 1',
+  )
+  .option(
+    "--ca-cert <path:string>",
+    "Path to PEM-encoded CA certificate to trust for TLS connections to the orchestrator; a system service must be able to read it",
+  )
   .example(
     "Enable worker daemon",
     "swamp worker daemon enable wss://orch:9090 --token tok.secret --label tier=ci --cache-dir /var/lib/swamp-worker",
@@ -194,6 +310,14 @@ const daemonEnableCommand = new Command()
   .example(
     "Enable with lifecycle policies",
     "swamp worker daemon enable wss://orch:9090 --token tok.secret --max-dispatches 100 --idle-timeout 30m",
+  )
+  .example(
+    "Enable against an orchestrator with a private-CA certificate",
+    "swamp worker daemon enable wss://orch.internal:9090 --token-file /etc/swamp/worker-token --ca-cert /etc/swamp/ca.pem --concurrency auto",
+  )
+  .example(
+    "Enable through a reverse-proxy that requires a tunnel token",
+    "SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123' swamp worker daemon enable wss://orch.internal:9090 --token tok.secret",
   )
   .action(async function (options: AnyOptions, urlArg?: string) {
     const ctx = createContext(options as GlobalOptions, [
@@ -224,14 +348,29 @@ const daemonEnableCommand = new Command()
           "  swamp worker daemon enable wss://orchestrator:9090 --token <name>.<secret>",
       );
     }
-    if (options.tokenFile) {
-      await readTokenFile(options.tokenFile as string, "--token-file");
-    }
-    if (options.serverTokenFile) {
-      await readTokenFile(
-        options.serverTokenFile as string,
-        "--server-token-file",
+    for (const label of validateWorkerDaemonOptions(urlArg, options)) {
+      logger.warn(
+        "--label {label} reaches the service as {labels} — it receives labels comma-separated, so a comma inside a value starts another label",
+        {
+          label,
+          labels: Object.entries(parseCommaSeparatedLabels(label))
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" "),
+        },
       );
+    }
+
+    // The service runs from the cache dir (or /), so a path relative to the
+    // shell that ran `daemon enable` must be made absolute here.
+    let tokenFile: string | undefined;
+    if (options.tokenFile) {
+      tokenFile = resolve(options.tokenFile as string);
+      await readTokenFile(tokenFile, "--token-file");
+    }
+    let serverTokenFile: string | undefined;
+    if (options.serverTokenFile) {
+      serverTokenFile = resolve(options.serverTokenFile as string);
+      await readTokenFile(serverTokenFile, "--server-token-file");
     }
 
     let cacheDir: string | undefined;
@@ -239,7 +378,22 @@ const daemonEnableCommand = new Command()
       cacheDir = await validateCacheDir(options.cacheDir as string);
     }
 
-    const resolvedOptions = { ...options, url: urlArg, cacheDir };
+    let caCert: string | undefined;
+    if (options.caCert) {
+      caCert = await validateCaCertFile(options.caCert as string);
+    }
+
+    const extraHeaders = captureExtraHeaders();
+
+    const resolvedOptions = {
+      ...options,
+      url: urlArg,
+      tokenFile,
+      serverTokenFile,
+      cacheDir,
+      caCert,
+      extraHeaders: extraHeaders?.raw,
+    };
     const mode = await resolveServiceMode({
       user: options.user as boolean | undefined,
     });
@@ -257,7 +411,11 @@ const daemonEnableCommand = new Command()
       cacheDir,
     });
 
-    renderWorkerDaemonEnabled(ctx.outputMode, toServiceMode(mode));
+    renderWorkerDaemonEnabled(
+      ctx.outputMode,
+      toServiceMode(mode),
+      extraHeaders?.names,
+    );
   });
 
 const daemonDisableCommand = new Command()
@@ -312,6 +470,6 @@ export const workerDaemonCommand = new Command()
   .name("daemon")
   .description("Manage swamp worker as a system daemon (EXPERIMENTAL)")
   .action(groupCommandAction)
-  .command("enable", daemonEnableCommand)
+  .command("enable", workerDaemonEnableCommand)
   .command("disable", daemonDisableCommand)
   .command("status", daemonStatusCommand);

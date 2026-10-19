@@ -23,15 +23,22 @@ import type { WorkerDaemonStatus } from "../../domain/worker/worker_daemon_sched
 import type { OutputMode } from "./output.ts";
 import { type ServiceMode, serviceModeLabel } from "./serve_daemon_output.ts";
 
+/**
+ * `extraHeaderNames` lists the SWAMP_SERVE_EXTRA_HEADERS names written into
+ * the service — names only, since header values often carry a tunnel secret.
+ */
 export function renderWorkerDaemonEnabled(
   mode: OutputMode,
   serviceMode: ServiceMode,
+  extraHeaderNames: string[] = [],
 ): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
     console.log(
       JSON.stringify(
-        { enabled: true, serviceMode },
+        extraHeaderNames.length > 0
+          ? { enabled: true, serviceMode, extraHeaderNames }
+          : { enabled: true, serviceMode },
         null,
         2,
       ),
@@ -53,6 +60,15 @@ export function renderWorkerDaemonEnabled(
       writeOutput(
         dim(
           "  To start at boot: loginctl enable-linger $USER (Linux) or re-run with sudo (macOS)",
+        ),
+      );
+    }
+    if (extraHeaderNames.length > 0) {
+      writeOutput(
+        dim(
+          `  Extra headers from SWAMP_SERVE_EXTRA_HEADERS: ${
+            extraHeaderNames.join(", ")
+          }`,
         ),
       );
     }

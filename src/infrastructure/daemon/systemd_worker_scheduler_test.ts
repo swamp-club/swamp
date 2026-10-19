@@ -149,3 +149,28 @@ Deno.test("buildWorkerService: escapes percent specifiers in env values", () => 
   const unit = buildWorkerService(config);
   assertStringIncludes(unit, "value%%nwith%%%%percents");
 });
+
+Deno.test("buildWorkerService: quotes an env value containing a space", () => {
+  const unit = buildWorkerService({
+    ...baseConfig,
+    env: { SWAMP_CA_CERT: "/etc/swamp certs/ca.pem" },
+  });
+  assertStringIncludes(
+    unit,
+    'Environment="SWAMP_CA_CERT=/etc/swamp certs/ca.pem"',
+  );
+});
+
+Deno.test("buildWorkerService: writes newlines in an env value as escapes on one line", () => {
+  const unit = buildWorkerService({
+    ...baseConfig,
+    env: {
+      SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: abc\nX-Env: prod\r\nX-Last: 1",
+    },
+  });
+  assertStringIncludes(
+    unit,
+    'Environment="SWAMP_SERVE_EXTRA_HEADERS=Tunnel-Token: abc\\nX-Env: prod\\r\\nX-Last: 1"\n',
+  );
+  assertFalse(unit.split("\n").some((line) => line.startsWith("X-Env")));
+});

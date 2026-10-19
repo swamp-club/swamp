@@ -148,3 +148,18 @@ Deno.test("buildWorkerPlist: uses worker log filenames", () => {
   assertStringIncludes(plist, "worker.stdout.log");
   assertStringIncludes(plist, "worker.stderr.log");
 });
+
+Deno.test("buildWorkerPlist: escapes env values with spaces and newlines", () => {
+  const plist = buildWorkerPlist({
+    ...baseConfig,
+    env: {
+      SWAMP_CA_CERT: "/etc/swamp certs/ca.pem",
+      SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: a<b\nX-Env: prod",
+    },
+  });
+  assertStringIncludes(plist, "<string>/etc/swamp certs/ca.pem</string>");
+  assertStringIncludes(
+    plist,
+    "<string>Tunnel-Token: a&lt;b\nX-Env: prod</string>",
+  );
+});

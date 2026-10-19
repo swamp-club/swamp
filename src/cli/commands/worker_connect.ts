@@ -27,8 +27,13 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { redactServerUrl } from "../../domain/auth/server_url.ts";
-import { parseLabels } from "./worker_shared.ts";
+import {
+  parseCommaSeparatedLabels,
+  parseConcurrency,
+  parseLabels,
+  validateMaxDispatches,
+  validateOrchestratorUrl,
+} from "./worker_shared.ts";
 import { runWorker, type WorkerExitReason } from "../../worker/connect.ts";
 import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
 import { VERSION } from "./version.ts";
@@ -46,22 +51,6 @@ import "../../domain/models/models.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-function parseCommaSeparatedLabels(envValue: string): Record<string, string> {
-  const labels: Record<string, string> = {};
-  for (const pair of envValue.split(",")) {
-    const trimmed = pair.trim();
-    if (trimmed === "") continue;
-    const eq = trimmed.indexOf("=");
-    if (eq <= 0 || eq === trimmed.length - 1) {
-      throw new UserError(
-        `Invalid label '${trimmed}' in SWAMP_WORKER_LABELS — expected the form key=value`,
-      );
-    }
-    labels[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-  }
-  return labels;
-}
 
 export const workerConnectCommand = new Command()
   .name("connect")
@@ -168,14 +157,7 @@ export const workerConnectCommand = new Command()
       );
     }
 
-    if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
-      const shown = redactServerUrl(url);
-      throw new UserError(
-        `Orchestrator URL must start with ws:// or wss://${
-          shown === undefined ? "" : ` (got '${shown}')`
-        }`,
-      );
-    }
+    validateOrchestratorUrl(url);
 
     const serverTokenValue = (options.serverToken as string | undefined) ??
       Deno.env.get("SWAMP_SERVER_TOKEN");
@@ -224,14 +206,8 @@ export const workerConnectCommand = new Command()
         const env = Deno.env.get("SWAMP_WORKER_MAX_DISPATCHES");
         return env !== undefined ? Number(env) : undefined;
       })();
-    if (
-      maxDispatchesRaw !== undefined &&
-      (isNaN(maxDispatchesRaw) || !Number.isInteger(maxDispatchesRaw) ||
-        maxDispatchesRaw < 1)
-    ) {
-      throw new UserError(
-        "--max-dispatches must be a positive integer",
-      );
+    if (maxDispatchesRaw !== undefined) {
+      validateMaxDispatches(maxDispatchesRaw);
     }
 
     const idleTimeoutRaw = (options.idleTimeout as string | undefined) ??
@@ -242,20 +218,9 @@ export const workerConnectCommand = new Command()
 
     const concurrencyRaw = (options.concurrency as string | undefined) ??
       Deno.env.get("SWAMP_WORKER_CONCURRENCY");
-    let concurrency = 1;
-    if (concurrencyRaw !== undefined) {
-      if (concurrencyRaw === "auto") {
-        concurrency = Math.max(1, navigator.hardwareConcurrency ?? 1);
-      } else {
-        const parsed = Number(concurrencyRaw);
-        if (isNaN(parsed) || !Number.isInteger(parsed) || parsed < 1) {
-          throw new UserError(
-            '--concurrency must be a positive integer or "auto"',
-          );
-        }
-        concurrency = parsed;
-      }
-    }
+    const concurrency = concurrencyRaw !== undefined
+      ? parseConcurrency(concurrencyRaw)
+      : 1;
 
     // After argument validation, so a usage error is reported first.
     warnIfRunningAsInit();
