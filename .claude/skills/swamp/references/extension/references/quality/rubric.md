@@ -189,31 +189,40 @@ one for an hour. URL changes clear the cache and trigger re-verification.
 
 ### `dependency-trust` (2 pts)
 
-Earned when all npm dependencies pass the supply-chain trust gates. The CLI
-extracts `npm:` and `jsr:` import specifiers from extension source files and
-audits them against OSV.dev advisories and the npm registry.
+Earned when all dependencies pass the supply-chain trust gates. The CLI extracts
+`npm:` and `jsr:` import specifiers from extension source files and audits each
+at the version the push ships (exact pin, else the honoured `deno.lock`, else
+the registry's resolution) against OSV.dev advisories, the npm registry and
+jsr.io.
 
 **Blockers (prevent push and fail the factor):**
 
 - HIGH or CRITICAL severity vulnerabilities (from OSV.dev)
-- Deprecated packages (npm registry `deprecated` field)
+- Deprecated packages (the shipped version and latest both deprecated)
+- A JSR package or version that does not exist (`cause: "jsr-missing"`)
 
-**Not audited (fails the factor, does not block):** a dependency whose OSV.dev
-or npm registry lookup failed, or whose specifier no published version matches,
-is reported as not audited (`cause:
-"not-audited"` with a `reason`) and never as
-passed. Re-run when both services are reachable to earn the factor.
+**Pinned deprecated version (fails the factor, does not block yet):** a shipped
+npm version that is deprecated while the package's latest is not
+(`cause: "deprecated-version"`) is a push warning, waived by `--yes`, but it
+loses the factor, as on the registry scorecard. Pin a supported version.
 
-**Warnings (displayed but do not block):**
+**Not audited (fails the factor, does not block):** a dependency whose OSV.dev,
+npm or JSR lookup failed, or whose specifier no published version matches, is
+reported as not audited (`cause: "not-audited"` with a `reason`) and never as
+passed. Re-run when all three services are reachable to earn the factor.
 
+**Warnings (displayed but do not block or cost the factor):**
+
+- An unpinned, range or dist-tag specifier (`loose-specifier`)
+- A yanked JSR version (`jsr-yanked`)
 - MEDIUM severity vulnerabilities
 - Low weekly downloads (< 1000)
 - Stale last-publish (> 2 years)
 - Non-OSI-approved license
 - Single maintainer
 
-jsr packages trust jsr's built-in enforcement and skip gates where npm-specific
-data is unavailable.
+JSR has no vulnerability data on OSV, so a `jsr:` import is checked for
+existence and yanking only.
 
 If the dependency audit does not run (e.g. cached push without re-audit), the
 factor defaults to `missing` — no free points.
@@ -280,7 +289,7 @@ Factor results:
 | has-license         | 1/1    | `license: MIT` declared                      |
 | license-file        | 1/1    | LICENSE file in additionalFiles              |
 | repository-verified | 2/2    | Public github.com URL                        |
-| dependency-trust    | 2/2    | No deprecated or vulnerable npm deps         |
+| dependency-trust    | 2/2    | No blocking or unaudited dependencies        |
 | verified-by-swamp   | 0/1    | Third-party, not admin-curated               |
 
 **Total: 15/16 = 93% Grade A.**

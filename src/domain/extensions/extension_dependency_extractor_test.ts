@@ -76,6 +76,15 @@ import { bar } from "npm:axios@1.7.2";`;
   assertEquals(result.length, 1);
 });
 
+Deno.test("extractSpecifiersFromSource: keeps each version of one package", () => {
+  const source = `import { foo } from "npm:axios@^1.6.0";
+import { bar } from "npm:axios@1.7.2/sub";
+import { baz } from "npm:axios@^1.6.0";`;
+  const result = extractSpecifiersFromSource(source, "model.ts");
+
+  assertEquals(result.map((s) => s.version), ["^1.6.0", "1.7.2"]);
+});
+
 Deno.test("extractSpecifiersFromSource: extracts multiple packages", () => {
   const source = `import { z } from "npm:zod@4";
 import mqtt from "npm:mqtt@5.10.3";

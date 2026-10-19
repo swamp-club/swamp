@@ -1632,7 +1632,7 @@ Deno.test("createExtensionPushPrepareDeps: fetchCollectives reads an API token's
   });
 });
 
-Deno.test("createExtensionPushPrepareDeps: records the npm and OSV calls the trust audit makes, and nothing without npm specifiers", async () => {
+Deno.test("createExtensionPushPrepareDeps: records the npm, OSV and JSR calls the trust audit makes, and nothing without specifiers", async () => {
   const recorder = createApiCallRecorder();
   let fetches = 0;
   const deps = createExtensionPushPrepareDeps(undefined, {
@@ -1655,20 +1655,31 @@ Deno.test("createExtensionPushPrepareDeps: records the npm and OSV calls the tru
       if (u.host === "api.osv.dev") {
         return Promise.resolve(jsonResponse({ vulns: [] }));
       }
+      if (u.host === "jsr.io") {
+        return Promise.resolve(
+          jsonResponse({ latest: "1.0.0", versions: { "1.0.0": {} } }),
+        );
+      }
       throw new Error(`unexpected call to ${u.host}`);
     },
   });
 
-  await deps.checkDependencyTrust([]);
+  await deps.checkDependencyTrust([], {});
   assertEquals(fetches, 0);
   assertEquals(recorder.calls, []);
 
   await deps.checkDependencyTrust([
     { name: "zod", version: "3.0.0", registry: "npm", sourceFile: "a.ts" },
-  ]);
+    {
+      name: "@std/path",
+      version: "1.0.0",
+      registry: "jsr",
+      sourceFile: "a.ts",
+    },
+  ], {});
   assertEquals(
     recorder.calls.map((c) => c.service).sort(),
-    ["npm", "npm", "osv"],
+    ["jsr", "npm", "npm", "osv"],
   );
   for (const call of recorder.calls) {
     assertEquals(
@@ -2370,6 +2381,79 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names each import-m
         '"lodash" with an explicit npm: or jsr: specifier; ' +
         '"zod" with "npm:zod@4.3.6".',
     );
+  });
+});
+
+Deno.test("extensionPushPrepare: the dependency audit gets the project the bundler resolves from", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import x from "npm:left-pad@^1.0.0";\nexport const a = x;\n',
+    "deno.json": "{}",
+  }, async (dir, paths) => {
+    const projects: unknown[] = [];
+    await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractDependencySpecifiers: () =>
+          Promise.resolve([{
+            name: "left-pad",
+            version: "^1.0.0",
+            registry: "npm",
+            sourceFile: paths["models/a.ts"],
+          }]),
+        checkDependencyTrust: (_specifiers, project) => {
+          projects.push(project);
+          return Promise.resolve({
+            errors: [],
+            warnings: [],
+            audited: [],
+            passed: true,
+          });
+        },
+      }),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"]]),
+        denoConfigPath: paths["deno.json"],
+      },
+    );
+    assertEquals(projects, [{
+      denoConfigPath: paths["deno.json"],
+      packageJsonDir: undefined,
+    }]);
+  });
+});
+
+Deno.test("extensionPushPrepare: a missing JSR version fails the dependency-trust gate", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const missing = {
+      dependency: "@std/assert",
+      message: "version 0.0.999 not found on JSR",
+      cause: "jsr-missing" as const,
+    };
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractDependencySpecifiers: () =>
+          Promise.resolve([{
+            name: "@std/assert",
+            version: "0.0.999",
+            registry: "jsr",
+            sourceFile: input.allModelFiles[0],
+          }]),
+        checkDependencyTrust: () =>
+          Promise.resolve({
+            errors: [missing],
+            warnings: [],
+            audited: [],
+            passed: false,
+          }),
+      }),
+      input,
+    );
+    const failure = result.gateFailures.find((f) =>
+      f.gate === "dependency-trust"
+    );
+    assertEquals(failure !== undefined, true);
   });
 });
 

@@ -305,6 +305,10 @@ Deno.test("classifyApiCallService: groups by host", () => {
     "npm",
   );
   assertEquals(
+    classifyApiCallService("https://jsr.io/@std/path/meta.json", registry),
+    "jsr",
+  );
+  assertEquals(
     classifyApiCallService("https://example.com/x", registry),
     "other",
   );

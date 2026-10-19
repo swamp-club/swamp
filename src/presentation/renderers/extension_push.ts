@@ -70,14 +70,17 @@ export type AcceptedReviewWarning = Omit<
 export type AcceptedSafetyWarning = Omit<SafetyIssue, "remediation">;
 
 /**
- * The safety and review warnings, and the unaudited dependencies, the pusher
- * waived with `--yes` or `--force`. Recorded in the dry-run and push
- * summaries so a reviewer can see exactly what was accepted. Advisory
- * warnings (the other dependency trust warnings, version drift, upgrade
- * entries) never gate a push and are not part of the record.
+ * The safety and review warnings, and the dependency trust warnings with a
+ * cause, the pusher waived with `--yes` or `--force`. Recorded in the
+ * dry-run and push summaries so a reviewer can see exactly what was
+ * accepted. Advisory warnings (the other dependency trust warnings, version
+ * drift, upgrade entries) never gate a push and are not part of the record.
  */
 export interface AcceptedWarnings {
-  /** Unaudited dependencies; present only when there is at least one. */
+  /**
+   * Unaudited dependencies and shipped-version findings; present only when
+   * there is at least one.
+   */
   dependencyTrust?: DependencyTrustIssue[];
   safety: AcceptedSafetyWarning[];
   review: AcceptedReviewWarning[];
@@ -399,11 +402,20 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
 
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
     const notAudited = warnings.filter((w) => w.cause === "not-audited");
-    const advisory = warnings.filter((w) => w.cause !== "not-audited");
+    const shipped = warnings.filter((w) =>
+      w.cause !== undefined && w.cause !== "not-audited"
+    );
+    const advisory = warnings.filter((w) => w.cause === undefined);
     if (notAudited.length > 0) {
       this.logger
-        .warn`Dependencies not audited (re-run when OSV and npm are reachable; --yes accepts):`;
+        .warn`Dependencies not audited (re-run when OSV, npm and JSR are reachable; --yes accepts):`;
       for (const w of notAudited) {
+        this.logger.warn`  ${w.dependency}: ${w.message}`;
+      }
+    }
+    if (shipped.length > 0) {
+      this.logger.warn`Dependency warnings (--yes accepts):`;
+      for (const w of shipped) {
         this.logger.warn`  ${w.dependency}: ${w.message}`;
       }
     }

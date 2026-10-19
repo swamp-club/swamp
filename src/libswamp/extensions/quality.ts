@@ -43,6 +43,7 @@ import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
+  dependencyTrustBlockerCount,
   type DependencyTrustResult,
   notAuditedCount,
 } from "../../domain/extensions/extension_dependency_trust_checker.ts";
@@ -329,9 +330,12 @@ export async function* extensionQuality(
         input.prepareInput.manifest,
         scoreDeps,
         {
-          dependencyTrustPassed: prepared.dependencyTrustResult.passed,
-          dependencyTrustBlockerCount:
-            prepared.dependencyTrustResult.errors.length,
+          dependencyTrustPassed: dependencyTrustBlockerCount(
+            prepared.dependencyTrustResult,
+          ) === 0,
+          dependencyTrustBlockerCount: dependencyTrustBlockerCount(
+            prepared.dependencyTrustResult,
+          ),
           dependencyNotAuditedCount: notAuditedCount(
             prepared.dependencyTrustResult,
           ),

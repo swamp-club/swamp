@@ -586,6 +586,7 @@ Deno.test("createExtensionQualityRenderer: an unaudited dependency is marked ? w
     ],
     audited: [{
       name: "leftpad",
+      specifier: "npm:leftpad@1.3.0",
       version: "1.3.0",
       registry: "npm",
       license: "MIT",
@@ -608,7 +609,7 @@ Deno.test("createExtensionQualityRenderer: an unaudited dependency is marked ? w
   assertStringIncludes(log, '"?" "leftpad"@"1.3.0"');
   assertStringIncludes(log, `MIT, not audited: ${reason}`);
   const notAuditedAt = log.indexOf(
-    "Dependencies not audited (re-run when OSV and npm are reachable):",
+    "Dependencies not audited (re-run when OSV, npm and JSR are reachable):",
   );
   const advisoryAt = log.indexOf("Dependency trust warnings (non-blocking):");
   assertEquals(notAuditedAt >= 0 && advisoryAt > notAuditedAt, true);

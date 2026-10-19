@@ -123,7 +123,7 @@ export function extractSpecifiersFromSource(
       const parsed = parseSpecifier(raw);
       if (!parsed) continue;
 
-      const key = `${parsed.registry}:${parsed.name}`;
+      const key = `${parsed.registry}:${parsed.name}@${parsed.version ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -148,7 +148,9 @@ export async function extractDependencySpecifiers(
       continue;
     }
     for (const spec of extractSpecifiersFromSource(source, file)) {
-      const key = `${spec.registry}:${spec.name}`;
+      // Each version of a package is audited: two specifiers can ship two
+      // different versions.
+      const key = `${spec.registry}:${spec.name}@${spec.version ?? ""}`;
       if (!seen.has(key)) {
         seen.set(key, spec);
       }

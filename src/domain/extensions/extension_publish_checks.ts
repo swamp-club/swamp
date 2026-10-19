@@ -160,7 +160,7 @@ export const REGISTRY_CHECK_LABELS: Record<RegistryCheckName, string> = {
 };
 
 /** The external services a push may call before uploading. */
-export type ApiCallService = "registry" | "osv" | "npm" | "other";
+export type ApiCallService = "registry" | "osv" | "npm" | "jsr" | "other";
 
 /** How an HTTP call ended, as the summary reports it. */
 export type ApiCallOutcome = "ok" | "not-found" | "error";
@@ -190,6 +190,7 @@ export function classifyApiCallService(
   if (host === hostOf(registryUrl)) return "registry";
   if (host === "api.osv.dev") return "osv";
   if (host === "registry.npmjs.org" || host === "api.npmjs.org") return "npm";
+  if (host === "jsr.io") return "jsr";
   return "other";
 }
 

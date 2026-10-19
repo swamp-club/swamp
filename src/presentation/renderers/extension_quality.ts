@@ -239,7 +239,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
               : "✗";
             const parts: string[] = [];
             if (dep.registry === "jsr") {
-              parts.push("jsr (trusted)");
+              parts.push("jsr");
             } else {
               if (dep.license) parts.push(dep.license);
               if (dep.weeklyDownloads !== null) {
@@ -268,7 +268,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         );
         if (notAudited.length > 0) {
           logger
-            .warn`Dependencies not audited (re-run when OSV and npm are reachable):`;
+            .warn`Dependencies not audited (re-run when OSV, npm and JSR are reachable):`;
           for (const w of notAudited) {
             logger.warn`  ${w.dependency}: ${w.message}`;
           }

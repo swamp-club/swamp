@@ -407,7 +407,7 @@ Deno.test("extensionPushRenderer: log prints unaudited dependencies in their own
   });
   const output = logs.join("\n");
   const notAuditedAt = output.indexOf(
-    "Dependencies not audited (re-run when OSV and npm are reachable; --yes accepts):",
+    "Dependencies not audited (re-run when OSV, npm and JSR are reachable; --yes accepts):",
   );
   const advisoryAt = output.indexOf(
     "Dependency trust warnings (non-blocking):",
@@ -434,6 +434,57 @@ Deno.test("extensionPushRenderer: log prints only the not-audited block when eve
   const output = logs.join("\n");
   assertStringIncludes(output, "Dependencies not audited");
   assertEquals(output.includes("Dependency trust warnings"), false);
+});
+
+const looseWarning = {
+  dependency: "express",
+  message:
+    "npm:express@^4.18.0 is a range; audited 4.21.1, the version this push resolves",
+  cause: "loose-specifier" as const,
+};
+
+Deno.test("extensionPushRenderer: log prints shipped-version findings in their own block, apart from advisory ones", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const logs = await capture(() =>
+    renderer.renderDependencyTrustWarnings([
+      { dependency: "tiny", message: "low weekly downloads (10 < 1000)" },
+      looseWarning,
+      notAuditedWarning,
+    ])
+  );
+  const output = logs.join("\n");
+  const notAuditedAt = output.indexOf("Dependencies not audited");
+  const shippedAt = output.indexOf("Dependency warnings (--yes accepts):");
+  const advisoryAt = output.indexOf(
+    "Dependency trust warnings (non-blocking):",
+  );
+  assertEquals(notAuditedAt >= 0 && shippedAt > notAuditedAt, true);
+  assertEquals(advisoryAt > shippedAt, true);
+  assertStringIncludes(
+    output.slice(shippedAt, advisoryAt),
+    "npm:express@^4.18.0 is a range; audited 4.21.1",
+  );
+  assertEquals(
+    output.slice(shippedAt, advisoryAt).includes("low weekly downloads"),
+    false,
+  );
+});
+
+Deno.test("extensionPushRenderer: JSON keeps each shipped-version finding's cause", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(() => {
+    renderer.renderDependencyTrustWarnings([looseWarning]);
+    renderer.renderDryRun({
+      ...dryRunBase,
+      accepted: {
+        warnings: { ...accepted, dependencyTrust: [looseWarning] },
+        waivedBy: "--yes",
+      },
+    });
+  });
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.warnings.dependencyTrust, [looseWarning]);
+  assertEquals(doc.acceptedWarnings.dependencyTrust, [looseWarning]);
 });
 
 Deno.test("extensionPushRenderer: log summaries say nothing about acceptance when none", async () => {

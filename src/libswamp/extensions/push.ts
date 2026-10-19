@@ -528,8 +528,13 @@ export interface ExtensionPushPrepareDeps {
   extractDependencySpecifiers: (
     sourceFiles: string[],
   ) => Promise<DependencySpecifier[]>;
+  /**
+   * Audits each dependency at the version push ships; `project` locates the
+   * lockfile the bundler honours.
+   */
   checkDependencyTrust: (
     specifiers: DependencySpecifier[],
+    project: ExtensionProject,
   ) => Promise<DependencyTrustResult>;
   checkReviewRules: (
     input: ExtensionReviewInput,
@@ -685,6 +690,10 @@ import type {
 } from "../../domain/extensions/extension_content.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
+  type ExtensionProject,
+  readProjectLockfile,
+} from "../../infrastructure/runtime/deno_lockfile_reader.ts";
+import {
   type ManifestLicenseWarning,
   manifestLicenseWarning,
 } from "../../domain/licensing/manifest_license_policy.ts";
@@ -762,10 +771,13 @@ export function createExtensionPushPrepareDeps(
     analyzeExtensionSafety,
     checkExtensionQuality,
     extractDependencySpecifiers,
-    checkDependencyTrust: (specifiers) =>
+    checkDependencyTrust: async (specifiers, project) =>
       checkDependencyTrust(
         specifiers,
         fetcherFor(resolveServerUrl()) ?? globalThis.fetch,
+        undefined,
+        undefined,
+        await readProjectLockfile(project),
       ),
     checkReviewRules: checkReviewRulesImpl,
     bundleEntryPoint: bundleExtension,
@@ -1287,7 +1299,10 @@ export async function extensionPushPrepare(
   const specifiers = await deps.extractDependencySpecifiers(sourceFiles);
   if (specifiers.length > 0) {
     ctx.logger.debug`Auditing ${specifiers.length} dependency specifier(s)`;
-    dependencyTrustResult = await deps.checkDependencyTrust(specifiers);
+    dependencyTrustResult = await deps.checkDependencyTrust(specifiers, {
+      denoConfigPath: input.denoConfigPath,
+      packageJsonDir: input.packageJsonDir,
+    });
     if (dependencyTrustResult.errors.length > 0) {
       failGate(
         "dependency-trust",
