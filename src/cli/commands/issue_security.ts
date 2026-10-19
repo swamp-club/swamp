@@ -30,9 +30,10 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   dispatchExtensionRepositoryReport,
-  requireNonBlank,
+  prefillTitle,
   resolveDestination,
   resolveExtensionOrRefuse,
+  resolveReportText,
   submitIssue,
   type UsableExtensionTarget,
 } from "./issue_submit.ts";
@@ -79,9 +80,10 @@ const SECURITY_TEMPLATE = `
  */
 export function parseSecurityContent(
   content: string,
+  template: string = SECURITY_TEMPLATE,
 ): { title: string; body: string } | null {
   const trimmedContent = content.trim();
-  if (!trimmedContent || trimmedContent === SECURITY_TEMPLATE.trim()) {
+  if (!trimmedContent || trimmedContent === template.trim()) {
     return null;
   }
 
@@ -181,25 +183,19 @@ export const issueSecurityCommand = new Command()
     let title: string;
     let body: string;
 
-    if (options.title !== undefined && options.body !== undefined) {
-      title = requireNonBlank("--title", options.title);
-      body = requireNonBlank("--body", options.body);
-    } else if (options.body !== undefined) {
-      throw new UserError("--body requires --title to be specified");
+    const source = resolveReportText(options, ctx.outputMode);
+    if (source.kind === "flags") {
+      title = source.title;
+      body = source.body;
     } else {
-      if (ctx.outputMode === "json") {
-        throw new UserError(
-          "Interactive mode is not available with --json. Use --title and --body options.",
-        );
-      }
-
       const tempFile = await Deno.makeTempFile({
         prefix: "swamp-security-",
         suffix: ".md",
       });
 
       try {
-        await Deno.writeTextFile(tempFile, SECURITY_TEMPLATE);
+        const template = prefillTitle(SECURITY_TEMPLATE, source.prefilledTitle);
+        await Deno.writeTextFile(tempFile, template);
         ctx.logger.debug`Opening editor for security report`;
         const launch = await editorService.prepareOpenFile(tempFile, {
           wait: true,
@@ -211,7 +207,7 @@ export const issueSecurityCommand = new Command()
         await launch.open();
 
         const content = await Deno.readTextFile(tempFile);
-        const parsed = parseSecurityContent(content);
+        const parsed = parseSecurityContent(content, template);
         if (!parsed) {
           renderIssueCancelled(
             { type: "security", reason: "empty" },

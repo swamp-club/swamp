@@ -30,6 +30,7 @@
  */
 
 import type { CommandContext } from "../context.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -69,6 +70,75 @@ export function requireNonBlank(flag: string, value: string): string {
     throw new UserError(`${flag} must not be empty or only whitespace.`);
   }
   return value;
+}
+
+/**
+ * Where a report's title and body come from: both flags, or the editor
+ * (with the `--title` value already in its Title section when only
+ * `--title` was given).
+ */
+export type ReportTextSource =
+  | { kind: "flags"; title: string; body: string }
+  | { kind: "editor"; prefilledTitle?: string };
+
+/**
+ * Decides how `swamp issue bug`, `feature` and `security` collect the title
+ * and body from `--title` and `--body`. Throws a UserError for combinations
+ * that can't be submitted, naming the flag that is missing
+ * (swamp-club#3576).
+ */
+export function resolveReportText(
+  options: { title?: string; body?: string },
+  outputMode: OutputMode,
+): ReportTextSource {
+  if (options.title !== undefined && options.body !== undefined) {
+    return {
+      kind: "flags",
+      title: requireNonBlank("--title", options.title),
+      body: requireNonBlank("--body", options.body),
+    };
+  }
+  if (options.body !== undefined) {
+    throw new UserError("--body requires --title to be specified");
+  }
+  if (options.title !== undefined) {
+    const title = requireNonBlank("--title", options.title);
+    if (outputMode === "json") {
+      throw new UserError(
+        "--title requires --body with --json (interactive mode is not available).",
+      );
+    }
+    // The report parsers read the title from one line that can't start with
+    // "#" or "<", so such a title would make the edited report unreadable and
+    // lose the body typed in the editor.
+    if (title.includes("\n") || /^\s*[#<]/.test(title)) {
+      throw new UserError(
+        '--title without --body must be one line that does not start with "#" or "<". Pass --body as well, or type the title in the editor.',
+      );
+    }
+    return { kind: "editor", prefilledTitle: title };
+  }
+  if (outputMode === "json") {
+    throw new UserError(
+      "Interactive mode is not available with --json. Use --title and --body options.",
+    );
+  }
+  return { kind: "editor" };
+}
+
+/**
+ * `template` with `title` on the line under its `## Title` comment, where the
+ * report parsers read the title from. Returns `template` unchanged when
+ * `title` is undefined.
+ */
+export function prefillTitle(template: string, title?: string): string {
+  if (title === undefined) {
+    return template;
+  }
+  return template.replace(
+    /(## Title\n<!--[^>]*-->\n)/,
+    (section) => `${section}${title}\n`,
+  );
 }
 
 /** Extension target after refusals have been thrown — never "refused". */

@@ -32,8 +32,10 @@ import type { CommandContext } from "../context.ts";
 import {
   buildMailtoUrl,
   dispatchExtensionRepositoryReport,
+  prefillTitle,
   requireNonBlank,
   resolveExtensionOrRefuse,
+  resolveReportText,
   submitIssue,
 } from "./issue_submit.ts";
 
@@ -50,6 +52,100 @@ Deno.test("requireNonBlank: rejects an empty or whitespace-only value", () => {
 Deno.test("requireNonBlank: returns a value with content unchanged", () => {
   assertEquals(requireNonBlank("--title", "probe"), "probe");
   assertEquals(requireNonBlank("--title", "  padded  "), "  padded  ");
+});
+
+Deno.test("resolveReportText: both flags submit without the editor", () => {
+  for (const mode of ["log", "json"] as const) {
+    assertEquals(resolveReportText({ title: "t", body: "b" }, mode), {
+      kind: "flags",
+      title: "t",
+      body: "b",
+    });
+  }
+});
+
+Deno.test("resolveReportText: --body without --title is refused", () => {
+  for (const mode of ["log", "json"] as const) {
+    const error = assertThrows(
+      () => resolveReportText({ body: "b" }, mode),
+      UserError,
+    );
+    assertEquals(error.message, "--body requires --title to be specified");
+  }
+});
+
+Deno.test("resolveReportText: --title alone opens the editor with the title pre-filled", () => {
+  assertEquals(resolveReportText({ title: "probe" }, "log"), {
+    kind: "editor",
+    prefilledTitle: "probe",
+  });
+});
+
+Deno.test("resolveReportText: --title alone with --json names the missing --body", () => {
+  const error = assertThrows(
+    () => resolveReportText({ title: "probe" }, "json"),
+    UserError,
+  );
+  assertEquals(
+    error.message,
+    "--title requires --body with --json (interactive mode is not available).",
+  );
+});
+
+Deno.test("resolveReportText: a blank --title alone is refused before the editor", () => {
+  for (const mode of ["log", "json"] as const) {
+    const error = assertThrows(
+      () => resolveReportText({ title: " " }, mode),
+      UserError,
+    );
+    assertEquals(
+      error.message,
+      "--title must not be empty or only whitespace.",
+    );
+  }
+});
+
+Deno.test("resolveReportText: --title alone that the editor can't read back is refused", () => {
+  for (
+    const title of ["#123 crash", "  # heading", "<Command> fails", "a\nb"]
+  ) {
+    const error = assertThrows(
+      () => resolveReportText({ title }, "log"),
+      UserError,
+    );
+    assertEquals(
+      error.message,
+      '--title without --body must be one line that does not start with "#" or "<". Pass --body as well, or type the title in the editor.',
+    );
+  }
+  // With --body the editor is skipped, so the same title is accepted.
+  assertEquals(resolveReportText({ title: "#123 crash", body: "b" }, "log"), {
+    kind: "flags",
+    title: "#123 crash",
+    body: "b",
+  });
+});
+
+Deno.test("resolveReportText: no flags opens the editor, or refuses with --json", () => {
+  assertEquals(resolveReportText({}, "log"), { kind: "editor" });
+  const error = assertThrows(
+    () => resolveReportText({}, "json"),
+    UserError,
+  );
+  assertEquals(
+    error.message,
+    "Interactive mode is not available with --json. Use --title and --body options.",
+  );
+});
+
+Deno.test("prefillTitle: puts the title on the line under the Title comment", () => {
+  const template =
+    "# Report\n\n## Title\n<!-- title below -->\n\n\n## Description\n";
+  assertEquals(
+    prefillTitle(template, "probe $& $1"),
+    "# Report\n\n## Title\n<!-- title below -->\nprobe $& $1\n\n\n## Description\n",
+  );
+  assertEquals(prefillTitle(template, undefined), template);
 });
 
 Deno.test("buildMailtoUrl: builds correct mailto URL for bug", () => {

@@ -30,9 +30,55 @@ import { AuthRepository } from "../../infrastructure/persistence/auth_repository
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+// The filter values swamp-club's Lab accepts for a search. `platform` is a
+// valid search filter even though `issue edit --type` cannot set it.
+const SEARCH_ISSUE_TYPES = ["bug", "feature", "security", "platform"] as const;
+const SEARCH_ISSUE_STATUSES = [
+  "open",
+  "triaged",
+  "in_progress",
+  "shipped",
+  "closed",
+] as const;
+
+/**
+ * Throws a UserError for a `--type`, `--status` or `--limit` value the Lab
+ * would refuse, so the request is never sent (swamp-club#3577).
+ */
+export function validateIssueSearchOptions(
+  options: { type?: string; status?: string; limit?: number },
+): void {
+  if (
+    options.type !== undefined &&
+    !(SEARCH_ISSUE_TYPES as readonly string[]).includes(options.type)
+  ) {
+    throw new UserError(
+      `Invalid issue type "${options.type}". Must be one of: ${
+        SEARCH_ISSUE_TYPES.join(", ")
+      }`,
+    );
+  }
+  if (
+    options.status !== undefined &&
+    !(SEARCH_ISSUE_STATUSES as readonly string[]).includes(options.status)
+  ) {
+    throw new UserError(
+      `Invalid issue status "${options.status}". Must be one of: ${
+        SEARCH_ISSUE_STATUSES.join(", ")
+      }`,
+    );
+  }
+  if (options.limit !== undefined && options.limit < 1) {
+    throw new UserError(
+      `Invalid limit ${options.limit}. Must be a positive integer.`,
+    );
+  }
+}
 
 export const issueSearchCommand = new Command()
   .name("search")
@@ -44,7 +90,7 @@ export const issueSearchCommand = new Command()
   .arguments("[query:string]")
   .option(
     "--type <type:string>",
-    "Filter by issue type (bug, feature, security)",
+    "Filter by issue type (bug, feature, security, platform)",
   )
   .option(
     "--status <status:string>",
@@ -54,6 +100,7 @@ export const issueSearchCommand = new Command()
   .option("--limit <limit:integer>", "Maximum number of results to return")
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["issue", "search"]);
+    validateIssueSearchOptions(options);
 
     const credentials = await new AuthRepository().load();
     const identity = await loadIdentity();

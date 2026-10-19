@@ -30,9 +30,10 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   dispatchExtensionRepositoryReport,
-  requireNonBlank,
+  prefillTitle,
   resolveDestination,
   resolveExtensionOrRefuse,
+  resolveReportText,
   submitIssue,
   type UsableExtensionTarget,
 } from "./issue_submit.ts";
@@ -184,25 +185,21 @@ export const issueBugCommand = new Command()
     let title: string;
     let body: string;
 
-    if (options.title !== undefined && options.body !== undefined) {
-      title = requireNonBlank("--title", options.title);
-      body = requireNonBlank("--body", options.body);
-    } else if (options.body !== undefined) {
-      throw new UserError("--body requires --title to be specified");
+    const source = resolveReportText(options, ctx.outputMode);
+    if (source.kind === "flags") {
+      title = source.title;
+      body = source.body;
     } else {
-      if (ctx.outputMode === "json") {
-        throw new UserError(
-          "Interactive mode is not available with --json. Use --title and --body options.",
-        );
-      }
-
       const tempFile = await Deno.makeTempFile({
         prefix: "swamp-bug-",
         suffix: ".md",
       });
 
       try {
-        const template = buildBugTemplate();
+        const template = prefillTitle(
+          buildBugTemplate(),
+          source.prefilledTitle,
+        );
         await Deno.writeTextFile(tempFile, template);
         ctx.logger.debug`Opening editor for bug report`;
         const launch = await editorService.prepareOpenFile(tempFile, {

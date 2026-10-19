@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { buildBugTemplate, parseBugContent } from "./issue_bug.ts";
+import { prefillTitle } from "./issue_submit.ts";
 
 Deno.test("parseBugContent: returns null for empty content", () => {
   const template = buildBugTemplate();
@@ -113,4 +114,20 @@ Deno.test("buildBugTemplate: auto-populates environment values", () => {
   const versionMatch = template.match(/- swamp version: (.+)/);
   assertEquals(versionMatch !== null, true);
   assertEquals(versionMatch![1].trim().length > 0, true);
+});
+
+Deno.test("parseBugContent: reads a pre-filled --title back", () => {
+  const template = prefillTitle(buildBugTemplate(), "CLI crashes on start");
+  const content = template.replace(
+    "## Description\n<!-- Describe the bug in detail. What did you expect to happen? What actually happened? -->\n",
+    "## Description\n<!-- Describe the bug in detail. What did you expect to happen? What actually happened? -->\nIt crashes.\n",
+  );
+  const result = parseBugContent(content, template);
+  assertEquals(result?.title, "CLI crashes on start");
+  assertStringIncludes(result!.body, "It crashes.");
+});
+
+Deno.test("parseBugContent: an unedited pre-filled template is cancelled", () => {
+  const template = prefillTitle(buildBugTemplate(), "CLI crashes on start");
+  assertEquals(parseBugContent(template, template), null);
 });

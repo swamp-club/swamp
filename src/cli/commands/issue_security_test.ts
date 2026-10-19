@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { parseSecurityContent } from "./issue_security.ts";
+import { prefillTitle } from "./issue_submit.ts";
 
 Deno.test("parseSecurityContent: extracts title and body", () => {
   const content = `# Security Report
@@ -97,4 +98,27 @@ Real description here.
   const result = parseSecurityContent(content);
   assertEquals(result?.body.includes("<!--"), false);
   assertEquals(result?.body.includes("Real description here"), true);
+});
+
+Deno.test("parseSecurityContent: reads a pre-filled --title back, and cancels it unedited", () => {
+  const template = prefillTitle(
+    `# Security Report
+
+## Title
+<!-- Enter a brief, descriptive title for the vulnerability on the line below -->
+
+
+## Description
+<!-- Describe the security issue. What is the vulnerability? What is the potential impact? -->
+
+`,
+    "Token leaks in logs",
+  );
+  assertEquals(parseSecurityContent(template, template), null);
+  const result = parseSecurityContent(
+    `${template}The token is logged.\n`,
+    template,
+  );
+  assertEquals(result?.title, "Token leaks in logs");
+  assertEquals(result?.body.includes("The token is logged."), true);
 });

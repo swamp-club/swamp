@@ -62,7 +62,7 @@ export const dataListCommand = withRemoteOptions(
     )
     .option(
       "--type <type:string>",
-      "Filter by data type (log, file, resource, data)",
+      "Filter by data type tag (log, file, resource, data, output)",
     )
     .option(
       "--workflow <name:string>",
