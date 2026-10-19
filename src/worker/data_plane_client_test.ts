@@ -68,6 +68,36 @@ Deno.test("DataPlaneClient: presents the bearer credential on every request", as
   assertEquals(requests[0].authorization, "Bearer cred-1");
 });
 
+Deno.test("DataPlaneClient: resource and writer-open bodies carry write overrides (swamp-club#3574)", async () => {
+  const { client, requests } = clientWith((req) =>
+    req.url.endsWith("/data/writers")
+      ? Response.json({ writerId: "w-1", dataId: "d" })
+      : Response.json({ dataId: "d", version: 1 })
+  );
+  await client.writeResource({
+    specName: "result",
+    name: "result",
+    data: { ok: true },
+    overrides: { tags: { provider: "claude" }, lifetime: "7d" },
+  });
+  await client.openWriter({
+    specName: "log",
+    name: "log",
+    overrides: { contentType: "text/plain", tags: { probe: "file" } },
+  });
+  assertEquals(JSON.parse(requests[0].body!), {
+    specName: "result",
+    name: "result",
+    data: { ok: true },
+    overrides: { tags: { provider: "claude" }, lifetime: "7d" },
+  });
+  assertEquals(JSON.parse(requests[1].body!), {
+    specName: "log",
+    name: "log",
+    overrides: { contentType: "text/plain", tags: { probe: "file" } },
+  });
+});
+
 Deno.test("DataPlaneClient: artifact reads cache by immutable content path", async () => {
   const { client, requests } = clientWith(() =>
     new Response(new TextEncoder().encode("bytes"))

@@ -146,6 +146,9 @@ function harness(
 
   const lines: string[] = [];
   const contents: Array<{ writerId: string; bytes: number }> = [];
+  // Request bodies the worker sent to the data plane, in order.
+  const writeBodies: Array<{ route: string; body: Record<string, unknown> }> =
+    [];
   let writerCounter = 0;
   const client = {
     readArtifact: (contentPath: string) => {
@@ -158,8 +161,9 @@ function harness(
     },
     writeResource: (
       body: { specName: string; name: string; data: Record<string, unknown> },
-    ) =>
-      Promise.resolve({
+    ) => {
+      writeBodies.push({ route: "resource", body });
+      return Promise.resolve({
         dataId: crypto.randomUUID(),
         name: body.name,
         specName: body.specName,
@@ -167,8 +171,10 @@ function harness(
         version: 1,
         size: 1,
         tags: {},
-      }),
-    openWriter: (_body: { specName: string; name: string }) => {
+      });
+    },
+    openWriter: (body: { specName: string; name: string }) => {
+      writeBodies.push({ route: "writers", body });
       writerCounter++;
       return Promise.resolve({
         writerId: `w-${writerCounter}`,
@@ -231,7 +237,15 @@ function harness(
     signal: new AbortController().signal,
     onEvent,
   });
-  return { context, getHandles, redact, calls, lines, contents };
+  return {
+    context,
+    getHandles,
+    redact,
+    calls,
+    lines,
+    contents,
+    writeBodies,
+  };
 }
 
 async function withScratch(
@@ -334,6 +348,66 @@ Deno.test("remote context: writeResource tracks handles for write-then-throw", a
     await h.context.writeResource!("out", "one", { a: 1 });
     await h.context.writeResource!("out", "two", { a: 2 });
     assertEquals(h.getHandles().map((x) => x.name), ["one", "two"]);
+  });
+});
+
+Deno.test("remote context: writeResource and createFileWriter send their overrides (swamp-club#3574)", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    await h.context.writeResource!("out", "one", { a: 1 }, {
+      tags: { provider: "claude", exitCode: "0" },
+      lifetime: "7d",
+      garbageCollection: 3,
+    });
+    const writer = h.context.createFileWriter!("log", "log", {
+      tags: { probe: "file" },
+      contentType: "text/plain",
+      lifetime: "1h",
+      garbageCollection: "2d",
+      streaming: true,
+    });
+    await writer.writeText("hello");
+    assertEquals(h.writeBodies, [
+      {
+        route: "resource",
+        body: {
+          specName: "out",
+          name: "one",
+          data: { a: 1 },
+          overrides: {
+            tags: { provider: "claude", exitCode: "0" },
+            lifetime: "7d",
+            garbageCollection: 3,
+          },
+        },
+      },
+      {
+        route: "writers",
+        body: {
+          specName: "log",
+          name: "log",
+          overrides: {
+            tags: { probe: "file" },
+            contentType: "text/plain",
+            lifetime: "1h",
+            garbageCollection: "2d",
+            streaming: true,
+          },
+        },
+      },
+    ]);
+  });
+});
+
+Deno.test("remote context: writes without overrides send no overrides key", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    await h.context.writeResource!("out", "one", { a: 1 });
+    await h.context.createFileWriter!("log", "log").writeText("hello");
+    assertEquals(h.writeBodies.map((w) => "overrides" in w.body), [
+      false,
+      false,
+    ]);
   });
 });
 

@@ -31,6 +31,10 @@
 
 import { createTlsHttpClient } from "../cli/remote_run.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type {
+  FileWriterOverrides,
+  ResourceWriteOverrides,
+} from "../domain/models/model.ts";
 
 const logger = getSwampLogger(["worker", "data-plane"]);
 
@@ -180,7 +184,12 @@ export class DataPlaneClient {
   }
 
   async writeResource(
-    body: { specName: string; name: string; data: Record<string, unknown> },
+    body: {
+      specName: string;
+      name: string;
+      data: Record<string, unknown>;
+      overrides?: ResourceWriteOverrides;
+    },
     signal?: AbortSignal,
   ): Promise<RemoteDataHandle> {
     const response = await this.#request("POST", "/data/resource", {
@@ -205,7 +214,7 @@ export class DataPlaneClient {
   }
 
   async openWriter(
-    body: { specName: string; name: string },
+    body: { specName: string; name: string; overrides?: FileWriterOverrides },
     signal?: AbortSignal,
   ): Promise<{ writerId: string; dataId: string }> {
     const response = await this.#request("POST", "/data/writers", {

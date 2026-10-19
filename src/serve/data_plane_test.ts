@@ -53,6 +53,8 @@ interface StoredEntry {
   data: Record<string, unknown>;
   version: number;
   lifetime?: string;
+  /** The saved record's metadata, for assertions on tags and policies. */
+  saved?: Data;
 }
 
 function createInMemoryRepo(tempDir: string): {
@@ -104,6 +106,7 @@ function createInMemoryRepo(tempDir: string): {
         data: { id: data.id, name: data.name },
         version,
         lifetime: data.lifetime,
+        saved: data,
       });
       return Promise.resolve({ version });
     },
@@ -145,6 +148,7 @@ function createInMemoryRepo(tempDir: string): {
         content,
         data: { id: data.id, name: data.name },
         version,
+        saved: data,
       });
       return { size: content.length, checksum: "test" };
     },
@@ -463,6 +467,161 @@ Deno.test("DataPlane: resource writes flow through declared-spec enforcement", a
     );
     // onFirstWrite fires once per dispatch, not per write.
     assertEquals(h.firstWrites, ["d-1"]);
+  });
+});
+
+Deno.test("DataPlane: resource write overrides from a worker land on the saved record (swamp-club#3574)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register({
+      ...activeDispatch(),
+      tagOverrides: { workflow: "wf" },
+    });
+
+    const response = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "x" },
+          overrides: {
+            lifetime: "7d",
+            garbageCollection: 3,
+            // Method tags rank below the auto-injected and workflow tags,
+            // exactly as for a local write.
+            tags: {
+              provider: "claude",
+              specName: "forged",
+              modelName: "forged",
+              workflow: "forged",
+            },
+          },
+        }),
+      }),
+    );
+    assertEquals(response?.status, 200);
+    await response?.body?.cancel();
+
+    const saved = h.stored.get(`${MODEL_TYPE.normalized}/m-1/result`)!.saved!;
+    assertEquals(saved.lifetime, "7d");
+    assertEquals(saved.garbageCollection, 3);
+    assertEquals(saved.tags.provider, "claude");
+    assertEquals(saved.tags.specName, "result");
+    assertEquals(saved.tags.modelName, "test-def");
+    assertEquals(saved.tags.workflow, "wf");
+  });
+});
+
+Deno.test("DataPlane: a resource write without overrides keeps the spec defaults", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "x" },
+        }),
+      }),
+    );
+    assertEquals(response?.status, 200);
+    await response?.body?.cancel();
+
+    const saved = h.stored.get(`${MODEL_TYPE.normalized}/m-1/result`)!.saved!;
+    assertEquals(saved.lifetime, "infinite");
+    assertEquals(saved.garbageCollection, 5);
+    assertEquals(saved.tags.provider, undefined);
+  });
+});
+
+Deno.test("DataPlane: malformed resource overrides are refused before anything is written", async () => {
+  for (
+    const [overrides, field] of [
+      [{ tags: { exitCode: 0 } }, "overrides.tags.exitCode"],
+      [{ lifetime: "forever" }, "overrides.lifetime"],
+      [{ garbageCollection: -1 }, "overrides.garbageCollection"],
+      ["7d", "overrides"],
+    ] as const
+  ) {
+    await withHarness(async (h) => {
+      h.dispatches.register(activeDispatch());
+      const response = await h.plane.handle(
+        request("/data/resource", {
+          method: "POST",
+          body: JSON.stringify({
+            specName: "result",
+            name: "result",
+            data: { value: "x" },
+            overrides,
+          }),
+        }),
+      );
+      assertEquals(response?.status, 400);
+      assertStringIncludes(await response!.text(), `Invalid ${field}`);
+      assertEquals(h.stored.size, 0);
+      // The lease is not marked as having written.
+      assertEquals(h.firstWrites, []);
+    });
+  }
+});
+
+Deno.test("DataPlane: file writer overrides sent at open land on the saved file (swamp-club#3574)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+
+    const open = await h.plane.handle(
+      request("/data/writers", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "log",
+          name: "log",
+          overrides: {
+            contentType: "application/x-ndjson",
+            lifetime: "1h",
+            garbageCollection: "2d",
+            tags: { probe: "file" },
+          },
+        }),
+      }),
+    );
+    assertEquals(open?.status, 200);
+    const { writerId } = await open!.json();
+
+    const content = await h.plane.handle(
+      request(`/data/writers/${writerId}/content`, {
+        method: "POST",
+        body: "streamed payload",
+      }),
+    );
+    assertEquals(content?.status, 200);
+    await content?.body?.cancel();
+
+    const saved = h.stored.get(`${MODEL_TYPE.normalized}/m-1/log`)!.saved!;
+    assertEquals(saved.contentType, "application/x-ndjson");
+    assertEquals(saved.lifetime, "1h");
+    assertEquals(saved.garbageCollection, "2d");
+    assertEquals(saved.tags.probe, "file");
+    assertEquals(saved.tags.specName, "log");
+  });
+});
+
+Deno.test("DataPlane: malformed file writer overrides are refused and open no writer", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const open = await h.plane.handle(
+      request("/data/writers", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "log",
+          name: "log",
+          overrides: { contentType: 5 },
+        }),
+      }),
+    );
+    assertEquals(open?.status, 400);
+    assertStringIncludes(await open!.text(), "Invalid overrides.contentType");
+    assertEquals(h.plane.openWriterCount, 0);
   });
 });
 

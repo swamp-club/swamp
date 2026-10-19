@@ -389,6 +389,20 @@ Deno.test({
           "line one\nline two\n",
         );
 
+        // The method's write overrides survived the worker-to-serve hop
+        // (swamp-club#3574).
+        const resultRecord = await orchestrator.repoContext.unifiedDataRepo
+          .findByName(IT_TYPE, IT_DEFINITION_ID, "result-main");
+        assertEquals(resultRecord!.lifetime, "7d");
+        assertEquals(resultRecord!.garbageCollection, 3);
+        assertEquals(resultRecord!.tags.provider, "it");
+        assertEquals(resultRecord!.tags.exitCode, "0");
+        const logRecord = await orchestrator.repoContext.unifiedDataRepo
+          .findByName(IT_TYPE, IT_DEFINITION_ID, "log-main");
+        assertEquals(logRecord!.contentType, "text/x-log");
+        assertEquals(logRecord!.lifetime, "1h");
+        assertEquals(logRecord!.tags.probe, "file");
+
         // The vault write the method performed landed in the real vault.
         const vault = await VaultService.fromRepository(dir);
         assertEquals(await vault.get("local", "from-method"), "round-trip");
