@@ -260,7 +260,8 @@ async function resolveDeps(
   return resolvedFiles;
 }
 
-async function hashFile(
+/** The SHA-256 of a file's content, as hex. */
+export async function hashFile(
   path: string,
   cache?: FreshnessCache,
 ): Promise<string> {

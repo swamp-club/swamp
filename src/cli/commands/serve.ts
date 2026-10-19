@@ -378,6 +378,7 @@ import {
   createExtensionDiscoverer,
   isReloading,
   performServeReload,
+  reloadAfterExtensionChange,
   seedPulledTypeSnapshot,
   serveReloadStatus,
 } from "../../serve/extension_reload.ts";
@@ -5500,6 +5501,22 @@ export const serveCommand = new Command()
       }
     };
     connectionCtx.workflowReloader = reloadExtensionWorkflows;
+
+    // A --hot-reload serve reloads itself after its own extension pull,
+    // update, install or rm (swamp-club#3594). Same scope as the config
+    // poller's reload: serve.yaml is not re-read, so a pull never applies
+    // unrelated pending config edits.
+    if (merged.hotReload) {
+      const changeDiscoverer = createExtensionDiscoverer({
+        lockfilePath: extensionLockfilePath,
+        repoDir: resolvedRepoDir,
+      });
+      connectionCtx.extensionChangeReloader = () =>
+        reloadAfterExtensionChange(resolvedRepoDir, extensionLockfilePath, {
+          extensionDiscoverer: changeDiscoverer,
+          workflowReloader: reloadExtensionWorkflows,
+        });
+    }
 
     // Parse group refresh interval and construct service
     let collectiveRefreshService:

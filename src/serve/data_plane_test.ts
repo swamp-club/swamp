@@ -32,7 +32,7 @@ import {
 } from "../domain/vaults/run_vault_access.ts";
 import { DataPlane, dataPlaneOperation } from "./data_plane.ts";
 import { type ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
-import { BundleRegistry } from "./bundle_registry.ts";
+import { BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -711,6 +711,59 @@ Deno.test("DataPlane: /bundle/{fp}/files skips declared files missing on disk", 
     } finally {
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     }
+  });
+});
+
+Deno.test("DataPlane: an asset changed since its fingerprint was taken is refused, without its path (swamp-club#3594)", async () => {
+  await withHarness(async (h) => {
+    const assetsRoot = join(h.tempDir, "assets");
+    await Deno.mkdir(assetsRoot, { recursive: true });
+    const asset = join(assetsRoot, "a.txt");
+    await Deno.writeTextFile(asset, "v1");
+    h.bundles.register("fp-pinned", {
+      js: "export {};",
+      filesRoot: assetsRoot,
+      additionalFiles: ["a.txt"],
+      assetHashes: {
+        "a.txt": await hashAssetBytes(new TextEncoder().encode("v1")),
+      },
+    });
+
+    const served = await h.plane.handle(
+      request("/bundle/fp-pinned/file/a.txt"),
+    );
+    assertEquals(served?.status, 200);
+    assertEquals(await served?.text(), "v1");
+
+    await Deno.writeTextFile(asset, "v2");
+    const refused = await h.plane.handle(
+      request("/bundle/fp-pinned/file/a.txt"),
+    );
+    assertEquals(refused?.status, 409);
+    const body = await refused!.text();
+    assertStringIncludes(body, "a.txt");
+    assertEquals(body.includes(assetsRoot), false);
+  });
+});
+
+Deno.test("DataPlane: /bundle/{fp}/files lists only the assets the fingerprint hashed (swamp-club#3594)", async () => {
+  await withHarness(async (h) => {
+    const assetsRoot = join(h.tempDir, "assets");
+    await Deno.mkdir(assetsRoot, { recursive: true });
+    await Deno.writeTextFile(join(assetsRoot, "hashed.txt"), "x");
+    // Absent when the fingerprint was taken, present now.
+    await Deno.writeTextFile(join(assetsRoot, "late.txt"), "y");
+    h.bundles.register("fp-listed", {
+      js: "export {};",
+      filesRoot: assetsRoot,
+      additionalFiles: ["hashed.txt", "late.txt"],
+      assetHashes: {
+        "hashed.txt": await hashAssetBytes(new TextEncoder().encode("x")),
+      },
+    });
+
+    const resp = await h.plane.handle(request("/bundle/fp-listed/files"));
+    assertEquals((await resp!.json()).files, ["hashed.txt"]);
   });
 });
 

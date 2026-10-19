@@ -33,7 +33,8 @@ import {
   WorkerAffinityLostError,
 } from "./dispatch_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
-import { BundleRegistry } from "./bundle_registry.ts";
+import { BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
+import { join } from "@std/path";
 import {
   WorkerGateway,
   WorkerNotDispatchableError,
@@ -244,6 +245,88 @@ Deno.test("DispatchService: extension bundles register by content fingerprint", 
   const registered = h.bundles.get(fingerprint);
   assertEquals(registered?.js, "export const model = 1;");
   assertEquals(registered?.filesRoot, "/ext/files");
+});
+
+Deno.test("DispatchService: a definition's fingerprint and assets are pinned once, so an asset changed on disk never pairs with its old JS (swamp-club#3594)", async () => {
+  const filesRoot = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(join(filesRoot, "a.txt"), "v1");
+    let factoryCalls = 0;
+    const h = createHarness();
+    const extensionDef: ModelDefinition = {
+      ...builtinModelDef,
+      bundleSourceFactory: () => {
+        factoryCalls++;
+        return Promise.resolve("export const model = 1;");
+      },
+      extensionFilesRoot: filesRoot,
+      extensionAdditionalFiles: ["a.txt", "missing.txt"],
+    };
+    await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
+    await Deno.writeTextFile(join(filesRoot, "a.txt"), "v2");
+    await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
+
+    const [first, second] = h.dispatchCalls.map((c) =>
+      c.params.bundleFingerprint
+    );
+    assertEquals(second, first);
+    assertEquals(factoryCalls, 1);
+    const registered = h.bundles.get(first);
+    assertEquals(registered?.assetHashes, {
+      "a.txt": await hashAssetBytes(new TextEncoder().encode("v1")),
+    });
+  } finally {
+    await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("DispatchService: a replaced definition gets a fingerprint of its own assets (swamp-club#3594)", async () => {
+  const filesRoot = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(join(filesRoot, "a.txt"), "v1");
+    const h = createHarness();
+    const define = (): ModelDefinition => ({
+      ...builtinModelDef,
+      bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
+      extensionFilesRoot: filesRoot,
+      extensionAdditionalFiles: ["a.txt"],
+    });
+    await h.service.executeRemote(stepRequest({ modelDef: define() }));
+    await Deno.writeTextFile(join(filesRoot, "a.txt"), "v2");
+    await h.service.executeRemote(stepRequest({ modelDef: define() }));
+
+    const [first, second] = h.dispatchCalls.map((c) =>
+      c.params.bundleFingerprint
+    );
+    assertEquals(second === first, false);
+    assertEquals(h.bundles.get(second)?.assetHashes, {
+      "a.txt": await hashAssetBytes(new TextEncoder().encode("v2")),
+    });
+  } finally {
+    await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("DispatchService: a bundle that cannot be built fails the step and is retried by the next dispatch (swamp-club#3594)", async () => {
+  const h = createHarness();
+  let fail = true;
+  const extensionDef: ModelDefinition = {
+    ...builtinModelDef,
+    bundleSourceFactory: () =>
+      fail
+        ? Promise.reject(new Error("stale source"))
+        : Promise.resolve("export const model = 1;"),
+  };
+  await assertRejects(
+    () => h.service.executeRemote(stepRequest({ modelDef: extensionDef })),
+    Error,
+    "stale source",
+  );
+  assertEquals(h.dispatchCalls.length, 0);
+
+  fail = false;
+  await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
+  assertEquals(h.dispatchCalls.length, 1);
 });
 
 Deno.test("DispatchService: remote method error fails the lease and rethrows", async () => {

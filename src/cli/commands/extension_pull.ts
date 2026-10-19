@@ -66,9 +66,10 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
-  warnServerReloadNeeded,
+  serverReloadCommand,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { renderServerExtensionChange } from "../../presentation/output/server_extension_change_output.ts";
 import type { ExtensionPullResponse } from "../../serve/protocol.ts";
 
 // Re-export types that other CLI commands depend on
@@ -305,7 +306,10 @@ export const extensionPullCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
-    warnServerReloadNeeded(server);
+    renderServerExtensionChange({
+      serveReload: response.serveReload,
+      reloadCommand: serverReloadCommand(server),
+    }, ctx.outputMode);
     return;
   }
 

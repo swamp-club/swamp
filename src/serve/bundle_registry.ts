@@ -42,6 +42,26 @@ export interface RegisteredBundle {
    * co-located assets are shipped.
    */
   additionalFiles?: string[];
+  /**
+   * Each declared asset's content hash ({@link hashAssetBytes}) when the
+   * fingerprint was computed, keyed by relative path; a file missing then
+   * has no entry. The data plane serves only bytes that still match, so a
+   * fingerprint never names assets other than those it hashed
+   * (swamp-club#3594). Undefined for a bundle with no assets.
+   */
+  assetHashes?: Readonly<Record<string, string>>;
+}
+
+/** The content hash a bundle fingerprint records for one asset file. */
+export async function hashAssetBytes(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    bytes as Uint8Array<ArrayBuffer>,
+  );
+  return Array.from(
+    new Uint8Array(digest),
+    (b) => b.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 export class BundleRegistry {

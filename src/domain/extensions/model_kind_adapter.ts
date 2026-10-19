@@ -70,6 +70,10 @@ import {
   type ExtensionContributor,
 } from "./extension_precedence.ts";
 import { evictRemovedBundles } from "./bundle_eviction.ts";
+import {
+  sourceSnapshotChanged,
+  StaleExtensionSourceError,
+} from "./source_snapshot.ts";
 import { realCanonicalPath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { markErrorPaths } from "../errors.ts";
 import {
@@ -785,6 +789,45 @@ function findNearestDenoConfig(
   return undefined;
 }
 
+/**
+ * Builds the self-contained bundle serve ships to workers, once per
+ * registration. It bundles only the source the type was registered from:
+ * once that source changed on disk, bundling it would ship workers code
+ * the process does not run itself (swamp-club#3594), so it refuses until
+ * a reload registers the type again.
+ */
+function createBundleSourceFactory(
+  typeNormalized: string,
+  context: RegistrationContext,
+): () => Promise<string> {
+  let bundlePromise: Promise<string> | undefined;
+  return () => {
+    bundlePromise ??= (async () => {
+      if (
+        context.sourceSnapshot &&
+        await sourceSnapshotChanged(context.sourceSnapshot)
+      ) {
+        throw new StaleExtensionSourceError(
+          typeNormalized,
+          context.extensionName,
+        );
+      }
+      const denoPath = await context.denoRuntime.ensureDeno();
+      return bundleExtension(
+        context.absolutePath,
+        denoPath,
+        { selfContained: true, env: context.denoRuntime.getDenoEnv() },
+      );
+    })().catch((error) => {
+      bundlePromise = undefined;
+      logger
+        .warn`Failed to create self-contained bundle for ${context.absolutePath}: ${error}`;
+      throw error;
+    });
+    return bundlePromise;
+  };
+}
+
 export const modelKindAdapter: KindAdapter = {
   kind: "model",
   bundleSubdir: SWAMP_SUBDIRS.bundles,
@@ -886,23 +929,10 @@ export const modelKindAdapter: KindAdapter = {
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
 
-    let bundlePromise: Promise<string> | undefined;
-    modelDef.bundleSourceFactory = () => {
-      bundlePromise ??= (async () => {
-        const denoPath = await context.denoRuntime.ensureDeno();
-        return bundleExtension(
-          context.absolutePath,
-          denoPath,
-          { selfContained: true, env: context.denoRuntime.getDenoEnv() },
-        );
-      })().catch((error) => {
-        bundlePromise = undefined;
-        logger
-          .warn`Failed to create self-contained bundle for ${context.absolutePath}: ${error}`;
-        throw error;
-      });
-      return bundlePromise;
-    };
+    modelDef.bundleSourceFactory = createBundleSourceFactory(
+      modelDef.type.normalized,
+      context,
+    );
 
     modelRegistry.register(modelDef);
   },
@@ -944,23 +974,10 @@ export const modelKindAdapter: KindAdapter = {
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
 
-    let bundlePromise: Promise<string> | undefined;
-    modelDef.bundleSourceFactory = () => {
-      bundlePromise ??= (async () => {
-        const denoPath = await context.denoRuntime.ensureDeno();
-        return bundleExtension(
-          context.absolutePath,
-          denoPath,
-          { selfContained: true, env: context.denoRuntime.getDenoEnv() },
-        );
-      })().catch((error) => {
-        bundlePromise = undefined;
-        logger
-          .warn`Failed to create self-contained bundle for ${context.absolutePath}: ${error}`;
-        throw error;
-      });
-      return bundlePromise;
-    };
+    modelDef.bundleSourceFactory = createBundleSourceFactory(
+      modelDef.type.normalized,
+      context,
+    );
 
     modelRegistry.promoteFromLazy(modelDef);
   },

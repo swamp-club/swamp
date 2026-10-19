@@ -47,7 +47,6 @@ import {
   setMarkerServerAddress,
   subscribeServerEvents,
   toWebSocketUrl,
-  warnServerReloadNeeded,
   writeRemoteIndicator,
 } from "./remote_run.ts";
 import { gzipSync } from "node:zlib";
@@ -2424,11 +2423,7 @@ Deno.test("diagnoseTlsMessage: returns undefined for non-TLS errors", () => {
   assertEquals(diagnoseTlsMessage("DNS lookup failed"), undefined);
 });
 
-// ── warnServerReloadNeeded tests ──────────────────────────────────────
-
-Deno.test("warnServerReloadNeeded: does not throw", () => {
-  warnServerReloadNeeded("ws://127.0.0.1:9090");
-});
+// ── serverReloadCommand tests ─────────────────────────────────────────
 
 Deno.test("serverReloadCommand: keeps --server for a clean URL", () => {
   assertEquals(

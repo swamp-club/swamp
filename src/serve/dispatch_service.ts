@@ -77,7 +77,7 @@ import type { ModelMethodRunner } from "./worker_gateway.ts";
 import type { WorkerSnapshot } from "./worker_gateway.ts";
 import { WorkerNotDispatchableError } from "./worker_gateway.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
-import type { BundleRegistry } from "./bundle_registry.ts";
+import { type BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RemoteLockHolder } from "../domain/datastore/lock_holder_marker.ts";
 import { extractVaultReferences } from "../domain/expressions/vault_reference_extractor.ts";
@@ -212,6 +212,15 @@ export class DispatchService {
    * promise to learn which worker was pinned.
    */
   readonly #affinityInflight = new Map<string, Promise<string>>();
+  /**
+   * Each definition's bundle fingerprint, computed once from the JS and
+   * assets it ships (swamp-club#3594). Keyed by the definition, so a
+   * reload, which registers a new one, starts fresh.
+   */
+  readonly #bundleFingerprints = new WeakMap<
+    ModelDefinition,
+    Promise<string>
+  >();
 
   constructor(options: DispatchServiceOptions) {
     this.#options = options;
@@ -1004,42 +1013,61 @@ export class DispatchService {
       // already guaranteed version lockstep.
       return `${BUILTIN_BUNDLE_PREFIX}${modelDef.type.normalized}`;
     }
-    const js = await modelDef.bundleSourceFactory();
-    const fingerprint = await this.#bundleFingerprint(
-      js,
-      modelDef.extensionFilesRoot,
-      modelDef.extensionAdditionalFiles,
-    );
-    this.#options.bundles.register(fingerprint, {
-      js,
-      filesRoot: modelDef.extensionFilesRoot,
-      additionalFiles: modelDef.extensionAdditionalFiles,
-    });
-    return fingerprint;
+    let pending = this.#bundleFingerprints.get(modelDef);
+    if (!pending) {
+      const registering = this.#registerBundle(modelDef);
+      pending = registering;
+      this.#bundleFingerprints.set(modelDef, registering);
+      // A failure is retried by the next dispatch, not cached.
+      registering.catch(() => {
+        if (this.#bundleFingerprints.get(modelDef) === registering) {
+          this.#bundleFingerprints.delete(modelDef);
+        }
+      });
+    }
+    return await pending;
   }
 
-  async #bundleFingerprint(
-    js: string,
-    filesRoot: string | undefined,
-    additionalFiles: string[] | undefined,
-  ): Promise<string> {
+  /**
+   * Registers the definition's bundle under a fingerprint of the JS and
+   * the assets as read now. The assets are hashed once, with the JS, so
+   * the fingerprint never pairs one version's JS with another's assets
+   * (swamp-club#3594); the data plane serves only assets that still match.
+   */
+  async #registerBundle(modelDef: ModelDefinition): Promise<string> {
+    const js = await modelDef.bundleSourceFactory!();
+    const filesRoot = modelDef.extensionFilesRoot;
+    const additionalFiles = modelDef.extensionAdditionalFiles;
     if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
-      return sha256Hex(js);
+      const fingerprint = await sha256Hex(js);
+      this.#options.bundles.register(fingerprint, {
+        js,
+        filesRoot,
+        additionalFiles,
+      });
+      return fingerprint;
     }
+    const assetHashes: Record<string, string> = {};
     const parts: string[] = [js];
     for (const relPath of [...additionalFiles].sort()) {
-      const absPath = join(filesRoot, relPath);
       try {
-        const content = await Deno.readFile(absPath);
-        const hash = await sha256Hex(
-          new TextDecoder().decode(content),
+        const hash = await hashAssetBytes(
+          await Deno.readFile(join(filesRoot, relPath)),
         );
+        assetHashes[relPath] = hash;
         parts.push(`${relPath}:${hash}`);
       } catch {
         parts.push(`${relPath}:missing`);
       }
     }
-    return sha256Hex(parts.join("\0"));
+    const fingerprint = await sha256Hex(parts.join("\0"));
+    this.#options.bundles.register(fingerprint, {
+      js,
+      filesRoot,
+      additionalFiles,
+      assetHashes,
+    });
+    return fingerprint;
   }
 
   #pendingTransition(

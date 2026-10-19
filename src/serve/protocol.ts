@@ -1805,16 +1805,30 @@ export interface ExtensionInfoResponse {
   data: Record<string, unknown>;
 }
 
+/**
+ * How a --hot-reload serve reloaded itself after an extension pull, update,
+ * install or rm it ran (swamp-club#3594). Absent when serve runs without
+ * --hot-reload: the change then waits for a restart.
+ */
+export interface ExtensionChangeServeReload {
+  status: "ok" | "failed";
+  reloadedCount: number;
+  errors: string[];
+}
+
 export interface ExtensionInstallResponse {
   data: Record<string, unknown>;
+  serveReload?: ExtensionChangeServeReload;
 }
 
 export interface ExtensionPullResponse {
   data: Record<string, unknown>;
+  serveReload?: ExtensionChangeServeReload;
 }
 
 export interface ExtensionRmResponse {
   data: Record<string, unknown>;
+  serveReload?: ExtensionChangeServeReload;
 }
 
 export interface ExtensionOutdatedResponse {
@@ -1823,6 +1837,7 @@ export interface ExtensionOutdatedResponse {
 
 export interface ExtensionUpdateResponse {
   data: Record<string, unknown>;
+  serveReload?: ExtensionChangeServeReload;
 }
 
 export interface DoctorVaultsResponse {

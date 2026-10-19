@@ -41,9 +41,10 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
-  warnServerReloadNeeded,
+  serverReloadCommand,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { renderServerExtensionChange } from "../../presentation/output/server_extension_change_output.ts";
 import type { ExtensionInstallResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -82,7 +83,7 @@ export const extensionInstallCommand = withRemoteOptions(
       options,
     );
     const response = await requestServerResponse<ExtensionInstallResponse>(
-      { server, token },
+      { server, token, timeoutMs: 300_000 },
       {
         type: "extension.install",
         payload: {},
@@ -98,7 +99,10 @@ export const extensionInstallCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
-    warnServerReloadNeeded(server);
+    renderServerExtensionChange({
+      serveReload: response.serveReload,
+      reloadCommand: serverReloadCommand(server),
+    }, cliCtx.outputMode);
     return;
   }
 

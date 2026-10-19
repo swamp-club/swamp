@@ -58,8 +58,10 @@ import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_st
 import {
   collectClusterInstances,
   handleDoctorWorkflows,
+  handleExtensionInstall,
   handleExtensionList,
   handleExtensionRm,
+  handleExtensionUpdate,
   handleRunDoctor,
   handleVaultMigrate,
   handleWorkerLeaseList,
@@ -623,6 +625,216 @@ Deno.test("handleExtensionRm: neither marks nor pushes without managedConfig (sw
 
       assertEquals(JSON.parse(socket.sent[0]).type, "extension.rm");
       assertEquals(events, []);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+async function writeLocalLockfile(
+  repoDir: string,
+  entries: Record<string, unknown>,
+): Promise<void> {
+  const lockfileDir = join(repoDir, "extensions", "models");
+  await ensureDir(lockfileDir);
+  await Deno.writeTextFile(
+    join(lockfileDir, "upstream_extensions.json"),
+    JSON.stringify(entries),
+  );
+}
+
+const TEST_EXT_ENTRY = {
+  "@test/ext": {
+    version: "1.0.0",
+    pulledAt: "2026-01-01T00:00:00Z",
+    files: [],
+  },
+};
+
+Deno.test("handleExtensionRm: a --hot-reload serve reloads after the removal and reports it (swamp-club#3594)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, TEST_EXT_ENTRY);
+      let lockfileAtReload: string | undefined;
+      ctx.extensionChangeReloader = async () => {
+        lockfileAtReload = await Deno.readTextFile(
+          join(repoDir, "extensions", "models", "upstream_extensions.json"),
+        );
+        return { success: true, reloadedCount: 2, errors: [] };
+      };
+      const socket = createMockSocket();
+
+      await handleExtensionRm(
+        socket,
+        ctx,
+        "req-rm",
+        { extensionName: "@test/ext" },
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "extension.rm");
+      assertEquals(response.payload.serveReload, {
+        status: "ok",
+        reloadedCount: 2,
+        errors: [],
+      });
+      // The reload runs once the removal is on disk.
+      assert(lockfileAtReload !== undefined);
+      assertEquals(lockfileAtReload.includes("@test/ext"), false);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleExtensionRm: a failed reload still answers with the removal and withholds paths (swamp-club#3594)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, TEST_EXT_ENTRY);
+      ctx.extensionChangeReloader = () =>
+        Promise.resolve({
+          success: false,
+          reloadedCount: 0,
+          errors: ["Hot-reload failed: cannot read /srv/repo/.swamp/x"],
+        });
+      const socket = createMockSocket();
+
+      await handleExtensionRm(
+        socket,
+        ctx,
+        "req-rm",
+        { extensionName: "@test/ext" },
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "extension.rm");
+      assert(response.payload.data !== undefined);
+      assertEquals(response.payload.serveReload.status, "failed");
+      assertEquals(response.payload.serveReload.errors, [
+        "An internal error occurred",
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleExtensionRm: a reloader that throws is reported as a failed reload (swamp-club#3594)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, TEST_EXT_ENTRY);
+      ctx.extensionChangeReloader = () => Promise.reject(new Error("boom"));
+      const socket = createMockSocket();
+
+      await handleExtensionRm(
+        socket,
+        ctx,
+        "req-rm",
+        { extensionName: "@test/ext" },
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "extension.rm");
+      assertEquals(response.payload.serveReload, {
+        status: "failed",
+        reloadedCount: 0,
+        errors: ["boom"],
+      });
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleExtensionRm: without --hot-reload the response carries no serveReload (swamp-club#3594)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, TEST_EXT_ENTRY);
+      const socket = createMockSocket();
+
+      await handleExtensionRm(
+        socket,
+        ctx,
+        "req-rm",
+        { extensionName: "@test/ext" },
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "extension.rm");
+      assertEquals("serveReload" in response.payload, false);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleExtensionInstall: a --hot-reload serve reloads after the install (swamp-club#3594)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, {});
+      let reloads = 0;
+      ctx.extensionChangeReloader = () => {
+        reloads++;
+        return Promise.resolve({ success: true, reloadedCount: 0, errors: [] });
+      };
+      const socket = createMockSocket();
+
+      await handleExtensionInstall(
+        socket,
+        ctx,
+        "req-install",
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "extension.install");
+      assertEquals(reloads, 1);
+      assertEquals(response.payload.serveReload.status, "ok");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleExtensionUpdate: --check never reloads (swamp-club#3594)", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, {});
+      let reloads = 0;
+      ctx.extensionChangeReloader = () => {
+        reloads++;
+        return Promise.resolve({ success: true, reloadedCount: 0, errors: [] });
+      };
+      const socket = createMockSocket();
+
+      await handleExtensionUpdate(
+        socket,
+        ctx,
+        "req-update",
+        { checkOnly: true },
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "extension.update");
+      assertEquals(reloads, 0);
+      assertEquals("serveReload" in response.payload, false);
     } finally {
       cleanup();
     }

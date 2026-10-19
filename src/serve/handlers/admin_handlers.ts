@@ -180,6 +180,7 @@ import type {
   AuditTimelinePayload,
   DatastoreSetupExtensionPayload,
   DoctorDatastoresPayload,
+  ExtensionChangeServeReload,
   ExtensionInfoPayload,
   ExtensionPullPayload,
   ExtensionRmPayload,
@@ -900,6 +901,45 @@ export async function handleExtensionInfo(
   }
 }
 
+/**
+ * Reloads a --hot-reload serve after an extension change it ran
+ * (swamp-club#3594), so the next run uses the new code. Runs once the
+ * change is on disk, even when the request was cancelled after it. A
+ * failed reload never fails the request: the change itself succeeded.
+ * Undefined without --hot-reload.
+ */
+async function reloadAfterExtensionChange(
+  ctx: ConnectionContext,
+): Promise<ExtensionChangeServeReload | undefined> {
+  if (!ctx.extensionChangeReloader) return undefined;
+  const logger = getSwampLogger(["serve", "reload"]);
+  try {
+    const result = await ctx.extensionChangeReloader();
+    if (result.success) {
+      logger
+        .info`Reloaded ${result.reloadedCount} extension type(s) after an extension change`;
+      for (const error of result.errors) {
+        logger.warn`Extension reload after an extension change: ${error}`;
+      }
+    } else {
+      logger
+        .warn`Extension reload after an extension change failed: ${result.errors}`;
+    }
+    return {
+      status: result.success ? "ok" : "failed",
+      reloadedCount: result.reloadedCount,
+      errors: result.errors.map(sanitizeErrorForClient),
+    };
+  } catch (error) {
+    logger.warn`Extension reload after an extension change failed: ${error}`;
+    return {
+      status: "failed",
+      reloadedCount: 0,
+      errors: [sanitizeErrorForClient(error)],
+    };
+  }
+}
+
 export async function handleExtensionInstall(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -952,6 +992,8 @@ export async function handleExtensionInstall(
         ),
     );
 
+    const serveReload = await reloadAfterExtensionChange(ctx);
+
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -960,7 +1002,7 @@ export async function handleExtensionInstall(
     send(socket, {
       type: "extension.install",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data: result ?? {}, serveReload },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -1067,6 +1109,8 @@ export async function handleExtensionPull(
         ),
     );
 
+    const serveReload = await reloadAfterExtensionChange(ctx);
+
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -1075,7 +1119,7 @@ export async function handleExtensionPull(
     send(socket, {
       type: "extension.pull",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data: result ?? {}, serveReload },
     });
   } catch (error) {
     const raw = error instanceof Error
@@ -1138,6 +1182,8 @@ export async function handleExtensionRm(
         ),
     );
 
+    const serveReload = await reloadAfterExtensionChange(ctx);
+
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -1146,7 +1192,7 @@ export async function handleExtensionRm(
     send(socket, {
       type: "extension.rm",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data: result ?? {}, serveReload },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -1324,6 +1370,10 @@ export async function handleExtensionUpdate(
         ),
     );
 
+    const serveReload = payload?.checkOnly
+      ? undefined
+      : await reloadAfterExtensionChange(ctx);
+
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -1332,7 +1382,7 @@ export async function handleExtensionUpdate(
     send(socket, {
       type: "extension.update",
       id: requestId,
-      payload: { data: result ?? {} },
+      payload: { data: result ?? {}, serveReload },
     });
   } catch (error) {
     const raw = error instanceof Error

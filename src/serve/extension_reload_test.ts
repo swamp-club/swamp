@@ -30,6 +30,7 @@ import {
   isReloading,
   performServeReload,
   RELOAD_IN_PROGRESS_ERROR,
+  reloadAfterExtensionChange,
   reloadPulledExtensions,
   resolveLockfilePath,
   seedPulledTypeSnapshot,
@@ -179,6 +180,163 @@ Deno.test("performServeReload: an overlapping reload maps to busy", async () => 
 
     assertEquals(serveReloadStatus(second), "busy");
     assertEquals(serveReloadStatus(firstResult), "ok");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("reloadAfterExtensionChange: reloads when no reload is running", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    let discovered = 0;
+    const result = await reloadAfterExtensionChange(
+      tmpDir,
+      join(tmpDir, "missing.json"),
+      {
+        extensionDiscoverer: () => {
+          discovered++;
+          return Promise.resolve(2);
+        },
+      },
+    );
+    assertEquals(serveReloadStatus(result), "ok");
+    assertEquals(result.reloadedCount, 2);
+    assertEquals(discovered, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("reloadAfterExtensionChange: waits for a running reload, then reloads again instead of answering busy", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    const lockfilePath = join(tmpDir, "missing.json");
+    let entered!: () => void;
+    const enteredDiscoverer = new Promise<void>((r) => entered = r);
+    let release!: () => void;
+    const released = new Promise<void>((r) => release = r);
+    const first = performServeReload(tmpDir, lockfilePath, {
+      extensionDiscoverer: async () => {
+        entered();
+        await released;
+        return 0;
+      },
+    });
+    await enteredDiscoverer;
+
+    let followUpRuns = 0;
+    const options = {
+      extensionDiscoverer: () => {
+        followUpRuns++;
+        return Promise.resolve(1);
+      },
+    };
+    const a = reloadAfterExtensionChange(tmpDir, lockfilePath, options);
+    const b = reloadAfterExtensionChange(tmpDir, lockfilePath, options);
+    assertEquals(followUpRuns, 0);
+    release();
+    await first;
+    const [aResult, bResult] = await Promise.all([a, b]);
+
+    assertEquals(serveReloadStatus(aResult), "ok");
+    assertEquals(serveReloadStatus(bResult), "ok");
+    assertEquals(aResult.reloadedCount, 1);
+    // Both callers arrived while the first reload ran, so they share one
+    // follow-up reload.
+    assertEquals(followUpRuns, 1);
+    assertEquals(isReloading(), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("reloadAfterExtensionChange: a caller arriving after the queued reload started gets a reload of its own", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    const lockfilePath = join(tmpDir, "missing.json");
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>((r) => releaseFirst = r);
+    let firstEntered!: () => void;
+    const firstStarted = new Promise<void>((r) => firstEntered = r);
+    const first = performServeReload(tmpDir, lockfilePath, {
+      extensionDiscoverer: async () => {
+        firstEntered();
+        await firstReleased;
+        return 0;
+      },
+    });
+    await firstStarted;
+
+    let releaseQueued!: () => void;
+    const queuedReleased = new Promise<void>((r) => releaseQueued = r);
+    let queuedEntered!: () => void;
+    const queuedStarted = new Promise<void>((r) => queuedEntered = r);
+    const queued = reloadAfterExtensionChange(tmpDir, lockfilePath, {
+      extensionDiscoverer: async () => {
+        queuedEntered();
+        await queuedReleased;
+        return 0;
+      },
+    });
+    releaseFirst();
+    await first;
+    await queuedStarted;
+
+    let lateRuns = 0;
+    const late = reloadAfterExtensionChange(tmpDir, lockfilePath, {
+      extensionDiscoverer: () => {
+        lateRuns++;
+        return Promise.resolve(0);
+      },
+    });
+    releaseQueued();
+    await queued;
+    const lateResult = await late;
+
+    assertEquals(serveReloadStatus(lateResult), "ok");
+    assertEquals(lateRuns, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("reloadAfterExtensionChange: a failed queued reload does not block the next one", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    const lockfilePath = join(tmpDir, "missing.json");
+    let entered!: () => void;
+    const enteredDiscoverer = new Promise<void>((r) => entered = r);
+    let release!: () => void;
+    const released = new Promise<void>((r) => release = r);
+    const first = performServeReload(tmpDir, lockfilePath, {
+      extensionDiscoverer: async () => {
+        entered();
+        await released;
+        return 0;
+      },
+    });
+    await enteredDiscoverer;
+    const failing = reloadAfterExtensionChange(tmpDir, lockfilePath, {
+      workflowReloader: () => Promise.reject(new Error("boom")),
+    });
+    release();
+    await first;
+    const failed = await failing;
+    assertStringIncludes(failed.errors[0], "boom");
+
+    let runs = 0;
+    const next = await reloadAfterExtensionChange(tmpDir, lockfilePath, {
+      extensionDiscoverer: () => {
+        runs++;
+        return Promise.resolve(0);
+      },
+    });
+    assertEquals(serveReloadStatus(next), "ok");
+    assertEquals(runs, 1);
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
