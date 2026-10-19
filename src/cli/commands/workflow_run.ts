@@ -739,9 +739,15 @@ export const workflowRunCommand = new Command()
         },
       );
     } catch (error) {
-      await runCheckpointer.restoreUncommittedRuns(() =>
-        RunTrackerStore.fromSwampDir(swampPath(repoDir))
-      );
+      let tracker: RunTrackerStore | undefined;
+      try {
+        await runCheckpointer.restoreUncommittedRuns(() => {
+          tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+          return tracker;
+        }, error);
+      } finally {
+        tracker?.close();
+      }
       throw error;
     } finally {
       await runCheckpointer.close();

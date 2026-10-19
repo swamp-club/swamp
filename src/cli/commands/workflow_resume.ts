@@ -643,7 +643,7 @@ export const workflowResumeCommand = withRemoteOptions(
         },
       );
     } catch (error) {
-      await runCheckpointer.restoreUncommittedRuns(() => runTracker);
+      await runCheckpointer.restoreUncommittedRuns(() => runTracker, error);
       throw error;
     } finally {
       await runCheckpointer.close();

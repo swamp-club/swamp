@@ -673,7 +673,10 @@ export async function executeWorkflowWithLocks(
       await finishRunTelemetry(runTelemetry, failure);
     },
   ).catch(async (error) => {
-    await runCheckpointer.restoreUncommittedRuns(() => runTracker);
+    await runCheckpointer.restoreUncommittedRuns(
+      () => runTracker,
+      error,
+    );
     throw error;
   }).finally(() => runCheckpointer.close());
 }

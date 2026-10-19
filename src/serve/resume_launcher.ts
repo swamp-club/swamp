@@ -474,7 +474,10 @@ export async function startDetachedResume(
           }
         },
       ).catch(async (error) => {
-        await runCheckpointer.restoreUncommittedRuns(() => ctx.runTracker);
+        await runCheckpointer.restoreUncommittedRuns(
+          () => ctx.runTracker,
+          error,
+        );
         throw error;
       }).finally(() => runCheckpointer.close());
       if (!buffer.finished) {

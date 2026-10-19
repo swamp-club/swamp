@@ -31,7 +31,10 @@ import type { RunTrackerRepository } from "../../domain/models/run_tracker_repos
 import type { RunCheckpointer } from "../../domain/workflows/run_checkpointer.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { getSwampLogger } from "../logging/logger.ts";
-import { checkpointOpenUnitOfWork } from "./repo_unit_of_work.ts";
+import {
+  checkpointOpenUnitOfWork,
+  rootCommittedBeforeThrowing,
+} from "./repo_unit_of_work.ts";
 import type { RepositoryContext } from "./repository_factory.ts";
 
 const logger = getSwampLogger(["workflow", "checkpoint"]);
@@ -53,6 +56,11 @@ export const RUN_CHECKPOINT_INTERVAL_MS = 2_000;
  * the saves made while it runs share the next one. {@link close} cancels or
  * waits for the trailing checkpoint; call it once the operation's root has
  * ended.
+ *
+ * One checkpointer serves one operation, whose runs save through one chain
+ * of open units: the run's use-case unit, which nested child runs and
+ * parallel steps share. A checkpoint commits what that chain staged, and
+ * counts every save made before it started as committed.
  */
 export class WorkflowRunCheckpointer implements RunCheckpointer {
   readonly #repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">;
@@ -74,6 +82,8 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   /** The trailing checkpoint once it has started; it never rejects. */
   #trailing: Promise<void> | undefined;
   #closed = false;
+  /** A failure is warned about once; repeats go to debug. */
+  #warnedFailure = false;
 
   constructor(
     repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
@@ -131,14 +141,20 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
    * checkpoint committed, when an earlier one did. Their committed record
    * still says `running`, and only a row that says so too, with this
    * process's pid, lets `workflow recover`, `run doctor --fix` and serve's
-   * reaper settle the run once this process is gone. Closes the
+   * reaper settle the run once this process is gone. `rootError` is what
+   * the root threw; a root that committed before throwing it leaves nothing
+   * to reopen. Closes the
    * checkpointer first. Never rejects, since it runs while the root's error
    * propagates; resolves with the run ids put back.
    */
   async restoreUncommittedRuns(
     tracker: () => Pick<RunTrackerRepository, "reopenCompleted"> | undefined,
+    rootError: unknown,
   ): Promise<string[]> {
     await this.close();
+    // A refusal settled with onRefused is thrown after the root committed
+    // each run's reconciled final record: nothing is left to reopen.
+    if (rootCommittedBeforeThrowing(this.#repoContext, rootError)) return [];
     const restored: string[] = [];
     try {
       const uncommitted = [...this.#runs].filter(([, saves]) =>
@@ -153,11 +169,11 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
       }
     } catch (error) {
       logger
-        .warn`Leaving uncommitted workflow runs for workflow recover failed: ${error}`;
+        .warn`Could not mark the uncommitted workflow runs for swamp workflow recover: ${error}`;
     }
     if (restored.length > 0) {
       logger
-        .warn`The final record of ${restored.length} workflow run(s) was not committed; left running for workflow recover to settle: ${
+        .warn`The final record of ${restored.length} workflow run(s) was not committed; run swamp workflow recover once this process has exited to settle them: ${
         restored.join(", ")
       }`;
     }
@@ -165,6 +181,9 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   }
 
   #schedule(): Promise<void> {
+    // Between a checkpoint's end and the start of the one queued after it,
+    // a new save joins the queued one rather than starting a third.
+    if (this.#next !== undefined) return this.#next;
     if (this.#current === undefined) {
       this.#current = this.#start();
       return this.#current;
@@ -189,11 +208,17 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
         } else if (outcome === "refused") {
           this.#refused = true;
           logger
-            .warn`A workflow run checkpoint was refused; the run's records are settled when it ends`;
+            .warn`A workflow run checkpoint was refused; the run's records are committed or discarded when it ends`;
         }
       } catch (error) {
-        logger
-          .warn`A workflow run checkpoint failed; the run goes on and its end commit tries again: ${error}`;
+        if (this.#warnedFailure) {
+          logger
+            .debug`A workflow run checkpoint failed again: ${error}`;
+        } else {
+          this.#warnedFailure = true;
+          logger
+            .warn`A workflow run checkpoint failed; the run goes on and its end commit tries again: ${error}`;
+        }
       }
     })();
     const current: Promise<void> = started.finally(() => {

@@ -71,6 +71,11 @@ export interface CommitLogEngine {
    */
   checkpointOpenUnit(): Promise<OpenUnitCheckpoint>;
   /**
+   * Whether a root that threw `error` committed before it threw: a refusal
+   * settled with `onRefused` is thrown after the root commits.
+   */
+  committedBeforeThrowing(error: unknown): boolean;
+  /**
    * Runs `fn` in a commit-log root for this context and ends it as
    * `options.disposition` decides; see `runInCommitLogRoot`.
    */
@@ -549,6 +554,17 @@ export async function checkpointOpenUnitOfWork(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): Promise<OpenUnitCheckpoint> {
   return await commitLogOf(repoContext)?.checkpointOpenUnit() ?? "no-unit";
+}
+
+/**
+ * Whether a root over this context that threw `error` committed before it
+ * threw (swamp-club#3587); always false on a v2 context.
+ */
+export function rootCommittedBeforeThrowing(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  error: unknown,
+): boolean {
+  return commitLogOf(repoContext)?.committedBeforeThrowing(error) ?? false;
 }
 
 /**

@@ -49,6 +49,7 @@ function fakeEngine() {
     },
     hasOpenUnit: () => open > 0,
     checkpointOpenUnit: () => Promise.resolve("no-unit"),
+    committedBeforeThrowing: () => false,
     async runRoot<T>(
       options: CommitLogRootRunOptions<T>,
       fn: (

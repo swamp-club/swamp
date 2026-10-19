@@ -700,6 +700,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             throw error;
           }
         },
+        committedBeforeThrowing(error: unknown): boolean {
+          // runInCommitLogRoot throws a settled refusal after its commit.
+          return error instanceof PartitionsRefusedError;
+        },
         async runRoot<T>(
           rootOptions: CommitLogRootRunOptions<T>,
           fn: (root: CommitLogRootView) => Promise<T>,

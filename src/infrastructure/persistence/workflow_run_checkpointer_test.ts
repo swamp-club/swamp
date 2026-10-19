@@ -31,6 +31,11 @@ import type {
 } from "./repo_unit_of_work.ts";
 import { WorkflowRunCheckpointer } from "./workflow_run_checkpointer.ts";
 
+/** A root's end that failed to commit. */
+const ROOT_FAILED = new Error("the end commit failed");
+/** A root that committed, then threw (a settled refusal). */
+const COMMITTED_THEN_THREW = new Error("refused, settled and committed");
+
 function newRun(): WorkflowRun {
   return WorkflowRun.create(Workflow.create({
     name: "flow",
@@ -59,6 +64,7 @@ function engine(
       return answer();
     },
     runRoot: () => Promise.reject(new Error("not used")),
+    committedBeforeThrowing: (error) => error === COMMITTED_THEN_THREW,
     calls: () => calls,
   };
 }
@@ -85,7 +91,10 @@ Deno.test("WorkflowRunCheckpointer: a v2 context commits nothing and leaves no r
   const run = newRun();
   await checkpointer.checkpoint(run);
   const rows = tracker();
-  assertEquals(await checkpointer.restoreUncommittedRuns(() => rows), []);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => rows, ROOT_FAILED),
+    [],
+  );
   assertEquals(rows.reopened, []);
 });
 
@@ -116,7 +125,10 @@ Deno.test("WorkflowRunCheckpointer: saves made while a checkpoint runs share the
   await Promise.all(saves);
   assertEquals(commitLog.calls(), 2);
   // Every save was committed, so a failed end leaves nothing to reopen.
-  assertEquals(await checkpointer.restoreUncommittedRuns(() => tracker()), []);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => tracker(), ROOT_FAILED),
+    [],
+  );
 });
 
 Deno.test("WorkflowRunCheckpointer: a failed checkpoint never rejects, and after a failed end only a run committed before its last save is reopened", async () => {
@@ -138,9 +150,12 @@ Deno.test("WorkflowRunCheckpointer: a failed checkpoint never rejects, and after
   await checkpointer.checkpoint(lagging);
   await checkpointer.checkpoint(never);
   const rows = tracker();
-  assertEquals(await checkpointer.restoreUncommittedRuns(() => rows), [
-    lagging.id,
-  ]);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => rows, ROOT_FAILED),
+    [
+      lagging.id,
+    ],
+  );
   assertEquals(rows.reopened, [lagging.id]);
 });
 
@@ -157,9 +172,12 @@ Deno.test("WorkflowRunCheckpointer: a refusal stops the checkpoints, and the sav
   answer = "committed";
   await checkpointer.checkpoint(run);
   assertEquals(commitLog.calls(), 2);
-  assertEquals(await checkpointer.restoreUncommittedRuns(() => tracker()), [
-    run.id,
-  ]);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => tracker(), ROOT_FAILED),
+    [
+      run.id,
+    ],
+  );
 });
 
 Deno.test("WorkflowRunCheckpointer: a tracker that fails to open or reopen is logged, never thrown", async () => {
@@ -174,7 +192,7 @@ Deno.test("WorkflowRunCheckpointer: a tracker that fails to open or reopen is lo
   assertEquals(
     await checkpointer.restoreUncommittedRuns(() => {
       throw new Error("the tracker database is locked");
-    }),
+    }, ROOT_FAILED),
     [],
   );
 });
@@ -197,7 +215,10 @@ Deno.test("WorkflowRunCheckpointer: within the interval a save waits for one tra
   await checkpointer.close();
   assertEquals(commitLog.calls(), 2);
   // The trailing checkpoint covered the later saves.
-  assertEquals(await checkpointer.restoreUncommittedRuns(() => tracker()), []);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => tracker(), ROOT_FAILED),
+    [],
+  );
 });
 
 Deno.test("WorkflowRunCheckpointer: close cancels a trailing checkpoint not yet started, and a later save takes none", async () => {
@@ -213,9 +234,12 @@ Deno.test("WorkflowRunCheckpointer: close cancels a trailing checkpoint not yet 
   assertEquals(commitLog.calls(), 1);
   // The saves after the first were never committed by a checkpoint.
   const rows = tracker();
-  assertEquals(await checkpointer.restoreUncommittedRuns(() => rows), [
-    run.id,
-  ]);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => rows, ROOT_FAILED),
+    [
+      run.id,
+    ],
+  );
 });
 
 Deno.test("WorkflowRunCheckpointer: a save that ends the run checkpoints at once, so a failed end reopens nothing it committed", async () => {
@@ -235,6 +259,32 @@ Deno.test("WorkflowRunCheckpointer: a save that ends the run checkpoints at once
   await checkpointer.checkpoint(run);
   assertEquals(commitLog.calls(), 2);
   const rows = tracker();
-  assertEquals(await checkpointer.restoreUncommittedRuns(() => rows), []);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => rows, ROOT_FAILED),
+    [],
+  );
+  assertEquals(rows.reopened, []);
+});
+
+Deno.test("WorkflowRunCheckpointer: a root that committed before it threw reopens nothing, even after a refusal", async () => {
+  let answer: OpenUnitCheckpoint = "committed";
+  const commitLog = engine(() => Promise.resolve(answer));
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 0,
+  });
+  const run = newRun();
+  await checkpointer.checkpoint(run);
+  answer = "refused";
+  run.start();
+  run.endAsCancelled();
+  await checkpointer.checkpoint(run);
+  const rows = tracker();
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(
+      () => rows,
+      COMMITTED_THEN_THREW,
+    ),
+    [],
+  );
   assertEquals(rows.reopened, []);
 });
