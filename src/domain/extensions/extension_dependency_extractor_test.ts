@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { extractSpecifiersFromSource } from "./extension_dependency_extractor.ts";
+import { join } from "@std/path";
+import {
+  extractDependencySpecifiers,
+  extractSpecifiersFromSource,
+  type ImportMap,
+  resolveBareImport,
+} from "./extension_dependency_extractor.ts";
 
 Deno.test("extractSpecifiersFromSource: extracts npm specifier with version", () => {
   const source = `import { z } from "npm:zod@4";
@@ -148,4 +154,199 @@ export function hello() { return "world"; }`;
   const result = extractSpecifiersFromSource(source, "model.ts");
 
   assertEquals(result.length, 0);
+});
+
+// ── Bare imports through the import map ─────────────────────────────────
+
+/** The audited specifiers, as `registry:name@version <- bare`. */
+function mappedOf(source: string, imports: ImportMap): string[] {
+  return extractSpecifiersFromSource(source, "model.ts", imports).map((s) =>
+    `${s.registry}:${s.name}@${s.version ?? ""}${
+      s.importedAs !== undefined ? ` <- ${s.importedAs}` : ""
+    }`
+  );
+}
+
+Deno.test("extractSpecifiersFromSource: resolves a bare import through an exact key", () => {
+  assertEquals(
+    mappedOf(`import ms from "ms";`, { ms: "npm:ms@2.1.3" }),
+    ["npm:ms@2.1.3 <- ms"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: resolves a scoped key to npm and jsr", () => {
+  assertEquals(
+    mappedOf(
+      `import type { V4 } from "uuid-types";
+import { assert } from "@std/assert";`,
+      {
+        "uuid-types": "npm:@types/uuid@10.0.0",
+        "@std/assert": "jsr:@std/assert@^1.0.0",
+      },
+    ),
+    [
+      "npm:@types/uuid@10.0.0 <- uuid-types",
+      "jsr:@std/assert@^1.0.0 <- @std/assert",
+    ],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a trailing-slash key resolves a subpath", () => {
+  assertEquals(
+    mappedOf(`import { h } from "preact/hooks";`, {
+      "preact/": "npm:/preact@10.27.3/",
+    }),
+    ["npm:preact@10.27.3 <- preact/hooks"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a package key covers its subpaths, as Deno expands it", () => {
+  assertEquals(
+    mappedOf(`import { join } from "@std/path/posix";`, {
+      "@std/path": "jsr:@std/path@^1",
+    }),
+    ["jsr:@std/path@^1 <- @std/path/posix"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a trailing-slash key beats the package key's expansion", () => {
+  assertEquals(
+    mappedOf(`import { join } from "@std/path/posix";`, {
+      "@std/path": "jsr:@std/path@1.0.0",
+      "@std/path/": "jsr:/@std/path@1.1.0/",
+    }),
+    ["jsr:@std/path@1.1.0 <- @std/path/posix"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: reads export-from, side-effect and dynamic bare imports", () => {
+  assertEquals(
+    mappedOf(
+      `export { a } from "a";
+import "b";
+const c = await import("c");`,
+      { a: "npm:a@1.0.0", b: "npm:b@1.0.0", c: "npm:c@1.0.0" },
+    ),
+    ["npm:a@1.0.0 <- a", "npm:b@1.0.0 <- b", "npm:c@1.0.0 <- c"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: ignores targets that are not npm or jsr", () => {
+  assertEquals(
+    mappedOf(
+      `import a from "a";
+import b from "b";
+import c from "c";`,
+      { a: "https://esm.sh/a@1", b: "./vendor/b.ts", c: "c-other" },
+    ),
+    [],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: absolute, file: and data: specifiers are not audited", () => {
+  assertEquals(
+    mappedOf(
+      `import a from "/abs/a.ts";
+import b from "file:///b.ts";
+import c from "data:text/javascript,export default 1";`,
+      { ms: "npm:ms@2.1.3" },
+    ),
+    [],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: zod through the map stays excluded", () => {
+  assertEquals(mappedOf(`import { z } from "zod";`, { zod: "npm:zod@4" }), []);
+});
+
+Deno.test("extractSpecifiersFromSource: map entries the source does not import are not audited", () => {
+  assertEquals(
+    mappedOf(`import ms from "ms";`, {
+      ms: "npm:ms@2.1.3",
+      unused: "npm:unused@1.0.0",
+    }),
+    ["npm:ms@2.1.3 <- ms"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: ignores bare imports in comments and template literals", () => {
+  assertEquals(
+    mappedOf(
+      `// import a from "a";
+/* import b from "b"; */
+const generated = \`import c from "c";\`;`,
+      { a: "npm:a@1.0.0", b: "npm:b@1.0.0", c: "npm:c@1.0.0" },
+    ),
+    [],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a string that names no map key is ignored", () => {
+  assertEquals(
+    mappedOf(`const m = 'value from "config"';`, { ms: "npm:ms@2.1.3" }),
+    [],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: without a map, bare imports are not audited", () => {
+  assertEquals(
+    extractSpecifiersFromSource(`import ms from "ms";`, "model.ts"),
+    [],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a package written out and mapped keeps the written form", () => {
+  assertEquals(
+    mappedOf(
+      `import ms from "ms";
+import ms2 from "npm:ms@2.1.3";`,
+      { ms: "npm:ms@2.1.3" },
+    ),
+    ["npm:ms@2.1.3"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a mapped and a written version are both audited", () => {
+  assertEquals(
+    mappedOf(
+      `import ms from "ms";
+import ms2 from "npm:ms@2.0.0";`,
+      { ms: "npm:ms@2.1.3" },
+    ),
+    ["npm:ms@2.0.0", "npm:ms@2.1.3 <- ms"],
+  );
+});
+
+Deno.test("resolveBareImport: an unmapped name resolves to nothing", () => {
+  assertEquals(resolveBareImport("lodash", { ms: "npm:ms@2.1.3" }), undefined);
+});
+
+async function withTempDir(
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_dep_extractor_" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("extractDependencySpecifiers: a written import in one file replaces the mapped one from another", async () => {
+  await withTempDir(async (dir) => {
+    const a = join(dir, "a.ts");
+    const b = join(dir, "b.ts");
+    await Deno.writeTextFile(a, `import ms from "ms";`);
+    await Deno.writeTextFile(b, `import ms from "npm:ms@2.1.3";`);
+    const specs = await extractDependencySpecifiers([a, b], {
+      ms: "npm:ms@2.1.3",
+    });
+    assertEquals(specs.length, 1);
+    assertEquals(specs[0].importedAs, undefined);
+    assertEquals(specs[0].sourceFile, b);
+  });
 });

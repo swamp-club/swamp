@@ -1889,7 +1889,16 @@ from `@bixu/wheelshop`:
 ### The version that ships
 
 Each `npm:` and `jsr:` specifier is audited at the version the push ships
-(swamp-club#3352). The rules live in
+(swamp-club#3352), whether the source writes it out or writes a bare import
+the project `deno.json` import map resolves to it (swamp-club#3611). The
+extractor resolves bare imports as the bundler does: an exact key, else the
+longest `key/` prefix, where a key mapped to an `npm:` or `jsr:` package also
+covers its subpaths (`"@std/path"` resolves `@std/path/posix`) unless the
+map has its own `key/` entry. It reads the map as JSON, resolves only the
+bare imports the source uses, and finds them as the bare-specifiers rule
+does, so an import inside a template literal is never audited. A package
+both written out and mapped at the same specifier is audited once, as the
+written form. The rules live in
 `src/domain/extensions/dependency_version_resolution.ts` and run no Deno
 tooling, so they outlive the runtime:
 
@@ -1924,8 +1933,12 @@ rewritten in the author's tree, so the version the audit reads from the lock
 is the version that ships. Local loading and `serve` reload keep Deno's
 default lock handling.
 
-The audit summary carries the source text (`specifier`), the resolved
-`version` and `resolvedFrom` (`exact`, `lockfile` or `registry`). npm
+The audit summary carries the source text (`specifier`; for a mapped import,
+the specifier the map resolves it to), the bare import as written
+(`importedAs`, mapped imports only), the resolved `version` and
+`resolvedFrom` (`exact`, `lockfile` or `registry`). Every finding for a
+mapped import ends `(imported as "<bare name>" via deno.json)`, and blocks or
+warns exactly as it would written out. npm
 license, maintainers and deprecation come from that version's manifest; a
 version the packument does not list is not audited. The age warning keeps
 the package's latest publish, since it measures maintenance. Each package is

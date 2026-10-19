@@ -1288,3 +1288,108 @@ Deno.test("checkDependencyTrust: a deprecation notice loses bidi and zero-width 
     "version 1.0.0 is deprecated: safe gnp.exe end",
   );
 });
+
+// ── Imports the import map resolved ──────────────────────────────────────
+
+function mapped(
+  spec: DependencySpecifier,
+  importedAs: string,
+): DependencySpecifier {
+  return { ...spec, importedAs };
+}
+
+const VULNERABLE_ROUTES = {
+  ...healthyRoutes(HEALTHY_NPM_BODY),
+  [OSV_URL]: {
+    status: 200,
+    body: {
+      vulns: [{ id: "GHSA-1234", database_specific: { severity: "HIGH" } }],
+    },
+  },
+};
+
+Deno.test("checkDependencyTrust: a mapped import's HIGH vulnerability blocks and names the bare import", async () => {
+  const result = await checkDependencyTrust(
+    [mapped(npmSpec("@types/uuid", "1.0.0"), "uuid-types")],
+    routedFetcher(VULNERABLE_ROUTES),
+  );
+  assertEquals(result.passed, false);
+  assertEquals(result.errors, [{
+    dependency: "@types/uuid",
+    message:
+      'vulnerability GHSA-1234 (HIGH) (imported as "uuid-types" via deno.json)',
+  }]);
+  assertEquals(result.audited[0].specifier, "npm:@types/uuid@1.0.0");
+  assertEquals(result.audited[0].importedAs, "uuid-types");
+});
+
+Deno.test("checkDependencyTrust: an inline import's findings and summary are unchanged", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("pkg", "1.0.0")],
+    routedFetcher(VULNERABLE_ROUTES),
+  );
+  assertEquals(result.errors, [{
+    dependency: "pkg",
+    message: "vulnerability GHSA-1234 (HIGH)",
+  }]);
+  assertEquals("importedAs" in result.audited[0], false);
+});
+
+Deno.test("checkDependencyTrust: a mapped range resolves from the lock and its finding names the bare import", async () => {
+  const result = await checkDependencyTrust(
+    [mapped(npmSpec("express", "^4.17.0"), "express")],
+    routedFetcher(healthyRoutes(RANGE_NPM_BODY)),
+    DEFAULT_TRUST_THRESHOLDS,
+    undefined,
+    lockOf({ "npm:express": ["4.18.2"] }),
+  );
+  assertEquals(result.audited[0].version, "4.18.2");
+  assertEquals(result.audited[0].resolvedFrom, "lockfile");
+  assertEquals(result.warnings, [{
+    dependency: "express",
+    message:
+      'npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock) (imported as "express" via deno.json)',
+    cause: "loose-specifier",
+  }]);
+});
+
+Deno.test("checkDependencyTrust: a mapped range without a lock resolves from the registry", async () => {
+  const result = await checkDependencyTrust(
+    [mapped(npmSpec("express", "^4.17.0"), "express")],
+    routedFetcher(healthyRoutes(RANGE_NPM_BODY)),
+  );
+  assertEquals(result.audited[0].version, "4.21.1");
+  assertEquals(result.audited[0].resolvedFrom, "registry");
+});
+
+Deno.test("checkDependencyTrust: a mapped JSR version that does not exist is an error", async () => {
+  const result = await checkDependencyTrust(
+    [mapped(jsrSpec("@std/assert", "0.0.999"), "@std/assert")],
+    jsrFetcher({ status: 200, body: JSR_META }),
+  );
+  assertEquals(result.passed, false);
+  assertEquals(result.errors, [{
+    dependency: "@std/assert",
+    message:
+      'version 0.0.999 not found on JSR (imported as "@std/assert" via deno.json)',
+    cause: "jsr-missing",
+  }]);
+  assertEquals(result.audited[0].importedAs, "@std/assert");
+});
+
+Deno.test("checkDependencyTrust: a mapped import whose lookup fails is not audited", async () => {
+  const result = await checkDependencyTrust(
+    [mapped(npmSpec("pkg", "1.0.0"), "pkg")],
+    routedFetcher({ ...healthyRoutes(HEALTHY_NPM_BODY), [OSV_URL]: "throw" }),
+  );
+  assertEquals(result.warnings.length, 1);
+  assertEquals(result.warnings[0].cause, "not-audited");
+  assertEquals(
+    result.warnings[0].message.endsWith(
+      ' (imported as "pkg" via deno.json)',
+    ),
+    true,
+  );
+  assertEquals(result.audited[0].passed, false);
+  assertEquals(result.audited[0].importedAs, "pkg");
+});

@@ -526,8 +526,10 @@ export interface ExtensionPushPrepareDeps {
       env?: Record<string, string>;
     },
   ) => Promise<string>;
+  /** `imports` resolves bare imports, as the bundler does. */
   extractDependencySpecifiers: (
     sourceFiles: string[],
+    imports?: Record<string, string>,
   ) => Promise<DependencySpecifier[]>;
   /**
    * Audits each dependency at the version push ships; `project` locates the
@@ -1301,7 +1303,10 @@ export async function extensionPushPrepare(
     ...gated.allReportFiles,
     ...gated.allWebhookFiles,
   ];
-  const specifiers = await deps.extractDependencySpecifiers(sourceFiles);
+  const specifiers = await deps.extractDependencySpecifiers(
+    sourceFiles,
+    await readImportMap(input.denoConfigPath),
+  );
   if (specifiers.length > 0) {
     ctx.logger.debug`Auditing ${specifiers.length} dependency specifier(s)`;
     dependencyTrustResult = await deps.checkDependencyTrust(specifiers, {
