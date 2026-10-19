@@ -625,6 +625,61 @@ Deno.test("DataPlane: malformed file writer overrides are refused and open no wr
   });
 });
 
+Deno.test("DataPlane: a refused file writer open is a 400 naming the reason, and opens nothing (swamp-club#3635)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+
+    for (
+      const [body, reason] of [
+        [
+          {
+            specName: "log",
+            name: "log",
+            overrides: { tags: { "_swamp.sensitiveFields": "*" } },
+          },
+          "Tag '_swamp.sensitiveFields' from the write overrides of file spec 'log'",
+        ],
+        [{ specName: "sneaky", name: "x" }, "Undeclared file spec 'sneaky'"],
+      ] as const
+    ) {
+      const open = await h.plane.handle(
+        request("/data/writers", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+      );
+      assertEquals(open?.status, 400);
+      assertStringIncludes(await open!.text(), reason);
+    }
+    assertEquals(h.plane.openWriterCount, 0);
+    assertEquals(h.stored.size, 0);
+  });
+});
+
+Deno.test("DataPlane: a reserved tag in a resource write is a 400 and saves nothing (swamp-club#3635)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+
+    const refused = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "x" },
+          overrides: { tags: { "_swamp.sensitiveFields": "*" } },
+        }),
+      }),
+    );
+    assertEquals(refused?.status, 400);
+    assertStringIncludes(
+      await refused!.text(),
+      "Tag '_swamp.sensitiveFields' from the write overrides of resource spec 'result'",
+    );
+    assertEquals(h.stored.size, 0);
+  });
+});
+
 Deno.test("DataPlane: file writer session — open, durable lines, finalize", async () => {
   await withHarness(async (h) => {
     h.dispatches.register(activeDispatch());

@@ -843,6 +843,18 @@ the fields to resolve. For legacy data without the tag, call sites with schema
 access fall back to `extractSensitiveFields()` on the resource spec; those
 without skip resolution (secure default).
 
+Only the vaulting step writes the tag. The `_swamp.` tag prefix is reserved, and
+a user-supplied key under it is refused from every source: definition, spec
+defaults, method write overrides, workflow tags, `--tag` and data output
+overrides (see [data.md](data.md)). Otherwise a forged tag could mark a plain
+field sensitive, and reference-shaped text that arrived as method output would
+resolve to the reader's vault plaintext (swamp-club#3635).
+
+Records written before that refusal may carry a user-supplied tag, and readers
+still trust it; a stored tag cannot be told apart from one the vaulting step
+wrote. `swamp data query '"_swamp.sensitiveFields" in tags'` lists the records
+that carry it, to review against their specs' sensitive fields.
+
 `resolveSensitiveVaultRefs()` does the resolution and
 `parseSensitiveFieldsTag()` parses the tag, both in
 `src/domain/models/data_writer.ts`.

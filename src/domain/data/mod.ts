@@ -44,8 +44,11 @@ export {
   Data,
   type DataNamePortability,
   dataNamePortability,
+  findReservedTagKey,
   isReservedDataName,
+  isReservedTagKey,
   RESERVED_DATA_NAMES,
+  RESERVED_TAG_PREFIX,
 } from "./data.ts";
 
 export {

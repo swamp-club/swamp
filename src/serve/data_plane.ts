@@ -649,11 +649,17 @@ export class DataPlane {
       dispatch.runtimeTags,
       dispatch.definitionName,
     );
-    const writer = createFileWriter(
-      body.specName,
-      body.name,
-      overrides.value,
-    );
+    // A refused open (an undeclared spec, a reserved name or tag) is the
+    // worker's request at fault, reported as the resource path reports it.
+    let writer: DataWriter;
+    try {
+      writer = createFileWriter(body.specName, body.name, overrides.value);
+    } catch (error) {
+      throw new DataPlaneError(
+        400,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     const writerId = crypto.randomUUID();
     this.#writers.set(writerId, {
       writer,

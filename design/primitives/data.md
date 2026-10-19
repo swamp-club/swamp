@@ -156,6 +156,37 @@ runtime tags from `--tag KEY=VALUE` on `swamp behavior run` /
 `workflow_run.ts`). Last is the definition-level `dataOutputOverrides` for that
 spec: lifetime, GC, tags, vary, vault name (`data_output_override.ts`).
 
+Tag keys under the `_swamp.` prefix are reserved for swamp. Readers trust them
+as swamp's own: `_swamp.sensitiveFields` chooses which fields resolve vault
+references, so the vaulting step must be the only way one reaches a record
+(swamp-club#3635). A key under the prefix from any user source is refused, never
+dropped, and as early as the source is known:
+
+- `behavior validate` fails its Tags check on the definition's tags and the
+  type's spec defaults. `workflow validate` fails on the workflow's tags, each
+  step's data output overrides, the stored definition each step names, the
+  spec defaults of each step's type, and, recursively, each nested workflow a
+  step runs.
+- A workflow run and a resume refuse `--tag`, the workflow's tags, every step's
+  data output overrides, the stored definition each step names (its
+  `modelIdOrName`, or the `modelName` a direct type execution adopts) and each
+  nested workflow's, before any step runs (`reservedWorkflowRunTag` in
+  `src/domain/workflows/reserved_workflow_tags.ts`). With `--last-evaluated`
+  the cached steps are checked as well. A later step's tag cannot fail the run
+  after earlier steps' side effects. Names written as expressions, and spec
+  defaults, are left to the method run's own refusal.
+- `DefaultMethodExecutionService.executeWorkflow` refuses every source known
+  before the method runs (definition, spec defaults, workflow tags, `--tag`,
+  data output overrides), which also covers steps named by an expression.
+- The writers refuse every source again on each write, including the method's
+  own `overrides.tags`.
+
+The refusal is `reservedRunTagRefusal` and `reservedTagRefusal` in
+`data_writer.ts` (`assertNoReservedRunTags` and `assertNoReservedTags` throw
+them); `RESERVED_TAG_PREFIX` and `isReservedTagKey` are in `data.ts`.
+`integration/reserved_tag_rules_test.ts` pins the files that may spell a
+reserved key.
+
 **Sensitive fields.** For a resource spec with `{ sensitive: true }` fields or
 `sensitiveOutput: true`, `processSensitiveResourceData` stores each value in a
 vault and replaces it in the payload with

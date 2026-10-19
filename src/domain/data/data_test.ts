@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { Data, dataNamePortability, isReservedDataName } from "./data.ts";
+import {
+  Data,
+  dataNamePortability,
+  findReservedTagKey,
+  isReservedDataName,
+  isReservedTagKey,
+} from "./data.ts";
 import type { OwnerDefinition } from "./data_metadata.ts";
 
 function createTestOwner(): OwnerDefinition {
@@ -961,6 +967,30 @@ Deno.test("isReservedDataName: returns false for non-reserved names", () => {
   assertEquals(isReservedDataName("vms"), false);
   assertEquals(isReservedDataName("my-data"), false);
   assertEquals(isReservedDataName("latest-version"), false);
+});
+
+Deno.test("isReservedTagKey: returns true for keys under the _swamp. prefix", () => {
+  assertEquals(isReservedTagKey("_swamp.sensitiveFields"), true);
+  assertEquals(isReservedTagKey("_swamp.anything"), true);
+  assertEquals(isReservedTagKey("_swamp."), true);
+});
+
+Deno.test("isReservedTagKey: returns false for lookalike keys", () => {
+  assertEquals(isReservedTagKey("swamp.sensitiveFields"), false);
+  assertEquals(isReservedTagKey("_swampx"), false);
+  assertEquals(isReservedTagKey("_swamp"), false);
+  assertEquals(isReservedTagKey("_SWAMP.sensitiveFields"), false);
+  assertEquals(isReservedTagKey("my._swamp.key"), false);
+  assertEquals(isReservedTagKey(" _swamp.sensitiveFields"), false);
+});
+
+Deno.test("findReservedTagKey: returns the reserved key, or undefined when none", () => {
+  assertEquals(
+    findReservedTagKey({ env: "prod", "_swamp.sensitiveFields": "*" }),
+    "_swamp.sensitiveFields",
+  );
+  assertEquals(findReservedTagKey({ env: "prod", team: "infra" }), undefined);
+  assertEquals(findReservedTagKey({}), undefined);
 });
 
 Deno.test("dataNamePortability: refuses each Windows-forbidden character on windows and warns elsewhere", () => {

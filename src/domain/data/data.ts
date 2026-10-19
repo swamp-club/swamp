@@ -45,6 +45,30 @@ export function isReservedDataName(name: string): boolean {
 }
 
 /**
+ * Prefix of the tag keys swamp writes itself, such as the
+ * `_swamp.sensitiveFields` tag the data writer sets after vaulting. A key
+ * under it is never accepted from a definition, spec, method, workflow or
+ * `--tag` (swamp-club#3635): readers trust these tags as swamp's own.
+ */
+export const RESERVED_TAG_PREFIX = "_swamp.";
+
+/**
+ * Returns true if the tag key is reserved for swamp. Comparison is
+ * case-sensitive: readers look reserved tags up by their exact key, so a
+ * case variant is an ordinary tag.
+ */
+export function isReservedTagKey(key: string): boolean {
+  return key.startsWith(RESERVED_TAG_PREFIX);
+}
+
+/** Returns the first reserved key in `tags`, or undefined when there is none. */
+export function findReservedTagKey(
+  tags: Record<string, string>,
+): string | undefined {
+  return Object.keys(tags).find(isReservedTagKey);
+}
+
+/**
  * Printable characters the Windows file API rejects in a file name; it also
  * rejects the control characters U+0001 to U+001F.
  */

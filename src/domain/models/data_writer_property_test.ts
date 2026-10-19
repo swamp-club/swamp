@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { z } from "zod";
-import { createResourceWriter } from "./data_writer.ts";
+import { createResourceWriter, SENSITIVE_FIELDS_TAG } from "./data_writer.ts";
+import { isReservedTagKey } from "../data/data.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
@@ -155,6 +156,94 @@ Deno.test("createResourceWriter: persisted content keeps vault references exact 
         for (const piece of pieces) {
           assert(redactor.redact(piece) === piece, `secret left in ${piece}`);
         }
+      },
+    ),
+  );
+});
+
+/** Tag keys a user might write: ordinary ones, and keys under `_swamp.`. */
+const arbTagKey = fc.oneof(
+  fc.string({ minLength: 1, maxLength: 12 }),
+  fc.string({ maxLength: 12 }).map((rest) => `_swamp.${rest}`),
+  fc.constant(SENSITIVE_FIELDS_TAG),
+);
+const arbTags = fc.option(
+  fc.dictionary(arbTagKey, fc.string({ maxLength: 8 }), { maxKeys: 3 }),
+  { nil: undefined },
+);
+
+function hasReservedKey(tags: Record<string, string> | undefined): boolean {
+  return Object.keys(tags ?? {}).some(isReservedTagKey);
+}
+
+Deno.test("createResourceWriter: a user-supplied reserved tag is always refused, and only the writer's own reaches a record", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.record({
+        definitionTags: arbTags,
+        specTags: arbTags,
+        overrideTags: arbTags,
+        tagOverrides: arbTags,
+        runtimeTags: arbTags,
+        dataOutputTags: arbTags,
+        sensitive: fc.boolean(),
+      }),
+      async (drawn) => {
+        const vaultService = new VaultService();
+        vaultService.registerVault({
+          name: "test-vault",
+          type: "mock",
+          config: {},
+        });
+        const resourceSpec: ResourceOutputSpec = {
+          schema: drawn.sensitive
+            ? z.object({ value: z.string().meta({ sensitive: true }) })
+            : z.object({ value: z.string() }),
+          lifetime: "infinite",
+          garbageCollection: 5,
+          ...(drawn.specTags ? { tags: drawn.specTags } : {}),
+        };
+        const { writeResource } = createResourceWriter(
+          createCapturingRepo(),
+          modelType,
+          modelId,
+          { r: resourceSpec },
+          drawn.tagOverrides,
+          drawn.dataOutputTags
+            ? [{ specName: "r", tags: drawn.dataOutputTags }]
+            : undefined,
+          drawn.definitionTags,
+          drawn.runtimeTags,
+          undefined,
+          vaultService,
+          "put",
+        );
+        const forged = [
+          drawn.definitionTags,
+          drawn.specTags,
+          drawn.overrideTags,
+          drawn.tagOverrides,
+          drawn.runtimeTags,
+          drawn.dataOutputTags,
+        ].some(hasReservedKey);
+
+        let tags: Record<string, string> | undefined;
+        try {
+          const handle = await writeResource(
+            "r",
+            "main",
+            { value: "v" },
+            drawn.overrideTags ? { tags: drawn.overrideTags } : undefined,
+          );
+          tags = handle.tags;
+        } catch (error) {
+          assert(forged, `refused without a reserved tag: ${error}`);
+          assert(String(error).includes("is reserved"), String(error));
+          return;
+        }
+        assert(!forged, "a reserved tag was accepted");
+        const reserved = Object.keys(tags).filter(isReservedTagKey);
+        assertEquals(reserved, drawn.sensitive ? [SENSITIVE_FIELDS_TAG] : []);
       },
     ),
   );

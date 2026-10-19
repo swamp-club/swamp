@@ -57,6 +57,7 @@ import {
   MALFORMED_TYPE_VERSION_CODE,
 } from "./definition_upgrade_service.ts";
 import { UserError } from "../errors.ts";
+import { outputSpecTags, reservedRunTagRefusal } from "./data_writer.ts";
 import {
   coerceMethodArgs,
   getObjectShape,
@@ -583,6 +584,8 @@ export class DefaultModelValidationService implements ModelValidationService {
     validations.push(
       this.validateCheckSelection(definition, modelDef),
     );
+
+    validations.push(this.validateTags(definition, modelDef));
 
     const results = await Promise.all(validations);
 
@@ -1504,6 +1507,32 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     return null;
+  }
+
+  /**
+   * Fails when the definition's tags or a spec's default tags hold a key
+   * under the reserved `_swamp.` prefix, which every method run refuses
+   * before it executes (swamp-club#3635).
+   */
+  private validateTags(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): Promise<ValidationResult> {
+    const refusal = reservedRunTagRefusal({
+      modelType: modelDef.type,
+      definitionTags: definition.tags,
+      specs: outputSpecTags(modelDef),
+    });
+    return Promise.resolve(
+      refusal
+        ? ValidationResult.fail(
+          "Tags",
+          refusal.text,
+          undefined,
+          refusal.modelText,
+        )
+        : ValidationResult.pass("Tags"),
+    );
   }
 
   /**

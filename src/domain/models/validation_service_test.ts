@@ -173,7 +173,7 @@ Deno.test("validateModel with valid definition returns passing results", async (
 
   const { results } = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 5);
+  assertEquals(results.length, 6);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
   assertEquals(results[1].name, "Type version");
@@ -184,6 +184,8 @@ Deno.test("validateModel with valid definition returns passing results", async (
   assertEquals(results[3].passed, true);
   assertEquals(results[4].name, "Check selection");
   assertEquals(results[4].passed, true);
+  assertEquals(results[5].name, "Tags");
+  assertEquals(results[5].passed, true);
 });
 
 Deno.test("validateModel with invalid method arguments returns failing result", async () => {
@@ -196,7 +198,7 @@ Deno.test("validateModel with invalid method arguments returns failing result", 
 
   const { results } = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 5);
+  assertEquals(results.length, 6);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
   assertEquals(results[3].name, "Method arguments");
@@ -214,12 +216,8 @@ Deno.test("validateModel with empty message passes when schema allows it", async
 
   const { results } = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 5);
-  assertEquals(results[0].passed, true);
-  assertEquals(results[1].passed, true);
-  assertEquals(results[2].passed, true);
-  assertEquals(results[3].passed, true);
-  assertEquals(results[4].passed, true);
+  assertEquals(results.length, 6);
+  assertEquals(results.every((r) => r.passed), true);
 });
 
 Deno.test("validateModel runs validations in parallel", async () => {
@@ -239,7 +237,7 @@ Deno.test("validateModel runs validations in parallel", async () => {
   const allResults = await Promise.all(promises);
 
   for (const outcome of allResults) {
-    assertEquals(outcome.results.length, 5);
+    assertEquals(outcome.results.length, 6);
     assertEquals(outcome.results.every((r) => r.passed), true);
   }
 });
@@ -470,8 +468,8 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
   const { results } = await service.validateModel(definition, testExprModel);
 
   // Should only have definition schema, type version, global arguments,
-  // method arguments, and check selection
-  assertEquals(results.length, 5);
+  // method arguments, check selection and tags
+  assertEquals(results.length, 6);
   assertEquals(results.every((r) => r.name !== "Expression paths"), true);
 });
 
@@ -3514,4 +3512,79 @@ Deno.test("findLiteralSensitiveGlobals: does not refuse an old key the current v
     ),
     [],
   );
+});
+
+// Reserved tags (swamp-club#3635)
+
+Deno.test("validateModel: Tags fails on a reserved key in the definition's tags, without its value", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    tags: { env: "dev", "_swamp.sensitiveFields": '["message"]' },
+  });
+
+  const { results } = await service.validateModel(definition, testExprModel);
+
+  const tags = results.find((r) => r.name === "Tags");
+  assertEquals(tags?.passed, false);
+  assertStringIncludes(
+    tags?.error ?? "",
+    "Tag '_swamp.sensitiveFields' from the behavior definition's tags is reserved",
+  );
+  assertStringIncludes(
+    tags?.modelError ?? "",
+    "from the model definition's tags is reserved",
+  );
+  assertEquals((tags?.error ?? "").includes('["message"]'), false);
+  // The other checks still report.
+  assertEquals(
+    results.filter((r) => r.name !== "Tags").every((r) => r.passed),
+    true,
+  );
+});
+
+Deno.test("validateModel: Tags fails on a reserved key in a spec's default tags", async () => {
+  const service = new DefaultModelValidationService();
+  const modelDef: ModelDefinition = {
+    ...testExprModel,
+    files: {
+      log: {
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { "_swamp.anything": "x" },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const { results } = await service.validateModel(definition, modelDef);
+
+  const tags = results.find((r) => r.name === "Tags");
+  assertEquals(tags?.passed, false);
+  assertStringIncludes(
+    tags?.error ?? "",
+    `from the default tags of file spec 'log' in behavior type '${testExprModel.type.normalized}'`,
+  );
+  assertStringIncludes(
+    tags?.error ?? "",
+    "The behavior type's author must remove it.",
+  );
+});
+
+Deno.test("validateModel: Tags passes for lookalike keys", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    tags: { "swamp.sensitiveFields": "a", "_SWAMP.x": "b" },
+  });
+
+  const { results } = await service.validateModel(definition, testExprModel);
+
+  assertEquals(results.find((r) => r.name === "Tags")?.passed, true);
 });

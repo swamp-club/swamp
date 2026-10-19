@@ -39,6 +39,11 @@ import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
 import { literalSensitiveGlobalArgsMessage } from "../models/sensitive_field_extractor.ts";
 import { findForeignTaskText } from "./expression_evaluators.ts";
+import {
+  atSteps,
+  type ReservedTagLookups,
+  reservedWorkflowTags,
+} from "./reserved_workflow_tags.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -93,6 +98,12 @@ export type MethodResolution =
      * literal secret, which the step refuses when it runs.
      */
     literalSensitiveGlobals?: string[];
+    /**
+     * The refusal of a reserved tag key in the type's spec defaults, which
+     * the step refuses when it runs (swamp-club#3635). The definition's own
+     * tags are checked with the workflow's, through `findDefinition`.
+     */
+    reservedTagRefusal?: string;
   }
   | { status: "model_not_found" }
   | { status: "method_not_found"; modelType: string }
@@ -162,6 +173,8 @@ export class DefaultWorkflowValidationService
     private readonly methodResolver?: ModelMethodResolver,
     private readonly workflowRepo?: WorkflowRepository,
     private readonly sensitiveOutputVaults?: SensitiveOutputVaultResolver,
+    /** The stored definition a step names, for its reserved tag keys. */
+    private readonly findDefinition?: ReservedTagLookups["findDefinition"],
   ) {}
 
   async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
@@ -234,7 +247,42 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
+    // 17. Reserved tag keys the workflow, its steps and nested workflows supply
+    for (const result of await this.validateReservedTags(workflow)) {
+      results.push(result);
+    }
+
     return results;
+  }
+
+  /**
+   * Reserved tag keys the workflow supplies: in its own tags, a step's data
+   * output overrides, the stored definition a step names, or a nested
+   * workflow's. A run refuses them before any step runs (swamp-club#3635).
+   */
+  private async validateReservedTags(
+    workflow: Workflow,
+  ): Promise<WorkflowValidationResult[]> {
+    const repo = this.workflowRepo;
+    const found = await reservedWorkflowTags(workflow, {
+      findDefinition: this.findDefinition,
+      findWorkflow: repo
+        ? async (idOrName) =>
+          await repo.findByName(idOrName) ??
+            await repo.findById(createWorkflowId(idOrName))
+        : undefined,
+    });
+    if (found.length === 0) return [WorkflowValidationResult.pass("Tags")];
+    return found.map(({ steps: [first, ...rest], refusal }) =>
+      WorkflowValidationResult.fail(
+        first
+          ? `Tags for '${first.stepName}' in job '${first.jobName}'${
+            first.workflow ? ` (workflow '${first.workflow}')` : ""
+          }`
+          : "Tags",
+        atSteps({ steps: rest, refusal }).text,
+      )
+    );
   }
 
   /**
@@ -974,6 +1022,15 @@ export class DefaultWorkflowValidationService
             ),
           ]
           : [];
+        const reservedTags = resolution.reservedTagRefusal
+          ? [
+            WorkflowValidationResult.fail(
+              `Tags for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
+              resolution.reservedTagRefusal,
+            ),
+          ]
+          : [];
+        const definitionProblems = [...literalGlobals, ...reservedTags];
         const provided = new Set<string>([
           ...Object.keys(inputs ?? {}),
           ...Object.keys(globalArgs ?? {}),
@@ -984,14 +1041,17 @@ export class DefaultWorkflowValidationService
         );
         if (missing.length > 0) {
           return [
-            ...literalGlobals,
+            ...definitionProblems,
             WorkflowValidationResult.fail(
               checkName,
               `Missing required inputs: ${missing.join(", ")}`,
             ),
           ];
         }
-        return [...literalGlobals, WorkflowValidationResult.pass(checkName)];
+        return [
+          ...definitionProblems,
+          WorkflowValidationResult.pass(checkName),
+        ];
       }
     }
   }
