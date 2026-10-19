@@ -103,6 +103,9 @@ main() {
 
   section "Extracting '$asset'"
   extract_archive "$tmpdir/$asset" "$tmpdir" "$bin"
+  # The archive was verified before extraction and is not needed again.
+  # Removing it now keeps it off disk while the binary is copied into place.
+  rm -f "$tmpdir/$asset" "$tmpdir/$checksum"
   verify_release_binary \
     "$tmpdir/$bin" "$tmpdir/$release_checksums" "$release_asset"
 
