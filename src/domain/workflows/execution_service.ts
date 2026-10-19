@@ -4916,10 +4916,7 @@ export class WorkflowExecutionService {
       // The run records the inputs its remaining steps run with, not the ones
       // it started with. Captured only once the provenance above is derived:
       // a legacy run derives it from the stored inputs, which must not yet
-      // hold the resume's values. `run.inputs` stays the stored set: a
-      // child's deferred bindings snapshot it, and only `inputs.*` keeps
-      // resume-only values out of them.
-      const storedInputs = existingRun.inputs;
+      // hold the resume's values.
       existingRun.captureInputs({ ...effectiveInputs });
       existingRun.captureInputsProvenance(resumedProvenance);
 
@@ -4931,7 +4928,10 @@ export class WorkflowExecutionService {
         startedAt: existingRun.startedAt!.toISOString(),
         tags: { ...existingRun.tags },
         initiatedBy: existingRun.initiatedBy,
-        inputs: storedInputs,
+        // The same set `inputs.*` reads: a step still to run sees one value
+        // through either, so an approval showing `run.inputs.X` shows what
+        // the step after it acts on (swamp-club#3583).
+        inputs: existingRun.inputs,
       };
       expressionContext.steps = {};
       const stepOutputResolver = this.createStepOutputResolver(
@@ -5046,7 +5046,12 @@ export class WorkflowExecutionService {
         nestedRuns,
         inFlightMethodRuns,
         stepStopGraceMs: options?.stepStopGraceMs,
-        resumeDerived: existingRun.resumeInputs.map((key) => `inputs.${key}`),
+        // Read as `inputs.X` and as `run.inputs.X`; both are kept out of a
+        // child's persisted deferred bindings.
+        resumeDerived: existingRun.resumeInputs.flatMap((key) => [
+          `inputs.${key}`,
+          `run.inputs.${key}`,
+        ]),
         // workflow resume never receives CLI report flags — default so
         // resumed runs still execute reports instead of silently skipping.
         reportFilterOptions: options?.reportFilterOptions ?? {},

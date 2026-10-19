@@ -416,7 +416,10 @@ function removedUnfinishedJob(
  * How to clear a suspended run a resume refused. A local cancel refuses a run
  * serve started, so such a run is cancelled through serve instead.
  */
-function suspendedWayOut(workflow: Workflow, run: WorkflowRun): string {
+export function suspendedWayOut(
+  workflow: Workflow,
+  run: WorkflowRun,
+): string {
   return run.instanceId !== undefined
     ? `To cancel it: 'swamp workflow cancel --run ${run.id} --server <url>'.`
     : `To cancel it: 'swamp workflow cancel ${workflow.name} --run ${run.id}'.`;

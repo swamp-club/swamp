@@ -83,16 +83,17 @@ it, or a step skipped by a guard that read it. Steps still to run, and steps the
 resume resets with `--from` or a retry, may read a new value, so the
 placeholder-then-resume pattern keeps working. To change a value a finished step
 used, start a new run (cancel the suspended one first with
-`swamp workflow cancel <wf> --run <id>`), or retry a failed run `--from` a step
-at or before the first that used it. A `--last-evaluated` run records the inputs
-its cache was evaluated with; one replaying a cache written before that records
-none, so a resume `--input` it read is refused. An approval binds only what its
-prompt or earlier steps read: name the value in the prompt, or check it in an
-earlier step, to pin it. The run records the merged inputs it resumes with.
-Other errors, such as an `--input` value that makes an expression fail to
-evaluate, exit 1 with `Workflow resume failed: ...` (`--json` code
-`workflow_resume_failed`). A failure after steps start is not rolled back: check
-the run with `swamp workflow history get <run-id>` before resuming again.
+`swamp workflow cancel <wf> --run <id>`, adding `--server <url>` for a run serve
+started), or retry a failed run `--from` a step at or before the first that used
+it. A `--last-evaluated` run records the inputs its cache was evaluated with;
+one replaying a cache written before that records none, so a resume `--input` it
+read is refused. An approval binds only what its prompt or earlier steps read:
+name the value in the prompt, or check it in an earlier step, to pin it. The run
+records the merged inputs it resumes with. Other errors, such as an `--input`
+value that makes an expression fail to evaluate, exit 1 with
+`Workflow resume failed: ...` (`--json` code `workflow_resume_failed`). A
+failure after steps start is not rolled back: check the run with
+`swamp workflow history get <run-id>` before resuming again.
 
 Resume uses the current workflow file. If it was edited during the approval
 window in a way the resume would walk into (a step added or moved into a job the

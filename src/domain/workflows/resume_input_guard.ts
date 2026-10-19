@@ -15,6 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
  * Whether a resume's `--input` may change the run's inputs (swamp-club#3583).
@@ -34,7 +35,11 @@ import { extractExpressions } from "../expressions/expression_parser.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import type { Job } from "./job.ts";
-import { evaluated, planFailedRunResume } from "./resume_reset.ts";
+import {
+  evaluated,
+  planFailedRunResume,
+  suspendedWayOut,
+} from "./resume_reset.ts";
 import type { ResumeReset } from "./resume_reset.ts";
 import type { Step } from "./step.ts";
 import type { Workflow } from "./workflow.ts";
@@ -314,8 +319,9 @@ function refusalMessage(
       quoteShellWord(from)
     } ${inputArgs}), or start ${newRun}.`
     : run.status === "suspended"
-    // Left suspended, the run would wait for a resume that cannot come.
-    ? `Cancel it (swamp workflow cancel ${name} --run ${run.id}), then start ${newRun}.`
+    // Left suspended, the run would wait for a resume that cannot come. A
+    // run serve started is cancelled through serve.
+    ? `${suspendedWayOut(workflow, run)} Then start ${newRun}.`
     : `Start ${newRun}.`;
   // The run id first: serve cuts an error at 512 characters.
   return `Run ${run.id} is unchanged: resume cannot change an input a step already ran with. ${

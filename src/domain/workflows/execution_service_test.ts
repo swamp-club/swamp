@@ -5472,8 +5472,91 @@ Deno.test("resume: a --last-evaluated run from a cache with no recorded inputs i
     );
     assertStringIncludes(
       error.message,
-      `Cancel it (swamp workflow cancel gated-destroy --run ${run.id})`,
+      `To cancel it: 'swamp workflow cancel gated-destroy --run ${run.id}'.`,
     );
+  });
+});
+
+Deno.test("resume: a step still to run sees one value through inputs and run.inputs (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    // What each step's context holds under `inputs` and `run.inputs`, which
+    // the step's expressions resolve against.
+    const seen: Array<{ step: string; inputs: unknown; runInputs: unknown }> =
+      [];
+    const executor: StepExecutor = {
+      execute(step, ctx) {
+        seen.push({
+          step: step.name,
+          inputs: ctx.expressionContext?.inputs?.target,
+          runInputs: (ctx.expressionContext?.run as
+            | { inputs?: Record<string, unknown> }
+            | undefined)?.inputs?.target,
+        });
+        return Promise.resolve({ executed: true });
+      },
+    };
+    // The check reads run.inputs, the destroy reads inputs. Were run.inputs
+    // the stored set during the resume, the check would pass on the old
+    // target while the destroy acted on the new one.
+    const workflow = Workflow.create({
+      name: "run-inputs-check",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "start",
+              task: StepTask.manualApproval("Proceed?"),
+            }),
+            Step.create({
+              name: "check",
+              task: StepTask.model("sh", "execute", {
+                run: "check ${{ run.inputs.target }}",
+              }),
+              dependsOn: [
+                { step: "start", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "destroy",
+              task: StepTask.model("sh", "execute", {
+                run: "echo DESTROYED ${{ inputs.target }}",
+              }),
+              dependsOn: [
+                { step: "check", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await service.execute(workflow.name, {
+      inputs: { target: "scratch" },
+    });
+    await approveWaitingGate(runRepo, workflow, suspended.id, true);
+
+    // Only steps still to run read target, so the change is accepted.
+    const finished = await resumeToEnd(service, workflow, suspended.id, {
+      inputs: { target: "protected" },
+    });
+    assertEquals(finished?.status, "succeeded");
+    assertEquals(seen, [
+      { step: "check", inputs: "protected", runInputs: "protected" },
+      { step: "destroy", inputs: "protected", runInputs: "protected" },
+    ]);
   });
 });
 
@@ -9142,6 +9225,13 @@ Deno.test("resume: resume-only inputs are excluded from the child's deferred bin
     // the forEach item iterated out of one are not.
     assertEquals(record.bindings.inputs, { region: "us-east" });
     assertEquals("item" in (record.bindings.self ?? {}), false);
+    // run.inputs holds the merged set during the resume (swamp-club#3583);
+    // its resume-only keys are left out too.
+    assertEquals(
+      (record.bindings.run as { inputs?: Record<string, unknown> } | undefined)
+        ?.inputs,
+      { region: "us-east" },
+    );
     assertEquals(JSON.stringify(childRun.toData()).includes(secret), false);
   });
 });

@@ -720,11 +720,12 @@ the guarded step's own definition too.
 The way out is a new run, or, for a failed run, `--from` the first step that
 read a refused key, which the refusal names only when retrying from it resets
 every step that read one (readers in parallel branches leave only a new run). A
-refused suspended run stays suspended, so its refusal names `swamp workflow
-cancel <wf> --run <id>` first. An approval binds only what its prompt or earlier
-steps read: a `Proceed?` prompt over a step that reads `target` does not pin
-`target`, so a gate that must pin a value names it in its prompt or checks it in
-an earlier step.
+refused suspended run stays suspended, so its refusal names the cancel command
+first (`suspendedWayOut`: `swamp workflow cancel <wf> --run <id>`, or `--run
+<id> --server <url>` for a run serve started). An approval binds only what its
+prompt or earlier steps read: a `Proceed?` prompt over a step that reads
+`target` does not pin `target`, so a gate that must pin a value names it in its
+prompt or checks it in an earlier step.
 
 A run started with `--last-evaluated` replays the evaluated cache, whose steps
 were resolved when it was written, so the run's own inputs are not what they
@@ -740,9 +741,11 @@ to compare with, and the way out is to cancel the run and start a new one.
 
 The run records the merged inputs it resumes with (`captureInputs` in
 `resumeWorkflow`, after the resume's provenance is derived), so the run record,
-its summary and the history index show the values the remaining steps ran
-with. The `run.inputs` expression keeps the stored set, so a child's deferred
-bindings never snapshot a resume-only value.
+its summary and the history index show the values the remaining steps ran with.
+`run.inputs` holds the same merged set, so a step still to run sees one value
+through `inputs.X` and `run.inputs.X`. A child's deferred bindings leave out
+every key supplied at resume under both (`resumeDerived` names `inputs.<key>`
+and `run.inputs.<key>`), on every later resume too.
 
 Resume inputs are ordinary inputs once merged. Their values are substituted and
 persisted wherever run inputs are: evaluated definitions, step data of behaviors

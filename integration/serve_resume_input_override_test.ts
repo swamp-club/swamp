@@ -15,6 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
  * A serve resume cannot change an input a finished step read
@@ -115,6 +116,11 @@ Deno.test({
       assertStringIncludes(
         error?.message ?? "",
         'Input "target" was already used by steps "gate", "approve"',
+      );
+      // A run serve started is cancelled through serve.
+      assertStringIncludes(
+        error?.message ?? "",
+        `'swamp workflow cancel --run ${suspended!.id} --server <url>'`,
       );
       assertEquals(f.seen, ["gate scratch"]);
       const after = await loadRun(f, workflow, suspended!.id);

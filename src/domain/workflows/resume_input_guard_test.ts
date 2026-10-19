@@ -15,6 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { UserError } from "../errors.ts";
@@ -153,7 +154,7 @@ Deno.test("checkResumeInputOverrides: refuses changing an input the gate and app
   );
   assertStringIncludes(
     message,
-    `Cancel it (swamp workflow cancel gated-destroy --run ${run.id}), then start a new run with all its inputs (swamp workflow run gated-destroy --input 'target=<value>')`,
+    `To cancel it: 'swamp workflow cancel gated-destroy --run ${run.id}'. Then start a new run with all its inputs (swamp workflow run gated-destroy --input 'target=<value>')`,
   );
   assertEquals(message.includes("protected"), false, "message leaks a value");
   assertEquals(message.includes("scratch"), false, "message leaks a value");
@@ -860,7 +861,7 @@ Deno.test("checkResumeInputOverrides: a value the run never recorded is named as
   );
   assertStringIncludes(
     message,
-    `swamp workflow cancel gated-destroy --run ${run.id}`,
+    `'swamp workflow cancel gated-destroy --run ${run.id}'`,
   );
 });
 
@@ -890,4 +891,17 @@ Deno.test("checkResumeInputOverrides: a refusal of several unrecorded inputs fit
   }, {});
   // refusal() asserts the 512-character bound.
   await refusal(wf, run, { target: "a", region: "b", account: "c" });
+});
+
+Deno.test("checkResumeInputOverrides: a serve-started run is pointed to cancel it through serve", async () => {
+  const wf = gatedDestroy();
+  const data = approvedRun(wf).toData();
+  data.instanceId = "serve-a";
+  const run = WorkflowRun.fromData(data);
+  const message = await refusal(wf, run, { target: "protected" });
+  assertStringIncludes(
+    message,
+    `'swamp workflow cancel --run ${run.id} --server <url>'`,
+  );
+  assertEquals(message.includes("swamp workflow cancel gated-destroy"), false);
 });
