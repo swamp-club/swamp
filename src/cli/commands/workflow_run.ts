@@ -562,6 +562,9 @@ export const workflowRunCommand = new Command()
                 },
                 findEvaluatedWorkflow: (runId) =>
                   evaluatedWorkflowRepo.findByRunId(runId),
+                cachedEvaluationInputs: async (name) =>
+                  (await evaluatedWorkflowRepo.findByNameWithProvenance(name))
+                    ?.evaluatedInputs,
                 runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
                 // The suspended nested runs a superseded run waited on are
                 // cancelled with it (swamp-club#2867). The tracker is opened

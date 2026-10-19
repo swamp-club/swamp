@@ -5938,6 +5938,8 @@ export class WorkflowExecutionService {
         .filter((path) => path.startsWith("inputs."))
         .map((path) => path.slice("inputs.".length));
       // Read as `inputs.X` or `run.inputs.X`: both hold resume-time values.
+      // A collection read whole or by a computed key counts as reading them,
+      // so its items are left out rather than risk persisting one.
       const inRefs = inputNamesRead(
         extractCelExpression(step.forEach?.in ?? "") ?? "",
       );

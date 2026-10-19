@@ -1232,3 +1232,47 @@ Deno.test("workflowEvaluate: the cache records the inputs it was evaluated with 
   assertEquals(events.at(-1)?.kind, "completed");
   assertEquals(recorded, [{ target: "scratch" }]);
 });
+
+Deno.test("workflowEvaluate: the cache records an expanded forEach step's expressions as resolved (swamp-club#3583)", async () => {
+  const workflow = makeForEachWorkflow({
+    modelIdOrName: "deployer",
+    methodName: "run",
+    forEachIn: "${{ inputs.envs }}",
+    forEachItem: "env",
+    stepName: "deploy-${{ self.env }}",
+    inputs: { where: "${{ inputs.prefix + self.env }}" },
+  });
+  const recorded: Array<ReadonlySet<string> | undefined> = [];
+  const deps = makeForEachDeps(workflow, {
+    saveEvaluatedWorkflow: (
+      _workflow,
+      _provenance,
+      _authored,
+      _references,
+      _inputs,
+      resolvedExpressions,
+    ) => {
+      recorded.push(resolvedExpressions);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "foreach-workflow",
+      inputs: { envs: ["a", "b"], prefix: "p-" },
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  // The collection and the iterations' expressions were resolved into the
+  // cached steps, though evaluation skipped them before expanding.
+  assertEquals(recorded.length, 1);
+  for (
+    const raw of [
+      "${{ inputs.envs }}",
+      "${{ inputs.prefix + self.env }}",
+      "${{ self.env }}",
+    ]
+  ) {
+    assertEquals(recorded[0]?.has(raw), true, raw);
+  }
+});

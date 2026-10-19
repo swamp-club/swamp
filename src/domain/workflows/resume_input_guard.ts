@@ -283,15 +283,21 @@ function refusalMessage(
     names.map((n) => `"${n}"`).join(", ");
   // Keys the same steps read are named together, to stay within serve's
   // error limit.
-  const keysByReaders = new Map<string, string[]>();
+  const keysByReaders = new Map<
+    string,
+    { readers: readonly string[]; keys: string[] }
+  >();
   for (const [key, readers] of readersByKey) {
-    const group = quoted(readers);
-    keysByReaders.set(group, [...keysByReaders.get(group) ?? [], key]);
+    const group = keysByReaders.get(quoted(readers)) ?? { readers, keys: [] };
+    group.keys.push(key);
+    keysByReaders.set(quoted(readers), group);
   }
-  const parts = [...keysByReaders].map(([readers, keys]) =>
+  const parts = [...keysByReaders.values()].map(({ readers, keys }) =>
     `${keys.length === 1 ? "input" : "inputs"} ${quoted(keys)} ${
       keys.length === 1 ? "was" : "were"
-    } already used by ${readers.includes(", ") ? "steps" : "step"} ${readers}`
+    } already used by ${readers.length === 1 ? "step" : "steps"} ${
+      quoted(readers)
+    }`
   );
   // A key the run has no value for cannot be compared: a run replaying a
   // cache written before its evaluation inputs were recorded keeps none.

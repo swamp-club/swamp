@@ -73,6 +73,7 @@ import { findBrokenWorkflow, workflowsDirFor } from "./broken_workflow.ts";
 import {
   type SkippedSupersedeData,
   type SupersedeDeps,
+  supersedeMatchInputs,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
@@ -894,7 +895,12 @@ export async function* workflowRun(
             const { cancelledRunIds, skippedRuns, ...nested } =
               await supersedeSuspendedRuns(
                 workflow,
-                resolvedInput.inputs ?? {},
+                await supersedeMatchInputs(
+                  workflow.name,
+                  resolvedInput.inputs ?? {},
+                  resolvedInput.lastEvaluated === true,
+                  deps.supersede,
+                ),
                 deps.supersede,
                 deps.runRepo,
               );

@@ -5263,11 +5263,11 @@ Deno.test("resume: an accepted --input is recorded as the run's inputs (swamp-cl
 
     // authKey is read only after the approval; target is passed unchanged.
     const finished = await resumeToEnd(service, workflow, suspended.id, {
-      inputs: { authKey: "tskey-abc123", target: "scratch" },
+      inputs: { authKey: "minted-key-name", target: "scratch" },
     });
     assertEquals(finished?.status, "succeeded");
-    assertEquals(executor.ran.at(-1)?.inputs?.token, "tskey-abc123");
-    const effective = { target: "scratch", authKey: "tskey-abc123" };
+    assertEquals(executor.ran.at(-1)?.inputs?.token, "minted-key-name");
+    const effective = { target: "scratch", authKey: "minted-key-name" };
     assertEquals(finished?.inputs, effective);
     const persisted = await runRepo.findById(workflow.id, suspended.id);
     assertEquals(persisted!.inputs, effective);

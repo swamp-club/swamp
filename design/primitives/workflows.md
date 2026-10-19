@@ -738,11 +738,13 @@ that an expression the cache resolved into its steps read, when its value
 differs from the recorded one or cannot be checked (the cache recorded none, or
 not that key); an input only expressions the cache left to resolve at run time
 read is the run's own (`inputsConflictingWithCache`). What was resolved is the
-cache's `resolvedExpressions`, the texts evaluation substituted somewhere: a
-text can be substituted in one step and kept raw in another, such as a guarded
-step's target, so what the cached workflow still holds does not tell. A cache
-written before it was recorded counts every authored expression as resolved. The
-refusal names keys only and points to `workflow evaluate` again or a run without
+cache's `resolvedExpressions`, the texts evaluation substituted somewhere, plus
+every expression of a step `workflow evaluate` expanded from a forEach (its
+collection and its iterations resolve into the cache): a text can be substituted
+in one step and kept raw in another, such as a guarded step's target, so what
+the cached workflow still holds does not tell. A cache written before it was
+recorded counts every authored expression as resolved. The refusal names keys
+only and points to `workflow evaluate` again or a run without
 `--last-evaluated`. A cache written before inputs were recorded leaves the run
 none, as does one whose evaluation inputs held a sensitive value, which the
 cache file would otherwise carry in plaintext (`recordableEvaluatedInputs`). The
@@ -752,6 +754,8 @@ finished step as reading every input. A plain resume then resolves `inputs.*`,
 re-supplying a recorded value is no change, and any other value, or a key the
 run recorded none for, is refused; the refusal says when the run recorded no
 value to compare with, and the way out is to cancel the run and start a new one.
+Superseding matches a `--last-evaluated` run on the same set it records, the
+cache's evaluation inputs under the supplied ones (`supersedeMatchInputs`).
 
 The run records the merged inputs it resumes with (`captureInputs` in
 `resumeWorkflow`, after the resume's provenance is derived), so the run record,

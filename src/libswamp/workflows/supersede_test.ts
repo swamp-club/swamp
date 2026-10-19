@@ -19,7 +19,7 @@
 
 import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
 import { assertEquals } from "@std/assert";
-import { supersedeSuspendedRuns } from "./supersede.ts";
+import { supersedeMatchInputs, supersedeSuspendedRuns } from "./supersede.ts";
 import { emptyNestedCascade } from "./nested_cascade.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -492,4 +492,34 @@ Deno.test("supersedeSuspendedRuns: a nested run that cannot be read does not sto
 
   assertEquals(result.cancelledRunIds, [chain[0].id]);
   assertEquals(result.skippedRuns, []);
+});
+
+Deno.test("supersedeMatchInputs: a --last-evaluated run is matched on the cache's evaluation inputs under its own (swamp-club#3583)", async () => {
+  const deps = {
+    cachedEvaluationInputs: (name: string) =>
+      Promise.resolve(
+        name === "gated" ? { target: "scratch", region: "eu" } : undefined,
+      ),
+  };
+  assertEquals(
+    await supersedeMatchInputs("gated", {}, true, deps),
+    { target: "scratch", region: "eu" },
+  );
+  assertEquals(
+    await supersedeMatchInputs("gated", { region: "us" }, true, deps),
+    { target: "scratch", region: "us" },
+  );
+  // A fresh run, a cache that recorded none, or no lookup: the supplied
+  // inputs alone.
+  assertEquals(
+    await supersedeMatchInputs("gated", { a: 1 }, false, deps),
+    { a: 1 },
+  );
+  assertEquals(
+    await supersedeMatchInputs("other", { a: 1 }, true, deps),
+    { a: 1 },
+  );
+  assertEquals(await supersedeMatchInputs("gated", { a: 1 }, true, {}), {
+    a: 1,
+  });
 });

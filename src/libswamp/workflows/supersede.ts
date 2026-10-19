@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { deepMerge } from "../../domain/inputs/input_merge.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -85,6 +86,31 @@ export interface SupersedeDeps {
    * Without it they are only reported.
    */
   cascade?: NestedCascade;
+  /**
+   * The inputs the workflow's evaluated cache was evaluated with. A
+   * `--last-evaluated` run records them under its own (swamp-club#3583), so
+   * they are what its inputs are matched on. Without it, only the supplied
+   * inputs are.
+   */
+  cachedEvaluationInputs?: (
+    workflowName: string,
+  ) => Promise<Record<string, unknown> | undefined>;
+}
+
+/**
+ * The inputs a new run's suspended predecessors are matched on: the ones it
+ * will record. A `--last-evaluated` run records the cache's evaluation
+ * inputs under the supplied ones (swamp-club#3583).
+ */
+export async function supersedeMatchInputs(
+  workflowName: string,
+  supplied: Record<string, unknown>,
+  lastEvaluated: boolean,
+  { cachedEvaluationInputs }: Pick<SupersedeDeps, "cachedEvaluationInputs">,
+): Promise<Record<string, unknown>> {
+  if (!lastEvaluated || !cachedEvaluationInputs) return supplied;
+  const cached = await cachedEvaluationInputs(workflowName);
+  return cached ? deepMerge({ ...cached }, supplied) : supplied;
 }
 
 /** Whether a new run of the workflow with `newInputs` supersedes `run`. */

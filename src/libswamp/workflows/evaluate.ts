@@ -422,7 +422,10 @@ async function evaluateWorkflowInternal(
   // Create new Workflow from evaluated data
   const evaluatedWorkflow = Workflow.fromData(evaluatedData as WorkflowData);
 
-  // Expand forEach steps
+  // Expand forEach steps. An expanded step's collection and its own
+  // expressions resolve into the cache's iterations, outside evaluatedValues,
+  // so they are recorded as resolved too (swamp-club#3583).
+  const resolvedByExpansion = new Set<string>();
   const expandedWorkflowData = evaluatedWorkflow.toData();
   for (const [jobIndex, jobData] of expandedWorkflowData.jobs.entries()) {
     const expandedSteps: typeof jobData.steps = [];
@@ -460,6 +463,16 @@ async function evaluateWorkflowInternal(
         throw new UserError("forEach.in must be an authored expression");
       }
       const items = await deps.evaluateCelAsync(inSpan.inner, context);
+      for (
+        const { raw } of extractExpressions({
+          forEach: stepData.forEach,
+          name: stepData.name,
+          task: stepData.task,
+          target: stepData.target,
+          labels: stepData.labels,
+          platform: stepData.platform,
+        })
+      ) resolvedByExpansion.add(raw);
       const itemsProvenance = spliceOrigin(inSpan.inner, context, items).map;
       const itemName = stepData.forEach.item;
       const nameHasExpression = containsExpression(stepData.name);
@@ -638,7 +651,7 @@ async function evaluateWorkflowInternal(
     authoredExpressions,
     persisted.writtenReferences,
     recordableEvaluatedInputs(coercedInputs, sensitiveValues),
-    new Set(evaluatedValues.keys()),
+    new Set([...evaluatedValues.keys(), ...resolvedByExpansion]),
   );
 
   return {
