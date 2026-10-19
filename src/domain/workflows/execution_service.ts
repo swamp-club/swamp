@@ -1969,6 +1969,9 @@ export class DefaultStepExecutor implements StepExecutor {
     // Global arguments the template-syntax scan reads in place of a
     // definition's evaluated ones; see templateScanGlobalArguments.
     let authoredGlobalArguments: Record<string, unknown> | undefined;
+    // Whether originalDefinition is the stored file, not a copy holding the
+    // real values direct execution resolved.
+    let storedDefinition = false;
     const isAutoDefinition = (definition: Definition, type: ModelType) =>
       allDeps.isAutoDefinition?.(definition, type) ?? Promise.resolve(false);
     if (task.modelType && task.modelName) {
@@ -2146,6 +2149,7 @@ export class DefaultStepExecutor implements StepExecutor {
       }
       originalDefinition = lookupResult.definition;
       modelType = lookupResult.type;
+      storedDefinition = true;
       authoredFromDefinition = collectAuthoredExpressions(
         originalDefinition.toData(),
       );
@@ -2207,7 +2211,11 @@ export class DefaultStepExecutor implements StepExecutor {
       modelDef,
       definitionRepo,
       undefined,
-      { authoredGlobalArguments },
+      // Direct execution refuses a stored literal in resolveOrCreateDefinition.
+      {
+        authoredGlobalArguments,
+        refuseLiteralSensitiveGlobals: storedDefinition,
+      },
     );
 
     // Fail fast if validation fails

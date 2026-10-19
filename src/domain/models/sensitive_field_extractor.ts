@@ -474,6 +474,54 @@ export function redactSensitiveValues(
 }
 
 /**
+ * Returns a clone of `data` with every literal secret under a field marked
+ * `{ sensitive: true }` in `schema` replaced by `"***"`, for display.
+ *
+ * A value is masked when {@link findLiteralSensitiveGlobalArgs} would refuse
+ * it: plain text, a constant expression, a bare number or boolean, or a
+ * container holding any of those (masked whole). A value made only of
+ * runtime expressions, such as a `vault.get(...)` reference, is kept as
+ * written, since its text names where the secret lives and is not the secret.
+ * Unlike {@link redactSensitiveValues}, which masks every sensitive value, this
+ * keeps that reference visible. The input is not mutated, and is returned as
+ * is when nothing is masked.
+ *
+ * @param schema - A global-arguments or method-argument Zod schema
+ * @param data - The argument values to mask
+ * @returns `data`, or a deep clone with literal sensitive values set to `"***"`
+ */
+export function maskLiteralSensitiveValues(
+  schema: z.ZodTypeAny,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return data;
+  }
+  const literals = findValuesWithMetadata(schema, data, isSensitive).filter((
+    { value },
+  ) => isLiteralSecret(value));
+  if (literals.length === 0) {
+    return data;
+  }
+
+  const masked = structuredClone(data);
+  for (const { keys } of literals) {
+    let parent: unknown = masked;
+    for (const key of keys.slice(0, -1)) {
+      // A parent already masked is a string by now, and covers this value.
+      parent = typeof parent === "object" && parent !== null
+        ? (parent as Record<string | number, unknown>)[key]
+        : undefined;
+    }
+    const last = keys.at(-1);
+    if (typeof parent === "object" && parent !== null && last !== undefined) {
+      (parent as Record<string | number, unknown>)[last] = "***";
+    }
+  }
+  return masked;
+}
+
+/**
  * Returns a deep clone of `data` with every leaf value replaced by `"***"`.
  * Used as the fallback redaction strategy when no Zod schema is available
  * to drive field-level redaction — all values are assumed sensitive.

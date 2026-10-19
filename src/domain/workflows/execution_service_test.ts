@@ -4117,6 +4117,96 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "DefaultStepExecutor: a step refuses a stored definition holding a literal sensitive global argument (swamp-club#3555)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+
+    let executed = false;
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-3555/sensitive-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({
+          token: z.string().meta({ sensitive: true }).optional(),
+        }),
+        resources: {},
+        methods: {
+          execute: {
+            description: "runs",
+            arguments: z.object({}),
+            execute: () => {
+              executed = true;
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const repo = new YamlDefinitionRepository(tempDir);
+        const definition = Definition.create({
+          name: "hand-edited",
+          type: modelType.normalized,
+        });
+        await repo.save(modelType, definition);
+        // Edited by hand after the save, so the save-time refusal never ran.
+        const path = repo.getPath(modelType, definition.id);
+        const yaml = await Deno.readTextFile(path);
+        await Deno.writeTextFile(
+          path,
+          yaml.replace(
+            /^globalArguments: \{\}$/m,
+            "globalArguments:\n  token: GLOBAL-CANARY",
+          ),
+        );
+
+        const step = Step.create({
+          name: "step",
+          task: StepTask.model(definition.name, "execute"),
+        });
+        const error = await assertRejects(() =>
+          new DefaultStepExecutor().execute(step, {
+            sensitiveValues: new RunSensitiveValues(),
+            workflowId: createWorkflowId(crypto.randomUUID()),
+            workflowRunId: crypto.randomUUID(),
+            workflowName: "wf",
+            jobName: "job",
+            stepName: "step",
+            repoDir: tempDir,
+            signal: new AbortController().signal,
+            step,
+            catalogStore,
+            authoredExpressions: new Set(),
+            expressionContext: { model: {}, env: {}, inputs: {} },
+          })
+        );
+        assertStringIncludes(
+          (error as Error).message,
+          'Behavior validation failed for "hand-edited"',
+        );
+        assertStringIncludes((error as Error).message, "'token'");
+        assertEquals((error as Error).message.includes("GLOBAL-CANARY"), false);
+      } finally {
+        catalogStore.close();
+      }
+    });
+    assertEquals(executed, false);
+  },
+});
+
 // --- forEach.in async helper resolution (Issue #88) ---
 
 Deno.test({

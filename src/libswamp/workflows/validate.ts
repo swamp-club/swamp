@@ -38,6 +38,7 @@ import { notFound, type SwampError } from "../errors.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { DefaultModelValidationService } from "../../domain/models/validation_service.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { zodToJsonSchema } from "../types/schema_helpers.ts";
@@ -191,6 +192,9 @@ function createModelMethodResolver(
         requiredArgs,
         definitionProvidedArgs,
         definitionProvidedArgValues,
+        // The step refuses these when it runs; read from the stored file.
+        literalSensitiveGlobals: new DefaultModelValidationService()
+          .findLiteralSensitiveGlobals(definition, modelDef),
       };
     },
   };

@@ -3238,3 +3238,280 @@ Deno.test("validateModel: a model name missing its prefix beside a vault read ke
     false,
   );
 });
+
+const sensitiveGlobalsModel: ModelDefinition = defineModel({
+  type: ModelType.create("test/sensitive-globals-validation"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({
+    token: z.string().meta({ sensitive: true }).optional(),
+    message: z.string().optional(),
+  }),
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  },
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals fails Global arguments for a literal sensitive global (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "literal-token",
+    globalArguments: { token: "GLOBAL-CANARY" },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'token'");
+  assertEquals(globalResult?.error?.includes("GLOBAL-CANARY"), false);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals catches a literal next to an expression field (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "literal-token-mixed",
+    globalArguments: {
+      token: "GLOBAL-CANARY",
+      message: "${{ inputs.message }}",
+    },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals passes a vault.get sensitive global (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "vault-token",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, true);
+});
+
+Deno.test("validateModel: a literal sensitive global passes without refuseLiteralSensitiveGlobals (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  // A copy holding a run's real values, which may be plaintext read through data.
+  const definition = Definition.create({
+    name: "real-values",
+    globalArguments: { token: "Pl41n-s3cret" },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, true);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals catches a literal an upgrade moves into a sensitive field (swamp-club#3555)", async () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY" },
+  });
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    modelDef,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'apiKey'");
+  assertEquals(globalResult?.error?.includes("GLOBAL-CANARY"), false);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals reports a schema error beside the literal (swamp-club#3555)", async () => {
+  const definition = Definition.create({
+    name: "literal-and-typo",
+    globalArguments: { token: "GLOBAL-CANARY", nope: "x" },
+  });
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'token'");
+  assertStringIncludes(globalResult?.error ?? "", "Unknown global argument");
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals catches an upgrade-moved literal beside an expression global (swamp-club#3555)", async () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        note: z.string().optional(),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token-with-expression",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY", note: "${{ inputs.note }}" },
+  });
+  const service = new DefaultModelValidationService();
+  const { results } = await service.validateModel(
+    definition,
+    modelDef,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'apiKey'");
+  assertEquals(service.findLiteralSensitiveGlobals(definition, modelDef), [
+    "apiKey",
+  ]);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals does not refuse an expression an upgrade moves into a sensitive field (swamp-club#3555)", () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token-expression",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobals: does not refuse a default an upgrade fills only when a vault-referenced key is dropped (swamp-club#3555)", () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token ?? "none" };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+    },
+  );
+  // The run upgrades this file as stored, so apiKey keeps the reference.
+  const definition = Definition.create({
+    name: "stale-token-vault",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobals: catches a moved literal when the upgrade also reads an expression-valued global (swamp-club#3555)", () => {
+  const modelDef = renamingModel(
+    (old) => ({
+      apiKey: old.token,
+      region: (old.region as string).toLowerCase(),
+    }),
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token-region",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY", region: "${{ inputs.region }}" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    ["apiKey"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobals: does not refuse an old key the current version reuses as a sensitive field (swamp-club#3555)", () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, clientId: token };
+    },
+    {
+      globalArguments: z.object({
+        clientId: z.string(),
+        token: z.string().meta({ sensitive: true }).optional(),
+      }),
+    },
+  );
+  // v1's token was a public client id; the upgrade moves it to clientId.
+  const definition = Definition.create({
+    name: "stale-client-id",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "client-abc" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    [],
+  );
+});

@@ -237,8 +237,12 @@ inside a string (`literal('vault.get(a, b)')`) is plain text and never resolved.
 **Cause**: A sensitive global argument holds a literal secret, or an expression
 that reads nothing — `${{ literal('hunter2') }}` or `${{ 'hunter2' }}` — which
 stores the secret in cleartext in the definition YAML. Reported on save,
-behavior create, method run and direct execution; `swamp doctor secrets` finds
-stored ones. Empty strings and null are allowed.
+behavior create, method run, direct execution, `behavior validate`,
+`workflow validate` and workflow steps, including for a hand-edited definition
+and after an upgrade moves a literal into a sensitive field;
+`swamp doctor secrets` finds stored ones. Empty strings and null are allowed.
+Method run output shows a literal value under a sensitive argument as `***`; a
+`vault.get` reference is shown as written.
 
 **Solution**: Store the secret in a vault and reference it:
 `${{ vault.get('my-vault', 'api-key') }}`.

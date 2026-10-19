@@ -26,6 +26,7 @@ import {
   findLiteralSensitiveGlobalArgs,
   getNestedValue,
   literalSensitiveGlobalArgsMessage,
+  maskLiteralSensitiveValues,
   redactAllValues,
   redactSensitiveValues,
   setNestedValue,
@@ -1431,4 +1432,95 @@ Deno.test("redactSensitiveValues and extractSensitiveFieldValues: a schema that 
   }) as Record<string, unknown>;
   assertEquals(redactSensitiveValues(schema, data) === data, true);
   assertEquals(extractSensitiveFieldValues(schema, data), []);
+});
+
+Deno.test("maskLiteralSensitiveValues: masks a literal and keeps a vault reference", () => {
+  const schema = z.object({
+    token: z.string().meta({ sensitive: true }),
+    key: z.string().meta({ sensitive: true }),
+    region: z.string(),
+  });
+  const vaultRef = "${{ vault.get('v', 'k') }}";
+  const data = { token: "hunter2", key: vaultRef, region: "us-east-1" };
+  assertEquals(maskLiteralSensitiveValues(schema, data), {
+    token: "***",
+    key: vaultRef,
+    region: "us-east-1",
+  });
+  assertEquals(data.token, "hunter2");
+});
+
+Deno.test("maskLiteralSensitiveValues: masks nested, array and record values", () => {
+  const schema = z.object({
+    credentials: z.object({ apiKey: z.string().meta({ sensitive: true }) }),
+    users: z.array(
+      z.object({ password: z.string().meta({ sensitive: true }) }),
+    ),
+    accounts: z.record(
+      z.string(),
+      z.object({ token: z.string().meta({ sensitive: true }) }),
+    ),
+  });
+  const masked = maskLiteralSensitiveValues(schema, {
+    credentials: { apiKey: "secret-a" },
+    users: [{ password: "secret-b" }],
+    accounts: { prod: { token: "secret-c" } },
+  });
+  assertEquals(masked, {
+    credentials: { apiKey: "***" },
+    users: [{ password: "***" }],
+    accounts: { prod: { token: "***" } },
+  });
+});
+
+Deno.test("maskLiteralSensitiveValues: masks a mixed string, a constant expression and a number", () => {
+  const schema = z.object({
+    a: z.string().meta({ sensitive: true }),
+    b: z.string().meta({ sensitive: true }),
+    c: z.number().meta({ sensitive: true }),
+  });
+  assertEquals(
+    maskLiteralSensitiveValues(schema, {
+      a: "prefix-${{ vault.get('v', 'k') }}",
+      b: "${{ literal('hunter2') }}",
+      c: 1234,
+    }),
+    { a: "***", b: "***", c: "***" },
+  );
+});
+
+Deno.test("maskLiteralSensitiveValues: masks a container holding any literal whole", () => {
+  const schema = z.object({
+    tokens: z.record(z.string(), z.string()).meta({ sensitive: true }),
+  });
+  assertEquals(
+    maskLiteralSensitiveValues(schema, {
+      tokens: { a: "${{ vault.get('v', 'a') }}", b: "plain" },
+    }),
+    { tokens: "***" },
+  );
+});
+
+Deno.test("maskLiteralSensitiveValues: returns the input when nothing is masked", () => {
+  const schema = z.object({
+    token: z.string().meta({ sensitive: true }).optional(),
+    region: z.string(),
+  });
+  const data = { token: "${{ vault.get('v', 'k') }}", region: "x" };
+  assertEquals(maskLiteralSensitiveValues(schema, data) === data, true);
+  const empty = { token: "", region: "x" };
+  assertEquals(maskLiteralSensitiveValues(schema, empty) === empty, true);
+});
+
+Deno.test("maskLiteralSensitiveValues: a schema that marks nothing is answered without reading the value", () => {
+  const schema = z.object({ region: z.string() });
+  const data = new Proxy({}, {
+    get: () => {
+      throw new Error("value was read");
+    },
+    ownKeys: () => {
+      throw new Error("value was read");
+    },
+  }) as Record<string, unknown>;
+  assertEquals(maskLiteralSensitiveValues(schema, data) === data, true);
 });

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { z } from "zod";
 import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import {
   type SwampError,
@@ -30,7 +31,10 @@ import { markOutcomeReported, withUnitOfWork } from "../unit_of_work.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { createModelUpdated } from "../../domain/events/types.ts";
-import { envVarWarningText } from "../../domain/models/validation_service.ts";
+import {
+  DefaultModelValidationService,
+  envVarWarningText,
+} from "../../domain/models/validation_service.ts";
 import {
   carryModelWording,
   markModelWording,
@@ -113,7 +117,11 @@ import {
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
 import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
-import { extractSensitiveFieldValues } from "../../domain/models/sensitive_field_extractor.ts";
+import {
+  extractSensitiveFieldValues,
+  literalSensitiveGlobalArgsMessage,
+  maskLiteralSensitiveValues,
+} from "../../domain/models/sensitive_field_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detector.ts";
 import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
@@ -587,6 +595,22 @@ export async function* modelMethodRun(
               return;
             }
             modelDef = resolvedModelDef;
+
+            // A hand-edited definition skips the save-time refusal, so a
+            // literal sensitive global is refused before it is used or shown.
+            // Read after the upgrade chain too, as validate reads it: an
+            // upgrade can move a literal into a sensitive field.
+            const leakedArgs = new DefaultModelValidationService()
+              .findLiteralSensitiveGlobals(definition, modelDef);
+            if (leakedArgs.length > 0) {
+              yield {
+                kind: "error",
+                error: validationFailed(
+                  literalSensitiveGlobalArgsMessage(leakedArgs),
+                ),
+              };
+              return;
+            }
           }
 
           // Validate method exists
@@ -958,13 +982,29 @@ export async function* modelMethodRun(
 
             // Capture pre-vault args for report context (so vault secrets stay as expressions)
             // Reports and the completed event show arguments to the user and are
-            // persisted with report output, so sensitive values are masked there.
-            const reportGlobalArgs = sensitiveValues.masked(
+            // persisted with report output, so sensitive values are masked there:
+            // values read from a vault or data wherever they sit, then literal
+            // values under a field the schema marks sensitive.
+            const maskArgs = (
+              schema: z.ZodTypeAny | undefined,
+              args: Record<string, unknown>,
+            ): Record<string, unknown> => {
+              const masked = sensitiveValues.masked(args) as Record<
+                string,
+                unknown
+              >;
+              return schema
+                ? maskLiteralSensitiveValues(schema, masked)
+                : masked;
+            };
+            const reportGlobalArgs = maskArgs(
+              modelDef.globalArguments,
               evaluatedDefinition.globalArguments,
-            ) as Record<string, unknown>;
-            const reportMethodArgs = sensitiveValues.masked(
+            );
+            const reportMethodArgs = maskArgs(
+              modelDef.methods[input.methodName]?.arguments,
               evaluatedDefinition.getMethodArguments(input.methodName),
-            ) as Record<string, unknown>;
+            );
 
             // Resolve runtime expressions (vault and env).
             // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.

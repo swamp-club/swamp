@@ -17,12 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { WorkflowValidationResult } from "../../domain/workflows/validation_service.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
+import { z } from "zod";
+import { Definition } from "../../domain/definitions/definition.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
+  createWorkflowValidateDeps,
   isWorkflowValidateAllData,
   workflowValidate,
   type WorkflowValidateData,
@@ -388,4 +398,77 @@ Deno.test("workflowValidate all with include reports only accepted workflows and
     { env: "prod" },
   );
   assertEquals(seen.find((w) => w.name === "broken-skip")?.tags, {});
+});
+
+Deno.test("createWorkflowValidateDeps: fails a step whose stored definition holds a literal sensitive global (swamp-club#3555)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const modelType = ModelType.create(
+      `@test-3555/sensitive-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({
+        token: z.string().meta({ sensitive: true }).optional(),
+      }),
+      resources: {},
+      methods: {
+        run: {
+          description: "Run",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "hand-edited",
+      type: modelType.normalized,
+    });
+    await repo.save(modelType, definition);
+    // Edited by hand after the save, so the save-time refusal never ran.
+    const path = repo.getPath(modelType, definition.id);
+    const yaml = await Deno.readTextFile(path);
+    await Deno.writeTextFile(
+      path,
+      yaml.replace(
+        /^globalArguments: \{\}$/m,
+        "globalArguments:\n  token: GLOBAL-CANARY",
+      ),
+    );
+
+    const deps = createWorkflowValidateDeps(
+      {} as WorkflowRepository,
+      new YamlDefinitionRepository(dir),
+    );
+    const results = await deps.validate(Workflow.create({
+      name: "wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("hand-edited", "run"),
+            }),
+          ],
+        }),
+      ],
+    }));
+    const globalResult = results.find((r) =>
+      r.name.startsWith("Global arguments for 'step1'")
+    );
+    assertEquals(globalResult?.passed, false);
+    assertStringIncludes(globalResult?.error ?? "", "'token'");
+    assertEquals(globalResult?.error?.includes("GLOBAL-CANARY"), false);
+    const inputResult = results.find((r) => r.name.includes("Step inputs"));
+    assertEquals(inputResult?.passed, true);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

@@ -37,6 +37,7 @@ import {
 import { extractVaultReferences } from "../expressions/vault_reference_extractor.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
+import { literalSensitiveGlobalArgsMessage } from "../models/sensitive_field_extractor.ts";
 import { findForeignTaskText } from "./expression_evaluators.ts";
 
 /**
@@ -87,6 +88,11 @@ export type MethodResolution =
     requiredArgs: string[];
     definitionProvidedArgs?: string[];
     definitionProvidedArgValues?: Record<string, unknown>;
+    /**
+     * Paths of sensitive global arguments the stored definition holds as a
+     * literal secret, which the step refuses when it runs.
+     */
+    literalSensitiveGlobals?: string[];
   }
   | { status: "model_not_found" }
   | { status: "method_not_found"; modelType: string }
@@ -956,6 +962,18 @@ export class DefaultWorkflowValidationService
           ),
         ];
       case "resolved": {
+        // The definition's own problem, reported beside the step's inputs
+        // rather than in place of them.
+        const literalGlobals = resolution.literalSensitiveGlobals?.length
+          ? [
+            WorkflowValidationResult.fail(
+              `Global arguments for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
+              literalSensitiveGlobalArgsMessage(
+                resolution.literalSensitiveGlobals,
+              ),
+            ),
+          ]
+          : [];
         const provided = new Set<string>([
           ...Object.keys(inputs ?? {}),
           ...Object.keys(globalArgs ?? {}),
@@ -966,13 +984,14 @@ export class DefaultWorkflowValidationService
         );
         if (missing.length > 0) {
           return [
+            ...literalGlobals,
             WorkflowValidationResult.fail(
               checkName,
               `Missing required inputs: ${missing.join(", ")}`,
             ),
           ];
         }
-        return [WorkflowValidationResult.pass(checkName)];
+        return [...literalGlobals, WorkflowValidationResult.pass(checkName)];
       }
     }
   }

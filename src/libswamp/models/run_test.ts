@@ -902,6 +902,179 @@ Deno.test("modelMethodRun: registers sensitive string method arg values with the
   assertEquals(redactor.redact("us-east-1"), "us-east-1");
 });
 
+Deno.test("modelMethodRun: the completed run masks literal sensitive argument values (swamp-club#3555)", async () => {
+  const vaultRef = "${{ vault.get('rv', 'K') }}";
+  const modelDef: ModelDefinition = {
+    type: TEST_MODEL_TYPE,
+    version: "1.0.0",
+    globalArguments: z.object({
+      gtoken: z.string().meta({ sensitive: true }).optional(),
+      vtoken: z.string().meta({ sensitive: true }).optional(),
+      region: z.string().optional(),
+    }),
+    methods: {
+      run: {
+        description: "Takes a sensitive argument",
+        arguments: z.object({
+          secret: z.string().meta({ sensitive: true }),
+          name: z.string().optional(),
+        }),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "sensitive-display-model",
+    globalArguments: {
+      gtoken: "${{ inputs.tok }}",
+      vtoken: vaultRef,
+      region: "us-east-1",
+    },
+    methods: { run: { arguments: {} } },
+  });
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.hasDefinitionExpressions = () => true;
+  // The expression pass resolves the inputs reference to plaintext and
+  // leaves the vault reference for the runtime pass.
+  evaluationService.evaluateDefinition = (def: Definition) => {
+    const evaluated = Definition.fromData(def.toData());
+    evaluated.setGlobalArgument("gtoken", "GLOBAL-CANARY");
+    return Promise.resolve({
+      definition: evaluated,
+      type: TEST_MODEL_TYPE,
+      hadExpressions: true,
+    });
+  };
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createEvaluationService: () => evaluationService,
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor: new SecretRedactor(),
+        cleanup: () => {},
+      }),
+  };
+
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("sensitive-display-model", "run"),
+      inputs: { secret: "METHOD-CANARY", name: "visible" },
+    }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.run.methodArguments, {
+      secret: "***",
+      name: "visible",
+    });
+    assertEquals(completed.run.globalArguments, {
+      gtoken: "***",
+      vtoken: vaultRef,
+      region: "us-east-1",
+    });
+  }
+});
+
+Deno.test("modelMethodRun: refuses a stored definition holding a literal sensitive global argument (swamp-club#3555)", async () => {
+  let executed = false;
+  const modelDef: ModelDefinition = {
+    type: TEST_MODEL_TYPE,
+    version: "1.0.0",
+    globalArguments: z.object({
+      gtoken: z.string().meta({ sensitive: true }).optional(),
+    }),
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => {
+          executed = true;
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "literal-global-model",
+    globalArguments: { gtoken: "GLOBAL-CANARY" },
+    methods: { run: { arguments: {} } },
+  });
+
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      createTestDeps(definition, modelDef),
+      createTestInput("literal-global-model", "run"),
+    ),
+  );
+
+  const error = events.find((e) => e.kind === "error");
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(error.error.message, "'gtoken'");
+    assertEquals(error.error.message.includes("GLOBAL-CANARY"), false);
+  }
+  assertEquals(events.some((e) => e.kind === "executing"), false);
+  assertEquals(executed, false);
+});
+
+Deno.test("modelMethodRun: refuses a literal an upgrade moves into a sensitive global argument (swamp-club#3555)", async () => {
+  let executed = false;
+  const modelDef: ModelDefinition = {
+    type: TEST_MODEL_TYPE,
+    version: "2026.02.01.1",
+    globalArguments: z.object({
+      apiKey: z.string().meta({ sensitive: true }).optional(),
+    }),
+    upgrades: [{
+      toVersion: "2026.02.01.1",
+      description: "Rename token to apiKey",
+      upgradeAttributes: (old: Record<string, unknown>) => {
+        const { token, ...rest } = old;
+        return { ...rest, apiKey: token };
+      },
+    }],
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => {
+          executed = true;
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "stale-token-model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY" },
+    methods: { run: { arguments: {} } },
+  });
+
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      createTestDeps(definition, modelDef),
+      createTestInput("stale-token-model", "run"),
+    ),
+  );
+
+  const error = events.find((e) => e.kind === "error");
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(error.error.message, "'apiKey'");
+    assertEquals(error.error.message.includes("GLOBAL-CANARY"), false);
+  }
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+  assertEquals(executed, false);
+});
+
 Deno.test("modelMethodRun: direct execution resolves @-prefixed type from registry", async () => {
   const nsType = ModelType.create("@myorg/custom-model");
   const modelDef: ModelDefinition = {
