@@ -215,6 +215,22 @@ swamp vault list-keys dev-secrets --json
 }
 ```
 
+## Remove a Vault
+
+`vault delete <vault> <key>` removes one secret; `vault remove` removes the
+vault:
+
+```bash
+swamp vault remove trip-planner --yes --json
+```
+
+- Deletes the config, then a `local_encryption` vault's secrets and key for
+  good. Other types lose only the local config.
+- Refuses the vault named by `defaultVault` in `.swamp.yaml`; change that first.
+- Refuses a vault that definitions, workflows or the datastore config reference;
+  remove the references, or pass `--force`.
+- `--json` never prompts, so confirm with the user before running it.
+
 ## Annotate Secrets
 
 Attach provenance metadata to a stored secret — URL, notes, and key=value

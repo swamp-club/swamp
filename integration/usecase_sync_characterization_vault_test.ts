@@ -165,6 +165,32 @@ function vaultMigrateRow(
   });
 }
 
+function vaultRemoveRow(managedConfig: boolean): AnyRow {
+  return row({
+    name: `vault remove${managedConfig ? " (managedConfig)" : ""}`,
+    rootUnit: { cli: true },
+    syncOrder: { cli: managedConfig ? ["push"] : [] },
+    // No bulk mark: the hooked repository marks the removed config's path,
+    // so the push deletes it on the remote.
+    options: { managedConfig },
+    seed: async (repos) => {
+      await createVault(repos);
+      await runCli({
+        args: ["vault", "put", "v1", "K1", "val", "--yes", ...json(repos)],
+      });
+    },
+    cli: (repos) => ({
+      args: ["vault", "remove", "v1", "--yes", ...json(repos)],
+    }),
+    // Serve has no vault.remove (swamp-club#3597).
+    serve: null,
+    verify: async (repos) => {
+      const vault = await repos.a.repoContext.vaultConfigRepo.findByName("v1");
+      if (vault !== null) throw new Error("vault remove kept the config");
+    },
+  });
+}
+
 /** The in-memory source type `vault migrate` moves away from, per run. */
 let migrateSourceType = "";
 
@@ -202,6 +228,8 @@ const ROWS: AnyRow[] = [
   }),
   vaultMigrateRow(false, () => migrateSourceType),
   vaultMigrateRow(true, () => migrateSourceType),
+  vaultRemoveRow(false),
+  vaultRemoveRow(true),
 ];
 
 /**
@@ -211,6 +239,27 @@ const ROWS: AnyRow[] = [
  * rows, and should update this table as it does.
  */
 const EXPECTED: Record<string, PinnedRow> = {
+  "vault remove": {
+    // Repo-local without managedConfig: nothing is marked or pushed.
+    cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
+    serve: null,
+  },
+  "vault remove (managedConfig)": {
+    // The removed config's path mark makes the push delete it, so peers lose
+    // the vault (unlike vault migrate's bare mark above).
+    cli: {
+      "ops": [
+        "markDirty config/vaults/local_encryption/<id>.yaml",
+        "push[0 del 1]",
+      ],
+      "remote": {
+        "added": [],
+        "removed": ["config/vaults/local_encryption/<id>.yaml"],
+        "changed": [],
+      },
+    },
+    serve: null,
+  },
   "vault create": {
     // Vault configs are repo-local without managedConfig: nothing is marked or
     // pushed.

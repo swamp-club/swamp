@@ -408,6 +408,27 @@ have their own sections. The group also has:
   computes its name is listed under its type id.
 - `swamp vault put ... --label k=v`: attach provider-native tags via
   `VaultPutOptions.tags` (repeatable)
+- `swamp vault remove <vault>`: remove a vault (swamp-club#3597); `vault delete`
+  removes one secret. Prompts in log mode unless `--yes`; `--json` does not
+  prompt (`src/libswamp/vaults/remove.ts`)
+  - The vault `defaultVault` names in `.swamp.yaml` is always refused, with no
+    override: change `defaultVault` first
+  - A vault referenced by a definition (`vault.get`, a resource override
+    `vaultName`), a workflow (`vault.get`, its `vaults` list) or the datastore
+    config's `vault.get` is refused unless `--force`
+    (`src/domain/vaults/vault_references.ts`). A `vault.get` whose vault
+    argument is evaluated is reported as a possible reference, never refused
+  - The config removal is the use case's unit of work, marked by path so the
+    push deletes it on the datastore. Only after it has committed and published
+    does `vaultRemoveStoredSecrets` delete a `local_encryption` vault's secrets
+    directory (secrets, annotations, refresh hooks, generated key), so a removal
+    that does not land never costs the secrets. The name must be one path
+    segment, a symlinked directory is unlinked rather than followed, and a
+    `key_file` or SSH key outside the directory is kept. Other checkouts keep
+    their own secrets directory
+  - Other vault types lose only the local config; their secrets stay with the
+    provider
+  - Not available over `--server`
 
 `swamp doctor secrets` finds `sensitive: true` arguments in definitions that
 hold cleartext literals instead of `vault.get(...)` expressions
@@ -734,6 +755,7 @@ sensitive outputs work in a new repo without setup. No key exists until the
 first secret is written. `--no-vault` skips it. A `--force` reinit keeps an
 existing vault named `default`, whatever its type, and the `defaultVault`
 already recorded. `repo upgrade` never adds it to existing repos.
+`swamp vault remove` refuses whichever vault `defaultVault` names.
 
 The config is committed, but the key and secrets live under
 `.swamp/secrets/`, which never leaves the machine: a clone starts with an

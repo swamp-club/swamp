@@ -1390,6 +1390,21 @@ export {
   vaultDeletePreview,
 } from "./vaults/delete.ts";
 
+// Vault remove operations
+export {
+  createVaultRemoveDeps,
+  vaultRemove,
+  type VaultRemoveData,
+  type VaultRemoveDeps,
+  type VaultRemoveEvent,
+  type VaultRemoveInput,
+  type VaultRemoveLocalStorage,
+  type VaultRemovePreview,
+  vaultRemovePreview,
+  type VaultRemoveRepositories,
+  vaultRemoveStoredSecrets,
+} from "./vaults/remove.ts";
+
 // Vault annotate operations
 export {
   createVaultAnnotateDeps,

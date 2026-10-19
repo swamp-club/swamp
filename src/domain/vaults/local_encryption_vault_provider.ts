@@ -33,7 +33,10 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
-import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import {
+  assertSafePath,
+  isSinglePathSegment,
+} from "../../infrastructure/persistence/safe_path.ts";
 import { checkFileNotBroadlyReadable } from "../../infrastructure/security/file_security_check.ts";
 import { errorPaths, markErrorPaths } from "../errors.ts";
 
@@ -124,6 +127,71 @@ export async function moveLocalEncryptionSecrets(
 
   await Deno.rename(fromDir, toDir);
   return true;
+}
+
+/** What {@link removeLocalEncryptionSecrets} found and removed. */
+export interface RemovedLocalEncryptionSecrets {
+  /** The vault's secrets directory. */
+  directory: string;
+  /** Whether anything was there to remove. */
+  removed: boolean;
+  /** The secrets the directory held. */
+  secretCount: number;
+}
+
+/**
+ * Removes a local_encryption vault's storage when the vault is removed
+ * (swamp-club#3597): its secrets, annotations, refresh hooks and generated
+ * key. A key file or SSH key the config names elsewhere is left alone.
+ *
+ * The vault name comes from a committed config, so it must be one path
+ * segment, and the directory must sit directly in the local_encryption
+ * secrets root: `../../data` would otherwise reach `.swamp/data`. A
+ * symlinked directory is unlinked, never followed.
+ */
+export async function removeLocalEncryptionSecrets(
+  baseDir: string,
+  vaultName: string,
+): Promise<RemovedLocalEncryptionSecrets> {
+  const directory = localEncryptionSecretsDirFor(baseDir, vaultName);
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(directory);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { directory, removed: false, secretCount: 0 };
+    }
+    throw error;
+  }
+  if (!info.isDirectory) {
+    await Deno.remove(directory);
+    return { directory, removed: true, secretCount: 0 };
+  }
+  await assertSafePath(directory, swampPath(baseDir));
+  let secretCount = 0;
+  for await (const entry of Deno.readDir(directory)) {
+    if (entry.isFile && entry.name.endsWith(".enc")) secretCount++;
+  }
+  await Deno.remove(directory, { recursive: true });
+  return { directory, removed: true, secretCount };
+}
+
+/**
+ * {@link localEncryptionSecretsDir}, refusing a vault name that is not one
+ * path segment, so the directory can only be a child of the local_encryption
+ * secrets root.
+ */
+export function localEncryptionSecretsDirFor(
+  baseDir: string,
+  vaultName: string,
+): string {
+  if (!isSinglePathSegment(vaultName)) {
+    throw new Error(
+      `Vault name '${vaultName}' is not a single path segment, so its ` +
+        `local_encryption secrets directory cannot be located safely.`,
+    );
+  }
+  return localEncryptionSecretsDir(baseDir, vaultName);
 }
 
 async function isAbsentOrEmptyDir(path: string): Promise<boolean> {
