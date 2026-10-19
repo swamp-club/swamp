@@ -28,6 +28,7 @@
  */
 
 import { UserError } from "../errors.ts";
+import { quoteShellWord } from "../shell_word.ts";
 import { inputNamesRead } from "../expressions/cel_grammar.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
@@ -279,15 +280,21 @@ function refusalMessage(
     } ${quoted(readers)}`
   );
   const keys = [...readersByKey.keys()];
-  const newRun = `swamp workflow run ${workflow.name} ${
-    keys.map((k) => `--input ${k}=<value>`).join(" ")
-  }`;
+  // Each word quoted for pasting: a `<value>` placeholder is a redirect
+  // unquoted, and a forEach template carries `${{ }}`.
+  const inputArgs = keys.map((k) => `--input ${quoteShellWord(`${k}=<value>`)}`)
+    .join(" ");
+  const name = quoteShellWord(workflow.name);
+  const newRun =
+    `a new run, passing its other inputs too (swamp workflow run ${name} ${inputArgs})`;
   const from = run.status === "failed"
     ? retryStepResetting(workflow, run, readersByKey)
     : undefined;
   const wayOut = from !== undefined
-    ? `Retry from "${from}", which runs it and every step after it again (swamp workflow resume ${workflow.name} --run ${run.id} --from ${from}), or start a new run (${newRun}).`
-    : `Start a new run with the new value (${newRun}).`;
+    ? `Retry from "${from}" (swamp workflow resume ${name} --run ${run.id} --from ${
+      quoteShellWord(from)
+    } ${inputArgs}), or start ${newRun}.`
+    : `Start ${newRun}.`;
   // The run id first: serve cuts an error at 512 characters.
   return `Run ${run.id} is unchanged: resume cannot change an input a step already ran with. ${
     capitalize(parts.join("; "))

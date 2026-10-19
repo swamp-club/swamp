@@ -152,7 +152,7 @@ Deno.test("checkResumeInputOverrides: refuses changing an input the gate and app
   );
   assertStringIncludes(
     message,
-    "Start a new run with the new value (swamp workflow run gated-destroy --input target=<value>)",
+    "Start a new run, passing its other inputs too (swamp workflow run gated-destroy --input 'target=<value>')",
   );
   assertEquals(message.includes("protected"), false, "message leaks a value");
   assertEquals(message.includes("scratch"), false, "message leaks a value");
@@ -335,7 +335,8 @@ Deno.test("checkResumeInputOverrides: path 1 - --from the approval is refused, -
   );
   assertStringIncludes(
     message,
-    `swamp workflow resume gated-destroy --run ${run.id} --from gate`,
+    // The retry carries the value the resume was refused for.
+    `swamp workflow resume gated-destroy --run ${run.id} --from gate --input 'target=<value>')`,
   );
   await accepts(
     wf,
@@ -658,7 +659,10 @@ Deno.test("checkResumeInputOverrides: --from names the first step that used any 
     { a: 2, b: 2 },
     planFailedRunResume(wf, run),
   );
-  assertStringIncludes(message, `--run ${run.id} --from s1)`);
+  assertStringIncludes(
+    message,
+    `--run ${run.id} --from s1 --input 'b=<value>' --input 'a=<value>')`,
+  );
   // Retrying from there resets every step that used them.
   await accepts(wf, run, { a: 2, b: 2 }, planFailedRunResume(wf, run, "s1"));
 });
@@ -800,4 +804,45 @@ Deno.test("checkResumeInputOverrides: an input named like an Object property is 
     main: [{ stepName: "first", status: "succeeded" }, { stepName: "second" }],
   }, {});
   await refusal(wf, run, { constructor: "x" });
+});
+
+Deno.test("checkResumeInputOverrides: the hint quotes a forEach template for the shell", async () => {
+  const wf = Workflow.create({
+    name: "fan-retry",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deploy-${{ self.env }}",
+            task: StepTask.model("sh", "execute", {
+              run: "echo ${{ inputs.target }}",
+            }),
+            forEach: { item: "env", in: '${{ ["a"] }}' },
+          }),
+          shell("after", "echo", ["deploy-${{ self.env }}"]),
+        ],
+      }),
+    ],
+  });
+  const run = storedRun(wf, "failed", {
+    main: [
+      {
+        stepName: "deploy-a",
+        status: "succeeded",
+        forEachTemplate: "deploy-${{ self.env }}",
+      },
+      { stepName: "after", status: "failed" },
+    ],
+  });
+  const message = await refusal(
+    wf,
+    run,
+    { target: "other" },
+    planFailedRunResume(wf, run),
+  );
+  assertStringIncludes(
+    message,
+    "--from 'deploy-${{ self.env }}' --input 'target=<value>'",
+  );
 });

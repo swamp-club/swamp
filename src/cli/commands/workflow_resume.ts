@@ -135,7 +135,7 @@ export const workflowResumeCommand = withRemoteOptions(
     )
     .option(
       "--input <value:string>",
-      "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs. An input a step that already ran read cannot change: start a new run, or retry a failed run --from that step",
+      "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs. Inputs already read by a completed step cannot be changed; start a new run, or retry a failed run with --from that step",
       { collect: true },
     )
     .option("--arg <value:string>", "Alias for --input", {
