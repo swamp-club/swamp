@@ -288,3 +288,37 @@ Deno.test("WorkflowRunCheckpointer: a root that committed before it threw reopen
   );
   assertEquals(rows.reopened, []);
 });
+
+Deno.test("WorkflowRunCheckpointer: a nested child run's ending save stays paced; its parent's covers it", async () => {
+  const commitLog = engine(() => Promise.resolve("committed"));
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => now,
+  });
+  const parent = newRun();
+  await checkpointer.checkpoint(parent);
+  now = 10;
+  const child = newRun();
+  child.recordParentRun({
+    workflowId: parent.workflowId,
+    workflowName: "flow",
+    runId: parent.id,
+    jobName: "main",
+    stepName: "a",
+    nestingDepth: 1,
+    ancestorWorkflowNames: ["flow"],
+  });
+  child.start();
+  child.complete();
+  await checkpointer.checkpoint(child);
+  assertEquals(commitLog.calls(), 1);
+  parent.start();
+  parent.complete();
+  await checkpointer.checkpoint(parent);
+  assertEquals(commitLog.calls(), 2);
+  assertEquals(
+    await checkpointer.restoreUncommittedRuns(() => tracker(), ROOT_FAILED),
+    [],
+  );
+});

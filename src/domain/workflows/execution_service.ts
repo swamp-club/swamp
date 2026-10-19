@@ -3390,7 +3390,8 @@ export class WorkflowExecutionService {
   signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
 
   /**
-   * Commits the run's progress after every save (swamp-club#3587). Defaults
+   * Commits the run's progress as it saves its record (swamp-club#3587),
+   * paced by the implementation. Defaults
    * to none, for a datastore whose writes land as they are made.
    */
   runCheckpointer: RunCheckpointer = NO_RUN_CHECKPOINTS;

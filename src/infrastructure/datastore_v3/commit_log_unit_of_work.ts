@@ -420,7 +420,8 @@ function nearestOpenAncestor(
  * the unit discards only what it staged after. A put or tombstone the unit
  * stages afterwards still supersedes a handed-over stream put that has not
  * been read, which is skipped rather than read from a file that may have
- * changed.
+ * changed; should the unit then be abandoned, neither version of that key
+ * lands, as a crash then would leave neither.
  */
 export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
   let current: UnitOfWork | undefined = unit;
@@ -432,6 +433,8 @@ export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
       await (current as CommitLogUnitOfWork).checkpoint();
       return true;
     }
+    // Every ancestor ended, the root included: nothing can commit now.
+    if (nearestOpenAncestor(state.parent) === undefined) return false;
     state.promote();
     current = nearestOpenAncestor(state.parent);
   }

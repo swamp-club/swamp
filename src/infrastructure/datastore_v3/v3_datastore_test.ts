@@ -190,7 +190,7 @@ Deno.test("initializeV3Datastore: completes a fresh skeleton, and refuses a data
   });
 });
 
-Deno.test("openV3Datastore: an engine checkpoints the units open around the call, and knows a settled refusal is thrown after its commit (swamp-club#3587)", async () => {
+Deno.test("openV3Datastore: an engine checkpoints the units open around the call, and counts no refusal it did not throw after a commit (swamp-club#3587)", async () => {
   await withTempDir(async (root) => {
     const dir = join(root, "datastore");
     await Deno.mkdir(dir);
@@ -230,7 +230,8 @@ Deno.test("openV3Datastore: an engine checkpoints the units open around the call
         message: "refused",
         versions: [],
       }], []);
-      assertEquals(engine.committedBeforeThrowing(refused), true);
+      // Only a refusal a root threw after its commit counts.
+      assertEquals(engine.committedBeforeThrowing(refused), false);
       assertEquals(engine.committedBeforeThrowing(new Error("x")), false);
     } finally {
       await handle.close();

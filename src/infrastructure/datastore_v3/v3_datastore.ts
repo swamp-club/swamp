@@ -92,7 +92,7 @@ import {
 } from "./commit_log_unit_of_work.ts";
 import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { recoverySince } from "./interrupted_writer_recovery.ts";
-import { runInCommitLogRoot } from "./commit_log_root.ts";
+import { runInCommitLogRoot, wasThrownAfterCommit } from "./commit_log_root.ts";
 import {
   createOutboxCommitSink,
   type OutboxCommitSink,
@@ -701,8 +701,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           }
         },
         committedBeforeThrowing(error: unknown): boolean {
-          // runInCommitLogRoot throws a settled refusal after its commit.
-          return error instanceof PartitionsRefusedError;
+          return wasThrownAfterCommit(error);
         },
         async runRoot<T>(
           rootOptions: CommitLogRootRunOptions<T>,

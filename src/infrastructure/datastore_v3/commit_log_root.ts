@@ -190,8 +190,24 @@ export async function runInCommitLogRoot<T>(
     ? undefined
     : await settleRefusals(root, onRefused);
   await root.commit();
-  if (refused !== undefined) throw refused;
+  if (refused !== undefined) {
+    refusalsThrownAfterCommit.add(refused);
+    throw refused;
+  }
   return value;
+}
+
+/** The settled refusals {@link runInCommitLogRoot} threw after it committed. */
+const refusalsThrownAfterCommit = new WeakSet<PartitionsRefusedError>();
+
+/**
+ * Whether `error` is a settled refusal {@link runInCommitLogRoot} threw
+ * after its root committed (swamp-club#3587). Any other error, a refusal the
+ * root's own commit threw included, may have left the root uncommitted.
+ */
+export function wasThrownAfterCommit(error: unknown): boolean {
+  return error instanceof PartitionsRefusedError &&
+    refusalsThrownAfterCommit.has(error);
 }
 
 /**

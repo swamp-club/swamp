@@ -126,7 +126,7 @@ export async function createWorkflowRunDeps(
      * is disabled), in which case libswamp's bridge is never constructed.
      */
     telemetrySink?: WorkflowTelemetrySink;
-    /** Commits each run's progress after every save (swamp-club#3587). */
+    /** Commits each run's progress as it saves its record (swamp-club#3587). */
     runCheckpointer?: RunCheckpointer;
   },
 ): Promise<WorkflowRunDeps> {

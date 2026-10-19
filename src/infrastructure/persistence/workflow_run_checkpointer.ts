@@ -50,7 +50,7 @@ export const RUN_CHECKPOINT_INTERVAL_MS = 2_000;
 /**
  * Checkpoints one operation's workflow runs. A save checkpoints at once
  * when none has started for {@link RUN_CHECKPOINT_INTERVAL_MS}, or when it
- * ends the run (any status but pending or running); otherwise
+ * ends a top-level run (any status but pending or running); otherwise
  * one trailing checkpoint starts when that interval ends, so the latest save
  * always lands within about one interval. One is in flight at a time, and
  * the saves made while it runs share the next one. {@link close} cancels or
@@ -99,9 +99,12 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     const seen = this.#runs.get(run.id);
     this.#runs.set(run.id, { first: seen?.first ?? save, latest: save });
     if (this.#refused || this.#closed) return;
-    // A run's last save commits at once, so whether its final record landed
-    // is known before its root ends (see restoreUncommittedRuns).
-    const ended = run.status !== "pending" && run.status !== "running";
+    // A top-level run's last save commits at once, so whether its final
+    // record landed is known before its root ends (see
+    // restoreUncommittedRuns). A nested child's is covered by its parent's,
+    // which comes later, so many child steps do not each force a commit.
+    const ended = run.status !== "pending" && run.status !== "running" &&
+      run.parentRun === undefined;
     if (ended && this.#trailingTimer !== undefined) {
       clearTimeout(this.#trailingTimer);
       this.#trailingTimer = undefined;

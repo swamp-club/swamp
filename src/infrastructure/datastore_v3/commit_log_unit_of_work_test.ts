@@ -552,9 +552,17 @@ Deno.test("checkpointFrom: an ended child goes on from its nearest open ancestor
   await child.commit();
   assertEquals(await checkpointFrom(child), true);
   assertEquals(sink.landed.length, 1);
+  // Opened before its root ends, and still open after.
+  const open = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await open.stageOp({ partition: MODEL, op: await savePut("b", 1) });
   await root.commit();
   assertEquals(await checkpointFrom(child), false);
   assertEquals(await checkpointFrom(root), false);
+  // A child still open under an ended root commits nothing either.
+  assertEquals(await checkpointFrom(open), false);
   const other = {
     stage: () => Promise.resolve(),
     commit: () => Promise.resolve(),
