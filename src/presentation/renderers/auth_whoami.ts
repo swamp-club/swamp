@@ -30,26 +30,10 @@ import { UserError } from "../../domain/errors.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { bold, cyan, dim } from "@std/fmt/colors";
 
-/**
- * The entitlement note for one collective: its billing status when paid, its
- * trial when not.
- *
- * A paying collective is never told it is on a free trial — the same rule the
- * web surface applies to its trial banner. It lives here rather than on the
- * server because whoami is also a billing-triage endpoint: the server reports
- * the trial whatever the plan, and `--json` keeps it, so nothing is lost by
- * declining to show it.
- */
-function entitlementNote(
-  entitlement: WhoamiCollectiveEntitlement,
-): string | undefined {
-  const paid = entitlement.plan !== undefined && entitlement.plan !== "free";
-  if (paid) return entitlement.subscriptionStatus ?? undefined;
-
-  const trial = entitlement.trial;
-  if (!trial || trial.state === "none") return undefined;
-  if (trial.state === "expired") return "trial expired";
-
+/** A running trial, as days left and the date it ends. */
+function runningTrial(
+  trial: NonNullable<WhoamiCollectiveEntitlement["trial"]>,
+): string {
   const days = trial.daysRemaining;
   const unit = days === 1 ? "day" : "days";
   // Render the server's day count as given — it is elapsed-based and so
@@ -59,31 +43,58 @@ function entitlementNote(
   return `trial: ${days} ${unit} left${ends}`;
 }
 
-/** Display name for the top-level roll-up, borrowed from a matching collective. */
+/**
+ * One collective's standing, named as the web names it, or empty when there
+ * is nothing to say.
+ *
+ * A collective on a plan shows the plan, and a paid one its billing status.
+ * It is never told it is on a free trial — the same rule the web surface
+ * applies to its trial banner; `--json` keeps the trial for billing triage.
+ *
+ * "Free" is not a plan, so a free collective shows where it stands instead:
+ * its running trial, then "covered" when the registry allows it private
+ * extensions, then an ended trial. A free collective with no running trial is
+ * allowed only through another collective its owner belongs to, so "allowed"
+ * here means covered — and covered outranks the ended trial, which would read
+ * as a lapse. A superseded or license-ended trial arrives as `trial: null`.
+ */
+function standing(entitlement: WhoamiCollectiveEntitlement): string {
+  if (entitlement.plan !== undefined && entitlement.plan !== "free") {
+    const name = entitlement.planName ?? entitlement.plan;
+    const status = entitlement.subscriptionStatus;
+    return status ? `${name}  ${dim(status)}` : name;
+  }
+
+  const trial = entitlement.trial;
+  if (trial?.state === "active") return dim(runningTrial(trial));
+  if (entitlement.privateExtensions === "allowed") return dim("covered");
+  if (trial?.state === "expired") return dim("trial ended");
+  return "";
+}
+
+/**
+ * Display name for the top-level roll-up, borrowed from a matching collective.
+ * None when the strongest plan is free, which is not a plan.
+ */
 function rollUpPlanName(identity: WhoamiIdentity): string | undefined {
-  if (!identity.plan) return undefined;
+  if (!identity.plan || identity.plan === "free") return undefined;
   const match = identity.collectiveEntitlements?.find(
     (c) => c.plan === identity.plan && c.planName,
   );
   return match?.planName ?? identity.plan;
 }
 
-/** The aligned per-collective block. */
+/** The per-collective block: slugs aligned, then each one's standing. */
 function collectiveLines(
   entitlements: WhoamiCollectiveEntitlement[],
 ): string[] {
   const slugWidth = Math.max(...entitlements.map((c) => c.slug.length));
-  const planWidth = Math.max(
-    ...entitlements.map((c) => (c.planName ?? c.plan ?? "").length),
-  );
 
   return entitlements.map((c) => {
-    const plan = c.planName ?? c.plan ?? "";
-    const note = entitlementNote(c);
-    const row = `  ${bold(c.slug.padEnd(slugWidth))}  ${
-      plan.padEnd(planWidth)
-    }`;
-    return note ? `${row}  ${dim(note)}` : row.trimEnd();
+    const said = standing(c);
+    return said
+      ? `  ${bold(c.slug.padEnd(slugWidth))}  ${said}`
+      : `  ${bold(c.slug)}`;
   });
 }
 
