@@ -79,9 +79,13 @@ export const extensionSearchCommand = withRemoteOptions(
     .description("Search the swamp extension registry")
     .arguments("[query:string]")
     .option("--collective <collective:string>", "Filter by collective")
-    .option("--platform <platform:string>", "Filter by platform", {
-      collect: true,
-    })
+    .option(
+      "--platform <platform:string>",
+      "Filter by a platform the extension declares (e.g. linux-x86_64)",
+      {
+        collect: true,
+      },
+    )
     .option("--label <label:string>", "Filter by label", { collect: true })
     .option(
       "--content-type <contentType:string>",
@@ -111,7 +115,7 @@ export const extensionSearchCommand = withRemoteOptions(
     )
     .example(
       "Filter by platform and label",
-      "swamp extension search --platform aws --label networking",
+      "swamp extension search --platform linux-x86_64 --label networking",
     )
     .example(
       "Filter by content type",

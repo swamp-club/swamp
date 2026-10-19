@@ -54,12 +54,14 @@ so existing extensions need no change.
    within types).
 
    ```
-   swamp extension search <service> --platform <platform> --content-type models --json
+   swamp extension search <service> --content-type models --json
    ```
 
-   Available filters: `--platform` (aws, gcp, azure, …), `--content-type`
-   (models, workflows, vaults, datastores, reports), `--label`, `--collective`.
-   Prefer `@swamp/*` official extensions first.
+   Available filters: `--content-type` (models, workflows, vaults, datastores,
+   reports), `--label`, `--collective`, and `--platform` — an OS/architecture id
+   such as `linux-x86_64` or `darwin-aarch64`, not a cloud provider. Add
+   `--platform` only when the host's platform matters: it drops extensions that
+   declare no platforms. Prefer `@swamp/*` official extensions first.
 
 2. **Inspect before pulling.** Once you find a candidate, check its types and
    methods with `extension info` — don't pull until you confirm it has what you
