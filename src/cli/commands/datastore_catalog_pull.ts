@@ -29,11 +29,25 @@ import {
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
+import {
+  createCatalogStore,
+  namespaceFromResolver,
+} from "../../infrastructure/persistence/repository_factory.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
-import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
-import type { CatalogExportRow } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  CatalogRow,
+  CatalogStore,
+} from "../../infrastructure/persistence/catalog_store.ts";
+import type {
+  CatalogExportEntry,
+  CatalogExportRow,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
+import type { Namespace } from "../../domain/data/namespace.ts";
+import {
+  acceptForeignExportRows,
+  parseForeignNamespaces,
+} from "../../domain/data/foreign_catalog_export.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -87,6 +101,60 @@ export function exportRowsToCatalogRows(
   return catalogRows;
 }
 
+/** What {@link storeForeignCatalogEntries} stored from one namespace's export. */
+export interface StoredForeignCatalog {
+  namespace: Namespace;
+  /** Rows written to the catalog. */
+  stored: number;
+  /** Rows the export attributed to another namespace, which were dropped. */
+  rejected: number;
+}
+
+/** The outcome of storing the exports a foreign catalog pull returned. */
+export interface StoreForeignCatalogsResult {
+  stored: StoredForeignCatalog[];
+  /** Namespaces the provider returned an export for that were not requested. */
+  unrequested: string[];
+  /** Requested namespaces the provider returned no export for. */
+  missing: Namespace[];
+}
+
+/**
+ * Stores the exports a foreign catalog pull returned. Only exports of the
+ * requested namespaces are stored, and of each only the rows that belong to
+ * it, so one namespace's export cannot write rows under the reader's
+ * namespace or any other (swamp-club#3636). `requested` must come from
+ * {@link parseForeignNamespaces}, which never yields the reader's own
+ * namespace.
+ */
+export function storeForeignCatalogEntries(
+  entries: readonly CatalogExportEntry[],
+  requested: readonly Namespace[],
+  catalogStore: Pick<CatalogStore, "bulkUpsertForeign">,
+): StoreForeignCatalogsResult {
+  const stored: StoredForeignCatalog[] = [];
+  const unrequested: string[] = [];
+  for (const entry of entries) {
+    const namespace = requested.find((ns) => ns === entry.namespace);
+    if (namespace === undefined) {
+      unrequested.push(entry.namespace);
+      continue;
+    }
+    const accepted = acceptForeignExportRows(namespace, entry.rows);
+    const catalogRows = exportRowsToCatalogRows(accepted.rows);
+    catalogStore.bulkUpsertForeign(namespace, catalogRows);
+    stored.push({
+      namespace,
+      stored: catalogRows.length,
+      rejected: accepted.rejected,
+    });
+  }
+  const missing = requested.filter(
+    (ns) => !entries.some((e) => e.namespace === ns),
+  );
+  return { stored, unrequested, missing };
+}
+
 export const datastoreCatalogPullCommand = new Command()
   .description("Pull catalog metadata from foreign namespaces")
   .example(
@@ -111,12 +179,12 @@ export const datastoreCatalogPullCommand = new Command()
     const repoDir = resolveRepoDir(options.repoDir);
     cliCtx.logger.debug("Executing datastore catalog pull command");
 
-    const namespaces = (options.namespaces as string)
+    const requestedNamespaces = (options.namespaces as string)
       .split(",")
       .map((s: string) => s.trim())
       .filter((s: string) => s.length > 0);
 
-    if (namespaces.length === 0) {
+    if (requestedNamespaces.length === 0) {
       throw new UserError(
         "No namespaces specified. Use --namespaces to list foreign namespaces (comma-separated).",
       );
@@ -157,6 +225,17 @@ export const datastoreCatalogPullCommand = new Command()
       );
     }
 
+    const datastoreResolver = new DefaultDatastorePathResolver(
+      repoDir,
+      datastoreConfig,
+    );
+    // Checked before the provider is contacted, against the namespace that
+    // stamps this repository's own catalog rows.
+    const namespaces = parseForeignNamespaces(
+      requestedNamespaces,
+      namespaceFromResolver(datastoreResolver),
+    );
+
     const syncService = provider.createSyncService?.(
       repoDir,
       datastoreConfig.cachePath,
@@ -175,48 +254,56 @@ export const datastoreCatalogPullCommand = new Command()
 
     const entries = await syncService.pullForeignCatalogs(namespaces);
 
-    const datastoreResolver = new DefaultDatastorePathResolver(
-      repoDir,
-      datastoreConfig,
-    );
     const catalogStore = createCatalogStore(repoDir, datastoreResolver);
-
-    let totalRows = 0;
-    for (const entry of entries) {
-      const catalogRows = exportRowsToCatalogRows(entry.rows);
-      catalogStore.bulkUpsertForeign(entry.namespace, catalogRows);
-      totalRows += catalogRows.length;
-      cliCtx.logger.info(
-        "Upserted {count} row(s) from namespace {namespace}",
-        { count: catalogRows.length, namespace: entry.namespace },
-      );
+    let result: StoreForeignCatalogsResult;
+    try {
+      result = storeForeignCatalogEntries(entries, namespaces, catalogStore);
+    } finally {
+      catalogStore.close();
     }
 
-    const skipped = namespaces.filter(
-      (ns) => !entries.some((e) => e.namespace === ns),
-    );
-    for (const ns of skipped) {
+    for (const ns of result.unrequested) {
+      cliCtx.logger.warn(
+        "Ignored a catalog export for namespace {namespace}, which was not requested",
+        { namespace: ns },
+      );
+    }
+    let totalRows = 0;
+    for (const entry of result.stored) {
+      totalRows += entry.stored;
+      cliCtx.logger.info(
+        "Upserted {count} row(s) from namespace {namespace}",
+        { count: entry.stored, namespace: entry.namespace },
+      );
+      if (entry.rejected > 0) {
+        cliCtx.logger.warn(
+          "Dropped {count} row(s) from the catalog export of namespace {namespace}: they name another namespace",
+          { count: entry.rejected, namespace: entry.namespace },
+        );
+      }
+    }
+    for (const ns of result.missing) {
       cliCtx.logger.warn(
         "Namespace {namespace} has no catalog export (skipped)",
         { namespace: ns },
       );
     }
 
-    catalogStore.close();
-
     cliCtx.logger.info(
       "Foreign catalog pull complete: {total} row(s) from {count} namespace(s)",
-      { total: totalRows, count: entries.length },
+      { total: totalRows, count: result.stored.length },
     );
 
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify(
         {
-          pulled: entries.map((e) => ({
+          pulled: result.stored.map((e) => ({
             namespace: e.namespace,
-            rows: e.rows.length,
+            rows: e.stored,
+            rejectedRows: e.rejected,
           })),
-          skipped,
+          skipped: result.missing,
+          ignored: result.unrequested,
           totalRows,
         },
         null,

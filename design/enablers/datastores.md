@@ -4839,6 +4839,34 @@ on-disk walk into the catalog, keeping rows the walk cannot see (e.g. lazily
 hydrated remote data). Foreign rows go through `bulkUpsertForeign`, which
 records a `foreign_synced:{namespace}` timestamp in `catalog_meta`.
 
+**An export speaks only for its own namespace** (swamp-club#3636). Each row
+carries a `namespace` field, and the catalog key starts with it, so a row that
+named another namespace would replace that namespace's rows — the reader's own
+among them, with its tags (`_swamp.sensitiveFields` included), latest flags and
+provenance. Readers trust `namespace` to tell their own rows from foreign ones:
+`data.latest` resolves sensitive vault references only for own rows, and serve
+GC reaps only own rows. So the pull enforces the rule in three places:
+
+- `parseForeignNamespaces` (`src/domain/data/foreign_catalog_export.ts`)
+  checks `--namespaces` before the provider is contacted. Each value must be
+  shaped like a namespace, and none may be the reader's own namespace, taken
+  from `namespaceFromResolver` (the value that stamps its own rows).
+- `storeForeignCatalogEntries` ignores any entry the provider returns for a
+  namespace that was not requested. Of each export, it keeps only the rows whose
+  `namespace` is the pulled namespace (`acceptForeignExportRows`), dropping rows
+  that claim the reader's namespace, the empty solo namespace or a third one,
+  and it warns with the count. The JSON output reports dropped rows per namespace
+  as `rejectedRows` and ignored exports as `ignored`.
+- `bulkUpsertForeign` refuses an empty namespace, and any row whose namespace
+  differs from the one it is storing, before it writes anything.
+
+The rule stops one namespace's export from speaking for another. It does not
+protect against anyone who can write into the reader's own bucket prefix: that
+prefix is guarded by the datastore's access control (bucket policies), not by
+swamp. Rows forged into a catalog before the rule existed stay until the catalog
+is rebuilt: delete `.swamp/data/_catalog.db` so the next query backfills it from
+disk, then pull again.
+
 **On-demand content fetch** (Phase 6d): when a cross-namespace CEL expression
 reads `attributes` whose content is not local, the `DataQueryService` calls
 `fetchForeignContent` through the `ForeignContentFetcher` its data repository

@@ -641,11 +641,29 @@ export class CatalogStore {
    * REPLACE so existing foreign rows are updated in place. Records the
    * sync timestamp in catalog_meta as `foreign_synced:{namespace}`.
    * Does NOT touch the global "populated" flag.
+   *
+   * Every row must belong to `namespace`, which must not be empty: an export
+   * speaks only for the namespace that wrote it, so a row naming another
+   * namespace would replace that namespace's rows — the reader's own among
+   * them (swamp-club#3636). Throws before writing anything otherwise.
    */
   bulkUpsertForeign(
     namespace: string,
     rows: readonly CatalogRow[],
   ): void {
+    if (namespace.length === 0) {
+      throw new Error(
+        "Foreign catalog rows need a namespace to be stored under",
+      );
+    }
+    const stray = rows.find((row) => row.namespace !== namespace);
+    if (stray) {
+      throw new Error(
+        `Foreign catalog rows pulled from namespace ${
+          JSON.stringify(namespace)
+        } include one for namespace ${JSON.stringify(stray.namespace)}`,
+      );
+    }
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const stmt = this.db.prepare(`

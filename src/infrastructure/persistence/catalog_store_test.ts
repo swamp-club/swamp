@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertLess } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertLess,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -1540,6 +1546,42 @@ Deno.test("bulkUpsertForeign: updates existing foreign rows in place", () => {
   const all = [...store.iterate()];
   assertEquals(all[0].size, 200);
 
+  store.close();
+});
+
+Deno.test("bulkUpsertForeign: refuses a row claiming another namespace and leaves the reader's own row unchanged", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  const own = makeRow({ namespace: "team-a", tags: '{"owner":"a"}' });
+  store.bulkUpsert([own]);
+
+  const error = assertThrows(() =>
+    store.bulkUpsertForeign("team-b", [
+      makeRow({ namespace: "team-b", data_name: "honest" }),
+      makeRow({
+        namespace: "team-a",
+        tags: '{"_swamp.sensitiveFields":"[\\"token\\"]"}',
+        spec_name: "forged",
+        is_latest: 0,
+      }),
+    ]), Error);
+  assertStringIncludes(error.message, '"team-b"');
+  assertStringIncludes(error.message, '"team-a"');
+
+  assertEquals(store.count(), 1);
+  const [stored] = [...store.iterate()];
+  assertEquals(stored.namespace, "team-a");
+  assertEquals(stored.tags, own.tags);
+  assertEquals(stored.spec_name, own.spec_name);
+  assertEquals(stored.is_latest, 1);
+  assertEquals(store.foreignSyncedAt("team-b"), null);
+  store.close();
+});
+
+Deno.test("bulkUpsertForeign: refuses the empty namespace", () => {
+  const store = new CatalogStore(makeTempDbPath());
+  assertThrows(() => store.bulkUpsertForeign("", [makeRow()]));
+  assertEquals(store.count(), 0);
+  assertEquals(store.foreignSyncedAt(""), null);
   store.close();
 });
 
