@@ -198,6 +198,38 @@ Deno.test("buildAcceptedWarnings: records unaudited dependencies and leaves the 
   });
 });
 
+Deno.test("buildAcceptedWarnings: records the shipped-version findings with the unaudited dependencies", () => {
+  const loose = {
+    dependency: "express",
+    message:
+      "npm:express@^4.18.0 is a range; audited 4.21.1, the version this push resolves",
+    cause: "loose-specifier" as const,
+  };
+  const deprecated = {
+    dependency: "uuid",
+    message: "version 3.3.27 is deprecated: use uuid@7",
+    cause: "deprecated-version" as const,
+  };
+  const yanked = {
+    dependency: "@std/assert",
+    message: "version 0.225.0 is yanked on JSR",
+    cause: "jsr-yanked" as const,
+  };
+  const record = buildAcceptedWarnings({
+    safetyWarnings: [],
+    reviewRulesResult: { warnings: [] },
+    dependencyTrustResult: {
+      warnings: [
+        { dependency: "tiny", message: "low weekly downloads (10 < 1000)" },
+        loose,
+        deprecated,
+        yanked,
+      ],
+    },
+  });
+  assertEquals(record.dependencyTrust, [loose, deprecated, yanked]);
+});
+
 // ── Existing version (swamp-club#2939) ────────────────────────────────
 
 const LOWER_CHANNEL_MESSAGE =

@@ -203,7 +203,7 @@ export interface AnalysisFactors {
   hasLicenseFile: boolean;
   dependencyTrustPassed: boolean;
   dependencyTrustBlockerCount: number;
-  /** Dependencies a failed OSV or npm lookup left unaudited. */
+  /** Dependencies a failed OSV, npm or JSR lookup left unaudited. */
   dependencyNotAuditedCount: number;
 }
 
@@ -581,12 +581,12 @@ function dependencyTrustRow(
   // factor exactly as a blocker does.
   const passed = noBlockers && notAuditedCount === 0;
   const remediation = blockerCount > 0
-    ? `${blockerCount} dependency blocker(s) found (deprecated packages or ` +
-      `HIGH/CRITICAL vulnerabilities). See the blocker details above, ` +
-      `then update or replace the flagged dependencies.`
+    ? `${blockerCount} dependency blocker(s) found (deprecated packages, ` +
+      `HIGH/CRITICAL vulnerabilities or missing JSR versions). See the ` +
+      `blocker details above, then update or replace the flagged dependencies.`
     : notAuditedCount > 0
-    ? `${notAuditedCount} dependency(ies) not audited because an OSV or npm ` +
-      `registry lookup failed. Re-run when both are reachable.`
+    ? `${notAuditedCount} dependency(ies) not audited because an OSV, npm or ` +
+      `JSR lookup failed. Re-run when all three are reachable.`
     : "Resolve dependency trust issues — update or replace flagged dependencies.";
   return {
     id: "dependency-trust",

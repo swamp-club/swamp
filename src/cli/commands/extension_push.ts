@@ -276,17 +276,18 @@ export function resolveExistingVersionResponse(input: {
  * when they are accepted. Findings drop their report skeleton and their
  * remediation: `warnings.review` and `warnings.safety` already carry them,
  * and repeating them would bury the summary. Of the dependency trust
- * warnings only the unaudited dependencies are gated; the list is left out
- * when there are none.
+ * warnings those with a cause are gated: unaudited dependencies and the
+ * shipped-version findings (a deprecated version, a loose specifier, a
+ * yanked JSR version). The list is left out when there are none.
  */
 export function buildAcceptedWarnings(prepared: {
   safetyWarnings: SafetyIssue[];
   reviewRulesResult: { warnings: ReviewFinding[] };
   dependencyTrustResult: { warnings: DependencyTrustIssue[] };
 }): AcceptedWarnings {
-  const notAudited = prepared.dependencyTrustResult.warnings.filter((w) =>
-    w.cause === "not-audited"
-  );
+  const gatedDependencies = prepared.dependencyTrustResult.warnings.filter((
+    w,
+  ) => w.cause !== undefined);
   return {
     safety: prepared.safetyWarnings.map((w) => ({
       ruleId: w.ruleId,
@@ -302,7 +303,9 @@ export function buildAcceptedWarnings(prepared: {
       ...(w.line !== undefined ? { line: w.line } : {}),
       message: w.message,
     })),
-    ...(notAudited.length > 0 ? { dependencyTrust: notAudited } : {}),
+    ...(gatedDependencies.length > 0
+      ? { dependencyTrust: gatedDependencies }
+      : {}),
   };
 }
 

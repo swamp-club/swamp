@@ -1126,7 +1126,7 @@ Deno.test("composeScore: dependency-trust earns nothing while a dependency is no
   );
   assertStringIncludes(
     factor.remediation ?? "",
-    "Re-run when both are reachable",
+    "Re-run when all three are reachable",
   );
 });
 

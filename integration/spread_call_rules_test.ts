@@ -246,14 +246,6 @@ const PINNED: ReadonlyArray<
     ],
   },
   {
-    file: "src/domain/extensions/extension_dependency_trust_checker.ts",
-    reason: "trust findings for one dependency",
-    calls: [
-      "allErrors.push(...errors)",
-      "allWarnings.push(...warnings)",
-    ],
-  },
-  {
     file: "src/domain/extensions/extension_loader.ts",
     reason: "files, entry points or warnings of one extension package",
     calls: [

@@ -630,6 +630,73 @@ Deno.test("extensionQuality: a dependency that was not audited loses the depende
   });
 });
 
+for (
+  const [label, result, earned] of [
+    [
+      "a loose specifier warning keeps the dependency-trust factor",
+      {
+        errors: [],
+        warnings: [{
+          dependency: "leftpad",
+          message:
+            "npm:leftpad@^1.0.0 is a range; audited 1.3.0, the version this push resolves",
+          cause: "loose-specifier" as const,
+        }],
+        audited: [],
+        passed: true,
+      },
+      2,
+    ],
+    [
+      "a missing JSR version loses the dependency-trust factor",
+      {
+        errors: [{
+          dependency: "@std/assert",
+          message: "version 0.0.999 not found on JSR",
+          cause: "jsr-missing" as const,
+        }],
+        warnings: [],
+        audited: [],
+        passed: false,
+      },
+      0,
+    ],
+  ] as const
+) {
+  Deno.test(`extensionQuality: ${label}`, async () => {
+    await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest);
+      const deps = makeQualityDeps(cacheRoot, {
+        pushPrepareOverrides: {
+          extractDependencySpecifiers: () =>
+            Promise.resolve([{
+              name: "leftpad",
+              version: "^1.0.0",
+              registry: "npm" as const,
+              sourceFile: join(repoDir, "models", "echo.ts"),
+            }]),
+          checkDependencyTrust: () =>
+            Promise.resolve({
+              ...result,
+              errors: [...result.errors],
+              warnings: [...result.warnings],
+              audited: [],
+            }),
+        },
+      });
+
+      const data = completedData(
+        await collect(extensionQuality(ctx, deps, input)),
+      );
+      const trustFactor = data.score.factors.find((f) =>
+        f.id === "dependency-trust"
+      )!;
+      assertEquals(trustFactor.earnedPoints, earned);
+    });
+  });
+}
+
 Deno.test("extensionQuality: cache hit audits webhook source dependencies", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const webhookPath = join(repoDir, "webhooks", "hook.ts");
