@@ -322,6 +322,10 @@ export const WorkflowRunSchema = z.object({
   // a resume knows which input text came from the caller. Absent on runs
   // recorded before it existed.
   inputsProvenance: ProvenanceMapDataSchema.optional(),
+  // Started with --last-evaluated: its steps ran the evaluated cache, whose
+  // source may differ from the workflow on disk (swamp-club#3583). Absent on
+  // other runs and on runs recorded before it existed.
+  replayedEvaluatedCache: z.literal(true).optional(),
   initiatedBy: z.string().optional(),
   instanceId: z.string().optional(),
   // The pid and instance id the run had before a resume took it over, kept
@@ -1376,6 +1380,7 @@ export interface RunOwner {
 export class WorkflowRun implements TriggerEvaluationContext {
   /** See {@link captureInputsProvenance}. */
   private _inputsProvenance: ProvenanceMap | undefined;
+  private _replayedEvaluatedCache = false;
 
   private constructor(
     readonly id: WorkflowRunId,
@@ -1551,6 +1556,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.allowedVaults,
       validated.recovered ?? false,
     );
+    run._replayedEvaluatedCache = validated.replayedEvaluatedCache === true;
     if (validated.inputsProvenance) {
       run._inputsProvenance = ProvenanceMap.fromData(
         validated.inputsProvenance,
@@ -1996,6 +2002,19 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._inputsProvenance = provenance;
   }
 
+  /**
+   * Records that the run replays the evaluated cache (`--last-evaluated`):
+   * its steps ran what the cache held, not the workflow on disk.
+   */
+  recordReplayedEvaluatedCache(): void {
+    this._replayedEvaluatedCache = true;
+  }
+
+  /** Whether the run replays the evaluated cache (`--last-evaluated`). */
+  get replayedEvaluatedCache(): boolean {
+    return this._replayedEvaluatedCache;
+  }
+
   /** Where data sits in `inputs`; undefined for runs recorded before it. */
   get inputsProvenance(): ProvenanceMap | undefined {
     return this._inputsProvenance;
@@ -2336,6 +2355,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     // Written even when nothing is data, so an absent map always means a
     // run recorded before provenance existed.
+    if (this._replayedEvaluatedCache) {
+      data.replayedEvaluatedCache = true;
+    }
     if (this._inputsProvenance) {
       data.inputsProvenance = this._inputsProvenance.toData();
     }

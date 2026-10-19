@@ -27,6 +27,7 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import {
   forEachNameWithoutSecrets,
+  inputsConflictingWithCache,
   isIdentifierMapPath,
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
@@ -208,5 +209,75 @@ Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are not r
       recorded(),
     ),
     undefined,
+  );
+});
+
+Deno.test("inputsConflictingWithCache: names supplied inputs the cache resolved into its steps with other values (swamp-club#3583)", () => {
+  // The source read target in a step input (resolved into the cache) and
+  // suffix in an env expression (left to resolve at run time).
+  const authored = new Set([
+    "${{ inputs.target }}",
+    "${{ inputs.creds.key }}",
+    '${{ env["HOME"] + inputs.suffix }}',
+  ]);
+  const cached = Workflow.create({
+    name: "cached",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "s",
+        task: StepTask.model("m", "run", {
+          target: "scratch",
+          key: "k",
+          home: '${{ env["HOME"] + inputs.suffix }}',
+        }),
+      })],
+    })],
+  });
+  const cache = (evaluatedInputs?: Record<string, unknown>) => ({
+    workflow: cached,
+    authoredExpressions: authored,
+    deferredExpressions: [],
+    evaluatedInputs,
+  });
+  const recorded = cache({
+    target: "scratch",
+    creds: { user: "u", key: "k" },
+    suffix: ":fresh",
+  });
+  assertEquals(inputsConflictingWithCache({}, recorded), []);
+  // The resolved values again, whole or partially nested: no conflict. A
+  // run-time-only input is the run's own.
+  assertEquals(
+    inputsConflictingWithCache(
+      { target: "scratch", creds: { key: "k" }, suffix: ":replay", extra: 1 },
+      recorded,
+    ),
+    [],
+  );
+  assertEquals(
+    inputsConflictingWithCache(
+      { target: "protected", creds: { key: "other" }, suffix: ":replay" },
+      recorded,
+    ),
+    ["target", "creds"],
+  );
+  // A resolved input the cache did not record, or a cache that recorded
+  // none, cannot be checked.
+  assertEquals(
+    inputsConflictingWithCache({ target: "scratch" }, cache({})),
+    ["target"],
+  );
+  assertEquals(
+    inputsConflictingWithCache({ target: "scratch", suffix: "x" }, cache()),
+    ["target"],
+  );
+  // A resolved expression reading inputs whole resolved every input.
+  assertEquals(
+    inputsConflictingWithCache({ suffix: "x" }, {
+      ...cache(),
+      authoredExpressions: new Set(["${{ inputs }}"]),
+    }),
+    ["suffix"],
   );
 });

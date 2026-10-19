@@ -25,7 +25,12 @@ import {
   type RemoteStepRequest,
   setRemoteStepDispatcher,
 } from "../src/domain/remote/remote_dispatch.ts";
-import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -721,11 +726,21 @@ for (const depth of [1, 2]) {
         );
         assertEquals(resumed.at(-1)?.kind, "completed");
         assertEquals(executions, [expected, expected]);
-        // Cached workflow and model reload their own records, even with different caller inputs.
-        await runWorkflow(repo, dir, child.name, true, {
-          suffix: ":child",
-          value: "changed",
-        });
+        // A different value for an input the cache resolved into its steps is
+        // refused rather than recorded over what they ran with
+        // (swamp-club#3583).
+        await assertRejects(
+          () =>
+            runWorkflow(repo, dir, child.name, true, {
+              suffix: ":child",
+              value: "changed",
+            }),
+          Error,
+          'was evaluated with other values for --input "value"',
+        );
+        // Cached workflow and model reload their own records; an input only
+        // run-time expressions read is the caller's.
+        await runWorkflow(repo, dir, child.name, true, { suffix: ":child" });
         assertEquals(executions, [expected, expected, expected]);
         if (!childSuffix) {
           await runModel(dir, {}, true);

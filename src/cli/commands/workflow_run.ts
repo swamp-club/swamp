@@ -154,7 +154,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--last-evaluated",
-    "Skip CEL evaluation, use previously evaluated workflow and definitions",
+    "Skip CEL evaluation, use previously evaluated workflow and definitions; an --input its steps were resolved with must match the evaluated value",
     { default: false },
   )
   .option("--input <value:string>", "Input values (key=value or JSON)", {

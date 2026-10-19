@@ -19,7 +19,9 @@
 
 import type { DeferredExpression } from "../expressions/deferred_expression.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
+import { inputNamesRead } from "../expressions/cel_grammar.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
+import { deepMerge } from "../inputs/input_merge.ts";
 import {
   type DataPath,
   definedEntry,
@@ -47,6 +49,64 @@ export function recordableEvaluatedInputs(
   return canonicalJson(values.masked(inputs)) === canonicalJson(inputs)
     ? inputs
     : undefined;
+}
+
+/**
+ * The inputs an evaluated cache resolved into its steps when it was written:
+ * every name read by an authored expression the cache no longer holds, raw in
+ * its workflow or among its deferred expressions. The rest resolve when the
+ * cache is replayed, against the replaying run's inputs. `all` when a resolved
+ * expression read `inputs` whole, by a computed key, or does not parse.
+ */
+function inputsResolvedIntoCache(cache: {
+  workflow: Workflow;
+  authoredExpressions: ReadonlySet<string>;
+  deferredExpressions: readonly DeferredExpression[];
+}): { names: Set<string>; all: boolean } {
+  const remaining = new Set([
+    ...extractExpressions(cache.workflow.toData()).map((e) => e.raw),
+    ...cache.deferredExpressions.map((d) => d.expression),
+  ]);
+  const names = new Set<string>();
+  let all = false;
+  for (const raw of cache.authoredExpressions) {
+    if (remaining.has(raw)) continue;
+    for (const { celExpression } of extractExpressions(raw)) {
+      const reads = inputNamesRead(celExpression);
+      for (const name of reads.names) names.add(name);
+      all ||= reads.opaque;
+    }
+  }
+  return { names, all };
+}
+
+/**
+ * The supplied inputs a run replaying the evaluated cache (`--last-evaluated`)
+ * cannot take (swamp-club#3583). Its steps run with the values the cache
+ * resolved into them when it was written, so a supplied input those resolved
+ * expressions read must equal the value the cache recorded; one it did not
+ * record, or any when it recorded none, cannot be checked. Inputs read only by
+ * expressions the cache left to resolve at run time are the run's own.
+ */
+export function inputsConflictingWithCache(
+  supplied: Record<string, unknown>,
+  cache: {
+    workflow: Workflow;
+    authoredExpressions: ReadonlySet<string>;
+    deferredExpressions: readonly DeferredExpression[];
+    evaluatedInputs?: Record<string, unknown>;
+  },
+): string[] {
+  const keys = Object.keys(supplied);
+  if (keys.length === 0) return [];
+  const resolved = inputsResolvedIntoCache(cache);
+  const recorded = cache.evaluatedInputs;
+  const merged = recorded ? deepMerge({ ...recorded }, supplied) : supplied;
+  return keys.filter((key) =>
+    (resolved.all || resolved.names.has(key)) &&
+    (recorded === undefined || !Object.hasOwn(recorded, key) ||
+      canonicalJson(merged[key]) !== canonicalJson(recorded[key]))
+  );
 }
 
 /** An evaluated workflow as it is written to the evaluated cache. */

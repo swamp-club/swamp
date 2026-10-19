@@ -93,11 +93,13 @@ export async function checkResumeInputOverrides(
     }
     return reads;
   };
-  // Edited since the run started: what its finished steps read can no longer
-  // be told from the workflow on disk.
+  // Edited since the run started, or replaying the evaluated cache, whose
+  // source may predate the workflow on disk: what its finished steps read
+  // can no longer be told from the workflow on disk.
   const recorded = run.runPlan?.definitionFingerprint;
-  const workflowReads = recorded !== undefined &&
-      recorded !== await computeWorkflowFingerprint(workflow)
+  const workflowReads = run.replayedEvaluatedCache ||
+      (recorded !== undefined &&
+        recorded !== await computeWorkflowFingerprint(workflow))
     ? READS_EVERYTHING
     : readsOfExpressions(workflowExpressions(workflow));
   const readersByKey = new Map<string, string[]>();

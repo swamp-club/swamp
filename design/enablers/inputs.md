@@ -211,6 +211,12 @@ skips evaluating inputs and CEL and runs the last evaluated version of the
 behaviors and workflows (`src/cli/commands/workflow_run.ts`,
 `src/cli/commands/model_method_run.ts`).
 
+A workflow's evaluated cache records the inputs it was evaluated with, and
+`workflow run --last-evaluated` refuses an `--input` its steps were resolved
+with when the value differs from the recorded one, or cannot be checked; an
+input only run-time expressions read is the run's own. See
+[workflows](../primitives/workflows.md) (Resume inputs).
+
 ### Combining file + key=value overrides
 
 With both `--input-file` and key=value `--input`, the file gives base values and

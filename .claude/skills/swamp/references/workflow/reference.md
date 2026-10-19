@@ -305,12 +305,12 @@ stdin item.
 
 **Options:**
 
-| Flag               | Description                                                        |
-| ------------------ | ------------------------------------------------------------------ |
-| `--input <value>`  | Input values (key=value repeatable, or JSON)                       |
-| `--input-file <f>` | Input values from YAML file (cannot combine with `--stdin`)        |
-| `--stdin`          | Read inputs from stdin (piped data)                                |
-| `--last-evaluated` | Use previously evaluated workflow (skip eval and input validation) |
+| Flag               | Description                                                                                                             |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `--input <value>`  | Input values (key=value repeatable, or JSON)                                                                            |
+| `--input-file <f>` | Input values from YAML file (cannot combine with `--stdin`)                                                             |
+| `--stdin`          | Read inputs from stdin (piped data)                                                                                     |
+| `--last-evaluated` | Use previously evaluated workflow (skip eval); an `--input` its steps were resolved with must match the evaluated value |
 
 **Output shape:**
 

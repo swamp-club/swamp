@@ -72,6 +72,7 @@ import {
 } from "./continuation_claim.ts";
 import { RunNotSuspendedError } from "./suspended_run_resolver.ts";
 import { completeAndSettle } from "./abort_settlement.ts";
+import { extractExpressions } from "../expressions/expression_parser.ts";
 import {
   claimsFor,
   InMemoryContinuationClaimStore,
@@ -5371,7 +5372,8 @@ async function saveEvaluatedGatedDestroy(
   await new YamlEvaluatedWorkflowRepository(tempDir).save(
     evaluated,
     undefined,
-    new Set(),
+    // The source's expressions, as the cache records them.
+    new Set(extractExpressions(workflow.toData()).map((e) => e.raw)),
     undefined,
     [],
     recorded ? { target: "scratch", authKey: "PENDING" } : undefined,
@@ -5558,6 +5560,65 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
       { step: "destroy", inputs: "protected", runInputs: "protected" },
     ]);
   });
+});
+
+Deno.test("run: --last-evaluated refuses an --input its cache was not evaluated with (swamp-club#3583)", async () => {
+  for (const recorded of [true, false]) {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const workflow = gatedDestroyWorkflow();
+      await workflowRepo.save(workflow);
+      await saveShellDefinition(tempDir, "sh");
+      await saveEvaluatedGatedDestroy(tempDir, workflow, recorded);
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        new TaskInputsRecorder(),
+        undefined,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+      );
+
+      // The cached gate checks scratch; recording protected would hand a
+      // resume a value no step saw. Refused before any run exists, naming
+      // the key and never the value.
+      const error = await assertRejects(
+        () =>
+          service.execute(workflow.name, {
+            lastEvaluated: true,
+            inputs: { target: "protected" },
+          }),
+        UserError,
+      );
+      assertStringIncludes(error.message, '--input "target"');
+      assertStringIncludes(
+        error.message,
+        recorded ? "was evaluated with other values" : "recorded no inputs",
+      );
+      assertEquals(error.message.includes("protected"), false);
+      assertEquals(await runRepo.findAllByWorkflowId(workflow.id), []);
+
+      if (recorded) {
+        // The value the cache was evaluated with is accepted.
+        const run = await service.execute(workflow.name, {
+          lastEvaluated: true,
+          inputs: { target: "scratch" },
+        });
+        assertEquals(run.status, "suspended");
+        assertEquals(run.replayedEvaluatedCache, true);
+        const stored = await runRepo.findById(workflow.id, run.id);
+        assertEquals(stored?.replayedEvaluatedCache, true);
+      } else {
+        // An old cache replays as before when no --input is given.
+        const run = await service.execute(workflow.name, {
+          lastEvaluated: true,
+        });
+        assertEquals(run.status, "suspended");
+        assertEquals(run.inputs, {});
+      }
+    });
+  }
 });
 
 // Regression for #1118: the per-run workflow log file is opened by
@@ -12263,9 +12324,15 @@ Deno.test("resume: --from still works on a run started from an evaluated forEach
     const { YamlEvaluatedWorkflowRepository } = await import(
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
+    // Recording the inputs it was evaluated with, as 'workflow evaluate'
+    // does, so the run may name them (swamp-club#3583).
     await new YamlEvaluatedWorkflowRepository(tempDir).save(
       evaluated,
       undefined,
+      new Set(),
+      undefined,
+      [],
+      { envs: ["prod"] },
     );
     executor.failing.add("prep");
     const failed = await service.execute(source.name, {

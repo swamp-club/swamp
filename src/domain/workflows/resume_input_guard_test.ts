@@ -905,3 +905,30 @@ Deno.test("checkResumeInputOverrides: a serve-started run is pointed to cancel i
   );
   assertEquals(message.includes("swamp workflow cancel gated-destroy"), false);
 });
+
+Deno.test("checkResumeInputOverrides: a run replaying the evaluated cache reads every input once a step ran", async () => {
+  // The workflow on disk no longer reads target in the gate; the cache the
+  // run replayed may have.
+  const wf = gatedDestroy("Proceed?");
+  const edited = Workflow.create({
+    name: "gated-destroy",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          shell("gate", "echo nothing read"),
+          approval("approve", "Proceed?", ["gate"]),
+          shell("destroy", "echo ${{ inputs.target }}", ["approve"]),
+        ],
+      }),
+    ],
+  });
+  const data = approvedRun(wf).toData();
+  data.replayedEvaluatedCache = true;
+  const replayed = WorkflowRun.fromData(data);
+  await refusal(edited, replayed, { target: "protected" });
+  // The same value is still no change.
+  await accepts(edited, replayed, { target: "scratch" });
+  // Without the flag, the edited workflow alone decides.
+  await accepts(edited, approvedRun(wf), { target: "protected" });
+});

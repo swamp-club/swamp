@@ -248,6 +248,7 @@ import {
   rehydrateEvaluatedDefinition,
 } from "../expressions/persisted_evaluation.ts";
 import {
+  inputsConflictingWithCache,
   type PersistedEvaluatedWorkflow,
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
@@ -3803,6 +3804,23 @@ export class WorkflowExecutionService {
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
             );
           }
+          // The cached steps run with the inputs the cache was evaluated
+          // with; a run recording other values would hand a resume values no
+          // step saw (swamp-club#3583). Key names only: values may be secrets.
+          const conflicting = inputsConflictingWithCache(
+            options.inputs ?? {},
+            lastEvaluated,
+          );
+          if (conflicting.length > 0) {
+            const keys = conflicting.map((k) => `"${k}"`).join(", ");
+            throw new UserError(
+              lastEvaluated.evaluatedInputs === undefined
+                ? `The evaluated workflow cached for "${workflow.name}" recorded no inputs, so --input ${keys}, which its steps were evaluated with, cannot be checked. ` +
+                  `Evaluate it again with these inputs (swamp workflow evaluate ${workflow.name} --input ...), or run it without --last-evaluated.`
+                : `The evaluated workflow cached for "${workflow.name}" was evaluated with other values for --input ${keys}, and its steps run with those. ` +
+                  `Evaluate it again with these inputs (swamp workflow evaluate ${workflow.name} --input ...), or run it without --last-evaluated.`,
+            );
+          }
           // Sensitive values are cached as vault references: restore real
           // values into the workflow and sentinels into the step overlay.
           const vaultService = lastEvaluated.writtenReferences.length > 0
@@ -3851,6 +3869,9 @@ export class WorkflowExecutionService {
             ...deferredExpressions,
             ...restored.deferredExpressions,
           ];
+          // A supplied input the cache resolved into its steps equals the
+          // recorded one (checked above); one only its run-time expressions
+          // read is the run's own.
           if (lastEvaluated.evaluatedInputs) {
             runInputs = deepMerge(
               { ...lastEvaluated.evaluatedInputs },
@@ -3976,6 +3997,9 @@ export class WorkflowExecutionService {
           run.recordAllowedVaults(allowedVaults);
         }
         run.attachSensitiveValues(sensitiveValues);
+        if (options?.lastEvaluated) {
+          run.recordReplayedEvaluatedCache();
+        }
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
         }
