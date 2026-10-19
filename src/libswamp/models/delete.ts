@@ -49,7 +49,10 @@ import { behaviorNotFound, wordedSwampError } from "../errors.ts";
 import { wordedText } from "../../domain/behavior_wording.ts";
 import { getLogger } from "@logtape/logtape";
 
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+} from "../../infrastructure/tracing/mod.ts";
 /** Preview data returned before confirmation. */
 export interface ModelDeletePreview {
   id: string;
@@ -108,6 +111,11 @@ export interface ModelDeleteInput {
    * unique, so only a resource with this name and the id is accepted.
    */
   expectedName?: string;
+  /**
+   * The principal that sent the request, as `kind:id`. It is recorded on the
+   * span as `auth.principal.id` and is never used to authorize the delete.
+   */
+  principalId?: string;
 }
 
 /** Dependencies for the model delete operation. */
@@ -330,7 +338,12 @@ export async function* modelDelete(
   yield* withUnitOfWork(ctx, () =>
     withGeneratorSpan(
       "swamp.model.delete",
-      { "model.id_or_name": input.modelIdOrName },
+      {
+        "model.id_or_name": input.modelIdOrName,
+        ...(input.principalId
+          ? { "auth.principal.id": input.principalId }
+          : {}),
+      },
       (async function* () {
         yield { kind: "deleting" };
 
@@ -343,6 +356,11 @@ export async function* modelDelete(
           return;
         }
         const { definition, type: modelType } = result;
+        setActiveSpanAttributes({
+          "model.name": definition.name,
+          "model.type": modelType.normalized,
+          "model.id": definition.id,
+        });
 
         // Check workflow references
         const allWorkflows = await deps.findAllWorkflows();

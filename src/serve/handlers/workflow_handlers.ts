@@ -2621,7 +2621,10 @@ export async function handleWorkflowCreate(
 
         let result: Record<string, unknown> | undefined;
         await consumeStream(
-          workflowCreate(libCtx, deps, { name: payload.name }),
+          workflowCreate(libCtx, deps, {
+            name: payload.name,
+            principalId: principal ? principalToString(principal) : undefined,
+          }),
           {
             creating: () => {},
             completed: (e) => {
@@ -2710,6 +2713,7 @@ export async function handleWorkflowDelete(
             workflowIdOrName: workflow.idOrName,
             byId: workflow.byId,
             expectedName: workflow.expectedName,
+            principalId: principal ? principalToString(principal) : undefined,
           }),
           {
             deleting: () => {},
@@ -2809,6 +2813,7 @@ export async function handleWorkflowEdit(
             workflowIdOrName: workflow.id,
             byId: true,
             expectedName: workflow.name,
+            principalId: principal ? principalToString(principal) : undefined,
             stdinContent: payload.content,
             allowRename: payload.allowRename === true,
             // Every save is authorized against the edited workflow too, so a

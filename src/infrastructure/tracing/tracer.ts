@@ -189,6 +189,17 @@ export function withActiveSpan<T>(span: Span, fn: () => T): T {
   return context.with(trace.setSpan(context.active(), span), fn);
 }
 
+/**
+ * Sets `attributes` on the active span, and does nothing when no span is
+ * active.
+ *
+ * Use it inside a {@link withGeneratorSpan} body for values known only after
+ * the span starts, such as the definition an edit resolved.
+ */
+export function setActiveSpanAttributes(attributes: Attributes): void {
+  trace.getActiveSpan()?.setAttributes(attributes);
+}
+
 export function withSpan<T>(
   name: string,
   attributes: Attributes,

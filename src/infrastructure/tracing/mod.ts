@@ -31,6 +31,7 @@ export {
   bindGeneratorToSpan,
   getTracer,
   runDetached,
+  setActiveSpanAttributes,
   type Span,
   SpanStatusCode,
   withActiveSpan,
