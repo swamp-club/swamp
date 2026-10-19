@@ -515,7 +515,12 @@ Deno.test("CelEvaluator typed secrets: a refusal absorbed across an await still 
 });
 
 Deno.test("CelEvaluator typed secrets: a synchronous refusal beside an async call leaves no rejection unhandled", async () => {
-  for (const latest of [async () => ({ id: "r" }), async () => null]) {
+  for (
+    const latest of [
+      () => Promise.resolve({ id: "r" }),
+      () => Promise.resolve(null),
+    ]
+  ) {
     const f = fixture();
     f.context.data = { latest };
     const error = assertThrows(
