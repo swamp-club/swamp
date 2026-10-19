@@ -35,6 +35,7 @@
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
+import { installPromptfooDeps } from "./promptfoo_install.ts";
 
 const API_KEY_ENV: Record<string, string> = {
   "sonnet": "ANTHROPIC_API_KEY",
@@ -375,15 +376,10 @@ async function main(): Promise<void> {
 
   // Install promptfoo dependencies once
   console.log("Installing promptfoo dependencies…");
-  const installCmd = new Deno.Command("npm", {
-    args: ["install", "--package-lock=false"],
-    cwd: configDir,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const installResult = await installCmd.output();
-  if (installResult.code !== 0) {
-    console.error("npm install failed with exit code", installResult.code);
+  try {
+    await installPromptfooDeps(configDir);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
     Deno.exit(1);
   }
 
