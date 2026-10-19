@@ -112,7 +112,8 @@
  * goes to that ancestor; one staged after it was abandoned is refused. Only
  * a root commits to the log, and
  * `checkpoint` on a child throws. A root's checkpoint commits what has been
- * handed to it so far; a child still open keeps its changes until it ends.
+ * handed to it so far; a child still open keeps its changes until it ends,
+ * or until {@link checkpointFrom} hands them over (swamp-club#3587).
  *
  * @module
  */
@@ -364,6 +365,16 @@ interface CommitLogState {
   readonly openedAt: number;
   /** Takes a committed child's batches, in order and batch by batch. */
   adopt(batches: readonly (readonly TypedChange[])[]): void;
+  /**
+   * Hands what the unit has staged so far to its nearest open ancestor and
+   * stays open (swamp-club#3587); a no-op on an ended unit.
+   */
+  promote(): void;
+  /**
+   * Skips this unit's queued stream puts that `change`, staged in a
+   * descendant that promoted, supersedes; see {@link checkpointFrom}.
+   */
+  skipSuperseded(change: TypedChange): void;
 }
 
 const states = new WeakMap<UnitOfWork, CommitLogState>();
@@ -395,6 +406,39 @@ function nearestOpenAncestor(
     unit = state.parent;
   }
   return undefined;
+}
+
+/**
+ * Commits, mid-operation, what `unit` and each open ancestor have staged so
+ * far (swamp-club#3587): each open unit from `unit` up hands its batches to
+ * its nearest open ancestor and stays open, then the root checkpoints. An
+ * ended unit has nothing left to hand over, so the walk goes on from its
+ * nearest open ancestor. Resolves false, committing nothing, when `unit` is
+ * not a commit-log unit or its root has ended.
+ *
+ * What is handed over belongs to the root from then on: a later abandon of
+ * the unit discards only what it staged after. A put or tombstone the unit
+ * stages afterwards still supersedes a handed-over stream put that has not
+ * been read, which is skipped rather than read from a file that may have
+ * changed; should the unit then be abandoned, neither version of that key
+ * lands, as a crash then would leave neither.
+ */
+export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
+  let current: UnitOfWork | undefined = unit;
+  while (current !== undefined) {
+    const state = states.get(current);
+    if (state === undefined) return false;
+    if (state.parent === undefined) {
+      if (!state.isOpen()) return false;
+      await (current as CommitLogUnitOfWork).checkpoint();
+      return true;
+    }
+    // Every ancestor ended, the root included: nothing can commit now.
+    if (nearestOpenAncestor(state.parent) === undefined) return false;
+    state.promote();
+    current = nearestOpenAncestor(state.parent);
+  }
+  return false;
 }
 
 /**
@@ -509,6 +553,33 @@ export function createCommitLogUnitOfWork(
     });
   };
 
+  /**
+   * Marks the queued stream puts `change` supersedes to be skipped when
+   * their group is appended, without removing them: `change` is still a
+   * descendant's, which may yet be abandoned. Unformed batches need nothing,
+   * since the next flush promotes `change` first and elides them then.
+   */
+  const skipSuperseded = (change: TypedChange): void => {
+    const slot = supersedingSlot(change);
+    if (slot === undefined) return;
+    for (const group of pending) {
+      for (const other of group.changes) {
+        if (
+          "put" in other && !stored.has(other.put) &&
+          streamPutSlot(other) === slot
+        ) {
+          supersededInFlight.add(other.put);
+        }
+      }
+    }
+  };
+
+  /**
+   * Whether this unit has handed batches to an ancestor while open: its
+   * later changes may then supersede puts the ancestor is appending.
+   */
+  let promoted = false;
+
   /** Records one batch: refused whole when a partition passes the limit. */
   const record = (changes: readonly TypedChange[]): void => {
     requireBatchWithinLimit(changes);
@@ -517,6 +588,15 @@ export function createCommitLogUnitOfWork(
     const batch: TypedChange[] = [];
     staged.push(batch);
     for (const change of changes) {
+      if (promoted) {
+        for (
+          let unit = nearestOpenAncestor(parent);
+          unit !== undefined;
+          unit = nearestOpenAncestor(states.get(unit)!.parent)
+        ) {
+          states.get(unit)!.skipSuperseded(change);
+        }
+      }
       elideSupersededBy(change);
       batch.push(change);
       all.push(change);
@@ -647,6 +727,21 @@ export function createCommitLogUnitOfWork(
     adopt(batches) {
       for (const batch of batches) record(batch);
     },
+    promote() {
+      if (ended !== undefined || staged.length === 0) return;
+      const target = nearestOpenAncestor(parent);
+      if (target === undefined) {
+        throw new Error(
+          "promote called on a unit of work with no open ancestor; a root " +
+            "commits its own changes",
+        );
+      }
+      promoted = true;
+      states.get(target)!.adopt(staged);
+      staged = [];
+      streamPuts.clear();
+    },
+    skipSuperseded,
   };
 
   const end = async (as: "committed" | "abandoned"): Promise<void> => {

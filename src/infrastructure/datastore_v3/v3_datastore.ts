@@ -81,15 +81,18 @@ import type {
   CommitLogEngine,
   CommitLogRootRunOptions,
   CommitLogRootView,
+  OpenUnitCheckpoint,
 } from "../persistence/repo_unit_of_work.ts";
 import { currentUnitOfWork } from "../persistence/unit_of_work_scope.ts";
 import {
+  checkpointFrom,
   commitLogParentFor,
   createCommitLogUnitOfWork,
   type UnitTracker,
 } from "./commit_log_unit_of_work.ts";
+import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { recoverySince } from "./interrupted_writer_recovery.ts";
-import { runInCommitLogRoot } from "./commit_log_root.ts";
+import { runInCommitLogRoot, wasThrownAfterCommit } from "./commit_log_root.ts";
 import {
   createOutboxCommitSink,
   type OutboxCommitSink,
@@ -686,6 +689,19 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         hasOpenUnit(): boolean {
           return commitLogParentFor(markDirty, currentUnitOfWork()) !==
             undefined;
+        },
+        async checkpointOpenUnit(): Promise<OpenUnitCheckpoint> {
+          const unit = commitLogParentFor(markDirty, currentUnitOfWork());
+          if (unit === undefined) return "no-unit";
+          try {
+            return await checkpointFrom(unit) ? "committed" : "no-unit";
+          } catch (error) {
+            if (error instanceof PartitionsRefusedError) return "refused";
+            throw error;
+          }
+        },
+        committedBeforeThrowing(error: unknown): boolean {
+          return wasThrownAfterCommit(error);
         },
         async runRoot<T>(
           rootOptions: CommitLogRootRunOptions<T>,

@@ -45,6 +45,7 @@ import {
   RUN_COMMIT_STATUSES,
   runInCommitLogRoot,
   runOutcomeDisposition,
+  wasThrownAfterCommit,
 } from "./commit_log_root.ts";
 import { PathOnlyChangeRefusedError } from "./commit_log_unit_of_work.ts";
 import {
@@ -388,6 +389,8 @@ Deno.test("runInCommitLogRoot: onRefused re-saves the held run in the root, whic
     PartitionsRefusedError,
   );
   assertStrictEquals(seen[0], error);
+  // Thrown after the commit, and marked so (swamp-club#3587).
+  assertEquals(wasThrownAfterCommit(error), true);
   assertEquals(error.refusals[0].versions, [{ dataId: DATA_ID, version: 1 }]);
   assertEquals(error.heldRuns.map(String), [runPartition().toString()]);
   // Both run puts commit, in order: the last one is the re-saved record.
@@ -404,7 +407,7 @@ Deno.test("runInCommitLogRoot: onRefused re-saves the held run in the root, whic
 
 Deno.test("runInCommitLogRoot: without onRefused, a refusal commits no run record; a failing onRefused discards the root (swamp-club#3257)", async () => {
   const plain = await fencedSink();
-  await assertRejects(
+  const thrownByCommit = await assertRejects(
     () =>
       runInCommitLogRoot(
         { markDirty: contextHook() },
@@ -414,6 +417,9 @@ Deno.test("runInCommitLogRoot: without onRefused, a refusal commits no run recor
     PartitionsRefusedError,
   );
   assertEquals(plain.commitsOf(runPartition()), []);
+  // The root's own commit threw it, so the run record never landed
+  // (swamp-club#3587).
+  assertEquals(wasThrownAfterCommit(thrownByCommit), false);
 
   const failing = await fencedSink();
   await assertRejects(

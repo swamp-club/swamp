@@ -68,9 +68,11 @@ import {
   unitOptions,
 } from "../src/infrastructure/datastore_v3/commit_log_test_helpers.ts";
 import {
+  checkpointFrom,
   type CommitSink,
   createCommitLogUnitOfWork,
 } from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
+import type { RunCheckpointer } from "../src/domain/workflows/run_checkpointer.ts";
 import { reconcileRefusedRuns } from "../src/infrastructure/datastore_v3/refused_run_records.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
@@ -346,15 +348,24 @@ async function runWorkflow(
     sink?: CommitSink;
     onRefused?: CommitLogRootOptions<unknown>["onRefused"];
     abort?: AbortController;
+    /** Checkpoint after every save of the run (swamp-club#3587). */
+    checkpoints?: boolean;
   } = {},
 ): Promise<string> {
   const unit = unitOptions(options.sink ?? env.store, env.storage, {
     signal: AbortSignal.timeout(60_000),
   });
-  const deps = await createWorkflowRunDeps(context.dir, context.repo, {
-    type: "filesystem",
-    path: join(context.dir, ".swamp"),
-  });
+  const deps = await createWorkflowRunDeps(
+    context.dir,
+    context.repo,
+    {
+      type: "filesystem",
+      path: join(context.dir, ".swamp"),
+    },
+    undefined,
+    undefined,
+    options.checkpoints === true ? { runCheckpointer: unitCheckpoints } : {},
+  );
   let runId: string | undefined;
   await runInCommitLogRoot(
     { markDirty: context.hook },
@@ -382,6 +393,22 @@ async function runWorkflow(
   assert(runId !== undefined, "the run started");
   return runId;
 }
+
+/**
+ * Checkpoints the units open around each save, as a v3 context's
+ * checkpointer does; a refusal is left for the root to settle.
+ */
+const unitCheckpoints: RunCheckpointer = {
+  async checkpoint() {
+    const unit = currentUnitOfWork();
+    if (unit === undefined) return;
+    try {
+      await checkpointFrom(unit);
+    } catch (error) {
+      if (!(error instanceof PartitionsRefusedError)) throw error;
+    }
+  },
+};
 
 async function drain(stream: AsyncIterable<{ kind: string }>): Promise<void> {
   for await (const _event of stream) {
@@ -523,6 +550,25 @@ Deno.test("v3 run staging: a run whose consumer stops before an outcome commits 
   });
 });
 
+Deno.test("v3 run staging: with checkpoints, a run whose consumer stops before an outcome keeps the record its last checkpoint committed (swamp-club#3587)", async () => {
+  await withV3Env(async (env) => {
+    const type = registerWriter();
+    const definition = Definition.create({ name: "writer" });
+    const stopped = await runContext(env, "stopped", type, definition, [
+      writeStep("a"),
+    ]);
+    const runId = await runWorkflow(env, stopped, async (stream) => {
+      for await (const event of stream) {
+        if (event.kind === "started") break;
+      }
+    }, { checkpoints: true });
+    // Committed up to the last checkpoint; only later writes are discarded.
+    // The run stays running, as v2 leaves its file, for the dead-owner
+    // settling to find.
+    assertEquals((await storedRun(env, stopped, runId))?.status, "running");
+  });
+});
+
 /** A sink that refuses each model-partition commit as `reason`. */
 function refusingModels(
   env: V3Env,
@@ -627,5 +673,31 @@ Deno.test("v3 run staging: without onRefused, a refused data partition commits n
       context.workflowId,
     );
     assertEquals(await committedRecord(env, context, runId), undefined);
+  });
+});
+
+Deno.test("v3 run staging: with checkpoints, a refused data partition keeps only the run record checkpointed before it, which never names the refused data (swamp-club#3587)", async () => {
+  await withV3Env(async (env) => {
+    const type = registerWriter();
+    const definition = Definition.create({ name: "writer" });
+    const context = await runContext(env, "plain", type, definition, [
+      writeStep("a"),
+    ]);
+    await assertRejects(
+      () =>
+        runWorkflow(env, context, drain, {
+          sink: refusingModels(env, "expect-failed"),
+          checkpoints: true,
+        }),
+      PartitionsRefusedError,
+    );
+    const [runId] = await context.repo.workflowRunRepo.listRunIdsForWorkflow(
+      context.workflowId,
+    );
+    const stored = await storedRun(env, context, runId);
+    assertEquals(stored?.status, "running");
+    const step = stored?.getJob("main")?.getStep("a");
+    assert(step?.status !== "succeeded", "the refused step never succeeds");
+    assertEquals(step?.dataArtifacts ?? [], []);
   });
 });

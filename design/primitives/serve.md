@@ -179,6 +179,10 @@ registration.
 | remote with control plane           | `local_encryption` only                | `durable (limited)` | Runs survive; secrets do not travel                                   |
 | remote with control plane           | at least one non-local vault           | `durable`           | Runs survive instance replacement                                    |
 
+On a v3 filesystem datastore a run survives a crash as well as a restart: it
+checkpoints as it saves its record, so the boot reaper settles it from
+its last checkpoint (swamp-club#3587).
+
 "Remote control plane" means the datastore extension advertises
 `capabilities().controlPlane` and exposes `controlPlaneStore()`. Otherwise serve
 uses `FileSystemControlPlaneStore` under the repository's `.swamp/_control/`

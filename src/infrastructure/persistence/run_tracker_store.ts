@@ -348,6 +348,22 @@ export class RunTrackerStore implements RunTrackerRepository {
     `).run(status, now, reason ?? null, runId);
   }
 
+  /**
+   * Puts a workflow row its owner completed back to `running` when the
+   * owner's final run record was not committed (swamp-club#3587): only a
+   * row owned by `pid` on `hostname` that this owner ended, never one
+   * interrupted or settled by another process. Returns whether it did.
+   */
+  reopenCompleted(runId: string, pid: number, hostname: string): boolean {
+    const result = this.db.prepare(`
+      UPDATE active_runs
+      SET status = 'running', completed_at = NULL, cancel_reason = NULL
+      WHERE id = ? AND pid = ? AND hostname = ? AND run_kind = 'workflow'
+        AND status IN ('completed', 'failed', 'cancelled', 'suspended')
+    `).run(runId, pid, hostname);
+    return Number(result.changes) > 0;
+  }
+
   markSettled(runId: string, reason: string): void {
     this.db.prepare(`
       UPDATE active_runs SET cancel_reason = ?

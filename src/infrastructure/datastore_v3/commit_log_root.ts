@@ -114,7 +114,8 @@ export const RUN_COMMIT_STATUSES = [
  * failed or cancelled run's record is its outcome), and discards on an
  * error. `fn` must therefore resolve with the run's terminal status, not
  * throw, when the run fails or is cancelled: a throw discards the run's
- * record.
+ * record back to what its last checkpoint committed, since a run
+ * checkpoints as it saves its record (swamp-club#3587).
  */
 export function runOutcomeDisposition(
   outcome: CommitLogOutcome<{ readonly status: string }>,
@@ -189,8 +190,24 @@ export async function runInCommitLogRoot<T>(
     ? undefined
     : await settleRefusals(root, onRefused);
   await root.commit();
-  if (refused !== undefined) throw refused;
+  if (refused !== undefined) {
+    refusalsThrownAfterCommit.add(refused);
+    throw refused;
+  }
   return value;
+}
+
+/** The settled refusals {@link runInCommitLogRoot} threw after it committed. */
+const refusalsThrownAfterCommit = new WeakSet<PartitionsRefusedError>();
+
+/**
+ * Whether `error` is a settled refusal {@link runInCommitLogRoot} threw
+ * after its root committed (swamp-club#3587). Any other error, a refusal the
+ * root's own commit threw included, may have left the root uncommitted.
+ */
+export function wasThrownAfterCommit(error: unknown): boolean {
+  return error instanceof PartitionsRefusedError &&
+    refusalsThrownAfterCommit.has(error);
 }
 
 /**

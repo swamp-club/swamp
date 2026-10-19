@@ -58,6 +58,7 @@ import {
   unitWrites,
 } from "../persistence/unit_of_work_binding.ts";
 import {
+  checkpointFrom,
   commitLogParentFor,
   createCommitLogUnitOfWork,
   partitionLockCountForTesting,
@@ -476,6 +477,141 @@ Deno.test("createCommitLogUnitOfWork: checkpoint on a child throws; its root com
     unitOptions(sink, memory(), { parent: root }),
   );
   await assertRejects(() => child.checkpoint(), Error, "its root commits");
+});
+
+Deno.test("checkpointFrom: commits what an open child and its ancestors staged, and the child stays open (swamp-club#3587)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  const grandchild = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: child }),
+  );
+  await root.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await child.stageOp({ partition: MODEL, op: await savePut("b", 1) });
+  await grandchild.stageOp({
+    partition: runPartition(),
+    op: await runPut("r"),
+  });
+  assertEquals(await checkpointFrom(grandchild), true);
+  assertEquals(sink.appendCalls, [
+    MODEL.toString(),
+    runPartition().toString(),
+  ]);
+  // Still open: it keeps staging, and its root commits the rest.
+  await grandchild.stageOp({ partition: MODEL, op: await savePut("c", 1) });
+  await grandchild.commit();
+  await child.commit();
+  await root.commit();
+  assertEquals(sink.commitsOf(MODEL).map((commit) => commit.ops.length), [
+    2,
+    1,
+  ]);
+});
+
+Deno.test("checkpointFrom: a later abandon of the child discards only what it staged after (swamp-club#3587)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await child.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await checkpointFrom(child);
+  // Handed over but not committed yet: the root's own commit lands it.
+  await child.stageOp({ partition: MODEL, op: await savePut("b", 1) });
+  const later = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await later.stageOp({ partition: MODEL, op: await savePut("c", 1) });
+  await checkpointFrom(later);
+  await child.abandon();
+  await later.commit();
+  await root.commit();
+  const keys = sink.commitsOf(MODEL).flatMap((commit) =>
+    commit.ops.map((op) => "key" in op ? op.key.toString() : op.kind)
+  );
+  assertEquals(keys, [dataKey("a", 1).toString(), dataKey("c", 1).toString()]);
+});
+
+Deno.test("checkpointFrom: an ended child goes on from its nearest open ancestor; an ended root or another unit commits nothing (swamp-club#3587)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await child.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await child.commit();
+  assertEquals(await checkpointFrom(child), true);
+  assertEquals(sink.landed.length, 1);
+  // Opened before its root ends, and still open after.
+  const open = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await open.stageOp({ partition: MODEL, op: await savePut("b", 1) });
+  await root.commit();
+  assertEquals(await checkpointFrom(child), false);
+  assertEquals(await checkpointFrom(root), false);
+  // A child still open under an ended root commits nothing either.
+  assertEquals(await checkpointFrom(open), false);
+  const other = {
+    stage: () => Promise.resolve(),
+    commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
+    staged: () => [],
+  };
+  assertEquals(await checkpointFrom(other), false);
+  assertEquals(sink.landed.length, 1);
+});
+
+Deno.test("checkpointFrom: a put the child stages while the root appends what it handed over skips that stream, not a wedged checkpoint (swamp-club#3587)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  let release!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reading!: () => void;
+  const started = new Promise<void>((resolve) => {
+    reading = resolve;
+  });
+  // The stream opens once the test lets it, then finds its file removed.
+  await child.stageOp(pendingPut("a", async () => {
+    reading();
+    await opened;
+    throw new Deno.errors.NotFound("raw was pruned");
+  }));
+  const checkpoint = checkpointFrom(child);
+  await started;
+  await child.stageOp({
+    partition: MODEL,
+    op: tombstoneOp({
+      intent: modelIntent({ kind: "data.gc", name: "a", version: 1 }),
+      key: dataKey("a", 1),
+    }),
+  });
+  release();
+  assertEquals(await checkpoint, true);
+  await child.commit();
+  await root.commit();
+  assertEquals(
+    sink.commitsOf(MODEL).map((commit) => commit.ops.map((op) => op.kind)),
+    [["tombstone"]],
+  );
 });
 
 Deno.test("createCommitLogUnitOfWork: a unit over another hook is a root, not a child", () => {

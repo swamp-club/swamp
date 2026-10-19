@@ -999,6 +999,62 @@ Deno.test("RunTrackerStore: reactivate returns false when the row is missing", (
   }
 });
 
+for (
+  const status of ["completed", "failed", "cancelled", "suspended"] as const
+) {
+  Deno.test(`RunTrackerStore: reopenCompleted puts its owner's ${status} workflow row back to running (swamp-club#3587)`, () => {
+    const dbPath = makeTempDbPath();
+    const store = new RunTrackerStore(dbPath);
+    try {
+      store.register(makeWorkflowRow("run-1", 4242));
+      store.complete("run-1", status, "a reason");
+
+      assertEquals(store.reopenCompleted("run-1", 4242, "original-host"), true);
+      const found = store.findById("run-1")!;
+      assertEquals(found.status, "running");
+      assertEquals(found.cancelReason, null);
+      assertEquals(completedAtOf(dbPath, "run-1"), null);
+    } finally {
+      store.close();
+    }
+  });
+}
+
+Deno.test("RunTrackerStore: reopenCompleted leaves another owner's, an interrupted, a running and a method row alone (swamp-club#3587)", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.register(makeWorkflowRow("other-pid", 4242));
+    store.complete("other-pid", "completed");
+    store.register(makeWorkflowRow("other-host", 4242));
+    store.complete("other-host", "completed");
+    store.register(makeWorkflowRow("interrupted", 4242));
+    store.complete("interrupted", "interrupted");
+    store.register(makeWorkflowRow("running", 4242));
+    store.register(makeRun({ id: "method", pid: 4242 }));
+    store.complete("method", "completed");
+
+    assertEquals(store.reopenCompleted("other-pid", 1, "original-host"), false);
+    assertEquals(store.reopenCompleted("other-host", 4242, "elsewhere"), false);
+    assertEquals(
+      store.reopenCompleted("interrupted", 4242, "original-host"),
+      false,
+    );
+    assertEquals(
+      store.reopenCompleted("running", 4242, "original-host"),
+      false,
+    );
+    assertEquals(store.reopenCompleted("method", 4242, "test-host"), false);
+    assertEquals(
+      store.reopenCompleted("missing", 4242, "original-host"),
+      false,
+    );
+    assertEquals(store.findById("interrupted")?.status, "interrupted");
+    assertEquals(store.findById("method")?.status, "completed");
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("RunTrackerStore: reapDeadProcessRuns skips a row reactivated by a live process", () => {
   const store = new RunTrackerStore(makeTempDbPath());
   try {

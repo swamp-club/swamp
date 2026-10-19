@@ -74,6 +74,10 @@ import {
   UNSHARED_SIGNAL_WAITS,
 } from "./signal_wait_store.ts";
 import {
+  NO_RUN_CHECKPOINTS,
+  type RunCheckpointer,
+} from "./run_checkpointer.ts";
+import {
   applyAcceptedSignals,
   closeRunWaits,
   findRegistrationOfStep,
@@ -3384,6 +3388,13 @@ export class WorkflowExecutionService {
    * signal.
    */
   signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
+
+  /**
+   * Commits the run's progress as it saves its record (swamp-club#3587),
+   * paced by the implementation. Defaults
+   * to none, for a datastore whose writes land as they are made.
+   */
+  runCheckpointer: RunCheckpointer = NO_RUN_CHECKPOINTS;
 
   /**
    * The continuation claims a resume of a suspended run takes
@@ -7162,6 +7173,7 @@ export class WorkflowExecutionService {
       this.fetchForeignContent,
     );
     childService.signalWaits = this.signalWaits;
+    childService.runCheckpointer = this.runCheckpointer;
 
     let childRun: WorkflowRun | undefined;
     // The child's suspended event is the parent step's outcome, as its
@@ -7846,6 +7858,7 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
   ): Promise<void> {
     await this.runRepo.save(workflowId, run);
+    await this.runCheckpointer.checkpoint(run);
   }
 
   /**

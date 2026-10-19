@@ -36,6 +36,15 @@ export interface RunTrackerRepository {
   markSettled(runId: string, reason: string): void;
 
   /**
+   * Puts a workflow row its owner completed back to `running`, when the
+   * owner's final run record was not committed (swamp-club#3587), so the
+   * dead-owner settling finds the run once the owner is gone. Only a row
+   * owned by `pid` on `hostname` that ended completed, failed, cancelled or
+   * suspended. Returns whether a row was put back.
+   */
+  reopenCompleted(runId: string, pid: number, hostname: string): boolean;
+
+  /**
    * Records `reason` on a row its owner already completed as cancelled
    * without one, as when a cancelled owner saves its own outcome before the
    * cancel command completes the row. Leaves a row that has a reason, or that

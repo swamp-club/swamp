@@ -59,6 +59,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
 import { localNestedCascade } from "../local_nested_cascade.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
@@ -376,6 +377,7 @@ export const workflowRunCommand = new Command()
     const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
       ? unlocked.datastoreConfig.namespace
       : undefined;
+    const runCheckpointer = new WorkflowRunCheckpointer(repoContext);
     try {
       await runCommandInRootUnit(
         repoContext,
@@ -538,6 +540,7 @@ export const workflowRunCommand = new Command()
                   repoContext.unifiedDataRepo.fetchForeignContent,
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
+                service.runCheckpointer = runCheckpointer;
                 return service;
               },
               catalogStore: repoContext.catalogStore,
@@ -735,7 +738,19 @@ export const workflowRunCommand = new Command()
           }
         },
       );
+    } catch (error) {
+      let tracker: RunTrackerStore | undefined;
+      try {
+        await runCheckpointer.restoreUncommittedRuns(() => {
+          tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+          return tracker;
+        }, error);
+      } finally {
+        tracker?.close();
+      }
+      throw error;
     } finally {
+      await runCheckpointer.close();
       shutdownHandle?.dispose();
       exitSuppress.dispose();
     }

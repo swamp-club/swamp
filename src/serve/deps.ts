@@ -30,6 +30,7 @@ import {
   repoUnitOfWorkFactory,
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import { WorkflowRunCheckpointer } from "../infrastructure/persistence/workflow_run_checkpointer.ts";
 import type { ModelMethodRunDeps } from "../libswamp/models/run.ts";
 import type {
   WorkflowRunDeps,
@@ -54,6 +55,7 @@ import {
 } from "../domain/workflows/workflow_lookup.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
+import type { RunCheckpointer } from "../domain/workflows/run_checkpointer.ts";
 import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver.ts";
 import { buildEnvContext } from "../domain/expressions/model_resolver.ts";
 import { CelEvaluator } from "../infrastructure/cel/cel_evaluator.ts";
@@ -124,6 +126,8 @@ export async function createWorkflowRunDeps(
      * is disabled), in which case libswamp's bridge is never constructed.
      */
     telemetrySink?: WorkflowTelemetrySink;
+    /** Commits each run's progress as it saves its record (swamp-club#3587). */
+    runCheckpointer?: RunCheckpointer;
   },
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
@@ -243,6 +247,9 @@ export async function createWorkflowRunDeps(
       service.runClaims = createWorkflowRunClaims(datastoreConfig);
       service.continuationClaims = repoContext.continuationClaims;
       service.runRecordCurrency = repoContext.runRecordCurrency;
+      if (options?.runCheckpointer !== undefined) {
+        service.runCheckpointer = options.runCheckpointer;
+      }
       return service;
     },
     catalogStore: repoContext.catalogStore,
@@ -519,13 +526,14 @@ export async function executeWorkflowWithLocks(
     )
     : undefined;
 
+  const runCheckpointer = new WorkflowRunCheckpointer(repoContext);
   const deps = await createWorkflowRunDeps(
     repoDir,
     repoContext,
     datastoreConfig,
     stepLockHook,
     runTracker,
-    { telemetrySink: runTelemetry?.sink },
+    { telemetrySink: runTelemetry?.sink, runCheckpointer },
   );
   const libCtx = createLibSwampContext({
     signal,
@@ -664,7 +672,13 @@ export async function executeWorkflowWithLocks(
       );
       await finishRunTelemetry(runTelemetry, failure);
     },
-  );
+  ).catch(async (error) => {
+    await runCheckpointer.restoreUncommittedRuns(
+      () => runTracker,
+      error,
+    );
+    throw error;
+  }).finally(() => runCheckpointer.close());
 }
 
 /**

@@ -57,6 +57,7 @@ import {
   localOwnerLiveness,
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -483,6 +484,8 @@ export const workflowResumeCommand = withRemoteOptions(
     service.continuationClaims = repoContext.continuationClaims;
     service.signalWaits = signalWaits;
     service.ownerLiveness = liveness;
+    const runCheckpointer = new WorkflowRunCheckpointer(repoContext);
+    service.runCheckpointer = runCheckpointer;
 
     const abort = new AbortController();
     const timeoutMs = options.timeout
@@ -639,7 +642,11 @@ export const workflowResumeCommand = withRemoteOptions(
           }
         },
       );
+    } catch (error) {
+      await runCheckpointer.restoreUncommittedRuns(() => runTracker, error);
+      throw error;
     } finally {
+      await runCheckpointer.close();
       shutdownHandle.dispose();
       exitSuppress.dispose();
       ephemeral.dispose();

@@ -48,6 +48,8 @@ function fakeEngine() {
       return createLegacyUnitOfWork(undefined, { flush: undefined });
     },
     hasOpenUnit: () => open > 0,
+    checkpointOpenUnit: () => Promise.resolve("no-unit"),
+    committedBeforeThrowing: () => false,
     async runRoot<T>(
       options: CommitLogRootRunOptions<T>,
       fn: (

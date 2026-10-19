@@ -82,7 +82,9 @@ const logger = getSwampLogger(["datastore", "unit-of-work"]);
  *   is what v2 publishes too. A use case that reaches an outcome before its
  *   stream reports it (a model method run cancelled by its signal, which
  *   saves its record and only then yields `cancelled`) calls
- *   {@link markOutcomeReported} as well (swamp-club#3299).
+ *   {@link markOutcomeReported} as well (swamp-club#3299). A workflow run
+ *   also checkpoints as it saves its record (swamp-club#3587), so
+ *   an abandon discards only what it wrote after its last checkpoint.
  * - **Nesting.** A use case run inside another opens its own unit, which is
  *   a child of the outer one when both are bound to the same hook; the
  *   innermost unit is ambient while it runs.

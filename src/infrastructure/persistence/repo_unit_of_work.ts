@@ -66,6 +66,16 @@ export interface CommitLogEngine {
   /** Whether a commit-log unit for this context is open around the call. */
   hasOpenUnit(): boolean;
   /**
+   * Commits, mid-operation, what the open unit around the call and its
+   * ancestors have staged so far, keeping them open (swamp-club#3587).
+   */
+  checkpointOpenUnit(): Promise<OpenUnitCheckpoint>;
+  /**
+   * Whether a root that threw `error` committed before it threw: a refusal
+   * settled with `onRefused` is thrown after the root commits.
+   */
+  committedBeforeThrowing(error: unknown): boolean;
+  /**
    * Runs `fn` in a commit-log root for this context and ends it as
    * `options.disposition` decides; see `runInCommitLogRoot`.
    */
@@ -74,6 +84,13 @@ export interface CommitLogEngine {
     fn: (root: CommitLogRootView) => Promise<T>,
   ): Promise<T>;
 }
+
+/**
+ * What {@link CommitLogEngine.checkpointOpenUnit} did: committed, found no
+ * open unit (or one whose root has ended) and committed nothing, or met a
+ * refused partition, which the root settles when it ends.
+ */
+export type OpenUnitCheckpoint = "committed" | "no-unit" | "refused";
 
 /** What a commit-log root gives the code it runs. */
 export interface CommitLogRootView
@@ -526,6 +543,28 @@ async function runInCommitLogEngineRoot<T>(
   ended = true;
   if (options.flush !== undefined) await options.flush({ completed: true });
   return value;
+}
+
+/**
+ * Commits, mid-operation, what the units open around the call over this
+ * context have staged so far (swamp-club#3587): `no-unit` on a v2 context,
+ * which commits nothing, and outside every unit.
+ */
+export async function checkpointOpenUnitOfWork(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+): Promise<OpenUnitCheckpoint> {
+  return await commitLogOf(repoContext)?.checkpointOpenUnit() ?? "no-unit";
+}
+
+/**
+ * Whether a root over this context that threw `error` committed before it
+ * threw (swamp-club#3587); always false on a v2 context.
+ */
+export function rootCommittedBeforeThrowing(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  error: unknown,
+): boolean {
+  return commitLogOf(repoContext)?.committedBeforeThrowing(error) ?? false;
 }
 
 /**

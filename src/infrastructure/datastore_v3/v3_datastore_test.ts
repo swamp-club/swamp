@@ -23,7 +23,12 @@ import {
   AutoDefinitionChanges,
   recordKeyOf,
 } from "../../domain/datastore_v3/repository_changes.ts";
-import type { CommitLogUnitOfWork } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  type CommitLogUnitOfWork,
+  PartitionsRefusedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { runInUnitOfWork } from "../persistence/unit_of_work_scope.ts";
 import { swampPath } from "../persistence/paths.ts";
 import {
   bindCommitLogEngine,
@@ -182,6 +187,55 @@ Deno.test("initializeV3Datastore: completes a fresh skeleton, and refuses a data
     }
     assertEquals(await isFreshV3Skeleton(dir), false);
     await assertRejects(() => initializeV3Datastore(dir, "test"));
+  });
+});
+
+Deno.test("openV3Datastore: an engine checkpoints the units open around the call, and counts no refusal it did not throw after a commit (swamp-club#3587)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await Deno.mkdir(dir);
+    await initializeV3Datastore(dir, "test");
+    const handle = openV3Datastore({
+      repoDir: join(root, "repo"),
+      datastorePath: dir,
+    });
+    try {
+      const engine = handle.engineFor(() => Promise.resolve(), () => {
+        throw new Error("no run repository needed");
+      });
+      assertEquals(await engine.checkpointOpenUnit(), "no-unit");
+      await engine.runRoot({}, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await runInUnitOfWork(unit, async () => {
+          await unit.stageOps([
+            new AutoDefinitionChanges(crypto.randomUUID()).write(
+              recordKeyOf(["auto-definitions", "x.yaml"]),
+              new TextEncoder().encode("x"),
+            ),
+          ]);
+          assertEquals(await engine.checkpointOpenUnit(), "committed");
+        });
+        // Landed while the root is still open.
+        assertEquals(await isFreshV3Skeleton(dir), false);
+        await unit.commit();
+      });
+
+      const refused = new PartitionsRefusedError([{
+        partition: partitionOf({
+          kind: "run",
+          workflowId: crypto.randomUUID(),
+          runId: crypto.randomUUID(),
+        }),
+        reason: "expect-failed",
+        message: "refused",
+        versions: [],
+      }], []);
+      // Only a refusal a root threw after its commit counts.
+      assertEquals(engine.committedBeforeThrowing(refused), false);
+      assertEquals(engine.committedBeforeThrowing(new Error("x")), false);
+    } finally {
+      await handle.close();
+    }
   });
 });
 

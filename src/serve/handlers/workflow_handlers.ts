@@ -185,6 +185,7 @@ import {
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
@@ -2385,6 +2386,7 @@ export async function handleWorkflowResume(
 
   const registry = ctx.activeRunRegistry;
   if (!registry) {
+    const runCheckpointer = new WorkflowRunCheckpointer(ctx.repoContext);
     // The root's flush is the post-resume push, on every outcome.
     await runInRootUnitOfWork(
       ctx.repoContext,
@@ -2434,6 +2436,7 @@ export async function handleWorkflowResume(
             ctx.datastoreConfig,
             stepLockHook,
             ctx.runTracker,
+            { runCheckpointer },
           );
 
           const resumeInputs = payload.inputs ?? {};
@@ -2546,7 +2549,13 @@ export async function handleWorkflowResume(
           }
         }
       },
-    );
+    ).catch(async (error) => {
+      await runCheckpointer.restoreUncommittedRuns(
+        () => ctx.runTracker,
+        error,
+      );
+      throw error;
+    }).finally(() => runCheckpointer.close());
     return;
   }
 

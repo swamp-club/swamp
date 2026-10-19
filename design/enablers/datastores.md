@@ -2107,9 +2107,30 @@ these.
    `interrupted` run does not commit through its own unit: the run's unit
    never ends that way, since shutdown and the reapers record it from
    another path.
+
+   Since swamp-club#3587 the run also checkpoints as it saves its record
+   (decision 6), so a run is committed up to its last checkpoint and
+   only the writes after it are discarded: by an early stop, a throw, a
+   refusal or a crash. A run whose consumer stops before an outcome
+   therefore stays committed as `running`, as v2 leaves its file; serve
+   lives on after a client disconnects, so such a run is settled when
+   serve restarts, as on v2.
 6. **Checkpoints.** `checkpoint()` commits each partition touched so far, in
    the order of decision 7, and keeps the unit open. Later changes to the
-   same partitions go into later commits.
+   same partitions go into later commits. A workflow run checkpoints as it
+   saves its record (`WorkflowRunCheckpointer`, swamp-club#3587): a save
+   checkpoints at once when none started in the last two seconds
+   (`RUN_CHECKPOINT_INTERVAL_MS`), and otherwise one trailing checkpoint
+   starts when that interval ends, so the latest save lands within about
+   two seconds and a crash loses at most that much of the run. One per save
+   would store the whole record each time, and the record grows with every
+   step: a 200-step run stored 80 MiB of chunks instead of 0.86 MiB
+   (`scripts/bench_v3_workflow_checkpoint.ts`). A checkpoint
+   (`checkpointFrom`) hands what the run's open units have staged up to the
+   root, and the root checkpoints. Each staged batch is whole, so a
+   checkpoint never splits a record; a batch a step still running has
+   staged commits with it, as its file is on disk on v2, and that step's
+   record says `running`.
 7. **No atomicity across partitions.** Each partition commits on its own. A
    workflow run that writes several behaviors commits the data partitions
    first and the run record last, so a run record never names data that has
@@ -2677,7 +2698,8 @@ the way `pushWhen` decides a legacy root's push: by default it commits when
 decision 5 for a workflow run: commit when the run ends `completed`,
 `failed`, `suspended` or `cancelled`, discard on a throw. A failed or
 cancelled run must resolve with its status, not throw, or its record is
-discarded. `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) ends a v3
+discarded, back to what its last checkpoint committed (decision 6).
+`withUnitOfWork` (`src/libswamp/unit_of_work.ts`) ends a v3
 unit, which `takesTypedChanges` tells apart, as decision 5 says
 (swamp-club#3257): it commits once the stream yields `completed`,
 `suspended`, `cancelled` or, since swamp-club#3279, a reported `error`,
@@ -4100,7 +4122,20 @@ leave every checkout with the same records.
 - *Recovery removes, it does not commit.* The run never completed, so its
   leftovers are removed rather than committed as recovered outputs, and the
   checkouts agree without the user doing anything: detection alone would
-  leave them disagreeing. The next command in that checkout recovers when the
+  leave them disagreeing. A workflow run is kept all the same
+  (swamp-club#3587): it checkpoints as it saves its record (decision 6 of
+  "v3 domain model"), so its record and its completed steps' data are
+  committed within about two seconds of each save, and the replay puts
+  them back. The run
+  comes back at its last checkpoint, `running`, with the step that was
+  running still `running`; only what it wrote after that checkpoint is
+  removed. `workflow recover`, `run doctor --fix` and serve's boot reaper
+  then settle it from the run tracker as on v2, and commit the
+  `interrupted` record, so every checkout sees it. A run whose last save
+  no checkpoint committed, because the root failed to commit at the end,
+  has its tracker row put back to `running` by its owner
+  (`restoreUncommittedRuns`), so the same settling finds it once the owner
+  is gone. The next command in that checkout recovers when the
   marker names a writer judged gone by **Writer liveness** (absent, a zombie,
   started at another time than the marker says, or this process's own pid
   under another token, as a restarted container's predecessor does), or a
