@@ -74,6 +74,7 @@ import { maskLiteralCalls, stripStringLiterals } from "./cel_string_lexer.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import type { SecretLoader } from "../vaults/secret_loader.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   CyclicDependencyError as TopoCyclicError,
@@ -1030,13 +1031,14 @@ export class ExpressionEvaluationService {
    * Resolves remaining runtime expressions (vault and env) in an already-evaluated definition.
    * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
    *
-   * Vault secrets are replaced with sentinel tokens. The returned VaultSecretBag
-   * maps sentinels to raw values, allowing the caller to resolve them appropriately:
+   * Vault secrets are replaced with sentinel tokens that stand for their
+   * references; no value is read. The caller's delivery loads the returned
+   * VaultSecretBag ({@link secretLoader}) and resolves through the loaded view:
    * - Non-shell contexts: VaultSecretBag.resolveDeep() for raw values
    * - Shell commands: VaultSecretBag.resolveForShell() for env var injection
    *
    * @param definition - The definition (may contain remaining ${{ vault.get(...) }} or ${{ env.* }} expressions)
-   * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
+   * @param redactor - Optional SecretRedactor for the value an existence probe reads
    * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
    * @param authored - Expressions the author wrote, collected from the pre-CEL
    *   source with {@link collectAuthoredExpressions}. Anything else in the
@@ -1121,11 +1123,22 @@ export class ExpressionEvaluationService {
   }
 
   /**
+   * A loader that reads vault.get() values at delivery through the vault
+   * service this evaluator's existence checks ask. A method boundary loads
+   * the step's bag with it (design/enablers/typed-secrets.md Section 3.3).
+   */
+  secretLoader(redactor: SecretRedactor | undefined): SecretLoader {
+    return this.modelResolver.secretLoader(redactor);
+  }
+
+  /**
    * Resolves remaining runtime expressions (vault and env) in arbitrary data.
    * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
    *
-   * When vault secrets are present, sentinels are resolved to raw values inline
-   * (no VaultSecretBag is returned). This is appropriate for non-shell data contexts.
+   * When vault secrets are present, sentinels are loaded and resolved to raw
+   * values inline (no VaultSecretBag is returned): each destination that
+   * receives this data takes the value today (design/enablers/typed-secrets.md
+   * Section 3.3). This is appropriate for non-shell data contexts.
    *
    * @param data - The data (may contain remaining runtime expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
@@ -1171,10 +1184,14 @@ export class ExpressionEvaluationService {
       provenance,
     );
 
-    // For the data path, resolve sentinels to raw values immediately
-    // since there's no shell context to worry about.
+    // For the data path, load and resolve sentinels to raw values
+    // immediately since there's no shell context to worry about.
     if (secretBag.resolvesAny) {
-      return secretBag.resolveDeep(resolved);
+      const loaded = await this.secretLoader(redactor).load(
+        secretBag,
+        resolved,
+      );
+      return loaded.resolveDeep(resolved);
     }
     return resolved;
   }
@@ -1234,10 +1251,15 @@ export class ExpressionEvaluationService {
       undefined,
       "unrestricted",
     );
-    // Legacy callers expect raw values, so resolve sentinels immediately
+    // Legacy callers expect raw values, so load and resolve sentinels
+    // immediately
     if (result.secretBag.resolvesAny) {
       const data = result.definition.toData();
-      const resolved = result.secretBag.resolveDeep(data);
+      const loaded = await this.secretLoader(undefined).load(
+        result.secretBag,
+        data,
+      );
+      const resolved = loaded.resolveDeep(data);
       return DefinitionClass.fromData(
         resolved as ReturnType<Definition["toData"]>,
       );
@@ -1320,10 +1342,13 @@ export class ExpressionEvaluationService {
     // Only the bindings an expression reads are resolved, so an unused
     // reference (a missing env var or vault key in another input) never
     // becomes a dependency of this expression. Resolved references are
-    // memoized, so re-substituting per expression is cheap.
+    // memoized, so re-substituting per expression is cheap. `location` is
+    // the authored expression being resolved, which a vault.get() in a
+    // deferred binding is reported at.
     const withBindings = async (
       ctx: ExpressionContext,
       cel: string,
+      location: string,
     ): Promise<ExpressionContext> => {
       const { inputs, self, run, steps } = ctx;
       return {
@@ -1332,6 +1357,7 @@ export class ExpressionEvaluationService {
           { inputs, self, run, steps },
           cel,
           bindingTreeProvenance(ctx),
+          location,
         ) as object,
       };
     };
@@ -1340,6 +1366,7 @@ export class ExpressionEvaluationService {
       bindings: unknown,
       cel: string,
       bindingMap: ProvenanceMap,
+      location: string,
     ): Promise<unknown> => {
       const read = referencedBindingPaths(cel);
       const values = new Map<string, unknown>();
@@ -1350,7 +1377,7 @@ export class ExpressionEvaluationService {
           !(expr.start !== undefined && expr.end !== undefined &&
             bindingMap.overlapsData(expr.path, expr.start, expr.end))
         ) {
-          values.set(expr.raw, await resolve(expr, context));
+          values.set(expr.raw, await resolve(expr, context, location));
         }
       }
       if (bindingMap.isAuthored) return replaceExpressions(bindings, values);
@@ -1364,6 +1391,7 @@ export class ExpressionEvaluationService {
     const resolve = async (
       expr: ExpressionLocation,
       ctx: ExpressionContext,
+      location: string = expr.path,
     ): Promise<unknown> => {
       const record = records.get(expr.raw);
       if (record) {
@@ -1378,6 +1406,7 @@ export class ExpressionEvaluationService {
           record.bindings,
           extractCelExpression(record.expression) ?? "",
           deferredBindingsProvenance(record),
+          location,
         ) as typeof record.bindings;
         // The parent's bindings carry the parent's provenance, never the
         // child's: a reference left in data there stays unresolved.
@@ -1397,6 +1426,7 @@ export class ExpressionEvaluationService {
             self: recordProvenance.subtree("self"),
             run: recordProvenance.subtree("run"),
           }),
+          location,
         );
         resolving.delete(expr.raw);
         resolvedReferences.set(expr.raw, value);
@@ -1404,15 +1434,21 @@ export class ExpressionEvaluationService {
       }
       if (isDeferredExpression(expr.celExpression)) return expr.raw;
       const celContext = records.size
-        ? await withBindings(ctx, expr.celExpression)
+        ? await withBindings(ctx, expr.celExpression, location)
         : ctx;
       let cel = expr.celExpression;
       if (containsVaultExpression(cel)) {
         cel = await this.modelResolver.resolveVaultExpressions(
           cel,
-          redactor,
           secretBag,
-          { celEvaluator: this.celEvaluator, context: celContext },
+          {
+            location,
+            redactor,
+            celOptions: {
+              celEvaluator: this.celEvaluator,
+              context: celContext,
+            },
+          },
         );
       }
       const validation = this.celEvaluator.validate(cel);

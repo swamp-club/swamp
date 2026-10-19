@@ -185,10 +185,14 @@ When `VaultService.get()` is called with refresh options configured:
    from stdout. Write the new value back via `provider.put()`, update
    `lastRefreshedAt`, and return the new value.
 4. If the command fails, or succeeds with empty stdout, log a warning and
-   return the stale value. An empty result is never written back.
+   return the stale value. An empty result is never written back. The warning
+   names the key and the vault, never the command's output or the error it
+   threw: a refresh command prints the secret it mints.
 
-This is invisible to callers: `vault.get()` in CEL expressions and workflows
-refreshes with no extra workflow code.
+This is invisible to callers: a `vault.get()` in CEL expressions and workflows
+refreshes when its value is loaded for delivery, with no extra workflow code.
+The existence check does not refresh: `has()` runs no hook, though a probe read
+of a provider without `has()` does.
 
 ### Refresh Hook CLI
 
@@ -356,10 +360,16 @@ In `vault.get(vault_name, key)`, `vault_name` names a configured vault and
 
 `vault.get` is not a CEL function. A regex matches it and substitutes it before
 CEL evaluation (`resolveVaultExpressions` in
-`src/domain/expressions/model_resolver.ts`). Each match is resolved through
-`VaultService.get()` and replaced with a sentinel string, or with an escaped
-literal when there is no secret bag. There is no `vault.put` expression. Writes
-go through `swamp vault put` or sensitive-field marking (below).
+`src/domain/expressions/model_resolver.ts`). Each match is checked and replaced
+with a sentinel string that stands for its vault and key; no value is read.
+The check (`checkSecretReference`) authorizes a read under the run's vault
+access, then asks the provider's `has()` where it has one, or makes one probe
+read whose value goes only to the run's redactor: a missing or unreadable key
+fails where the expression is evaluated. The value is read at delivery
+(`SecretLoader`, see
+[typed-secrets](../enablers/typed-secrets.md#33-loading-at-delivery)). There is
+no `vault.put` expression. Writes go through `swamp vault put` or
+sensitive-field marking (below).
 
 Arguments can be quoted literals or bare-token CEL expressions. Bare tokens
 containing `.` (e.g. `inputs.vaultName`) are evaluated as CEL against the
@@ -790,7 +800,11 @@ copy that executes, where recorded values inside the spliced result become
 sentinels from the step's own `VaultSecretBag`. Authored text around a splice is
 never examined. The bag is a view of the run's sentinel registry, so any
 sentinel the run issued resolves through it, while it issues only the values
-spliced into that step; remote dispatch ships those entries and the ones the
+spliced into that step. A `vault.get()` entry holds its reference and no value:
+the step's delivery loads it into a delivery view of the bag
+(`VaultSecretBag.withLoaded`), once per attempt, and that view is what the
+method, its pre-flight checks and the shell see as `context.vaultSecrets`.
+Remote dispatch ships the entries the attempt has values for and the ones the
 step's arguments reference, nothing from other steps. A step placed on a remote
 worker ships its bag and unresolved args with the dispatch, and the worker
 delivers the values the same way (see
@@ -950,20 +964,28 @@ For each vault expression:
 
 1. The vault name is resolved from repository configuration.
 2. The matching vault provider is created.
-3. The secret is fetched during expression evaluation.
-4. The value is put into the final data structure.
+3. When the expression is evaluated, the reference is checked and a sentinel
+   stands in for it.
+4. When a step delivers its arguments, the secret is loaded and put into the
+   data the consumer receives.
 
 ### Lazy Evaluation
 
-Secrets are fetched only when expressions are evaluated. This keeps credential
-use low, gives each workflow run fresh values, and surfaces errors at
-evaluation time.
+Secrets are read only when they are delivered: a step's arguments once per
+attempt, before its pre-flight checks, and each inline destination (placement,
+task selectors, child workflow references, assert messages) when it is
+resolved. A step a guard skips reads nothing. This keeps credential use low,
+gives each attempt fresh values, and the existence check still surfaces a
+missing or unreadable key at evaluation time.
 
 ### Caching Strategy
 
-- **No Caching**: secrets are not cached between workflow runs. Each
-  `vault.get` match is resolved separately through `VaultService.get()`
-  (`resolveVaultExpressions` in `src/domain/expressions/model_resolver.ts`).
+- **No value caching**: no value is cached, within a run or between runs. Each
+  delivery loads through `VaultService.get()` (`SecretLoader` in
+  `src/domain/vaults/secret_loader.ts`).
+- **Existence**: a reference the existence check confirmed is not asked again
+  in the same run (the run's `SecretBagRegistry` keeps the answer), but its
+  read is authorized on every check.
 
 ## Security Considerations
 

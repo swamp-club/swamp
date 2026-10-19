@@ -26,6 +26,12 @@
 // sentinel from an earlier pass would be delivered as literal text. The
 // constructor requires a registry, so the places that create one are the
 // whole story, and they are pinned here.
+//
+// A vault.get() value is read only at delivery (typed-secrets Section 3.3,
+// swamp-club#3562): the SecretLoader is the one place that reads a value for
+// delivery and builds the delivery view that holds it, so a new read path
+// cannot fill a bag before delivery, or around the loader's access scope and
+// redaction.
 
 import {
   assertPinnedSet,
@@ -67,5 +73,40 @@ Deno.test("secret bag registry: only the pinned production files create a regist
       "RunSensitiveValues (or sensitiveValuesOf(context)). Create a " +
       "registry only where a run begins, and add that file here with its " +
       "reason.",
+  );
+});
+
+/** Production files whose code, comments aside, matches `pattern`. */
+async function filesMatching(pattern: RegExp): Promise<string[]> {
+  const files: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const source = await Deno.readTextFile(filePath);
+    const code = source.split("\n").filter((line) => !isCommentLine(line))
+      .join("\n");
+    if (pattern.test(code)) files.push(repoRelative(filePath));
+  }
+  return files.sort();
+}
+
+const LOADER = ["src/domain/vaults/secret_loader.ts"];
+
+Deno.test("secret bag registry: only the secret loader builds a delivery view", async () => {
+  assertPinnedSet(
+    await filesMatching(/\.withLoaded\(/),
+    LOADER,
+    "VaultSecretBag.withLoaded call sites",
+    "A delivery view holds plaintext: build one only through " +
+      "SecretLoader.load at the delivery that receives it.",
+  );
+});
+
+Deno.test("secret bag registry: only the secret loader reads a vault.get value for delivery", async () => {
+  assertPinnedSet(
+    await filesMatching(/"expression:vault-resolve"/),
+    LOADER,
+    "Reads with the load purpose",
+    "Read a vault.get() value only through SecretLoader.load, which runs " +
+      "under the run's vault access and registers the value with the " +
+      "redactor; the existence check reads with PROBE_PURPOSE.",
   );
 });

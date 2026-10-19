@@ -54,10 +54,12 @@ Returns the name of this vault instance. This is the `name` parameter passed to
 ## VaultExistenceProvider (optional)
 
 A provider that can answer whether a secret exists without reading its value
-also implements `VaultExistenceProvider`. swamp detects it at run time. A
-provider without it is unaffected: the typed-secrets existence check gives it
-one probe read per reference per run instead, so implement `has` when a read has
-a cost or an effect (such as minting a dynamic credential).
+also implements `VaultExistenceProvider`. swamp detects it at run time. swamp
+reads a `vault.get()` value only when it delivers it, and checks each reference
+exists when the expression is evaluated. A provider without `has` still works:
+the check makes one probe read per reference per run, in addition to the read
+that delivers the value, so implement `has` when a read has a cost or an effect
+(such as minting a dynamic credential).
 
 ```typescript
 interface VaultExistenceProvider {

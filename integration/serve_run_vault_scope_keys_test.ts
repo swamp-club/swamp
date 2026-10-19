@@ -138,3 +138,37 @@ Deno.test({
       ],
     }),
 });
+
+Deno.test({
+  name:
+    "serve run vault scope keys: a key the principal can list but not read is refused when its reference is evaluated, before anything reads it",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      // bot may list erp, but not read its `password` key.
+      await runMethodAs(f, "ops", "ops", BOT, { vault: "erp" });
+      const [ops] = f.ops;
+      assertEquals(ops.list, "ok");
+      assertStringIncludes(ops.get, "Reading vault 'erp' is refused");
+
+      // erp-reader's argument is vault.get('erp', 'password'): the existence
+      // check refuses it as the eager read did, so nothing loads it and the
+      // method never runs.
+      const frames = await runMethodAs(f, "erp-reader", "read", BOT);
+      const message = methodError(frames) ?? "";
+      assertStringIncludes(
+        message,
+        "Failed to resolve vault expression vault.get('erp', 'password')",
+      );
+      assertStringIncludes(message, "Reading vault 'erp' is refused");
+      assertEquals(f.seen, []);
+    }, {
+      grants: [
+        ...runnerGrants("user:bot"),
+        withCondition(
+          grant("user:bot", "vault", "erp", ["read"]),
+          'key != "password"',
+        ),
+      ],
+    }),
+});

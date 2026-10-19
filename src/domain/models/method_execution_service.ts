@@ -84,6 +84,7 @@ import {
 } from "../behavior_wording.ts";
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
+import type { SecretLoader } from "../vaults/secret_loader.ts";
 
 /**
  * Filters data entries to only those belonging to declared resource specs.
@@ -153,12 +154,15 @@ export interface MethodExecutionService {
   ): Promise<MethodResult>;
 
   /**
-   * Executes a method through the full pipeline (workflow execution).
+   * Executes a method through the full pipeline (workflow execution). One
+   * call is one delivery attempt: it loads the vault references in the
+   * definition's global arguments and the method's arguments once.
    *
    * @param definition - The definition containing attributes
    * @param modelDef - The complete model definition (for accessing other methods)
    * @param methodName - Name of the method to execute
    * @param context - Execution context
+   * @param options - The loader for `context.vaultSecrets`
    * @returns The final method result
    */
   executeWorkflow(
@@ -166,7 +170,19 @@ export interface MethodExecutionService {
     modelDef: ModelDefinition,
     methodName: string,
     context: MethodContext,
+    options?: MethodDeliveryOptions,
   ): Promise<MethodResult>;
+}
+
+/** How one execution delivers the step's vault secrets. */
+export interface MethodDeliveryOptions {
+  /**
+   * Loads the vault references in the step's arguments at delivery. It is
+   * the loader of the evaluator whose runtime pass issued them, and is not
+   * part of the context a method or check receives. Without one, a vault
+   * reference the arguments carry fails at delivery.
+   */
+  secretLoader?: SecretLoader;
 }
 
 /**
@@ -615,6 +631,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     modelDef: ModelDefinition,
     methodName: string,
     context: MethodContext,
+    options: MethodDeliveryOptions = {},
   ): Promise<MethodResult> {
     return withSpan("swamp.model.method", {
       "model.name": definition.name,
@@ -701,9 +718,30 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
+      // Load the vault references this attempt delivers, once and before
+      // anything receives them (design/enablers/typed-secrets.md Section
+      // 3.3). From here on `context` is the attempt's: global argument
+      // validation, the pre-flight checks, the method, the shell and a
+      // remote dispatch all read its delivery view. The step's own bag stays
+      // unloaded, so the next attempt loads again; a step a guard skipped
+      // never gets here and loads nothing.
+      if (context.vaultSecrets?.resolvesAny && options.secretLoader) {
+        context = {
+          ...context,
+          vaultSecrets: await options.secretLoader.load(context.vaultSecrets, {
+            globalArguments: currentDefinition.globalArguments,
+            methodArguments: currentDefinition.getMethodArguments(methodName),
+          }),
+        };
+      }
+
       // Resolve vault sentinels in globalArguments before validation.
       // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
       // regex()) validate against actual secret values, not sentinel tokens.
+      // This writes values into `currentDefinition`, which is the caller's
+      // definition when no upgrade ran: every attempt starts from a freshly
+      // evaluated definition (a retry or resume evaluates again), so a value
+      // written here never reaches another attempt.
       const secretBag = context.vaultSecrets;
       if (secretBag?.resolvesAny) {
         const rawGlobal = currentDefinition.globalArguments;

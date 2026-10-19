@@ -49,22 +49,53 @@ export interface SecretBagEntry {
 }
 
 /**
+ * A vault.get() reference a pass issued. It holds no value: a load reads
+ * one at delivery, for that delivery attempt only.
+ */
+export interface VaultReferenceEntry {
+  sentinel: string;
+  reference: SecretReference;
+  encoding: "raw";
+  dataOrigin: false;
+  /** Where the author wrote the reference, for a load's errors. */
+  location: string;
+}
+
+/**
+ * A secret that reached a step through a data read. It keeps the value the
+ * read brought into the expression, until typed-secrets Phase 4 makes data
+ * reads return references too.
+ */
+export interface DataSecretEntry extends SecretBagEntry {
+  reference: SecretReference;
+  encoding: SecretEncoding;
+  dataOrigin: true;
+}
+
+/**
  * An entry a pass of a run issued. It answers its reference, its encoding
- * and its origin without reading its value. Every entry an orchestrator
+ * and its origin without reading a value. Every entry an orchestrator
  * issues is one; only a worker rebuilding a dispatched bag stores the plain
  * shape, because the dispatch carries no reference until typed-secrets
  * Phase 5.
  */
-export interface IssuedSecretBagEntry extends SecretBagEntry {
-  reference: SecretReference;
-  encoding: SecretEncoding;
-}
+export type IssuedSecretBagEntry = VaultReferenceEntry | DataSecretEntry;
+
+/** Any entry a registry holds. */
+export type RegistryEntry = IssuedSecretBagEntry | SecretBagEntry;
 
 /** Whether an entry carries its reference. */
 export function isIssuedEntry(
-  entry: SecretBagEntry,
+  entry: RegistryEntry,
 ): entry is IssuedSecretBagEntry {
   return "reference" in entry;
+}
+
+/** Whether an entry holds its value, which a vault reference never does. */
+export function holdsValue(
+  entry: RegistryEntry,
+): entry is SecretBagEntry | DataSecretEntry {
+  return "value" in entry;
 }
 
 /**
@@ -73,21 +104,48 @@ export function isIssuedEntry(
  * VaultSecretBag is a view of it: a bag issues under its own prefix and
  * resolves any sentinel the registry holds, so a sentinel issued in an
  * earlier pass is never delivered as literal text. A child run shares its
- * parent's registry, as it shares its parent's RunSensitiveValues.
+ * parent's registry, as it shares its parent's RunSensitiveValues. No
+ * vault.get() entry holds a value; each delivery loads its own.
  */
 export class SecretBagRegistry {
-  private readonly entries = new Map<string, SecretBagEntry>();
+  private readonly entries = new Map<string, RegistryEntry>();
   /** Each sentinel's position in issue order. */
   private readonly sequence = new Map<string, number>();
   private readonly prefixes = new Set<string>();
+  /** Each reference's existence answer: in flight, or confirmed. */
+  private readonly existence = new Map<string, Promise<void>>();
 
   /** Records a prefix a bag of this registry drew. */
   drawPrefix(prefix: string): void {
     this.prefixes.add(prefix);
   }
 
+  /**
+   * Answers whether `reference` exists once for this registry, so once for
+   * the run tree that shares it: `ask` runs for the first caller, and every
+   * caller while it is in flight shares its answer. A confirmation is kept;
+   * a rejection is dropped, so the next caller asks again. Authorization is
+   * the caller's to check on every call.
+   */
+  confirmExists(
+    reference: SecretReference,
+    ask: () => Promise<void>,
+  ): Promise<void> {
+    const id = `${reference.vaultName}\u0000${reference.key}`;
+    let answer = this.existence.get(id);
+    if (answer === undefined) {
+      const asked = Promise.resolve().then(ask).catch((error: unknown) => {
+        if (this.existence.get(id) === asked) this.existence.delete(id);
+        throw error;
+      });
+      answer = asked;
+      this.existence.set(id, answer);
+    }
+    return answer;
+  }
+
   /** Adds an entry. A sentinel is registered once; a repeat throws. */
-  register(entry: SecretBagEntry | IssuedSecretBagEntry): void {
+  register(entry: RegistryEntry): void {
     const parts = SENTINEL_PARTS.exec(entry.sentinel);
     if (!parts) {
       throw new Error("Malformed vault secret sentinel in secret bag entry");
@@ -101,7 +159,7 @@ export class SecretBagRegistry {
   }
 
   /** The entry behind a sentinel this registry holds. */
-  entryOf(sentinel: string): SecretBagEntry | undefined {
+  entryOf(sentinel: string): RegistryEntry | undefined {
     return this.entries.get(sentinel);
   }
 
@@ -136,7 +194,7 @@ export class SecretBagRegistry {
   }
 
   /** Every entry, in issue order. */
-  all(): IterableIterator<SecretBagEntry> {
+  all(): IterableIterator<RegistryEntry> {
     return this.entries.values();
   }
 }

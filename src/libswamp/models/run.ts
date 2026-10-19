@@ -82,7 +82,7 @@ import {
   methodArgumentPath,
   ProvenanceMap,
   routedGlobalProvenance,
-  sentinelResolverOf,
+  sentinelStandInOf,
 } from "../../domain/expressions/provenance_map.ts";
 import { attachBindingProvenance } from "../../domain/expressions/splice_origin.ts";
 import {
@@ -802,8 +802,8 @@ export async function* modelMethodRun(
                 rawProvenance,
                 evaluatedDefinition.toData(),
                 executedDefinition.toData(),
-                sentinelResolverOf(stepSecretBag),
-                sentinelResolverOf(stepSecretBag),
+                sentinelStandInOf(stepSecretBag.registry),
+                sentinelStandInOf(stepSecretBag.registry),
               );
               for (const expression of lastEval.authoredExpressions) {
                 authoredExpressions.add(expression);
@@ -1213,6 +1213,7 @@ export async function* modelMethodRun(
                         },
                       },
                     ),
+                    { secretLoader: evaluationService.secretLoader(redactor) },
                   ),
               );
             } catch (error) {

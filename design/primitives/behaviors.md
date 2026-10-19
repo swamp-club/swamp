@@ -555,7 +555,8 @@ action limits.
 **Vault isolation:** The caller's `VaultSecretBag` is not passed to the nested
 behavior. Each nested execution evaluates its target definition's CEL and
 runtime (`vault.get`, `env`) expressions as a standalone run of that definition
-does, into its own bag, within the caller's vault access scope: a workflow's
+does, into its own bag, which its own delivery loads, within the caller's vault
+access scope: a workflow's
 `vaults` list and a serve principal's grants still apply. The evaluated
 definition is not persisted. Wherever the standalone run would fail — a refused
 vault, a missing key, a failed expression in the invoked method's arguments —
@@ -678,6 +679,12 @@ with two differences:
   over filtered global arguments. Global args containing unresolved `${{ }}`
   expressions are excluded. This lets per-method checks confirm that required
   arguments are present before execution begins.
+
+The step's `vault.get()` values are loaded once per attempt, before the
+checks run, and the checks and the method share that loaded bag as
+`context.vaultSecrets`: `globalArgs` holds the values, while
+`unresolvedMethodArgs` keeps the sentinels. A load that fails fails the step
+before any check runs (design/enablers/typed-secrets.md Section 3.3).
 
 ```typescript
 // Example: validate a method argument in a pre-flight check

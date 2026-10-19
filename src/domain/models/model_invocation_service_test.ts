@@ -38,6 +38,7 @@ import { Definition } from "../definitions/definition.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import { SecretLoader } from "../vaults/secret_loader.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
 import {
   RunVaultAccess,
@@ -67,6 +68,9 @@ const passthroughEvaluator: Evaluator = {
       definition,
       secretBag: new VaultSecretBag(new SecretBagRegistry()),
     }),
+  // Nothing is issued, so nothing is loaded.
+  secretLoader: () =>
+    new SecretLoader(() => Promise.resolve(new VaultService())),
 };
 
 function makeStubContext(

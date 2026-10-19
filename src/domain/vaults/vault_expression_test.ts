@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { UserError } from "../errors.ts";
+import { SecretBagRegistry } from "./secret_bag_registry.ts";
+import { VaultSecretBag } from "./vault_secret_bag.ts";
 import { VaultService } from "./vault_service.ts";
 import { ModelResolver } from "../expressions/model_resolver.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -105,156 +108,119 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     return new ModelResolver(definitionRepo, { vaultService });
   }
 
-  await t.step("should resolve basic vault expression", async () => {
-    const resolver = createResolverWithMockVault({ "api-key": "secret123" });
-    const result = await resolver.resolveVaultExpressions(
+  /**
+   * Rewrites `expression` with a fresh bag, then loads it as a delivery
+   * does: `cel` is the rewritten CEL, `sentinels` the sentinels it holds and
+   * `delivered` the value each one delivers.
+   */
+  async function resolveAndLoad(resolver: ModelResolver, expression: string) {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
+    const cel = await resolver.resolveVaultExpressions(expression, bag, {
+      location: "methods.run.arguments.cmd",
+    });
+    const sentinels = cel.match(VaultSecretBag.SENTINEL_PATTERN) ?? [];
+    const loaded = await resolver.secretLoader().load(bag, cel);
+    return {
+      cel,
+      sentinels,
+      delivered: sentinels.map((s) => loaded.resolveRaw(s)),
+    };
+  }
+
+  /** Each quoting of the vault and key resolves the same reference. */
+  for (
+    const expression of [
       "vault.get(test-vault, api-key)",
-    );
-    assertEquals(result, '"secret123"');
-  });
-
-  await t.step(
-    "should resolve vault expression with single quotes",
-    async () => {
-      const resolver = createResolverWithMockVault({ "api-key": "secret123" });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get('test-vault', 'api-key')",
-      );
-      assertEquals(result, '"secret123"');
-    },
-  );
-
-  await t.step(
-    "should resolve vault expression with double quotes",
-    async () => {
-      const resolver = createResolverWithMockVault({ "api-key": "secret123" });
-      const result = await resolver.resolveVaultExpressions(
-        'vault.get("test-vault", "api-key")',
-      );
-      assertEquals(result, '"secret123"');
-    },
-  );
-
-  await t.step("should resolve vault expression with backticks", async () => {
-    const resolver = createResolverWithMockVault({ "api-key": "secret123" });
-    const result = await resolver.resolveVaultExpressions(
+      "vault.get('test-vault', 'api-key')",
+      'vault.get("test-vault", "api-key")',
       "vault.get(`test-vault`, `api-key`)",
-    );
-    assertEquals(result, '"secret123"');
-  });
+      "vault.get(  test-vault  ,  api-key  )",
+    ]
+  ) {
+    await t.step(`replaces ${expression} with a sentinel`, async () => {
+      const resolver = createResolverWithMockVault({ "api-key": "secret123" });
+      const { cel, sentinels, delivered } = await resolveAndLoad(
+        resolver,
+        expression,
+      );
+      assertEquals(sentinels.length, 1);
+      assertEquals(cel, `"${sentinels[0]}"`);
+      assertEquals(delivered, ["secret123"]);
+    });
+  }
 
   await t.step("should resolve multiple vault expressions", async () => {
     const resolver = createResolverWithMockVault({
       "key1": "value1",
       "key2": "value2",
     });
-    const result = await resolver.resolveVaultExpressions(
+    const { cel, sentinels, delivered } = await resolveAndLoad(
+      resolver,
       'vault.get(test-vault, key1) + "-" + vault.get(test-vault, key2)',
     );
-    assertEquals(result, '"value1" + "-" + "value2"');
+    assertEquals(cel, `"${sentinels[0]}" + "-" + "${sentinels[1]}"`);
+    assertEquals(delivered, ["value1", "value2"]);
   });
 
-  await t.step("should escape double quotes in secret values", async () => {
-    const resolver = createResolverWithMockVault({
-      "json-secret": '{"key": "value"}',
-    });
-    const result = await resolver.resolveVaultExpressions(
-      "vault.get(test-vault, json-secret)",
+  // No value enters the CEL text, so no character of it needs escaping
+  // there; the load delivers it exactly. Shell safety is handled by the
+  // shell model via VaultSecretBag.resolveForShell().
+  for (
+    const value of [
+      '{"key": "value"}',
+      "C:\\Users\\test",
+      "line1\nline2\r\nline3",
+      "col1\tcol2\tcol3",
+      "p@ss'w0rd",
+      "value`with`backticks",
+      'line1\nkey="val\\ue"\ttab',
+      "my$&secret",
+      "prefix$`suffix",
+      "prefix$'suffix",
+      "cost: $$100",
+      "$1$2$3",
+      "a]$&b$`c$'d$$e$1f",
+      "$(echo injected)",
+      "`echo injected`",
+    ]
+  ) {
+    await t.step(
+      `delivers ${JSON.stringify(value)} exactly, outside the CEL text`,
+      async () => {
+        const resolver = createResolverWithMockVault({ "special": value });
+        const { cel, sentinels, delivered } = await resolveAndLoad(
+          resolver,
+          "vault.get(test-vault, special)",
+        );
+        assertEquals(cel, `"${sentinels[0]}"`);
+        assertEquals(delivered, [value]);
+      },
     );
-    assertEquals(result, '"{\\"key\\": \\"value\\"}"');
-  });
-
-  await t.step("should escape backslashes in secret values", async () => {
-    const resolver = createResolverWithMockVault({
-      "path-secret": "C:\\Users\\test",
-    });
-    const result = await resolver.resolveVaultExpressions(
-      "vault.get(test-vault, path-secret)",
-    );
-    assertEquals(result, '"C:\\\\Users\\\\test"');
-  });
-
-  await t.step("should escape newlines in secret values", async () => {
-    const resolver = createResolverWithMockVault({
-      "multiline-secret": "line1\nline2\r\nline3",
-    });
-    const result = await resolver.resolveVaultExpressions(
-      "vault.get(test-vault, multiline-secret)",
-    );
-    assertEquals(result, '"line1\\nline2\\r\\nline3"');
-  });
-
-  await t.step("should escape tabs in secret values", async () => {
-    const resolver = createResolverWithMockVault({
-      "tabbed-secret": "col1\tcol2\tcol3",
-    });
-    const result = await resolver.resolveVaultExpressions(
-      "vault.get(test-vault, tabbed-secret)",
-    );
-    assertEquals(result, '"col1\\tcol2\\tcol3"');
-  });
-
-  await t.step("should escape single quotes in secret values", async () => {
-    const resolver = createResolverWithMockVault({
-      "quote-secret": "p@ss'w0rd",
-    });
-    const result = await resolver.resolveVaultExpressions(
-      "vault.get(test-vault, quote-secret)",
-    );
-    assertEquals(result, '"p@ss\\\'w0rd"');
-  });
-
-  await t.step("should pass backticks through in secret values", async () => {
-    const resolver = createResolverWithMockVault({
-      "backtick-secret": "value`with`backticks",
-    });
-    const result = await resolver.resolveVaultExpressions(
-      "vault.get(test-vault, backtick-secret)",
-    );
-    // Backticks have no special meaning in CEL strings — passed through as-is.
-    // Shell safety is handled by the shell model via VaultSecretBag.resolveForShell().
-    assertEquals(result, '"value`with`backticks"');
-  });
-
-  await t.step(
-    "should handle complex secret with multiple special characters",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "complex-secret": 'line1\nkey="val\\ue"\ttab',
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, complex-secret)",
-      );
-      assertEquals(result, '"line1\\nkey=\\"val\\\\ue\\"\\ttab"');
-    },
-  );
+  }
 
   await t.step(
     "should return unchanged string with no vault expressions",
     async () => {
       const resolver = createResolverWithMockVault({});
       const input = "just a regular string with no vault calls";
-      const result = await resolver.resolveVaultExpressions(input);
+      const result = await resolver.resolveVaultExpressions(
+        input,
+        new VaultSecretBag(new SecretBagRegistry()),
+        { location: "test" },
+      );
       assertEquals(result, input);
     },
   );
 
-  await t.step("should handle whitespace in vault expression", async () => {
-    const resolver = createResolverWithMockVault({ "api-key": "secret123" });
-    const result = await resolver.resolveVaultExpressions(
-      "vault.get(  test-vault  ,  api-key  )",
-    );
-    assertEquals(result, '"secret123"');
-  });
-
   await t.step("should throw error for missing vault", async () => {
     const resolver = createResolverWithMockVault({});
     const error = await assertRejects(
-      () => resolver.resolveVaultExpressions("vault.get(missing-vault, key)"),
+      () => resolveAndLoad(resolver, "vault.get(missing-vault, key)"),
       Error,
     );
     assertStringIncludes(error.message, "Failed to resolve vault expression");
     assertStringIncludes(error.message, "vault.get(missing-vault, key)");
+    assertStringIncludes(error.message, "Vault 'missing-vault' not found");
   });
 
   await t.step(
@@ -262,7 +228,7 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     async () => {
       const resolver = createResolverWithMockVault({});
       const error = await assertRejects(
-        () => resolver.resolveVaultExpressions("vault.get(missing-vault, key)"),
+        () => resolveAndLoad(resolver, "vault.get(missing-vault, key)"),
         Error,
       );
       assertEquals(error.message.includes("\n"), false);
@@ -273,122 +239,17 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
   await t.step("should throw error for missing secret key", async () => {
     const resolver = createResolverWithMockVault({ "existing-key": "value" });
     const error = await assertRejects(
-      () =>
-        resolver.resolveVaultExpressions("vault.get(test-vault, missing-key)"),
-      Error,
+      () => resolveAndLoad(resolver, "vault.get(test-vault, missing-key)"),
+      UserError,
     );
     assertStringIncludes(error.message, "Failed to resolve vault expression");
     assertStringIncludes(error.message, "vault.get(test-vault, missing-key)");
+    assertStringIncludes(
+      error.message,
+      "Secret 'missing-key' not found in vault 'test-vault' (at methods.run.arguments.cmd)",
+    );
+    assertEquals(error.code, "secret_reference_unavailable");
   });
-
-  // The following tests verify that $ and ` are passed through as-is in CEL strings.
-  // These characters have no special meaning in CEL. Shell safety is now handled
-  // by VaultSecretBag.resolveForShell() in the shell model, not by escaping here.
-
-  await t.step(
-    "should pass $ through in secret values (CEL-safe)",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "dollar-amp": "my$&secret",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, dollar-amp)",
-      );
-      assertEquals(result, '"my$&secret"');
-    },
-  );
-
-  await t.step(
-    "should pass $` pattern through in secret values",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "dollar-backtick": "prefix$`suffix",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, dollar-backtick)",
-      );
-      assertEquals(result, '"prefix$`suffix"');
-    },
-  );
-
-  await t.step(
-    "should pass $' pattern through and escape single quote for CEL",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "dollar-quote": "prefix$'suffix",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, dollar-quote)",
-      );
-      assertEquals(result, '"prefix$\\\'suffix"');
-    },
-  );
-
-  await t.step(
-    "should pass $$ pattern through in secret values",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "dollar-dollar": "cost: $$100",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, dollar-dollar)",
-      );
-      assertEquals(result, '"cost: $$100"');
-    },
-  );
-
-  await t.step(
-    "should pass numbered dollar patterns through in secret values",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "dollar-numbers": "$1$2$3",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, dollar-numbers)",
-      );
-      assertEquals(result, '"$1$2$3"');
-    },
-  );
-
-  await t.step(
-    "should pass multiple dollar and backtick patterns through",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "multi-dollar": "a]$&b$`c$'d$$e$1f",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, multi-dollar)",
-      );
-      // Only ' is escaped (CEL safety), $ and ` pass through
-      assertEquals(result, '"a]$&b$`c$\\\'d$$e$1f"');
-    },
-  );
-
-  await t.step(
-    "should pass $() through in secret values (shell safety via env vars)",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "cmd-secret": "$(echo injected)",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, cmd-secret)",
-      );
-      assertEquals(result, '"$(echo injected)"');
-    },
-  );
-
-  await t.step(
-    "should pass backtick commands through in secret values (shell safety via env vars)",
-    async () => {
-      const resolver = createResolverWithMockVault({
-        "backtick-cmd": "`echo injected`",
-      });
-      const result = await resolver.resolveVaultExpressions(
-        "vault.get(test-vault, backtick-cmd)",
-      );
-      assertEquals(result, '"`echo injected`"');
-    },
-  );
 
   // ========================================================================
   // Spaces in quoted vault names and secret keys (#902)
@@ -400,10 +261,11 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const resolver = createResolverWithMockVault({
         "Client ID": "my-client-id",
       });
-      const result = await resolver.resolveVaultExpressions(
+      const { delivered } = await resolveAndLoad(
+        resolver,
         'vault.get("test-vault", "Client ID")',
       );
-      assertEquals(result, '"my-client-id"');
+      assertEquals(delivered, ["my-client-id"]);
     },
   );
 
@@ -413,10 +275,11 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const resolver = createResolverWithMockVault({
         "Client Secret": "super-secret",
       });
-      const result = await resolver.resolveVaultExpressions(
+      const { delivered } = await resolveAndLoad(
+        resolver,
         "vault.get('test-vault', 'Client Secret')",
       );
-      assertEquals(result, '"super-secret"');
+      assertEquals(delivered, ["super-secret"]);
     },
   );
 
@@ -426,10 +289,11 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const resolver = createResolverWithMockVault({
         "Tailscale K8s Operator/Client ID": "ts-client-id-123",
       });
-      const result = await resolver.resolveVaultExpressions(
+      const { delivered } = await resolveAndLoad(
+        resolver,
         'vault.get("test-vault", "Tailscale K8s Operator/Client ID")',
       );
-      assertEquals(result, '"ts-client-id-123"');
+      assertEquals(delivered, ["ts-client-id-123"]);
     },
   );
 
@@ -439,10 +303,11 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const resolver = createResolverWithNamedVaults({
         "my infra vault": { "api-key": "infra-key-456" },
       });
-      const result = await resolver.resolveVaultExpressions(
+      const { delivered } = await resolveAndLoad(
+        resolver,
         'vault.get("my infra vault", "api-key")',
       );
-      assertEquals(result, '"infra-key-456"');
+      assertEquals(delivered, ["infra-key-456"]);
     },
   );
 
@@ -452,10 +317,11 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const resolver = createResolverWithNamedVaults({
         "my infra vault": { "Client Secret": "both-spaces-val" },
       });
-      const result = await resolver.resolveVaultExpressions(
+      const { delivered } = await resolveAndLoad(
+        resolver,
         'vault.get("my infra vault", "Client Secret")',
       );
-      assertEquals(result, '"both-spaces-val"');
+      assertEquals(delivered, ["both-spaces-val"]);
     },
   );
 
@@ -465,10 +331,11 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const resolver = createResolverWithNamedVaults({
         "my infra vault": { "api-key": "mixed-val" },
       });
-      const result = await resolver.resolveVaultExpressions(
+      const { delivered } = await resolveAndLoad(
+        resolver,
         'vault.get("my infra vault", api-key)',
       );
-      assertEquals(result, '"mixed-val"');
+      assertEquals(delivered, ["mixed-val"]);
     },
   );
 

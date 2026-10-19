@@ -1385,8 +1385,10 @@ windowsOnlyTest(
   "shellModel.methods.execute (powershell): preserves vault metacharacters",
   async () => {
     const secret = "pass;rm -rf /|cat /etc/passwd&whoami";
-    const vaultSecrets = new VaultSecretBag(new SecretBagRegistry());
-    const sentinel = vaultSecrets.addSecret(secret, REF);
+    // The shell receives the delivery view the method boundary loaded.
+    const bag = new VaultSecretBag(new SecretBagRegistry());
+    const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+    const vaultSecrets = bag.withLoaded(new Map([[sentinel, secret]]));
     const { context, getResults } = createTestContext({
       vaultSecrets,
       unresolvedMethodArgs: { run: `Write-Output ${sentinel}` },

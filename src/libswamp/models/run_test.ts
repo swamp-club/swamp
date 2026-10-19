@@ -43,6 +43,8 @@ import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
+import { SecretLoader } from "../../domain/vaults/secret_loader.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
@@ -156,6 +158,9 @@ function createFakeEvaluationService(): any {
         secretBag: new VaultSecretBag(new SecretBagRegistry()),
       }),
     resolveRuntimeExpressionsInData: (data: unknown) => Promise.resolve(data),
+    // The fake execution service delivers nothing, so nothing is loaded.
+    secretLoader: () =>
+      new SecretLoader(() => Promise.resolve(new VaultService())),
   };
 }
 

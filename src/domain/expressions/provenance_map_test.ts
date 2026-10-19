@@ -29,7 +29,7 @@ import {
   ProvenanceMap,
   routedGlobalProvenance,
   sentinelIdentityOf,
-  sentinelResolverOf,
+  sentinelStandInOf,
 } from "./provenance_map.ts";
 import { sensitiveSpliceSanitizer } from "./splice_pair.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
@@ -319,7 +319,7 @@ Deno.test("alignStrings: sentinels resolve through the bag, so authored text bet
     raw,
     sanitized,
     undefined,
-    sentinelResolverOf(bag),
+    sentinelStandInOf(bag.registry),
   );
   const env = sanitized.indexOf("${{ env.A }}");
   assertEquals(
@@ -493,7 +493,7 @@ Deno.test("alignStrings: a sentinel and its rehomed copy align by what they refe
     vaultName: "v",
     key: "a",
   });
-  const two = workflowBag.addSecret("pw2", { vaultName: "v", key: "b" });
+  const two = workflowBag.addSecret({ vaultName: "v", key: "b" }, "inputs.b");
   const overlay = `${one} \${{ env.A }} ${two}`;
   const rehomed = workflowBag.rehomeSentinels(overlay, stepBag) as string;
   assertEquals(rehomed !== overlay, true);
@@ -534,7 +534,7 @@ Deno.test("alignStrings: resolving both copies keeps a sentinel from an earlier 
     [10, 10 + early.length],
     [raw.length - 7, raw.length],
   ] as const;
-  const resolve = sentinelResolverOf(stepBag);
+  const resolve = sentinelStandInOf(stepBag.registry);
   const aligned = alignStrings(ranges, raw, sanitized, resolve, resolve);
   assertEquals(aligned, [
     [0, late.length],
@@ -545,4 +545,34 @@ Deno.test("alignStrings: resolving both copies keeps a sentinel from an earlier 
   // treats the whole differing span, authored text included, as data.
   const oneSided = alignStrings(ranges, raw, sanitized, undefined, resolve);
   assertEquals(oneSided, [[0, sanitized.length]]);
+});
+
+Deno.test("sentinelStandInOf: a data sentinel stands in for its value and a vault reference for its identity, with no value read", () => {
+  const registry = new SecretBagRegistry();
+  const workflowBag = new VaultSecretBag(registry);
+  const stepBag = new VaultSecretBag(registry);
+  const vault = workflowBag.addSecret({ vaultName: "v", key: "b" }, "inputs.b");
+  const twin = workflowBag.rehomeSentinels(vault, stepBag) as string;
+  const data = stepBag.addDataSecret("pw1secret", REF);
+  const standIn = sentinelStandInOf(registry);
+  assertEquals(standIn(data), "pw1secret");
+  assertEquals(standIn(vault), standIn(twin));
+  assertEquals(standIn(vault), sentinelIdentityOf(registry)(vault));
+  assertEquals(standIn("__SWAMP_VSEC_" + "0".repeat(32) + "_0__"), undefined);
+
+  // The raw copy holds the data value and the earlier vault sentinel; the
+  // sanitized copy holds the data sentinel and the vault sentinel's twin.
+  const raw = `pw1secret \${{ env.A }} ${vault}`;
+  const sanitized = `${data} \${{ env.A }} ${twin}`;
+  const aligned = alignStrings(
+    [[0, 9], [raw.length - vault.length, raw.length]],
+    raw,
+    sanitized,
+    standIn,
+    standIn,
+  );
+  assertEquals(aligned, [
+    [0, data.length],
+    [sanitized.length - twin.length, sanitized.length],
+  ]);
 });

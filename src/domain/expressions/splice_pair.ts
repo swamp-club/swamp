@@ -25,7 +25,7 @@ import {
   type SpliceOrigin,
   type SpliceSanitizer,
 } from "./expression_parser.ts";
-import { ProvenanceMap, sentinelResolverOf } from "./provenance_map.ts";
+import { ProvenanceMap, sentinelStandInOf } from "./provenance_map.ts";
 
 /**
  * Whether a path in a definition's data holds an argument that reaches the
@@ -57,7 +57,7 @@ export function sensitiveSpliceSanitizer(
         : value,
     embedded: (text, path) =>
       applies(path) ? bag.sentinelizeText(text, sensitiveValues.list()) : text,
-    resolve: sentinelResolverOf(bag),
+    resolve: sentinelStandInOf(bag.registry),
   };
 }
 

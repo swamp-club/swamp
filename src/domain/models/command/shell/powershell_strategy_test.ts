@@ -70,9 +70,10 @@ Deno.test("PowerShellStrategy.buildInvocation: passes command through verbatim a
 Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to quoted $env:VAR outside quotes", () => {
   const strategy = new PowerShellStrategy();
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const sentinel = bag.addSecret("secret-value", REF);
+  const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+  const loaded = bag.withLoaded(new Map([[sentinel, "secret-value"]]));
 
-  const resolved = strategy.resolveSecrets(`Write-Output ${sentinel}`, bag);
+  const resolved = strategy.resolveSecrets(`Write-Output ${sentinel}`, loaded);
 
   // Outside quotes: wrap in double quotes so PowerShell's argument
   // splitting on whitespace doesn't break the value when it's passed
@@ -84,11 +85,12 @@ Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to quoted $env:V
 Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to bare $env:VAR inside double quotes", () => {
   const strategy = new PowerShellStrategy();
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const sentinel = bag.addSecret("token-xyz", REF);
+  const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+  const loaded = bag.withLoaded(new Map([[sentinel, "token-xyz"]]));
 
   const resolved = strategy.resolveSecrets(
     `Write-Output "auth: ${sentinel}"`,
-    bag,
+    loaded,
   );
 
   // Inside double quotes: PowerShell already interpolates `$env:VAR`
@@ -100,12 +102,13 @@ Deno.test("PowerShellStrategy.resolveSecrets: rewrites sentinel to bare $env:VAR
 Deno.test("PowerShellStrategy.resolveSecrets: handles multiple secrets", () => {
   const strategy = new PowerShellStrategy();
   const bag = new VaultSecretBag(new SecretBagRegistry());
-  const s1 = bag.addSecret("user", REF);
-  const s2 = bag.addSecret("pass", REF);
+  const s1 = bag.addSecret(REF, "methods.execute.arguments.run");
+  const s2 = bag.addSecret(REF, "methods.execute.arguments.run");
+  const loaded = bag.withLoaded(new Map([[s1, "user"], [s2, "pass"]]));
 
   const resolved = strategy.resolveSecrets(
     `Connect-Service -User ${s1} -Password ${s2}`,
-    bag,
+    loaded,
   );
 
   assertEquals(

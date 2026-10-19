@@ -251,10 +251,7 @@ Deno.test("rehydratePersistedForm: sentinels only where a fresh run sanitizes, r
 Deno.test("toPersistedForm: a vault.get sentinel is written as its reference from its entry, with no recorded value", () => {
   const values = new RunSensitiveValues();
   const bag = new VaultSecretBag(values.sentinels);
-  const sentinel = bag.addSecret("vault-value", {
-    vaultName: "prod",
-    key: "k",
-  });
+  const sentinel = bag.addSecret({ vaultName: "prod", key: "k" }, "run");
   const form = toPersistedForm({ run: `echo ${sentinel}` }, values, {
     applies: () => false,
   });
@@ -287,7 +284,7 @@ Deno.test("toPersistedForm: a JSON-encoded data sentinel keeps its encoding from
 Deno.test("toPersistedForm: a sentinel with a prefix of this run but no entry fails the write", () => {
   const values = new RunSensitiveValues();
   const bag = new VaultSecretBag(values.sentinels);
-  const issued = bag.addSecret("x", source);
+  const issued = bag.addSecret(source, "run");
   const unknown = issued.replace(/_\d+__$/, "_999__");
   assertThrows(
     () => toPersistedForm({ run: unknown }, values, { applies: everywhere }),
@@ -298,7 +295,7 @@ Deno.test("toPersistedForm: a sentinel with a prefix of this run but no entry fa
 
 Deno.test("toPersistedForm: sentinel-shaped text with another prefix is written as data", () => {
   const values = recorded();
-  new VaultSecretBag(values.sentinels).addSecret("x", source);
+  new VaultSecretBag(values.sentinels).addSecret(source, "run");
   const foreign = `__SWAMP_VSEC_${"f".repeat(32)}_0__`;
   const form = toPersistedForm(
     { run: `${foreign} ${secret}` },
@@ -350,6 +347,7 @@ Deno.test("rehydratePersistedForm: an issued sentinel carries the written entry'
     dataOrigin: true,
   });
   assertEquals(values.sentinels.issuedEntryOf(bodySentinel)?.encoding, "json");
-  assertEquals(values.sentinels.issuedEntryOf(bodySentinel)?.value, 'p\\"w');
+  const bodyEntry = values.sentinels.issuedEntryOf(bodySentinel);
+  assertEquals(bodyEntry?.dataOrigin && bodyEntry.value, 'p\\"w');
   assertEquals(JSON.parse(bag.resolveRaw(restored.sanitized.body)).k, 'p"w');
 });

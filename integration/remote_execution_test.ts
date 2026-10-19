@@ -723,19 +723,25 @@ function checkValue(word: string, secret: string, label: string): string {
 }
 
 /**
- * A command/shell dispatch built the way #executeRemotely builds it: the
- * resolved args always, and with `shipBag` the unresolved args and the
- * step's bag beside them.
+ * A command/shell dispatch built the way #executeRemotely builds it, from
+ * the bag its load filled: the resolved args always, and with `shipBag` the
+ * unresolved args and the step's bag beside them.
  */
 function shellStepRequest(
   shipBag: boolean,
   onEvent?: (event: RpcStreamEvent) => void,
 ) {
-  const bag = new VaultSecretBag(new SecretBagRegistry());
-  const vaultSentinel = bag.addSecret(VAULT_SECRET, REF);
-  const dataSentinel = bag.addDataSecret(DATA_SECRET, REF);
+  const step = new VaultSecretBag(new SecretBagRegistry());
+  const vaultSentinel = step.addSecret(REF, "methods.execute.arguments.run");
+  const dataSentinel = step.addDataSecret(DATA_SECRET, REF);
   // Kept separate so only this secret's single-quoted use raises the warning.
-  const quotedSentinel = bag.addSecret("quoted-s3cret-value", REF);
+  const quotedSentinel = step.addSecret(REF, "methods.execute.arguments.run");
+  const bag = step.withLoaded(
+    new Map([
+      [vaultSentinel, VAULT_SECRET],
+      [quotedSentinel, "quoted-s3cret-value"],
+    ]),
+  );
   const unresolved = {
     run: `echo STEP=secrets; ` +
       `${checkValue(`"${vaultSentinel}"`, VAULT_SECRET, "VAULT")}; ` +
