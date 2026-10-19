@@ -105,6 +105,15 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE outbox_entries ADD COLUMN writer_process TEXT;
   ALTER TABLE outbox_entries ADD COLUMN left_at_fence INTEGER;
   `,
+  // 2 → 3 (swamp-club#3586): when a unit gave an entry up, which recovery
+  // honours whatever the writer's state, and the fence a writer noted as
+  // taken before raising it, by which a lost chain record is told from
+  // another copy's fence. A swamp at schema 2 refuses the outbox as newer:
+  // it would land an abandoned entry.
+  `
+  ALTER TABLE outbox_entries ADD COLUMN abandoned_at INTEGER;
+  ALTER TABLE outbox_chain ADD COLUMN pending_fence INTEGER;
+  `,
 ];
 
 /** The schema version this outbox writes. */
@@ -142,6 +151,7 @@ interface EntryRow {
   readonly body: string;
   readonly writer_process: string | null;
   readonly left_at_fence: number | null;
+  readonly abandoned_at: number | null;
 }
 
 /**
@@ -181,7 +191,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT (namespace, partition, txn_id) DO UPDATE SET unit_id = excluded.unit_id, " +
           "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body, " +
-          "writer_process = excluded.writer_process, left_at_fence = NULL " +
+          "writer_process = excluded.writer_process, left_at_fence = NULL, abandoned_at = NULL " +
           "RETURNING sequence",
       ).get(
         commit.namespace,
@@ -218,6 +228,21 @@ export class SqliteCommitOutbox implements CommitOutbox {
     return this.#remove(keys, true);
   }
 
+  abandon(keys: readonly OutboxKey[]): Promise<void> {
+    if (keys.length === 0) return Promise.resolve();
+    // The mark is what keeps a reported failure from landing: fsynced.
+    const at = this.#clock().getTime();
+    return this.#write((db) => {
+      const mark = db.prepare(
+        "UPDATE outbox_entries SET abandoned_at = ? " +
+          "WHERE namespace = ? AND partition = ? AND txn_id = ? AND abandoned_at IS NULL",
+      );
+      for (const key of keys) {
+        mark.run(at, key.namespace, key.partition, key.txnId);
+      }
+    }, { create: false });
+  }
+
   #remove(keys: readonly OutboxKey[], durable: boolean): Promise<void> {
     if (keys.length === 0) return Promise.resolve();
     return this.#write((db) => {
@@ -245,7 +270,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     const rows = this.#read((db) =>
       db.prepare(
         "SELECT sequence, namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, " +
-          "writer_process, left_at_fence FROM outbox_entries ORDER BY sequence",
+          "writer_process, left_at_fence, abandoned_at FROM outbox_entries ORDER BY sequence",
       ).all() as unknown as EntryRow[]
     ) ?? [];
     const entries: OutboxEntry[] = [];
@@ -276,6 +301,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
           ...(row.left_at_fence !== null
             ? { leftAtFence: row.left_at_fence }
             : {}),
+          ...(row.abandoned_at !== null
+            ? { abandonedAt: row.abandoned_at }
+            : {}),
         });
       } catch (error) {
         unreadable.push({
@@ -295,13 +323,49 @@ export class SqliteCommitOutbox implements CommitOutbox {
     ) ?? false;
   }
 
-  recordFence(fence: number): Promise<FenceChain> {
+  notePendingFence(fence: number): Promise<void> {
     return this.#write((db) => {
-      const next = decideFenceChain(readChain(db), fence);
+      // A note one above the last fence, or the first note of a chain that
+      // holds no fence yet, is a fence this copy took whose record was
+      // lost: the chain takes it before this note replaces it.
+      db.prepare(
+        "UPDATE outbox_chain SET last_fence = pending_fence, " +
+          "chain_start = CASE WHEN last_fence = 0 THEN pending_fence ELSE chain_start END " +
+          "WHERE id = 1 AND pending_fence IS NOT NULL " +
+          "AND (pending_fence = last_fence + 1 OR last_fence = 0)",
+      ).run();
+      // Before any chain, an empty one (fence 0) holds the note, so even the
+      // copy's first fence is recognised when its record is lost.
+      db.prepare(
+        "INSERT INTO outbox_chain (id, last_fence, chain_start, floor, pending_fence) VALUES (1, 0, 0, 0, ?) " +
+          "ON CONFLICT (id) DO UPDATE SET pending_fence = MAX(COALESCE(pending_fence, 0), excluded.pending_fence)",
+      ).run(fence);
+    });
+  }
+
+  recordFence(
+    fence: number,
+    options: { readonly replicated?: boolean } = {},
+  ): Promise<FenceChain> {
+    return this.#write((db) => {
+      const pending = db.prepare(
+        "SELECT pending_fence FROM outbox_chain WHERE id = 1",
+      ).get() as { pending_fence: number | null } | undefined;
+      const next = decideFenceChain(readChain(db), fence, {
+        ...(pending !== undefined && pending.pending_fence !== null
+          ? { pendingFence: pending.pending_fence }
+          : {}),
+        ...(options.replicated !== undefined
+          ? { replicated: options.replicated }
+          : {}),
+      });
+      // A recorded fence needs no note: clearing it keeps a stale one from
+      // outliving a restart of the lease's records and being taken later for
+      // a fence another copy held.
       db.prepare(
         "INSERT INTO outbox_chain (id, last_fence, chain_start, floor) VALUES (1, ?, ?, ?) " +
           "ON CONFLICT (id) DO UPDATE SET last_fence = excluded.last_fence, " +
-          "chain_start = excluded.chain_start, floor = excluded.floor",
+          "chain_start = excluded.chain_start, floor = excluded.floor, pending_fence = NULL",
       ).run(next.lastFence, next.chainStart, next.floor);
       return next;
     });
@@ -528,7 +592,8 @@ function readChain(db: DatabaseSync): FenceChain | undefined {
   ).get() as
     | { last_fence: number; chain_start: number; floor: number }
     | undefined;
-  return row === undefined ? undefined : {
+  // A chain at fence 0 only holds a note: no fence was recorded yet.
+  return row === undefined || row.last_fence === 0 ? undefined : {
     lastFence: row.last_fence,
     chainStart: row.chain_start,
     floor: row.floor,

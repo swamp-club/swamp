@@ -631,3 +631,40 @@ Deno.test("ChunkCollector.collect: a sweep monitor that fails to end leaves the 
     "store gone",
   );
 });
+
+Deno.test("ChunkCollector.collect: each batch runs inside the sweep's batch, from its reference check through its re-check (swamp-club#3586)", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  storage.seed("acme", "orphan", OLD);
+  const events: string[] = [];
+  let inBatch = false;
+  refs.afterLookup = () => {
+    events.push(inBatch ? "lookup in batch" : "lookup outside");
+  };
+  const originalDelete = storage.delete.bind(storage);
+  storage.delete = (namespace, sha256, signal) => {
+    events.push(inBatch ? "delete in batch" : "delete outside");
+    return originalDelete(namespace, sha256, signal);
+  };
+  await collector(storage, refs, {
+    sweep: {
+      begin: () => Promise.resolve(),
+      heartbeat: () => Promise.resolve(),
+      end: () => Promise.resolve(),
+      async batch(run) {
+        inBatch = true;
+        try {
+          await run();
+        } finally {
+          inBatch = false;
+        }
+      },
+    },
+  }).collect(ACME, { signal });
+  // The reference check, the delete, and the re-check after it.
+  assertEquals(events, [
+    "lookup in batch",
+    "delete in batch",
+    "lookup in batch",
+  ]);
+});

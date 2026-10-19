@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import {
   AutoDefinitionChanges,
@@ -26,8 +26,13 @@ import {
 import type { CommitLogUnitOfWork } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { swampPath } from "../persistence/paths.ts";
 import {
+  bindCommitLogEngine,
+  openRepoUnitOfWork,
+} from "../persistence/repo_unit_of_work.ts";
+import {
   COMMITS_DB_FILE,
   datastoreKeyFilter,
+  DroppedWorkRecoveryRunningError,
   initializeV3Datastore,
   isFreshV3Skeleton,
   listV3Namespaces,
@@ -425,6 +430,149 @@ Deno.test("openV3Datastore: dropped work is recovered only once no unit of the c
       await Deno.stat(swampPath(repoDir, "auto-definitions", "kept.yaml"));
       assertEquals(handle.droppedWork(), undefined);
       assertEquals(await handle.recoverDroppedWork(), "clean");
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+Deno.test("openV3Datastore: a root opened while dropped work is recovered is refused, directly or through the use-case factory (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "a");
+    const handle = openV3Datastore({ repoDir, datastorePath });
+    try {
+      const markDirty = () => Promise.resolve();
+      const engine = handle.engineFor(markDirty, () => {
+        throw new Error("no run repository needed");
+      });
+      bindCommitLogEngine(markDirty, engine);
+      await engine.runRoot({ disposition: () => "discard" }, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await unit.stageOps([
+          new AutoDefinitionChanges(crypto.randomUUID()).write(
+            recordKeyOf(["auto-definitions", "dropped.yaml"]),
+            new TextEncoder().encode("dropped"),
+          ),
+        ]);
+        await unit.commit();
+      });
+      assert(handle.droppedWork() !== undefined);
+
+      const started = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      const recover = handle.readModel.recover.bind(handle.readModel);
+      Object.defineProperty(handle.readModel, "recover", {
+        configurable: true,
+        value: async (...args: Parameters<typeof recover>) => {
+          started.resolve();
+          await gate.promise;
+          return await recover(...args);
+        },
+      });
+      const recovering = handle.recoverDroppedWork();
+      await started.promise;
+      assertThrows(() => engine.openUnit(), DroppedWorkRecoveryRunningError);
+      assertThrows(
+        () => openRepoUnitOfWork(markDirty),
+        DroppedWorkRecoveryRunningError,
+      );
+      gate.resolve();
+      assertEquals(await recovering, "recovered");
+      await engine.openUnit().abandon();
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+Deno.test("openV3Datastore: a writer whose prepare meets a sweep batch in flight appends only once the batch has re-checked (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const handle = openV3Datastore({ repoDir: join(dir, "a"), datastorePath });
+    try {
+      // An old chunk no commit names, which the sweep will delete.
+      await handle.chunkStore.write(
+        SOLO_NAMESPACE,
+        new Uint8Array(1024).fill(1),
+        new AbortController().signal,
+      );
+      const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      const age = async (path: string): Promise<void> => {
+        for await (const entry of Deno.readDir(path)) {
+          const child = join(path, entry.name);
+          if (entry.isDirectory) await age(child);
+          else await Deno.utime(child, old, old);
+        }
+      };
+      await age(join(datastorePath, "_blobs"));
+
+      const deleting = Promise.withResolvers<void>();
+      const releaseDelete = Promise.withResolvers<void>();
+      const del = handle.storage.delete.bind(handle.storage);
+      Object.defineProperty(handle.storage, "delete", {
+        configurable: true,
+        value: async (...args: Parameters<typeof del>) => {
+          deleting.resolve();
+          await releaseDelete.promise;
+          return await del(...args);
+        },
+      });
+      const events: string[] = [];
+      const append = handle.commitStore.append.bind(handle.commitStore);
+      Object.defineProperty(handle.commitStore, "append", {
+        configurable: true,
+        value: (...args: Parameters<typeof append>) => {
+          events.push("append");
+          return append(...args);
+        },
+      });
+      const prepare = handle.outbox.prepare.bind(handle.outbox);
+      let afterPrepare = false;
+      Object.defineProperty(handle.outbox, "prepare", {
+        configurable: true,
+        value: async (...args: Parameters<typeof prepare>) => {
+          await prepare(...args);
+          events.push("prepare");
+          afterPrepare = true;
+        },
+      });
+      // The writer's read after its prepare: it then waits on the batch.
+      const read = handle.outbox.sweepState.bind(handle.outbox);
+      const checked = Promise.withResolvers<void>();
+      Object.defineProperty(handle.outbox, "sweepState", {
+        configurable: true,
+        value: async (...args: Parameters<typeof read>) => {
+          const state = await read(...args);
+          if (afterPrepare) checked.resolve();
+          return state;
+        },
+      });
+
+      const sweeping = handle.collectChunks(new AbortController().signal);
+      await deleting.promise;
+      const engine = handle.engineFor(() => Promise.resolve(), () => {
+        throw new Error("no run repository needed");
+      });
+      const writing = engine.runRoot({}, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await unit.stageOps([
+          new AutoDefinitionChanges(crypto.randomUUID()).write(
+            recordKeyOf(["auto-definitions", "x.yaml"]),
+            new TextEncoder().encode("x"),
+          ),
+        ]);
+        await unit.commit();
+      });
+      await checked.promise;
+      assertEquals(events, ["prepare"]);
+      events.push("batch released");
+      releaseDelete.resolve();
+      await sweeping;
+      await writing;
+      assertEquals(events, ["prepare", "batch released", "append"]);
     } finally {
       await handle.close();
     }

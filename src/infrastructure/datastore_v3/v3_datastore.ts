@@ -72,6 +72,7 @@ import {
 } from "../../domain/datastore_v3/compaction_policy.ts";
 import type { CommitWriter } from "../../domain/datastore_v3/commit.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import { UserError } from "../../domain/errors.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
@@ -314,9 +315,12 @@ export interface V3Datastore {
   /** Applies every commit this checkout has not applied yet. */
   catchUp(signal?: AbortSignal): Promise<void>;
   /**
-   * Records that this process took the writer lease at `fence`: raises the
-   * commit store's writer fence and records the fence in the outbox's chain
-   * (swamp-club#3490). Every lease taken on this copy goes through it.
+   * Records that this process took the writer lease at `fence`: notes the
+   * fence in the outbox, raises the commit store's writer fence and records
+   * the fence in the outbox's chain (swamp-club#3490, swamp-club#3586). The
+   * two files share no transaction; the note lets the next record tell this
+   * copy's own fence from another copy's when the record is lost. Every
+   * lease taken on this copy goes through it.
    *
    * @throws WriterFencedError when the store has seen a higher fence
    */
@@ -421,16 +425,50 @@ interface CheckoutUnits {
   open: number;
   /** The earliest open time of a root whose unit dropped work. */
   droppedSince?: number;
+  /**
+   * Moves with every drop recorded (swamp-club#3586), so a recovery clears
+   * only what was dropped before it started.
+   */
+  droppedGeneration: number;
   /** The recovery running now, which new roots wait for. */
   recovering?: Promise<unknown>;
 }
 
 const checkoutUnits = new Map<string, CheckoutUnits>();
 
+/**
+ * The chunk sweep batch running on each outbox's copy in this process, by
+ * outbox path (swamp-club#3586). A sweep runs only under the writer lease,
+ * so a writer that may overlap one is in the same process.
+ */
+const sweepBatches = new Map<string, Promise<void>>();
+
+/** Resolves once the sweep batch running on the outbox at `path` is done. */
+function sweepBatchAt(path: string): Promise<void> {
+  return sweepBatches.get(path) ?? Promise.resolve();
+}
+
+/** Error code for {@link DroppedWorkRecoveryRunningError}. */
+export const DROPPED_WORK_RECOVERY_RUNNING_CODE =
+  "datastore_v3_dropped_work_recovery_running";
+
+/** Thrown for a root opened while the checkout's dropped work is recovered. */
+export class DroppedWorkRecoveryRunningError extends UserError {
+  constructor() {
+    super(
+      "Swamp is still removing unfinished writes from this checkout, so a " +
+        "change started now was refused and nothing from it was written. " +
+        "Run the command again once the current one has finished.",
+      DROPPED_WORK_RECOVERY_RUNNING_CODE,
+    );
+    this.name = "DroppedWorkRecoveryRunningError";
+  }
+}
+
 function checkoutUnitsFor(stateDir: string): CheckoutUnits {
   let units = checkoutUnits.get(stateDir);
   if (units === undefined) {
-    units = { open: 0 };
+    units = { open: 0, droppedGeneration: 0 };
     checkoutUnits.set(stateDir, units);
   }
   return units;
@@ -487,6 +525,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const sink: OutboxCommitSink = createOutboxCommitSink({
     commitStore,
     outbox,
+    sweepBatch: () => sweepBatchAt(outbox.path),
     ...(options.assertWriterCurrent !== undefined
       ? { assertWriterCurrent: options.assertWriterCurrent }
       : {}),
@@ -504,6 +543,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     },
     dropped: (openedAt) => {
       units.droppedSince = Math.min(units.droppedSince ?? openedAt, openedAt);
+      units.droppedGeneration++;
     },
   };
   const unitNamespace = namespace === ""
@@ -554,8 +594,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       await readModel.catchUp(signal ?? lifetime.signal);
     },
     async raiseWriterFence(fence) {
+      // Noted first: a writer killed, or failing, before the record leaves
+      // the note, and the next record continues the chain over it rather
+      // than dropping this copy's prepared commits as another copy's.
+      await outbox.notePendingFence(fence);
       await commitStore.raiseWriterFence(fence);
-      await outbox.recordFence(fence);
+      // Only a copy of its own per checkout can meet another copy's fences.
+      await outbox.recordFence(fence, {
+        replicated: bucket !== undefined ||
+          v3ReplicaFor(datastorePath) !== undefined,
+      });
     },
     writerFence() {
       return commitStore.writerFence();
@@ -574,6 +622,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     },
     async recoverDroppedWork(signal) {
       const since = units.droppedSince;
+      const generation = units.droppedGeneration;
       if (since === undefined) return "clean";
       if (units.open > 0) return "busy";
       const recovery = readModel.recover(namespace, {
@@ -587,8 +636,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       } finally {
         units.recovering = undefined;
       }
-      // Work dropped while it ran (none: no root opened) would be newer.
-      if (units.droppedSince === since) units.droppedSince = undefined;
+      // A drop recorded while it ran stays owed to the next recovery.
+      if (units.droppedGeneration === generation) {
+        units.droppedSince = undefined;
+      }
       return "recovered";
     },
     forgetDroppedWork() {
@@ -614,10 +665,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       };
       return {
         openUnit(): UnitOfWork {
+          const parent = currentUnitOfWork();
+          // A root opening while dropped work is recovered would write into
+          // a checkout the recovery is rewriting; it cannot wait, being
+          // synchronous, so it is refused (swamp-club#3586). The recovery
+          // runs at teardown, so only a straggler meets this. A child rolls
+          // up into a root that is open, so no recovery is running.
+          if (
+            units.recovering !== undefined &&
+            commitLogParentFor(markDirty, parent) === undefined
+          ) {
+            throw new DroppedWorkRecoveryRunningError();
+          }
           return createCommitLogUnitOfWork(markDirty, {
             ...unitOptions,
             ...fenced(),
-            parent: currentUnitOfWork(),
+            parent,
           });
         },
         hasOpenUnit(): boolean {
@@ -680,6 +743,19 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           begin: () => outbox.beginSweep(sweeper, Date.now()),
           heartbeat: () => outbox.heartbeatSweep(sweeper, Date.now()),
           end: () => outbox.endSweep(sweeper),
+          // Writers that may overlap a batch wait for it (swamp-club#3586).
+          async batch(run) {
+            const done = run();
+            const settled = done.then(() => {}, () => {});
+            sweepBatches.set(outbox.path, settled);
+            try {
+              return await done;
+            } finally {
+              if (sweepBatches.get(outbox.path) === settled) {
+                sweepBatches.delete(outbox.path);
+              }
+            }
+          },
         },
         ...(options.assertCopyCurrent !== undefined
           ? { assertMayDelete: options.assertCopyCurrent }

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The commit outbox's schema 2 migration (swamp-club#3564) under openers
+ * The commit outbox's migrations (swamp-club#3564, swamp-club#3586) under openers
  * that race: each worker is its own connection, as two swamp processes
  * opening one checkout's outbox at once are.
  */
@@ -42,12 +42,42 @@ import type {
 
 const OPENERS = 4;
 
-Deno.test("commit outbox: openers racing on a schema 1 outbox all end on schema 2, with its entry kept", async () => {
+/** What each schema's migration added, dropped to make an older file. */
+const DOWNGRADES: Record<number, string> = {
+  1: "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
+    "ALTER TABLE outbox_entries DROP COLUMN left_at_fence; ",
+  2: "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
+    "ALTER TABLE outbox_chain DROP COLUMN pending_fence; ",
+};
+
+/** The statements that turn a current outbox into one at `schema`. */
+function downgradeTo(schema: number): string {
+  let sql = "";
+  for (
+    let version = COMMIT_OUTBOX_SCHEMA_VERSION - 1;
+    version >= schema;
+    version--
+  ) {
+    sql += DOWNGRADES[version];
+  }
+  return sql + `PRAGMA user_version=${schema}`;
+}
+
+Deno.test("commit outbox: openers racing on a schema 1 outbox all end on the current schema, with its entry kept", async () => {
+  await raceOpeners(1);
+});
+
+Deno.test("commit outbox: openers racing on a schema 2 outbox all end on schema 3, with its entry kept (swamp-club#3586)", async () => {
+  assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 3);
+  await raceOpeners(2);
+});
+
+async function raceOpeners(schema: number): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-outbox-migration-" });
   const workers: Worker[] = [];
   try {
     const path = join(dir, "commits-outbox.db");
-    // As a swamp at schema 1 left it, with one entry.
+    // As a swamp at `schema` left it, with one entry.
     const outbox = new SqliteCommitOutbox(path);
     await outbox.prepare({
       commit: modelCommit(1, [await savePut("a", 1)]),
@@ -56,11 +86,7 @@ Deno.test("commit outbox: openers racing on a schema 1 outbox all end on schema 
     });
     await outbox.close();
     const db = new DatabaseSync(path);
-    db.exec(
-      "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
-        "ALTER TABLE outbox_entries DROP COLUMN left_at_fence; " +
-        "PRAGMA user_version=1",
-    );
+    db.exec(downgradeTo(schema));
     db.close();
 
     const start = new SharedArrayBuffer(4);
@@ -115,4 +141,4 @@ Deno.test("commit outbox: openers racing on a schema 1 outbox all end on schema 
       await Deno.remove(dir, { recursive: true });
     }
   }
-});
+}

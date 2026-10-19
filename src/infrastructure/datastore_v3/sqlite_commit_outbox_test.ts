@@ -316,9 +316,35 @@ async function schemaOneOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
+    "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
+      "ALTER TABLE outbox_chain DROP COLUMN pending_fence; " +
+      "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
       "ALTER TABLE outbox_entries DROP COLUMN left_at_fence; " +
       "PRAGMA user_version=1",
+  );
+  db.close();
+}
+
+/**
+ * An outbox file as a swamp at schema 2 left it (swamp-club#3586): a chain,
+ * and an entry a recovery left for its live writer.
+ */
+async function schemaTwoOutbox(path: string): Promise<void> {
+  const outbox = new SqliteCommitOutbox(path);
+  const commit = modelCommit(1, [await savePut("a", 1)]);
+  await outbox.prepare({
+    commit,
+    unitId: "u",
+    base: { seq: 0, txnId: undefined },
+  });
+  await outbox.recordFence(4);
+  await outbox.markLeft([outboxKeyOf(commit)], 4);
+  await outbox.close();
+  const db = new DatabaseSync(path);
+  db.exec(
+    "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
+      "ALTER TABLE outbox_chain DROP COLUMN pending_fence; " +
+      "PRAGMA user_version=2",
   );
   db.close();
 }
@@ -345,7 +371,7 @@ Deno.test("SqliteCommitOutbox: a schema 1 outbox migrates to 2, its entries read
       assertEquals(entries[0].writerProcess, undefined);
       assertEquals(entries[0].leftAtFence, undefined);
       assertEquals(schemaOf(path), COMMIT_OUTBOX_SCHEMA_VERSION);
-      assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 2);
+      assertEquals(entries[0].abandonedAt, undefined);
     } finally {
       await outbox.close();
     }
@@ -359,7 +385,163 @@ Deno.test("SqliteCommitOutbox: a read alone migrates a schema 1 outbox", async (
     const outbox = new SqliteCommitOutbox(path);
     try {
       assertEquals(await outbox.hasEntries(), true);
-      assertEquals(schemaOf(path), 2);
+      assertEquals(schemaOf(path), COMMIT_OUTBOX_SCHEMA_VERSION);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: a schema 2 outbox migrates to 3, keeping its left marks and chain, nothing abandoned (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    await schemaTwoOutbox(path);
+    const outbox = new SqliteCommitOutbox(path);
+    try {
+      const { entries } = await outbox.entries();
+      assertEquals(entries.length, 1);
+      assertEquals(entries[0].leftAtFence, 4);
+      assertEquals(entries[0].abandonedAt, undefined);
+      assertEquals(await outbox.chain(), {
+        lastFence: 4,
+        chainStart: 4,
+        floor: 0,
+      });
+      assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 3);
+      assertEquals(schemaOf(path), 3);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: abandon marks entries durably, and a prepare again clears the mark (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const modes: number[] = [];
+    const outbox = new SqliteCommitOutbox(path, {
+      clock: () => new Date(5_000),
+      onWrite: (synchronous) => modes.push(synchronous),
+    });
+    try {
+      const commit = modelCommit(1, [await savePut("a", 1)]);
+      const preparation = {
+        commit,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      };
+      await outbox.prepare(preparation);
+      modes.length = 0;
+      await outbox.abandon([outboxKeyOf(commit)]);
+      assertEquals(modes, [2]);
+      assertEquals((await outbox.entries()).entries[0].abandonedAt, 5_000);
+      await outbox.prepare(preparation);
+      assertEquals(
+        (await outbox.entries()).entries[0].abandonedAt,
+        undefined,
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: a noted fence whose record was lost continues the chain (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      await outbox.notePendingFence(1);
+      await outbox.recordFence(1, { replicated: true });
+      // Fence 2 noted, then its writer died before the record.
+      await outbox.notePendingFence(2);
+      await outbox.notePendingFence(3);
+      assertEquals(
+        await outbox.recordFence(3, { replicated: true }),
+        { lastFence: 3, chainStart: 1, floor: 0 },
+      );
+      // A stale lower note never lowers it.
+      await outbox.notePendingFence(2);
+      // Fence 4 was never noted here: another copy's, while replicating.
+      assertEquals(
+        await outbox.recordFence(5, { replicated: true }),
+        { lastFence: 5, chainStart: 5, floor: 0 },
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: another copy's fence, then this copy's noted fence whose record was lost, still restarts the chain while replicating (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      await outbox.notePendingFence(1);
+      await outbox.recordFence(1, { replicated: true });
+      // Another copy takes fence 2 and replicates; this copy's writer at 3
+      // notes it, raises it and dies before the record.
+      await outbox.notePendingFence(3);
+      await outbox.notePendingFence(4);
+      assertEquals(
+        await outbox.recordFence(4, { replicated: true }),
+        { lastFence: 4, chainStart: 4, floor: 0 },
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: a recorded fence clears its note, so a stale note never outlives recreated lease records (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      assertEquals(await outbox.chain(), undefined);
+      await outbox.notePendingFence(10);
+      assertEquals(await outbox.chain(), undefined, "a note is no chain");
+      await outbox.recordFence(10, { replicated: true });
+      // The lease records are recreated: the chain restarts at 1 and climbs
+      // back to 9.
+      for (let fence = 1; fence <= 9; fence++) {
+        await outbox.notePendingFence(fence);
+        await outbox.recordFence(fence, { replicated: true });
+      }
+      // Another copy takes 10; this copy's next fence is 11.
+      await outbox.notePendingFence(11);
+      assertEquals(
+        await outbox.recordFence(11, { replicated: true }),
+        { lastFence: 11, chainStart: 11, floor: 0 },
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: the first fence of a copy, noted and its record lost, is still the chain's (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      await outbox.notePendingFence(1);
+      await outbox.notePendingFence(2);
+      assertEquals(
+        await outbox.recordFence(2, { replicated: true }),
+        { lastFence: 2, chainStart: 1, floor: 0 },
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+  // A copy whose first fence is not 1: other copies took the ones before.
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      await outbox.notePendingFence(5);
+      await outbox.notePendingFence(6);
+      assertEquals(
+        await outbox.recordFence(6, { replicated: true }),
+        { lastFence: 6, chainStart: 5, floor: 0 },
+      );
     } finally {
       await outbox.close();
     }

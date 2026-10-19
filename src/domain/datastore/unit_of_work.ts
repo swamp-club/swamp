@@ -44,6 +44,7 @@
  */
 
 import type { MarkDirtyHook } from "./datastore_sync_service.ts";
+import { UserError } from "../errors.ts";
 
 /**
  * One change a repository is about to make in the datastore.
@@ -143,4 +144,27 @@ export interface UnitOfWorkBinding {
   requireUnit(markDirty: MarkDirtyHook): void;
   /** Whether {@link requireUnit} marked `markDirty`. */
   requiresUnit(markDirty: MarkDirtyHook): boolean;
+}
+
+/**
+ * A unit's end that could not record its outcome, so changes it gave up may
+ * still be committed (swamp-club#3586). A caller ending a unit after another
+ * failure logs most errors of the end and rethrows the failure; this one it
+ * rethrows instead, rebuilt by {@link during} to carry that failure, since
+ * the caller must not be told only that the operation failed.
+ */
+export abstract class UnrecordedEndError extends UserError {
+  /** This error, carrying `failure`, the error the operation ended with. */
+  abstract during(failure: unknown): UnrecordedEndError;
+}
+
+/**
+ * Throws `endError` rebuilt to carry `failure` when it is an
+ * {@link UnrecordedEndError}; otherwise returns, and the caller logs it.
+ */
+export function rethrowUnrecordedEnd(
+  endError: unknown,
+  failure: unknown,
+): void {
+  if (endError instanceof UnrecordedEndError) throw endError.during(failure);
 }

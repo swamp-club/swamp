@@ -628,7 +628,7 @@ Deno.test("v3 staging: a saved version's chunks a sweep deleted before the commi
   });
 });
 
-Deno.test("v3 staging: a changed file cannot restore a deleted chunk, and the commit fails loudly", async () => {
+Deno.test("v3 staging: a changed file cannot restore a deleted chunk; the landed commit stands, with a warning (swamp-club#3586)", async () => {
   await withV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     const contentPath = join(
@@ -636,20 +636,19 @@ Deno.test("v3 staging: a changed file cannot restore a deleted chunk, and the co
       "1",
       "raw",
     );
-    await assertRejects(
-      () =>
-        writer.run(
-          () =>
-            writer.data.save(MODEL_TYPE, MODEL_ID, data("big"), large("b1")),
-          sinkWith(env, async (commit) => {
-            await deleteChunksOf(env, commit);
-            await Deno.writeFile(contentPath, large("changed"));
-          }),
-        ),
-      // The repair reads the file again, which no longer holds what was
-      // staged (swamp-club#3564).
-      StagedContentChangedError,
+    let landed = 0;
+    // The repair reads the file again, which no longer holds what was staged
+    // (swamp-club#3564); the commit has landed, so failing the unit would
+    // report a committed change as failed.
+    await writer.run(
+      () => writer.data.save(MODEL_TYPE, MODEL_ID, data("big"), large("b1")),
+      sinkWith(env, async (commit) => {
+        landed++;
+        await deleteChunksOf(env, commit);
+        await Deno.writeFile(contentPath, large("changed"));
+      }),
     );
+    assert(landed > 0);
   });
 });
 

@@ -127,7 +127,9 @@ export function buildErrorJson(
  *   datastore's writer lease, and the command changed nothing
  *   (swamp-club#3564). `datastore_v3_writer_fenced` stays `1`: a command
  *   whose lease was taken over may have landed some of its commits, so a
- *   blind retry is not safe.
+ *   blind retry is not safe. So does `datastore_v3_commit_may_land`
+ *   (swamp-club#3586): its change may still be committed by a later
+ *   command.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {

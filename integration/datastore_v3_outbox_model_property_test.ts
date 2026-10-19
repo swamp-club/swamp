@@ -22,11 +22,14 @@
  * random interleavings of staging, flushing, refusals and their
  * acknowledgement, seq gaps, writers killed at any point of a commit,
  * recoveries, takeovers by another copy, compaction with pruning, the clock
- * passing the retry bound, chunk sweeps landing inside a commit, and power
- * cuts (swamp-club#3506) that undo the outbox removals not yet fsynced, the
- * real unit, sink, outbox, commit store and collector keep:
+ * passing the retry bound, chunk sweeps landing inside a commit, power
+ * cuts (swamp-club#3506) that undo the outbox removals not yet fsynced, and
+ * a unit's discard failing after a failed append, with or without its
+ * abandoned mark (swamp-club#3586), the real unit, sink, outbox, commit
+ * store and collector keep:
  *
- * - a commit whose failure or drop was reported never lands later;
+ * - a commit whose failure or drop was reported never lands later; one
+ *   reported as one that may land is not held to it;
  * - a commit never lands after another copy took the lease since it was
  *   prepared, unless it landed before;
  * - a commit lands only on the head it was prepared on;
@@ -52,7 +55,10 @@ import {
   OUTBOX_RETRY_BOUND_MS,
   type OutboxKey,
 } from "../src/domain/datastore_v3/commit_outbox.ts";
-import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  type CommitLogUnitOfWork,
+  MayLandLaterError,
+} from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import type { PartitionKey } from "../src/domain/datastore_v3/partition_key.ts";
 import {
   AutoDefinitionChanges,
@@ -89,7 +95,9 @@ type Fault =
   | "stray-commit-then-kill"
   | "sweep-before-prepare-then-kill"
   | "sweep-after-prepare-then-kill"
-  | "sweep-before-append-then-kill";
+  | "sweep-before-append-then-kill"
+  | "fail-append-and-discard"
+  | "fail-append-discard-and-mark";
 
 /** What each fault does: actions that fire once, at the first group reaching them. */
 const ACTIONS: Record<Fault, readonly string[]> = {
@@ -111,6 +119,15 @@ const ACTIONS: Record<Fault, readonly string[]> = {
   // After the writer's second look at the sweep state: only the sweep's own
   // reference check can see the prepared entry.
   "sweep-before-append-then-kill": ["sweep-before-append", "kill-after-append"],
+  // The unit's discard fails too: its abandoned mark keeps the failure from
+  // landing (swamp-club#3586).
+  "fail-append-and-discard": ["fail-append", "fail-discard"],
+  // Neither can be written: the unit says the commit may land.
+  "fail-append-discard-and-mark": [
+    "fail-append",
+    "fail-discard",
+    "fail-abandon",
+  ],
 };
 
 type Command =
@@ -157,6 +174,8 @@ const FAULTS: readonly Fault[] = [
   "sweep-before-prepare-then-kill",
   "sweep-after-prepare-then-kill",
   "sweep-before-append-then-kill",
+  "fail-append-and-discard",
+  "fail-append-discard-and-mark",
 ];
 
 const arbCommand: fc.Arbitrary<Command> = fc.oneof(
@@ -228,6 +247,8 @@ const coverage = {
   undone: { settle: 0, discard: 0 },
   /** Recoveries a power cut stopped part way. */
   recoveryCuts: 0,
+  /** Units that reported their commits may land (swamp-club#3586). */
+  mayLand: 0,
   drops: {} as Record<string, number>,
 };
 
@@ -359,6 +380,9 @@ async function runModel(commands: readonly Command[]): Promise<void> {
   const wrapRemoval = (kind: "settle" | "discard") => {
     const remove = outbox[kind].bind(outbox);
     outbox[kind] = async (keys: readonly OutboxKey[]) => {
+      if (kind === "discard" && !recovering && take("fail-discard")) {
+        throw new Error("database or disk is full");
+      }
       if (cutAfterRemovals !== undefined) {
         if (cutAfterRemovals === 0) throw new Killed();
         cutAfterRemovals--;
@@ -392,6 +416,13 @@ async function runModel(commands: readonly Command[]): Promise<void> {
   };
   wrapRemoval("settle");
   wrapRemoval("discard");
+  const abandon = outbox.abandon.bind(outbox);
+  outbox.abandon = (keys: readonly OutboxKey[]) => {
+    if (take("fail-abandon")) {
+      return Promise.reject(new Error("database or disk is full"));
+    }
+    return abandon(keys);
+  };
   // The floor's write is fsynced: a cut before it loses the recovery's
   // relaxed removals.
   const raiseFloor = outbox.raiseFloor.bind(outbox);
@@ -546,7 +577,10 @@ async function runModel(commands: readonly Command[]): Promise<void> {
         coverage.refusals++;
         refusedAt.set(unitIndex, [...(refusedAt.get(unitIndex) ?? []), step]);
       }
-      if (ends) await reportFailed(unitIndex);
+      // A unit that could not record its failure says its commits may
+      // land: no failure was reported.
+      if (error instanceof MayLandLaterError) coverage.mayLand++;
+      else if (ends) await reportFailed(unitIndex);
     } finally {
       actions.clear();
     }
@@ -830,7 +864,8 @@ Deno.test("v3 outbox (model): the interleavings take every path the invariants g
   assertEquals(coverage.undone.discard, 0, reached);
   // A unit-dropped run entry needs a failed run commit and a later data
   // commit of one unit both left behind; the recovery unit tests pin it.
-  for (const reason of ["stale-fence", "head-moved", "expired"]) {
+  assert(coverage.mayLand > 0, reached);
+  for (const reason of ["stale-fence", "head-moved", "expired", "abandoned"]) {
     assert((coverage.drops[reason] ?? 0) > 0, `${reason}: ${reached}`);
   }
 });

@@ -211,6 +211,26 @@ export class ChunkStore {
     return hashes.filter((sha256) => !present.has(sha256));
   }
 
+  /**
+   * Refreshes the chunks of `ref`, so a sweep's grace period counts from
+   * now, and returns the ones the storage does not hold, in order
+   * (swamp-club#3586). A storage that cannot touch is only checked.
+   */
+  async refresh(
+    namespace: Namespace,
+    ref: BlobRef,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    if (!this.#touch) return await this.missing(namespace, ref, signal);
+    const hashes = ref.chunkHashes();
+    const missing = await this.#storage.touch!(
+      storageNamespaceOf(namespace),
+      hashes,
+      signal,
+    );
+    return hashes.filter((sha256) => missing.has(sha256));
+  }
+
   /** Makes one chunk present and fresh: put, touched, or put again. */
   async #store(
     ns: string,

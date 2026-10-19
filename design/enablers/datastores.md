@@ -3461,9 +3461,11 @@ an object store's server time), and `now` from the collector's. A skew between
 them shifts the cutoff by the same amount. Against a 24-hour grace normal skew
 does not matter. Only tests should configure a grace near zero.
 
-**The commit outbox.** A unit's pending retry calls `appendGroup` again, so
-its content is stored (refreshed) again before each append, and the writer's
-check runs after the append lands. An outbox entry a recovery lands days
+**The commit outbox.** A unit's pending retry calls `appendGroup` again,
+which reuses the content it stored the first time but refreshes its chunks
+(`ChunkStore.refresh`: a touch, or a presence check on a storage that cannot
+touch) and stores again any a sweep deleted, before it prepares
+(swamp-club#3586); the writer's check runs after the append lands. An outbox entry a recovery lands days
 later has no content source left. Its chunks are kept instead: every sweep
 counts them as referenced for as long as the entry exists, and a recovery
 checks they are present before it appends, dropping (never landing) an entry
@@ -4606,9 +4608,12 @@ the fence chain then judges. The file is created by the first lease taken
 on the copy, never by setup, and with `synchronous=FULL`, like `commits.db`.
 Schema 2 (swamp-club#3564) adds each entry's `writer_process`, the preparing
 process's identity, and `left_at_fence`; the commit body's `CommitWriter` is
-unchanged, so `commits.db` needs no bump. The bump is a one-way upgrade: an
-older swamp refuses a schema 2 outbox with `commit_outbox_schema_newer`
-("upgrade swamp"). Without replication the outbox sits beside the shared
+unchanged, so `commits.db` needs no bump. Schema 3 (swamp-club#3586) adds each
+entry's `abandoned_at` and the chain's `pending_fence` (**Fences**, below);
+neither touches a commit body or `commits.db`, so again only the outbox is
+bumped. Each bump is a one-way upgrade: an older swamp refuses a newer outbox
+with `commit_outbox_schema_newer` ("upgrade swamp"), since it would land an
+abandoned entry or misjudge a left one. Without replication the outbox sits beside the shared
 `commits.db`, so the first new swamp to open it, a read-only command
 included, upgrades it for every checkout of that datastore.
 
@@ -4620,14 +4625,36 @@ included, upgrades it for every checkout of that datastore.
    seq-gap rebuild prepares again with its new base; the entry keeps its
    first creation time and its place in the outbox's order;
 3. it is appended, then the post-commit chunk check runs, then the entry is
-   **settled** (removed).
+   **settled** (removed). Once the append returns the commit has landed: a
+   check that then fails is a warning, never a failure that would drop the
+   landed work (swamp-club#3586).
 
-A refusal removes the refused entries, and every run entry of the unit with
-them (decision 7). An abandon, or a unit whose commit ends failing, removes
+A refusal gives up the refused entries, and every run entry of the unit with
+them (decision 7). An abandon, or a unit whose commit ends failing, gives up
 the unit's entries: that failure was reported to the caller, so a later
-recovery must not land them. A removal that fails is logged, the original
-outcome stands, and the handle retries it when it closes. So only a process
-that dies leaves entries.
+recovery must not land them. Giving an entry up (swamp-club#3586) first
+marks it **abandoned** (`abandoned_at`, fsynced), then removes it. Recovery
+drops an abandoned entry before any other rule, whatever its writer's state,
+an entry a recovery left for its writer included. A removal that fails is
+logged, the original outcome stands, and the handle retries it when it
+closes; the mark already keeps the entry from landing. When neither the mark
+nor the removal can be written (a disk that stays full), the unit fails with
+`MayLandLaterError` (`datastore_v3_commit_may_land`, exit 1): its change may
+already be in the datastore, or be landed by the next writer, so the command
+must not simply be run again. An operation that fails and then cannot give
+its commit up this way fails with it too, carrying the operation's own
+error: a caller ending a unit after a failure logs most errors of the end,
+but rethrows an `UnrecordedEndError`, which `MayLandLaterError` is. So a
+process that dies, or a failure that
+could record nothing, leaves entries a recovery may land.
+
+**What a failed append reports** (swamp-club#3586). After an append that
+fails, a prepared group asks the commit store whether its txnId landed: a
+writer that took over may have landed the entry (its recovery runs under a
+newer lease), or the append failed after its commit. A landed group counts as
+appended, settles, and the unit goes on; a fenced writer whose only group a
+successor landed reports success, while groups after it, which never landed,
+still fail. A landing that cannot be read is reported as `MayLandLaterError`.
 
 **Durability.** Every outbox write is fsynced (`synchronous=FULL`) except a
 settle (swamp-club#3506). A settle lost to a power cut brings its entry
@@ -4645,8 +4672,15 @@ lease. A read-only command never recovers the outbox: it holds no
 Litestream sidecar, and commits nothing. For each entry, in preparation
 order, run entries of a unit last:
 
+- it was abandoned: it is dropped quietly, as its unit already reported
+  the failure;
 - its txnId already landed (the writer died before settling): the chunk
-  check runs, and it settles;
+  check runs, and it settles. This is read for every entry before any
+  other drop reason is judged (swamp-club#3586), so a landed entry whose
+  settle was lost is never dropped as `stale-fence`, `overtaken` or
+  `expired` and reported lost. An `expired` entry older than
+  `COMPACTED_TXN_RETENTION_MS` may have had its txnId pruned; its drop says
+  its changes may or may not be in the datastore;
 - the partition head is still its base: its commit is rebuilt at that head
   under the recovering writer's fence and identity, its chunks are checked
   present, and it is appended;
@@ -4659,12 +4693,23 @@ An entry dropped or refused takes its unit's run entries with it.
 
 **Fences.** Every CLI write takes a new fence, so an entry's fence is always
 below its recoverer's. The copy records each fence it takes as a **chain**
-(`decideFenceChain`, the rule replication lineages follow): one above the
-last fence continues it, anything else restarts it. Every lease take on the
-copy goes through `V3Datastore.raiseWriterFence`, which raises
-`commits.db`'s `writer_fence` and records the chain together. An entry
-whose fence is below the chain's start was prepared before another copy
-took the lease, and is dropped (`stale-fence`). The **floor** is the fence of
+(`decideFenceChain`): one above the last fence continues it. Every lease
+take on the copy goes through `V3Datastore.raiseWriterFence`, which notes the
+fence in the outbox (`pending_fence`, fsynced), raises `commits.db`'s
+`writer_fence`, then records the fence in the chain. The two files share no
+transaction (swamp-club#3586): a writer killed, or failing (`SQLITE_FULL`),
+between the note and the record leaves the note, and the next note folds a
+note one above the chain's last fence into the chain before replacing it, so
+this copy's own fence is never taken for another copy's. A note proves only
+that fence; any other gap is judged by mode. In shared mode the datastore
+has one copy and every writer recovers before it writes, so a gap (a fence a
+writer took and died with before raising it) continues the chain. While
+replicating, a gap may be another copy's, and restarts the chain; a fence
+granted to a writer that died before noting it cannot be told from one, so
+it restarts the chain too. A fence below the last one means the lease's
+records were recreated, and restarts the chain and the floor. An entry
+whose fence is below the chain's start may have been prepared before another
+copy took the lease, and is dropped (`stale-fence`). The **floor** is the fence of
 the last completed recovery; an entry below it was prepared by a writer
 that had lost the lease after its successor recovered (`overtaken`). An
 entry whose writer may still be running (this process's units, or a writer
@@ -4672,7 +4717,10 @@ judged alive by **Writer liveness** from the identity it prepared the entry
 under) is left for it, and marked with the fence of the recovery that left
 it: the floor does not drop a left entry, which existed before the floor
 rose, so a later recovery lands it once its writer is gone. Preparing the
-entry again clears the mark. A writer this process cannot judge (another
+entry again clears the mark. A left entry whose writer then resumes and is
+refused is kept from landing only by that writer giving it up, which its
+abandoned mark makes survive a failed removal. A writer this process cannot
+judge (another
 host or namespace, or an entry from before schema 2) counts as gone: the
 recovery runs under a newer lease, so that writer is fenced already. In shared (non-replicated) mode every
 writer start recovers before it writes, so no writer can come between a
@@ -4690,9 +4738,16 @@ again after preparing it, and checks its chunks before the append when a
 sweep was in progress at either read or the epoch moved
 (`sweepMayOverlap`), restoring any missing one from its live source.
 Otherwise a sweep that deletes one of its chunks started after the entry was
-prepared, and its re-check sees the entry and puts the chunk back. Either
-way no landed commit names a chunk a sweep deleted, and a writer that dies
-after its append needs no content source. The collector also checks the
+prepared, and its re-check sees the entry and puts the chunk back. A batch
+already in flight at the prepare may have judged a chunk unreferenced before
+it, and delete it after the writer's check (swamp-club#3586): so a writer
+that may overlap first waits for that batch, which the collector runs inside
+its `SweepMonitor.batch`, from its reference check through its re-check
+after deleting. A sweep runs only under the writer lease, so an overlapping
+writer is in the same process and waits on it in memory. By then the
+re-check, seeing the entry, has put the chunk back, and the writer's check
+holds until its append. Either way no landed commit names a chunk a sweep
+deleted, and a writer that dies after its append needs no content source. The collector also checks the
 writer lease before and after each batch's deletes, and puts a batch back
 when the lease was lost. A sweep on another copy is fenced by that lease
 check, not by this copy's outbox.
@@ -4716,6 +4771,12 @@ keeps (`DEFAULT_COMPACTION_POLICY.retainMs`).
 | A commit landed, not yet settled | Settles it, after the chunk check | Keeps its files |
 | Changes staged but never flushed | Nothing: they were never prepared | Removes their files and catalog rows |
 | A run never committed | Nothing | Removes its leftovers; the run stays as its last landed record shows |
+
+A read-only command's interrupted-writer recovery holds no lease, so it
+cannot recover the outbox, and removes a killed writer's file as
+uncommitted. The next writer's outbox recovery then lands that commit, and
+the file comes back at the next catch-up: the end state is right, but the
+two recoveries disagree in between (swamp-club#3586).
 
 **Phase 5.** Team mode's outbox forwards commits to serve's leader. It fits
 the same `CommitSink` seam; nothing of it is built here.

@@ -79,11 +79,11 @@
  * `expect` supersedes it, among the unflushed batches and the pending
  * groups not being appended whose put is not stored yet; a group emptied so
  * is dropped. A stored put's op is kept, so a retry never reads the stream
- * again. The one exception is repair after a chunk GC race: every landed
- * commit, a retry that reused a kept op included, runs the post-commit check
- * ({@link restoreMissingChunks}), which reads the source again only when one
- * of the commit's chunks is actually missing. A superseded put that was
- * dropped never commits, so it needs no check.
+ * again. The exceptions are repair after a chunk GC race: a retry that
+ * reuses a kept op refreshes its chunks first, and every landed commit runs
+ * the post-commit check ({@link restoreMissingChunks}); each reads the source
+ * again only when one of the commit's chunks is actually missing. A
+ * superseded put that was dropped never commits, so it needs no check.
  *
  * **The outbox (swamp-club#3490).** The unit appends through a
  * {@link CommitSink}. A sink with an {@link SinkOutbox} (a v3 datastore's)
@@ -91,14 +91,19 @@
  * the unit prepares the commit with the head it was built on, then appends
  * it, checks its chunks and settles the entry. A process that dies in
  * between leaves the entry for the next writer to land
- * (`commit_outbox_recovery.ts`). A refusal discards the refused entry and
+ * (`commit_outbox_recovery.ts`). A refusal gives up the refused entry and
  * every run entry of the unit (decision 7); a unit that ends with a commit
- * still failing discards its entries, since the failure was reported. A
- * sink without an outbox, the bare `CommitStore` tests pass, prepares
- * nothing. Before preparing, and after, the unit reads the sweep state; when
- * a chunk sweep may have overlapped (`sweepMayOverlap`) it checks its chunks
- * before the append too, so no landed commit names a chunk a sweep deleted
- * even when the writer dies before its post-commit check.
+ * still failing gives up its entries, since the failure was reported. Giving
+ * up marks an entry abandoned, then discards it; a unit that can write
+ * neither fails with `MayLandLaterError` (swamp-club#3586). An append that
+ * fails is checked against the store: a commit a writer that took over
+ * landed counts as appended, and once an append returns, a failing check
+ * after it is a warning. A sink without an outbox, the bare `CommitStore`
+ * tests pass, prepares nothing. Before preparing, and after, the unit reads
+ * the sweep state; when a chunk sweep may have overlapped
+ * (`sweepMayOverlap`) it waits for the sweep's batch in flight, then checks
+ * its chunks before the append too, so no landed commit names a chunk a
+ * sweep deleted even when the writer dies before its post-commit check.
  *
  * **Root and child units.** A unit opened with an open commit-log unit for
  * the same hook as `parent` is its child. A child keeps its changes to
@@ -128,6 +133,7 @@ import {
 import {
   type CommitLogUnitOfWork,
   type ContentSource,
+  MayLandLaterError,
   type PartitionRefusal,
   PartitionsRefusedError,
   type PendingPut,
@@ -243,8 +249,27 @@ export interface SinkOutbox {
   settle(keys: readonly OutboxKey[]): Promise<void>;
   /** Removes entries the unit gave up; fsynced, since the failure was reported. */
   discard(keys: readonly OutboxKey[]): Promise<void>;
+  /**
+   * Marks entries the unit gave up, fsynced, before they are discarded
+   * (swamp-club#3586): recovery never lands a marked entry.
+   */
+  abandon?(keys: readonly OutboxKey[]): Promise<void>;
+  /**
+   * The seq a txnId landed at, if it did: read after an append fails, since
+   * a writer that took over may have landed the prepared commit.
+   */
+  landedSeq?(
+    namespace: string,
+    partition: PartitionKey,
+    txnId: string,
+  ): Promise<number | undefined>;
   /** The chunk sweep's state now. */
   sweepState(): Promise<SweepState>;
+  /**
+   * Resolves once the chunk sweep batch this process is running, if any,
+   * has deleted its chunks and re-checked their references.
+   */
+  sweepBatch?(): Promise<void>;
 }
 
 /** What a commit-log unit needs to commit. */
@@ -434,6 +459,13 @@ export function createCommitLogUnitOfWork(
   let refusals: PartitionRefusal[] = [];
   /** Serializes this unit's commits and checkpoints. */
   let flushing: Promise<void> = Promise.resolve();
+  /**
+   * A refusal whose entries could be neither discarded nor marked abandoned
+   * (swamp-club#3586): the unit's end says its changes may still land.
+   */
+  let unconfirmed:
+    | { readonly cause: unknown; readonly reason: unknown }
+    | undefined;
   /** The unit's outbox entries not yet settled, by txnId. */
   const outbox: UnitOutbox = {
     unitId: crypto.randomUUID(),
@@ -552,11 +584,14 @@ export function createCommitLogUnitOfWork(
           // Decision 7 across a crash: with the refused entries go the
           // unit's run entries, so a recovery never lands a run record that
           // names what was refused.
-          await discardEntries(
+          const lost = await discardEntries(
             options,
             outbox,
             [...dropped, ...pending.filter((other) => runRank(other) === 1)],
           );
+          if (lost !== undefined && unconfirmed === undefined) {
+            unconfirmed = { cause: error, reason: lost.reason };
+          }
           const refusal: PartitionRefusal = {
             partition: group.partition,
             reason: error.reason,
@@ -617,7 +652,23 @@ export function createCommitLogUnitOfWork(
   const end = async (as: "committed" | "abandoned"): Promise<void> => {
     if (ended !== undefined) throw new Error(`unit of work already ${ended}`);
     ended = as;
-    options.tracker?.ended();
+    // Told only once the final flush and its discards are done: a recovery
+    // of dropped work waits for every open unit (swamp-club#3586).
+    try {
+      await finish(as);
+    } finally {
+      options.tracker?.ended();
+    }
+  };
+
+  /** A refusal's lost discard, as the unit's end reports it. */
+  const throwUnconfirmed = (): void => {
+    if (unconfirmed !== undefined) {
+      throw new MayLandLaterError(unconfirmed.cause, unconfirmed.reason);
+    }
+  };
+
+  const finish = async (as: "committed" | "abandoned"): Promise<void> => {
     if (as === "abandoned") {
       await flushing;
       staged = [];
@@ -626,7 +677,11 @@ export function createCommitLogUnitOfWork(
       pending = [];
       refusals = [];
       dropWork();
-      await discardEntries(options, outbox, abandoned);
+      const lost = await discardEntries(options, outbox, abandoned);
+      if (lost !== undefined) {
+        throw new MayLandLaterError(undefined, lost.reason);
+      }
+      throwUnconfirmed();
       return;
     }
     if (parent !== undefined) {
@@ -649,11 +704,17 @@ export function createCommitLogUnitOfWork(
       await flush();
     } catch (error) {
       // The unit ends with these commits failed, and the caller is told so:
-      // a later recovery must not land them.
+      // a later recovery must not land them. When that cannot be recorded,
+      // the caller is told they may land (swamp-club#3586).
       dropWork();
-      await discardEntries(options, outbox, pending);
+      const lost = await discardEntries(options, outbox, pending) ??
+        unconfirmed;
+      if (lost !== undefined && !(error instanceof MayLandLaterError)) {
+        throw new MayLandLaterError(error, lost.reason);
+      }
       throw error;
     }
+    throwUnconfirmed();
   };
 
   const uow: CommitLogUnitOfWork = {
@@ -977,6 +1038,17 @@ async function appendGroup(
         throw error;
       }
       storedOps.set(change.put, op);
+    } else if ("blob" in op.content) {
+      // A retry refreshes what it stored the first time, and stores again
+      // what a sweep deleted since, before it prepares (swamp-club#3586).
+      const missing = await options.chunkStore.refresh(
+        options.namespace,
+        op.content.blob,
+        options.signal,
+      );
+      if (missing.length > 0) {
+        await storeAgain(change.put.content, op.content.blob, missing, options);
+      }
     }
     // Every blob the commit names gets the post-commit check, a reused op
     // included: a sweep may have deleted its chunks since they were stored.
@@ -1024,6 +1096,11 @@ async function appendGroup(
           );
           await outbox.prepare({ commit, unitId: unitOutbox.unitId, base });
           if (sweepMayOverlap(sweepBefore, await outbox.sweepState())) {
+            // A batch in flight may have judged a chunk unreferenced before
+            // the prepare and delete it after this check: once it has
+            // re-checked, with the entry present, the check holds
+            // (swamp-club#3586). A batch that starts later sees the entry.
+            await outbox.sweepBatch?.();
             await restoreMissingChunks(stored, options);
           }
         }
@@ -1037,12 +1114,20 @@ async function appendGroup(
           ) {
             continue;
           }
+          if (await landedDespite(error, group, options, unitOutbox)) return;
           throw error;
         }
       }
     },
   );
-  await restoreMissingChunks(stored, options);
+  // The commit has landed: a failing check is a warning, never a failure
+  // that would drop landed work (swamp-club#3586).
+  try {
+    await restoreMissingChunks(stored, options);
+  } catch (error) {
+    logger
+      .warn`A v3 commit to partition ${group.partition.toString()} landed, but checking the content it names failed; reads of that content may fail: ${error}`;
+  }
   if (outbox !== undefined) {
     const key = unitOutbox.prepared.get(group.txnId);
     unitOutbox.prepared.delete(group.txnId);
@@ -1076,17 +1161,50 @@ function outboxKeyOfGroup(
 }
 
 /**
- * Removes the outbox entries of `groups` that the unit prepared: a refusal,
- * an abandon or a failed end. A removal that fails is logged and the
- * original outcome stands; the sink retries it when the datastore closes.
+ * Whether the group's commit landed although its append failed
+ * (swamp-club#3586): a writer that took over may have landed the prepared
+ * entry, or the append may have failed after its commit. Only a prepared
+ * group can have; a landing that cannot be read may have happened.
+ *
+ * @throws MayLandLaterError when the store cannot say
+ */
+async function landedDespite(
+  error: unknown,
+  group: Group,
+  options: CommitLogUnitOptions,
+  unitOutbox: UnitOutbox,
+): Promise<boolean> {
+  const outbox = options.sink.outbox;
+  if (
+    outbox?.landedSeq === undefined || !unitOutbox.prepared.has(group.txnId)
+  ) {
+    return false;
+  }
+  try {
+    return await outbox.landedSeq(
+      options.namespace,
+      group.partition,
+      group.txnId,
+    ) !== undefined;
+  } catch (readError) {
+    throw new MayLandLaterError(error, readError);
+  }
+}
+
+/**
+ * Gives up the outbox entries of `groups` that the unit prepared: a refusal,
+ * an abandon or a failed end (swamp-club#3586). Each is marked abandoned,
+ * fsynced, then removed; a removal that fails is retried when the datastore
+ * closes, and recovery drops a marked entry meanwhile. Resolves with the
+ * reason when neither could be written: then a recovery may land them.
  */
 async function discardEntries(
   options: CommitLogUnitOptions,
   unitOutbox: UnitOutbox,
   groups: readonly Group[],
-): Promise<void> {
+): Promise<{ readonly reason: unknown } | undefined> {
   const outbox = options.sink.outbox;
-  if (outbox === undefined) return;
+  if (outbox === undefined) return undefined;
   const keys: OutboxKey[] = [];
   for (const group of groups) {
     const key = unitOutbox.prepared.get(group.txnId);
@@ -1094,12 +1212,29 @@ async function discardEntries(
     unitOutbox.prepared.delete(group.txnId);
     keys.push(key);
   }
-  if (keys.length === 0) return;
+  if (keys.length === 0) return undefined;
+  let marked = false;
+  if (outbox.abandon !== undefined) {
+    try {
+      await outbox.abandon(keys);
+      marked = true;
+    } catch (error) {
+      logger
+        .debug`Marking ${keys.length} outbox entries of failed v3 commits abandoned failed: ${error}`;
+    }
+  }
   try {
     await outbox.discard(keys);
+    return undefined;
   } catch (error) {
+    if (marked) {
+      logger
+        .warn`Discarding ${keys.length} outbox entries of failed v3 commits failed; they are marked abandoned, so no recovery lands them, and are discarded again when the datastore closes: ${error}`;
+      return undefined;
+    }
     logger
-      .warn`Discarding ${keys.length} outbox entries of failed v3 commits failed; they are discarded again when the datastore closes: ${error}`;
+      .warn`Discarding ${keys.length} outbox entries of failed v3 commits failed, and so did marking them abandoned; a later swamp command may commit them: ${error}`;
+    return { reason: error };
   }
 }
 
@@ -1117,8 +1252,9 @@ interface StoredContent {
  * left is a commit landing after that re-check. Checked here, after the
  * commit has landed (appended or a duplicate), any chunk of it missing is
  * stored again from the put's content source, which stays readable until
- * the unit ends. Content stored again must give the same reference;
- * a source that changed cannot repair the commit, and that is an error.
+ * the unit ends. Content stored again must give the same reference; a
+ * source that changed cannot repair the commit, and the caller reports it
+ * as a warning, since the commit has landed (swamp-club#3586).
  */
 async function restoreMissingChunks(
   stored: readonly StoredContent[],
@@ -1128,18 +1264,32 @@ async function restoreMissingChunks(
   for (const { source, blob } of stored) {
     const missing = await chunkStore.missing(namespace, blob, signal);
     if (missing.length === 0) continue;
-    const again = await chunkStore.write(
-      namespace,
-      source instanceof Uint8Array ? source : await source(),
-      signal,
+    await storeAgain(source, blob, missing, options);
+  }
+}
+
+/**
+ * Stores `blob`'s content again from `source`, of which `missing` chunks are
+ * gone. Content stored again must give the same reference.
+ */
+async function storeAgain(
+  source: ContentSource,
+  blob: BlobRef,
+  missing: readonly string[],
+  options: CommitLogUnitOptions,
+): Promise<void> {
+  const { chunkStore, namespace, signal } = options;
+  const again = await chunkStore.write(
+    namespace,
+    source instanceof Uint8Array ? source : await source(),
+    signal,
+  );
+  if (!again.equals(blob)) {
+    throw new Error(
+      `A commit names chunk ${
+        missing[0]
+      }, which is missing, and its content source no longer gives content ${blob.sha256}`,
     );
-    if (!again.equals(blob)) {
-      throw new Error(
-        `A landed commit names chunk ${
-          missing[0]
-        }, which is missing, and its content source no longer gives content ${blob.sha256}`,
-      );
-    }
   }
 }
 

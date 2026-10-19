@@ -236,3 +236,102 @@ Deno.test("planOutboxRecovery: an entry a recovery left for its live writer is n
     [live],
   );
 });
+
+Deno.test("decideFenceChain: a gap continues the chain in shared mode, and restarts it while replicating (swamp-club#3586)", () => {
+  const chain = { lastFence: 5, chainStart: 3, floor: 4 };
+  assertEquals(decideFenceChain(chain, 8, { replicated: false }), {
+    lastFence: 8,
+    chainStart: 3,
+    floor: 4,
+  }, "shared mode has one copy: the gap is this copy's own");
+  assertEquals(decideFenceChain(chain, 8, { replicated: true }), {
+    lastFence: 8,
+    chainStart: 8,
+    floor: 4,
+  });
+  assertEquals(
+    decideFenceChain(chain, 2, { replicated: false }),
+    { lastFence: 2, chainStart: 2, floor: 0 },
+    "recreated lease records restart it in either mode",
+  );
+});
+
+Deno.test("decideFenceChain: a noted fence one above the last counts as taken; any other note proves nothing (swamp-club#3586)", () => {
+  const chain = { lastFence: 5, chainStart: 3, floor: 4 };
+  assertEquals(
+    decideFenceChain(chain, 7, { replicated: true, pendingFence: 6 }),
+    { lastFence: 7, chainStart: 3, floor: 4 },
+  );
+  assertEquals(
+    decideFenceChain(chain, 8, { replicated: true, pendingFence: 7 }),
+    { lastFence: 8, chainStart: 8, floor: 4 },
+    "fence 6 may be another copy's",
+  );
+  assertEquals(
+    decideFenceChain({ lastFence: 0, chainStart: 0, floor: 0 }, 4, {
+      replicated: true,
+    }),
+    { lastFence: 4, chainStart: 4, floor: 0 },
+    "a chain holding only a note starts at the first record",
+  );
+});
+
+Deno.test("planOutboxRecovery: an abandoned entry is dropped whatever its writer's state, a left one included (swamp-club#3586)", async () => {
+  const abandoned = { ...await entry(1, { fence: 5 }), abandonedAt: NOW };
+  const left = {
+    ...await entry(2, { fence: 3 }),
+    leftAtFence: 4,
+    abandonedAt: NOW,
+  };
+  for (const alive of [false, true]) {
+    const plan = planOutboxRecovery([abandoned, left], {
+      ...judge(),
+      writerAlive: () => alive,
+      landed: () => true,
+    });
+    assertEquals(plan.sends, []);
+    assertEquals(plan.settles, []);
+    assertEquals(plan.skipped, []);
+    assertEquals(
+      plan.drops.map((drop) => [drop.entry.sequence, drop.reason]),
+      [[1, "abandoned"], [2, "abandoned"]],
+    );
+  }
+});
+
+Deno.test("planOutboxRecovery: a landed entry settles before any drop reason is judged (swamp-club#3586)", async () => {
+  const stale = await entry(1, { fence: 2 });
+  const overtaken = await entry(2, { fence: 3 });
+  const expired = await entry(3, {
+    fence: 6,
+    createdAt: NOW - OUTBOX_RETRY_BOUND_MS - 1,
+  });
+  const run = await entry(4, { fence: 2, run: true });
+  const plan = planOutboxRecovery([stale, overtaken, expired, run], {
+    ...judge(),
+    landed: () => true,
+  });
+  assertEquals(plan.settles, [stale, overtaken, expired, run]);
+  assertEquals(plan.drops, []);
+  assertEquals(plan.sends, []);
+});
+
+Deno.test("planOutboxRecovery: an expired entry whose txnId may have been pruned is dropped as uncertain (swamp-club#3586)", async () => {
+  const expired = await entry(1, {
+    fence: 6,
+    createdAt: NOW - OUTBOX_RETRY_BOUND_MS - 1,
+  });
+  const pruned = await entry(2, {
+    fence: 6,
+    createdAt: NOW - COMPACTED_TXN_RETENTION_MS - 1,
+  });
+  const plan = planOutboxRecovery([expired, pruned], judge());
+  assertEquals(
+    plan.drops.map((drop) => [
+      drop.entry.sequence,
+      drop.reason,
+      drop.uncertain === true,
+    ]),
+    [[1, "expired", false], [2, "expired", true]],
+  );
+});

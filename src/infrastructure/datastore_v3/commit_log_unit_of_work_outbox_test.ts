@@ -21,7 +21,10 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { OUTBOX_RETRY_BOUND_MS } from "../../domain/datastore_v3/commit_outbox.ts";
-import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  MayLandLaterError,
+  PartitionsRefusedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import {
   dataKey,
@@ -281,4 +284,118 @@ Deno.test("commit-log unit with an outbox: a retry older than the bound is refus
   assertEquals(sink.entries.size, 0);
   uow.acknowledgeRefusals();
   await uow.commit();
+});
+
+Deno.test("commit-log unit with an outbox: a writer that may overlap a sweep batch waits for it before its chunk check and its append (swamp-club#3586)", async () => {
+  const sink = new OutboxMemorySink();
+  const options = unitOptions(sink, memory());
+  // A sweep is in progress at both reads.
+  sink.sweepStates = [{ epoch: 4, active: true }, { epoch: 4, active: true }];
+  // The batch in flight judged the chunks unreferenced before the prepare.
+  // Run to its end, it deletes them and its re-check, finding the entry,
+  // puts them back.
+  let batchEnded = false;
+  Object.assign(sink.outbox, {
+    sweepBatch: () => {
+      sink.events.push("batch");
+      batchEnded = true;
+      return Promise.resolve();
+    },
+  });
+  let presentAtAppend: boolean | undefined;
+  sink.beforeAppend = () => {
+    // Not waited for, it deletes them after the writer's check, and the
+    // process dies before either re-check runs.
+    if (!batchEnded) options.storage.chunks.clear();
+    presentAtAppend = options.storage.chunks.size > 0;
+  };
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(blobChange("x"));
+  await uow.commit();
+  assertEquals(presentAtAppend, true);
+  const [commit] = sink.landed;
+  assertEquals(sink.events.slice(0, 3), [
+    `prepare:${commit.txnId}`,
+    "batch",
+    `append:${commit.txnId}`,
+  ]);
+});
+
+Deno.test("commit-log unit with an outbox: the unit counts as open until its final flush and discards are done (swamp-club#3586)", async () => {
+  for (const ending of ["commit", "abandon"] as const) {
+    const sink = new OutboxMemorySink();
+    const options = unitOptions(sink, memory(), {
+      tracker: {
+        opened: () => {},
+        ended: () => sink.events.push("ended"),
+        dropped: () => {},
+      },
+    });
+    const uow = createCommitLogUnitOfWork(contextHook(), options);
+    await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+    if (ending === "abandon") {
+      sink.beforeAppend = () => {
+        throw new Error("transient");
+      };
+      await assertRejects(() => uow.checkpoint(), Error, "transient");
+      await uow.abandon();
+    } else {
+      await uow.commit();
+    }
+    assertEquals(sink.events.at(-1), "ended", ending);
+    assertEquals(sink.events.filter((event) => event === "ended").length, 1);
+  }
+});
+
+Deno.test("commit-log unit with an outbox: a retry refreshes the chunks it stored, and stores again what a sweep deleted, before it appends (swamp-club#3586)", async () => {
+  const sink = new OutboxMemorySink();
+  const options = unitOptions(sink, memory());
+  let fail = true;
+  let presentAtAppend: boolean | undefined;
+  sink.beforeAppend = () => {
+    if (fail) throw new Error("transient");
+    presentAtAppend = options.storage.chunks.size > 0;
+  };
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(blobChange("x"));
+  await assertRejects(() => uow.checkpoint(), Error, "transient");
+  // Past the grace period while the retry waited, a sweep deletes them.
+  options.storage.chunks.clear();
+  fail = false;
+  await uow.commit();
+  assertEquals(presentAtAppend, true);
+  assertEquals(sink.landed.length, 1);
+});
+
+Deno.test("commit-log unit with an outbox: a refusal in the unit's own commit whose give-up cannot be recorded says the change may land (swamp-club#3586)", async () => {
+  for (const ending of ["commit", "checkpoint then commit"] as const) {
+    const sink = new OutboxMemorySink();
+    const options = unitOptions(sink, memory());
+    const first = createCommitLogUnitOfWork(contextHook(), options);
+    await first.stageOp({
+      partition: MODEL,
+      op: await savePut("a", 1, "a", "absent"),
+    });
+    await first.commit();
+    // Neither the abandoned mark nor the discard can be written.
+    Object.assign(sink.outbox, {
+      abandon: () => Promise.reject(new Error("database or disk is full")),
+    });
+    sink.beforeRemove = () => {
+      throw new Error("database or disk is full");
+    };
+    const uow = createCommitLogUnitOfWork(contextHook(), options);
+    // Refused: its expect no longer holds.
+    await uow.stageOp({
+      partition: MODEL,
+      op: await savePut("a", 1, "again", "absent"),
+    });
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    if (ending === "checkpoint then commit") {
+      await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+      uow.acknowledgeRefusals();
+    }
+    const error = await assertRejects(() => uow.commit(), MayLandLaterError);
+    assert(error.message.includes("disk is full"), ending);
+  }
 });

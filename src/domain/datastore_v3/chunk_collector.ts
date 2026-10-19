@@ -148,6 +148,14 @@ export interface SweepMonitor {
   begin(): Promise<void>;
   heartbeat(): Promise<void>;
   end(): Promise<void>;
+  /**
+   * Runs one batch, from its reference check through its deletes and the
+   * re-check after them, where a writer that may overlap it waits for it
+   * (swamp-club#3586): a chunk the batch judged unreferenced before the
+   * writer prepared its commit is either back or absent by then, and the
+   * writer's own check stores it again before its commit lands.
+   */
+  batch?(run: () => Promise<void>): Promise<void>;
 }
 
 /** What a {@link ChunkCollector} works over. */
@@ -302,6 +310,15 @@ export class ChunkCollector {
     const flush = async () => {
       if (batch.length === 0) return;
       await this.#sweep?.heartbeat();
+      if (this.#sweep?.batch !== undefined) {
+        await this.#sweep.batch(sweepBatch);
+      } else {
+        await sweepBatch();
+      }
+      batch = [];
+    };
+
+    const sweepBatch = async () => {
       const names = await this.#commitStore.referencedChunks(
         namespace,
         batch,
@@ -338,7 +355,6 @@ export class ChunkCollector {
         }
       }
       await settle(held);
-      batch = [];
     };
 
     for await (const chunk of this.#storage.list(ns, signal)) {
