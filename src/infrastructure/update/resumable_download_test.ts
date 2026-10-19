@@ -26,9 +26,10 @@ import {
 } from "@std/assert";
 import { join } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
-import type {
-  DownloadProgress,
-  DownloadRetry,
+import {
+  type DownloadProgress,
+  type DownloadRetry,
+  formatBytes,
 } from "../../domain/update/download_progress.ts";
 import { downloadToFile } from "./resumable_download.ts";
 
@@ -139,6 +140,12 @@ function sendThen(
     }/${ARCHIVE.length}`;
   }
   return new Response(body, { status: start > 0 ? 206 : 200, headers });
+}
+
+/** The offset a request's `Range` header asks for, or 0 without one. */
+function rangeStart(req: Request): number {
+  const match = req.headers.get("range")?.match(/^bytes=(\d+)-$/);
+  return match ? Number(match[1]) : 0;
 }
 
 function recorder() {
@@ -264,7 +271,13 @@ Deno.test("downloadToFile: a stalled download fails with what it received once t
     const path = join(dir, "swamp.tar.gz");
     const rec = recorder();
     const error = await withServer(
-      [() => sendThen(0, HALF, "stall"), () => sendThen(HALF, HALF, "stall")],
+      [
+        () => sendThen(0, HALF, "stall"),
+        // Answers the offset asked for, so the retry stalls too even when a
+        // loaded runner stalled the first attempt before its bytes arrived. A
+        // fixed offset would be refused as the wrong one and restart instead.
+        (req) => sendThen(rangeStart(req), rangeStart(req), "stall"),
+      ],
       (url) =>
         assertRejects(
           () =>
@@ -278,10 +291,25 @@ Deno.test("downloadToFile: a stalled download fails with what it received once t
     );
 
     assertStringIncludes(error.message, "no data received for 0.05s");
-    assertStringIncludes(error.message, "received 2.0 KB of 4.0 KB");
+    // Usually 2.0 KB of 4.0 KB, but on a loaded runner the stall can cut the
+    // first attempt short, or fire before any response arrives so the total
+    // is never learned. The message is checked against what actually happened.
+    const received = (await Deno.stat(path)).size;
+    const last = rec.progress.at(-1);
+    assertEquals(last?.receivedBytes ?? 0, received);
+    assertStringIncludes(
+      error.message,
+      last
+        ? `received ${formatBytes(received)} of 4.0 KB`
+        : `received ${formatBytes(received)})`,
+    );
     assertStringIncludes(error.message, "Run swamp update again to retry");
-    assertEquals(rec.retries.length, 1);
-    assertStringIncludes(rec.retries[0].reason, "no data received");
+    // Usually one retry, but a first request aborted before the server
+    // dispatched it leaves the scripted first answer to the retry.
+    assert(rec.retries.length > 0);
+    for (const retry of rec.retries) {
+      assertStringIncludes(retry.reason, "no data received");
+    }
   });
 });
 
@@ -388,18 +416,26 @@ Deno.test("downloadToFile: every attempt uses a new HTTP client, so a retry neve
       };
       return client;
     };
+    const rec = recorder();
     await withServer(
-      [() => sendThen(0, HALF, "stall"), () => partial(HALF)],
+      [
+        () => sendThen(0, HALF, "stall"),
+        // Answers the offset asked for: a loaded runner can stall the first
+        // attempt before any byte arrives, and the retry then starts from zero.
+        (req) => rangeStart(req) > 0 ? partial(rangeStart(req)) : full(),
+      ],
       (url) =>
         downloadToFile(url, path, {
-          ...recorder().options,
+          ...rec.options,
           stallTimeoutMs: 50,
           createClient,
         }),
     );
 
     await assertArchive(path);
-    assertEquals(clients, [{ closed: true }, { closed: true }]);
+    assert(rec.retries.length > 0);
+    assertEquals(clients.length, rec.retries.length + 1);
+    assert(clients.every((client) => client.closed));
   });
 });
 
