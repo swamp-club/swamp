@@ -104,9 +104,9 @@ export const SWAMP_SUBDIRS = {
 
 // Lockfile-relative prefixes for regenerable bundle output. Sourced from
 // SWAMP_SUBDIRS so a future bundle-dir addition only needs the key list
-// extended below to stay in sync. Forward slashes match how
-// installExtension writes lockfile paths (POSIX-normalized via
-// `relative()` in src/libswamp/extensions/pull.ts).
+// extended below to stay in sync. Forward slashes match lockfile paths,
+// which the lockfile reader and writer convert to forward slashes
+// (canonicalLockfileEntry in upstream_extensions.ts).
 const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
   SWAMP_SUBDIRS.bundles,
   SWAMP_SUBDIRS.vaultBundles,

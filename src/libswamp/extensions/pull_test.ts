@@ -1847,16 +1847,15 @@ Deno.test(
       );
       assertEquals(await installedTree(repoDir), freshTree);
       assertEquals(entryWithoutTimes(lockfile, name), freshEntry);
-      assertEquals(
-        [...(result?.pruned ?? [])].sort(),
-        [
-          relative(
-            repoDir,
-            join(extRootOf(repoDir, name), "models", "old_only.ts"),
-          ),
-          vaultBundle,
-        ].sort(),
-      );
+      // The lockfile does not list bundle cache files, so the swap
+      // removes v1's bundle without reporting it.
+      assertEquals(result?.pruned, [
+        relative(
+          repoDir,
+          join(extRootOf(repoDir, name), "models", "old_only.ts"),
+        ),
+      ]);
+      assertEquals(await exists(join(repoDir, vaultBundle)), false);
     });
   },
 );

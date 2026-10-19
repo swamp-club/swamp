@@ -1663,3 +1663,77 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "RemoveExtensionService.execute: deletes the extension's bundle namespaces, which the lockfile does not list (swamp-club#3569)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/untracked-bundle-${crypto.randomUUID()}`;
+        const extRoot = join(swampPath(repoDir, "pulled-extensions"), extName);
+        await ensureDir(join(extRoot, "models"));
+        await Deno.writeTextFile(join(extRoot, "models", "model.ts"), "// x");
+        const namespaceDir = join(
+          swampPath(repoDir, "vault-bundles"),
+          bundleNamespace(join(extRoot, "vaults"), repoDir),
+        );
+        await ensureDir(join(namespaceDir, "nested"));
+        await Deno.writeTextFile(join(namespaceDir, "nested", "v.js"), "// v");
+        await lockfileRepository.writeEntry(extName, "1.0.0", [
+          `.swamp/pulled-extensions/${extName}/models/model.ts`,
+        ]);
+
+        await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(extName);
+
+        await assertRejects(
+          () => Deno.stat(namespaceDir),
+          Deno.errors.NotFound,
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: refuses a backslash path that leads outside the repo (swamp-club#3569)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/backslash-outside-${crypto.randomUUID()}`;
+        const outside = join(repoDir, "..", `outside-${crypto.randomUUID()}`);
+        await Deno.writeTextFile(outside, "keep");
+        try {
+          await Deno.writeTextFile(
+            lockfileRepository.lockfilePath,
+            JSON.stringify({
+              [extName]: {
+                version: "1.0.0",
+                pulledAt: "2026-01-01T00:00:00.000Z",
+                files: [`..\\${relative(join(repoDir, ".."), outside)}`],
+              },
+            }),
+          );
+          await lockfileRepository.refresh();
+
+          await assertRejects(
+            () =>
+              new RemoveExtensionService({
+                repository,
+                lockfileRepository,
+                repoDir,
+              }).execute(extName),
+            UserError,
+            "lists 1 path(s) outside the repository",
+          );
+          assertEquals(await Deno.readTextFile(outside), "keep");
+        } finally {
+          await Deno.remove(outside);
+        }
+      },
+    );
+  },
+);

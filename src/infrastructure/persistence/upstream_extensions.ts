@@ -19,6 +19,7 @@
 
 import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
+import { isBundleArtifactPath } from "./paths.ts";
 
 /** Entry in upstream_extensions.json. */
 export interface UpstreamExtensionEntry {
@@ -70,8 +71,52 @@ export function readPublishedChannel(
 export type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
 
 /**
- * Reads upstream_extensions.json and returns the parsed map. A missing file
- * reads as an empty map.
+ * A lockfile path with forward slashes. `relative()` writes the OS
+ * separator, so a lockfile written on Windows holds backslashes; on POSIX
+ * those would read as part of a file name.
+ */
+export function canonicalLockfilePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
+/**
+ * The entry in the form every checkout writes and reads: `files` and
+ * `include` with forward slashes, and `files` without bundle cache
+ * paths. A bundle namespace is a hash of an OS-separated path, so its
+ * directory differs between Windows and POSIX checkouts, and bundles are
+ * rebuilt locally. Key order, array order, unknown keys and non-string
+ * array items are kept, and applying it twice changes nothing.
+ */
+export function canonicalLockfileEntry<T>(entry: T): T {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return entry;
+  }
+  // fromEntries defines own properties, so a `__proto__` key in the
+  // repo-controlled file stays data.
+  return Object.fromEntries(
+    Object.entries(entry).map(([key, value]) => {
+      if ((key !== "files" && key !== "include") || !Array.isArray(value)) {
+        return [key, value];
+      }
+      const paths = value.map((item) =>
+        typeof item === "string" ? canonicalLockfilePath(item) : item
+      );
+      return [
+        key,
+        key === "files"
+          ? paths.filter((item) =>
+            typeof item !== "string" || !isBundleArtifactPath(item)
+          )
+          : paths,
+      ];
+    }),
+  ) as T;
+}
+
+/**
+ * Reads upstream_extensions.json and returns the parsed map, each entry in
+ * its {@link canonicalLockfileEntry} form, so a lockfile written on another
+ * OS reads the same. A missing file reads as an empty map.
  *
  * Content that is not valid JSON, or is valid JSON but not an object (such
  * as `null` or an array), throws a `SyntaxError` naming the file, so callers
@@ -117,5 +162,9 @@ export async function readUpstreamExtensions(
       [lockfilePath],
     );
   }
-  return parsed as UpstreamExtensionsMap;
+  return Object.fromEntries(
+    Object.entries(parsed).map((
+      [name, entry],
+    ) => [name, canonicalLockfileEntry(entry)]),
+  );
 }

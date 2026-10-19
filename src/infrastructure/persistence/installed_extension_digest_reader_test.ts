@@ -222,3 +222,18 @@ Deno.test("installedDigestMatches: returns null when the root is missing", async
     null,
   );
 });
+
+// The lockfile's filesChecksum is shared by every checkout, so the digest
+// of a nested tree must not depend on the OS's path separator. This value
+// was computed on Linux; the same test runs on Windows (swamp-club#3569).
+Deno.test("readInstalledExtensionDigest: a nested tree hashes the same on every OS", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(dir, "models", "_lib"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "models", "_lib", "a.ts"), "a");
+    await Deno.writeTextFile(join(dir, "manifest.yaml"), "m");
+    assertEquals(
+      await readInstalledExtensionDigest(dir),
+      "224d335a308a9c8c97625e15008d8cdeee9f491a60b897915a531cbce7b1cfb7",
+    );
+  });
+});

@@ -133,7 +133,7 @@ Deno.test("LockfileRepository.writeEntry: creates file and updates own cache", a
   });
 });
 
-Deno.test("LockfileRepository.writeEntry: sorts files[] for deterministic output", async () => {
+Deno.test("LockfileRepository.writeEntry: sorts files[] for deterministic output, leaving out bundle cache paths", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "upstream_extensions.json");
     const repo = await LockfileRepository.create(path);
@@ -149,7 +149,6 @@ Deno.test("LockfileRepository.writeEntry: sorts files[] for deterministic output
 
     const sorted = [
       ".claude/skills/my-skill",
-      ".swamp/bundles/abc/x.js",
       "models/_lib/b.ts",
       "models/a.ts",
       "models/z.ts",
@@ -598,5 +597,92 @@ Deno.test("LockfileRepository.writeEntry: records publishedChannel next to chann
     assertEquals(onDisk["@scope/known"].channel, undefined);
     assertEquals("publishedChannel" in onDisk["@scope/unknown"], false);
     assertEquals(onDisk["@scope/unknown"].channel, "beta");
+  });
+});
+
+/**
+ * A lockfile entry as a Windows checkout writes it, sorted there
+ * (swamp-club#3569): a backslash sorts after "A", a slash before it.
+ */
+const WINDOWS_ENTRY = {
+  version: "1.0.0",
+  pulledAt: "2026-01-01T00:00:00.000Z",
+  files: [
+    ".swamp\\bundles\\2f6574ec\\a.js",
+    ".swamp\\pulled-extensions\\@w\\ext\\modelsA.ts",
+    ".swamp\\pulled-extensions\\@w\\ext\\models\\a.ts",
+  ],
+};
+
+Deno.test("LockfileRepository.writeEntry: writes backslash paths with forward slashes", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repo = await LockfileRepository.create(path);
+    await repo.writeEntry("@scope/foo", "1.0.0", ["models\\_lib\\b.ts"], {
+      include: ["models\\_lib\\c.ts"],
+    });
+    const onDisk = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(onDisk["@scope/foo"].files, ["models/_lib/b.ts"]);
+    assertEquals(onDisk["@scope/foo"].include, ["models/_lib/c.ts"]);
+  });
+});
+
+Deno.test("LockfileRepository.writeEntry: rewrites other entries written on Windows", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(path, JSON.stringify({ "@w/ext": WINDOWS_ENTRY }));
+    const repo = await LockfileRepository.create(path);
+    await repo.writeEntry("@scope/foo", "1.0.0", ["models/foo.ts"]);
+    const onDisk = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(onDisk["@w/ext"].files, [
+      ".swamp/pulled-extensions/@w/ext/modelsA.ts",
+      ".swamp/pulled-extensions/@w/ext/models/a.ts",
+    ]);
+  });
+});
+
+Deno.test("LockfileRepository.normalize: rewrites a lockfile written on Windows, sorted, once", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(path, JSON.stringify({ "@w/ext": WINDOWS_ENTRY }));
+    const repo = await LockfileRepository.create(path);
+
+    assertEquals(await repo.normalize(), true);
+    const expected = {
+      ...WINDOWS_ENTRY,
+      files: [
+        ".swamp/pulled-extensions/@w/ext/models/a.ts",
+        ".swamp/pulled-extensions/@w/ext/modelsA.ts",
+      ],
+    };
+    const normalized = await Deno.readTextFile(path);
+    assertEquals(JSON.parse(normalized), { "@w/ext": expected });
+    assertEquals(repo.getEntry("@w/ext"), expected);
+
+    assertEquals(await repo.normalize(), false);
+    assertEquals(await Deno.readTextFile(path), normalized);
+  });
+});
+
+Deno.test("LockfileRepository.normalize: leaves a canonical lockfile's bytes alone", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    // Compact JSON: only path changes trigger a rewrite, not formatting.
+    const written = JSON.stringify({
+      "@scope/foo": { version: "1.0.0", files: ["models/foo.ts"] },
+    });
+    await Deno.writeTextFile(path, written);
+    const repo = await LockfileRepository.create(path);
+    assertEquals(await repo.normalize(), false);
+    assertEquals(await Deno.readTextFile(path), written);
+  });
+});
+
+Deno.test("LockfileRepository.normalize: a missing lockfile creates nothing", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "models", "upstream_extensions.json");
+    const repo = await LockfileRepository.create(path);
+    assertEquals(await repo.normalize(), false);
+    assertEquals([...Deno.readDirSync(dir)], []);
   });
 });

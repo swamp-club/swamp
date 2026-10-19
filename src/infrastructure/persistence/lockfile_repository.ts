@@ -22,6 +22,7 @@ import { UserError } from "../../domain/errors.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { lockfileAdvisoryLockPath } from "./paths.ts";
 import {
+  canonicalLockfileEntry,
   readUpstreamExtensions,
   type UpstreamExtensionEntry,
   type UpstreamExtensionsMap,
@@ -185,13 +186,15 @@ export class LockfileRepository {
     const lockFile = await this.acquireLock();
     try {
       const current = await readUpstreamExtensions(this.lockfilePath);
+      const paths = canonicalLockfileEntry({
+        files,
+        include: options?.include ?? [],
+      });
       current[name] = {
         version,
         pulledAt: options?.pulledAt ?? new Date().toISOString(),
-        files: [...files].sort(),
-        ...(options?.include && options.include.length > 0
-          ? { include: options.include }
-          : {}),
+        files: [...paths.files].sort(),
+        ...(paths.include.length > 0 ? { include: paths.include } : {}),
         ...(options?.checksum ? { checksum: options.checksum } : {}),
         ...(options?.filesChecksum
           ? { filesChecksum: options.filesChecksum }
@@ -240,12 +243,13 @@ export class LockfileRepository {
   }
 
   /**
-   * Puts entries back exactly as they were read: each named entry object
-   * is written verbatim, or its key deleted when the value is null. All
-   * of them land in one atomic write under the advisory lock, so either
-   * every entry is restored or none is. Unlike {@link writeEntry}, the
-   * entry is not rebuilt: file order, empty fields and keys this version
-   * does not know are kept. Used to undo an install's lockfile writes.
+   * Puts entries back as they were read: each named entry object is
+   * written in its canonical form (as every read returns it), or its key
+   * deleted when the value is null. All of them land in one atomic write
+   * under the advisory lock, so either every entry is restored or none
+   * is. Unlike {@link writeEntry}, the entry is not rebuilt: file order,
+   * empty fields and keys this version does not know are kept. Used to
+   * undo an install's lockfile writes.
    */
   async restoreEntries(
     entries: Readonly<Record<string, UpstreamExtensionEntry | null>>,
@@ -258,7 +262,7 @@ export class LockfileRepository {
         if (entry === null) {
           delete current[name];
         } else {
-          current[name] = structuredClone(entry);
+          current[name] = canonicalLockfileEntry(structuredClone(entry));
         }
       }
       await atomicWriteTextFile(
@@ -281,11 +285,67 @@ export class LockfileRepository {
     await Deno.mkdir(dirname(this.lockfilePath), { recursive: true });
     const lockFile = await this.acquireLock();
     try {
+      const canonical: UpstreamExtensionsMap = Object.fromEntries(
+        Object.entries(entries).map((
+          [name, entry],
+        ) => [name, canonicalLockfileEntry(structuredClone(entry))]),
+      );
       await atomicWriteTextFile(
         this.lockfilePath,
-        JSON.stringify(entries, null, 2) + "\n",
+        JSON.stringify(canonical, null, 2) + "\n",
       );
-      this.cache = structuredClone(entries);
+      this.cache = canonical;
+    } finally {
+      await this.releaseLock(lockFile);
+    }
+  }
+
+  /**
+   * Rewrites the lockfile in its canonical form when the file on disk is
+   * not in it: paths written with backslashes, or `files` listing bundle
+   * cache paths (see {@link canonicalLockfileEntry}). Reads accept both,
+   * so this only stops a lockfile written on another OS from showing as
+   * changed. Leaves the file alone, and returns false, when it is missing
+   * or already canonical.
+   */
+  async normalize(): Promise<boolean> {
+    // No lockfile, nothing to rewrite: don't create the lock's dir for it.
+    try {
+      await Deno.stat(this.lockfilePath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+    const lockFile = await this.acquireLock();
+    try {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await Deno.readTextFile(this.lockfilePath));
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return false;
+        throw error;
+      }
+      const current = await readUpstreamExtensions(this.lockfilePath);
+      if (JSON.stringify(raw) === JSON.stringify(current)) {
+        this.cache = current;
+        return false;
+      }
+      // Sorted as writeEntry sorts them: "\" and "/" sort differently, so
+      // the converted paths may be out of order.
+      for (const entry of Object.values(current)) {
+        const files: unknown = entry?.files;
+        if (
+          Array.isArray(files) && files.every((f) => typeof f === "string")
+        ) {
+          files.sort();
+        }
+      }
+      await atomicWriteTextFile(
+        this.lockfilePath,
+        JSON.stringify(current, null, 2) + "\n",
+      );
+      this.cache = current;
+      return true;
     } finally {
       await this.releaseLock(lockFile);
     }

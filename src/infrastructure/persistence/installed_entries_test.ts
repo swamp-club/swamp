@@ -331,3 +331,58 @@ Deno.test("pathsToRemoveForReinstall: lists only its own files in a skill dir an
   assertPathEquals(paths[1], ".swamp/pulled-extensions/skills/shared/SKILL.md");
   assertPathEquals(paths[2], ".swamp/pulled-extensions/skills/own");
 });
+
+Deno.test("readInstalledEntries: an auto-resolve lockfile written on Windows reads with forward slashes (swamp-club#3569)", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const skill = ".swamp/pulled-extensions/skills/foo/SKILL.md";
+    await Deno.mkdir(
+      join(repo, ".swamp", "pulled-extensions", "skills", "foo"),
+      {
+        recursive: true,
+      },
+    );
+    await Deno.writeTextFile(join(repo, skill), "x");
+    const localPath = join(repo, "local.json");
+    await Deno.writeTextFile(
+      localPath,
+      JSON.stringify({
+        "@a/gone": {
+          ...entry("1"),
+          files: [
+            ".swamp\\bundles\\2f6574ec\\x.js",
+            skill.replaceAll("/", "\\"),
+          ],
+        },
+      }),
+    );
+
+    const { entries, localOnly } = await readInstalledEntries(
+      join(repo, "missing.json"),
+      localPath,
+    );
+    assertEquals([...localOnly], ["@a/gone"]);
+    assertEquals(entries["@a/gone"].files, [skill]);
+    // The skill survives on disk, so the extension is not gone, and the
+    // reinstall hint names its skill dir.
+    assertEquals(
+      await isAbsentFromDisk(repo, "@a/gone", entries["@a/gone"]),
+      false,
+    );
+    assertEquals(
+      pathsToRemoveForReinstall(repo, "@a/gone", entries).map((p) =>
+        p.replaceAll("\\", "/")
+      ),
+      [
+        ".swamp/pulled-extensions/@a/gone",
+        ".swamp/pulled-extensions/skills/foo",
+      ],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repo, { recursive: true });
+    }
+  }
+});

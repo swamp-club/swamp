@@ -32,7 +32,11 @@ import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cle
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { InstallContext } from "./pull.ts";
-import { ManagedLockfileUnpublishedError } from "./managed_lockfile_transaction.ts";
+import {
+  ManagedLockfileTransaction,
+  ManagedLockfileUnpublishedError,
+  withManagedLockfileTransaction,
+} from "./managed_lockfile_transaction.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 
@@ -2592,3 +2596,109 @@ Deno.test(
     }
   },
 );
+
+/**
+ * A repo whose one extension's source file is on disk, with a lockfile
+ * written as a Windows checkout writes it: backslash paths, and a bundle
+ * path under that checkout's bundle namespace (swamp-club#3569).
+ */
+async function withWindowsLockfile(
+  fn: (tmpDir: string, lockfilePath: string, written: string) => Promise<void>,
+): Promise<void> {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const modelsDir = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      "@test",
+      "ext",
+      "models",
+    );
+    await ensureDir(modelsDir);
+    await Deno.writeTextFile(join(modelsDir, "test.ts"), "// test");
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    const written = JSON.stringify(
+      {
+        "@test/ext": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00.000Z",
+          files: [
+            ".swamp\\bundles\\2f6574ec\\test.js",
+            ".swamp\\pulled-extensions\\@test\\ext\\models\\test.ts",
+          ],
+        },
+      },
+      null,
+      2,
+    ) + "\n";
+    await Deno.writeTextFile(lockfilePath, written);
+    await fn(tmpDir, lockfilePath, written);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+function installUpToDate(
+  tmpDir: string,
+  lockfilePath: string,
+): Promise<ExtensionInstallEvent[]> {
+  return collectEvents(
+    extensionInstall(createLibSwampContext({}), {
+      lockfilePath,
+      repoDir: tmpDir,
+      createInstallContext: () =>
+        Promise.reject(new Error("should not be called for up-to-date")),
+    }),
+  );
+}
+
+Deno.test("extensionInstall: rewrites a lockfile written on Windows without reinstalling", async () => {
+  await withWindowsLockfile(async (tmpDir, lockfilePath) => {
+    const events = await installUpToDate(tmpDir, lockfilePath);
+
+    const completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("no completed event");
+    assertEquals(completed.data.upToDate, 1);
+    assertEquals(completed.data.installed, 0);
+    const onDisk = JSON.parse(await Deno.readTextFile(lockfilePath));
+    assertEquals(onDisk, {
+      "@test/ext": {
+        version: "1.0.0",
+        pulledAt: "2026-01-01T00:00:00.000Z",
+        files: [".swamp/pulled-extensions/@test/ext/models/test.ts"],
+      },
+    });
+
+    const normalized = await Deno.readTextFile(lockfilePath);
+    await installUpToDate(tmpDir, lockfilePath);
+    assertEquals(await Deno.readTextFile(lockfilePath), normalized);
+  });
+});
+
+Deno.test("extensionInstall: leaves a managed lockfile written on Windows as it is", async () => {
+  await withWindowsLockfile(async (tmpDir, lockfilePath, written) => {
+    const transaction = new ManagedLockfileTransaction({
+      lockfilePath,
+      inRoot: (fn) => fn(),
+      lock: {
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+      },
+      sync: {
+        hydrate: () => Promise.resolve(),
+        publish: () => Promise.resolve(),
+      },
+      pending: {
+        read: () => Promise.resolve({ kind: "none" }),
+        write: () => Promise.resolve(),
+        clear: () => Promise.resolve(),
+      },
+    });
+    await withManagedLockfileTransaction(
+      transaction,
+      () => installUpToDate(tmpDir, lockfilePath),
+    );
+    assertEquals(await Deno.readTextFile(lockfilePath), written);
+  });
+});
