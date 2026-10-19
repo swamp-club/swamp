@@ -2784,6 +2784,7 @@ function fileWriterOn(
   repo: UnifiedDataRepository,
   os: typeof Deno.build.os,
   events: MethodExecutionEvent[],
+  dataOutputOverrides?: Parameters<typeof createFileWriterFactory>[5],
 ) {
   return createFileWriterFactory(
     repo,
@@ -2791,7 +2792,7 @@ function fileWriterOn(
     modelId,
     testFiles,
     undefined,
-    undefined,
+    dataOutputOverrides,
     { onEvent: (e) => events.push(e) },
     undefined,
     undefined,
@@ -2907,6 +2908,25 @@ Deno.test("createResourceWriter: the portability check covers the vary suffix", 
       resourceWriterOn(windowsRepo, "windows", [], overrides)("item", "plain", {
         value: "a",
       }),
+    Error,
+    "'plain-us:east'",
+  );
+  assertEquals(windowsRepo.writes(), 0);
+});
+
+Deno.test("createFileWriter: the portability check covers the vary suffix", async () => {
+  const overrides = [{ specName: "log", resolvedVarySuffix: "us:east" }];
+
+  const events: MethodExecutionEvent[] = [];
+  const repo = createCountingRepo();
+  await fileWriterOn(repo, "linux", events, overrides)("log", "plain")
+    .writeText("x");
+  assertEquals(repo.savedNames(), ["plain-us:east"]);
+  assertStringIncludes(portabilityWarnings(events)[0], "'plain-us:east'");
+
+  const windowsRepo = createCountingRepo();
+  assertThrows(
+    () => fileWriterOn(windowsRepo, "windows", [], overrides)("log", "plain"),
     Error,
     "'plain-us:east'",
   );
