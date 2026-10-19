@@ -913,7 +913,9 @@ arguments. For a sensitive argument field, the framework:
 1. Registers every resolved value of the field with `SecretRedactor` before the
    method runs, which scrubs them from the per-run log file.
 2. Applies the redactor when writing result resource attributes, so the values
-   are scrubbed even if the extension behavior writes them there.
+   are scrubbed even if the extension behavior writes them there. The vault
+   references swamp writes for the resource's own sensitive fields are left as
+   written, since their keys can embed such a value through the instance name.
 3. Shows the field as `"***"` in the generated method summary reports (Markdown
    and JSON).
 

@@ -41,6 +41,7 @@ import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import { Data } from "../data/data.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import { SecretRedactor } from "../secrets/secret_redactor.ts";
 import {
   RunVaultAccess,
   runWithVaultAccess,
@@ -2439,4 +2440,273 @@ Deno.test("processSensitiveResourceData: decides each target with the key the pu
   // The allowed field was not stored ahead of the refusal: no orphan.
   assertEquals(await vaultService.list("outputs"), outputsBefore);
   assertEquals(data, { pinned: "a", generated: "b" });
+});
+
+// --- createResourceWriter persisted redaction tests (swamp-club#3585) ---
+
+/**
+ * A mock repository that keeps the last record and content saved, so a reader
+ * built on it reads back what the writer persisted.
+ */
+function createCapturingRepo(): UnifiedDataRepository & {
+  persisted: () => string;
+} {
+  let saved: { data: Data; content: Uint8Array } | null = null;
+  return {
+    ...createMockRepo(),
+    save: (_type, _modelId, data, content) => {
+      saved = { data, content };
+      return Promise.resolve({ version: 1 });
+    },
+    findByName: () => Promise.resolve(saved?.data ?? null),
+    getContent: () => Promise.resolve(saved?.content ?? null),
+    persisted: () => new TextDecoder().decode(saved?.content),
+  };
+}
+
+/** Writes one resource through a writer whose redactor knows `secrets`. */
+async function writeRedacted(
+  spec: ResourceOutputSpec,
+  instanceName: string,
+  data: Record<string, unknown>,
+  secrets: string[],
+) {
+  const repo = createCapturingRepo();
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "test-vault", type: "mock", config: {} });
+  const redactor = new SecretRedactor();
+  for (const secret of secrets) redactor.addSecret(secret);
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    { r: spec },
+    undefined, // tagOverrides
+    undefined, // dataOutputOverrides
+    undefined, // definitionTags
+    undefined, // runtimeTags
+    undefined, // definitionName
+    vaultService,
+    "put",
+    undefined, // onEvent
+    redactor,
+  );
+  await writeResource("r", instanceName, data);
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  // Text-level redaction can leave invalid JSON (a secret matching a number
+  // or a whole object), so those tests read the raw text instead.
+  let persisted;
+  try {
+    persisted = JSON.parse(repo.persisted());
+  } catch {
+    persisted = undefined;
+  }
+  return { repo, readResource, persisted };
+}
+
+const HOST = "192.0.2.10";
+const hostSpec: ResourceOutputSpec = {
+  schema: z.object({
+    host: z.string(),
+    port: z.number(),
+    token: z.string().meta({ sensitive: true }),
+  }),
+  lifetime: "infinite",
+  garbageCollection: 5,
+};
+
+Deno.test("createResourceWriter: a secret in the instance name does not mask the vault key in a sensitive field's reference", async () => {
+  const data = { host: HOST, port: 22, token: "dummy-token" };
+  const { readResource, persisted } = await writeRedacted(
+    hostSpec,
+    `root~${HOST}~22`,
+    data,
+    [HOST],
+  );
+
+  assertEquals(persisted.token, data.token);
+  assertStringIncludes(persisted.token, `root~${HOST}~22-token`);
+  const read = await readResource(`root~${HOST}~22`);
+  assertEquals(read?.token, "dummy-token");
+});
+
+Deno.test("createResourceWriter: a non-sensitive field holding a secret is still persisted as ***", async () => {
+  const { persisted } = await writeRedacted(
+    hostSpec,
+    `root~${HOST}~22`,
+    { host: HOST, port: 22, token: "dummy-token" },
+    [HOST],
+  );
+
+  assertEquals(persisted.host, "***");
+  assertEquals(persisted.port, 22);
+});
+
+Deno.test("createResourceWriter: a nested sensitive field keeps its reference intact", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      credentials: z.object({ apiKey: z.string().meta({ sensitive: true }) }),
+      note: z.string(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const data = { credentials: { apiKey: "key-value" }, note: `at ${HOST}` };
+  const { readResource, persisted } = await writeRedacted(
+    spec,
+    `n~${HOST}`,
+    data,
+    [HOST],
+  );
+
+  assertEquals(persisted.credentials.apiKey, data.credentials.apiKey);
+  assertEquals(persisted.note, "at ***");
+  const read = await readResource(`n~${HOST}`);
+  assertEquals(
+    (read?.credentials as Record<string, unknown>).apiKey,
+    "key-value",
+  );
+});
+
+Deno.test("createResourceWriter: sensitiveOutput keeps every top-level reference intact", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ a: z.string(), b: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+    sensitiveOutput: true,
+  };
+  const data = { a: "first", b: HOST };
+  const { readResource, persisted } = await writeRedacted(
+    spec,
+    `n~${HOST}`,
+    data,
+    [HOST],
+  );
+
+  assertEquals(persisted, data);
+  assertEquals(await readResource(`n~${HOST}`), { a: "first", b: HOST });
+});
+
+Deno.test("createResourceWriter: an object key containing a secret is still redacted", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ labels: z.record(z.string(), z.string()) }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const { persisted } = await writeRedacted(
+    spec,
+    "main",
+    { labels: { [`for-${HOST}`]: "x" } },
+    [HOST],
+  );
+
+  assertEquals(persisted, { labels: { "for-***": "x" } });
+});
+
+Deno.test("createResourceWriter: a secret containing a JSON-escaped character is masked", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ note: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const { persisted } = await writeRedacted(
+    spec,
+    "main",
+    { note: 'before pa"ss\\word after' },
+    ['pa"ss\\word'],
+  );
+
+  assertEquals(persisted.note, "before *** after");
+});
+
+Deno.test("createResourceWriter: without registered secrets the content is plain JSON.stringify", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ note: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const data = { note: HOST, when: new Date(0), gone: undefined };
+
+  const { repo } = await writeRedacted(spec, "main", data, []);
+
+  assertEquals(repo.persisted(), JSON.stringify(data));
+});
+
+Deno.test("createResourceWriter: redaction keeps JSON.stringify serialization of dates and undefined", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ note: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const data = { note: HOST, when: new Date(0), gone: undefined };
+
+  const { repo } = await writeRedacted(spec, "main", data, [HOST]);
+
+  assertEquals(
+    repo.persisted(),
+    JSON.stringify({ note: "***", when: new Date(0) }),
+  );
+});
+
+Deno.test("createResourceWriter: a sensitive object with a sensitive child writes without throwing", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      creds: z.object({ key: z.string().meta({ sensitive: true }) }).meta({
+        sensitive: true,
+      }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const data: Record<string, unknown> = { creds: { key: "key-value" } };
+
+  const { persisted } = await writeRedacted(spec, `n~${HOST}`, data, [HOST]);
+
+  assertEquals(persisted.creds, data.creds);
+});
+
+Deno.test("createResourceWriter: a JSON secret written back as an object is not persisted in clear", async () => {
+  const jsonSecret = JSON.stringify({ user: "svc", pass: "hunter22" });
+  const data = { obj: JSON.parse(jsonSecret), note: "plain", token: "t" };
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      obj: z.unknown(),
+      note: z.string(),
+      token: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+
+  const { repo } = await writeRedacted(spec, "main", data, [
+    jsonSecret,
+    "svc",
+  ]);
+
+  const text = repo.persisted();
+  assertEquals(text.includes("hunter22"), false);
+  assertStringIncludes(text, JSON.stringify(data.token));
+});
+
+Deno.test("createResourceWriter: a secret holding an escape sequence written back unescaped is not persisted in clear", async () => {
+  const oneLineKey = "-----BEGIN KEY-----\\nMIIEsecretbody\\n-----END KEY-----";
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ key: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+
+  const { repo } = await writeRedacted(
+    spec,
+    "main",
+    { key: oneLineKey.replace(/\\n/g, "\n") },
+    [oneLineKey],
+  );
+
+  assertEquals(repo.persisted().includes("MIIEsecretbody"), false);
 });
