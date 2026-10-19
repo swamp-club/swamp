@@ -398,3 +398,35 @@ Deno.test("v3 outbox reports: a commit that lands reads no landing and marks not
     assertEquals(calls, []);
   });
 });
+
+Deno.test("v3 outbox reports: an operation that fails, then cannot record giving up its commit, says the change may land, carrying its own failure (swamp-club#3586)", async () => {
+  await withDatastore(async (datastore) => {
+    const writer = await datastore.open("a", { fence: 1 });
+    fault(writer.commitStore, "append", diskFull);
+    fault(writer.outbox, "discard", diskFull);
+    fault(writer.outbox, "abandon", diskFull);
+    const engine = writer.engineFor(() => Promise.resolve(), () => {
+      throw new Error("no run repository needed");
+    });
+    const operationFailed = new Error("the operation failed");
+    const error = await assertRejects(() =>
+      engine.runRoot({}, async (root) => {
+        const id = crypto.randomUUID();
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await unit.stageOps([
+          new AutoDefinitionChanges(id).write(
+            recordKeyOf(["auto-definitions", `${id}.yaml`]),
+            new Uint8Array(64).fill(7),
+          ),
+        ]);
+        await unit.commit();
+        // The checkpoint prepares the commit, and its append fails.
+        await root.checkpoint().catch(() => {});
+        throw operationFailed;
+      })
+    );
+    assert(error instanceof MayLandLaterError, String(error));
+    assertEquals(error.code, COMMIT_MAY_LAND_CODE);
+    assertEquals(error.cause, operationFailed);
+  });
+});

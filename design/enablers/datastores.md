@@ -4641,7 +4641,11 @@ closes; the mark already keeps the entry from landing. When neither the mark
 nor the removal can be written (a disk that stays full), the unit fails with
 `MayLandLaterError` (`datastore_v3_commit_may_land`, exit 1): its change may
 already be in the datastore, or be landed by the next writer, so the command
-must not simply be run again. So a process that dies, or a failure that
+must not simply be run again. An operation that fails and then cannot give
+its commit up this way fails with it too, carrying the operation's own
+error: a caller ending a unit after a failure logs most errors of the end,
+but rethrows an `UnrecordedEndError`, which `MayLandLaterError` is. So a
+process that dies, or a failure that
 could record nothing, leaves entries a recovery may land.
 
 **What a failed append reports** (swamp-club#3586). After an append that

@@ -26,6 +26,7 @@
  */
 
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import { rethrowUnrecordedEnd } from "../../domain/datastore/unit_of_work.ts";
 import {
   type CommitLogUnitOfWork,
   PartitionsRefusedError,
@@ -173,6 +174,8 @@ export async function runInCommitLogRoot<T>(
         await root.abandon();
       }
     } catch (endError) {
+      // An end that could not record the failure says so instead of it.
+      rethrowUnrecordedEnd(endError, error);
       logger
         .warn`Ending a commit-log unit of work after a failed operation also failed: ${endError}`;
     }
@@ -234,6 +237,7 @@ async function settle(
     try {
       await root.abandon();
     } catch (endError) {
+      rethrowUnrecordedEnd(endError, callbackError);
       logger
         .warn`Ending a commit-log unit of work after a failed operation also failed: ${endError}`;
     }

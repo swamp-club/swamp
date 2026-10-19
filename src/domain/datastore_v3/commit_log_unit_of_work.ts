@@ -28,8 +28,10 @@
  * @module
  */
 
-import type { UnitOfWork } from "../datastore/unit_of_work.ts";
-import { UserError } from "../errors.ts";
+import {
+  type UnitOfWork,
+  UnrecordedEndError,
+} from "../datastore/unit_of_work.ts";
 import type { Intent } from "./intent.ts";
 import type { Op, PutExpect } from "./op.ts";
 import { CommitRejectedError, type CommitRejection } from "./partition.ts";
@@ -187,8 +189,8 @@ export const COMMIT_MAY_LAND_CODE = "datastore_v3_commit_may_land";
  * again blindly could make it twice. `cause` is the failure the unit met, if
  * any; `reason` why it could not be recorded.
  */
-export class MayLandLaterError extends UserError {
-  constructor(cause: unknown, reason: unknown) {
+export class MayLandLaterError extends UnrecordedEndError {
+  constructor(cause: unknown, readonly reason: unknown) {
     const failed = cause === undefined ? "" : `${messageOf(cause)}. `;
     super(
       `${failed}Swamp could not record that this change must not be ` +
@@ -199,6 +201,10 @@ export class MayLandLaterError extends UserError {
     );
     this.name = "MayLandLaterError";
     if (cause !== undefined) this.cause = cause;
+  }
+
+  during(failure: unknown): MayLandLaterError {
+    return new MayLandLaterError(failure, this.reason);
   }
 }
 

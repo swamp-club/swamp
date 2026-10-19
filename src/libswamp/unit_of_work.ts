@@ -31,7 +31,10 @@
  * @module
  */
 
-import type { UnitOfWork } from "../domain/datastore/unit_of_work.ts";
+import {
+  rethrowUnrecordedEnd,
+  type UnitOfWork,
+} from "../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   currentUnitOfWork,
@@ -96,7 +99,7 @@ export async function* withUnitOfWork<E extends { kind: string }>(
       () => Promise.resolve(inner()[Symbol.asyncIterator]()),
     );
   } catch (error) {
-    await abandonQuietly(uow);
+    await abandonQuietly(uow, error);
     throw error;
   }
   let done = false;
@@ -106,6 +109,7 @@ export async function* withUnitOfWork<E extends { kind: string }>(
   let failed = false;
   let succeeded = false;
   let thrown = false;
+  let thrownError: unknown;
   try {
     while (true) {
       let result: IteratorResult<E>;
@@ -128,6 +132,7 @@ export async function* withUnitOfWork<E extends { kind: string }>(
     succeeded = completed && !failed;
   } catch (error) {
     thrown = true;
+    thrownError = error;
     throw error;
   } finally {
     // Runs on every ending, including the consumer's return(), after which
@@ -152,7 +157,7 @@ export async function* withUnitOfWork<E extends { kind: string }>(
           returned
         : succeeded;
       if (commits) await uow.commit();
-      else if (thrown || !returned) await abandonQuietly(uow);
+      else if (thrown || !returned) await abandonQuietly(uow, thrownError);
       else await uow.abandon();
     }
   }
@@ -179,11 +184,19 @@ export function markOutcomeReported(): void {
   if (uow !== undefined) outcomeReported.add(uow);
 }
 
-/** Abandons `uow` while another error propagates, never masking it. */
-async function abandonQuietly(uow: UnitOfWork): Promise<void> {
+/**
+ * Abandons `uow` while another error, `failure` when known, propagates,
+ * masking it only with an abandon that could not record its outcome, which
+ * carries it (swamp-club#3586).
+ */
+async function abandonQuietly(
+  uow: UnitOfWork,
+  failure: unknown,
+): Promise<void> {
   try {
     await uow.abandon();
   } catch (abandonError) {
+    rethrowUnrecordedEnd(abandonError, failure);
     logger
       .warn`Finishing datastore changes after a failed operation also failed: ${abandonError}`;
   }

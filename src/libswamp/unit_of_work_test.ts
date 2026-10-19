@@ -23,9 +23,10 @@ import {
   assertRejects,
   assertStrictEquals,
 } from "@std/assert";
-import type {
-  StagedChange,
-  UnitOfWork,
+import {
+  type StagedChange,
+  type UnitOfWork,
+  UnrecordedEndError,
 } from "../domain/datastore/unit_of_work.ts";
 import { legacyUnitOfWorkParent } from "../infrastructure/persistence/legacy_unit_of_work.ts";
 import { typedStagers } from "../infrastructure/persistence/unit_of_work_binding.ts";
@@ -215,6 +216,31 @@ Deno.test("withUnitOfWork: a failing abandon never masks the error that ended th
     throw new Error("boom");
   }
   await assertRejects(() => drain(withUnitOfWork(ctx, body)), Error, "boom");
+});
+
+/** An abandon that could not record its outcome, as a v3 unit's may be. */
+class Unrecorded extends UnrecordedEndError {
+  constructor(readonly failure?: unknown) {
+    super("the outcome could not be recorded");
+  }
+  during(failure: unknown): Unrecorded {
+    return new Unrecorded(failure);
+  }
+}
+
+Deno.test("withUnitOfWork: an abandon that could not record its outcome replaces the error that ended the stream, carrying it (swamp-club#3586)", async () => {
+  const { ctx, units } = countingContext();
+  const boom = new Error("boom");
+  // deno-lint-ignore require-yield
+  async function* body(): AsyncGenerator<Event> {
+    units[0].abandon = () => Promise.reject(new Unrecorded());
+    throw boom;
+  }
+  const error = await assertRejects(
+    () => drain(withUnitOfWork(ctx, body)),
+    Unrecorded,
+  );
+  assertStrictEquals(error.failure, boom);
 });
 
 Deno.test("withUnitOfWork: inside a root unit, a wrapped use case stages into a child that rolls up", async () => {
