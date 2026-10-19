@@ -71,6 +71,7 @@ import {
   suspensionKeyOf,
 } from "./continuation_claim.ts";
 import { RunNotSuspendedError } from "./suspended_run_resolver.ts";
+import { completeAndSettle } from "./abort_settlement.ts";
 import {
   claimsFor,
   InMemoryContinuationClaimStore,
@@ -5017,6 +5018,239 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
       JSON.stringify(persisted!.resumeInputs).includes("tskey-abc123"),
       false,
     );
+  });
+});
+
+// swamp-club#3583: a resume --input cannot change a value a finished step
+// read. The issue's workflow: a gate that refuses "protected", an approval
+// that shows the target, and the destructive step after it.
+function gatedDestroyWorkflow(): Workflow {
+  return Workflow.create({
+    name: "gated-destroy",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.model("sh", "execute", {
+              run: 'test "${{ inputs.target }}" != "protected"',
+            }),
+          }),
+          Step.create({
+            name: "approve",
+            task: StepTask.manualApproval("Destroy ${{ inputs.target }}?"),
+            dependsOn: [
+              { step: "gate", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+          Step.create({
+            name: "destroy",
+            task: StepTask.model("sh", "execute", {
+              run: "echo DESTROYED ${{ inputs.target }}",
+              token: "${{ inputs.authKey }}",
+            }),
+            dependsOn: [
+              { step: "approve", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** Records each step the executor runs with its resolved task inputs. */
+class TaskInputsRecorder implements StepExecutor {
+  ran: Array<{ step: string; inputs: Record<string, unknown> | undefined }> =
+    [];
+  execute(step: Step): Promise<unknown> {
+    const task = step.task.data;
+    this.ran.push({
+      step: step.name,
+      inputs: task.type === "model_method"
+        ? task.inputs as Record<string, unknown> | undefined
+        : undefined,
+    });
+    return Promise.resolve({ executed: true });
+  }
+}
+
+async function approveWaitingGate(
+  runRepo: InMemoryWorkflowRunRepository,
+  workflow: Workflow,
+  runId: WorkflowRun["id"],
+  approved: boolean,
+): Promise<void> {
+  const run = await runRepo.findById(workflow.id, runId);
+  const waiting = run!.findWaitingApprovalStep()!;
+  const gate = run!.getJob(waiting.jobName)!.getStep(waiting.stepName)!;
+  gate.recordApprovalDecision({
+    approved,
+    decidedBy: "user:test",
+    decidedAt: new Date().toISOString(),
+  });
+  if (approved) {
+    gate.succeed();
+  } else {
+    // As workflow reject does: the run ends failed at its rejected gate.
+    gate.fail("Approval rejected");
+    completeAndSettle(run!, workflow);
+  }
+  await runRepo.save(workflow.id, run!);
+}
+
+async function resumeToEnd(
+  service: WorkflowExecutionService,
+  workflow: Workflow,
+  runId: string,
+  options: { inputs?: Record<string, unknown>; fromStep?: string } = {},
+): Promise<WorkflowRun | undefined> {
+  let last: WorkflowRun | undefined;
+  for await (const event of service.resume(workflow.name, runId, options)) {
+    if (event.kind === "completed" || event.kind === "suspended") {
+      last = event.run;
+    }
+  }
+  return last;
+}
+
+Deno.test("resume: --input cannot change an input the gate and approval already read (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    const workflow = gatedDestroyWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await service.execute(workflow.name, {
+      inputs: { target: "scratch3", authKey: "PENDING" },
+    });
+    assertEquals(suspended.status, "suspended");
+    await approveWaitingGate(runRepo, workflow, suspended.id, true);
+    const before = JSON.stringify(
+      (await runRepo.findById(workflow.id, suspended.id))!.toData(),
+    );
+
+    const error = await assertRejects(
+      () =>
+        resumeToEnd(service, workflow, suspended.id, {
+          inputs: { target: "protected" },
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "resume_input_consumed");
+    assertStringIncludes(
+      error.message,
+      'Input "target" was already used by steps "gate", "approve"',
+    );
+    // Nothing ran and nothing was saved.
+    assertEquals(executor.ran.map((r) => r.step), ["gate"]);
+    assertEquals(
+      JSON.stringify(
+        (await runRepo.findById(workflow.id, suspended.id))!.toData(),
+      ),
+      before,
+    );
+
+    // No claim was left behind: the run still resumes, with the value its
+    // gate and approval saw.
+    const finished = await resumeToEnd(service, workflow, suspended.id);
+    assertEquals(finished?.status, "succeeded");
+    assertEquals(executor.ran.at(-1), {
+      step: "destroy",
+      inputs: { run: "echo DESTROYED scratch3", token: "PENDING" },
+    });
+  });
+});
+
+Deno.test("resume: --from the rejected approval cannot change an input the gate read (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    const workflow = gatedDestroyWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await service.execute(workflow.name, {
+      inputs: { target: "scratch", authKey: "PENDING" },
+    });
+    await approveWaitingGate(runRepo, workflow, suspended.id, false);
+
+    const error = await assertRejects(
+      () =>
+        resumeToEnd(service, workflow, suspended.id, {
+          inputs: { target: "protected" },
+          fromStep: "approve",
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "resume_input_consumed");
+    assertStringIncludes(
+      error.message,
+      `--run ${suspended.id} --from gate`,
+    );
+    assertEquals(executor.ran.map((r) => r.step), ["gate"]);
+
+    // Retrying from the gate runs it again with the new value.
+    const regated = await resumeToEnd(service, workflow, suspended.id, {
+      inputs: { target: "other" },
+      fromStep: "gate",
+    });
+    assertEquals(regated?.status, "suspended");
+    assertEquals(executor.ran.map((r) => r.step), ["gate", "gate"]);
+    assertEquals(executor.ran[1].inputs?.run, 'test "other" != "protected"');
+  });
+});
+
+Deno.test("resume: an accepted --input is recorded as the run's inputs (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    const workflow = gatedDestroyWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await service.execute(workflow.name, {
+      inputs: { target: "scratch", authKey: "PENDING" },
+    });
+    await approveWaitingGate(runRepo, workflow, suspended.id, true);
+
+    // authKey is read only after the approval; target is passed unchanged.
+    const finished = await resumeToEnd(service, workflow, suspended.id, {
+      inputs: { authKey: "tskey-abc123", target: "scratch" },
+    });
+    assertEquals(finished?.status, "succeeded");
+    assertEquals(executor.ran.at(-1)?.inputs?.token, "tskey-abc123");
+    const effective = { target: "scratch", authKey: "tskey-abc123" };
+    assertEquals(finished?.inputs, effective);
+    const persisted = await runRepo.findById(workflow.id, suspended.id);
+    assertEquals(persisted!.inputs, effective);
+    assertEquals([...persisted!.resumeInputs].sort(), ["authKey", "target"]);
   });
 });
 
@@ -10629,10 +10863,19 @@ Deno.test("resume: a resume that fails before execution stops the heartbeat", as
   });
 });
 
-/** One step whose input reads `inputs.n`, so a string `n` fails evaluation. */
+/**
+ * One step whose input reads `inputs.n`, so a string `n` fails evaluation.
+ * Behind a gate it waits on the gate, so it has not read `n` when the run
+ * suspends and a resume may still change `n` (swamp-club#3583).
+ */
 function createArithmeticWorkflow(withGate: boolean): Workflow {
   const steps = [
-    modelStep("compute", { inputs: { value: "${{ inputs.n + 1 }}" } }),
+    modelStep("compute", {
+      inputs: { value: "${{ inputs.n + 1 }}" },
+      dependsOn: withGate
+        ? [{ step: "gate", condition: TriggerCondition.succeeded() }]
+        : [],
+    }),
   ];
   if (withGate) {
     steps.unshift(
@@ -17969,25 +18212,30 @@ Deno.test("resume(): a re-entered nested step does not evaluate its guard again 
               name: "call-child",
               task: StepTask.workflow("gated-child"),
               // Truthy only once the nested run has finished: re-evaluated on
-              // re-entry, it would skip the step and strand the child.
-              guard: "${{ inputs.skip == true }}",
+              // re-entry, it would skip the step and strand the child. It
+              // reads env, not an input: a resume cannot change an input the
+              // waiting step already read (swamp-club#3583).
+              guard: '${{ env.SWAMP_TEST_NESTED_SKIP == "1" }}',
             }),
           ],
         }),
       ],
-      inputs: { properties: { skip: { type: "boolean", default: false } } },
     });
     const { service, runRepo } = await setupNestedGate(tempDir, [
       parent,
       child,
     ]);
-    await drain(service.run(parent.name, { inputs: { skip: false } }));
+    await withMockedEnv(
+      { SWAMP_TEST_NESTED_SKIP: "0" },
+      () => drain(service.run(parent.name)),
+    );
     const childRun = await decideChildGate(runRepo, child, true);
     await drain(service.resume(child.name, childRun.id));
 
     const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
-    await drain(
-      service.resume(parent.name, parentRun.id, { inputs: { skip: true } }),
+    await withMockedEnv(
+      { SWAMP_TEST_NESTED_SKIP: "1" },
+      () => drain(service.resume(parent.name, parentRun.id)),
     );
     const done = await runRepo.findById(parent.id, parentRun.id);
     const step = done!.getJob("main")!.getStep("call-child")!;

@@ -135,7 +135,7 @@ export const workflowResumeCommand = withRemoteOptions(
     )
     .option(
       "--input <value:string>",
-      "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
+      "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs. An input a step that already ran read cannot change: start a new run, or retry a failed run --from that step",
       { collect: true },
     )
     .option("--arg <value:string>", "Alias for --input", {
@@ -144,11 +144,15 @@ export const workflowResumeCommand = withRemoteOptions(
     })
     .option(
       "--input-file <file:string>",
-      "Override inputs from a YAML file (cannot combine with --stdin)",
+      "Override inputs from a YAML file, held to the rules of --input (cannot combine with --stdin)",
     )
-    .option("--stdin", "Read override inputs from stdin (piped data)", {
-      default: false,
-    })
+    .option(
+      "--stdin",
+      "Read override inputs from stdin (piped data), held to the rules of --input",
+      {
+        default: false,
+      },
+    )
     .option(
       "--timeout <duration:string>",
       "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",

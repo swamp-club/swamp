@@ -126,6 +126,7 @@ import {
   planFailedRunResume,
   type ResumeReset,
 } from "./resume_reset.ts";
+import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
   nextActionForStatus,
   RunNotSuspendedError,
@@ -4569,6 +4570,8 @@ export class WorkflowExecutionService {
       existingRun,
       options?.inputs ?? {},
     );
+    // A value a finished step read cannot change under it (swamp-club#3583).
+    checkResumeInputOverrides(workflow, existingRun, resumeInputs, reset);
 
     // A copy of the run that is behind the datastore's shows a suspension a
     // peer has already ended. Compared under the run's claim, so a peer that
@@ -4861,10 +4864,11 @@ export class WorkflowExecutionService {
       // suspended. Resume overrides win on key collision; new keys are
       // additive. Set before evaluation so workflow- and step-level
       // `inputs.*` expressions resolve.
-      expressionContext.inputs = deepMerge(
+      const effectiveInputs = deepMerge(
         { ...existingRun.inputs },
         resumeInputs,
       );
+      expressionContext.inputs = effectiveInputs;
       // The provenance the run recorded when it started; runs recorded
       // before it existed fall back to deriving it. Resume-time inputs come
       // from the caller and are judged like a fresh run's.
@@ -4889,6 +4893,15 @@ export class WorkflowExecutionService {
       // new value as data, never less.
       resumedProvenance = resumedProvenance.union(resumeProvenance);
       attachInputsProvenance(expressionContext, resumedProvenance);
+      // The run records the inputs its remaining steps run with, not the ones
+      // it started with. Captured only once the provenance above is derived:
+      // a legacy run derives it from the stored inputs, which must not yet
+      // hold the resume's values. `run.inputs` stays the stored set: a
+      // child's deferred bindings snapshot it, and only `inputs.*` keeps
+      // resume-only values out of them.
+      const storedInputs = existingRun.inputs;
+      existingRun.captureInputs({ ...effectiveInputs });
+      existingRun.captureInputsProvenance(resumedProvenance);
 
       expressionContext.workflowRunId = existingRun.id;
       expressionContext.run = {
@@ -4898,7 +4911,7 @@ export class WorkflowExecutionService {
         startedAt: existingRun.startedAt!.toISOString(),
         tags: { ...existingRun.tags },
         initiatedBy: existingRun.initiatedBy,
-        inputs: existingRun.inputs,
+        inputs: storedInputs,
       };
       expressionContext.steps = {};
       const stepOutputResolver = this.createStepOutputResolver(

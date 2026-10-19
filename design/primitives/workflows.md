@@ -689,10 +689,38 @@ references. The pattern is to declare the input at run time and supply or
 override its value at resume. For audit, the run record's `resumeInputs` lists
 the key names supplied at resume.
 
+A resume cannot change an input a step already ran with (swamp-club#3583). A
+gate that checked a value, an approval that showed it, or a nested workflow step
+that forwarded it would otherwise let the steps after it act on a value nothing
+before them saw. `checkResumeInputOverrides`
+(`src/domain/workflows/resume_input_guard.ts`) refuses the resume before
+anything changes, coded `resume_input_consumed` locally, when a supplied
+top-level key's merged value differs from the stored one (a key the run did not
+have counts as changed) and a step record that keeps its result reads that key.
+A record keeps its result unless it is pending, reset by this resume (`--from`
+or a retry), reopened after an abort, or skipped for its dependency or its job;
+a guarded skip read its guard. A record reads every input named in its authored
+step (task, prompt, `forEach.in`, `guard`, placement, name, an assert's
+`expr`) and in its job's own fields, as `inputs.X`, `inputs["X"]`,
+`run.inputs.X` or `run.inputs["X"]`; reading `inputs`, `run.inputs` or `run`
+whole or by a computed key reads them all. A record whose job or step name is
+an expression is read against every authored job or step whose name is one.
+The way out is a new run, or, for a failed run, `--from` a step at or before the
+first that read the key, which runs it again. An approval binds only what its
+prompt or earlier steps read: a `Proceed?` prompt over a step that reads
+`target` does not pin `target`, so a gate that must pin a value names it in its
+prompt or checks it in an earlier step.
+
+The run records the merged inputs it resumes with (`captureInputs` in
+`resumeWorkflow`, after the resume's provenance is derived), so the run record,
+its summary and the history index show the values the remaining steps ran
+with. The `run.inputs` expression keeps the stored set, so a child's deferred
+bindings never snapshot a resume-only value.
+
 Resume inputs are ordinary inputs once merged. Their values are substituted and
 persisted wherever run inputs are: evaluated definitions, step data of behaviors
-that record their arguments, the run record on a later suspension, and child
-runs they are forwarded to. They are not a secret channel. A credential minted
+that record their arguments, the run record, and child runs they are forwarded
+to. They are not a secret channel. A credential minted
 during a gate is stored with `swamp vault put` while the run is suspended, and
 the post-gate step reads it with `vault.get(...)`, which is resolved per step,
 redacted in step data, and left raw in evaluated definitions. Resume passes at

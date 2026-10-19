@@ -523,8 +523,10 @@ schema defaults) in the run record, the history index that
 `workflow history search --input` filters on, any child workflow run they are
 forwarded to, evaluated behavior definitions, and the data of any behavior that
 records its arguments. This holds for `workflow resume --input`, `--input-file`,
-and `--stdin` too; the run record's `resumeInputs` lists only the key names, but
-the merged values persist everywhere else.
+and `--stdin` too: the run record holds the merged values, and its
+`resumeInputs` lists the key names supplied at resume. A resume cannot change an
+input a step already ran with; see
+[execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 Pass the vault name and key instead, and resolve the secret in the step (see
 [Working with Vaults](#working-with-vaults)):
