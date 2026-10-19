@@ -25,6 +25,8 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { basename, dirname, join } from "@std/path";
+import { walk } from "@std/fs";
 import { z } from "zod";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
@@ -33,8 +35,6 @@ import {
   processSensitiveResourceData,
   resolveVaultRefsInData,
 } from "../src/domain/models/data_writer.ts";
-import { basename, dirname, join } from "@std/path";
-import { walk } from "@std/fs";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";

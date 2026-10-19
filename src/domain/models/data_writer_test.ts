@@ -2166,7 +2166,8 @@ Deno.test("createResourceWriter: a vary suffix outside the verbatim form is hash
       "x@y",
       "us east",
       '{"region":"us"}',
-      // Azure Key Vault names refuse . and _.
+      // Azure Key Vault names refuse . and _, and ignore case.
+      "Prod",
       "ip-10-0-0-1.ec2.internal",
       "v1_2",
       "a".repeat(33),
@@ -2185,6 +2186,20 @@ Deno.test("createResourceWriter: a short vary suffix of key-safe characters is k
   ) {
     assertEquals(await varyKeySegment(suffix), suffix);
   }
+});
+
+Deno.test("createResourceWriter: vary values that differ only in case keep their own secrets in a case-insensitive vault", async () => {
+  // Azure Key Vault, and local_encryption on macOS or Windows, treat keys
+  // that differ only in case as one secret.
+  const keys = [];
+  for (const suffix of ["prod", "Prod", "PROD"]) {
+    const vaultService = new VaultService();
+    vaultService.registerVault({ name: "v", type: "mock", config: {} });
+    const data = { secret: "s" };
+    await varyResourceWriter(vaultService, suffix)("creds", "creds", data);
+    keys.push(referencedVaultKey(data.secret).toLowerCase());
+  }
+  assertEquals(new Set(keys).size, 3);
 });
 
 Deno.test("createResourceWriter: a vary suffix kept as written is never longer than its hashed form", async () => {

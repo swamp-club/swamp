@@ -378,20 +378,23 @@ const MAX_VERBATIM_VARY_SUFFIX_LENGTH = 32;
 
 /**
  * The form a vary suffix takes inside a generated vault key
- * (swamp-club#3633). A suffix of at most 32 letters, digits and `-` is kept
- * as written, so the key names the instance the record is stored under. Any
- * other suffix becomes `h-` and the first 32 hex digits of its SHA-256:
- * other characters do not survive into a readable key ({@link sanitizeVaultKey}
- * drops `@`, so `x@y` and `xy` would share one; a `'` ends the key inside its
- * vault reference; Azure Key Vault names allow only letters, digits and `-`),
- * and a long value would overflow the file name a file-backed vault stores the
- * key under. The hashed form is longer than any suffix kept as written, so the
- * two forms cannot produce the same key.
+ * (swamp-club#3633). A suffix of at most 32 lowercase letters, digits and `-`
+ * is kept as written, so the key names the instance the record is stored
+ * under. Any other suffix becomes `h-` and the first 32 hex digits of its
+ * SHA-256: other characters do not survive into a readable key
+ * ({@link sanitizeVaultKey} drops `@`, so `x@y` and `xy` would share one; a
+ * `'` ends the key inside its vault reference; Azure Key Vault names allow
+ * only letters, digits and `-`), capitals would fold onto lowercase in a
+ * case-insensitive vault (Azure Key Vault, or local_encryption on a
+ * case-insensitive file system), and a long value would overflow the file name
+ * a file-backed vault stores the key under. The hashed form is longer than any
+ * suffix kept as written, so for one data name the two forms cannot produce
+ * the same key.
  */
 async function varySuffixVaultKeySegment(suffix: string): Promise<string> {
   if (
     suffix.length <= MAX_VERBATIM_VARY_SUFFIX_LENGTH &&
-    /^[A-Za-z0-9-]+$/.test(suffix)
+    /^[a-z0-9-]+$/.test(suffix)
   ) {
     return suffix;
   }
