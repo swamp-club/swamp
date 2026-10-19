@@ -278,18 +278,25 @@ function Confirm-ArchiveContents {
 function Extract-Archive {
     param(
         [string]$ArchivePath,
-        [string]$DestinationPath
+        [string]$DestinationFile
     )
 
     Write-Info "Extracting archive..."
 
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)
-
-        $extractedBinary = Join-Path $DestinationPath $BinExe
-        if (-not (Test-Path $extractedBinary)) {
-            throw "Failed to extract binary '$BinExe' from archive"
+        # .NET resolves relative paths against the process directory, not the
+        # PowerShell location, so hand it a full path.
+        $fullPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DestinationFile)
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        try {
+            $entry = $archive.GetEntry($BinExe)
+            if (-not $entry) {
+                throw "Failed to extract binary '$BinExe' from archive"
+            }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $fullPath)
+        } finally {
+            $archive.Dispose()
         }
     } catch {
         throw "Failed to extract archive: $_"
@@ -298,29 +305,53 @@ function Extract-Archive {
 
 function Install-Binary {
     param(
-        [string]$SourcePath,
+        [string]$TmpFile,
         [string]$DestinationDir
     )
 
     Write-Info "Installing '$BinExe' to '$DestinationDir'"
 
+    $destFile = Join-Path $DestinationDir $BinExe
+    $oldFile = "$destFile.old"
+
+    # Windows refuses to delete or overwrite a running exe but allows renaming
+    # it, so the old binary is renamed aside and only then replaced. If the new
+    # one cannot be put in place, the old one is renamed back.
+    $hadOld = Test-Path -LiteralPath $destFile
     try {
-        if (-not (Test-Path $DestinationDir)) {
-            New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+        if ($hadOld) {
+            if (Test-Path -LiteralPath $oldFile) {
+                Remove-Item -LiteralPath $oldFile -Force -ErrorAction SilentlyContinue
+            }
+            Move-Item -LiteralPath $destFile -Destination $oldFile
         }
-
-        $destFile = Join-Path $DestinationDir $BinExe
-
-        if (Test-Path $destFile) {
-            Remove-Item $destFile -Force
-        }
-
-        Copy-Item -Path $SourcePath -Destination $destFile -Force
-
-        Write-Success "Installed to $destFile"
     } catch {
-        throw "Failed to install binary: $_"
+        throw "Failed to install binary: could not replace '$destFile', which is left in place. Close any running swamp processes and try again. ($_)"
     }
+
+    try {
+        Move-Item -LiteralPath $tmpFile -Destination $destFile
+    } catch {
+        $placeError = $_
+        if (-not $hadOld) {
+            throw "Failed to install binary: $placeError"
+        }
+        Move-Item -LiteralPath $oldFile -Destination $destFile -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $destFile)) {
+            throw "Failed to install binary: could not replace '$destFile'. The previous binary is at '$oldFile'; rename it back to '$BinExe'. ($placeError)"
+        }
+        throw "Failed to install binary: could not replace '$destFile', which is left in place. Close any running swamp processes and try again. ($placeError)"
+    }
+
+    if ($hadOld) {
+        try {
+            Remove-Item -LiteralPath $oldFile -Force
+        } catch {
+            Write-Info "The previous '$BinExe' is still running; it is removed the next time swamp starts"
+        }
+    }
+
+    Write-Success "Installed to $destFile"
 }
 
 function Add-ToPath {
@@ -410,6 +441,8 @@ function Main {
     Write-Info "Version: $Version"
 
     # Create temp directory
+    $binaryPath = $null
+    $createdDestination = $false
     $tempDir = Join-Path $env:TEMP "swamp-install-$(Get-Random)"
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
@@ -445,10 +478,26 @@ function Main {
         Confirm-ArchiveContents $zipFile $BinExe
         Write-Success "Archive contains expected binary"
 
-        # Extract archive
+        # Extract the binary straight into the destination under a temporary
+        # name; it is renamed into place once verified. A file created there
+        # inherits the destination's permissions, and no second copy of the
+        # binary is made. The names are the ones `swamp update` uses: it sweeps
+        # abandoned `.swamp.tmp.` files, and swamp removes a leftover `.old`
+        # binary when it starts.
         Write-Header "Extracting archive"
-        $extractDir = Join-Path $tempDir "extract"
-        Extract-Archive -ArchivePath $zipFile -DestinationPath $extractDir
+        if (-not (Test-Path $Destination)) {
+            try {
+                New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+            } catch {
+                throw "Failed to install binary: $_"
+            }
+            $createdDestination = $true
+        }
+        $binaryPath = Join-Path $Destination ".swamp.tmp.$([guid]::NewGuid())"
+        Extract-Archive -ArchivePath $zipFile -DestinationFile $binaryPath
+        # The archive was verified before extraction and is not needed again.
+        # Removing it now keeps it off disk while the binary is put in place.
+        Remove-Item -LiteralPath $zipFile, $checksumFile -Force -ErrorAction SilentlyContinue
         Write-Success "Extracted successfully"
 
         # Cross-verify extracted binary against GitHub release checksums
@@ -460,13 +509,12 @@ function Main {
             -Destination $releaseChecksumsFile
 
         $expectedBinaryHash = Get-ChecksumForAsset $releaseChecksumsFile $releaseAsset
-        $binaryPath = Join-Path $extractDir $BinExe
         Assert-Sha256 $binaryPath $expectedBinaryHash $releaseAsset
         Write-Success "Verified GitHub release checksum for '$releaseAsset'"
 
         # Install binary
         Write-Header "Installing binary"
-        Install-Binary -SourcePath $binaryPath -DestinationDir $Destination
+        Install-Binary -TmpFile $binaryPath -DestinationDir $Destination
 
         # Add to PATH
         if ($AddToPath) {
@@ -499,6 +547,13 @@ function Main {
     } finally {
         if (Test-Path $tempDir) {
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        # A binary that failed verification or was never put in place.
+        if ($binaryPath -and (Test-Path -LiteralPath $binaryPath)) {
+            Remove-Item -LiteralPath $binaryPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($createdDestination -and -not (Get-ChildItem -LiteralPath $Destination -Force -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
         }
     }
 

@@ -103,3 +103,47 @@ Deno.test("install.ps1: only the param block and the child-scope invocation are 
   assertEquals(errorPreference.length, 1);
   assertEquals(errorPreference[0].depth, 1);
 });
+
+Deno.test("install.ps1: never deletes the installed binary before its replacement is in place", async () => {
+  const lines = codeLines(await Deno.readTextFile(INSTALL_PS1));
+
+  const removes = lines.filter((line) => /\bRemove-Item\b/i.test(line.text));
+  assert(removes.length > 0, "no Remove-Item lines found");
+  assertEquals(
+    removes
+      .filter((line) => /\$destFile\b/.test(line.text))
+      .map((line) => `${line.lineNumber}: ${line.text}`),
+    [],
+    "deleting swamp.exe before the new one is in place leaves no binary " +
+      "if the copy fails, and fails outright when swamp.exe is running; " +
+      "rename it aside instead",
+  );
+
+  const renamesAside = lines.filter((line) =>
+    /\bMove-Item\b.*\$destFile\b.*\$oldFile\b/i.test(line.text)
+  );
+  assertEquals(renamesAside.length, 1, "swamp.exe is renamed aside once");
+});
+
+Deno.test("install.ps1: removes the archive after extraction and before installing", async () => {
+  const lines = codeLines(await Deno.readTextFile(INSTALL_PS1));
+
+  const indexOf = (pattern: RegExp): number => {
+    const matches = lines.flatMap((line, index) =>
+      pattern.test(line.text) ? [index] : []
+    );
+    assertEquals(matches.length, 1, `expected one line matching ${pattern}`);
+    return matches[0];
+  };
+
+  const extract = indexOf(/^Extract-Archive\s+-ArchivePath/);
+  const install = indexOf(/^Install-Binary\s+-/);
+  const removeArchive = indexOf(
+    /\bRemove-Item\b.*\$zipFile\b.*\$checksumFile\b/i,
+  );
+  assert(
+    extract < removeArchive && removeArchive < install,
+    "the verified archive and its .sha256 are removed once extracted, so " +
+      "they are not on disk while the binary is copied into place",
+  );
+});
