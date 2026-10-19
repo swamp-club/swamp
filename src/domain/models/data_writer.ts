@@ -19,7 +19,13 @@
 
 import { z } from "zod";
 import { getLogger } from "@logtape/logtape";
-import { Data, dataNamePortability, isReservedDataName } from "../data/mod.ts";
+import {
+  Data,
+  dataNamePortability,
+  findReservedTagKey,
+  isReservedDataName,
+  RESERVED_TAG_PREFIX,
+} from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
 import type {
   DeferredWriteReceipt,
@@ -40,7 +46,11 @@ import type {
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
-import { wordedError, wordedText } from "../behavior_wording.ts";
+import {
+  type BehaviorWords,
+  wordedError,
+  wordedText,
+} from "../behavior_wording.ts";
 import { currentVaultAccess } from "../vaults/run_vault_access.ts";
 import {
   overriddenSpecVaultName,
@@ -638,6 +648,13 @@ export function createResourceWriter(
   const handles: DataHandle[] = [];
   const deferredReceipts: DeferredWriteReceipt[] = [];
   const portabilityWarned = new Set<string>();
+  const assertWriteTagsUnreserved = writeTagsGuard(
+    modelType,
+    definitionTags,
+    tagOverrides,
+    runtimeTags,
+    dataOutputOverrides,
+  );
   const writerLogger = getLogger([
     "swamp",
     "data-writer",
@@ -702,6 +719,8 @@ export function createResourceWriter(
     }
 
     let instanceName = name;
+
+    assertWriteTagsUnreserved("resource", specName, spec.tags, overrides?.tags);
 
     // Resolve tags with full resolution chain:
     // 1. type auto-tag → 2. definition tags → 3. spec defaults →
@@ -872,6 +891,124 @@ export const SENSITIVE_FIELDS_TAG = "_swamp.sensitiveFields";
  * are sensitive (`sensitiveOutput: true` on the resource spec).
  */
 export const SENSITIVE_FIELDS_ALL = "*";
+
+/** Who must remove a reserved tag that a type's own code supplies. */
+const typeAuthorRemedy = (w: BehaviorWords) =>
+  `The ${w.noun} type's author must remove it.`;
+
+/**
+ * Refuses a tag key under {@link RESERVED_TAG_PREFIX} from a source swamp does
+ * not control (swamp-club#3635). Readers trust `_swamp.*` tags as swamp's own,
+ * and {@link SENSITIVE_FIELDS_TAG} chooses which fields resolve vault
+ * references, so the vaulting step must be the only way one reaches a record.
+ * The message names the key and its source, never the value, which may be
+ * sensitive.
+ *
+ * @param tags - The tags from one source, if any
+ * @param source - Completes "Tag 'x' from …"
+ * @param remedy - The sentence that says how to fix it
+ */
+export function assertNoReservedTags(
+  tags: Record<string, string> | undefined,
+  source: (w: BehaviorWords) => string,
+  remedy: (w: BehaviorWords) => string = () => "Remove it.",
+): void {
+  if (!tags) return;
+  const key = findReservedTagKey(tags);
+  if (key === undefined) return;
+  throw wordedError(
+    wordedText((w) =>
+      `Tag '${key}' from ${source(w)} is reserved: tag keys starting with ` +
+      `'${RESERVED_TAG_PREFIX}' are written by swamp alone. ${remedy(w)}`
+    ),
+  );
+}
+
+/** The tag sources of one method run that exist before the method runs. */
+export interface RunTagSources {
+  modelType: ModelType;
+  definitionTags?: Record<string, string>;
+  specs?: Array<{
+    kind: "resource" | "file";
+    specName: string;
+    tags?: Record<string, string>;
+  }>;
+  tagOverrides?: Record<string, string>;
+  runtimeTags?: Record<string, string>;
+  dataOutputOverrides?: Array<{
+    specName: string;
+    tags?: Record<string, string>;
+  }>;
+}
+
+/**
+ * Refuses a reserved tag key in any source of a method run that is known
+ * before the method runs: the definition, spec defaults, workflow tags,
+ * `--tag` and data output overrides. The method execution service calls it
+ * before anything executes; the writers call it again on every write, with
+ * the method's own write overrides, as the backstop.
+ */
+export function assertNoReservedRunTags(sources: RunTagSources): void {
+  const type = sources.modelType.normalized;
+  assertNoReservedTags(
+    sources.definitionTags,
+    (w) => `the ${w.noun} definition's tags`,
+  );
+  for (const spec of sources.specs ?? []) {
+    assertNoReservedTags(
+      spec.tags,
+      (w) =>
+        `the default tags of ${spec.kind} spec '${spec.specName}' in ${w.noun} type '${type}'`,
+      typeAuthorRemedy,
+    );
+  }
+  assertNoReservedTags(sources.tagOverrides, () => "the workflow's tags");
+  assertNoReservedTags(sources.runtimeTags, () => "--tag");
+  for (const override of sources.dataOutputOverrides ?? []) {
+    assertNoReservedTags(
+      override.tags,
+      () => `the data output override for spec '${override.specName}'`,
+    );
+  }
+}
+
+/**
+ * Binds {@link assertNoReservedRunTags} to one writer factory's sources and
+ * adds the write's own spec and method overrides.
+ */
+function writeTagsGuard(
+  modelType: ModelType,
+  definitionTags: Record<string, string> | undefined,
+  tagOverrides: Record<string, string> | undefined,
+  runtimeTags: Record<string, string> | undefined,
+  dataOutputOverrides:
+    | Array<{ specName: string; tags?: Record<string, string> }>
+    | undefined,
+): (
+  kind: "resource" | "file",
+  specName: string,
+  specTags: Record<string, string> | undefined,
+  overrideTags: Record<string, string> | undefined,
+) => void {
+  return (kind, specName, specTags, overrideTags) => {
+    assertNoReservedRunTags({
+      modelType,
+      definitionTags,
+      specs: [{ kind, specName, tags: specTags }],
+      tagOverrides,
+      runtimeTags,
+      dataOutputOverrides: dataOutputOverrides?.filter((o) =>
+        o.specName === specName
+      ),
+    });
+    assertNoReservedTags(
+      overrideTags,
+      (w) =>
+        `the write overrides of ${kind} spec '${specName}' in ${w.noun} type '${modelType.normalized}'`,
+      typeAuthorRemedy,
+    );
+  };
+}
 
 /**
  * Parses the `_swamp.sensitiveFields` tag from a data record's tags.
@@ -1209,6 +1346,13 @@ export function createFileWriterFactory(
   const writers: DefaultDataWriter[] = [];
   const deferredReceipts: DeferredWriteReceipt[] = [];
   const portabilityWarned = new Set<string>();
+  const assertWriteTagsUnreserved = writeTagsGuard(
+    modelType,
+    definitionTags,
+    tagOverrides,
+    runtimeTags,
+    dataOutputOverrides,
+  );
 
   const createFileWriter = (
     specName: string,
@@ -1247,6 +1391,8 @@ export function createFileWriterFactory(
     }
 
     let instanceName = name;
+
+    assertWriteTagsUnreserved("file", specName, spec.tags, overrides?.tags);
 
     // Resolve tags with full resolution chain:
     // 1. type auto-tag → 2. definition tags → 3. spec defaults →

@@ -2932,3 +2932,273 @@ Deno.test("createFileWriter: the portability check covers the vary suffix", asyn
   );
   assertEquals(windowsRepo.writes(), 0);
 });
+
+// --- Reserved tag refusal (swamp-club#3635) ---
+
+/** A forged sensitive-fields tag value: it would mark `value` sensitive. */
+const FORGED_TAG_VALUE = JSON.stringify(["value"]);
+const FORGED_TAG = { [SENSITIVE_FIELDS_TAG]: FORGED_TAG_VALUE };
+
+/** Where a reserved tag enters one write, and how the refusal names it. */
+interface ReservedTagSource {
+  label: string;
+  definitionTags?: Record<string, string>;
+  specTags?: Record<string, string>;
+  overrideTags?: Record<string, string>;
+  tagOverrides?: Record<string, string>;
+  runtimeTags?: Record<string, string>;
+  dataOutputTags?: Record<string, string>;
+  /** Text the refusal must contain, given the write's kind and spec. */
+  expected: (kind: "resource" | "file", specName: string) => string[];
+}
+
+const RESERVED_TAG_SOURCES: ReservedTagSource[] = [
+  {
+    label: "definition tags",
+    definitionTags: FORGED_TAG,
+    expected: () => ["from the behavior definition's tags", "Remove it."],
+  },
+  {
+    label: "spec default tags",
+    specTags: FORGED_TAG,
+    expected: (kind, specName) => [
+      `from the default tags of ${kind} spec '${specName}' in behavior type 'swamp/test'`,
+      "The behavior type's author must remove it.",
+    ],
+  },
+  {
+    label: "method write overrides",
+    overrideTags: FORGED_TAG,
+    expected: (kind, specName) => [
+      `from the write overrides of ${kind} spec '${specName}' in behavior type 'swamp/test'`,
+      "The behavior type's author must remove it.",
+    ],
+  },
+  {
+    label: "workflow tags",
+    tagOverrides: { workflow: "wf", ...FORGED_TAG },
+    expected: () => ["from the workflow's tags", "Remove it."],
+  },
+  {
+    label: "runtime tags",
+    runtimeTags: FORGED_TAG,
+    expected: () => ["from --tag", "Remove it."],
+  },
+  {
+    label: "data output override tags",
+    dataOutputTags: FORGED_TAG,
+    expected: (_kind, specName) => [
+      `from the data output override for spec '${specName}'`,
+      "Remove it.",
+    ],
+  },
+];
+
+function assertReservedTagRefusal(
+  error: Error,
+  source: ReservedTagSource,
+  kind: "resource" | "file",
+  specName: string,
+): void {
+  assertStringIncludes(
+    error.message,
+    `Tag '${SENSITIVE_FIELDS_TAG}' `,
+  );
+  assertStringIncludes(error.message, "tag keys starting with '_swamp.'");
+  for (const text of source.expected(kind, specName)) {
+    assertStringIncludes(error.message, text);
+  }
+  // The value may be sensitive; the refusal never repeats it.
+  assertEquals(error.message.includes(FORGED_TAG_VALUE), false);
+}
+
+for (const source of RESERVED_TAG_SOURCES) {
+  Deno.test(`createResourceWriter: refuses a reserved tag from ${source.label} and persists nothing`, async () => {
+    const repo = createCountingRepo();
+    const vaultService = createTestVaultService();
+    const puts: string[] = [];
+    const put = vaultService.put.bind(vaultService);
+    vaultService.put = (vaultName, key, value, options, caller) => {
+      puts.push(key);
+      return put(vaultName, key, value, options, caller);
+    };
+    const resources: Record<string, ResourceOutputSpec> = {
+      item: {
+        // A sensitive field, so a write that got past the refusal would vault.
+        schema: z.object({
+          value: z.string(),
+          secret: z.string().meta({ sensitive: true }),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+        ...(source.specTags ? { tags: source.specTags } : {}),
+      },
+    };
+
+    const { writeResource } = createResourceWriter(
+      repo,
+      modelType,
+      modelId,
+      resources,
+      source.tagOverrides,
+      source.dataOutputTags
+        ? [{ specName: "item", tags: source.dataOutputTags }]
+        : undefined,
+      source.definitionTags,
+      source.runtimeTags,
+      undefined,
+      vaultService,
+      "create",
+    );
+
+    const error = await assertRejects(() =>
+      writeResource(
+        "item",
+        "main",
+        { value: "plain", secret: "s3cret" },
+        source.overrideTags ? { tags: source.overrideTags } : undefined,
+      )
+    );
+    assertReservedTagRefusal(error as Error, source, "resource", "item");
+    assertEquals(repo.writes(), 0);
+    assertEquals(puts, []);
+  });
+
+  Deno.test(`createFileWriterFactory: refuses a reserved tag from ${source.label} and persists nothing`, () => {
+    const repo = createCountingRepo();
+    const files = {
+      log: {
+        ...testFiles.log,
+        ...(source.specTags ? { tags: source.specTags } : {}),
+      },
+    };
+
+    const { createFileWriter } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      files,
+      source.tagOverrides,
+      source.dataOutputTags
+        ? [{ specName: "log", tags: source.dataOutputTags }]
+        : undefined,
+      undefined,
+      source.definitionTags,
+      source.runtimeTags,
+    );
+
+    const error = assertThrows(() =>
+      createFileWriter(
+        "log",
+        "main",
+        source.overrideTags ? { tags: source.overrideTags } : undefined,
+      )
+    );
+    assertReservedTagRefusal(error as Error, source, "file", "log");
+    assertEquals(repo.writes(), 0);
+  });
+}
+
+Deno.test("createResourceWriter: a forged sensitive-fields tag cannot make reference text in a plain field resolve", async () => {
+  // swamp-club#3635: the field's value is ordinary method output (an HTTP
+  // body, say) that happens to look like a stored vault reference. Before the
+  // fix the forged tag was persisted, and createResourceReader resolved the
+  // text to the vault's plaintext.
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "db-password", "hunter2");
+  const reference = "${{ vault.get('test-vault', 'db-password') }}";
+  const repo = createCountingRepo();
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    { workflow: "wf", ...FORGED_TAG },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "fetch",
+  );
+
+  await assertRejects(
+    () => writeResource("item", "response", { value: reference }),
+    Error,
+    `Tag '${SENSITIVE_FIELDS_TAG}' from the workflow's tags is reserved`,
+  );
+  assertEquals(repo.writes(), 0);
+});
+
+Deno.test("createResourceWriter: the writer still sets its own sensitive-fields tag after vaulting", async () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    creds: {
+      schema: z.object({
+        endpoint: z.string(),
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  };
+
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    resources,
+    { workflow: "wf" },
+    undefined,
+    { env: "dev" },
+    { run: "1" },
+    undefined,
+    createTestVaultService(),
+    "create",
+  );
+
+  const handle = await writeResource("creds", "main", {
+    endpoint: "https://example.com",
+    apiKey: "secret-value",
+  });
+  assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], JSON.stringify(["apiKey"]));
+});
+
+Deno.test("createResourceWriter: tag keys that only look reserved are persisted unchanged", async () => {
+  const lookalikes = {
+    "swamp.sensitiveFields": "a",
+    "_swampx": "b",
+    "_SWAMP.sensitiveFields": "c",
+    "my._swamp.key": "d",
+  };
+
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    undefined,
+    lookalikes,
+  );
+
+  const handle = await writeResource("item", "main", { value: "v" });
+  for (const [key, value] of Object.entries(lookalikes)) {
+    assertEquals(handle.tags[key], value);
+  }
+  assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], undefined);
+});
+
+Deno.test("createResourceWriter: a data output override for another spec is not checked", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    [{ specName: "other", tags: FORGED_TAG }],
+  );
+
+  const handle = await writeResource("item", "main", { value: "v" });
+  assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], undefined);
+});

@@ -979,6 +979,139 @@ Deno.test("executeWorkflow - throws error for unknown method", async () => {
   );
 });
 
+// ---------- Reserved tag refusal (swamp-club#3635) ----------
+
+const RESERVED_TAG = { "_swamp.sensitiveFields": JSON.stringify(["value"]) };
+
+/** A model whose one method counts its runs, with optional spec tags. */
+function reservedTagModel(specTags: {
+  resource?: Record<string, string>;
+  file?: Record<string, string>;
+}): { model: ModelDefinition; runs: () => number } {
+  let runs = 0;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/reserved-tags"),
+    version: "1",
+    globalArguments: z.object({}),
+    resources: {
+      out: {
+        schema: z.object({ value: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+        ...(specTags.resource ? { tags: specTags.resource } : {}),
+      },
+    },
+    files: {
+      log: {
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        ...(specTags.file ? { tags: specTags.file } : {}),
+      },
+    },
+    methods: {
+      run: {
+        description: "Counts its runs",
+        arguments: z.object({}),
+        execute: () => {
+          runs++;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+  return { model, runs: () => runs };
+}
+
+const RESERVED_TAG_RUN_SOURCES: Array<{
+  label: string;
+  definitionTags?: Record<string, string>;
+  specTags?: {
+    resource?: Record<string, string>;
+    file?: Record<string, string>;
+  };
+  context?: Partial<MethodContext>;
+  expected: string;
+}> = [
+  {
+    label: "the definition's tags",
+    definitionTags: RESERVED_TAG,
+    expected: "from the behavior definition's tags",
+  },
+  {
+    label: "a resource spec's default tags",
+    specTags: { resource: RESERVED_TAG },
+    expected:
+      "from the default tags of resource spec 'out' in behavior type 'test/reserved-tags'",
+  },
+  {
+    label: "a file spec's default tags",
+    specTags: { file: RESERVED_TAG },
+    expected:
+      "from the default tags of file spec 'log' in behavior type 'test/reserved-tags'",
+  },
+  {
+    label: "--tag",
+    context: { runtimeTags: RESERVED_TAG },
+    expected: "from --tag",
+  },
+  {
+    label: "the workflow's tags",
+    context: { tagOverrides: { workflow: "wf", ...RESERVED_TAG } },
+    expected: "from the workflow's tags",
+  },
+  {
+    label: "a data output override",
+    context: { dataOutputOverrides: [{ specName: "out", tags: RESERVED_TAG }] },
+    expected: "from the data output override for spec 'out'",
+  },
+];
+
+for (const source of RESERVED_TAG_RUN_SOURCES) {
+  Deno.test(`executeWorkflow: refuses a reserved tag from ${source.label} before the method runs`, async () => {
+    const service = new DefaultMethodExecutionService();
+    const { model, runs } = reservedTagModel(source.specTags ?? {});
+    const definition = Definition.create({
+      name: "reserved-tags",
+      globalArguments: {},
+      ...(source.definitionTags ? { tags: source.definitionTags } : {}),
+    });
+    const { context } = createTestContext({
+      modelType: model.type,
+      ...source.context,
+    });
+
+    const error = await assertRejects(
+      () => service.executeWorkflow(definition, model, "run", context),
+      Error,
+      `Tag '_swamp.sensitiveFields' ${source.expected} is reserved`,
+    );
+    assertEquals(
+      (error as Error).message.includes(RESERVED_TAG["_swamp.sensitiveFields"]),
+      false,
+    );
+    assertEquals(runs(), 0);
+  });
+}
+
+Deno.test("executeWorkflow: runs when no tag source holds a reserved key", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { model, runs } = reservedTagModel({ resource: { tier: "gold" } });
+  const definition = Definition.create({
+    name: "reserved-tags",
+    globalArguments: {},
+    tags: { "swamp.sensitiveFields": "lookalike" },
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    runtimeTags: { env: "prod" },
+    tagOverrides: { workflow: "wf" },
+  });
+
+  await service.executeWorkflow(definition, model, "run", context);
+  assertEquals(runs(), 1);
+});
+
 Deno.test("execute passes logger in context to method", async () => {
   const service = new DefaultMethodExecutionService();
   let capturedLogger: unknown = undefined;

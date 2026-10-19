@@ -43,7 +43,7 @@ import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
-import { modelRequiresVault } from "./data_writer.ts";
+import { assertNoReservedRunTags, modelRequiresVault } from "./data_writer.ts";
 import { sensitiveOutputTargets } from "./sensitive_output_vault.ts";
 import {
   currentVaultAccess,
@@ -644,6 +644,25 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           wordedText((w) => `Method '${methodName}' not found in ${w.noun}`),
         );
       }
+
+      // Refuse a reserved tag before anything runs, so the run fails ahead
+      // of the method's side effects (swamp-club#3635). The writers refuse
+      // the method's own write overrides when it writes.
+      assertNoReservedRunTags({
+        modelType: context.modelType,
+        definitionTags: definition.tags,
+        specs: [
+          ...Object.entries(modelDef.resources ?? {}).map((
+            [specName, spec],
+          ) => ({ kind: "resource" as const, specName, tags: spec.tags })),
+          ...Object.entries(modelDef.files ?? {}).map((
+            [specName, spec],
+          ) => ({ kind: "file" as const, specName, tags: spec.tags })),
+        ],
+        tagOverrides: context.tagOverrides,
+        runtimeTags: context.runtimeTags,
+        dataOutputOverrides: context.dataOutputOverrides,
+      });
 
       // Upgrade definition if needed
       const upgradeService = new DefinitionUpgradeService();
