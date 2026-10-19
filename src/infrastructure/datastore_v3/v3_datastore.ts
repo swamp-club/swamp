@@ -72,6 +72,7 @@ import {
 } from "../../domain/datastore_v3/compaction_policy.ts";
 import type { CommitWriter } from "../../domain/datastore_v3/commit.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import { UserError } from "../../domain/errors.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
@@ -447,12 +448,18 @@ function sweepBatchAt(path: string): Promise<void> {
   return sweepBatches.get(path) ?? Promise.resolve();
 }
 
+/** Error code for {@link DroppedWorkRecoveryRunningError}. */
+export const DROPPED_WORK_RECOVERY_RUNNING_CODE =
+  "datastore_v3_dropped_work_recovery_running";
+
 /** Thrown for a root opened while the checkout's dropped work is recovered. */
-export class DroppedWorkRecoveryRunningError extends Error {
+export class DroppedWorkRecoveryRunningError extends UserError {
   constructor() {
     super(
-      "A v3 unit of work opened while the checkout's dropped work is being " +
-        "recovered; its writes would be removed, so it was refused",
+      "Swamp is still removing unfinished writes from this checkout, so a " +
+        "change started now was refused and nothing from it was written. " +
+        "Run the command again once the current one has finished.",
+      DROPPED_WORK_RECOVERY_RUNNING_CODE,
     );
     this.name = "DroppedWorkRecoveryRunningError";
   }

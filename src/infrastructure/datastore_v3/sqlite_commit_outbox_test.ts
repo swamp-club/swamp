@@ -492,6 +492,32 @@ Deno.test("SqliteCommitOutbox: another copy's fence, then this copy's noted fenc
   });
 });
 
+Deno.test("SqliteCommitOutbox: a recorded fence clears its note, so a stale note never outlives recreated lease records (swamp-club#3586)", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      assertEquals(await outbox.chain(), undefined);
+      await outbox.notePendingFence(10);
+      assertEquals(await outbox.chain(), undefined, "a note is no chain");
+      await outbox.recordFence(10, { replicated: true });
+      // The lease records are recreated: the chain restarts at 1 and climbs
+      // back to 9.
+      for (let fence = 1; fence <= 9; fence++) {
+        await outbox.notePendingFence(fence);
+        await outbox.recordFence(fence, { replicated: true });
+      }
+      // Another copy takes 10; this copy's next fence is 11.
+      await outbox.notePendingFence(11);
+      assertEquals(
+        await outbox.recordFence(11, { replicated: true }),
+        { lastFence: 11, chainStart: 11, floor: 0 },
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
 Deno.test("SqliteCommitOutbox: the first fence of a copy, noted and its record lost, is still the chain's (swamp-club#3586)", async () => {
   await withTempDir(async (dir) => {
     const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));

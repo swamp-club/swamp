@@ -359,10 +359,13 @@ export class SqliteCommitOutbox implements CommitOutbox {
           ? { replicated: options.replicated }
           : {}),
       });
+      // A recorded fence needs no note: clearing it keeps a stale one from
+      // outliving a restart of the lease's records and being taken later for
+      // a fence another copy held.
       db.prepare(
         "INSERT INTO outbox_chain (id, last_fence, chain_start, floor) VALUES (1, ?, ?, ?) " +
           "ON CONFLICT (id) DO UPDATE SET last_fence = excluded.last_fence, " +
-          "chain_start = excluded.chain_start, floor = excluded.floor",
+          "chain_start = excluded.chain_start, floor = excluded.floor, pending_fence = NULL",
       ).run(next.lastFence, next.chainStart, next.floor);
       return next;
     });
@@ -589,7 +592,8 @@ function readChain(db: DatabaseSync): FenceChain | undefined {
   ).get() as
     | { last_fence: number; chain_start: number; floor: number }
     | undefined;
-  return row === undefined ? undefined : {
+  // A chain at fence 0 only holds a note: no fence was recorded yet.
+  return row === undefined || row.last_fence === 0 ? undefined : {
     lastFence: row.last_fence,
     chainStart: row.chain_start,
     floor: row.floor,
