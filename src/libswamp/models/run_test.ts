@@ -1022,6 +1022,59 @@ Deno.test("modelMethodRun: refuses a stored definition holding a literal sensiti
   assertEquals(executed, false);
 });
 
+Deno.test("modelMethodRun: refuses a literal an upgrade moves into a sensitive global argument (swamp-club#3555)", async () => {
+  let executed = false;
+  const modelDef: ModelDefinition = {
+    type: TEST_MODEL_TYPE,
+    version: "2026.02.01.1",
+    globalArguments: z.object({
+      apiKey: z.string().meta({ sensitive: true }).optional(),
+    }),
+    upgrades: [{
+      toVersion: "2026.02.01.1",
+      description: "Rename token to apiKey",
+      upgradeAttributes: (old: Record<string, unknown>) => {
+        const { token, ...rest } = old;
+        return { ...rest, apiKey: token };
+      },
+    }],
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => {
+          executed = true;
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "stale-token-model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY" },
+    methods: { run: { arguments: {} } },
+  });
+
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      createTestDeps(definition, modelDef),
+      createTestInput("stale-token-model", "run"),
+    ),
+  );
+
+  const error = events.find((e) => e.kind === "error");
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(error.error.message, "'apiKey'");
+    assertEquals(error.error.message.includes("GLOBAL-CANARY"), false);
+  }
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+  assertEquals(executed, false);
+});
+
 Deno.test("modelMethodRun: direct execution resolves @-prefixed type from registry", async () => {
   const nsType = ModelType.create("@myorg/custom-model");
   const modelDef: ModelDefinition = {

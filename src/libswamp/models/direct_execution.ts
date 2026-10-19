@@ -56,6 +56,7 @@ import {
   findLiteralSensitiveGlobalArgs,
   literalSensitiveGlobalArgsMessage,
 } from "../../domain/models/sensitive_field_extractor.ts";
+import { DefaultModelValidationService } from "../../domain/models/validation_service.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed, wordedSwampError } from "../errors.ts";
 import { wordedText } from "../../domain/behavior_wording.ts";
@@ -352,11 +353,11 @@ async function adoptExistingDefinition(
   }
   // Checked whether or not this run changed the globals: a hand-edited
   // definition skips the save-time refusal. The persisted form is checked,
-  // never the real values, which may hold plaintext read through data.
-  const leakedArgs = findLiteralSensitiveGlobalArgs(
-    modelDef.globalArguments,
-    existing.definition.globalArguments,
-  );
+  // never the real values, which may hold plaintext read through data, and
+  // after its upgrade chain too, which can move a literal into a sensitive
+  // field.
+  const leakedArgs = new DefaultModelValidationService()
+    .findLiteralSensitiveGlobals(existing.definition, modelDef);
   if (leakedArgs.length > 0) {
     return {
       ok: false,

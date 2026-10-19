@@ -31,7 +31,10 @@ import { markOutcomeReported, withUnitOfWork } from "../unit_of_work.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { createModelUpdated } from "../../domain/events/types.ts";
-import { envVarWarningText } from "../../domain/models/validation_service.ts";
+import {
+  DefaultModelValidationService,
+  envVarWarningText,
+} from "../../domain/models/validation_service.ts";
 import {
   carryModelWording,
   markModelWording,
@@ -116,7 +119,6 @@ import {
 import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
 import {
   extractSensitiveFieldValues,
-  findLiteralSensitiveGlobalArgs,
   literalSensitiveGlobalArgsMessage,
   maskLiteralSensitiveValues,
 } from "../../domain/models/sensitive_field_extractor.ts";
@@ -596,10 +598,10 @@ export async function* modelMethodRun(
 
             // A hand-edited definition skips the save-time refusal, so a
             // literal sensitive global is refused before it is used or shown.
-            const leakedArgs = findLiteralSensitiveGlobalArgs(
-              modelDef.globalArguments,
-              definition.globalArguments,
-            );
+            // Read after the upgrade chain too, as validate reads it: an
+            // upgrade can move a literal into a sensitive field.
+            const leakedArgs = new DefaultModelValidationService()
+              .findLiteralSensitiveGlobals(definition, modelDef);
             if (leakedArgs.length > 0) {
               yield {
                 kind: "error",

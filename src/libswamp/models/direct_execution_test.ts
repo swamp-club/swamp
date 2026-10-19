@@ -776,6 +776,58 @@ Deno.test("resolveOrCreateDefinition: refuses a stored literal sensitive global 
   assertEquals(saved, false);
 });
 
+Deno.test("resolveOrCreateDefinition: refuses a stored literal an upgrade moves into a sensitive global arg (swamp-club#3555)", async () => {
+  const modelDef: ModelDefinition = {
+    ...createTestModelDef(
+      z.object({ apiKey: z.string().meta({ sensitive: true }).optional() }),
+      { run: z.object({}) },
+    ),
+    version: "2026.02.01.1",
+    upgrades: [{
+      toVersion: "2026.02.01.1",
+      description: "Rename token to apiKey",
+      upgradeAttributes: (old: Record<string, unknown>) => {
+        const { token, ...rest } = old;
+        return { ...rest, apiKey: token };
+      },
+    }],
+  };
+  const resolvedType = ModelType.create("test/model");
+  const existingDef = Definition.create({
+    name: "stale-token",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "HAND-EDITED-SECRET" },
+  });
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({ definition: existingDef, type: resolvedType }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "stale-token",
+    "run",
+    {},
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "'apiKey'");
+    assertEquals(result.error.message.includes("HAND-EDITED-SECRET"), false);
+  }
+  assertEquals(saved, false);
+});
+
 Deno.test("resolveOrCreateDefinition: reuses a definition whose sensitive global holds a data-read secret's vault reference (swamp-club#3555)", async () => {
   const modelDef = createTestModelDef(
     z.object({ token: z.string().meta({ sensitive: true }) }),
