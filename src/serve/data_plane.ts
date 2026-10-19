@@ -41,9 +41,15 @@
  *   GET    /bundle/{fingerprint}/file/{relPath}          fetch co-located asset
  */
 
+import type { z } from "zod";
 import { isAbsolute, join, normalize, resolve } from "@std/path";
 import { ModelType } from "../domain/models/model_type.ts";
-import type { DataHandle, DataWriter } from "../domain/models/model.ts";
+import {
+  type DataHandle,
+  type DataWriter,
+  FileWriterOverridesSchema,
+  ResourceWriteOverridesSchema,
+} from "../domain/models/model.ts";
 import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
 import {
   createFileWriterFactory,
@@ -97,6 +103,27 @@ function json(body: unknown, status = 200): Response {
 
 function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
+}
+
+/**
+ * Parses the optional write overrides a worker sends. Absent overrides mean
+ * the spec defaults, as for a local write. Returns the error message for a
+ * malformed value, naming the field.
+ */
+function parseOverrides<T>(
+  schema: z.ZodType<T>,
+  raw: unknown,
+): { ok: true; value: T | undefined } | { ok: false; error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  const parsed = schema.safeParse(raw);
+  if (parsed.success) {
+    return { ok: true, value: parsed.data };
+  }
+  const issue = parsed.error.issues[0];
+  const field = ["overrides", ...issue.path.map(String)].join(".");
+  return { ok: false, error: `Invalid ${field}: ${issue.message}` };
 }
 
 /**
@@ -508,9 +535,18 @@ export class DataPlane {
       specName?: string;
       name?: string;
       data?: Record<string, unknown>;
+      overrides?: unknown;
     };
     if (!body.specName || !body.name || body.data === undefined) {
       return errorResponse(400, "Expected { specName, name, data }");
+    }
+    // Validated before the lease is marked: a refused body writes nothing.
+    const overrides = parseOverrides(
+      ResourceWriteOverridesSchema,
+      body.overrides,
+    );
+    if (!overrides.ok) {
+      return errorResponse(400, overrides.error);
     }
 
     const repo = this.#repoForWorker(workerName, dispatchId);
@@ -535,7 +571,12 @@ export class DataPlane {
     const done = this.#beginWrite(dispatch.dispatchId);
     let handle: DataHandle;
     try {
-      handle = await writeResource(body.specName, body.name, body.data);
+      handle = await writeResource(
+        body.specName,
+        body.name,
+        body.data,
+        overrides.value,
+      );
       this.#recordVersion(dispatch, handle);
     } catch (error) {
       throw new DataPlaneError(
@@ -582,9 +623,17 @@ export class DataPlane {
     dispatchId?: string,
   ): Promise<Response> {
     const dispatch = this.#activeDispatch(workerName, dispatchId);
-    const body = await req.json() as { specName?: string; name?: string };
+    const body = await req.json() as {
+      specName?: string;
+      name?: string;
+      overrides?: unknown;
+    };
     if (!body.specName || !body.name) {
       return errorResponse(400, "Expected { specName, name }");
+    }
+    const overrides = parseOverrides(FileWriterOverridesSchema, body.overrides);
+    if (!overrides.ok) {
+      return errorResponse(400, overrides.error);
     }
 
     const repo = this.#repoForWorker(workerName, dispatchId);
@@ -600,7 +649,11 @@ export class DataPlane {
       dispatch.runtimeTags,
       dispatch.definitionName,
     );
-    const writer = createFileWriter(body.specName, body.name);
+    const writer = createFileWriter(
+      body.specName,
+      body.name,
+      overrides.value,
+    );
     const writerId = crypto.randomUUID();
     this.#writers.set(writerId, {
       writer,

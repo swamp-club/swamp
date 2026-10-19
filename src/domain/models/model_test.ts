@@ -25,6 +25,7 @@ import {
   type DataHandle,
   type DataWriter,
   defineModel,
+  FileWriterOverridesSchema,
   inferMethodKind,
   isMutatingKind,
   type LazyModelEntry,
@@ -32,6 +33,7 @@ import {
   type MethodDefinition,
   type ModelDefinition,
   ModelRegistry,
+  ResourceWriteOverridesSchema,
 } from "./model.ts";
 import { ModelType } from "./model_type.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
@@ -1747,4 +1749,59 @@ Deno.test("ModelRegistry.refreshSources: each pass runs through the given schedu
   });
 
   assertEquals(order, ["lock", "pass", "unlock"]);
+});
+
+Deno.test("ResourceWriteOverridesSchema: accepts every override and strips unknown keys", () => {
+  assertEquals(
+    ResourceWriteOverridesSchema.parse({
+      lifetime: "7d",
+      garbageCollection: 3,
+      tags: { provider: "claude" },
+      fromANewerWorker: true,
+    }),
+    { lifetime: "7d", garbageCollection: 3, tags: { provider: "claude" } },
+  );
+  assertEquals(ResourceWriteOverridesSchema.parse({}), {});
+});
+
+Deno.test("ResourceWriteOverridesSchema: rejects non-string tags and invalid policies", () => {
+  assertEquals(
+    ResourceWriteOverridesSchema.safeParse({ tags: { exitCode: 0 } }).success,
+    false,
+  );
+  assertEquals(
+    ResourceWriteOverridesSchema.safeParse({ lifetime: "forever" }).success,
+    false,
+  );
+  assertEquals(
+    ResourceWriteOverridesSchema.safeParse({ garbageCollection: 0 }).success,
+    false,
+  );
+});
+
+Deno.test("FileWriterOverridesSchema: accepts file overrides and rejects bad types", () => {
+  assertEquals(
+    FileWriterOverridesSchema.parse({
+      contentType: "text/plain",
+      lifetime: "1h",
+      garbageCollection: "2d",
+      streaming: true,
+      tags: { probe: "file" },
+    }),
+    {
+      contentType: "text/plain",
+      lifetime: "1h",
+      garbageCollection: "2d",
+      streaming: true,
+      tags: { probe: "file" },
+    },
+  );
+  assertEquals(
+    FileWriterOverridesSchema.safeParse({ contentType: 5 }).success,
+    false,
+  );
+  assertEquals(
+    FileWriterOverridesSchema.safeParse({ streaming: "yes" }).success,
+    false,
+  );
 });

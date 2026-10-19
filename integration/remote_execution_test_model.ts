@@ -71,7 +71,12 @@ defineModel({
           });
         }
 
-        const writer = context.createFileWriter!("log", "log-main");
+        // Overrides travel to serve with the write (swamp-club#3574).
+        const writer = context.createFileWriter!("log", "log-main", {
+          contentType: "text/x-log",
+          lifetime: "1h",
+          tags: { probe: "file" },
+        });
         await writer.writeLine("line one");
         await writer.writeLine("line two");
         const logHandle = await writer.finalize();
@@ -92,6 +97,11 @@ defineModel({
             sawEnv: Deno.env.get("REMOTE_IT_ENV"),
             priorWasNull: prior === null,
             vaultRoundTrip,
+          },
+          {
+            lifetime: "7d",
+            garbageCollection: 3,
+            tags: { provider: "it", exitCode: "0" },
           },
         );
         return { dataHandles: [resultHandle, logHandle] };

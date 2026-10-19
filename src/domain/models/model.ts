@@ -144,6 +144,49 @@ export interface FileWriterOverrides {
 }
 
 /**
+ * Validates resource write overrides that cross a process boundary (a worker
+ * sending them to serve). Unknown keys are stripped, not refused, so a newer
+ * worker stays compatible with an older serve.
+ */
+export const ResourceWriteOverridesSchema = z.object({
+  lifetime: LifetimeSchema.optional(),
+  garbageCollection: GarbageCollectionSchema.optional(),
+  tags: z.record(z.string(), z.string()).optional(),
+});
+
+/**
+ * Validates file writer overrides that cross a process boundary. Unknown keys
+ * are stripped, as for {@link ResourceWriteOverridesSchema}.
+ */
+export const FileWriterOverridesSchema = z.object({
+  contentType: z.string().optional(),
+  lifetime: LifetimeSchema.optional(),
+  garbageCollection: GarbageCollectionSchema.optional(),
+  streaming: z.boolean().optional(),
+  tags: z.record(z.string(), z.string()).optional(),
+});
+
+// Compile-time guards: each schema must parse to its interface and cover
+// every key of it, so a new override field cannot be silently dropped on the
+// wire.
+type SameKeys<A, B> = [keyof A] extends [keyof B]
+  ? [keyof B] extends [keyof A] ? true : false
+  : false;
+const _resourceOverridesMatch:
+  & SameKeys<
+    ResourceWriteOverrides,
+    z.infer<typeof ResourceWriteOverridesSchema>
+  >
+  & (z.infer<typeof ResourceWriteOverridesSchema> extends ResourceWriteOverrides
+    ? true
+    : false) = true;
+const _fileOverridesMatch:
+  & SameKeys<FileWriterOverrides, z.infer<typeof FileWriterOverridesSchema>>
+  & (z.infer<typeof FileWriterOverridesSchema> extends FileWriterOverrides
+    ? true
+    : false) = true;
+
+/**
  * Context provided to method execution.
  */
 export interface MethodContext {

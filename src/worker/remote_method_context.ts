@@ -412,10 +412,10 @@ function createRemoteWriters(options: RemoteContextOptions): RemoteWriters {
     specName,
     name,
     data,
-    _overrides,
+    overrides,
   ) => {
     const remote = await client.writeResource(
-      { specName, name, data },
+      { specName, name, data, ...(overrides ? { overrides } : {}) },
       signal,
     );
     const handle = toDataHandle(remote);
@@ -426,7 +426,7 @@ function createRemoteWriters(options: RemoteContextOptions): RemoteWriters {
   const createFileWriter: RemoteWriters["createFileWriter"] = (
     specName,
     name,
-    _overrides,
+    overrides,
   ) => {
     let opened: Promise<{ writerId: string; dataId: string }> | null = null;
     let spoolPath: string | null = null;
@@ -434,7 +434,10 @@ function createRemoteWriters(options: RemoteContextOptions): RemoteWriters {
     const placeholderDataId = generateDataId();
 
     const open = () => {
-      opened ??= client.openWriter({ specName, name }, signal);
+      opened ??= client.openWriter(
+        { specName, name, ...(overrides ? { overrides } : {}) },
+        signal,
+      );
       return opened;
     };
     const track = (remote: RemoteDataHandle): DataHandle => {
