@@ -654,6 +654,39 @@ For example, `@user/aws/ec2-keypair` (id `abc-123`, method `createKeyPair`,
 spec `result`, instance `result`) with field `KeyMaterial` becomes
 `user-aws-ec2-keypair-abc-123-createKeyPair-result-result-KeyMaterial`.
 
+For a vary write ([data.md §The record](./data.md#the-record)) the instance
+segment is the data name, `-`, and the vary suffix in its key form, so each vary
+instance has its own key (`varySuffixVaultKeySegment()` in `data_writer.ts`):
+
+- A suffix of at most 32 lowercase letters, digits and `-` is kept as written,
+  so the segment matches the stored name: varied on `prod`, the write above
+  uses `...-createKeyPair-result-result-prod-KeyMaterial`.
+- Any other suffix becomes `h-` and the first 32 hex digits of its SHA-256
+  (`...-result-result-h-3f9c...-KeyMaterial`). Kept as written, such a suffix
+  would lose characters to `sanitizeVaultKey()` (`x@y` and `xy` would share a
+  key), could end the key early inside its single-quoted reference (`'`), be
+  refused by a provider with a narrow name alphabet (Azure Key Vault allows
+  only letters, digits and `-`, so `.` and `_` are hashed too), or, with
+  capitals, fold onto another value in a case-insensitive vault (Azure Key
+  Vault, or `local_encryption` on macOS or Windows), so `Prod` is hashed while
+  `prod` is kept. The hashed form is 34 characters, longer than any suffix
+  kept as written, so for one data name the two forms cannot meet, and a vary
+  write's key is at most 35 bytes longer than the same write's key without
+  vary. Across data names they can (`x` hashed against `x-h` with a kept
+  32-hex suffix), the same split ambiguity as the rest of the key
+  (swamp-club#3641).
+
+The rest of the key is not shortened. A behavior whose type, method, spec and
+field names already make a key close to the 255-byte file name a
+`local_encryption` vault stores it under can still overflow it, with or without
+vary; capping the whole key is swamp-club#3641.
+
+Before swamp-club#3633 the key used the data name without the suffix, so every
+vary instance of a spec and data name shared one secret and the last write won.
+Records written then still name that shared key until their instance is written
+again. The data name itself still passes through `sanitizeVaultKey()` alone
+(swamp-club#3641).
+
 Set a custom key with `vaultKey` in field metadata:
 
 ```typescript
