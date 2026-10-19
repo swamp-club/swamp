@@ -275,6 +275,17 @@ export function refuseUnboundSecrets(value: unknown, expression: string): void {
   }
 }
 
+/**
+ * Reads `value` as {@link SecretBoundary.release} would, firing the getters of
+ * every view in it, so that a record the expression returned without
+ * selecting into it is adapted, and its references recorded, before release.
+ * Stops at the first `Secret`, which is enough: one recorded reference
+ * already decides a synchronous evaluation.
+ */
+export function readResult(value: unknown): void {
+  containsSecret(value);
+}
+
 function containsSecret(value: unknown): boolean {
   if (isSecret(value)) return true;
   if (value instanceof Optional) {

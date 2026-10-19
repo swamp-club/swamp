@@ -328,12 +328,16 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   and a denial fails the evaluation as the read-time denial does with the
   option off. A typed evaluation with no vault scope fails closed; with a
   scope but no ambient `RunVaultAccess` the check passes, as the option-off
-  read does outside a run. The synchronous `evaluate` fails closed on any
-  recorded reference, before and after release so that no sentinel is issued
-  for a refused result, naming `evaluateAsync`, because the check is
-  asynchronous; Phase 4 gives the synchronous passes (`forEach` expansion,
-  step names) an authorization step of their own, for example in `prepare`,
-  before it enables them. With the option off the accessors still read tagged
+  read does outside a run. On the asynchronous path release precedes
+  authorization, so a denial leaves the value-less entries release issued in
+  the run's registry; nothing delivers them, and a load authorizes again. The
+  synchronous `evaluate` fails closed on any recorded reference, naming
+  `evaluateAsync`, because the check is asynchronous: it reads the result as
+  release would first, so a record the expression returned without selecting
+  into it is adapted too, and the refusal comes before release issues any
+  sentinel. Phase 4 gives the synchronous passes (`forEach` expansion, step
+  names) an authorization step of their own, for example in `prepare`, before
+  it enables them. With the option off the accessors still read tagged
   fields, and that read authorizes each reference under the run's
   `RunVaultAccess` and re-throws a denial.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key

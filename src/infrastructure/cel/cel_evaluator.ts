@@ -55,6 +55,7 @@ import {
 import { hasContainerComparison } from "./container_comparison.ts";
 import {
   detachForDestination,
+  readResult,
   refuseUnboundSecrets,
   SecretBoundary,
 } from "./secret_boundary.ts";
@@ -1025,14 +1026,20 @@ export class CelEvaluator {
       if (result instanceof Promise) throw unresolvedPromiseError(expression);
       // Authorization is asynchronous, so a record with tagged fields cannot
       // be read here, as vault.get cannot (typed-secrets 3.3; Phase 4 gives
-      // the synchronous passes an authorization step of their own). Checked
-      // before release, so no sentinel is issued for a result that is
-      // refused, and again after it, since release adapts records the
-      // expression returned unread.
+      // the synchronous passes an authorization step of their own). The
+      // result is read as release reads it first, so a record the expression
+      // returned without selecting into it is adapted now, and the check
+      // refuses before release issues a sentinel for anything.
+      try {
+        readResult(result);
+      } catch (error) {
+        if (error instanceof SecretRefusal) {
+          throw new SecretRefusedError(error.code, error.operation, expression);
+        }
+        throw this.evaluationError(error, expression, wrappedContext);
+      }
       this.refuseSynchronousSensitiveReads(faults, expression);
-      const released = this.releaseWithSecrets(result, run, expression);
-      this.refuseSynchronousSensitiveReads(faults, expression);
-      return released;
+      return this.releaseWithSecrets(result, run, expression);
     });
   }
 
