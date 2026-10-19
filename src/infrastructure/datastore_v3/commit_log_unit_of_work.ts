@@ -707,7 +707,8 @@ export function createCommitLogUnitOfWork(
       // a later recovery must not land them. When that cannot be recorded,
       // the caller is told they may land (swamp-club#3586).
       dropWork();
-      const lost = await discardEntries(options, outbox, pending);
+      const lost = await discardEntries(options, outbox, pending) ??
+        unconfirmed;
       if (lost !== undefined && !(error instanceof MayLandLaterError)) {
         throw new MayLandLaterError(error, lost.reason);
       }

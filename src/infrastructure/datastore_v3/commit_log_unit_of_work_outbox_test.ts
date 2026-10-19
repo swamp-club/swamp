@@ -21,7 +21,10 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { OUTBOX_RETRY_BOUND_MS } from "../../domain/datastore_v3/commit_outbox.ts";
-import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  MayLandLaterError,
+  PartitionsRefusedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import {
   dataKey,
@@ -362,4 +365,37 @@ Deno.test("commit-log unit with an outbox: a retry refreshes the chunks it store
   await uow.commit();
   assertEquals(presentAtAppend, true);
   assertEquals(sink.landed.length, 1);
+});
+
+Deno.test("commit-log unit with an outbox: a refusal in the unit's own commit whose give-up cannot be recorded says the change may land (swamp-club#3586)", async () => {
+  for (const ending of ["commit", "checkpoint then commit"] as const) {
+    const sink = new OutboxMemorySink();
+    const options = unitOptions(sink, memory());
+    const first = createCommitLogUnitOfWork(contextHook(), options);
+    await first.stageOp({
+      partition: MODEL,
+      op: await savePut("a", 1, "a", "absent"),
+    });
+    await first.commit();
+    // Neither the abandoned mark nor the discard can be written.
+    Object.assign(sink.outbox, {
+      abandon: () => Promise.reject(new Error("database or disk is full")),
+    });
+    sink.beforeRemove = () => {
+      throw new Error("database or disk is full");
+    };
+    const uow = createCommitLogUnitOfWork(contextHook(), options);
+    // Refused: its expect no longer holds.
+    await uow.stageOp({
+      partition: MODEL,
+      op: await savePut("a", 1, "again", "absent"),
+    });
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    if (ending === "checkpoint then commit") {
+      await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+      uow.acknowledgeRefusals();
+    }
+    const error = await assertRejects(() => uow.commit(), MayLandLaterError);
+    assert(error.message.includes("disk is full"), ending);
+  }
 });
