@@ -496,30 +496,61 @@ Deno.test("supersedeSuspendedRuns: a nested run that cannot be read does not sto
 
 Deno.test("supersedeMatchInputs: a --last-evaluated run is matched on the cache's evaluation inputs under its own (swamp-club#3583)", async () => {
   const deps = {
-    cachedEvaluationInputs: (name: string) =>
+    evaluatedCache: (name: string) =>
       Promise.resolve(
-        name === "gated" ? { target: "scratch", region: "eu" } : undefined,
+        name === "gated"
+          ? {
+            evaluatedInputs: { target: "scratch", region: "eu" },
+            authoredExpressions: new Set([
+              "${{ inputs.target }}",
+              "${{ env.HOME + inputs.region }}",
+            ]),
+            // Only target was resolved into the cached steps.
+            resolvedExpressions: new Set(["${{ inputs.target }}"]),
+          }
+          : undefined,
       ),
   };
   assertEquals(
     await supersedeMatchInputs("gated", {}, true, deps),
     { target: "scratch", region: "eu" },
   );
+  // A run-time-only input is the run's own.
   assertEquals(
     await supersedeMatchInputs("gated", { region: "us" }, true, deps),
     { target: "scratch", region: "us" },
   );
-  // A fresh run, a cache that recorded none, or no lookup: the supplied
-  // inputs alone.
+  // A fresh run, or no lookup: the supplied inputs alone.
   assertEquals(
     await supersedeMatchInputs("gated", { a: 1 }, false, deps),
-    { a: 1 },
-  );
-  assertEquals(
-    await supersedeMatchInputs("other", { a: 1 }, true, deps),
     { a: 1 },
   );
   assertEquals(await supersedeMatchInputs("gated", { a: 1 }, true, {}), {
     a: 1,
   });
+});
+
+Deno.test("supersedeMatchInputs: a --last-evaluated run that will be refused supersedes nothing (swamp-club#3583)", async () => {
+  const deps = {
+    evaluatedCache: (name: string) =>
+      Promise.resolve(
+        name === "gated"
+          ? {
+            evaluatedInputs: { target: "scratch" },
+            authoredExpressions: new Set(["${{ inputs.target }}"]),
+            resolvedExpressions: new Set(["${{ inputs.target }}"]),
+          }
+          : undefined,
+      ),
+  };
+  // An input the cached steps were resolved with, at another value.
+  assertEquals(
+    await supersedeMatchInputs("gated", { target: "protected" }, true, deps),
+    undefined,
+  );
+  // No cache to replay.
+  assertEquals(
+    await supersedeMatchInputs("missing", {}, true, deps),
+    undefined,
+  );
 });

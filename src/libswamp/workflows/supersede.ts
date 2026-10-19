@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { deepMerge } from "../../domain/inputs/input_merge.ts";
+import { inputsConflictingWithCache } from "../../domain/workflows/persisted_workflow.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -87,30 +88,42 @@ export interface SupersedeDeps {
    */
   cascade?: NestedCascade;
   /**
-   * The inputs the workflow's evaluated cache was evaluated with. A
-   * `--last-evaluated` run records them under its own (swamp-club#3583), so
-   * they are what its inputs are matched on. Without it, only the supplied
-   * inputs are.
+   * The workflow's evaluated cache, as far as a `--last-evaluated` run reads
+   * it before it starts (swamp-club#3583): the inputs it was evaluated with,
+   * which the run records under its own and is matched on, and what it
+   * resolved, which decides whether the run is refused. Undefined when there
+   * is no cache. Without it, only the supplied inputs are matched on.
    */
-  cachedEvaluationInputs?: (
-    workflowName: string,
-  ) => Promise<Record<string, unknown> | undefined>;
+  evaluatedCache?: (workflowName: string) => Promise<
+    | {
+      evaluatedInputs?: Record<string, unknown>;
+      authoredExpressions: ReadonlySet<string>;
+      resolvedExpressions?: ReadonlySet<string>;
+    }
+    | undefined
+  >;
 }
 
 /**
  * The inputs a new run's suspended predecessors are matched on: the ones it
  * will record. A `--last-evaluated` run records the cache's evaluation
- * inputs under the supplied ones (swamp-club#3583).
+ * inputs under the supplied ones (swamp-club#3583). Undefined when the run
+ * will be refused before it starts (no cache, or an input that conflicts
+ * with it), so nothing is superseded by a run that never starts.
  */
 export async function supersedeMatchInputs(
   workflowName: string,
   supplied: Record<string, unknown>,
   lastEvaluated: boolean,
-  { cachedEvaluationInputs }: Pick<SupersedeDeps, "cachedEvaluationInputs">,
-): Promise<Record<string, unknown>> {
-  if (!lastEvaluated || !cachedEvaluationInputs) return supplied;
-  const cached = await cachedEvaluationInputs(workflowName);
-  return cached ? deepMerge({ ...cached }, supplied) : supplied;
+  { evaluatedCache }: Pick<SupersedeDeps, "evaluatedCache">,
+): Promise<Record<string, unknown> | undefined> {
+  if (!lastEvaluated || !evaluatedCache) return supplied;
+  const cache = await evaluatedCache(workflowName);
+  if (!cache) return undefined;
+  if (inputsConflictingWithCache(supplied, cache).length > 0) return undefined;
+  return cache.evaluatedInputs
+    ? deepMerge({ ...cache.evaluatedInputs }, supplied)
+    : supplied;
 }
 
 /** Whether a new run of the workflow with `newInputs` supersedes `run`. */

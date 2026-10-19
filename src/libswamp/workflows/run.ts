@@ -891,16 +891,20 @@ export async function* workflowRun(
             };
           }
 
-          if (!resolvedInput.noSupersede && deps.supersede) {
+          // Undefined when the run will be refused before it starts.
+          const supersedeInputs = !resolvedInput.noSupersede && deps.supersede
+            ? await supersedeMatchInputs(
+              workflow.name,
+              resolvedInput.inputs ?? {},
+              resolvedInput.lastEvaluated === true,
+              deps.supersede,
+            )
+            : undefined;
+          if (supersedeInputs && deps.supersede) {
             const { cancelledRunIds, skippedRuns, ...nested } =
               await supersedeSuspendedRuns(
                 workflow,
-                await supersedeMatchInputs(
-                  workflow.name,
-                  resolvedInput.inputs ?? {},
-                  resolvedInput.lastEvaluated === true,
-                  deps.supersede,
-                ),
+                supersedeInputs,
                 deps.supersede,
                 deps.runRepo,
               );

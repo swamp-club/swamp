@@ -425,16 +425,6 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/**
- * The first reader, as `--from` names it (a forEach iteration by its
- * template), when retrying from it resets every step that read a refused
- * input. Undefined when no single reader's retry does: readers in parallel
- * branches, or a step `--from` cannot name.
- *
- * The first reader is taken in record order, which across jobs may not be
- * the earliest in dependency order. The hint then falls back to a new run:
- * less helpful, never wrong.
- */
 /** Every step a refused input counts as read by, however it counts. */
 function readerSteps(
   run: WorkflowRun,
@@ -456,6 +446,16 @@ function readerSteps(
   return steps;
 }
 
+/**
+ * The first reader, as `--from` names it (a forEach iteration by its
+ * template), when retrying from it resets every step that read a refused
+ * input. Undefined when no single reader's retry does: readers in parallel
+ * branches, or a step `--from` cannot name.
+ *
+ * The first reader is taken in record order, which across jobs may not be
+ * the earliest in dependency order. The hint then falls back to a new run:
+ * less helpful, never wrong.
+ */
 function retryStepResetting(
   workflow: Workflow,
   run: WorkflowRun,

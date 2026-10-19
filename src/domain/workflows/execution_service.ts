@@ -7257,9 +7257,10 @@ export class WorkflowExecutionService {
     }
 
     // Deferred bindings are persisted by the child, so resume-derived values
-    // (audited by key, never by value) are left out. A parent runtime
-    // expression that references one fails to resolve in the child instead
-    // of persisting the secret or silently using a stale pre-resume value.
+    // are left out: a parent runtime expression that references one fails to
+    // resolve in the child instead of silently using a stale pre-resume
+    // value. The parent run records them as its inputs; inputs are not a
+    // secret channel (swamp-club#2585).
     const deferred = expressionContext
       ? inStepReport(() =>
         this.expressionEvaluator.deferChildInputs(

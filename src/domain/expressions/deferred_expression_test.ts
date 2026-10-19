@@ -46,3 +46,27 @@ Deno.test("captureDeferredBindings: omits two- and three-segment paths and leave
     "minted",
   );
 });
+
+Deno.test("captureDeferredBindings: an omitted key is one key, and no path reaches a prototype (swamp-club#3583)", () => {
+  const context = {
+    inputs: { "a.b": "dotted", a: { b: "nested" }, keep: 1 },
+    self: {},
+    run: { id: "r1", inputs: { "a.b": "dotted" } },
+    workflowRunId: "r1",
+    steps: {},
+  } as unknown as ExpressionContext;
+  const toString = Object.prototype.toString;
+  const bindings = captureDeferredBindings(context, [
+    "inputs.a.b",
+    "run.inputs.a.b",
+    "inputs.__proto__.toString",
+    "run.inputs.__proto__",
+    "inputs.constructor",
+    "other.key",
+  ]);
+  // The dotted key is removed whole; the nested one is untouched.
+  assertEquals(bindings.inputs as unknown, { a: { b: "nested" }, keep: 1 });
+  assertEquals(bindings.run as unknown, { id: "r1", inputs: {} });
+  assertEquals(Object.prototype.toString, toString);
+  assertEquals(typeof ({}).toString, "function");
+});
