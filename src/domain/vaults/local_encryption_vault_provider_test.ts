@@ -20,8 +20,10 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
+  countLocalEncryptionSecrets,
   type LocalEncryptionConfig,
   localEncryptionSecretsDir,
+  localEncryptionSecretsWithin,
   LocalEncryptionVaultProvider,
   moveLocalEncryptionSecrets,
   removeLocalEncryptionSecrets,
@@ -1407,7 +1409,11 @@ Deno.test("removeLocalEncryptionSecrets: removes secrets, annotations and the ge
     );
     const directory = localEncryptionSecretsDir(dir, "trip-planner");
 
-    const result = await removeLocalEncryptionSecrets(dir, "trip-planner");
+    const result = await removeLocalEncryptionSecrets(
+      dir,
+      "trip-planner",
+      join(dir, ".swamp"),
+    );
 
     assertEquals(result, { directory, removed: true, secretCount: 2 });
     await assertRejects(() => Deno.lstat(directory), Deno.errors.NotFound);
@@ -1416,7 +1422,11 @@ Deno.test("removeLocalEncryptionSecrets: removes secrets, annotations and the ge
 
 Deno.test("removeLocalEncryptionSecrets: a vault with no stored secrets removes nothing", async () => {
   await withTempDir(async (dir) => {
-    const result = await removeLocalEncryptionSecrets(dir, "empty");
+    const result = await removeLocalEncryptionSecrets(
+      dir,
+      "empty",
+      join(dir, ".swamp"),
+    );
     assertEquals(result.removed, false);
     assertEquals(result.secretCount, 0);
   });
@@ -1433,7 +1443,11 @@ Deno.test("removeLocalEncryptionSecrets: leaves a key file stored outside the va
     });
     await provider.put("API_KEY", "s3cret");
 
-    await removeLocalEncryptionSecrets(dir, "trip-planner");
+    await removeLocalEncryptionSecrets(
+      dir,
+      "trip-planner",
+      join(dir, ".swamp"),
+    );
 
     assertEquals((await Deno.stat(keyFile)).isFile, true);
   });
@@ -1447,7 +1461,7 @@ Deno.test("removeLocalEncryptionSecrets: refuses a name that is not one path seg
 
     for (const name of ["../../data", "..", "a/b", "a\\b", ""]) {
       await assertRejects(
-        () => removeLocalEncryptionSecrets(dir, name),
+        () => removeLocalEncryptionSecrets(dir, name, join(dir, ".swamp")),
         Error,
         "single path segment",
       );
@@ -1465,10 +1479,86 @@ Deno.test("removeLocalEncryptionSecrets: unlinks a symlinked vault directory wit
     await Deno.mkdir(join(directory, ".."), { recursive: true });
     await Deno.symlink(target, directory, { type: "dir" });
 
-    const result = await removeLocalEncryptionSecrets(dir, "linked");
+    const result = await removeLocalEncryptionSecrets(
+      dir,
+      "linked",
+      join(dir, ".swamp"),
+    );
 
     assertEquals(result.removed, true);
     await assertRejects(() => Deno.lstat(directory), Deno.errors.NotFound);
     assertEquals(await Deno.readTextFile(join(target, "API_KEY.enc")), "{}");
+  });
+});
+
+Deno.test("removeLocalEncryptionSecrets: refuses storage outside the repository being changed", async () => {
+  await withTempDir(async (dir) => {
+    // A base_dir another checkout recorded in the committed config.
+    const other = join(dir, "other-checkout");
+    const provider = new LocalEncryptionVaultProvider("trip-planner", {
+      auto_generate: true,
+      base_dir: other,
+    });
+    await provider.put("API_KEY", "s3cret");
+    const boundary = join(dir, "this-checkout", ".swamp");
+    await Deno.mkdir(boundary, { recursive: true });
+
+    assertEquals(
+      await localEncryptionSecretsWithin(other, "trip-planner", boundary),
+      false,
+    );
+    await assertRejects(() =>
+      removeLocalEncryptionSecrets(other, "trip-planner", boundary)
+    );
+    assertEquals(await provider.get("API_KEY"), "s3cret");
+  });
+});
+
+Deno.test("removeLocalEncryptionSecrets: refuses when the secrets root is a symlink out of the repository", async () => {
+  await withTempDir(async (dir) => {
+    const outside = join(dir, "outside");
+    await Deno.mkdir(join(outside, "trip-planner"), { recursive: true });
+    await Deno.writeTextFile(join(outside, "trip-planner", "K.enc"), "{}");
+    const repo = join(dir, "repo");
+    await Deno.mkdir(join(repo, ".swamp", "secrets"), { recursive: true });
+    await Deno.symlink(
+      outside,
+      join(repo, ".swamp", "secrets", "local_encryption"),
+      { type: "dir" },
+    );
+
+    assertEquals(
+      await localEncryptionSecretsWithin(
+        repo,
+        "trip-planner",
+        join(repo, ".swamp"),
+      ),
+      false,
+    );
+    await assertRejects(() =>
+      removeLocalEncryptionSecrets(repo, "trip-planner", join(repo, ".swamp"))
+    );
+    assertEquals(
+      await Deno.readTextFile(join(outside, "trip-planner", "K.enc")),
+      "{}",
+    );
+  });
+});
+
+Deno.test("countLocalEncryptionSecrets: counts secrets and does not follow a symlink", async () => {
+  await withTempDir(async (dir) => {
+    const provider = new LocalEncryptionVaultProvider("v", {
+      auto_generate: true,
+      base_dir: dir,
+    });
+    await provider.put("A", "1");
+    await provider.put("B", "2");
+    const directory = localEncryptionSecretsDir(dir, "v");
+    assertEquals(await countLocalEncryptionSecrets(directory), 2);
+    assertEquals(await countLocalEncryptionSecrets(join(dir, "missing")), 0);
+
+    const link = localEncryptionSecretsDir(dir, "linked");
+    await Deno.symlink(directory, link, { type: "dir" });
+    assertEquals(await countLocalEncryptionSecrets(link), 0);
   });
 });

@@ -27,11 +27,11 @@
 
 import type { Definition } from "../definitions/definition.ts";
 import type { Workflow } from "../workflows/workflow.ts";
-import { scanExpressions } from "../expressions/expression_scanner.ts";
+import { scanExpressions } from "./expression_scanner.ts";
 import {
   findVaultGetCalls,
   isDynamicVaultArgument,
-} from "../expressions/vault_reference_extractor.ts";
+} from "./vault_reference_extractor.ts";
 
 /** What names the vault. */
 export type VaultReferenceSourceKind = "definition" | "workflow" | "datastore";

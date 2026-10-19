@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { Definition } from "../definitions/definition.ts";
-import { findVaultReferences } from "./vault_references.ts";
+import { findVaultReferences } from "./vault_reference_finder.ts";
 
 const arbVaultName = fc.stringMatching(/^[a-z][a-z0-9-]{0,20}$/);
 const arbKey = fc.stringMatching(/^[A-Z][A-Z0-9_]{0,20}$/);

@@ -58,21 +58,22 @@ interface TestRepo {
 
 async function withRepo(
   fn: (repo: TestRepo) => Promise<void>,
-  datastore?: DatastoreConfigData,
+  options: { datastore?: DatastoreConfigData; defaultVault?: boolean } = {},
 ): Promise<void> {
+  const withDefault = options.defaultVault ?? true;
   const repoDir = await Deno.makeTempDir({ prefix: "swamp_vault_remove_" });
   try {
     await new RepoMarkerRepository().write(RepoPath.create(repoDir), {
       swampVersion: "test",
       initializedAt: new Date().toISOString(),
-      defaultVault: "default",
-      datastore,
+      defaultVault: withDefault ? "default" : undefined,
+      datastore: options.datastore,
     });
     const repoContext = createRepositoryContext({
       repoDir,
       enableIndexing: false,
     });
-    await saveLocalVault(repoContext, "default");
+    if (withDefault) await saveLocalVault(repoContext, "default");
     await fn({ repoDir, repoContext });
   } finally {
     if (Deno.build.os === "windows") {
@@ -87,9 +88,10 @@ async function saveLocalVault(
   repoContext: TestRepo["repoContext"],
   name: string,
   config: Record<string, unknown> = { auto_generate: true },
+  id: string = crypto.randomUUID(),
 ): Promise<VaultConfig> {
   const vault = VaultConfig.create(
-    crypto.randomUUID(),
+    id,
     name,
     "local_encryption",
     config,
@@ -150,7 +152,7 @@ Deno.test("vault remove: removes the config, then the vault's secrets and key", 
 
     const { preview, secrets } = await removeVault(repo, "trip-planner");
 
-    assertEquals(preview.localStorage?.secretKeys, ["API_KEY"]);
+    assertEquals(preview.localStorage?.secretCount, 1);
     assertEquals(secrets, { directory, removed: true, secretCount: 1 });
     assertEquals(
       await repo.repoContext.vaultConfigRepo.findByName("trip-planner"),
@@ -237,7 +239,7 @@ Deno.test("vault remove: refuses a vault referenced by a definition, a workflow 
       await repo.repoContext.vaultConfigRepo.findByName("trip-planner"),
       null,
     );
-  }, datastore);
+  }, { datastore });
 });
 
 Deno.test("vault remove: leaves a key file the config names outside the vault directory", async () => {
@@ -274,5 +276,58 @@ Deno.test("vault remove: a committed config whose name escapes the secrets root 
       (await repo.repoContext.vaultConfigRepo.findByName(escaping.name))?.name,
       escaping.name,
     );
+  });
+});
+
+Deno.test("vault remove: without defaultVault, refuses the first vault sensitive outputs fall back to", async () => {
+  await withRepo(async (repo) => {
+    // Vaults load in file order, so the ids fix which one is first.
+    await saveLocalVault(
+      repo.repoContext,
+      "first",
+      undefined,
+      "00000000-0000-4000-8000-000000000000",
+    );
+    await saveLocalVault(
+      repo.repoContext,
+      "second",
+      undefined,
+      "ffffffff-ffff-4fff-bfff-ffffffffffff",
+    );
+
+    assertStringIncludes(
+      await previewError(repo, "first", true),
+      "names no existing defaultVault",
+    );
+    await removeVault(repo, "second");
+    assertEquals(
+      await repo.repoContext.vaultConfigRepo.findByName("second"),
+      null,
+    );
+  }, { defaultVault: false });
+});
+
+Deno.test("vault remove: keeps secrets a base_dir from another checkout points at", async () => {
+  await withRepo(async (repo) => {
+    const other = await Deno.makeTempDir({ prefix: "swamp_other_checkout_" });
+    try {
+      const config = { auto_generate: true, base_dir: other };
+      await saveLocalVault(repo.repoContext, "trip-planner", config);
+      const provider = new LocalEncryptionVaultProvider("trip-planner", config);
+      await provider.put("API_KEY", "s3cret");
+
+      const { preview, secrets } = await removeVault(repo, "trip-planner");
+
+      assertEquals(preview.localStorage?.removable, false);
+      assertEquals(secrets?.keptOutsideRepository, true);
+      assertEquals(secrets?.removed, false);
+      assertEquals(
+        await repo.repoContext.vaultConfigRepo.findByName("trip-planner"),
+        null,
+      );
+      assertEquals(await provider.get("API_KEY"), "s3cret");
+    } finally {
+      await Deno.remove(other, { recursive: true }).catch(() => {});
+    }
   });
 });

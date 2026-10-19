@@ -39,22 +39,24 @@ import {
   withRuntimeBaseDir,
 } from "../../domain/vaults/local_encryption_key_source.ts";
 import {
+  countLocalEncryptionSecrets,
   localEncryptionSecretsDirFor,
-  LocalEncryptionVaultProvider,
-  type RemovedLocalEncryptionSecrets,
+  localEncryptionSecretsWithin,
   removeLocalEncryptionSecrets,
 } from "../../domain/vaults/local_encryption_vault_provider.ts";
+import { resolveSensitiveOutputVault } from "../../domain/models/sensitive_output_vault.ts";
 import {
   findVaultReferences,
   type PossibleVaultReference,
   type VaultReferences,
   type VaultReferenceSite,
-} from "../../domain/vaults/vault_references.ts";
+} from "../../domain/expressions/vault_reference_finder.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import type { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -69,7 +71,30 @@ export interface VaultRemoveLocalStorage {
   /** The vault's secrets directory. */
   directory: string;
   /** The secrets stored there. */
-  secretKeys: string[];
+  secretCount: number;
+  /**
+   * False when the directory lies outside this repository's `.swamp`: a
+   * `base_dir` another checkout recorded in the config. Those secrets are
+   * that checkout's, so they are kept.
+   */
+  removable: boolean;
+}
+
+/** What happened to a local_encryption vault's secrets. */
+export interface VaultRemoveSecrets {
+  directory: string;
+  /** Whether the directory was removed. */
+  removed: boolean;
+  secretCount: number;
+  /** The directory lies outside this repository, so it was kept. */
+  keptOutsideRepository?: boolean;
+}
+
+/** The vault swamp stores sensitive outputs in when none is named. */
+export interface EffectiveDefaultVault {
+  name: string;
+  /** Named by `defaultVault`; otherwise it is the first vault, by fallback. */
+  configured: boolean;
 }
 
 export interface VaultRemovePreview {
@@ -88,13 +113,15 @@ export interface VaultRemoveData {
   vaultType: string;
   /** References the removal went ahead despite, with force. */
   forcedReferences: VaultReferenceSite[];
+  /** Sources that compute a vault name at run time and may use this vault. */
+  possibleReferences: PossibleVaultReference[];
   timestamp: string;
   /**
-   * The local secrets removed after the config removal was published, set by
-   * the caller of {@link vaultRemoveStoredSecrets}. Absent for a vault whose
-   * secrets live elsewhere.
+   * The local secrets, handled after the config removal was published by the
+   * caller of {@link vaultRemoveStoredSecrets}. Absent for a vault whose
+   * secrets live with its provider.
    */
-  secrets?: RemovedLocalEncryptionSecrets;
+  secrets?: VaultRemoveSecrets;
 }
 
 export type VaultRemoveEvent =
@@ -111,8 +138,11 @@ export interface VaultRemoveInput {
 export interface VaultRemoveDeps {
   findVault: (name: string) => Promise<VaultConfig | null>;
   listVaultNames: () => Promise<string[]>;
-  /** The vault `.swamp.yaml` names as `defaultVault`, if any. */
-  getDefaultVaultName: () => Promise<string | undefined>;
+  /**
+   * The vault sensitive outputs go to when none is named: `defaultVault`
+   * when it names a vault, else the first user vault.
+   */
+  getEffectiveDefaultVault: () => Promise<EffectiveDefaultVault | undefined>;
   findReferences: (vaultName: string) => Promise<VaultReferences>;
   /** The local_encryption storage of `config`; undefined for other types. */
   findLocalStorage: (
@@ -122,7 +152,7 @@ export interface VaultRemoveDeps {
   removeLocalSecrets: (
     storage: VaultRemoveLocalStorage,
     vaultName: string,
-  ) => Promise<RemovedLocalEncryptionSecrets>;
+  ) => Promise<VaultRemoveSecrets>;
 }
 
 /** The repositories vault remove reads and writes through. */
@@ -141,6 +171,7 @@ export function createVaultRemoveDeps(
 ): VaultRemoveDeps {
   const readMarker = () =>
     new RepoMarkerRepository().read(RepoPath.create(repoDir));
+  const secretsBoundary = swampPath(repoDir);
 
   return {
     findVault: (name) => repos.vaultConfigRepo.findByName(name),
@@ -148,7 +179,27 @@ export function createVaultRemoveDeps(
       const all = await repos.vaultConfigRepo.findAll();
       return all.map((v) => v.name);
     },
-    getDefaultVaultName: async () => (await readMarker())?.defaultVault,
+    getEffectiveDefaultVault: async () => {
+      const [all, marker] = await Promise.all([
+        repos.vaultConfigRepo.findAll(),
+        readMarker(),
+      ]);
+      const userVaults = all.map((v) => v.name).filter((n) =>
+        !isReservedVaultName(n)
+      );
+      const configured = marker?.defaultVault;
+      // The same rule the data writer stores sensitive outputs by.
+      const name = resolveSensitiveOutputVault({}, {
+        getDefaultVaultName: () =>
+          configured !== undefined && userVaults.includes(configured)
+            ? configured
+            : undefined,
+        getUserVaultNames: () => userVaults,
+      });
+      return name === undefined
+        ? undefined
+        : { name, configured: name === configured };
+    },
     findReferences: async (vaultName) => {
       const [found, workflows, marker] = await Promise.all([
         repos.definitionRepo.findAllIncludingAutoGlobal(),
@@ -171,15 +222,20 @@ export function createVaultRemoveDeps(
       );
       const baseDir = providerConfig.base_dir as string;
       const directory = localEncryptionSecretsDirFor(baseDir, config.name);
-      const secretKeys = await new LocalEncryptionVaultProvider(
-        config.name,
-        providerConfig,
-      ).list();
-      return { baseDir, directory, secretKeys };
+      return {
+        baseDir,
+        directory,
+        secretCount: await countLocalEncryptionSecrets(directory),
+        removable: await localEncryptionSecretsWithin(
+          baseDir,
+          config.name,
+          secretsBoundary,
+        ),
+      };
     },
     deleteConfig: (config) => repos.vaultConfigRepo.delete(config),
     removeLocalSecrets: (storage, vaultName) =>
-      removeLocalEncryptionSecrets(storage.baseDir, vaultName),
+      removeLocalEncryptionSecrets(storage.baseDir, vaultName, secretsBoundary),
   };
 }
 
@@ -200,11 +256,22 @@ export async function vaultRemovePreview(
   const { references, refusal } = await checkRemovable(deps, config, input);
   if (refusal) throw refusal;
 
+  let localStorage: VaultRemoveLocalStorage | undefined;
+  try {
+    localStorage = await deps.findLocalStorage(config);
+  } catch (error) {
+    throw validationFailed(
+      `Cannot locate the stored secrets of vault '${config.name}': ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
   return {
     vaultName: config.name,
     vaultId: config.id,
     vaultType: config.type,
-    localStorage: await deps.findLocalStorage(config),
+    localStorage,
     references: references.references,
     possibleReferences: references.possibleReferences,
   };
@@ -255,6 +322,7 @@ export async function* vaultRemove(
             vaultId: config.id,
             vaultType: config.type,
             forcedReferences: references.references,
+            possibleReferences: references.possibleReferences,
             timestamp: new Date().toISOString(),
           },
         };
@@ -265,23 +333,31 @@ export async function* vaultRemove(
 /**
  * Removes a removed vault's local secrets. Call it only once the config
  * removal of {@link vaultRemove} has committed and published. Returns
- * undefined for a vault whose secrets are not stored locally.
+ * undefined for a vault whose secrets are not stored locally, and keeps a
+ * directory outside this repository.
  */
 export async function vaultRemoveStoredSecrets(
   ctx: LibSwampContext,
   deps: VaultRemoveDeps,
   preview: VaultRemovePreview,
-): Promise<RemovedLocalEncryptionSecrets | undefined> {
-  if (!preview.localStorage) return undefined;
-  ctx.logger.debug`Removing local secrets: ${preview.localStorage.directory}`;
-  return await deps.removeLocalSecrets(
-    preview.localStorage,
-    preview.vaultName,
-  );
+): Promise<VaultRemoveSecrets | undefined> {
+  const storage = preview.localStorage;
+  if (!storage) return undefined;
+  if (!storage.removable) {
+    return {
+      directory: storage.directory,
+      removed: false,
+      secretCount: storage.secretCount,
+      keptOutsideRepository: true,
+    };
+  }
+  ctx.logger.debug`Removing local secrets: ${storage.directory}`;
+  return await deps.removeLocalSecrets(storage, preview.vaultName);
 }
 
 /**
- * The default vault is never removed; a referenced vault only with force.
+ * The default vault is never removed, nor a name two configs share; a
+ * referenced vault only with force.
  */
 async function checkRemovable(
   deps: VaultRemoveDeps,
@@ -289,13 +365,33 @@ async function checkRemovable(
   input: VaultRemoveInput,
 ): Promise<{ references: VaultReferences; refusal?: SwampError }> {
   const none: VaultReferences = { references: [], possibleReferences: [] };
-  if (config.name === await deps.getDefaultVaultName()) {
+  const sameName = (await deps.listVaultNames()).filter((n) =>
+    n === config.name
+  );
+  if (sameName.length > 1) {
     return {
       references: none,
       refusal: validationFailed(
-        `Vault '${config.name}' is the repository's default vault ` +
-          `(defaultVault in .swamp.yaml) and cannot be removed. Set ` +
-          `defaultVault in .swamp.yaml to another vault first.`,
+        `${sameName.length} vault configs are named '${config.name}' and ` +
+          `share one secrets directory. Rename or delete the extra config ` +
+          `with 'swamp vault edit <id>' first.`,
+      ),
+    };
+  }
+
+  const effectiveDefault = await deps.getEffectiveDefaultVault();
+  if (effectiveDefault?.name === config.name) {
+    return {
+      references: none,
+      refusal: validationFailed(
+        effectiveDefault.configured
+          ? `Vault '${config.name}' is the repository's default vault ` +
+            `(defaultVault in .swamp.yaml) and cannot be removed. Set ` +
+            `defaultVault in .swamp.yaml to another vault first.`
+          : `Vault '${config.name}' is the repository's default vault: ` +
+            `.swamp.yaml names no existing defaultVault, so sensitive ` +
+            `outputs are stored in the first vault. Set defaultVault in ` +
+            `.swamp.yaml to another vault first.`,
       ),
     };
   }

@@ -23,7 +23,7 @@ import { Workflow } from "../workflows/workflow.ts";
 import { Job } from "../workflows/job.ts";
 import { Step } from "../workflows/step.ts";
 import { StepTask } from "../workflows/step_task.ts";
-import { findVaultReferences } from "./vault_references.ts";
+import { findVaultReferences } from "./vault_reference_finder.ts";
 
 function workflow(
   props: { vaults?: string[]; inputs?: Record<string, unknown> } = {},

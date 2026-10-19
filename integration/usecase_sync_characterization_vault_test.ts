@@ -25,6 +25,8 @@
 import "../src/domain/models/models.ts";
 import { parse, stringify } from "@std/yaml";
 import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
+import { RepoPath } from "../src/domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
 import { MockVaultProvider } from "../src/domain/vaults/mock_vault_provider.ts";
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -174,6 +176,14 @@ function vaultRemoveRow(managedConfig: boolean): AnyRow {
     // so the push deletes it on the remote.
     options: { managedConfig },
     seed: async (repos) => {
+      // Another vault is the default, so v1 is not refused as the fallback.
+      await runCli({
+        args: ["vault", "create", "local_encryption", "keep", ...json(repos)],
+      });
+      const markerRepo = new RepoMarkerRepository();
+      const repoPath = RepoPath.create(repos.repoA);
+      const marker = await markerRepo.read(repoPath);
+      await markerRepo.write(repoPath, { ...marker!, defaultVault: "keep" });
       await createVault(repos);
       await runCli({
         args: ["vault", "put", "v1", "K1", "val", "--yes", ...json(repos)],

@@ -21,7 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
-import type { VaultReferences } from "../../domain/vaults/vault_references.ts";
+import type { VaultReferences } from "../../domain/expressions/vault_reference_finder.ts";
 import {
   vaultRemove,
   type VaultRemoveDeps,
@@ -41,7 +41,8 @@ const localVault = VaultConfig.create(
 const storage: VaultRemoveLocalStorage = {
   baseDir: "/repo",
   directory: "/repo/.swamp/secrets/local_encryption/trip-planner",
-  secretKeys: ["API_KEY"],
+  secretCount: 1,
+  removable: true,
 };
 
 const noReferences: VaultReferences = {
@@ -65,7 +66,8 @@ function makeDeps(
     findVault: (name) =>
       Promise.resolve(name === localVault.name ? localVault : null),
     listVaultNames: () => Promise.resolve(["default", "trip-planner"]),
-    getDefaultVaultName: () => Promise.resolve("default"),
+    getEffectiveDefaultVault: () =>
+      Promise.resolve({ name: "default", configured: true }),
     findReferences: () => Promise.resolve(noReferences),
     findLocalStorage: () => Promise.resolve(storage),
     deleteConfig: (config) => {
@@ -77,7 +79,7 @@ function makeDeps(
       return Promise.resolve({
         directory: s.directory,
         removed: true,
-        secretCount: s.secretKeys.length,
+        secretCount: s.secretCount,
       });
     },
     ...overrides,
@@ -133,7 +135,8 @@ Deno.test("vaultRemovePreview: a reserved name explains it is reserved", async (
 
 Deno.test("vaultRemovePreview: refuses the default vault, even with force", async () => {
   const deps = makeDeps({
-    getDefaultVaultName: () => Promise.resolve("trip-planner"),
+    getEffectiveDefaultVault: () =>
+      Promise.resolve({ name: "trip-planner", configured: true }),
   });
   for (const force of [false, true]) {
     const error = await previewError(deps, "trip-planner", force);
@@ -180,7 +183,8 @@ Deno.test("vaultRemove: removes only the config and reports the forced reference
 
 Deno.test("vaultRemove: re-checks the default vault and removes nothing", async () => {
   const deps = makeDeps({
-    getDefaultVaultName: () => Promise.resolve("trip-planner"),
+    getEffectiveDefaultVault: () =>
+      Promise.resolve({ name: "trip-planner", configured: true }),
   });
   const events = await collect<VaultRemoveEvent>(
     vaultRemove(createLibSwampContext(), deps, {
@@ -256,4 +260,68 @@ Deno.test("vaultRemoveStoredSecrets: a failure reaches the caller", async () => 
     Error,
     "permission denied",
   );
+});
+
+Deno.test("vaultRemovePreview: refuses the fallback default vault when defaultVault names none", async () => {
+  const deps = makeDeps({
+    getEffectiveDefaultVault: () =>
+      Promise.resolve({ name: "trip-planner", configured: false }),
+  });
+  const error = await previewError(deps, "trip-planner", true);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "names no existing defaultVault");
+});
+
+Deno.test("vaultRemovePreview: refuses a name two configs share", async () => {
+  const deps = makeDeps({
+    listVaultNames: () =>
+      Promise.resolve(["default", "trip-planner", "trip-planner"]),
+  });
+  const error = await previewError(deps, "trip-planner", true);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "2 vault configs are named");
+});
+
+Deno.test("vaultRemovePreview: a storage lookup failure is a validation error", async () => {
+  const deps = makeDeps({
+    findLocalStorage: () =>
+      Promise.reject(new Error("not a single path segment")),
+  });
+  const error = await previewError(deps, "trip-planner");
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "not a single path segment");
+});
+
+Deno.test("vaultRemove: reports possible references in its result", async () => {
+  const possible: VaultReferences = {
+    references: [],
+    possibleReferences: [{ kind: "workflow", name: "deploy" }],
+  };
+  const deps = makeDeps({ findReferences: () => Promise.resolve(possible) });
+  const events = await collect<VaultRemoveEvent>(
+    vaultRemove(createLibSwampContext(), deps, { vaultName: "trip-planner" }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("expected completed");
+  assertEquals(completed.data.possibleReferences, possible.possibleReferences);
+});
+
+Deno.test("vaultRemoveStoredSecrets: keeps secrets outside this repository", async () => {
+  const deps = makeDeps({
+    findLocalStorage: () =>
+      Promise.resolve({ ...storage, removable: false, secretCount: 3 }),
+  });
+  const preview = await vaultRemovePreview(createLibSwampContext(), deps, {
+    vaultName: "trip-planner",
+  });
+  assertEquals(
+    await vaultRemoveStoredSecrets(createLibSwampContext(), deps, preview),
+    {
+      directory: storage.directory,
+      removed: false,
+      secretCount: 3,
+      keptOutsideRepository: true,
+    },
+  );
+  assertEquals(deps.removedSecrets, []);
 });
