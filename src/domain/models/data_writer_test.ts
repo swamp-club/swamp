@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -2115,6 +2116,83 @@ Deno.test("createResourceWriter: a multi-dimension vary suffix lands in the gene
   );
 });
 
+/** The instance segment a vary write's generated key ends up with. */
+async function varyKeySegment(suffix: string): Promise<string> {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+  const data = { secret: "s" };
+  await varyResourceWriter(vaultService, suffix)("creds", "creds", data);
+  const prefix = sanitizeVaultKey(
+    `${modelType.normalized}/${modelId}/create/creds/creds-`,
+  );
+  const key = referencedVaultKey(data.secret);
+  assert(key.startsWith(prefix) && key.endsWith("-secret"), key);
+  return key.slice(prefix.length, -"-secret".length);
+}
+
+/** Writes each vary value's own secret, then reads each one back. */
+async function assertEachVaryValueReadsItsOwnSecret(
+  suffixes: string[],
+): Promise<void> {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+  const written = [];
+  for (const suffix of suffixes) {
+    const data: Record<string, unknown> = { secret: `secret-for-${suffix}` };
+    await varyResourceWriter(vaultService, suffix)("creds", "creds", data);
+    written.push({ suffix, data });
+  }
+  assertEquals(
+    new Set(written.map(({ data }) => referencedVaultKey(data.secret))).size,
+    suffixes.length,
+  );
+  for (const { suffix, data } of written) {
+    await resolveVaultRefsInData(data, vaultService);
+    assertEquals(data.secret, `secret-for-${suffix}`);
+  }
+}
+
+Deno.test("createResourceWriter: vary values the key sanitizer would fold together keep their own secrets", async () => {
+  // A quote would end the key inside its reference, and sanitizeVaultKey
+  // drops @.
+  await assertEachVaryValueReadsItsOwnSecret(["a'b", "a-b", "x@y", "xy"]);
+});
+
+Deno.test("createResourceWriter: a vary suffix outside the verbatim form is hashed to a fixed-length key segment", async () => {
+  const hashed = /^\+[0-9a-f]{32}$/;
+  for (
+    const suffix of [
+      "o'brien",
+      "x@y",
+      "us east",
+      '{"region":"us"}',
+      "a".repeat(65),
+      // An ARN as coerceToSuffix hands it over, with / already turned to --.
+      "arn:aws:iam::123456789012:role--" + "r".repeat(180),
+    ]
+  ) {
+    const segment = await varyKeySegment(suffix);
+    assert(hashed.test(segment), `${suffix} -> ${segment}`);
+  }
+});
+
+Deno.test("createResourceWriter: a short vary suffix of key-safe characters is kept as written", async () => {
+  for (
+    const suffix of ["us", "prod-us-east-1", "v1.2_rc", "a".repeat(64)]
+  ) {
+    assertEquals(await varyKeySegment(suffix), suffix);
+  }
+});
+
+Deno.test("createResourceWriter: a long vary value still stores its secret in a file-backed vault", async () => {
+  // A local_encryption vault stores each key as a file name, which most
+  // filesystems cap at 255 bytes.
+  const suffix = "v".repeat(200);
+  const segment = await varyKeySegment(suffix);
+  assertEquals(segment.length, 33);
+  await assertEachVaryValueReadsItsOwnSecret([suffix, "v".repeat(201)]);
+});
+
 Deno.test("createResourceWriter: a field's explicit vaultKey is not changed by a vary suffix", async () => {
   const vaultService = new VaultService();
   vaultService.registerVault({ name: "v", type: "mock", config: {} });
@@ -2163,7 +2241,7 @@ Deno.test("createResourceWriter: a vary write is decided with the suffixed key i
   // the key the reference points at.
   const storedKey = referencedVaultKey(data.secret);
   assertStringIncludes(storedKey, "-creds-us-secret");
-  assertEquals(decided.length > 0, true);
+  assert(decided.length > 0);
   assertEquals(decided.filter((key) => key !== storedKey), []);
 });
 

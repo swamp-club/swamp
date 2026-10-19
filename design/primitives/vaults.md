@@ -654,13 +654,26 @@ For example, `@user/aws/ec2-keypair` (id `abc-123`, method `createKeyPair`,
 spec `result`, instance `result`) with field `KeyMaterial` becomes
 `user-aws-ec2-keypair-abc-123-createKeyPair-result-result-KeyMaterial`.
 
-The instance name is the name the record is stored under, vary suffix included
-([data.md §The record](./data.md#the-record)), so each vary instance has its
-own key: the same write varied on `prod` uses instance `result-prod` and the key
-`...-createKeyPair-result-result-prod-KeyMaterial`. Before swamp-club#3633 the
-key used the name without the suffix, so every vary instance of a spec and data
-name shared one secret and the last write won. Records written then still name
-that shared key until their instance is written again.
+For a vary write ([data.md §The record](./data.md#the-record)) the instance
+segment is the data name, `-`, and the vary suffix in its key form, so each vary
+instance has its own key (`varySuffixVaultKeySegment()` in `data_writer.ts`):
+
+- A suffix of at most 64 letters, digits, `.`, `_` and `-` is kept as written,
+  so the segment matches the stored name: varied on `prod`, the write above
+  uses `...-createKeyPair-result-result-prod-KeyMaterial`.
+- Any other suffix becomes `+` and the first 32 hex digits of its SHA-256
+  (`...-result-result-+3f9c...-KeyMaterial`). Kept as written, such a suffix
+  would lose characters to `sanitizeVaultKey()` (`x@y` and `xy` would share a
+  key), could end the key early inside its single-quoted reference (`'`), or,
+  at length, put the key past the 255-byte file name a `local_encryption`
+  vault stores it under. `+` never occurs in a suffix kept as written, so the
+  two forms cannot meet.
+
+Before swamp-club#3633 the key used the data name without the suffix, so every
+vary instance of a spec and data name shared one secret and the last write won.
+Records written then still name that shared key until their instance is written
+again. The data name itself still passes through `sanitizeVaultKey()` alone
+(swamp-club#3641).
 
 Set a custom key with `vaultKey` in field metadata:
 

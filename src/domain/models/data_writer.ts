@@ -366,6 +366,37 @@ export function sanitizeVaultKey(key: string): string {
     .replace(/\0/g, "");
 }
 
+/** Longest vary suffix a generated vault key carries as written. */
+const MAX_VERBATIM_VARY_SUFFIX_LENGTH = 64;
+
+/**
+ * The form a vary suffix takes inside a generated vault key
+ * (swamp-club#3633). A short suffix of letters, digits, `.`, `_` and `-` is
+ * kept as written, so the key names the instance the record is stored under.
+ * Any other suffix becomes `+` and the first 32 hex digits of its SHA-256:
+ * other characters do not survive into a readable key ({@link sanitizeVaultKey}
+ * drops `@`, so `x@y` and `xy` would share one; a `'` ends the key inside its
+ * vault reference), and a long value would overflow the filename a
+ * file-backed vault stores the key under. `+` never appears in a suffix kept
+ * as written, so the two forms cannot produce the same key.
+ */
+async function varySuffixVaultKeySegment(suffix: string): Promise<string> {
+  if (
+    suffix.length <= MAX_VERBATIM_VARY_SUFFIX_LENGTH &&
+    /^[A-Za-z0-9._-]+$/.test(suffix)
+  ) {
+    return suffix;
+  }
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(suffix),
+  );
+  const hex = Array.from(new Uint8Array(digest).slice(0, 16))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `+${hex}`;
+}
+
 /**
  * Returns true if any resource output spec in the model requires a vault
  * (has fields marked `{ sensitive: true }` or `sensitiveOutput: true`).
@@ -702,6 +733,7 @@ export function createResourceWriter(
     }
 
     let instanceName = name;
+    let varySuffix: string | undefined;
 
     // Resolve tags with full resolution chain:
     // 1. type auto-tag → 2. definition tags → 3. spec defaults →
@@ -750,6 +782,7 @@ export function createResourceWriter(
           Object.assign(resolvedTags, override.tags);
         }
         if (override.resolvedVarySuffix) {
+          varySuffix = override.resolvedVarySuffix;
           instanceName = `${instanceName}-${override.resolvedVarySuffix}`;
         }
         const vaultName = overriddenSpecVaultName(
@@ -794,9 +827,11 @@ export function createResourceWriter(
         modelId,
         methodName,
         specName,
-        // The stored name, vary suffix included: each vary instance keeps its
+        // The vary suffix is part of the key, so each vary instance keeps its
         // own secret (swamp-club#3633).
-        instanceName,
+        varySuffix === undefined
+          ? name
+          : `${name}-${await varySuffixVaultKeySegment(varySuffix)}`,
         { onEvent },
       );
       if (vaultedPaths.length > 0) {

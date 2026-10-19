@@ -77,8 +77,7 @@ named inputs into a suffix (`src/domain/workflows/data_suffix.ts`
 `coerceToSuffix`), and the writer stores the instance as `{name}-{suffix}`
 (`data_writer.ts`, `resolvedVarySuffix`; pure form `composeDataName` in
 `src/domain/data/composite_name.ts`). There is no separate dimension column.
-The suffixed name is also the instance segment of a sensitive field's generated
-vault key (below).
+The suffix is also part of a sensitive field's generated vault key (below).
 
 **`latest`.** Each name directory holds a plain-text `latest` file with the
 current version number. Reads without a version use it (`getLatestVersion`,
@@ -162,7 +161,9 @@ spec: lifetime, GC, tags, vary, vault name (`data_output_override.ts`).
 vault and replaces it in the payload with
 `${{ vault.get('<vault>', '<key>') }}`. The key is `field.vaultKey` or the
 derived `type/modelId/method/spec/instance/field.path`, where `instance` is the
-stored name with any vary suffix. The vault is
+data name plus any vary suffix in its key form: kept as written when short and
+key-safe, hashed otherwise ([vaults.md §Vault Key
+Naming](./vaults.md#vault-key-naming)). The vault is
 `field.vaultName ?? spec.vaultName ?? default vault ?? first user vault`.
 `modelRequiresVault()` (`data_writer.ts`) tells callers up front whether a
 behavior has such a spec. With no vault configured, the write fails rather than

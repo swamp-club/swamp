@@ -29,7 +29,10 @@ import { z } from "zod";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
-import { processSensitiveResourceData } from "../src/domain/models/data_writer.ts";
+import {
+  processSensitiveResourceData,
+  resolveVaultRefsInData,
+} from "../src/domain/models/data_writer.ts";
 import { basename, dirname, join } from "@std/path";
 import { walk } from "@std/fs";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -245,7 +248,19 @@ async function persistedResources(
   return byName;
 }
 
-Deno.test("Integration: a forEach step varying on its input vaults each instance's sensitive field under its own key (swamp-club#3633)", async () => {
+/**
+ * Runs a workflow whose forEach step writes a sensitive token per value of
+ * `envs`, varying the `creds` spec on that input, against a temp repo with a
+ * local_encryption vault. Hands `check` the persisted records by data name
+ * and the repo's vault service.
+ */
+async function withVaryWorkflowRun(
+  envs: string[],
+  check: (
+    records: Map<string, Record<string, unknown>>,
+    vaultService: VaultService,
+  ) => Promise<void>,
+): Promise<void> {
   await initializeLogging({});
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-3633-" });
   try {
@@ -296,7 +311,7 @@ Deno.test("Integration: a forEach step varying on its input vaults each instance
           name: "main",
           steps: [
             Step.create({
-              name: "write-${{ self.env }}",
+              name: "write-${{ self._index }}",
               task: StepTask.directExecution(
                 modelType.normalized,
                 "writer",
@@ -323,7 +338,7 @@ Deno.test("Integration: a forEach step varying on its input vaults each instance
       resolved,
       repoContext,
       datastoreConfig,
-      { workflowIdOrName: workflow.name, inputs: { envs: ["dev", "prod"] } },
+      { workflowIdOrName: workflow.name, inputs: { envs } },
       new AbortController().signal,
       (event: WorkflowRunEvent) => {
         if (event.kind === "completed") status = event.run.status;
@@ -337,10 +352,22 @@ Deno.test("Integration: a forEach step varying on its input vaults each instance
     );
     assertEquals(status, "succeeded", events.join("\n"));
 
-    const records = await persistedResources(repoDir, modelType);
-    assertEquals([...records.keys()].sort(), ["creds-dev", "creds-prod"]);
+    await check(
+      await persistedResources(repoDir, modelType),
+      await VaultService.fromRepository(repoDir),
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
 
-    const vaultService = await VaultService.fromRepository(repoDir);
+Deno.test("Integration: a forEach step varying on its input vaults each instance's sensitive field under its own key (swamp-club#3633)", async () => {
+  await withVaryWorkflowRun(["dev", "prod"], async (records, vaultService) => {
+    assertEquals([...records.keys()].sort(), ["creds-dev", "creds-prod"]);
     const keys = new Set<string>();
     for (const env of ["dev", "prod"]) {
       const reference = String(records.get(`creds-${env}`)?.token);
@@ -356,11 +383,22 @@ Deno.test("Integration: a forEach step varying on its input vaults each instance
       );
     }
     assertEquals(keys.size, 2);
-  } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(repoDir, { recursive: true });
+  });
+});
+
+Deno.test("Integration: vary values the key sanitizer would fold together, or too long for a file name, each read back their own secret (swamp-club#3633)", async () => {
+  // a'b and a-b, and x@y and xy, would share one sanitized key; a 200
+  // character value would put the key past local_encryption's file name limit.
+  const envs = ["a'b", "a-b", "x@y", "xy", "v".repeat(200)];
+  await withVaryWorkflowRun(envs, async (records, vaultService) => {
+    assertEquals(
+      [...records.keys()].sort(),
+      envs.map((env) => `creds-${env}`).sort(),
+    );
+    for (const env of envs) {
+      const record = { ...records.get(`creds-${env}`) };
+      await resolveVaultRefsInData(record, vaultService);
+      assertEquals(record.token, `token-for-${env}`, env);
     }
-  }
+  });
 });
