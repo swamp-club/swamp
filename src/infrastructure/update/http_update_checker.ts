@@ -64,7 +64,25 @@ export interface HttpUpdateCheckerOptions {
   /** Replaced in tests; see {@link downloadToFile}. */
   downloadStallTimeoutMs?: number;
   downloadMaxAttempts?: number;
+  /** Replaced in tests; see {@link BinaryFileOps}. */
+  fileOps?: BinaryFileOps;
 }
+
+/**
+ * The file operations that replace the binary. A seam so tests can fail an
+ * operation or drive the Windows path on every OS.
+ */
+export interface BinaryFileOps {
+  rename(oldPath: string, newPath: string): Promise<void>;
+  copyFile(fromPath: string, toPath: string): Promise<void>;
+  remove(path: string): Promise<void>;
+}
+
+const denoFileOps: BinaryFileOps = {
+  rename: (oldPath, newPath) => Deno.rename(oldPath, newPath),
+  copyFile: (fromPath, toPath) => Deno.copyFile(fromPath, toPath),
+  remove: (path) => Deno.remove(path),
+};
 
 /** One request's result: a value, or the reason to try again. */
 type AttemptResult<T> = { ok: true; value: T } | { ok: false; reason: string };
@@ -141,9 +159,11 @@ export async function cleanupStaleBinary(binaryPath: string): Promise<void> {
  * no SIGKILL on macOS, no ETXTBSY on Linux.
  *
  * On Windows: running executables are locked and cannot be overwritten,
- * but CAN be renamed. Strategy: rename the running binary to `.old`,
- * then rename the new binary into place. If placement fails, rollback
- * by renaming `.old` back. The `.old` file is cleaned up on next launch.
+ * but CAN be renamed. Strategy: stage the new binary in a temp file beside
+ * the target (rename, or copy across volumes), rename the running binary to
+ * `.old`, then rename the staged file into place. If placement fails,
+ * rollback by renaming `.old` back. The `.old` file is cleaned up on next
+ * launch.
  *
  * POSIX fallback: if rename fails with EXDEV (cross-filesystem), copy to
  * a temp file in the target directory (same filesystem), then rename.
@@ -151,6 +171,7 @@ export async function cleanupStaleBinary(binaryPath: string): Promise<void> {
 async function replaceBinary(
   sourcePath: string,
   targetPath: string,
+  ops: BinaryFileOps = denoFileOps,
 ): Promise<void> {
   // Clean up temp files abandoned by a previous crashed update. Fresh ones
   // are kept — they may belong to a concurrent update still copying.
@@ -158,12 +179,12 @@ async function replaceBinary(
   await removeAbandonedTempFiles(targetDir, ".swamp.tmp.");
 
   if (Deno.build.os === "windows") {
-    await replaceBinaryWindows(sourcePath, targetPath);
+    await replaceBinaryWindows(sourcePath, targetPath, ops);
     return;
   }
 
   try {
-    await Deno.rename(sourcePath, targetPath);
+    await ops.rename(sourcePath, targetPath);
   } catch (error) {
     if (error instanceof Deno.errors.PermissionDenied) {
       throw new UserError(permissionDeniedMessage(targetPath));
@@ -176,11 +197,11 @@ async function replaceBinary(
     if (code === "EXDEV") {
       const tmpPath = join(targetDir, `.swamp.tmp.${crypto.randomUUID()}`);
       try {
-        await Deno.copyFile(sourcePath, tmpPath);
-        await Deno.rename(tmpPath, targetPath);
+        await ops.copyFile(sourcePath, tmpPath);
+        await ops.rename(tmpPath, targetPath);
       } catch (innerError) {
         try {
-          await Deno.remove(tmpPath);
+          await ops.remove(tmpPath);
         } catch {
           // Best-effort cleanup
         }
@@ -195,70 +216,86 @@ async function replaceBinary(
   }
 }
 
-async function replaceBinaryWindows(
+/**
+ * The Windows strategy of {@link replaceBinary}. Exported so tests can drive
+ * it on every OS through `ops`.
+ */
+export async function replaceBinaryWindows(
   sourcePath: string,
   targetPath: string,
+  ops: BinaryFileOps = denoFileOps,
 ): Promise<void> {
   const oldPath = targetPath + ".old";
+  const tmpPath = join(
+    dirname(targetPath),
+    `.swamp.tmp.${crypto.randomUUID()}`,
+  );
+  const removeTmp = async () => {
+    try {
+      await ops.remove(tmpPath);
+    } catch {
+      // Best-effort cleanup; an abandoned temp file is swept next update
+    }
+  };
 
   // Clean up stale .old from a previous update
   await cleanupStaleBinary(targetPath);
+
+  // Stage the new binary beside the target first, so swamp.exe is only
+  // absent between the two renames below. Fall back to copy if EXDEV
+  // (cross-volume, e.g. %TEMP% on D: and swamp installed on C:).
+  try {
+    try {
+      await ops.rename(sourcePath, tmpPath);
+    } catch (renameError) {
+      const code = renameError instanceof Error
+        ? (renameError as Error & { code?: string }).code
+        : undefined;
+      if (code !== "EXDEV") throw renameError;
+      await ops.copyFile(sourcePath, tmpPath);
+    }
+  } catch (stageError) {
+    await removeTmp();
+    if (stageError instanceof Deno.errors.PermissionDenied) {
+      throw new UserError(permissionDeniedMessage(targetPath));
+    }
+    throw stageError;
+  }
 
   // Rename the running binary out of the way — Windows allows renaming
   // a locked file, just not overwriting or deleting it.
   let targetExisted = false;
   try {
-    await Deno.rename(targetPath, oldPath);
+    await ops.rename(targetPath, oldPath);
     targetExisted = true;
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
       // Target doesn't exist yet (fresh install) — proceed directly
-    } else if (error instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(permissionDeniedMessage(targetPath));
     } else {
+      await removeTmp();
+      if (error instanceof Deno.errors.PermissionDenied) {
+        throw new UserError(permissionDeniedMessage(targetPath));
+      }
       throw error;
     }
   }
 
-  // Place the new binary at the target path.
-  // Try rename first; fall back to copy if EXDEV (cross-volume, e.g.
-  // %TEMP% on D: and swamp installed on C:).
   try {
-    await Deno.rename(sourcePath, targetPath);
+    await ops.rename(tmpPath, targetPath);
   } catch (renameError) {
-    const code = renameError instanceof Error
-      ? (renameError as Error & { code?: string }).code
-      : undefined;
-    if (code === "EXDEV") {
+    // Rollback: restore the old binary so the user isn't left without one
+    if (targetExisted) {
       try {
-        await Deno.copyFile(sourcePath, targetPath);
-      } catch (copyError) {
-        if (targetExisted) {
-          try {
-            await Deno.rename(oldPath, targetPath);
-          } catch {
-            // Rollback failed — .old file still exists for manual recovery
-          }
-        }
-        if (copyError instanceof Deno.errors.PermissionDenied) {
-          throw new UserError(permissionDeniedMessage(targetPath));
-        }
-        throw copyError;
+        await ops.rename(oldPath, targetPath);
+      } catch {
+        // Rollback failed — .old file still exists for manual recovery
       }
-    } else {
-      // Rollback: restore the old binary so the user isn't left without one
-      if (targetExisted) {
-        try {
-          await Deno.rename(oldPath, targetPath);
-        } catch {
-          // Rollback failed — .old file still exists for manual recovery
-        }
-      }
-      if (renameError instanceof Deno.errors.PermissionDenied) {
-        throw new UserError(permissionDeniedMessage(targetPath));
-      }
-      throw renameError;
     }
+    await removeTmp();
+    if (renameError instanceof Deno.errors.PermissionDenied) {
+      throw new UserError(permissionDeniedMessage(targetPath));
+    }
+    throw renameError;
   }
 }
 
@@ -305,6 +342,7 @@ export class HttpUpdateChecker implements UpdateChecker {
   private readonly tempRoot: string | undefined;
   private readonly downloadStallTimeoutMs: number | undefined;
   private readonly downloadMaxAttempts: number | undefined;
+  private readonly fileOps: BinaryFileOps;
 
   constructor(options: HttpUpdateCheckerOptions = {}) {
     this.maxAttempts = Math.max(1, options.maxAttempts ?? 1);
@@ -312,6 +350,7 @@ export class HttpUpdateChecker implements UpdateChecker {
     this.tempRoot = options.tempRoot;
     this.downloadStallTimeoutMs = options.downloadStallTimeoutMs;
     this.downloadMaxAttempts = options.downloadMaxAttempts;
+    this.fileOps = options.fileOps ?? denoFileOps;
   }
 
   /**
@@ -509,6 +548,14 @@ export class HttpUpdateChecker implements UpdateChecker {
         );
       }
 
+      // The archive is no longer needed; don't keep it on disk alongside the
+      // extracted binary and the old one through the replace.
+      try {
+        await Deno.remove(archivePath);
+      } catch (error) {
+        logger.debug`Could not remove ${archivePath}: ${error}`;
+      }
+
       // macOS: remove quarantine attribute from extracted binary before copying.
       // When fetch() writes to disk, macOS tags the file with com.apple.quarantine.
       // tar preserves this on extraction, and Gatekeeper will SIGKILL the binary.
@@ -521,7 +568,7 @@ export class HttpUpdateChecker implements UpdateChecker {
       signal?.throwIfAborted();
 
       // Replace the current binary (atomic rename to preserve running processes)
-      await replaceBinary(extractedBinary, binaryPath);
+      await replaceBinary(extractedBinary, binaryPath, this.fileOps);
 
       // chmod is meaningless on Windows (file permissions live in the ACL,
       // not POSIX mode bits). Only set the executable bit on POSIX hosts.

@@ -24,12 +24,14 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { TarStream } from "@std/tar/tar-stream";
 import { Platform } from "../../domain/update/platform.ts";
 import {
+  type BinaryFileOps,
   cleanupStaleBinary,
   HttpUpdateChecker,
+  replaceBinaryWindows,
 } from "./http_update_checker.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import {
@@ -884,6 +886,335 @@ Deno.test({
       await installFromLocalServer(root, body, checksum, {});
 
       assertEquals(await updateTempDirs(tempRoot), []);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+/** One file operation `replaceBinaryWindows` ran, as `op from -> to`. */
+type OpCall = {
+  op: "rename" | "copyFile" | "remove";
+  from: string;
+  to?: string;
+};
+
+/**
+ * Real file operations that behave like Windows for the running binary at
+ * `targetPath`: it can be renamed aside, but renaming or copying onto it, or
+ * removing it, fails while it exists. A rename out of `otherVolumeDir` fails
+ * with EXDEV, like %TEMP% on another drive. `fail` can make any operation
+ * throw instead of running.
+ */
+function windowsLikeOps(
+  targetPath: string,
+  options: {
+    otherVolumeDir?: string;
+    fail?: (call: OpCall) => Error | undefined;
+  } = {},
+): { ops: BinaryFileOps; calls: OpCall[] } {
+  const calls: OpCall[] = [];
+  const exists = async (path: string) => {
+    try {
+      await Deno.stat(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const locked = () =>
+    new Deno.errors.PermissionDenied(`${targetPath} is in use`);
+  const ops: BinaryFileOps = {
+    rename: async (from, to) => {
+      const call: OpCall = { op: "rename", from, to };
+      calls.push(call);
+      const injected = options.fail?.(call);
+      if (injected) throw injected;
+      if (to === targetPath && await exists(targetPath)) throw locked();
+      if (
+        options.otherVolumeDir !== undefined &&
+        dirname(from) === options.otherVolumeDir
+      ) {
+        throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+      }
+      await Deno.rename(from, to);
+    },
+    copyFile: async (from, to) => {
+      const call: OpCall = { op: "copyFile", from, to };
+      calls.push(call);
+      const injected = options.fail?.(call);
+      if (injected) throw injected;
+      if (to === targetPath && await exists(targetPath)) throw locked();
+      await Deno.copyFile(from, to);
+    },
+    remove: async (path) => {
+      const call: OpCall = { op: "remove", from: path };
+      calls.push(call);
+      const injected = options.fail?.(call);
+      if (injected) throw injected;
+      if (path === targetPath) throw locked();
+      await Deno.remove(path);
+    },
+  };
+  return { ops, calls };
+}
+
+/**
+ * Sets up a Windows-style update: the running `swamp.exe` (unless `fresh`)
+ * in `<root>/install`, and the extracted new binary in `<root>/temp`.
+ */
+async function windowsInstall(root: string, fresh = false) {
+  const installDir = join(root, "install");
+  const tempDir = join(root, "temp");
+  await Deno.mkdir(installDir);
+  await Deno.mkdir(tempDir);
+  const targetPath = join(installDir, "swamp.exe");
+  const sourcePath = join(tempDir, "swamp.exe");
+  if (!fresh) await Deno.writeTextFile(targetPath, "old binary");
+  await Deno.writeTextFile(sourcePath, "new binary");
+  return { installDir, tempDir, targetPath, sourcePath };
+}
+
+async function readOrNull(path: string): Promise<string | null> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+}
+
+async function swampTempFiles(dir: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.name.startsWith(".swamp.tmp.")) names.push(entry.name);
+  }
+  return names;
+}
+
+/**
+ * Asserts swamp.exe is only absent between two renames inside the install
+ * directory: nothing is copied onto it, and the operation after renaming it
+ * aside renames a staged temp file from the install directory into place.
+ */
+function assertStagedSwap(calls: OpCall[], targetPath: string) {
+  const installDir = dirname(targetPath);
+  for (const call of calls) {
+    if (call.op === "copyFile") {
+      assertEquals(dirname(call.to!), installDir);
+      assertStringIncludes(call.to!, ".swamp.tmp.");
+    }
+  }
+  const aside = calls.findIndex((c) =>
+    c.op === "rename" && c.from === targetPath
+  );
+  assertNotEquals(aside, -1, "swamp.exe was never renamed aside");
+  const next = calls[aside + 1];
+  assertEquals(next?.op, "rename");
+  assertEquals(next?.to, targetPath);
+  assertEquals(dirname(next!.from), installDir);
+}
+
+Deno.test("replaceBinaryWindows: a cross-volume update stages the copy beside swamp.exe before renaming it aside", async () => {
+  const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+  try {
+    const { tempDir, installDir, targetPath, sourcePath } =
+      await windowsInstall(root);
+    const { ops, calls } = windowsLikeOps(targetPath, {
+      otherVolumeDir: tempDir,
+    });
+
+    await replaceBinaryWindows(sourcePath, targetPath, ops);
+
+    assertStagedSwap(calls, targetPath);
+    assertEquals(await Deno.readTextFile(targetPath), "new binary");
+    assertEquals(await Deno.readTextFile(`${targetPath}.old`), "old binary");
+    assertEquals(await swampTempFiles(installDir), []);
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("replaceBinaryWindows: a same-volume update swaps with two renames in the install directory", async () => {
+  const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+  try {
+    const { installDir, targetPath, sourcePath } = await windowsInstall(root);
+    const { ops, calls } = windowsLikeOps(targetPath);
+
+    await replaceBinaryWindows(sourcePath, targetPath, ops);
+
+    assertStagedSwap(calls, targetPath);
+    assertEquals(calls.some((c) => c.op === "copyFile"), false);
+    assertEquals(await Deno.readTextFile(targetPath), "new binary");
+    assertEquals(await Deno.readTextFile(`${targetPath}.old`), "old binary");
+    assertEquals(await swampTempFiles(installDir), []);
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("replaceBinaryWindows: a failed staging copy leaves swamp.exe in place and untouched", async () => {
+  const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+  try {
+    const { tempDir, installDir, targetPath, sourcePath } =
+      await windowsInstall(root);
+    const { ops, calls } = windowsLikeOps(targetPath, {
+      otherVolumeDir: tempDir,
+      fail: (c) => c.op === "copyFile" ? new Error("disk full") : undefined,
+    });
+
+    await assertRejects(
+      () => replaceBinaryWindows(sourcePath, targetPath, ops),
+      Error,
+      "disk full",
+    );
+
+    assertEquals(
+      calls.some((c) => c.op === "rename" && c.from === targetPath),
+      false,
+      "swamp.exe must not be renamed aside before the new binary is staged",
+    );
+    assertEquals(await Deno.readTextFile(targetPath), "old binary");
+    assertEquals(await readOrNull(`${targetPath}.old`), null);
+    assertEquals(await swampTempFiles(installDir), []);
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("replaceBinaryWindows: a failed final rename restores swamp.exe and removes the staged copy", async () => {
+  const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+  try {
+    const { tempDir, installDir, targetPath, sourcePath } =
+      await windowsInstall(root);
+    const { ops } = windowsLikeOps(targetPath, {
+      otherVolumeDir: tempDir,
+      fail: (c) =>
+        c.op === "rename" && c.to === targetPath &&
+          c.from.includes(".swamp.tmp.")
+          ? new Error("sharing violation")
+          : undefined,
+    });
+
+    await assertRejects(
+      () => replaceBinaryWindows(sourcePath, targetPath, ops),
+      Error,
+      "sharing violation",
+    );
+
+    assertEquals(await Deno.readTextFile(targetPath), "old binary");
+    assertEquals(await readOrNull(`${targetPath}.old`), null);
+    assertEquals(await swampTempFiles(installDir), []);
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("replaceBinaryWindows: permission denied while staging is a UserError", async () => {
+  const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+  try {
+    const { tempDir, targetPath, sourcePath } = await windowsInstall(root);
+    const { ops } = windowsLikeOps(targetPath, {
+      otherVolumeDir: tempDir,
+      fail: (c) =>
+        c.op === "copyFile"
+          ? new Deno.errors.PermissionDenied("access denied")
+          : undefined,
+    });
+
+    const error = await assertRejects(() =>
+      replaceBinaryWindows(sourcePath, targetPath, ops)
+    );
+
+    assertInstanceOf(error, UserError);
+    assertStringIncludes(error.message, "permission denied");
+    assertEquals(await Deno.readTextFile(targetPath), "old binary");
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("replaceBinaryWindows: permission denied renaming swamp.exe aside is a UserError and removes the staged copy", async () => {
+  const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+  try {
+    const { installDir, targetPath, sourcePath } = await windowsInstall(root);
+    const { ops } = windowsLikeOps(targetPath, {
+      fail: (c) =>
+        c.op === "rename" && c.from === targetPath
+          ? new Deno.errors.PermissionDenied("access denied")
+          : undefined,
+    });
+
+    const error = await assertRejects(() =>
+      replaceBinaryWindows(sourcePath, targetPath, ops)
+    );
+
+    assertInstanceOf(error, UserError);
+    assertStringIncludes(error.message, "permission denied");
+    assertEquals(await Deno.readTextFile(targetPath), "old binary");
+    assertEquals(await swampTempFiles(installDir), []);
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("replaceBinaryWindows: a fresh install places the binary with no .old", async () => {
+  const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+  try {
+    const { tempDir, installDir, targetPath, sourcePath } =
+      await windowsInstall(root, true);
+    const { ops } = windowsLikeOps(targetPath, { otherVolumeDir: tempDir });
+
+    await replaceBinaryWindows(sourcePath, targetPath, ops);
+
+    assertEquals(await Deno.readTextFile(targetPath), "new binary");
+    assertEquals(await readOrNull(`${targetPath}.old`), null);
+    assertEquals(await swampTempFiles(installDir), []);
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test({
+  name:
+    "HttpUpdateChecker.downloadAndInstall: removes the archive before replacing the binary",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      const tempRoot = join(root, "tmp");
+      await Deno.mkdir(tempRoot);
+      const binaryPath = join(root, "swamp");
+      await Deno.writeTextFile(binaryPath, "original");
+      const { body, checksum } = await buildFakeSwampTarball();
+      const archivesAtReplace: boolean[] = [];
+      const fileOps: BinaryFileOps = {
+        rename: async (from, to) => {
+          archivesAtReplace.push(
+            (await readOrNull(join(dirname(from), "swamp.tar.gz"))) !== null,
+          );
+          await Deno.rename(from, to);
+        },
+        copyFile: (from, to) => Deno.copyFile(from, to),
+        remove: (path) => Deno.remove(path),
+      };
+      const server = Deno.serve(
+        { port: 0, onListen: () => {} },
+        () => new Response(body),
+      );
+      try {
+        const checker = new HttpUpdateChecker({ tempRoot, fileOps });
+        await checker.downloadAndInstall(
+          `http://localhost:${server.addr.port}/swamp.tar.gz`,
+          binaryPath,
+          checksum,
+        );
+      } finally {
+        await server.shutdown();
+      }
+
+      assertEquals(archivesAtReplace, [false]);
+      assertEquals((await Deno.stat(binaryPath)).mode! & 0o777, 0o755);
     } finally {
       await Deno.remove(root, { recursive: true }).catch(() => {});
     }
