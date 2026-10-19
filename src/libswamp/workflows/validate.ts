@@ -199,9 +199,9 @@ function createModelMethodResolver(
         // The step refuses these when it runs; read from the stored file.
         literalSensitiveGlobals: new DefaultModelValidationService()
           .findLiteralSensitiveGlobals(definition, modelDef),
+        // The definition's own tags are checked with the workflow's.
         reservedTagRefusal: reservedRunTagRefusal({
           modelType,
-          definitionTags: definition.tags,
           specs: outputSpecTags(modelDef),
         })?.text,
       };
@@ -317,6 +317,15 @@ export function createWorkflowValidateDeps(
     definitionRepo ? workflowRepo : undefined,
     definitionRepo && loadVaultConfig
       ? createSensitiveOutputVaultResolver(definitionRepo, loadVaultConfig)
+      : undefined,
+    definitionRepo
+      ? async (idOrName) => {
+        const found = await findDefinitionByIdOrName(definitionRepo, idOrName);
+        return found && {
+          name: found.definition.name,
+          tags: found.definition.tags,
+        };
+      }
       : undefined,
   );
   return {

@@ -163,14 +163,17 @@ dropped, and as early as the source is known:
 
 - `behavior validate` fails its Tags check on the definition's tags and the
   type's spec defaults. `workflow validate` fails on the workflow's tags, each
-  step's data output overrides, and the definition and spec defaults of each
-  step that names a stored definition.
-- A workflow run refuses `--tag`, the workflow's tags, every step's data output
-  overrides, and the tags of each definition a step names literally, before any
-  step runs (`reservedWorkflowRunTag` in
-  `src/domain/workflows/reserved_workflow_tags.ts`), and with `--last-evaluated`
-  checks the cached steps it runs as well. A later step's tag cannot fail the
-  run after earlier steps' side effects.
+  step's data output overrides, the stored definition each step names, the
+  spec defaults of each step's type, and, recursively, each nested workflow a
+  step runs.
+- A workflow run and a resume refuse `--tag`, the workflow's tags, every step's
+  data output overrides, the stored definition each step names (its
+  `modelIdOrName`, or the `modelName` a direct type execution adopts) and each
+  nested workflow's, before any step runs (`reservedWorkflowRunTag` in
+  `src/domain/workflows/reserved_workflow_tags.ts`). With `--last-evaluated`
+  the cached steps are checked as well. A later step's tag cannot fail the run
+  after earlier steps' side effects. Names written as expressions, and spec
+  defaults, are left to the method run's own refusal.
 - `DefaultMethodExecutionService.executeWorkflow` refuses every source known
   before the method runs (definition, spec defaults, workflow tags, `--tag`,
   data output overrides), which also covers steps named by an expression.

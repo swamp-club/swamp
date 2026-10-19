@@ -39,7 +39,11 @@ import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
 import { literalSensitiveGlobalArgsMessage } from "../models/sensitive_field_extractor.ts";
 import { findForeignTaskText } from "./expression_evaluators.ts";
-import { reservedWorkflowTags } from "./reserved_workflow_tags.ts";
+import {
+  atSteps,
+  type ReservedTagLookups,
+  reservedWorkflowTags,
+} from "./reserved_workflow_tags.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -95,9 +99,9 @@ export type MethodResolution =
      */
     literalSensitiveGlobals?: string[];
     /**
-     * The refusal of a reserved tag key in the definition's tags or the
-     * type's spec defaults, which the step refuses when it runs
-     * (swamp-club#3635).
+     * The refusal of a reserved tag key in the type's spec defaults, which
+     * the step refuses when it runs (swamp-club#3635). The definition's own
+     * tags are checked with the workflow's, through `findDefinition`.
      */
     reservedTagRefusal?: string;
   }
@@ -169,6 +173,8 @@ export class DefaultWorkflowValidationService
     private readonly methodResolver?: ModelMethodResolver,
     private readonly workflowRepo?: WorkflowRepository,
     private readonly sensitiveOutputVaults?: SensitiveOutputVaultResolver,
+    /** The stored definition a step names, for its reserved tag keys. */
+    private readonly findDefinition?: ReservedTagLookups["findDefinition"],
   ) {}
 
   async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
@@ -241,8 +247,8 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
-    // 17. Reserved tag keys in the workflow's tags or a step's overrides
-    for (const result of this.validateReservedTags(workflow)) {
+    // 17. Reserved tag keys the workflow, its steps and nested workflows supply
+    for (const result of await this.validateReservedTags(workflow)) {
       results.push(result);
     }
 
@@ -250,19 +256,31 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * Reserved tag keys the workflow declares: in its own tags or a step's data
-   * output overrides. A run refuses them before any step runs
-   * (swamp-club#3635).
+   * Reserved tag keys the workflow supplies: in its own tags, a step's data
+   * output overrides, the stored definition a step names, or a nested
+   * workflow's. A run refuses them before any step runs (swamp-club#3635).
    */
-  private validateReservedTags(
+  private async validateReservedTags(
     workflow: Workflow,
-  ): WorkflowValidationResult[] {
-    const found = reservedWorkflowTags(workflow);
+  ): Promise<WorkflowValidationResult[]> {
+    const repo = this.workflowRepo;
+    const found = await reservedWorkflowTags(workflow, {
+      findDefinition: this.findDefinition,
+      findWorkflow: repo
+        ? async (idOrName) =>
+          await repo.findByName(idOrName) ??
+            await repo.findById(createWorkflowId(idOrName))
+        : undefined,
+    });
     if (found.length === 0) return [WorkflowValidationResult.pass("Tags")];
-    return found.map(({ step, refusal }) =>
+    return found.map(({ steps: [first, ...rest], refusal }) =>
       WorkflowValidationResult.fail(
-        step ? `Tags for '${step.stepName}' in job '${step.jobName}'` : "Tags",
-        refusal.text,
+        first
+          ? `Tags for '${first.stepName}' in job '${first.jobName}'${
+            first.workflow ? ` (workflow '${first.workflow}')` : ""
+          }`
+          : "Tags",
+        atSteps({ steps: rest, refusal }).text,
       )
     );
   }

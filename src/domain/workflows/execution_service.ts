@@ -206,7 +206,10 @@ import {
 import { buildMethodContext } from "../models/method_context.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
-import { reservedWorkflowRunTag } from "./reserved_workflow_tags.ts";
+import {
+  type ReservedTagLookups,
+  reservedWorkflowRunTag,
+} from "./reserved_workflow_tags.ts";
 import { wordedError } from "../behavior_wording.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
@@ -3627,6 +3630,27 @@ export class WorkflowExecutionService {
     );
   }
 
+  /**
+   * The lookups the before-any-step reserved tag check follows: the stored
+   * definitions steps name and the nested workflows they run, as the steps
+   * themselves look them up.
+   */
+  private reservedTagLookups(): ReservedTagLookups {
+    return {
+      findDefinition: async (idOrName) => {
+        const found = await findDefinitionByIdOrName(
+          this.definitionRepo,
+          idOrName,
+        );
+        return found && {
+          name: found.definition.name,
+          tags: found.definition.tags,
+        };
+      },
+      findWorkflow: (idOrName) => this.lookupWorkflow(idOrName),
+    };
+  }
+
   /** Finds the workflow {@link run} executes, by id or by name. */
   private async findRunWorkflow(
     idOrName: string,
@@ -3699,7 +3723,7 @@ export class WorkflowExecutionService {
         const reservedTag = await reservedWorkflowRunTag(
           found,
           options?.runtimeTags,
-          this.definitionRepo,
+          this.reservedTagLookups(),
         );
         if (reservedTag) throw wordedError(reservedTag);
 
@@ -3763,7 +3787,7 @@ export class WorkflowExecutionService {
           const cachedReservedTag = await reservedWorkflowRunTag(
             workflow,
             options?.runtimeTags,
-            this.definitionRepo,
+            this.reservedTagLookups(),
           );
           if (cachedReservedTag) throw wordedError(cachedReservedTag);
           sanitizedTasks = restored.sanitizedTasks;
@@ -4735,6 +4759,15 @@ export class WorkflowExecutionService {
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.
     if (holdsSignalWait(workflow)) await this.readySignalWaits(workflow.name);
+    // So is a reserved tag the remaining steps supply: refused before the run
+    // is taken over, a later step's tag cannot fail the resume after earlier
+    // steps' side effects (swamp-club#3635).
+    const reservedTag = await reservedWorkflowRunTag(
+      workflow,
+      options?.runtimeTags,
+      this.reservedTagLookups(),
+    );
+    if (reservedTag) throw wordedError(reservedTag);
     // Created before anything is resolved, so every sensitive value this
     // resume reads, from the stored run or afterwards, is recorded and
     // redacted from its logs.

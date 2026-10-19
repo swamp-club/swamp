@@ -17,111 +17,162 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type WordedText, wordedText } from "../behavior_wording.ts";
-import type { DefinitionRepository } from "../definitions/repositories.ts";
+import {
+  MODEL_WORDS,
+  type WordedText,
+  wordedText,
+} from "../behavior_wording.ts";
 import {
   reservedRunTagRefusal,
   reservedTagRefusal,
 } from "../models/data_writer.ts";
-import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { Workflow } from "./workflow.ts";
 
 /**
- * A reserved tag key a workflow supplies (swamp-club#3635): in its own tags,
- * or in a step's data output override. Every method run refuses one; a
- * workflow run and `workflow validate` find them all before any step runs.
+ * How {@link reservedWorkflowTags} finds what a step names. Each lookup is
+ * optional: without it, steps of that kind are not followed. A lookup that
+ * throws counts as not found; the step that uses it reports the problem when
+ * it runs.
+ */
+export interface ReservedTagLookups {
+  /** The stored definition a step names, by name or id. */
+  findDefinition?: (
+    idOrName: string,
+  ) => Promise<{ name: string; tags: Record<string, string> } | null>;
+  /** The workflow a step runs, by name or id. */
+  findWorkflow?: (idOrName: string) => Promise<Workflow | null>;
+}
+
+/** One step on the way to a reserved tag, outermost first. */
+export interface ReservedTagStep {
+  jobName: string;
+  stepName: string;
+  /** Set when the step runs a nested workflow the key is found in. */
+  workflow?: string;
+}
+
+/**
+ * A reserved tag key a workflow supplies (swamp-club#3635). Every method run
+ * refuses one; a workflow run, a resume and `workflow validate` find them
+ * before any step runs.
  */
 export interface ReservedWorkflowTag {
-  /** The step whose override holds the key; absent for the workflow's tags. */
-  step?: { jobName: string; stepName: string };
+  /** The steps that lead to the key; empty for the workflow's own tags. */
+  steps: ReservedTagStep[];
   refusal: WordedText;
 }
 
 /**
- * The reserved tag keys in the tags the workflow itself declares: its own
- * tags and every step's data output overrides, one finding per source that
- * holds one.
+ * The reserved tag keys a workflow supplies: in its own tags, every step's
+ * data output overrides, the stored definition each step names (its
+ * `modelIdOrName`, or the `modelName` a direct type execution adopts), and,
+ * recursively, each nested workflow a step runs. A name written as an
+ * expression is not followed, nor is a workflow already on the path, so a
+ * cycle ends. Spec default tags are left to the step's own validation.
  */
-export function reservedWorkflowTags(
+export async function reservedWorkflowTags(
   workflow: Workflow,
-): ReservedWorkflowTag[] {
+  lookups: ReservedTagLookups = {},
+): Promise<ReservedWorkflowTag[]> {
+  return await collect(workflow, lookups, new Set([workflow.id]), new Map());
+}
+
+async function collect(
+  workflow: Workflow,
+  lookups: ReservedTagLookups,
+  ancestors: ReadonlySet<string>,
+  definitions: Map<string, Promise<WordedText | undefined>>,
+): Promise<ReservedWorkflowTag[]> {
   const found: ReservedWorkflowTag[] = [];
   const own = reservedRunTagRefusal({ tagOverrides: workflow.tags });
-  if (own) found.push({ refusal: own });
+  if (own) found.push({ steps: [], refusal: own });
   for (const job of workflow.jobs) {
     for (const step of job.steps) {
-      const refusal = reservedRunTagRefusal({
+      const at = { jobName: job.name, stepName: step.name };
+      const overrides = reservedRunTagRefusal({
         dataOutputOverrides: step.dataOutputOverrides,
       });
-      if (refusal) {
-        found.push({
-          step: { jobName: job.name, stepName: step.name },
-          refusal,
-        });
+      if (overrides) found.push({ steps: [at], refusal: overrides });
+
+      const task = step.task?.data;
+      if (task?.type === "model_method" && lookups.findDefinition) {
+        const ref = task.modelType ? task.modelName : task.modelIdOrName;
+        if (!isLiteral(ref)) continue;
+        let refusal = definitions.get(ref);
+        if (!refusal) {
+          refusal = definitionRefusal(ref, lookups.findDefinition);
+          definitions.set(ref, refusal);
+        }
+        const definitionTag = await refusal;
+        if (definitionTag) found.push({ steps: [at], refusal: definitionTag });
+      } else if (task?.type === "workflow" && lookups.findWorkflow) {
+        if (!isLiteral(task.workflowIdOrName)) continue;
+        const child = await lookups.findWorkflow(task.workflowIdOrName)
+          .catch(() => null);
+        if (!child || ancestors.has(child.id)) continue;
+        const nested = await collect(
+          child,
+          lookups,
+          new Set([...ancestors, child.id]),
+          definitions,
+        );
+        for (const inner of nested) {
+          found.push({
+            steps: [{ ...at, workflow: child.name }, ...inner.steps],
+            refusal: inner.refusal,
+          });
+        }
       }
     }
   }
   return found;
 }
 
+async function definitionRefusal(
+  ref: string,
+  findDefinition: NonNullable<ReservedTagLookups["findDefinition"]>,
+): Promise<WordedText | undefined> {
+  const definition = await findDefinition(ref).catch(() => null);
+  if (!definition) return undefined;
+  return reservedTagRefusal(
+    definition.tags,
+    (w) => `the tags of ${w.noun} definition '${definition.name}'`,
+  );
+}
+
+/** Whether a step names what it runs literally, not with an expression. */
+function isLiteral(ref: string | undefined): ref is string {
+  return ref !== undefined && ref !== "" && !ref.includes("${{");
+}
+
 /**
- * The first reserved tag key a workflow run would refuse, found before any
- * step runs: in `--tag`, the workflow's own tags, a step's data output
- * override, or the stored definition a step names (by a literal name or id).
- * A step that names its definition with an expression, or executes a type
- * directly, is left to the refusal each method run makes when it starts, as
- * are the default tags of each type's specs.
+ * The first reserved tag key a workflow run or resume would refuse, found
+ * before any step runs: in `--tag`, then anywhere
+ * {@link reservedWorkflowTags} looks. A step that names what it runs with an
+ * expression, and each type's spec defaults, are left to the refusal each
+ * method run makes when it starts.
  *
- * @returns The refusal, prefixed with the step it is about, or undefined
+ * @returns The refusal, prefixed with the steps it is about, or undefined
  */
 export async function reservedWorkflowRunTag(
   workflow: Workflow,
   runtimeTags: Record<string, string> | undefined,
-  definitionRepo: DefinitionRepository,
+  lookups: ReservedTagLookups,
 ): Promise<WordedText | undefined> {
   const runtime = reservedRunTagRefusal({ runtimeTags });
   if (runtime) return runtime;
-  const [declared] = reservedWorkflowTags(workflow);
-  if (declared) return atStep(declared);
-
-  const checked = new Set<string>();
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
-      const task = step.task?.data;
-      if (task?.type !== "model_method" || !task.modelIdOrName) continue;
-      const ref = task.modelIdOrName;
-      if (ref.includes("${{") || checked.has(ref)) continue;
-      checked.add(ref);
-      const lookup = await findDefinitionByIdOrName(definitionRepo, ref);
-      if (!lookup) continue;
-      const name = lookup.definition.name;
-      const refusal = reservedTagRefusal(
-        lookup.definition.tags,
-        (w) => `the tags of ${w.noun} definition '${name}'`,
-      );
-      if (refusal) {
-        return atStep({
-          step: { jobName: job.name, stepName: step.name },
-          refusal,
-        });
-      }
-    }
-  }
-  return undefined;
+  const [first] = await reservedWorkflowTags(workflow, lookups);
+  return first && atSteps(first);
 }
 
-/** A finding's refusal, prefixed with the step it is about when it has one. */
-export function atStep(found: ReservedWorkflowTag): WordedText {
-  const step = found.step;
-  if (!step) return found.refusal;
+/** A finding's refusal, prefixed with each step on the way to it. */
+export function atSteps(found: ReservedWorkflowTag): WordedText {
+  const prefix = found.steps.map((step) =>
+    `Step '${step.stepName}' in job '${step.jobName}'${
+      step.workflow ? ` (workflow '${step.workflow}')` : ""
+    }: `
+  ).join("");
   return wordedText((w) =>
-    `Step '${step.stepName}' in job '${step.jobName}': ${
-      pick(found.refusal, w)
-    }`
+    prefix + (w === MODEL_WORDS ? found.refusal.modelText : found.refusal.text)
   );
-}
-
-/** The spelling of `text` that matches `w`. */
-function pick(text: WordedText, w: { noun: string }): string {
-  return w.noun === "model" ? text.modelText : text.text;
 }

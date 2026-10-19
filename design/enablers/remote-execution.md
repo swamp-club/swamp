@@ -749,6 +749,10 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | extension assets | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`               | h2        | Cacheable by fingerprint                                                                                          |
 | `log` / `event`  | run-event stream                                                                      | ws        | `rpc.stream` frames; flows to client and the run log (below)                                                      |
 
+A resource write or file writer open the writer refuses (an undeclared spec, a
+reserved name or a reserved `_swamp.*` tag) is a 400 carrying the writer's
+message, and nothing is opened or saved.
+
 The orchestrator writes a step's output to its run log, wherever the step ran.
 A worker's method logger has no run log to write to, so each line travels as an
 `output` method event and `MethodExecutionService` writes it through the run

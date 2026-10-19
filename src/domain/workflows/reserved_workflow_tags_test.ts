@@ -19,7 +19,8 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  atStep,
+  atSteps,
+  type ReservedTagLookups,
   reservedWorkflowRunTag,
   reservedWorkflowTags,
 } from "./reserved_workflow_tags.ts";
@@ -27,20 +28,20 @@ import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
-import { Definition } from "../definitions/definition.ts";
-import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { ModelType } from "../models/model_type.ts";
 
 const RESERVED = { "_swamp.sensitiveFields": "*" };
 
 function workflowOf(
-  steps: Array<
-    { name: string; model: string; overrideTags?: Record<string, string> }
-  >,
+  name: string,
+  steps: Array<{
+    name: string;
+    task: StepTask;
+    overrideTags?: Record<string, string>;
+  }>,
   tags?: Record<string, string>,
 ): Workflow {
   return Workflow.create({
-    name: "wf",
+    name,
     ...(tags ? { tags } : {}),
     jobs: [
       Job.create({
@@ -48,7 +49,7 @@ function workflowOf(
         steps: steps.map((s) =>
           Step.create({
             name: s.name,
-            task: StepTask.model(s.model, "run"),
+            task: s.task,
             ...(s.overrideTags
               ? {
                 dataOutputOverrides: [{
@@ -64,68 +65,168 @@ function workflowOf(
   });
 }
 
-/** A repository holding `definitions` by name, counting its lookups. */
-function definitionRepoOf(
+const model = (ref: string) => StepTask.model(ref, "run");
+const direct = (type: string, name: string) =>
+  StepTask.fromData({
+    type: "model_method",
+    modelType: type,
+    modelName: name,
+    methodName: "run",
+  });
+
+/** Lookups over fixed definitions and workflows, recording each lookup. */
+function lookupsOf(
   definitions: Record<string, Record<string, string>>,
-): { repo: DefinitionRepository; lookups: string[] } {
-  const lookups: string[] = [];
-  const type = ModelType.create("command/shell");
-  const repo = {
-    findByNameGlobal: (name: string) => {
-      lookups.push(name);
+  workflows: Workflow[] = [],
+): ReservedTagLookups & { definitionLookups: string[] } {
+  const definitionLookups: string[] = [];
+  return {
+    definitionLookups,
+    findDefinition: (name) => {
+      definitionLookups.push(name);
       const tags = definitions[name];
-      return Promise.resolve(
-        tags ? { definition: Definition.create({ name, tags }), type } : null,
-      );
+      return Promise.resolve(tags ? { name, tags } : null);
     },
-  } as unknown as DefinitionRepository;
-  return { repo, lookups };
+    findWorkflow: (name) =>
+      Promise.resolve(workflows.find((w) => w.name === name) ?? null),
+  };
 }
 
-Deno.test("reservedWorkflowTags: finds the workflow's tags and every step override that hold a reserved key", () => {
-  const found = reservedWorkflowTags(workflowOf([
-    { name: "one", model: "m", overrideTags: RESERVED },
-    { name: "two", model: "m", overrideTags: { ok: "1" } },
-    { name: "three", model: "m", overrideTags: RESERVED },
+Deno.test("reservedWorkflowTags: finds the workflow's tags and every step override that hold a reserved key", async () => {
+  const found = await reservedWorkflowTags(workflowOf("wf", [
+    { name: "one", task: model("m"), overrideTags: RESERVED },
+    { name: "two", task: model("m"), overrideTags: { ok: "1" } },
+    { name: "three", task: model("m"), overrideTags: RESERVED },
   ], RESERVED));
 
-  assertEquals(found.map((f) => f.step?.stepName), [undefined, "one", "three"]);
-  assertStringIncludes(atStep(found[1]).text, "Step 'one' in job 'job': Tag");
-  assertEquals(atStep(found[0]).text, found[0].refusal.text);
+  assertEquals(found.map((f) => f.steps.map((s) => s.stepName)), [
+    [],
+    ["one"],
+    ["three"],
+  ]);
+  assertStringIncludes(
+    atSteps(found[1]).text,
+    "Step 'one' in job 'job': Tag",
+  );
+  assertEquals(atSteps(found[0]).text, found[0].refusal.text);
 });
 
-Deno.test("reservedWorkflowTags: is empty for a workflow without reserved keys", () => {
+Deno.test("reservedWorkflowTags: is empty for a workflow without reserved keys", async () => {
   assertEquals(
-    reservedWorkflowTags(workflowOf([{ name: "one", model: "m" }], { a: "b" })),
+    await reservedWorkflowTags(
+      workflowOf("wf", [{ name: "one", task: model("m") }], { a: "b" }),
+      lookupsOf({ m: { env: "dev" } }),
+    ),
     [],
   );
 });
 
-Deno.test("reservedWorkflowRunTag: looks each literally named definition up once and skips expressions and missing ones", async () => {
-  const { repo, lookups } = definitionRepoOf({ plain: { env: "dev" } });
-
-  const refusal = await reservedWorkflowRunTag(
-    workflowOf([
-      { name: "one", model: "plain" },
-      { name: "two", model: "plain" },
-      { name: "three", model: "${{ inputs.model }}" },
-      { name: "four", model: "missing" },
-    ]),
-    undefined,
-    repo,
+Deno.test("reservedWorkflowTags: checks the definition a direct type execution adopts by modelName", async () => {
+  const found = await reservedWorkflowTags(
+    workflowOf("wf", [{
+      name: "one",
+      task: direct("command/shell", "adopted"),
+    }]),
+    lookupsOf({ adopted: RESERVED }),
   );
 
-  assertEquals(refusal, undefined);
-  assertEquals(lookups, ["plain", "missing"]);
+  assertEquals(found.length, 1);
+  assertStringIncludes(
+    atSteps(found[0]).text,
+    "Step 'one' in job 'job': Tag '_swamp.sensitiveFields' from the tags of behavior definition 'adopted'",
+  );
+});
+
+Deno.test("reservedWorkflowTags: looks each named definition up once and skips expressions", async () => {
+  const lookups = lookupsOf({ plain: { env: "dev" } });
+
+  await reservedWorkflowTags(
+    workflowOf("wf", [
+      { name: "one", task: model("plain") },
+      { name: "two", task: model("plain") },
+      { name: "three", task: model("${{ inputs.model }}") },
+      { name: "four", task: direct("command/shell", "${{ inputs.name }}") },
+      { name: "five", task: model("missing") },
+    ]),
+    lookups,
+  );
+
+  assertEquals(lookups.definitionLookups, ["plain", "missing"]);
+});
+
+Deno.test("reservedWorkflowTags: follows nested workflows and names the path to the key", async () => {
+  const grandchild = workflowOf("grandchild", [
+    { name: "deep", task: model("m"), overrideTags: RESERVED },
+  ]);
+  const child = workflowOf("child", [
+    { name: "tagged", task: model("tagged") },
+    { name: "deeper", task: StepTask.workflow("grandchild") },
+  ], RESERVED);
+  const parent = workflowOf("parent", [
+    { name: "call", task: StepTask.workflow("child") },
+  ]);
+
+  const found = await reservedWorkflowTags(
+    parent,
+    lookupsOf({ tagged: RESERVED }, [child, grandchild]),
+  );
+
+  assertEquals(found.map((f) => atSteps(f).text.split(": Tag")[0]), [
+    "Step 'call' in job 'job' (workflow 'child')",
+    "Step 'call' in job 'job' (workflow 'child'): Step 'tagged' in job 'job'",
+    "Step 'call' in job 'job' (workflow 'child'): Step 'deeper' in job 'job' (workflow 'grandchild'): Step 'deep' in job 'job'",
+  ]);
+});
+
+Deno.test("reservedWorkflowTags: a cycle of nested workflows ends", async () => {
+  const a = workflowOf("a", [{ name: "to-b", task: StepTask.workflow("b") }]);
+  const b = workflowOf("b", [
+    { name: "to-a", task: StepTask.workflow("a") },
+    { name: "own", task: model("m"), overrideTags: RESERVED },
+  ]);
+
+  const found = await reservedWorkflowTags(a, lookupsOf({}, [a, b]));
+
+  assertEquals(found.length, 1);
+  assertStringIncludes(
+    atSteps(found[0]).text,
+    "Step 'to-b' in job 'job' (workflow 'b'): Step 'own' in job 'job':",
+  );
+});
+
+Deno.test("reservedWorkflowTags: a lookup that throws counts as not found", async () => {
+  const found = await reservedWorkflowTags(
+    workflowOf("wf", [
+      { name: "one", task: model("broken") },
+      { name: "two", task: StepTask.workflow("broken") },
+    ]),
+    {
+      findDefinition: () => Promise.reject(new Error("bad yaml")),
+      findWorkflow: () => Promise.reject(new Error("bad yaml")),
+    },
+  );
+
+  assertEquals(found, []);
+});
+
+Deno.test("reservedWorkflowRunTag: refuses --tag before looking up any definition", async () => {
+  const lookups = lookupsOf({});
+
+  const refusal = await reservedWorkflowRunTag(
+    workflowOf("wf", [{ name: "one", task: model("plain") }]),
+    RESERVED,
+    lookups,
+  );
+
+  assertStringIncludes(refusal?.text ?? "", "from --tag is reserved");
+  assertEquals(lookups.definitionLookups, []);
 });
 
 Deno.test("reservedWorkflowRunTag: refuses a named definition's reserved tag in both spellings", async () => {
-  const { repo } = definitionRepoOf({ tagged: RESERVED });
-
   const refusal = await reservedWorkflowRunTag(
-    workflowOf([{ name: "one", model: "tagged" }]),
+    workflowOf("wf", [{ name: "one", task: model("tagged") }]),
     undefined,
-    repo,
+    lookupsOf({ tagged: RESERVED }),
   );
 
   assertStringIncludes(
@@ -136,17 +237,4 @@ Deno.test("reservedWorkflowRunTag: refuses a named definition's reserved tag in 
     refusal?.modelText ?? "",
     "from the tags of model definition 'tagged'",
   );
-});
-
-Deno.test("reservedWorkflowRunTag: refuses --tag before looking up any definition", async () => {
-  const { repo, lookups } = definitionRepoOf({});
-
-  const refusal = await reservedWorkflowRunTag(
-    workflowOf([{ name: "one", model: "plain" }]),
-    RESERVED,
-    repo,
-  );
-
-  assertStringIncludes(refusal?.text ?? "", "from --tag is reserved");
-  assertEquals(lookups, []);
 });
