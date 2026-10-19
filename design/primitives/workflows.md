@@ -719,10 +719,24 @@ the guarded step's own definition too.
 
 The way out is a new run, or, for a failed run, `--from` the first step that
 read a refused key, which the refusal names only when retrying from it resets
-every step that read one (readers in parallel branches leave only a new run). An
-approval binds only what its prompt or earlier steps read: a `Proceed?` prompt
-over a step that reads `target` does not pin `target`, so a gate that must pin a
-value names it in its prompt or checks it in an earlier step.
+every step that read one (readers in parallel branches leave only a new run). A
+refused suspended run stays suspended, so its refusal names `swamp workflow
+cancel <wf> --run <id>` first. An approval binds only what its prompt or earlier
+steps read: a `Proceed?` prompt over a step that reads `target` does not pin
+`target`, so a gate that must pin a value names it in its prompt or checks it in
+an earlier step.
+
+A run started with `--last-evaluated` replays the evaluated cache, whose steps
+were resolved when it was written, so the run's own inputs are not what they
+saw. The cache records the inputs it was evaluated with (`evaluatedInputs`,
+written by `workflow evaluate` and by every fresh run), and the replaying run
+records them as its inputs, merged under any it was given. A plain resume then
+resolves `inputs.*`, re-supplying the same value is no change, and a different
+one is refused. A cache written before inputs were recorded leaves the run none,
+as does one whose evaluation inputs held a sensitive value, which the cache file
+would otherwise carry in plaintext (`recordableEvaluatedInputs`). Either way any
+key a finished step read is refused, the refusal says the run recorded no value
+to compare with, and the way out is to cancel the run and start a new one.
 
 The run records the merged inputs it resumes with (`captureInputs` in
 `resumeWorkflow`, after the resume's provenance is derived), so the run record,

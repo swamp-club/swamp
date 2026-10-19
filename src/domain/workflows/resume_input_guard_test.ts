@@ -145,14 +145,15 @@ const approvedRun = (wf: Workflow, inputs?: Record<string, unknown>) =>
 
 Deno.test("checkResumeInputOverrides: refuses changing an input the gate and approval read", async () => {
   const wf = gatedDestroy();
-  const message = await refusal(wf, approvedRun(wf), { target: "protected" });
+  const run = approvedRun(wf);
+  const message = await refusal(wf, run, { target: "protected" });
   assertStringIncludes(
     message,
     'Input "target" was already used by steps "gate", "approve"',
   );
   assertStringIncludes(
     message,
-    "Start a new run, passing its other inputs too (swamp workflow run gated-destroy --input 'target=<value>')",
+    `Cancel it (swamp workflow cancel gated-destroy --run ${run.id}), then start a new run with all its inputs (swamp workflow run gated-destroy --input 'target=<value>')`,
   );
   assertEquals(message.includes("protected"), false, "message leaks a value");
   assertEquals(message.includes("scratch"), false, "message leaks a value");
@@ -845,4 +846,48 @@ Deno.test("checkResumeInputOverrides: the hint quotes a forEach template for the
     message,
     "--from 'deploy-${{ self.env }}' --input 'target=<value>'",
   );
+});
+
+Deno.test("checkResumeInputOverrides: a value the run never recorded is named as such", async () => {
+  // A run replaying a cache written before evaluation inputs were recorded
+  // stores none, so a re-supplied value cannot be compared.
+  const wf = gatedDestroy();
+  const run = approvedRun(wf, {});
+  const message = await refusal(wf, run, { target: "scratch" });
+  assertStringIncludes(
+    message,
+    'Input "target" was already used by steps "gate", "approve". The run recorded no value for it to compare with.',
+  );
+  assertStringIncludes(
+    message,
+    `swamp workflow cancel gated-destroy --run ${run.id}`,
+  );
+});
+
+Deno.test("checkResumeInputOverrides: a refusal of several unrecorded inputs fits serve's error limit", async () => {
+  const wf = Workflow.create({
+    name: "several-unrecorded",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          shell(
+            "gate",
+            "echo ${{ inputs.target }} ${{ inputs.region }} ${{ inputs.account }}",
+          ),
+          approval("approve", "Proceed?", ["gate"]),
+          shell("destroy", "echo", ["approve"]),
+        ],
+      }),
+    ],
+  });
+  const run = storedRun(wf, "suspended", {
+    main: [
+      { stepName: "gate", status: "succeeded" },
+      { stepName: "approve", status: "succeeded" },
+      { stepName: "destroy" },
+    ],
+  }, {});
+  // refusal() asserts the 512-character bound.
+  await refusal(wf, run, { target: "a", region: "b", account: "c" });
 });

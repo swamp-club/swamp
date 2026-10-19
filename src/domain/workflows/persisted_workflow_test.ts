@@ -29,6 +29,7 @@ import {
   forEachNameWithoutSecrets,
   isIdentifierMapPath,
   persistEvaluatedWorkflow,
+  recordableEvaluatedInputs,
   rehydrateEvaluatedWorkflow,
 } from "./persisted_workflow.ts";
 
@@ -186,5 +187,26 @@ Deno.test("forEachNameWithoutSecrets: replaces each recorded value with the item
   assertEquals(
     forEachNameWithoutSecrets("deploy-us-east", 3, recorded()),
     "deploy-us-east",
+  );
+});
+
+Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are not recorded (swamp-club#3583)", () => {
+  const plain = { target: "scratch", envs: ["a", "b"] };
+  assertEquals(recordableEvaluatedInputs(plain, recorded()), plain);
+  assertEquals(
+    recordableEvaluatedInputs(plain, new RunSensitiveValues()),
+    plain,
+  );
+  // Anywhere in the structure, whole or inside a longer string.
+  assertEquals(
+    recordableEvaluatedInputs({ tok: SECRET }, recorded()),
+    undefined,
+  );
+  assertEquals(
+    recordableEvaluatedInputs(
+      { nested: { header: `Bearer ${SECRET}` } },
+      recorded(),
+    ),
+    undefined,
   );
 });

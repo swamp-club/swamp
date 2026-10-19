@@ -274,11 +274,30 @@ function refusalMessage(
 ): string {
   const quoted = (names: readonly string[]) =>
     names.map((n) => `"${n}"`).join(", ");
-  const parts = [...readersByKey].map(([key, readers]) =>
-    `input "${key}" was already used by ${
-      readers.length === 1 ? "step" : "steps"
-    } ${quoted(readers)}`
+  // Keys the same steps read are named together, to stay within serve's
+  // error limit.
+  const keysByReaders = new Map<string, string[]>();
+  for (const [key, readers] of readersByKey) {
+    const group = quoted(readers);
+    keysByReaders.set(group, [...keysByReaders.get(group) ?? [], key]);
+  }
+  const parts = [...keysByReaders].map(([readers, keys]) =>
+    `${keys.length === 1 ? "input" : "inputs"} ${quoted(keys)} ${
+      keys.length === 1 ? "was" : "were"
+    } already used by ${readers.includes(", ") ? "steps" : "step"} ${readers}`
   );
+  // A key the run has no value for cannot be compared: a run replaying a
+  // cache written before its evaluation inputs were recorded keeps none.
+  const unrecorded = [...readersByKey.keys()].filter((key) =>
+    !Object.hasOwn(run.inputs, key)
+  );
+  const noValue = unrecorded.length === 0
+    ? ""
+    : unrecorded.length < readersByKey.size
+    ? ` The run recorded no value for ${quoted(unrecorded)} to compare with.`
+    : readersByKey.size === 1
+    ? " The run recorded no value for it to compare with."
+    : " The run recorded none of them to compare with.";
   const keys = [...readersByKey.keys()];
   // Each word quoted for pasting: a `<value>` placeholder is a redirect
   // unquoted, and a forEach template carries `${{ }}`.
@@ -286,7 +305,7 @@ function refusalMessage(
     .join(" ");
   const name = quoteShellWord(workflow.name);
   const newRun =
-    `a new run, passing its other inputs too (swamp workflow run ${name} ${inputArgs})`;
+    `a new run with all its inputs (swamp workflow run ${name} ${inputArgs})`;
   const from = run.status === "failed"
     ? retryStepResetting(workflow, run, readersByKey)
     : undefined;
@@ -294,11 +313,14 @@ function refusalMessage(
     ? `Retry from "${from}" (swamp workflow resume ${name} --run ${run.id} --from ${
       quoteShellWord(from)
     } ${inputArgs}), or start ${newRun}.`
+    : run.status === "suspended"
+    // Left suspended, the run would wait for a resume that cannot come.
+    ? `Cancel it (swamp workflow cancel ${name} --run ${run.id}), then start ${newRun}.`
     : `Start ${newRun}.`;
   // The run id first: serve cuts an error at 512 characters.
   return `Run ${run.id} is unchanged: resume cannot change an input a step already ran with. ${
     capitalize(parts.join("; "))
-  }. ${wayOut}`;
+  }.${noValue} ${wayOut}`;
 }
 
 function capitalize(text: string): string {

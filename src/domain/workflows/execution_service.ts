@@ -250,6 +250,7 @@ import {
 import {
   type PersistedEvaluatedWorkflow,
   persistEvaluatedWorkflow,
+  recordableEvaluatedInputs,
   rehydrateEvaluatedWorkflow,
 } from "./persisted_workflow.ts";
 import {
@@ -3732,6 +3733,10 @@ export class WorkflowExecutionService {
       let stepProvenance = StepProvenanceOverlay.authored();
       let workflowProvenance = ProvenanceMap.authored();
       let persistedWorkflow: PersistedEvaluatedWorkflow | undefined;
+      // The run's inputs. A run replaying the evaluated cache adds the inputs
+      // the cache was evaluated with, which its steps ran with: what a resume
+      // compares an override against (swamp-club#3583).
+      let runInputs = options?.inputs;
       const secretRedactor = options?.secretRedactor ?? new SecretRedactor();
       const sensitiveValues = options?.sensitiveValues ??
         new RunSensitiveValues(secretRedactor);
@@ -3846,6 +3851,12 @@ export class WorkflowExecutionService {
             ...deferredExpressions,
             ...restored.deferredExpressions,
           ];
+          if (lastEvaluated.evaluatedInputs) {
+            runInputs = deepMerge(
+              { ...lastEvaluated.evaluatedInputs },
+              options?.inputs ?? {},
+            );
+          }
           authoredExpressions = new Set([
             ...authoredExpressions,
             ...lastEvaluated.authoredExpressions,
@@ -3857,17 +3868,17 @@ export class WorkflowExecutionService {
             true,
             deferredExpressions,
           );
-          if (options?.inputs) {
-            expressionContext.inputs = options.inputs;
+          if (runInputs) {
+            expressionContext.inputs = runInputs;
           }
           attachInputsProvenance(
             expressionContext,
             options?.inputsProvenance ??
               vouchInherited(
-                workflowInputsProvenance(options?.inputs, found, {
+                workflowInputsProvenance(runInputs, found, {
                   webhook: options?.triggerSource === "webhook",
                 }),
-                options?.inputs,
+                runInputs,
                 options?.authoredExpressions ?? new Set(),
               ),
           );
@@ -3931,6 +3942,7 @@ export class WorkflowExecutionService {
             authoredExpressions,
             persistedWorkflow.deferredExpressions,
             persistedWorkflow.writtenReferences,
+            recordableEvaluatedInputs(options?.inputs ?? {}, sensitiveValues),
           );
           evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
             persistedWorkflow.workflow,
@@ -3967,8 +3979,8 @@ export class WorkflowExecutionService {
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
         }
-        if (options?.inputs) {
-          run.captureInputs(options.inputs);
+        if (runInputs) {
+          run.captureInputs(runInputs);
           run.captureInputsProvenance(
             bindingProvenanceOf(expressionContext).inputs ??
               ProvenanceMap.authored(),

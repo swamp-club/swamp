@@ -19,6 +19,7 @@
 
 import type { DeferredExpression } from "../expressions/deferred_expression.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
+import { canonicalJson } from "../expressions/expression_references.ts";
 import {
   type DataPath,
   definedEntry,
@@ -31,6 +32,22 @@ import {
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SanitizedTaskOverlay } from "./expression_evaluators.ts";
 import { Workflow, type WorkflowInput } from "./workflow.ts";
+
+/**
+ * The evaluation inputs the evaluated cache may record (swamp-club#3583), or
+ * undefined when any of them holds a sensitive value: a parent can pass a
+ * secret to a nested workflow as an input, and the cache file would carry it
+ * in plaintext. A run replaying a cache without them records none, so a
+ * resume refuses any input its finished steps read.
+ */
+export function recordableEvaluatedInputs(
+  inputs: Record<string, unknown>,
+  values: RunSensitiveValues,
+): Record<string, unknown> | undefined {
+  return canonicalJson(values.masked(inputs)) === canonicalJson(inputs)
+    ? inputs
+    : undefined;
+}
 
 /** An evaluated workflow as it is written to the evaluated cache. */
 export interface PersistedEvaluatedWorkflow {

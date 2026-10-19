@@ -98,6 +98,7 @@ import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import {
   forEachNameWithoutSecrets,
   persistEvaluatedWorkflow,
+  recordableEvaluatedInputs,
 } from "../../domain/workflows/persisted_workflow.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -191,6 +192,8 @@ export interface WorkflowEvaluateDeps {
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
+    /** The inputs the workflow was evaluated with (swamp-club#3583). */
+    evaluatedInputs?: Record<string, unknown>,
   ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
@@ -264,6 +267,7 @@ export function createWorkflowEvaluateDeps(
       provenance,
       authoredExpressions,
       writtenReferences,
+      evaluatedInputs,
     ) =>
       evaluatedWorkflowRepo.save(
         workflow,
@@ -271,6 +275,7 @@ export function createWorkflowEvaluateDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
+        evaluatedInputs,
       ),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
@@ -300,6 +305,8 @@ async function evaluateWorkflowInternal(
       workflow,
       ProvenanceMap.authored(),
       authoredExpressions,
+      undefined,
+      inputs,
     );
     return {
       id: workflow.id,
@@ -625,6 +632,7 @@ async function evaluateWorkflowInternal(
     expandedProvenance,
     authoredExpressions,
     persisted.writtenReferences,
+    recordableEvaluatedInputs(coercedInputs, sensitiveValues),
   );
 
   return {

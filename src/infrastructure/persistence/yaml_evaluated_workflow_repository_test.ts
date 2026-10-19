@@ -413,3 +413,45 @@ Deno.test("YamlEvaluatedWorkflowRepository.findByNameWithProvenance: an evaluate
     await Deno.remove(tempDir, { recursive: true });
   }
 });
+
+Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated with round-trip apart from the workflow's input schema (swamp-club#3583)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const workflow = Workflow.create({
+      name: "evaluated-inputs",
+      inputs: {
+        properties: { target: { type: "string" } },
+        required: ["target"],
+      },
+      jobs: [...provenanceWorkflow().jobs],
+    });
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+      new Set(),
+      undefined,
+      [],
+      { target: "scratch", envs: ["a", "b"] },
+    );
+    const cached = await new YamlEvaluatedWorkflowRepository(tempDir)
+      .findByNameWithProvenance(workflow.name);
+    assertEquals(cached?.evaluatedInputs, {
+      target: "scratch",
+      envs: ["a", "b"],
+    });
+    assertEquals(cached?.workflow.inputs, workflow.inputs);
+
+    // A cache written before evaluation inputs were recorded has none.
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+    );
+    assertEquals(
+      (await new YamlEvaluatedWorkflowRepository(tempDir)
+        .findByNameWithProvenance(workflow.name))?.evaluatedInputs,
+      undefined,
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});

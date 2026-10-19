@@ -80,6 +80,7 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { Definition, type InputsSchema } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -5345,6 +5346,134 @@ Deno.test("resume: --input cannot change an input the gate's definition read (sw
       'Input "target" was already used by step "gate"',
     );
     assertEquals(executor.ran.map((r) => r.step), ["gate"]);
+  });
+});
+
+/**
+ * Saves the evaluated cache `workflow run --last-evaluated` replays: the
+ * gated workflow with `target` resolved to "scratch", as `workflow evaluate
+ * --input target=scratch` writes it. `recorded` is false for a cache written
+ * before its evaluation inputs were recorded.
+ */
+async function saveEvaluatedGatedDestroy(
+  tempDir: string,
+  workflow: Workflow,
+  recorded: boolean,
+): Promise<void> {
+  const evaluated = Workflow.fromData(
+    JSON.parse(
+      JSON.stringify(workflow.toData()).replaceAll(
+        "${{ inputs.target }}",
+        "scratch",
+      ),
+    ),
+  );
+  await new YamlEvaluatedWorkflowRepository(tempDir).save(
+    evaluated,
+    undefined,
+    new Set(),
+    undefined,
+    [],
+    recorded ? { target: "scratch", authKey: "PENDING" } : undefined,
+  );
+}
+
+Deno.test("resume: a --last-evaluated run resumes with the inputs its cache was evaluated with (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    const workflow = gatedDestroyWorkflow();
+    await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
+    await saveEvaluatedGatedDestroy(tempDir, workflow, true);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const approvedLastEvaluatedRun = async () => {
+      const run = await service.execute(workflow.name, { lastEvaluated: true });
+      assertEquals(run.status, "suspended");
+      assertEquals(run.inputs, { target: "scratch", authKey: "PENDING" });
+      await approveWaitingGate(runRepo, workflow, run.id, true);
+      return run;
+    };
+
+    // No --input: the run's recorded inputs resolve the authored workflow.
+    const plain = await approvedLastEvaluatedRun();
+    assertEquals(
+      (await resumeToEnd(service, workflow, plain.id))?.status,
+      "succeeded",
+    );
+    assertEquals(executor.ran.at(-1)?.inputs?.run, "echo DESTROYED scratch");
+
+    // The value the gate saw, re-supplied: unchanged, so accepted.
+    const same = await approvedLastEvaluatedRun();
+    assertEquals(
+      (await resumeToEnd(service, workflow, same.id, {
+        inputs: { target: "scratch" },
+      }))?.status,
+      "succeeded",
+    );
+
+    // Another value is still refused.
+    const other = await approvedLastEvaluatedRun();
+    const error = await assertRejects(
+      () =>
+        resumeToEnd(service, workflow, other.id, {
+          inputs: { target: "protected" },
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "resume_input_consumed");
+  });
+});
+
+Deno.test("resume: a --last-evaluated run from a cache with no recorded inputs is refused with the way out (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    const workflow = gatedDestroyWorkflow();
+    await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
+    await saveEvaluatedGatedDestroy(tempDir, workflow, false);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const run = await service.execute(workflow.name, { lastEvaluated: true });
+    assertEquals(run.status, "suspended");
+    assertEquals(run.inputs, {});
+    await approveWaitingGate(runRepo, workflow, run.id, true);
+
+    // What the gate saw is not known, so even the same value is refused, and
+    // the message says why and how to leave the run.
+    const error = await assertRejects(
+      () =>
+        resumeToEnd(service, workflow, run.id, {
+          inputs: { target: "scratch" },
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "resume_input_consumed");
+    assertStringIncludes(
+      error.message,
+      "The run recorded no value for it to compare with.",
+    );
+    assertStringIncludes(
+      error.message,
+      `Cancel it (swamp workflow cancel gated-destroy --run ${run.id})`,
+    );
   });
 });
 

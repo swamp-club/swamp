@@ -1208,3 +1208,27 @@ Deno.test("forEach: prepares each of the step's expressions once before resolvin
     "eval:self.env",
   ]);
 });
+
+Deno.test("workflowEvaluate: the cache records the inputs it was evaluated with (swamp-club#3583)", async () => {
+  const recorded: Array<Record<string, unknown> | undefined> = [];
+  const deps = makeDeps({
+    saveEvaluatedWorkflow: (
+      _workflow,
+      _provenance,
+      _authored,
+      _references,
+      evaluatedInputs,
+    ) => {
+      recorded.push(evaluatedInputs);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      inputs: { target: "scratch" },
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(recorded, [{ target: "scratch" }]);
+});
