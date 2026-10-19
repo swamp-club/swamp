@@ -1905,12 +1905,24 @@ tooling, so they outlive the runtime:
    lock. The lockfile sits behind the `LockedDependencyVersions` port; the
    Deno adapter (`src/infrastructure/runtime/deno_lockfile_reader.ts`) reads
    lock formats 4 and 5 as data, capped at 16 MiB. A lock entry that no
-   longer satisfies the specifier falls through, as Deno re-resolves it.
+   longer satisfies the specifier falls through; push itself never gets
+   there, because it refuses a stale lock (below).
 3. Otherwise, the registry. npm resolves the way the registry's scorecard
    does: a range to the highest published release that satisfies it, a
    dist-tag through `dist-tags`, no version to `latest`. JSR takes the
    highest version that is neither yanked nor a prerelease, falling back to
    a yanked match as Deno does, and `latest` for no version.
+
+Push and quality treat the author's lockfile as read-only
+(swamp-club#3613). The module graph read (`deno info`) and the bundle run
+with `--frozen` when the project has the lock the bundler honours, and with
+`--no-lock` when it has none (`readOnlyLockFor` in the lockfile adapter; a
+`deno.json` that is not plain JSON keeps the `deno.lock` beside it). A lock
+that no longer matches the project fails the push with an error naming the
+lock, the config and `deno install --entrypoint <file>`, instead of being
+rewritten in the author's tree, so the version the audit reads from the lock
+is the version that ships. Local loading and `serve` reload keep Deno's
+default lock handling.
 
 The audit summary carries the source text (`specifier`), the resolved
 `version` and `resolvedFrom` (`exact`, `lockfile` or `registry`). npm

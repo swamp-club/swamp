@@ -584,6 +584,15 @@ range to its highest published match, no version to `latest`). npm license,
 maintainers and deprecation are read from that version; OSV is asked about it. A
 JSR import's package and version must exist on jsr.io.
 
+Push and `extension quality` never write the extension's lockfile. With a lock,
+they bundle under `--frozen`, so a `deno.lock` that no longer matches
+`deno.json`, `package.json` or an import fails the push
+(`<lock> is out of date
+with <config>`) instead of being rewritten; the locked
+version is then always the one that ships. Fix it with
+`deno install --entrypoint <file>` in the project directory, commit the lock,
+and push again. Without a lock they bundle with `--no-lock` and create none.
+
 Findings with a `cause` in `warnings.dependencyTrust`:
 
 | Cause                | Means                                                                           | Severity |

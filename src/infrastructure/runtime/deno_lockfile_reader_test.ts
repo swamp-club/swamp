@@ -24,6 +24,7 @@ import {
   lockfilePathFor,
   MAX_LOCKFILE_BYTES,
   readDenoLockfile,
+  readOnlyLockFor,
   readProjectLockfile,
 } from "./deno_lockfile_reader.ts";
 
@@ -192,5 +193,66 @@ Deno.test("readProjectLockfile: a custom lock path names that file in findings",
     await Deno.writeTextFile(config, JSON.stringify({ lock: "custom.lock" }));
     const lock = await readProjectLockfile({ denoConfigPath: config });
     assertEquals(lock?.source, "custom.lock");
+  });
+});
+
+Deno.test("readOnlyLockFor: a deno.json project freezes the deno.lock beside it, or has none", async () => {
+  await withTempDir(async (dir) => {
+    const config = join(dir, "deno.json");
+    await Deno.writeTextFile(config, "{}");
+    assertEquals(await readOnlyLockFor({ denoConfigPath: config }), {});
+    const lock = await writeLock(dir, V5_LOCK);
+    assertPathEquals(
+      (await readOnlyLockFor({ denoConfigPath: config })).lockPath,
+      lock,
+    );
+  });
+});
+
+Deno.test("readOnlyLockFor: follows the deno.json lock setting", async () => {
+  await withTempDir(async (dir) => {
+    await writeLock(dir, V5_LOCK);
+    const config = join(dir, "deno.json");
+    await Deno.writeTextFile(config, JSON.stringify({ lock: false }));
+    assertEquals(await readOnlyLockFor({ denoConfigPath: config }), {});
+
+    await Deno.writeTextFile(config, JSON.stringify({ lock: "custom.lock" }));
+    assertEquals(await readOnlyLockFor({ denoConfigPath: config }), {});
+    const custom = await writeLock(dir, V5_LOCK, "custom.lock");
+    assertPathEquals(
+      (await readOnlyLockFor({ denoConfigPath: config })).lockPath,
+      custom,
+    );
+  });
+});
+
+Deno.test("readOnlyLockFor: a deno.json that is not plain JSON keeps the deno.lock beside it", async () => {
+  await withTempDir(async (dir) => {
+    const config = join(dir, "deno.json");
+    await Deno.writeTextFile(config, '{ // comment\n "imports": {} }');
+    assertEquals(await readOnlyLockFor({ denoConfigPath: config }), {});
+    const lock = await writeLock(dir, V5_LOCK);
+    assertPathEquals(
+      (await readOnlyLockFor({ denoConfigPath: config })).lockPath,
+      lock,
+    );
+  });
+});
+
+Deno.test("readOnlyLockFor: package.json mode freezes the deno.lock in its directory, or has none", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(await readOnlyLockFor({ packageJsonDir: dir }), {});
+    const lock = await writeLock(dir, V5_LOCK);
+    assertPathEquals(
+      (await readOnlyLockFor({ packageJsonDir: dir })).lockPath,
+      lock,
+    );
+  });
+});
+
+Deno.test("readOnlyLockFor: a directory named like the lock is no lock", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(dir, "deno.lock"));
+    assertEquals(await readOnlyLockFor({ packageJsonDir: dir }), {});
   });
 });

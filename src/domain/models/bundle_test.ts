@@ -29,17 +29,20 @@ import { z } from "zod";
 import { UserError } from "../errors.ts";
 import {
   bundleExtension,
+  denoProjectArgs,
   extractBareSpecifierNames,
   fixCjsEsmInterop,
   importMapTarget,
   installZodGlobal,
   isEsbuildInstallRace,
   isExpectedBundleFailure,
+  isStaleLockfile,
   rejectZodV3Imports,
   rewriteZodImports,
   runFirstAlone,
   sanitizeDataUrlError,
   sourceHasBareSpecifiers,
+  staleLockfileError,
   uint8ArrayToBase64,
 } from "./bundle.ts";
 
@@ -1442,4 +1445,137 @@ Deno.test("isEsbuildInstallRace: matches only the esbuild copy failure", () => {
     ),
     false,
   );
+});
+
+// Deno 2.9.7's --frozen refusal, colours and all, as `deno bundle` and
+// `deno info` print it. If an embedded Deno bump changes this text, the
+// stale-lock message falls back to the generic failure: update it here.
+const STALE_LOCK_OUTPUT = "\u001b[0m\u001b[1m\u001b[31merror\u001b[0m: " +
+  "Prepare module load error\n\nCaused by:\n    The lockfile is out of " +
+  "date. Run `deno install --frozen=false`, or rerun with `--frozen=false` " +
+  'to update it.\n    changes:\n     4 | -    "npm:ms@2": "2.1.3"\n' +
+  '     4 | +    "npm:ms@^2.1.0": "2.1.3"\n';
+
+Deno.test("denoProjectArgs: without readOnlyLock the flags are unchanged", () => {
+  assertEquals(denoProjectArgs({ denoConfigPath: "/p/deno.json" }), [
+    "--config",
+    "/p/deno.json",
+  ]);
+  assertEquals(denoProjectArgs({ packageJsonDir: "/p" }), [
+    "--node-modules-dir=auto",
+  ]);
+  assertEquals(denoProjectArgs(), ["--no-lock", "--node-modules-dir=none"]);
+});
+
+Deno.test("denoProjectArgs: readOnlyLock freezes an existing lock and disables a missing one", () => {
+  const lockPath = "/p/deno.lock";
+  assertEquals(
+    denoProjectArgs({
+      denoConfigPath: "/p/deno.json",
+      readOnlyLock: { lockPath },
+    }),
+    ["--config", "/p/deno.json", "--frozen"],
+  );
+  assertEquals(
+    denoProjectArgs({ denoConfigPath: "/p/deno.json", readOnlyLock: {} }),
+    ["--config", "/p/deno.json", "--no-lock"],
+  );
+  assertEquals(
+    denoProjectArgs({ packageJsonDir: "/p", readOnlyLock: { lockPath } }),
+    ["--node-modules-dir=auto", "--frozen"],
+  );
+  assertEquals(
+    denoProjectArgs({ packageJsonDir: "/p", readOnlyLock: {} }),
+    ["--node-modules-dir=auto", "--no-lock"],
+  );
+  assertEquals(denoProjectArgs({ readOnlyLock: {} }), [
+    "--no-lock",
+    "--node-modules-dir=none",
+  ]);
+});
+
+Deno.test("isStaleLockfile: matches Deno's --frozen refusal only", () => {
+  assertEquals(isStaleLockfile(STALE_LOCK_OUTPUT), true);
+  assertEquals(
+    isStaleLockfile('error: Module not found "file:///x.ts".'),
+    false,
+  );
+});
+
+Deno.test("staleLockfileError: names the lock, the config and the fix, and keeps the changes", () => {
+  const configDir = join("ext", "proj");
+  const error = staleLockfileError(
+    join(configDir, "deno.lock"),
+    join(configDir, "mod.ts"),
+    { denoConfigPath: join(configDir, "deno.json") },
+    STALE_LOCK_OUTPUT,
+  );
+  assertEquals(error instanceof UserError, true);
+  assertStringIncludes(
+    error.message,
+    `${join(configDir, "deno.lock")} is out of date with ${
+      join(configDir, "deno.json")
+    }`,
+  );
+  assertStringIncludes(
+    error.message,
+    `Run \`deno install --entrypoint ${
+      join(configDir, "mod.ts")
+    }\` in ${configDir}`,
+  );
+  assertStringIncludes(error.message, '+    "npm:ms@^2.1.0": "2.1.3"');
+  assertEquals(error.message.includes("--frozen=false"), false);
+  assertEquals(error.message.includes("\u001b"), false);
+});
+
+Deno.test("staleLockfileError: package.json mode names package.json and its directory", () => {
+  const dir = join("ext", "pkg");
+  const error = staleLockfileError(
+    join(dir, "deno.lock"),
+    join(dir, "mod.ts"),
+    { packageJsonDir: dir },
+    STALE_LOCK_OUTPUT,
+  );
+  assertStringIncludes(error.message, "is out of date with package.json");
+  assertStringIncludes(error.message, `\` in ${dir}, commit`);
+});
+
+Deno.test("bundleExtension: readOnlyLock bundles with --frozen and reports a stale lock", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    const lockPath = join(path, "..", "deno.lock");
+    const { calls } = await withMockedCommand(
+      [{ stdout: "", stderr: STALE_LOCK_OUTPUT, code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            bundleExtension(path, DENO_PATH, {
+              denoConfigPath: join(path, "..", "deno.json"),
+              readOnlyLock: { lockPath },
+              env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+            }),
+          UserError,
+          `${lockPath} is out of date`,
+        );
+      },
+    );
+    assertEquals(calls[0].args.includes("--frozen"), true);
+  });
+});
+
+Deno.test("bundleExtension: without readOnlyLock a stale-lock failure is the generic bundle error", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    await withMockedCommand(
+      [{ stdout: "", stderr: STALE_LOCK_OUTPUT, code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            bundleExtension(path, DENO_PATH, {
+              env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+            }),
+          Error,
+          "deno bundle failed for",
+        );
+      },
+    );
+  });
 });

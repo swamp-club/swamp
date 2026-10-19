@@ -291,15 +291,72 @@ export function rewriteZodImports(js: string, origin?: string): string {
  * does: the project's deno.json, or its package.json and node_modules (run
  * with `cwd` at the package.json directory), or no project at all. Shared
  * with the module graph read, so push packages the modules it bundles.
+ *
+ * With `readOnlyLock`, the project's lockfile is never written: `--frozen`
+ * when it has one (a lock that no longer satisfies a specifier fails rather
+ * than being rewritten), `--no-lock` when it has none (so none is created).
  */
 export function denoProjectArgs(
-  options?: { denoConfigPath?: string; packageJsonDir?: string },
+  options?: {
+    denoConfigPath?: string;
+    packageJsonDir?: string;
+    readOnlyLock?: ReadOnlyLock;
+  },
 ): string[] {
-  return options?.denoConfigPath
+  const project = options?.denoConfigPath
     ? ["--config", options.denoConfigPath]
     : options?.packageJsonDir
     ? ["--node-modules-dir=auto"]
-    : ["--no-lock", "--node-modules-dir=none"];
+    : undefined;
+  if (!project) return ["--no-lock", "--node-modules-dir=none"];
+  if (!options?.readOnlyLock) return project;
+  return [
+    ...project,
+    options.readOnlyLock.lockPath ? "--frozen" : "--no-lock",
+  ];
+}
+
+/**
+ * Bundle a project without writing its lockfile. `lockPath` is the lock the
+ * project has, or undefined when it has none.
+ */
+export interface ReadOnlyLock {
+  lockPath?: string;
+}
+
+/** Whether deno output names a lockfile `--frozen` refused to update. */
+export function isStaleLockfile(output: string): boolean {
+  return stripAnsiCode(output).includes("The lockfile is out of date");
+}
+
+/**
+ * The error for a lockfile that no longer matches the project: push would
+ * have to rewrite it, and it treats the author's lock as read-only. Names
+ * the command that brings the lock up to date, and keeps the change list
+ * from the deno output but not its `--frozen=false` hint.
+ */
+export function staleLockfileError(
+  lockPath: string,
+  entryPoint: string,
+  project: { denoConfigPath?: string; packageJsonDir?: string },
+  output: string,
+): UserError {
+  const projectFile = project.denoConfigPath ?? "package.json";
+  const projectDir = project.denoConfigPath
+    ? dirname(project.denoConfigPath)
+    : project.packageJsonDir ?? dirname(lockPath);
+  const plain = stripAnsiCode(output);
+  const changesAt = plain.indexOf("changes:");
+  const changes = changesAt >= 0 ? `\n${plain.slice(changesAt).trimEnd()}` : "";
+  return markErrorPaths(
+    new UserError(
+      `${lockPath} is out of date with ${projectFile}, and push and quality ` +
+        `never rewrite your lockfile. Run \`deno install --entrypoint ` +
+        `${entryPoint}\` in ${projectDir}, commit the updated lock, and try ` +
+        `again.${changes}`,
+    ),
+    [lockPath, projectFile, entryPoint, projectDir],
+  );
 }
 
 /** Options for controlling bundle output. */
@@ -325,6 +382,14 @@ export interface BundleOptions {
    * Mutually exclusive with `denoConfigPath`.
    */
   packageJsonDir?: string;
+
+  /**
+   * Leave the project's lockfile untouched: bundle with `--frozen` when it
+   * has one, so a stale lock fails with {@link staleLockfileError}, and with
+   * `--no-lock` when it has none. Push and quality set this; local loading
+   * does not.
+   */
+  readOnlyLock?: ReadOnlyLock;
 
   /**
    * Environment variables for the subprocess. When provided, the bundler
@@ -924,6 +989,15 @@ export async function bundleExtension(
     });
 
     if (!output.success) {
+      const lockPath = options?.readOnlyLock?.lockPath;
+      if (lockPath && isStaleLockfile(outputText(output))) {
+        throw staleLockfileError(
+          lockPath,
+          absolutePath,
+          options,
+          outputText(output),
+        );
+      }
       const rawDetails = outputText(output).trim() ||
         "(no output — try running deno 2.7.x or later)";
       const details = stripAnsiCode(rawDetails);
