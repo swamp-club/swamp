@@ -65,7 +65,13 @@ function makeDeps(
     removedSecrets,
     findVault: (name) =>
       Promise.resolve(name === localVault.name ? localVault : null),
-    listVaultNames: () => Promise.resolve(["default", "trip-planner"]),
+    listVaults: () =>
+      Promise.resolve([
+        { id: "22222222-2222-4222-8222-222222222222", name: "default" },
+        { id: localVault.id, name: "trip-planner" },
+      ]),
+    findStoredAt: (config) =>
+      Promise.resolve(config.id === localVault.id ? localVault : null),
     getEffectiveDefaultVault: () =>
       Promise.resolve({ name: "default", configured: true }),
     findReferences: () => Promise.resolve(noReferences),
@@ -274,12 +280,49 @@ Deno.test("vaultRemovePreview: refuses the fallback default vault when defaultVa
 
 Deno.test("vaultRemovePreview: refuses a name two configs share", async () => {
   const deps = makeDeps({
-    listVaultNames: () =>
-      Promise.resolve(["default", "trip-planner", "trip-planner"]),
+    listVaults: () =>
+      Promise.resolve([
+        { id: localVault.id, name: "trip-planner" },
+        { id: "33333333-3333-4333-8333-333333333333", name: "trip-planner" },
+      ]),
   });
   const error = await previewError(deps, "trip-planner", true);
   assertEquals(error.code, "validation_failed");
   assertStringIncludes(error.message, "2 vault configs are named");
+});
+
+Deno.test("vaultRemovePreview: refuses a config whose id another config shares", async () => {
+  const deps = makeDeps({
+    listVaults: () =>
+      Promise.resolve([
+        { id: localVault.id, name: "keep" },
+        { id: localVault.id, name: "trip-planner" },
+      ]),
+  });
+  const error = await previewError(deps, "trip-planner", true);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "'keep', 'trip-planner' share the id");
+});
+
+Deno.test("vaultRemovePreview: refuses a config not stored at the file its type and id name", async () => {
+  for (const stored of [null, { ...localVault, name: "keep" } as VaultConfig]) {
+    const deps = makeDeps({ findStoredAt: () => Promise.resolve(stored) });
+    const error = await previewError(deps, "trip-planner", true);
+    assertEquals(error.code, "validation_failed");
+    assertStringIncludes(error.message, "is not stored at the file");
+  }
+});
+
+Deno.test("vaultRemove: re-checks where the config is stored and removes nothing", async () => {
+  const deps = makeDeps({ findStoredAt: () => Promise.resolve(null) });
+  const events = await collect<VaultRemoveEvent>(
+    vaultRemove(createLibSwampContext(), deps, {
+      vaultName: "trip-planner",
+      force: true,
+    }),
+  );
+  assertEquals(events.some((e) => e.kind === "error"), true);
+  assertEquals(deps.deleted, []);
 });
 
 Deno.test("vaultRemovePreview: a storage lookup failure is a validation error", async () => {

@@ -25,7 +25,7 @@
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
 import type { DatastoreConfigData } from "../src/domain/datastore/datastore_config.ts";
@@ -329,5 +329,66 @@ Deno.test("vault remove: keeps secrets a base_dir from another checkout points a
     } finally {
       await Deno.remove(other, { recursive: true }).catch(() => {});
     }
+  });
+});
+
+Deno.test("vault remove: a copied config that kept its source's id is refused and nothing is deleted", async () => {
+  await withRepo(async (repo) => {
+    const keep = await saveLocalVault(repo.repoContext, "keep");
+    const keepProvider = new LocalEncryptionVaultProvider("keep", {
+      auto_generate: true,
+      base_dir: repo.repoDir,
+    });
+    await keepProvider.put("K", "keep-secret");
+    // Clone a vault by copying its file and changing only the name.
+    const keepPath = repo.repoContext.vaultConfigRepo.getPath(
+      keep.type,
+      keep.id,
+    );
+    const yaml = await Deno.readTextFile(keepPath);
+    await Deno.writeTextFile(
+      join(dirname(keepPath), "copy.yaml"),
+      yaml.replace(/^name: keep$/m, "name: copy"),
+    );
+    const copyProvider = new LocalEncryptionVaultProvider("copy", {
+      auto_generate: true,
+      base_dir: repo.repoDir,
+    });
+    await copyProvider.put("C", "copy-secret");
+
+    assertStringIncludes(
+      await previewError(repo, "copy", true),
+      "share the id",
+    );
+    const events = await collect<VaultRemoveEvent>(
+      vaultRemove(createLibSwampContext(), depsFor(repo), {
+        vaultName: "copy",
+        force: true,
+      }),
+    );
+    assertEquals(events.some((e) => e.kind === "error"), true);
+
+    assertEquals((await Deno.stat(keepPath)).isFile, true);
+    assertEquals(await keepProvider.get("K"), "keep-secret");
+    assertEquals(await copyProvider.get("C"), "copy-secret");
+  });
+});
+
+Deno.test("vault remove: a config whose file is not at its type and id path is refused, not reported removed", async () => {
+  await withRepo(async (repo) => {
+    const vault = await saveLocalVault(repo.repoContext, "trip-planner");
+    const path = repo.repoContext.vaultConfigRepo.getPath(vault.type, vault.id);
+    // Hand-edit the type: the file stays in the local_encryption directory.
+    const yaml = await Deno.readTextFile(path);
+    await Deno.writeTextFile(
+      path,
+      yaml.replace(/^type: local_encryption$/m, "type: mock"),
+    );
+
+    assertStringIncludes(
+      await previewError(repo, "trip-planner", true),
+      "is not stored at the file",
+    );
+    assertEquals((await Deno.stat(path)).isFile, true);
   });
 });

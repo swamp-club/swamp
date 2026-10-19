@@ -137,7 +137,13 @@ export interface VaultRemoveInput {
 
 export interface VaultRemoveDeps {
   findVault: (name: string) => Promise<VaultConfig | null>;
-  listVaultNames: () => Promise<string[]>;
+  /** Every vault config, as read from each file. */
+  listVaults: () => Promise<{ id: string; name: string }[]>;
+  /**
+   * The config stored at the path `config`'s type and id give, which is the
+   * file a removal deletes; null when no file is there.
+   */
+  findStoredAt: (config: VaultConfig) => Promise<VaultConfig | null>;
   /**
    * The vault sensitive outputs go to when none is named: `defaultVault`
    * when it names a vault, else the first user vault.
@@ -175,9 +181,17 @@ export function createVaultRemoveDeps(
 
   return {
     findVault: (name) => repos.vaultConfigRepo.findByName(name),
-    listVaultNames: async () => {
+    listVaults: async () => {
       const all = await repos.vaultConfigRepo.findAll();
-      return all.map((v) => v.name);
+      return all.map((v) => ({ id: v.id, name: v.name }));
+    },
+    findStoredAt: async (config) => {
+      try {
+        return await repos.vaultConfigRepo.findById(config.type, config.id);
+      } catch {
+        // A file there that does not parse is not this config.
+        return null;
+      }
     },
     getEffectiveDefaultVault: async () => {
       const [all, marker] = await Promise.all([
@@ -356,8 +370,9 @@ export async function vaultRemoveStoredSecrets(
 }
 
 /**
- * The default vault is never removed, nor a name two configs share; a
- * referenced vault only with force.
+ * The default vault is never removed, nor a name or id two configs share, nor
+ * a config whose file is not where the removal would delete; a referenced
+ * vault only with force.
  */
 async function checkRemovable(
   deps: VaultRemoveDeps,
@@ -365,9 +380,8 @@ async function checkRemovable(
   input: VaultRemoveInput,
 ): Promise<{ references: VaultReferences; refusal?: SwampError }> {
   const none: VaultReferences = { references: [], possibleReferences: [] };
-  const sameName = (await deps.listVaultNames()).filter((n) =>
-    n === config.name
-  );
+  const vaults = await deps.listVaults();
+  const sameName = vaults.filter((v) => v.name === config.name);
   if (sameName.length > 1) {
     return {
       references: none,
@@ -375,6 +389,34 @@ async function checkRemovable(
         `${sameName.length} vault configs are named '${config.name}' and ` +
           `share one secrets directory. Rename or delete the extra config ` +
           `with 'swamp vault edit <id>' first.`,
+      ),
+    };
+  }
+
+  // The removal deletes the file at vaults/<type>/<id>.yaml. A copied file
+  // that kept its source's id would otherwise delete the source's config.
+  const sameId = vaults.filter((v) => v.id === config.id);
+  if (sameId.length > 1) {
+    return {
+      references: none,
+      refusal: validationFailed(
+        `Vault configs ${
+          sameId.map((v) => `'${v.name}'`).join(", ")
+        } share the id ${config.id}, so removing '${config.name}' could ` +
+          `delete another vault's config. Give the copy a new id and a file ` +
+          `named after it, or delete its file by hand.`,
+      ),
+    };
+  }
+  const stored = await deps.findStoredAt(config);
+  if (stored?.name !== config.name) {
+    return {
+      references: none,
+      refusal: validationFailed(
+        `Vault '${config.name}' is not stored at the file its type ` +
+          `(${config.type}) and id (${config.id}) name, so removing it would ` +
+          `not delete its config. Move its file to match, or delete it by ` +
+          `hand.`,
       ),
     };
   }
@@ -418,7 +460,7 @@ async function vaultNotFound(
   deps: VaultRemoveDeps,
   vaultName: string,
 ): Promise<SwampError> {
-  const names = await deps.listVaultNames();
+  const names = (await deps.listVaults()).map((v) => v.name);
   const available = names.length > 0
     ? ` Available vaults: ${names.join(", ")}`
     : "";

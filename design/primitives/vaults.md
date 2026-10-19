@@ -415,7 +415,10 @@ have their own sections. The group also has:
     vault `defaultVault` names, or, when it names no existing vault, the first
     user vault sensitive outputs fall back to (`resolveSensitiveOutputVault`).
     Change `defaultVault` first. So is a name two configs share, since they
-    share one secrets directory
+    share one secrets directory, an id two configs share, and a config whose
+    file is not at `vaults/<type>/<id>.yaml`: the removal deletes that path,
+    so a copied file that kept its source's id would delete the source's
+    config
   - A vault referenced by a definition (`vault.get`, a resource override
     `vaultName`), a workflow (`vault.get`, its `vaults` list) or the datastore
     config's `vault.get` is refused unless `--force`
