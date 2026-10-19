@@ -116,7 +116,8 @@ those namespaces.
 Each export speaks only for its own namespace. The pull refuses the repository's
 own namespace and any value not shaped like a namespace. It drops export rows
 that name another namespace, warns with the count, and reports it as
-`rejectedRows` in the JSON output.
+`rejectedRows` in the JSON output. Exports for namespaces that were not
+requested are ignored and listed under `ignored`.
 
 Foreign content (the actual data attributes) is fetched on demand when a CEL
 expression accesses them — it is not persisted locally.

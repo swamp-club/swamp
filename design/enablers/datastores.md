@@ -4847,7 +4847,7 @@ provenance. Readers trust `namespace` to tell their own rows from foreign ones:
 `data.latest` resolves sensitive vault references only for own rows, and serve
 GC reaps only own rows. So the pull enforces the rule in three places:
 
-- `parseForeignNamespaces` (`src/domain/datastore/foreign_catalog_export.ts`)
+- `parseForeignNamespaces` (`src/domain/data/foreign_catalog_export.ts`)
   checks `--namespaces` before the provider is contacted. Each value must be
   shaped like a namespace, and none may be the reader's own namespace, taken
   from `namespaceFromResolver` (the value that stamps its own rows).
@@ -4855,7 +4855,8 @@ GC reaps only own rows. So the pull enforces the rule in three places:
   namespace that was not requested. Of each export, it keeps only the rows whose
   `namespace` is the pulled namespace (`acceptForeignExportRows`), dropping rows
   that claim the reader's namespace, the empty solo namespace or a third one,
-  and it warns with the count.
+  and it warns with the count. The JSON output reports dropped rows per namespace
+  as `rejectedRows` and ignored exports as `ignored`.
 - `bulkUpsertForeign` refuses an empty namespace, and any row whose namespace
   differs from the one it is storing, before it writes anything.
 

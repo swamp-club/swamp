@@ -47,7 +47,7 @@ import type { Namespace } from "../../domain/data/namespace.ts";
 import {
   acceptForeignExportRows,
   parseForeignNamespaces,
-} from "../../domain/datastore/foreign_catalog_export.ts";
+} from "../../domain/data/foreign_catalog_export.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -303,6 +303,7 @@ export const datastoreCatalogPullCommand = new Command()
             rejectedRows: e.rejected,
           })),
           skipped: result.missing,
+          ignored: result.unrequested,
           totalRows,
         },
         null,

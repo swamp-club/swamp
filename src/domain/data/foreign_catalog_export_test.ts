@@ -22,12 +22,12 @@ import {
   acceptForeignExportRows,
   parseForeignNamespaces,
 } from "./foreign_catalog_export.ts";
-import type { CatalogExportRow } from "./datastore_sync_service.ts";
+import type { CatalogExportRow } from "../datastore/datastore_sync_service.ts";
 import {
   type Namespace,
   restoreNamespace,
   SOLO_NAMESPACE,
-} from "../data/namespace.ts";
+} from "./namespace.ts";
 import { UserError } from "../errors.ts";
 
 const OWN = restoreNamespace("team-a");

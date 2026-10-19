@@ -136,11 +136,9 @@ async function withCatalogStore(
 
 /** The reader's own row, as the reader's own writes stamp it. */
 function ownRow(): CatalogRow {
-  return {
-    ...exportRowsToCatalogRows([
-      makeExportRow({ namespace: "team-a", tags: '{"owner":"a"}' }),
-    ])[0],
-  };
+  return exportRowsToCatalogRows([
+    makeExportRow({ namespace: "team-a", tags: '{"owner":"a"}' }),
+  ])[0];
 }
 
 const TEAM_B = restoreNamespace("team-b");
@@ -179,14 +177,16 @@ Deno.test("storeForeignCatalogEntries: an export row claiming the reader's names
       unrequested: [],
       missing: [],
     });
-    const byNamespace = [...store.iterate()].map((r) => [
-      r.namespace,
-      r.data_name,
-      r.version,
-      r.tags,
-      r.spec_name,
-      r.is_latest,
-    ]);
+    const byNamespace = [...store.iterate()]
+      .map((r) => [
+        r.namespace,
+        r.data_name,
+        r.version,
+        r.tags,
+        r.spec_name,
+        r.is_latest,
+      ])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
     assertEquals(byNamespace, [
       ["team-a", own.data_name, 1, own.tags, own.spec_name, 1],
       ["team-b", "honest", 1, "{}", "item", 1],

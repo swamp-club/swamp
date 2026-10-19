@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
-import { type Namespace, restoreNamespace } from "../data/namespace.ts";
-import type { CatalogExportRow } from "./datastore_sync_service.ts";
+import { type Namespace, restoreNamespace } from "./namespace.ts";
+import type { CatalogExportRow } from "../datastore/datastore_sync_service.ts";
 
 /**
  * Parses the namespaces a foreign catalog pull asks for. Values are trimmed,
@@ -40,11 +40,12 @@ export function parseForeignNamespaces(
     let namespace: Namespace;
     try {
       namespace = restoreNamespace(value);
-    } catch (error) {
+    } catch {
       throw new UserError(
-        `Cannot pull namespace ${JSON.stringify(value)}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Cannot pull namespace ${
+          JSON.stringify(value)
+        }: a namespace is lowercase letters, digits and hyphens, starts and ` +
+          "ends with a letter or digit, and is at most 64 characters.",
       );
     }
     if (namespace === ownNamespace) {

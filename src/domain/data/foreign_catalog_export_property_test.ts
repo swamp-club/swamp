@@ -20,8 +20,8 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { acceptForeignExportRows } from "./foreign_catalog_export.ts";
-import type { CatalogExportRow } from "./datastore_sync_service.ts";
-import { restoreNamespace } from "../data/namespace.ts";
+import type { CatalogExportRow } from "../datastore/datastore_sync_service.ts";
+import { restoreNamespace } from "./namespace.ts";
 
 const PULLED = restoreNamespace("team-b");
 
