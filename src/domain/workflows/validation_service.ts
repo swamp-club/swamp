@@ -962,16 +962,18 @@ export class DefaultWorkflowValidationService
           ),
         ];
       case "resolved": {
-        if (resolution.literalSensitiveGlobals?.length) {
-          return [
+        // The definition's own problem, reported beside the step's inputs
+        // rather than in place of them.
+        const literalGlobals = resolution.literalSensitiveGlobals?.length
+          ? [
             WorkflowValidationResult.fail(
-              checkName,
+              `Global arguments for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
               literalSensitiveGlobalArgsMessage(
                 resolution.literalSensitiveGlobals,
               ),
             ),
-          ];
-        }
+          ]
+          : [];
         const provided = new Set<string>([
           ...Object.keys(inputs ?? {}),
           ...Object.keys(globalArgs ?? {}),
@@ -982,13 +984,14 @@ export class DefaultWorkflowValidationService
         );
         if (missing.length > 0) {
           return [
+            ...literalGlobals,
             WorkflowValidationResult.fail(
               checkName,
               `Missing required inputs: ${missing.join(", ")}`,
             ),
           ];
         }
-        return [WorkflowValidationResult.pass(checkName)];
+        return [...literalGlobals, WorkflowValidationResult.pass(checkName)];
       }
     }
   }

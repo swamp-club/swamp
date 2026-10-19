@@ -913,7 +913,7 @@ Deno.test("validateStepInputs: fails a step whose definition holds a literal sen
   const resolver = mockResolver({
     "deploy.run": {
       status: "resolved",
-      requiredArgs: [],
+      requiredArgs: ["region"],
       literalSensitiveGlobals: ["apiKey"],
     },
   });
@@ -934,10 +934,16 @@ Deno.test("validateStepInputs: fails a step whose definition holds a literal sen
   });
 
   const results = await svc.validate(workflow);
+  const globalResult = results.find((r) =>
+    r.name === "Global arguments for 'step1' in job 'job1' (deploy)"
+  );
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'apiKey'");
+  assertStringIncludes(globalResult?.error ?? "", "vault.get");
+  // The step's own inputs are still checked beside it.
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, false);
-  assertStringIncludes(inputResult?.error ?? "", "'apiKey'");
-  assertStringIncludes(inputResult?.error ?? "", "vault.get");
+  assertEquals(inputResult?.error, "Missing required inputs: region");
 });
 
 Deno.test("validateStepInputs: definition and step inputs overlap on the same key (no double-count, still passes)", async () => {

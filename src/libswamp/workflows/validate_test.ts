@@ -456,10 +456,14 @@ Deno.test("createWorkflowValidateDeps: fails a step whose stored definition hold
         }),
       ],
     }));
+    const globalResult = results.find((r) =>
+      r.name.startsWith("Global arguments for 'step1'")
+    );
+    assertEquals(globalResult?.passed, false);
+    assertStringIncludes(globalResult?.error ?? "", "'token'");
+    assertEquals(globalResult?.error?.includes("GLOBAL-CANARY"), false);
     const inputResult = results.find((r) => r.name.includes("Step inputs"));
-    assertEquals(inputResult?.passed, false);
-    assertStringIncludes(inputResult?.error ?? "", "'token'");
-    assertEquals(inputResult?.error?.includes("GLOBAL-CANARY"), false);
+    assertEquals(inputResult?.passed, true);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

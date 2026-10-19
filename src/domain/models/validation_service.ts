@@ -21,8 +21,7 @@ import type { z } from "zod";
 import type { MethodContext, ModelDefinition } from "./model.ts";
 import { modelRegistry } from "./model.ts";
 import { buildMethodContext } from "./method_context.ts";
-import type { Definition } from "../definitions/definition.ts";
-import { DefinitionSchema } from "../definitions/definition.ts";
+import { Definition, DefinitionSchema } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import {
@@ -522,6 +521,11 @@ export class DefaultModelValidationService implements ModelValidationService {
       modelDef.globalArguments,
       stored.globalArguments,
     );
+    if (
+      upgraded === stored && containsSwampExpression(stored.globalArguments)
+    ) {
+      upgraded = this.upgradeLiteralGlobals(stored, modelDef);
+    }
     if (upgraded === stored) return paths;
     return [
       ...new Set([
@@ -532,6 +536,33 @@ export class DefaultModelValidationService implements ModelValidationService {
         ),
       ]),
     ];
+  }
+
+  /**
+   * Upgrades a copy holding only the global arguments with no expression in
+   * them, since upgradeInMemory declines a definition with any. A literal is
+   * never an expression, so the copy answers for every literal, and an
+   * expression is never mistaken for one. Returns the definition when the
+   * upgrade throws.
+   */
+  private upgradeLiteralGlobals(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): Definition {
+    const data = definition.toData();
+    const literalGlobals = Object.fromEntries(
+      Object.entries(data.globalArguments ?? {}).filter(([, value]) =>
+        !containsSwampExpression(value)
+      ),
+    );
+    try {
+      return new DefinitionUpgradeService().upgrade(
+        Definition.fromData({ ...data, globalArguments: literalGlobals }),
+        modelDef,
+      ).definition;
+    } catch {
+      return definition;
+    }
   }
 
   async validateModel(

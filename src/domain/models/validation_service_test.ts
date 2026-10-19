@@ -3373,3 +3373,63 @@ Deno.test("validateModel: refuseLiteralSensitiveGlobals reports a schema error b
   assertStringIncludes(globalResult?.error ?? "", "'token'");
   assertStringIncludes(globalResult?.error ?? "", "Unknown global argument");
 });
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals catches an upgrade-moved literal beside an expression global (swamp-club#3555)", async () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        note: z.string().optional(),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token-with-expression",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY", note: "${{ inputs.note }}" },
+  });
+  const service = new DefaultModelValidationService();
+  const { results } = await service.validateModel(
+    definition,
+    modelDef,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'apiKey'");
+  assertEquals(service.findLiteralSensitiveGlobals(definition, modelDef), [
+    "apiKey",
+  ]);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals does not refuse an expression an upgrade moves into a sensitive field (swamp-club#3555)", async () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token-expression",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    [],
+  );
+});
