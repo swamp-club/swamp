@@ -27,6 +27,12 @@ import { Logo } from "./Logo.tsx";
 import { ThemeToggle } from "./ThemeToggle.tsx";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher.tsx";
 import { operationsOff, showsLogout } from "./sidebar_state.ts";
+import {
+  logoutConfirmed,
+  type LogoutEvent,
+  type LogoutStep,
+  nextLogoutStep,
+} from "./logout_confirm.ts";
 import { PAGE_WORKSPACE } from "../client/workspace_path.ts";
 
 export type { View };
@@ -210,12 +216,34 @@ interface RailTooltip {
  * past its 64px edge.
  */
 function tooltipFor(e: MouseEvent<HTMLElement>): RailTooltip | null {
-  const item = (e.target as HTMLElement).closest<HTMLElement>(".nav-item");
+  const item = (e.target as HTMLElement).closest<HTMLElement>(
+    ".nav-item, .sidebar-logout",
+  );
   const label = item?.dataset.tooltip ??
     item?.querySelector(".nav-label")?.textContent;
   if (!item || !label) return null;
   const rect = item.getBoundingClientRect();
   return { label, top: rect.top + rect.height / 2, left: rect.right + 10 };
+}
+
+/** Where the Logout confirm sits when it flies out beside the rail. */
+interface FlyoutAnchor {
+  left: number;
+  bottom: number;
+}
+
+/**
+ * Lines the flyout's bottom edge up with the Logout button so it grows
+ * upward from the foot of the rail, kept at least 8px inside the window.
+ * It starts past the rail's edge so it never covers the rail's controls.
+ */
+function flyoutAnchorFor(button: HTMLElement): FlyoutAnchor {
+  const rect = button.getBoundingClientRect();
+  const rail = button.closest(".sidebar")?.getBoundingClientRect() ?? rect;
+  return {
+    left: rail.right + 8,
+    bottom: Math.max(8, globalThis.innerHeight - rect.bottom),
+  };
 }
 
 interface SidebarProps {
@@ -235,6 +263,8 @@ interface SidebarProps {
   onToggleCollapsed: () => void;
   drawerOpen: boolean;
   onCloseDrawer: () => void;
+  /** Test-only: render with the Logout confirm already open. */
+  initialLogoutStep?: LogoutStep;
 }
 
 export function Sidebar({
@@ -249,13 +279,54 @@ export function Sidebar({
   onToggleCollapsed,
   drawerOpen,
   onCloseDrawer,
+  initialLogoutStep = "idle",
 }: SidebarProps) {
   const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
+  const [logoutStep, setLogoutStep] = useState<LogoutStep>(initialLogoutStep);
+  const [flyout, setFlyout] = useState<FlyoutAnchor | null>(null);
   const off = operationsOff({ auditEnabled, local });
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
+  const keepButtonRef = useRef<HTMLButtonElement>(null);
+  const logoutButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Drop a tooltip measured before the rail was toggled.
-  useEffect(() => setTooltip(null), [collapsed]);
+  const sendLogout = (event: LogoutEvent) => {
+    if (logoutConfirmed(logoutStep, event)) onLogout();
+    setLogoutStep((step) => nextLogoutStep(step, event));
+  };
+
+  // Drop a tooltip measured before the rail was toggled, and a confirm
+  // whose flyout would be left beside a rail that moved.
+  useEffect(() => {
+    setTooltip(null);
+    setLogoutStep((step) => nextLogoutStep(step, "dismiss"));
+  }, [collapsed]);
+
+  // Land on Keep when the confirm opens, so Enter backs out rather than
+  // logging out. The inline confirm grows the footer past the fold of a
+  // short sidebar, so bring all of it, Log out included, into view first.
+  // The flyout is fixed beside the rail and needs no scroll.
+  useEffect(() => {
+    if (logoutStep !== "confirming") return;
+    const confirm = confirmRef.current;
+    if (confirm && getComputedStyle(confirm).position !== "fixed") {
+      footerRef.current?.scrollIntoView({ block: "end" });
+    }
+    keepButtonRef.current?.focus({ preventScroll: true });
+  }, [logoutStep]);
+
+  // A click anywhere outside the footer (the flyout is inside it) backs out.
+  useEffect(() => {
+    if (logoutStep !== "confirming") return;
+    const onMouseDown = (e: globalThis.MouseEvent) => {
+      if (!footerRef.current?.contains(e.target as Node)) {
+        setLogoutStep((step) => nextLogoutStep(step, "dismiss"));
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [logoutStep]);
 
   // Move focus into the drawer when it opens so keyboard users land in it.
   useEffect(() => {
@@ -269,7 +340,15 @@ export function Sidebar({
       aria-label="Main navigation"
       onMouseOver={collapsed ? (e) => setTooltip(tooltipFor(e)) : undefined}
       onMouseLeave={() => setTooltip(null)}
-      onScroll={() => setTooltip(null)}
+      onScroll={() => {
+        setTooltip(null);
+        // The flyout is drawn fixed, so it follows its button as the rail
+        // scrolls. Closing it instead would also close one opened just as a
+        // scroll (trackpad momentum) was still settling.
+        if (logoutStep === "confirming" && logoutButtonRef.current) {
+          setFlyout(flyoutAnchorFor(logoutButtonRef.current));
+        }
+      }}
       style={{
         background: "var(--sidebar-bg)",
         borderRight: "1px solid rgba(255,255,255,0.06)",
@@ -447,6 +526,7 @@ export function Sidebar({
       <ThemeToggle />
 
       <div
+        ref={footerRef}
         className="sidebar-footer"
         style={{
           marginTop: "auto",
@@ -498,15 +578,23 @@ export function Sidebar({
         {/* The local dashboard has no login to leave. */}
         {showsLogout(local) && (
           <button
+            ref={logoutButtonRef}
             type="button"
-            className="sidebar-logout"
-            onClick={onLogout}
+            className={`sidebar-logout${
+              logoutStep === "confirming" ? " confirming" : ""
+            }`}
+            onClick={(e) => {
+              setTooltip(null);
+              setFlyout(flyoutAnchorFor(e.currentTarget));
+              sendLogout("ask");
+            }}
             aria-label="Logout"
+            aria-expanded={logoutStep === "confirming"}
             title="Logout"
+            data-tooltip={logoutStep === "idle" ? "Logout" : undefined}
             style={{
               marginTop: 12,
               width: "100%",
-              display: "flex",
               alignItems: "center",
               justifyContent: "center",
               gap: 6,
@@ -531,10 +619,39 @@ export function Sidebar({
               strokeLinejoin="round"
               style={{ flexShrink: 0 }}
             >
-              <path d="M6 2H3v12h3M10 5l3 3-3 3M13 8H6" />
+              {/* A power symbol: an arrow here read as "expand sidebar". */}
+              <path d="M4.5 4.5a5 5 0 1 0 7 0M8 2v6" />
             </svg>
             <span className="sidebar-logout-text">Logout</span>
           </button>
+        )}
+        {showsLogout(local) && logoutStep === "confirming" && (
+          <div
+            ref={confirmRef}
+            className="sidebar-logout-confirm"
+            role="group"
+            aria-label="Confirm logout"
+            style={flyout ?? undefined}
+          >
+            <span className="sidebar-logout-confirm-prompt">
+              Log out of the dashboard?
+            </span>
+            <button
+              ref={keepButtonRef}
+              type="button"
+              className="sidebar-logout-keep"
+              onClick={() => sendLogout("keep")}
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              className="sidebar-logout-confirm-button"
+              onClick={() => sendLogout("confirm")}
+            >
+              Log out
+            </button>
+          </div>
         )}
       </div>
       {collapsed && tooltip && (

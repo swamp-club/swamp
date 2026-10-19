@@ -238,6 +238,55 @@ a.start-dashboard-link {
   color: var(--sidebar-text-active);
 }
 
+.sidebar-logout {
+  display: flex;
+}
+
+/* The inline confirm takes the Logout button's place. */
+.sidebar-logout.confirming {
+  display: none;
+}
+
+.sidebar-logout-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.sidebar-logout-confirm-prompt {
+  font-size: 0.72rem;
+  color: var(--sidebar-text);
+}
+
+.sidebar-logout-keep,
+.sidebar-logout-confirm-button {
+  width: 100%;
+  padding: 6px 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--sidebar-text);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.sidebar-logout-keep:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-active);
+}
+
+.sidebar-logout-confirm-button {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.sidebar-logout-confirm-button:hover {
+  background: var(--danger);
+  color: #ffffff;
+}
+
 .mobile-topbar,
 .sidebar-backdrop,
 .sidebar-close {
@@ -254,6 +303,25 @@ a.start-dashboard-link {
   .app.sidebar-collapsed .sidebar-health-text,
   .app.sidebar-collapsed .sidebar-logout-text {
     display: none;
+  }
+
+  /* The 64px rail cannot hold the confirm's labels, so it flies out beside
+     the rail, its left and bottom set inline from the Logout button, while
+     the button stays in place. */
+  .app.sidebar-collapsed .sidebar-logout.confirming {
+    display: flex;
+  }
+
+  .app.sidebar-collapsed .sidebar-logout-confirm {
+    position: fixed;
+    z-index: 60;
+    width: 180px;
+    margin-top: 0;
+    padding: 10px;
+    border-radius: 6px;
+    background: var(--sidebar-active);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
   }
 
   /* Hidden visually but still read by screen readers, so collapsed
