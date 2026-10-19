@@ -25,7 +25,8 @@ with `swamp vault search --json` before creating one: to store a secret in a new
 repo, use `swamp vault put default KEY` and reference it as
 `${{ vault.get(default, KEY) }}`. Create another vault only for a different
 provider or to keep secrets apart. The `default` vault's key and secrets stay on
-the machine, so a clone starts with it empty.
+the machine, so a clone starts with it empty. `swamp vault remove` refuses the
+vault `defaultVault` names.
 
 ## Quick Reference
 
@@ -48,6 +49,8 @@ the machine, so a clone starts with it empty.
 | Inspect metadata  | `swamp vault inspect <vault> <key> --json`                               |
 | Clear annotation  | `swamp vault annotate <vault> <key> --clear`                             |
 | Migrate backend   | `swamp vault migrate <vault> --to-type <type>`                           |
+| Delete a secret   | `swamp vault delete <vault> <key> --json`                                |
+| Remove a vault    | `swamp vault remove <vault> --yes --json` (deletes its secrets)          |
 
 For detailed walkthroughs of each operation, see [reference.md](reference.md).
 

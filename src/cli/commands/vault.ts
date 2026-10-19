@@ -27,6 +27,7 @@ import { vaultDescribeCommand } from "./vault_describe.ts";
 import { vaultEditCommand } from "./vault_edit.ts";
 import { vaultPutCommand } from "./vault_put.ts";
 import { vaultDeleteCommand } from "./vault_delete.ts";
+import { vaultRemoveCommand } from "./vault_remove.ts";
 import { vaultAnnotateCommand } from "./vault_annotate.ts";
 import { vaultInspectCommand } from "./vault_inspect.ts";
 import { vaultListKeysCommand } from "./vault_list_keys.ts";
@@ -60,6 +61,7 @@ export const vaultCommand = new Command()
   .command("edit", vaultEditCommand)
   .command("put", vaultPutCommand)
   .command("delete", vaultDeleteCommand)
+  .command("remove", vaultRemoveCommand)
   .command("annotate", vaultAnnotateCommand)
   .command("inspect", vaultInspectCommand)
   .command("migrate", vaultMigrateCommand)

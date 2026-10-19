@@ -419,6 +419,38 @@ have their own sections. The group also has:
   computes its name is listed under its type id.
 - `swamp vault put ... --label k=v`: attach provider-native tags via
   `VaultPutOptions.tags` (repeatable)
+- `swamp vault remove <vault>`: remove a vault (swamp-club#3597); `vault delete`
+  removes one secret. Prompts in log mode unless `--yes`; `--json` does not
+  prompt (`src/libswamp/vaults/remove.ts`)
+  - The effective default vault is always refused, with no override: the
+    vault `defaultVault` names, or, when it names no existing vault, the first
+    user vault sensitive outputs fall back to (`resolveSensitiveOutputVault`).
+    Change `defaultVault` first. So is a name two configs share, since they
+    share one secrets directory, an id two configs share, and a config whose
+    file is not at `vaults/<type>/<id>.yaml`: the removal deletes that path,
+    so a copied file that kept its source's id would delete the source's
+    config
+  - A vault referenced by a definition (`vault.get`, a resource override
+    `vaultName`), a workflow (`vault.get`, its `vaults` list) or the datastore
+    config's `vault.get` is refused unless `--force`
+    (`src/domain/expressions/vault_reference_finder.ts`). A `vault.get` whose
+    vault argument is evaluated is reported as a possible reference, never
+    refused. Not scanned: a model type's spec- or field-level `vaultName`, and
+    stored data whose sensitive outputs point into the vault
+  - The config removal is the use case's unit of work, marked by path so the
+    push deletes it on the datastore. Only after it has committed and published
+    does `vaultRemoveStoredSecrets` delete a `local_encryption` vault's secrets
+    directory (secrets, annotations, refresh hooks, generated key), so a removal
+    that does not land never costs the secrets. The name must be one path
+    segment and the directory's parent must resolve inside this repository's
+    `.swamp`; a directory elsewhere (an absolute `base_dir` another checkout
+    recorded) is kept and reported. A symlinked directory is unlinked rather
+    than followed, and a `key_file` or SSH key outside the directory is kept.
+    Other checkouts keep their own secrets directory. If the push fails, the
+    error names the directory still holding the secrets
+  - Other vault types lose only the local config; their secrets stay with the
+    provider
+  - Not available over `--server`
 
 `swamp doctor secrets` finds `sensitive: true` arguments in definitions that
 hold cleartext literals instead of `vault.get(...)` expressions
@@ -745,6 +777,7 @@ sensitive outputs work in a new repo without setup. No key exists until the
 first secret is written. `--no-vault` skips it. A `--force` reinit keeps an
 existing vault named `default`, whatever its type, and the `defaultVault`
 already recorded. `repo upgrade` never adds it to existing repos.
+`swamp vault remove` refuses whichever vault `defaultVault` names.
 
 The config is committed, but the key and secrets live under
 `.swamp/secrets/`, which never leaves the machine: a clone starts with an

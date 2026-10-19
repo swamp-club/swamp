@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type {
   VaultDeleteProvider,
@@ -33,7 +33,11 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
-import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import {
+  assertSafePath,
+  isSinglePathSegment,
+  PathTraversalError,
+} from "../../infrastructure/persistence/safe_path.ts";
 import { checkFileNotBroadlyReadable } from "../../infrastructure/security/file_security_check.ts";
 import { errorPaths, markErrorPaths } from "../errors.ts";
 
@@ -124,6 +128,111 @@ export async function moveLocalEncryptionSecrets(
 
   await Deno.rename(fromDir, toDir);
   return true;
+}
+
+/** What {@link removeLocalEncryptionSecrets} found and removed. */
+export interface RemovedLocalEncryptionSecrets {
+  /** The vault's secrets directory. */
+  directory: string;
+  /** Whether anything was there to remove. */
+  removed: boolean;
+  /** The secrets the directory held. */
+  secretCount: number;
+}
+
+/**
+ * Removes a local_encryption vault's storage when the vault is removed
+ * (swamp-club#3597): its secrets, annotations, refresh hooks and generated
+ * key. A key file or SSH key the config names elsewhere is left alone.
+ *
+ * The vault name and base dir come from a committed config, so the name must
+ * be one path segment and the directory's parent must resolve inside
+ * `boundary`, the `.swamp` of the repository being changed: `../../data`
+ * would otherwise reach `.swamp/data`, and a `base_dir` recorded by another
+ * checkout would reach that checkout's secrets. A symlinked directory is
+ * unlinked, never followed.
+ */
+export async function removeLocalEncryptionSecrets(
+  baseDir: string,
+  vaultName: string,
+  boundary: string,
+): Promise<RemovedLocalEncryptionSecrets> {
+  const directory = localEncryptionSecretsDirFor(baseDir, vaultName);
+  await assertSafePath(dirname(directory), boundary);
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(directory);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { directory, removed: false, secretCount: 0 };
+    }
+    throw error;
+  }
+  if (!info.isDirectory) {
+    await Deno.remove(directory);
+    return { directory, removed: true, secretCount: 0 };
+  }
+  await assertSafePath(directory, boundary);
+  const secretCount = await countLocalEncryptionSecrets(directory);
+  await Deno.remove(directory, { recursive: true });
+  return { directory, removed: true, secretCount };
+}
+
+/**
+ * Whether {@link removeLocalEncryptionSecrets} may remove the vault's
+ * storage: its directory's parent resolves inside `boundary`.
+ */
+export async function localEncryptionSecretsWithin(
+  baseDir: string,
+  vaultName: string,
+  boundary: string,
+): Promise<boolean> {
+  const directory = localEncryptionSecretsDirFor(baseDir, vaultName);
+  try {
+    await assertSafePath(dirname(directory), boundary);
+    return true;
+  } catch (error) {
+    if (error instanceof PathTraversalError) return false;
+    throw error;
+  }
+}
+
+/**
+ * The secrets stored directly in `directory`: none when it is missing or is
+ * not a directory (a symlink is not followed).
+ */
+export async function countLocalEncryptionSecrets(
+  directory: string,
+): Promise<number> {
+  try {
+    if (!(await Deno.lstat(directory)).isDirectory) return 0;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return 0;
+    throw error;
+  }
+  let count = 0;
+  for await (const entry of Deno.readDir(directory)) {
+    if (entry.isFile && entry.name.endsWith(".enc")) count++;
+  }
+  return count;
+}
+
+/**
+ * {@link localEncryptionSecretsDir}, refusing a vault name that is not one
+ * path segment, so the directory can only be a child of the local_encryption
+ * secrets root.
+ */
+export function localEncryptionSecretsDirFor(
+  baseDir: string,
+  vaultName: string,
+): string {
+  if (!isSinglePathSegment(vaultName)) {
+    throw new Error(
+      `Vault name '${vaultName}' is not a single path segment, so its ` +
+        `local_encryption secrets directory cannot be located safely.`,
+    );
+  }
+  return localEncryptionSecretsDir(baseDir, vaultName);
 }
 
 async function isAbsentOrEmptyDir(path: string): Promise<boolean> {

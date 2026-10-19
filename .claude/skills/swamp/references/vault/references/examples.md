@@ -298,10 +298,10 @@ swamp behavior validate --json
 
 Run workflows with staging vault before switching production.
 
-**Step 6: Delete old vault (optional)**
+**Step 6: Remove old vault (optional)**
 
 ```bash
-swamp vault delete prod-secrets --json
+swamp vault remove prod-secrets --yes --json
 ```
 
 ### Consolidating Multiple Vaults
