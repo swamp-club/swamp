@@ -91,7 +91,12 @@ interface CallSpan {
  */
 function callSpans(source: string): CallSpan[] {
   const calls: CallSpan[] = [];
-  const frames: { close: string; call?: CallSpan; argument: number }[] = [];
+  const frames: {
+    close: string;
+    call?: CallSpan;
+    argument: number;
+    argumentStarted: boolean;
+  }[] = [];
   let state: LexState = LexState.Code;
   let pos = 0;
   let precedingCode = "";
@@ -102,7 +107,10 @@ function callSpans(source: string): CallSpan[] {
       // Legacy names can themselves contain CEL punctuation, even // or
       // quotes in a bare token. Recognize one complete literal argument before
       // feeding its contents to the CEL lexer. Nested CEL still uses the stack.
-      if (frame?.call && source.slice(frame.argument, pos).trim() === "") {
+      const atArgumentStart = frame?.call && !frame.argumentStarted &&
+        !/\s/.test(ch);
+      if (atArgumentStart) {
+        frame.argumentStarted = true;
         const rest = source.slice(pos);
         const token = /^(?:(['"`])(.+?)\1|[^\s,)]+)(?=\s*[,)])/.exec(rest)?.[0];
         if (token && literalArgument(token) !== undefined) {
@@ -112,8 +120,7 @@ function callSpans(source: string): CallSpan[] {
         }
       }
       if (
-        ch === "`" && frame?.call &&
-        source.slice(frame.argument, pos).trim() === ""
+        ch === "`" && atArgumentStart
       ) {
         const end = source.indexOf("`", pos + 1);
         if (end === -1) break;
@@ -134,6 +141,7 @@ function callSpans(source: string): CallSpan[] {
             close: ")",
             call: { start, end: 0, args: [] },
             argument: pos,
+            argumentStarted: false,
           });
           continue;
         }
@@ -142,10 +150,12 @@ function callSpans(source: string): CallSpan[] {
         frames.push({
           close: ch === "(" ? ")" : ch === "[" ? "]" : "}",
           argument: pos + 1,
+          argumentStarted: false,
         });
       } else if (ch === "," && frame?.call) {
         frame.call.args.push({ start: frame.argument, end: pos });
         frame.argument = pos + 1;
+        frame.argumentStarted = false;
       } else if (ch === ")" || ch === "]" || ch === "}") {
         if (frame?.close !== ch) break;
         frames.pop();
@@ -261,7 +271,14 @@ const grammar = new Environment({
   unlistedVariablesAreDyn: true,
   enableOptionalTypes: true,
 });
-const binders = new Set(["map", "filter", "all", "exists", "exists_one"]);
+/** Shared by vault extraction and the parse-only free-root collector. */
+export const BINDING_MACROS: ReadonlySet<string> = new Set([
+  "map",
+  "filter",
+  "all",
+  "exists",
+  "exists_one",
+]);
 
 /** One AST extractor, independent of whether an expression will be executed. */
 export function analyzeVaultCalls(expression: string): VaultCallAnalysis {
@@ -337,7 +354,7 @@ export function analyzeVaultCalls(expression: string): VaultCallAnalysis {
           return;
         }
         visit(receiver, bound);
-        if (binders.has(name) && first?.op === "id") {
+        if (BINDING_MACROS.has(name) && first?.op === "id") {
           for (const arg of args.slice(1)) {
             visit(arg, new Set(bound).add(first.args));
           }

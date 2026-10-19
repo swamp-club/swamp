@@ -967,6 +967,7 @@ export class CelEvaluator {
       let run: SecretEvaluation | undefined;
       let result: unknown;
       let checking = false;
+      let executing = false;
       try {
         // Reject aliases before context preparation or argument evaluation can
         // start external work. Every direct call is checked, even in dead branches.
@@ -1001,13 +1002,18 @@ export class CelEvaluator {
           );
           checking = false;
         }
+        executing = true;
         result = await execute();
       } catch (error) {
         faults.recording = false;
         this.refuseFaulted(faults, run, expression);
         // Reference checks have their own domain error contract. In particular,
         // preserve unavailable/access-denied codes and the provider's failure.
-        if (checking || error instanceof InvalidExpressionError) throw error;
+        if (
+          checking || (!executing && error instanceof InvalidExpressionError)
+        ) {
+          throw error;
+        }
         throw this.evaluationError(error, expression, wrappedContext);
       }
       faults.recording = false;
@@ -1129,7 +1135,9 @@ export class CelEvaluator {
       // Attempt to parse the expression — ParseResult is callable, not a
       // success/error union.  If parse() doesn't throw, the syntax is valid.
       if (this.typedSecrets) {
-        assertDirectVaultCalls(analyzeVaultCalls(expression), expression);
+        const analysis = analyzeVaultCalls(expression);
+        assertDirectVaultCalls(analysis, expression);
+        this.env.parse(analysis.source.text);
       } else this.env.parse(transformHyphenatedModelRefs(expression));
       return { valid: true };
     } catch (error) {

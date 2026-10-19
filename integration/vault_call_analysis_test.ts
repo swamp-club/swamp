@@ -115,3 +115,26 @@ Deno.test("vault call analysis: compatibility shim does not grant new remote aut
     },
   );
 });
+
+Deno.test("vault call analysis: multi-argument CEL cannot change a legacy match's reference identity", () => {
+  for (
+    const [source, vaultName, secretKey] of [
+      ["vault.get(prod, 'a', 'b')", "prod", "a', 'b"],
+      ["vault.get('a', 'b', k)", "a', 'b", "k"],
+    ]
+  ) {
+    const text = "${{ " + source + " }}";
+    assertEquals(extractVaultReferences(text), {
+      staticRefs: [{ vaultName, secretKey }],
+      hasDynamicRefs: false,
+    });
+    assertEquals(
+      findVaultReferences(vaultName, {
+        definitions: [],
+        workflows: [],
+        datastoreConfig: text,
+      }).references.length,
+      1,
+    );
+  }
+});

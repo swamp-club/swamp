@@ -26,6 +26,7 @@
 
 import { type ASTNode, Environment } from "cel-js";
 import {
+  BINDING_MACROS,
   prepareVaultSource,
   rewriteHyphenatedModelRefs,
 } from "./vault_call_syntax.ts";
@@ -144,13 +145,7 @@ export function isBlankConstant(celExpression: string): boolean {
  * CEL macros whose first argument binds a local variable for the remaining
  * arguments. A variable bound this way shadows a root identifier.
  */
-export const BINDING_MACROS: ReadonlySet<string> = new Set([
-  "map",
-  "filter",
-  "all",
-  "exists",
-  "exists_one",
-]);
+export { BINDING_MACROS } from "./vault_call_syntax.ts";
 
 /** What {@link collectReferences} finds in an expression. */
 export interface References {

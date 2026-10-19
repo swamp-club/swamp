@@ -106,6 +106,7 @@ export interface AnalyzedVaultCall {
  */
 export function vaultCallsForAnalysis(expression: string): AnalyzedVaultCall[] {
   const legacy = findVaultGetCalls(expression);
+  if (legacy.length === 0) return [];
   let calls = new Map<number, AnalyzedVaultCall>();
   try {
     calls = new Map(
@@ -119,7 +120,11 @@ export function vaultCallsForAnalysis(expression: string): AnalyzedVaultCall[] {
   }
   return legacy.map((match) => {
     const call = calls.get(match.index);
-    if (call?.end === match.index + match[0].length) return call;
+    if (
+      call?.end === match.index + match[0].length && call.args.length === 2 &&
+      call.args[0].literal === literalVaultArg(match[2], match[3]) &&
+      call.args[1].literal === literalVaultArg(match[5], match[6])
+    ) return call;
     return {
       start: match.index,
       end: match.index + match[0].length,

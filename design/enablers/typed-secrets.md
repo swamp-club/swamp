@@ -605,7 +605,11 @@ The shared AST walk finds direct root calls and rejects other free uses of
 `vault`. Aliases such as `cel.bind(v, vault, v.get(...))`,
 `dyn(vault).get(...)` and `[vault].map(m, m.get(...))` stay refused. Calls whose
 arguments depend on surrounding comprehension or `cel.bind` locals are refused:
-up-front evaluation does not introduce local-binding semantics. A `Secret`
+up-front evaluation does not introduce local-binding semantics. Effectful
+`model.method` calls inside arguments are refused before any checks or argument
+evaluation, including aliased receivers, so checking cannot run an effect that
+short-circuit evaluation would skip or reorder it ahead of the outer expression.
+A `Secret`
 argument is refused inside the fault/boundary scope before string conversion or
 result release.
 

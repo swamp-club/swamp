@@ -118,3 +118,16 @@ Deno.test("attachBindingProvenance: replaces the namespaces it names and keeps t
   // Object spread carries it to derived contexts.
   assertEquals(bindingProvenanceOf({ ...c }).inputs?.isWholeData, true);
 });
+
+Deno.test("spliceOrigin: vault results remain data after literal-name normalization", () => {
+  const c = ctx({}, {});
+  for (
+    const source of ["vault.get(prod, data)", "vault.get(my//vault, data)"]
+  ) {
+    assertEquals(
+      spliceOrigin(source, c, "reference").map.isWholeData,
+      true,
+      source,
+    );
+  }
+});

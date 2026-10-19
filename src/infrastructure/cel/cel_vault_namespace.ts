@@ -86,6 +86,30 @@ export function assertDirectVaultCalls(
       expression,
     );
   }
+  if (
+    analysis.calls.some((call) =>
+      call.args.some((arg) => containsMethodCall(arg.node))
+    )
+  ) {
+    throw new InvalidExpressionError(
+      "vault.get arguments cannot invoke model.method during up-front checking",
+      expression,
+    );
+  }
+}
+
+/** Refuse the effectful receiver method even when its receiver is aliased. */
+function containsMethodCall(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsMethodCall);
+  if (
+    typeof value !== "object" || value === null || !("op" in value) ||
+    !("args" in value) || value.op === "value"
+  ) return false;
+  if (
+    value.op === "rcall" && Array.isArray(value.args) &&
+    value.args[0] === "method"
+  ) return true;
+  return containsMethodCall(value.args);
 }
 
 /**

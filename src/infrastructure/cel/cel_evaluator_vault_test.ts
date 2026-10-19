@@ -386,3 +386,34 @@ Deno.test("CelEvaluator vault.get: provider failures preserve their contract and
     }, { withExistence, unauthorizedKeys: ["token"] });
   }
 });
+
+Deno.test("CelEvaluator vault.get: effectful arguments are rejected before checks or effects in any branch", async () => {
+  await withVault(async (f) => {
+    let effects = 0;
+    const context = {
+      modelMethod: {
+        method: () => {
+          effects++;
+          return { key: "token" };
+        },
+      },
+    };
+    for (
+      const expression of [
+        "false && vault.get(prod, model.method('m','run',{}).key) != null",
+        "vault.get(prod, model.method('m','run',{}).key)",
+        "vault.get(prod, cel.bind(m, model, m.method('m','run',{}).key))",
+        "[vault.get(prod,token), vault.get(prod, model.method('m','run',{}).key)]",
+      ]
+    ) {
+      await assertRejects(
+        () => f.evaluate(expression, context),
+        InvalidExpressionError,
+        "cannot invoke model.method",
+      );
+      assertEquals(f.evaluator.validate(expression).valid, false);
+    }
+    assertEquals(effects, 0);
+    assertEquals(f.ctx.getOperations(), []);
+  });
+});
