@@ -42,6 +42,8 @@ export {
 export {
   type CreateDataProps,
   Data,
+  type DataNamePortability,
+  dataNamePortability,
   isReservedDataName,
   RESERVED_DATA_NAMES,
 } from "./data.ts";

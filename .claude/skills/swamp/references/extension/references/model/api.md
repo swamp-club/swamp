@@ -158,6 +158,12 @@ When a behavior has multiple resource specs, prefix instance names with the spec
 name or use another strategy to ensure uniqueness across all specs within a
 method execution.
 
+**Portable instance names:** Because instance names become directory names, keep
+them valid on Windows too: no `< > : " | ? *` or control characters, no reserved
+device name (`CON`, `NUL`, `COM1`, …), and no trailing dot or space. Swamp warns
+about such a name on Linux and macOS and refuses one with a forbidden character
+on Windows. Join parts with `-`, not `:` (e.g. `owner-repo-branches`).
+
 ```typescript
 // Wrong — "bixu" collides across specs on disk
 await context.writeResource("summary", "bixu", summaryData);

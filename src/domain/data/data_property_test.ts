@@ -19,7 +19,7 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
-import { type CreateDataProps, Data } from "./data.ts";
+import { type CreateDataProps, Data, dataNamePortability } from "./data.ts";
 import type {
   GarbageCollectionPolicy,
   Lifetime,
@@ -356,5 +356,78 @@ Deno.test("property: deletion markers tombstone without changing identity", () =
       },
     ),
     { numRuns: 100 },
+  );
+});
+
+// --- dataNamePortability (swamp-club#3568) ---
+
+const OSES = ["linux", "darwin", "windows", "freebsd"] as const;
+const WINDOWS_FORBIDDEN = ["<", ">", ":", '"', "|", "?", "*"];
+const CONTROL = Array.from(
+  { length: 31 },
+  (_, i) => String.fromCharCode(i + 1),
+);
+
+// Any character outside the Windows-forbidden set and the control range.
+// Checked per code point: a grapheme such as "≮" carries a "<".
+const arbPortableChar = fc.oneof(
+  fc.constantFrom(..."abcxyzABC019-_.@+=,;'()[]{}~!#%&^ "),
+  fc.string({ unit: "grapheme", minLength: 1, maxLength: 1 }),
+).filter((c) =>
+  [...c].every((cp) => !WINDOWS_FORBIDDEN.includes(cp) && !CONTROL.includes(cp))
+);
+
+Deno.test("dataNamePortability: never refuses outside windows", () => {
+  fc.assert(
+    fc.property(
+      fc.string({ unit: "binary", minLength: 1, maxLength: 40 }),
+      fc.constantFrom("linux", "darwin", "freebsd", "android") as fc.Arbitrary<
+        typeof Deno.build.os
+      >,
+      (name, os) => {
+        assert(dataNamePortability(name, os).kind !== "refuse");
+      },
+    ),
+    { numRuns: 2000 },
+  );
+});
+
+Deno.test("dataNamePortability: refuses on windows exactly when a forbidden character is present", () => {
+  fc.assert(
+    fc.property(
+      fc.string({ unit: "binary", minLength: 1, maxLength: 40 }),
+      (name) => {
+        const hasForbidden = [...name].some((c) =>
+          WINDOWS_FORBIDDEN.includes(c) || CONTROL.includes(c)
+        );
+        assertEquals(
+          dataNamePortability(name, "windows").kind === "refuse",
+          hasForbidden,
+        );
+        // Every os agrees on whether the name is portable at all.
+        const kinds = OSES.map((os) => dataNamePortability(name, os).kind);
+        assert(kinds.every((k) => (k === "ok") === (kinds[0] === "ok")));
+      },
+    ),
+    { numRuns: 2000 },
+  );
+});
+
+Deno.test("dataNamePortability: portable names are ok on every os", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbPortableChar, { minLength: 1, maxLength: 30 }).map((cs) =>
+        cs.join("")
+      ).filter((name) =>
+        !name.endsWith(".") && !name.endsWith(" ") &&
+        !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(name)
+      ),
+      (name) => {
+        for (const os of OSES) {
+          assertEquals(dataNamePortability(name, os), { kind: "ok" });
+        }
+      },
+    ),
+    { numRuns: 2000 },
   );
 });
