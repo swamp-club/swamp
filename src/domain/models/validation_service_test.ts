@@ -3408,7 +3408,7 @@ Deno.test("validateModel: refuseLiteralSensitiveGlobals catches an upgrade-moved
   ]);
 });
 
-Deno.test("validateModel: refuseLiteralSensitiveGlobals does not refuse an expression an upgrade moves into a sensitive field (swamp-club#3555)", async () => {
+Deno.test("validateModel: refuseLiteralSensitiveGlobals does not refuse an expression an upgrade moves into a sensitive field (swamp-club#3555)", () => {
   const modelDef = renamingModel(
     (old) => {
       const { token, ...rest } = old;
