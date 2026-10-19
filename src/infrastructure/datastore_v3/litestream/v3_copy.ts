@@ -45,6 +45,7 @@ import { dirname, join, resolve } from "@std/path";
 import { markErrorPaths, UserError } from "../../../domain/errors.ts";
 import {
   collectableLineages,
+  copyNeverRestored,
   copyStateAdvances,
   currentLineage,
   decideChunkCollection,
@@ -80,6 +81,7 @@ import { LineageRegistry } from "./lineage_registry.ts";
 import {
   installByLink,
   restoreV3Copy,
+  V3_RESTORE_FAILED_CODE,
   type V3RestoreResult,
 } from "./litestream_restorer.ts";
 import {
@@ -202,8 +204,9 @@ export interface V3CopyRefresh {
  *
  * Restores of one copy are serialized by `restore.lock` beside it, and the
  * copy's sidecar is stopped for the restore. A read-only command whose
- * restore cannot take the locks within `lockWaitMs` reads the copy as it
- * is; a writer fails.
+ * restore cannot take the locks within `lockWaitMs`, or fails, reads a copy
+ * that was restored before as it is, with a warning; a writer, or a reader
+ * of a copy that never was, fails (swamp-club#3642).
  */
 export async function makeV3CopyCurrent(
   copy: V3Copy,
@@ -222,11 +225,8 @@ export async function makeV3CopyCurrent(
   const paths = await copyPaths(copy);
   const registry = lineageRegistryFor(copy.datastorePath);
   // The cheap check, without any lock: a current copy stops here.
-  const first = decideLocalCopy(
-    await localState(paths),
-    await registry.read(root),
-    root,
-  );
+  const firstLocal = await localState(paths);
+  const first = decideLocalCopy(firstLocal, await registry.read(root), root);
   if (first.kind === "none") {
     // A bucket datastore has no shared commits.db to seed from.
     return options.mode === "write" &&
@@ -248,19 +248,21 @@ export async function makeV3CopyCurrent(
         options.mode,
         copy,
         "another swamp process is restoring this checkout's copy",
+        { neverRestored: copyNeverRestored(firstLocal) },
       );
     }
     // Another process may have restored while this one waited.
-    const decision = decideLocalCopy(
-      await localState(paths),
-      await registry.read(root),
-      root,
-    );
+    const local = await localState(paths);
+    const decision = decideLocalCopy(local, await registry.read(root), root);
     if (decision.kind === "none" || decision.kind === "current") return {};
+    const neverRestored = copyNeverRestored(local);
     try {
       quiesced = await v3Replicator().quiesce(copy.commitsDb);
     } catch (error) {
-      return refuseOrSkip(options.mode, copy, reasonOf(error), error);
+      return refuseOrSkip(options.mode, copy, reasonOf(error), {
+        cause: error,
+        neverRestored,
+      });
     }
     await ensurePrivateDir(paths);
     const cursor = readModelCursor(copy.repoDir);
@@ -317,10 +319,11 @@ export async function makeV3CopyCurrent(
       });
     } catch (error) {
       // A reader whose restore fails (the replica unreachable, or the
-      // lineage collected while it read) reads the copy as it is; a writer
-      // fails, its copy unchanged.
-      if (options.mode === "read") {
-        return refuseOrSkip("read", copy, messageOf(error), error);
+      // lineage collected while it read) reads a copy restored before as it
+      // is; a writer fails, its copy unchanged, and so does a reader of a
+      // copy that never was: it would read as an empty datastore.
+      if (options.mode === "read" && !neverRestored) {
+        return refuseOrSkip("read", copy, messageOf(error), { cause: error });
       }
       throw error;
     }
@@ -440,7 +443,7 @@ async function seedFromSharedDatabase(
     try {
       quiesced = await v3Replicator().quiesce(copy.commitsDb);
     } catch (error) {
-      return refuseOrSkip("write", copy, reasonOf(error), error);
+      return refuseOrSkip("write", copy, reasonOf(error), { cause: error });
     }
     await ensurePrivateDir(paths);
     // The checkout's read model applied the shared commits before
@@ -502,26 +505,33 @@ function commitsIn(path: string): number {
   }
 }
 
+/**
+ * Fails a writer, or a reader of a copy that was never restored, which
+ * would read as an empty datastore (swamp-club#3642). Otherwise the reader
+ * reads the copy as this checkout last restored it, with a warning.
+ */
 function refuseOrSkip(
   mode: "read" | "write",
   copy: V3Copy,
   reason: string,
-  cause?: unknown,
+  options: { readonly cause?: unknown; readonly neverRestored?: boolean } = {},
 ): V3CopyRefresh {
-  if (mode === "write") {
+  if (mode === "write" || options.neverRestored === true) {
     const error = markErrorPaths(
       new UserError(
         `This checkout's copy of the v3 datastore at ${copy.datastorePath} ` +
-          `must be restored before it is written, but ${reason}. Nothing was ` +
-          `changed; run the command again.`,
+          `must be restored before it is ${
+            mode === "write" ? "written" : "read"
+          }, but ${reason}. Nothing was changed; run the command again.`,
+        mode === "read" ? V3_RESTORE_FAILED_CODE : undefined,
       ),
       [copy.commitsDb],
     );
-    if (cause !== undefined) error.cause = cause;
+    if (options.cause !== undefined) error.cause = options.cause;
     throw error;
   }
   logger
-    .debug`Reading this checkout's copy of the v3 datastore at ${copy.datastorePath} as it is: ${reason}`;
+    .warn`Reading this checkout's last restored state of the v3 datastore at ${copy.datastorePath}, because bringing it up to date failed: ${reason}`;
   return {};
 }
 
