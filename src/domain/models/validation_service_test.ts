@@ -3487,3 +3487,31 @@ Deno.test("findLiteralSensitiveGlobals: catches a moved literal when the upgrade
     ["apiKey"],
   );
 });
+
+Deno.test("findLiteralSensitiveGlobals: does not refuse an old key the current version reuses as a sensitive field (swamp-club#3555)", () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, clientId: token };
+    },
+    {
+      globalArguments: z.object({
+        clientId: z.string(),
+        token: z.string().meta({ sensitive: true }).optional(),
+      }),
+    },
+  );
+  // v1's token was a public client id; the upgrade moves it to clientId.
+  const definition = Definition.create({
+    name: "stale-client-id",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "client-abc" },
+  });
+  assertEquals(
+    new DefaultModelValidationService().findLiteralSensitiveGlobals(
+      definition,
+      modelDef,
+    ),
+    [],
+  );
+});

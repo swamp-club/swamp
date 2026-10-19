@@ -491,37 +491,33 @@ export function expressionPathErrorInModelWords(
 export class DefaultModelValidationService implements ModelValidationService {
   /**
    * Paths of sensitive global arguments that hold a literal secret in a
-   * stored definition, as stored and after its upgrade chain: a run upgrades
-   * the stored file, expressions included, and saves the result, and an
-   * upgrade can move a literal into a sensitive field. Both copies are read,
-   * so a key an upgrade drops is still refused; when the upgrade throws, only
-   * the stored copy is. Pass only a definition as stored (see
+   * stored definition, read as a run would save it: a run upgrades the stored
+   * file, expressions included, and saves the result, and an upgrade can move
+   * a literal into a sensitive field. When an upgrade applies, only the
+   * upgraded copy is read, since a key it drops leaves the file on that save
+   * and an old key the current schema reuses may not be secret. Without an
+   * upgrade, or when it throws, the stored copy is read. Pass only a
+   * definition as stored (see
    * {@link ModelValidationOptions.refuseLiteralSensitiveGlobals}).
    */
   findLiteralSensitiveGlobals(
     definition: Definition,
     modelDef: ModelDefinition,
   ): string[] {
-    const paths = findLiteralSensitiveGlobalArgs(
-      modelDef.globalArguments,
-      definition.globalArguments,
-    );
-    let upgraded: Definition;
+    let saved = definition;
     try {
-      upgraded = new DefinitionUpgradeService().upgrade(definition, modelDef)
-        .definition;
+      const upgrade = new DefinitionUpgradeService().upgrade(
+        definition,
+        modelDef,
+      );
+      if (upgrade.upgraded) saved = upgrade.definition;
     } catch {
-      return paths;
+      // The run fails on the same upgrade; the stored copy is what stays.
     }
-    return [
-      ...new Set([
-        ...paths,
-        ...findLiteralSensitiveGlobalArgs(
-          modelDef.globalArguments,
-          upgraded.globalArguments,
-        ),
-      ]),
-    ];
+    return findLiteralSensitiveGlobalArgs(
+      modelDef.globalArguments,
+      saved.globalArguments,
+    );
   }
 
   async validateModel(
