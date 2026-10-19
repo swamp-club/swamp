@@ -5076,6 +5076,22 @@ class TaskInputsRecorder implements StepExecutor {
   }
 }
 
+/**
+ * Saves a command/shell definition: the guard reads the definition a
+ * finished step ran, and one it cannot find reads every input.
+ */
+async function saveShellDefinition(
+  tempDir: string,
+  name: string,
+  methods: Record<string, { arguments: Record<string, unknown> }> = {},
+): Promise<void> {
+  const type = ModelType.create("command/shell");
+  await new YamlDefinitionRepository(tempDir).save(
+    type,
+    Definition.create({ name, type: type.normalized, methods }),
+  );
+}
+
 async function approveWaitingGate(
   runRepo: InMemoryWorkflowRunRepository,
   workflow: Workflow,
@@ -5122,6 +5138,7 @@ Deno.test("resume: --input cannot change an input the gate and approval already 
     const executor = new TaskInputsRecorder();
     const workflow = gatedDestroyWorkflow();
     await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -5179,6 +5196,7 @@ Deno.test("resume: --from the rejected approval cannot change an input the gate 
     const executor = new TaskInputsRecorder();
     const workflow = gatedDestroyWorkflow();
     await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -5226,6 +5244,7 @@ Deno.test("resume: an accepted --input is recorded as the run's inputs (swamp-cl
     const executor = new TaskInputsRecorder();
     const workflow = gatedDestroyWorkflow();
     await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -5251,6 +5270,81 @@ Deno.test("resume: an accepted --input is recorded as the run's inputs (swamp-cl
     const persisted = await runRepo.findById(workflow.id, suspended.id);
     assertEquals(persisted!.inputs, effective);
     assertEquals([...persisted!.resumeInputs].sort(), ["authKey", "target"]);
+  });
+});
+
+Deno.test("resume: --input cannot change an input the gate's definition read (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    // The check lives in the definition: the step passes nothing and the
+    // approval shows nothing, but the definition is evaluated with the
+    // run's inputs in scope.
+    const workflow = Workflow.create({
+      name: "definition-gate",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.model("gate-check", "execute"),
+            }),
+            Step.create({
+              name: "approve",
+              task: StepTask.manualApproval("Proceed?"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "destroy",
+              task: StepTask.model("sh", "execute", {
+                run: "echo DESTROYED ${{ inputs.target }}",
+              }),
+              dependsOn: [
+                { step: "approve", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
+    await saveShellDefinition(tempDir, "gate-check", {
+      execute: {
+        arguments: { run: 'test "${{ inputs.target }}" != "protected"' },
+      },
+    });
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await service.execute(workflow.name, {
+      inputs: { target: "scratch" },
+    });
+    await approveWaitingGate(runRepo, workflow, suspended.id, true);
+
+    const error = await assertRejects(
+      () =>
+        resumeToEnd(service, workflow, suspended.id, {
+          inputs: { target: "protected" },
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "resume_input_consumed");
+    assertStringIncludes(
+      error.message,
+      'Input "target" was already used by step "gate"',
+    );
+    assertEquals(executor.ran.map((r) => r.step), ["gate"]);
   });
 });
 

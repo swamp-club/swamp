@@ -47,6 +47,17 @@ interface StepReads {
 }
 
 /**
+ * The stored data of the behavior definition a step names, or undefined when
+ * there is none. A definition is evaluated with the run's inputs in scope, so
+ * `${{ inputs.X }}` in it reads the workflow's X.
+ */
+export type DefinitionData = (
+  modelIdOrName: string,
+) => Promise<unknown | undefined>;
+
+const READS_EVERYTHING: StepReads = { names: new Set(), opaque: true };
+
+/**
  * Refuses a resume whose inputs change a value a finished step read. Throws
  * a UserError coded `resume_input_consumed` before anything changes; returns
  * when every changed input is read only by steps still to run.
@@ -54,20 +65,34 @@ interface StepReads {
  * `reset` is the failed-run reset the resume will apply, undefined for a
  * suspended run: a step it resets runs again with the new value.
  */
-export function checkResumeInputOverrides(
+export async function checkResumeInputOverrides(
   workflow: Workflow,
   run: WorkflowRun,
   resumeInputs: Record<string, unknown>,
   reset: ResumeReset | undefined,
-): void {
+  definitionData: DefinitionData,
+): Promise<void> {
   const changed = changedKeys(run.inputs, resumeInputs);
   if (changed.length === 0) return;
 
+  const definitions = new Map<string, Promise<StepReads>>();
+  const definitionReads = (modelIdOrName: string) => {
+    let reads = definitions.get(modelIdOrName);
+    if (!reads) {
+      reads = readsOfDefinition(definitionData, modelIdOrName);
+      definitions.set(modelIdOrName, reads);
+    }
+    return reads;
+  };
+  const workflowReads = readsOfExpressions(workflowExpressions(workflow));
   const readersByKey = new Map<string, string[]>();
   for (const jobRun of run.jobs) {
     for (const stepRun of jobRun.steps) {
       if (!ranAndStays(stepRun, reset)) continue;
-      const reads = readsOf(workflow, jobRun, stepRun);
+      const reads = union([
+        workflowReads,
+        ...await readsOf(workflow, jobRun, stepRun, definitionReads),
+      ]);
       for (const key of changed) {
         if (!reads.opaque && !reads.names.has(key)) continue;
         const readers = readersByKey.get(key) ?? [];
@@ -117,35 +142,89 @@ function ranAndStays(
 }
 
 /**
- * The inputs a stored step read: its authored step's expressions and its
- * job's own (a job name can read an input). A job or step whose name is an
- * expression is stored evaluated, so a record matching no authored name is
- * read against every candidate written with an expression.
+ * What a stored step read, one entry per source: its job's own fields (a job
+ * name can read an input), its authored step, and the definition the step
+ * runs. A job or step whose name is an expression is stored evaluated, so a
+ * record matching no authored name is read against every candidate written
+ * with an expression. A record with no candidate at all (the workflow was
+ * edited since) reads everything: what it read can no longer be told.
  */
-function readsOf(
+async function readsOf(
   workflow: Workflow,
   jobRun: JobRun,
   stepRun: StepRun,
-): StepReads {
+  definitionReads: (modelIdOrName: string) => Promise<StepReads>,
+): Promise<StepReads[]> {
   const named = workflow.jobs.find((job) => job.name === jobRun.jobName);
   const jobs = named ? [named] : workflow.jobs.filter((j) => evaluated(j.name));
   const template = stepRun.forEachTemplate ?? stepRun.stepName;
-  const names = new Set<string>();
-  let opaque = false;
-  const add = (cel: string) => {
-    const reads = inputNamesRead(cel);
-    for (const name of reads.names) names.add(name);
-    opaque ||= reads.opaque;
-  };
+  const found: StepReads[] = [];
+  let matched = false;
   for (const job of jobs) {
-    for (const cel of jobExpressions(job)) add(cel);
+    found.push(readsOfExpressions(jobExpressions(job)));
     const step = job.steps.find((s) => s.name === template);
     const steps = step ? [step] : job.steps.filter((s) => evaluated(s.name));
     for (const s of steps) {
-      for (const cel of stepExpressions(s)) add(cel);
+      matched = true;
+      found.push(readsOfExpressions(stepExpressions(s)));
+      const task = s.task.data;
+      if (task.type === "model_method" && task.modelIdOrName) {
+        found.push(await definitionReads(task.modelIdOrName));
+      }
     }
   }
+  if (!matched) found.push(READS_EVERYTHING);
+  return found;
+}
+
+/**
+ * What a definition reads. One named by an expression, missing, or failing
+ * to load reads everything: what the step ran cannot be told.
+ */
+async function readsOfDefinition(
+  definitionData: DefinitionData,
+  modelIdOrName: string,
+): Promise<StepReads> {
+  if (evaluated(modelIdOrName)) return READS_EVERYTHING;
+  let data: unknown;
+  try {
+    data = await definitionData(modelIdOrName);
+  } catch {
+    return READS_EVERYTHING;
+  }
+  if (data === undefined) return READS_EVERYTHING;
+  return readsOfExpressions(
+    extractExpressions(data).map((e) => e.celExpression),
+  );
+}
+
+function readsOfExpressions(expressions: readonly string[]): StepReads {
+  const names = new Set<string>();
+  let opaque = false;
+  for (const cel of expressions) {
+    const reads = inputNamesRead(cel);
+    for (const name of reads.names) names.add(name);
+    opaque ||= reads.opaque;
+  }
   return { names, opaque };
+}
+
+function union(all: readonly StepReads[]): StepReads {
+  return {
+    names: new Set(all.flatMap((r) => [...r.names])),
+    opaque: all.some((r) => r.opaque),
+  };
+}
+
+/**
+ * The workflow's own fields, which every step inherits: placement, tags. Not
+ * its jobs, read per record; its inputs schema, which declares rather than
+ * reads; or its trigger, which supplies inputs.
+ */
+function workflowExpressions(workflow: Workflow): string[] {
+  const { jobs: _jobs, inputs: _inputs, trigger: _trigger, ...ownFields } =
+    workflow.toData();
+  return extractExpressions(ownFields).map((e) => e.celExpression);
 }
 
 function jobExpressions(job: Job): string[] {
@@ -179,12 +258,14 @@ function refusalMessage(
     } ${quoted(readers)}`
   );
   const keys = [...readersByKey.keys()];
-  const firstReader = [...readersByKey.values()][0][0];
+  const readers = new Set([...readersByKey.values()].flat());
+  const firstReader = run.jobs.flatMap((j) => j.steps)
+    .find((s) => readers.has(s.stepName))!.stepName;
   const newRun = `swamp workflow run ${workflow.name} ${
     keys.map((k) => `--input ${k}=<value>`).join(" ")
   }`;
   const wayOut = run.status === "failed"
-    ? `Retry from a step at or before the first that used it, which runs it and every step after it again (swamp workflow resume ${workflow.name} --run ${run.id} --from ${
+    ? `Retry from a step at or before the first that used them, which runs it and every step after it again (swamp workflow resume ${workflow.name} --run ${run.id} --from ${
       stepTemplate(run, firstReader)
     }), or start a new run (${newRun}).`
     : `Start a new run with the new value (${newRun}).`;

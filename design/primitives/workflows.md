@@ -701,10 +701,15 @@ A record keeps its result unless it is pending, reset by this resume (`--from`
 or a retry), reopened after an abort, or skipped for its dependency or its job;
 a guarded skip read its guard. A record reads every input named in its authored
 step (task, prompt, `forEach.in`, `guard`, placement, name, an assert's
-`expr`) and in its job's own fields, as `inputs.X`, `inputs["X"]`,
-`run.inputs.X` or `run.inputs["X"]`; reading `inputs`, `run.inputs` or `run`
-whole or by a computed key reads them all. A record whose job or step name is
-an expression is read against every authored job or step whose name is one.
+`expr`), in its job's and the workflow's own fields (placement and tags every
+step inherits), and in the behavior definition a `modelIdOrName` step runs,
+which is evaluated with the run's inputs in scope. Reads are `inputs.X`,
+`inputs["X"]`, `run.inputs.X` or `run.inputs["X"]`; reading `inputs`,
+`run.inputs` or `run` whole or by a computed key reads them all. A record whose
+job or step name is an expression is read against every authored job or step
+whose name is one. What cannot be told reads every input: a definition that is
+missing, fails to load, or is named by an expression, and a record that matches
+no authored step (the workflow was edited since).
 The way out is a new run, or, for a failed run, `--from` a step at or before the
 first that read the key, which runs it again. An approval binds only what its
 prompt or earlier steps read: a `Proceed?` prompt over a step that reads

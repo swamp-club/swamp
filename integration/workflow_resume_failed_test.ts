@@ -89,6 +89,9 @@ import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts"
 
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 
@@ -230,6 +233,14 @@ function freshService(
 async function failPipeline(repoDir: string) {
   const workflow = pipelineWorkflow();
   await new YamlWorkflowRepository(repoDir).save(workflow);
+  // The steps' definition reads no input. A resume reads the definition a
+  // finished step ran, and one it cannot find reads every input
+  // (swamp-club#3583).
+  const type = ModelType.create("command/shell");
+  await new YamlDefinitionRepository(repoDir).save(
+    type,
+    Definition.create({ name: "test-model", type: type.normalized }),
+  );
   const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
   const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
   const executor = new CountingStepExecutor(tracker);

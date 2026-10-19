@@ -19,7 +19,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { UserError } from "../errors.ts";
 import { Job } from "./job.ts";
-import { checkResumeInputOverrides } from "./resume_input_guard.ts";
+import {
+  checkResumeInputOverrides,
+  type DefinitionData,
+} from "./resume_input_guard.ts";
 import { planFailedRunResume, type ResumeReset } from "./resume_reset.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -93,15 +96,29 @@ function storedRun(
   return WorkflowRun.fromData(data);
 }
 
-function refusal(
+/** Every definition a test names exists and reads nothing. */
+const NO_READS: DefinitionData = (ref) => Promise.resolve({ name: ref });
+
+function accepts(
   wf: Workflow,
   run: WorkflowRun,
   inputs: Record<string, unknown>,
   reset?: ResumeReset,
-): string {
+  definitions: DefinitionData = NO_READS,
+): Promise<void> {
+  return checkResumeInputOverrides(wf, run, inputs, reset, definitions);
+}
+
+async function refusal(
+  wf: Workflow,
+  run: WorkflowRun,
+  inputs: Record<string, unknown>,
+  reset?: ResumeReset,
+  definitions: DefinitionData = NO_READS,
+): Promise<string> {
   const before = JSON.stringify(run.toData());
   try {
-    checkResumeInputOverrides(wf, run, inputs, reset);
+    await checkResumeInputOverrides(wf, run, inputs, reset, definitions);
   } catch (error) {
     assert(error instanceof UserError, `expected UserError, got ${error}`);
     assertEquals(error.code, "resume_input_consumed");
@@ -125,9 +142,9 @@ const approvedRun = (wf: Workflow, inputs?: Record<string, unknown>) =>
     ],
   }, inputs);
 
-Deno.test("checkResumeInputOverrides: refuses changing an input the gate and approval read", () => {
+Deno.test("checkResumeInputOverrides: refuses changing an input the gate and approval read", async () => {
   const wf = gatedDestroy();
-  const message = refusal(wf, approvedRun(wf), { target: "protected" });
+  const message = await refusal(wf, approvedRun(wf), { target: "protected" });
   assertStringIncludes(
     message,
     'Input "target" was already used by steps "gate", "approve"',
@@ -140,7 +157,7 @@ Deno.test("checkResumeInputOverrides: refuses changing an input the gate and app
   assertEquals(message.includes("scratch"), false, "message leaks a value");
 });
 
-Deno.test("checkResumeInputOverrides: accepts an input only steps still to run read", () => {
+Deno.test("checkResumeInputOverrides: accepts an input only steps still to run read", async () => {
   // The #467 pattern: a placeholder the approval does not show, minted
   // during the gate and read only after it.
   const wf = gatedDestroy("Proceed?");
@@ -168,20 +185,20 @@ Deno.test("checkResumeInputOverrides: accepts an input only steps still to run r
       stepName: "harden",
     }],
   }, { authKey: "PENDING" });
-  checkResumeInputOverrides(
+  await accepts(
     wfAuth,
     runAuth,
     { authKey: "tskey-abc" },
     undefined,
   );
-  checkResumeInputOverrides(wfAuth, runAuth, { region: "us-west" }, undefined);
+  await accepts(wfAuth, runAuth, { region: "us-west" }, undefined);
   // The gate still reads target, so even a prompt that hides it pins it.
-  refusal(wf, run, { target: "protected" });
+  await refusal(wf, run, { target: "protected" });
 });
 
-Deno.test("checkResumeInputOverrides: an input re-passed with its stored value is not a change", () => {
+Deno.test("checkResumeInputOverrides: an input re-passed with its stored value is not a change", async () => {
   const wf = gatedDestroy();
-  checkResumeInputOverrides(
+  await accepts(
     wf,
     approvedRun(wf),
     { target: "scratch" },
@@ -189,7 +206,7 @@ Deno.test("checkResumeInputOverrides: an input re-passed with its stored value i
   );
 });
 
-Deno.test("checkResumeInputOverrides: a nested override is compared at its top-level key", () => {
+Deno.test("checkResumeInputOverrides: a nested override is compared at its top-level key", async () => {
   const wf = Workflow.create({
     name: "nested",
     jobs: [
@@ -208,11 +225,11 @@ Deno.test("checkResumeInputOverrides: a nested override is compared at its top-l
     }],
   }, { creds: { user: "u", key: "old" } });
   // Merged, the same value: no change.
-  checkResumeInputOverrides(wf, run, { creds: { key: "old" } }, undefined);
-  refusal(wf, run, { creds: { key: "new" } });
+  await accepts(wf, run, { creds: { key: "old" } }, undefined);
+  await refusal(wf, run, { creds: { key: "new" } });
 });
 
-Deno.test("checkResumeInputOverrides: a key the run did not have counts as changed", () => {
+Deno.test("checkResumeInputOverrides: a key the run did not have counts as changed", async () => {
   const wf = Workflow.create({
     name: "absent",
     jobs: [
@@ -228,10 +245,10 @@ Deno.test("checkResumeInputOverrides: a key the run did not have counts as chang
   const run = storedRun(wf, "suspended", {
     main: [{ stepName: "check", status: "succeeded" }, { stepName: "act" }],
   }, {});
-  assertStringIncludes(refusal(wf, run, { force: true }), '"force"');
+  assertStringIncludes(await refusal(wf, run, { force: true }), '"force"');
 });
 
-Deno.test("checkResumeInputOverrides: steps that never evaluated do not count", () => {
+Deno.test("checkResumeInputOverrides: steps that never evaluated do not count", async () => {
   const wf = gatedDestroy();
   const run = storedRun(wf, "failed", {
     main: [
@@ -250,7 +267,7 @@ Deno.test("checkResumeInputOverrides: steps that never evaluated do not count", 
   });
   // The retry resets the failed gate, so it runs again with the new value.
   const reset = planFailedRunResume(wf, run);
-  checkResumeInputOverrides(wf, run, { target: "scratch2" }, reset);
+  await accepts(wf, run, { target: "scratch2" }, reset);
   // A record the run's abort settled without starting is reopened.
   const settled = storedRun(wf, "suspended", {
     main: [
@@ -259,10 +276,10 @@ Deno.test("checkResumeInputOverrides: steps that never evaluated do not count", 
       { stepName: "destroy" },
     ],
   });
-  checkResumeInputOverrides(wf, settled, { target: "x" }, undefined);
+  await accepts(wf, settled, { target: "x" }, undefined);
 });
 
-Deno.test("checkResumeInputOverrides: a guarded skip read its guard", () => {
+Deno.test("checkResumeInputOverrides: a guarded skip read its guard", async () => {
   const wf = Workflow.create({
     name: "guarded",
     jobs: [
@@ -289,10 +306,10 @@ Deno.test("checkResumeInputOverrides: a guarded skip read its guard", () => {
       { stepName: "after" },
     ],
   }, { skip: true });
-  refusal(wf, run, { skip: false });
+  await refusal(wf, run, { skip: false });
 });
 
-Deno.test("checkResumeInputOverrides: path 1 - --from the approval is refused, --from the gate is not", () => {
+Deno.test("checkResumeInputOverrides: path 1 - --from the approval is refused, --from the gate is not", async () => {
   const wf = gatedDestroy();
   const run = storedRun(wf, "failed", {
     main: [
@@ -305,7 +322,7 @@ Deno.test("checkResumeInputOverrides: path 1 - --from the approval is refused, -
       },
     ],
   });
-  const message = refusal(
+  const message = await refusal(
     wf,
     run,
     { target: "protected" },
@@ -319,7 +336,7 @@ Deno.test("checkResumeInputOverrides: path 1 - --from the approval is refused, -
     message,
     `swamp workflow resume gated-destroy --run ${run.id} --from gate`,
   );
-  checkResumeInputOverrides(
+  await accepts(
     wf,
     run,
     { target: "protected" },
@@ -327,7 +344,7 @@ Deno.test("checkResumeInputOverrides: path 1 - --from the approval is refused, -
   );
 });
 
-Deno.test("checkResumeInputOverrides: forEach iterations are read through their template", () => {
+Deno.test("checkResumeInputOverrides: forEach iterations are read through their template", async () => {
   const wf = Workflow.create({
     name: "fan",
     jobs: [
@@ -356,12 +373,12 @@ Deno.test("checkResumeInputOverrides: forEach iterations are read through their 
       { stepName: "after" },
     ],
   }, { envs: ["a"], broken: "b" });
-  const message = refusal(wf, run, { broken: "none" });
+  const message = await refusal(wf, run, { broken: "none" });
   assertStringIncludes(message, '"deploy-a"');
-  refusal(wf, run, { envs: ["a", "c"] });
+  await refusal(wf, run, { envs: ["a", "c"] });
 });
 
-Deno.test("checkResumeInputOverrides: a step named by an expression is read against its whole job", () => {
+Deno.test("checkResumeInputOverrides: a step named by an expression is read against its whole job", async () => {
   const wf = Workflow.create({
     name: "named",
     jobs: [
@@ -383,12 +400,12 @@ Deno.test("checkResumeInputOverrides: a step named by an expression is read agai
       { stepName: "later" },
     ],
   }, { suffix: "x", target: "t" });
-  refusal(wf, run, { suffix: "y" });
+  await refusal(wf, run, { suffix: "y" });
   // The fallback reads only steps named by an expression, not "other".
-  checkResumeInputOverrides(wf, run, { target: "u" }, undefined);
+  await accepts(wf, run, { target: "u" }, undefined);
 });
 
-Deno.test("checkResumeInputOverrides: a job whose name reads an input pins it once its steps ran", () => {
+Deno.test("checkResumeInputOverrides: a job whose name reads an input pins it once its steps ran", async () => {
   const wf = Workflow.create({
     name: "jobs",
     jobs: [
@@ -403,10 +420,10 @@ Deno.test("checkResumeInputOverrides: a job whose name reads an input pins it on
       stepName: "two",
     }],
   }, { region: "east" });
-  assertStringIncludes(refusal(wf, run, { region: "west" }), '"one"');
+  assertStringIncludes(await refusal(wf, run, { region: "west" }), '"one"');
 });
 
-Deno.test("checkResumeInputOverrides: an assert's expr and run.inputs reads count", () => {
+Deno.test("checkResumeInputOverrides: an assert's expr and run.inputs reads count", async () => {
   const wf = Workflow.create({
     name: "assert",
     jobs: [
@@ -430,11 +447,11 @@ Deno.test("checkResumeInputOverrides: an assert's expr and run.inputs reads coun
       { stepName: "after" },
     ],
   }, { size: 1, label: "a" });
-  refusal(wf, run, { size: 100 });
-  refusal(wf, run, { label: "b" });
+  await refusal(wf, run, { size: 100 });
+  await refusal(wf, run, { label: "b" });
 });
 
-Deno.test("checkResumeInputOverrides: a step reading inputs whole pins every input", () => {
+Deno.test("checkResumeInputOverrides: a step reading inputs whole pins every input", async () => {
   const wf = Workflow.create({
     name: "whole",
     jobs: [
@@ -455,5 +472,192 @@ Deno.test("checkResumeInputOverrides: a step reading inputs whole pins every inp
   const run = storedRun(wf, "suspended", {
     main: [{ stepName: "child", status: "waiting" }, { stepName: "after" }],
   }, { a: 1 });
-  refusal(wf, run, { anything: "new" });
+  await refusal(wf, run, { anything: "new" });
+});
+
+Deno.test("checkResumeInputOverrides: a definition that reads an input pins it once its step ran", async () => {
+  // The issue's attack with the check moved into the definition: the step
+  // passes nothing, the approval shows nothing, and the definition is
+  // evaluated with the run's inputs in scope.
+  const wf = Workflow.create({
+    name: "definition-gate",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.model("gate-check", "execute"),
+          }),
+          approval("approve", "Proceed?", ["gate"]),
+          shell("destroy", "echo ${{ inputs.target }}", ["approve"]),
+        ],
+      }),
+    ],
+  });
+  const run = storedRun(wf, "suspended", {
+    main: [
+      { stepName: "gate", status: "succeeded" },
+      { stepName: "approve", status: "succeeded" },
+      { stepName: "destroy" },
+    ],
+  });
+  const definitions: DefinitionData = (ref) =>
+    Promise.resolve(
+      ref === "gate-check"
+        ? {
+          name: ref,
+          methods: {
+            execute: {
+              arguments: { run: 'test "${{ inputs.target }}" != "protected"' },
+            },
+          },
+        }
+        : { name: ref },
+    );
+  const message = await refusal(
+    wf,
+    run,
+    { target: "protected" },
+    undefined,
+    definitions,
+  );
+  assertStringIncludes(
+    message,
+    'Input "target" was already used by step "gate"',
+  );
+});
+
+Deno.test("checkResumeInputOverrides: a definition that cannot be read reads every input", async () => {
+  const wf = gatedDestroy("Proceed?");
+  const ran = () =>
+    storedRun(wf, "suspended", {
+      main: [
+        { stepName: "gate", status: "succeeded" },
+        { stepName: "approve", status: "succeeded" },
+        { stepName: "destroy" },
+      ],
+    });
+  // Missing, or failing to load: what the step ran cannot be told.
+  await refusal(
+    wf,
+    ran(),
+    { other: "x" },
+    undefined,
+    () => Promise.resolve(undefined),
+  );
+  await refusal(
+    wf,
+    ran(),
+    { other: "x" },
+    undefined,
+    () => Promise.reject(new Error("unreadable")),
+  );
+
+  // A model named by an expression is not looked up at all.
+  const computed = Workflow.create({
+    name: "computed-model",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.model("${{ self.model }}", "execute"),
+          }),
+          shell("after", "echo", ["gate"]),
+        ],
+      }),
+    ],
+  });
+  const looked: string[] = [];
+  await refusal(
+    computed,
+    storedRun(computed, "suspended", {
+      main: [{ stepName: "gate", status: "succeeded" }, { stepName: "after" }],
+    }),
+    { other: "x" },
+    undefined,
+    (ref) => {
+      looked.push(ref);
+      return Promise.resolve({ name: ref });
+    },
+  );
+  assertEquals(looked, []);
+});
+
+Deno.test("checkResumeInputOverrides: the workflow's own fields are read by every step that ran", async () => {
+  const wf = Workflow.create({
+    name: "tagged",
+    tags: { env: "${{ inputs.env }}" },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [shell("one", "echo"), shell("two", "echo", ["one"])],
+      }),
+    ],
+  });
+  const run = storedRun(wf, "suspended", {
+    main: [{ stepName: "one", status: "succeeded" }, { stepName: "two" }],
+  }, { env: "dev" });
+  assertStringIncludes(await refusal(wf, run, { env: "prod" }), '"one"');
+  // Before any step ran, nothing read it.
+  const fresh = storedRun(wf, "suspended", {
+    main: [{ stepName: "one" }, { stepName: "two" }],
+  }, { env: "dev" });
+  await accepts(wf, fresh, { env: "prod" });
+});
+
+Deno.test("checkResumeInputOverrides: a record the workflow no longer has reads every input", async () => {
+  // The gate was renamed since the run: its record maps to no step.
+  const wf = Workflow.create({
+    name: "renamed",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [shell("check", "echo"), shell("after", "echo", ["check"])],
+      }),
+    ],
+  });
+  const run = storedRun(wf, "suspended", {
+    main: [{ stepName: "gate", status: "succeeded" }, { stepName: "after" }],
+  });
+  assertStringIncludes(
+    await refusal(wf, run, { anything: "x" }),
+    'used by step "gate"',
+  );
+});
+
+Deno.test("checkResumeInputOverrides: --from names the first step that used any refused input", async () => {
+  const wf = Workflow.create({
+    name: "two-keys",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          shell("s1", "echo ${{ inputs.b }}"),
+          shell("s2", "echo", ["s1"]),
+          shell("s3", "echo ${{ inputs.a }}", ["s2"]),
+          shell("s4", "echo", ["s3"]),
+        ],
+      }),
+    ],
+  });
+  const run = storedRun(wf, "failed", {
+    main: [
+      { stepName: "s1", status: "succeeded" },
+      { stepName: "s2", status: "succeeded" },
+      { stepName: "s3", status: "succeeded" },
+      { stepName: "s4", status: "failed" },
+    ],
+  }, { a: 1, b: 1 });
+  const message = await refusal(
+    wf,
+    run,
+    { a: 2, b: 2 },
+    planFailedRunResume(wf, run),
+  );
+  assertStringIncludes(message, `--run ${run.id} --from s1)`);
+  // Retrying from there resets every step that used them.
+  await accepts(wf, run, { a: 2, b: 2 }, planFailedRunResume(wf, run, "s1"));
 });

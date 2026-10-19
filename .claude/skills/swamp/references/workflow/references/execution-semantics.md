@@ -77,18 +77,19 @@ step or an `--input` value that does not match its declared type (`--json` code
 `input_validation_failed` locally), keeps its own message and changes nothing.
 
 `--input` cannot change an input a step already ran with and keeps its result
-(`--json` code `resume_input_consumed` locally): a gate that checked the value,
-an approval that showed it, or a step skipped by a guard that read it. Steps
-still to run, and steps the resume resets with `--from` or a retry, may read a
-new value, so the placeholder-then-resume pattern keeps working. To change a
-value a finished step used, start a new run, or retry a failed run `--from` a
-step at or before the first that used it. An approval binds only what its prompt
-or earlier steps read: name the value in the prompt, or check it in an earlier
-step, to pin it. The run records the merged inputs it resumes with. Other
-errors, such as an `--input` value that makes an expression fail to evaluate,
-exit 1 with `Workflow resume failed: ...` (`--json` code
-`workflow_resume_failed`). A failure after steps start is not rolled back: check
-the run with `swamp workflow history get <run-id>` before resuming again.
+(`--json` code `resume_input_consumed` locally): a gate that checked the value
+(in the step, or in the behavior definition it runs), an approval that showed
+it, or a step skipped by a guard that read it. Steps still to run, and steps the
+resume resets with `--from` or a retry, may read a new value, so the
+placeholder-then-resume pattern keeps working. To change a value a finished step
+used, start a new run, or retry a failed run `--from` a step at or before the
+first that used it. An approval binds only what its prompt or earlier steps
+read: name the value in the prompt, or check it in an earlier step, to pin it.
+The run records the merged inputs it resumes with. Other errors, such as an
+`--input` value that makes an expression fail to evaluate, exit 1 with
+`Workflow resume failed: ...` (`--json` code `workflow_resume_failed`). A
+failure after steps start is not rolled back: check the run with
+`swamp workflow history get <run-id>` before resuming again.
 
 Resume uses the current workflow file. If it was edited during the approval
 window in a way the resume would walk into (a step added or moved into a job the

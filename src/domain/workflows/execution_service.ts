@@ -4571,7 +4571,15 @@ export class WorkflowExecutionService {
       options?.inputs ?? {},
     );
     // A value a finished step read cannot change under it (swamp-club#3583).
-    checkResumeInputOverrides(workflow, existingRun, resumeInputs, reset);
+    await checkResumeInputOverrides(
+      workflow,
+      existingRun,
+      resumeInputs,
+      reset,
+      async (ref) =>
+        (await findDefinitionByIdOrName(this.definitionRepo, ref))?.definition
+          .toData(),
+    );
 
     // A copy of the run that is behind the datastore's shows a suspension a
     // peer has already ended. Compared under the run's claim, so a peer that

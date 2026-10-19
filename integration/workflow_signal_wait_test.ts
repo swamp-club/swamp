@@ -70,6 +70,7 @@ import {
   waitOutcomeKey,
 } from "../src/domain/workflows/signal_wait_records.ts";
 import { UserError } from "../src/domain/errors.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
@@ -698,13 +699,16 @@ Deno.test("signal wait: without allowFailure a timeout fails the run, and a retr
   });
 });
 
-Deno.test("signal wait: a resume whose inputs flip the step's guard still times the wait out and opens no second wait", async () => {
+Deno.test("signal wait: a resume under which the step's guard flips still times the wait out and opens no second wait", async () => {
+  // The guard reads env, not an input: a resume cannot change an input the
+  // waiting step already read (swamp-club#3583).
   const workflow = release("guard-flips", {
-    reviewGuard: "${{ inputs.skipReview }}",
+    reviewGuard: '${{ env.SWAMP_TEST_SKIP_REVIEW == "1" }}',
   });
   await withHarness([workflow], async (h) => {
-    await drain(
-      h.service.run(workflow.name, { inputs: { skipReview: false } }),
+    await withMockedEnv(
+      { SWAMP_TEST_SKIP_REVIEW: "0" },
+      () => drain(h.service.run(workflow.name)),
     );
     const run = await only(h, workflow);
     const waitId = waitIdOf(run);
@@ -713,10 +717,9 @@ Deno.test("signal wait: a resume whose inputs flip the step's guard still times 
 
     // The guard would now skip the step. It holds a wait, so it is settled
     // instead of evaluated again.
-    await drain(
-      h.service.resume(workflow.name, run.id, {
-        inputs: { skipReview: true },
-      }),
+    await withMockedEnv(
+      { SWAMP_TEST_SKIP_REVIEW: "1" },
+      () => drain(h.service.resume(workflow.name, run.id)),
     );
     const finished = await reload(h, run);
     const review = stepOf(finished, "review");
@@ -932,19 +935,22 @@ Deno.test("signal wait: each forEach iteration gets its own wait, and the run re
 });
 
 Deno.test("signal wait: an expired iteration a resume no longer expands is timed out, not left waiting in a succeeded run", async () => {
+  // The collection reads env, not an input: a resume cannot change an input
+  // the waiting iterations already read (swamp-club#3583).
   const perRegion = (name: string, allowFailure: boolean) =>
     Workflow.create({
       name,
-      inputs: {
-        properties: { regions: { type: "array", items: { type: "string" } } },
-      },
       jobs: [
         Job.create({
           name: "release",
           steps: [
             Step.create({
               name: "review-${{ self.region }}",
-              forEach: { item: "region", in: "${{ inputs.regions }}" },
+              forEach: {
+                item: "region",
+                in:
+                  '${{ env.SWAMP_TEST_REGIONS == "both" ? ["eu", "us"] : ["eu"] }}',
+              },
               allowFailure,
               task: StepTask.waitForSignal(3600, VERDICT_SCHEMA),
             }),
@@ -956,18 +962,18 @@ Deno.test("signal wait: an expired iteration a resume no longer expands is timed
   const lenient = perRegion("drops-lenient", true);
   await withHarness([strict, lenient], async (h) => {
     for (const workflow of [strict, lenient]) {
-      await drain(
-        h.service.run(workflow.name, { inputs: { regions: ["eu", "us"] } }),
+      await withMockedEnv(
+        { SWAMP_TEST_REGIONS: "both" },
+        () => drain(h.service.run(workflow.name)),
       );
       const run = await only(h, workflow);
       await signalOk(h, waitIdOf(run, "review-eu"), { verdict: "ship" });
       await expireWaits(h, run);
 
       // The resume's collection no longer produces the "us" iteration.
-      const events = await drain(
-        h.service.resume(workflow.name, run.id, {
-          inputs: { regions: ["eu"] },
-        }),
+      const events = await withMockedEnv(
+        { SWAMP_TEST_REGIONS: "one" },
+        () => drain(h.service.resume(workflow.name, run.id)),
       );
 
       const finished = await reload(h, run);
