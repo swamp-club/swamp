@@ -51,6 +51,29 @@ Deno.test("renderWorkerDaemonEnabled: json mode system service", () => {
   assertEquals(parsed, { enabled: true, serviceMode: "system" });
 });
 
+Deno.test("renderWorkerDaemonEnabled: json mode lists captured header names", () => {
+  const output = captureLogs(() =>
+    renderWorkerDaemonEnabled("json", "user", ["Tunnel-Token", "X-Env"])
+  );
+  const parsed = JSON.parse(output);
+  assertEquals(parsed, {
+    enabled: true,
+    serviceMode: "user",
+    extraHeaderNames: ["Tunnel-Token", "X-Env"],
+  });
+});
+
+Deno.test("renderWorkerDaemonEnabled: log mode names captured headers", () => {
+  const output = captureLogs(() =>
+    renderWorkerDaemonEnabled("log", "system", ["Tunnel-Token"])
+  );
+  const stripped = stripAnsiCode(output);
+  assertStringIncludes(
+    stripped,
+    "Extra headers from SWAMP_SERVE_EXTRA_HEADERS: Tunnel-Token",
+  );
+});
+
 Deno.test("renderWorkerDaemonEnabled: log mode user service says runs while logged in", () => {
   const output = captureLogs(() => renderWorkerDaemonEnabled("log", "user"));
   const stripped = stripAnsiCode(output);

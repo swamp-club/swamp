@@ -37,6 +37,18 @@ function servicePath(mode: LaunchdMode = "agent"): string {
   return join(systemdUnitDir(mode), `${UNIT_NAME}.service`);
 }
 
+/**
+ * A raw newline would end the Environment= line and leave the rest of the
+ * value as unit directives, so newlines (SWAMP_SERVE_EXTRA_HEADERS holds one
+ * header per line) are written as C escapes, which systemd unescapes.
+ */
+function escapeSystemdEnvValue(value: string): string {
+  return escapeSystemdPath(value).replace(/\r/g, "\\r").replace(
+    /\n/g,
+    "\\n",
+  );
+}
+
 export function buildWorkerService(
   config: WorkerDaemonConfig,
   mode: LaunchdMode = "agent",
@@ -59,7 +71,7 @@ export function buildWorkerService(
   if (config.env) {
     for (const [k, v] of Object.entries(config.env)) {
       envLines.push(
-        `Environment="${escapeSystemdPath(k)}=${escapeSystemdPath(v)}"`,
+        `Environment="${escapeSystemdPath(k)}=${escapeSystemdEnvValue(v)}"`,
       );
     }
   }
