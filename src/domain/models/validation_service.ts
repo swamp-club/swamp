@@ -38,7 +38,7 @@ import {
   unresolvableVaultArguments,
   WIDEST_SWAMP_SCOPE,
 } from "../expressions/swamp_namespaces.ts";
-import { findVaultGetCalls } from "../expressions/vault_reference_extractor.ts";
+import { vaultCallsForAnalysis } from "../expressions/vault_reference_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
 import { foreignTemplatePathPredicate } from "./foreign_template_fields.ts";
 import {
@@ -1126,7 +1126,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     const vaultPattern = /^vault\.get\(.*\)$/;
     if (
       vaultPattern.test(celExpression) ||
-      (findVaultGetCalls(celExpression).length > 0 &&
+      (vaultCallsForAnalysis(celExpression).length > 0 &&
         isSwampExpression(celExpression, WIDEST_SWAMP_SCOPE))
     ) {
       return null;

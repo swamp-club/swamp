@@ -28,10 +28,7 @@
 import type { Definition } from "../definitions/definition.ts";
 import type { Workflow } from "../workflows/workflow.ts";
 import { scanExpressions } from "./expression_scanner.ts";
-import {
-  findVaultGetCalls,
-  isDynamicVaultArgument,
-} from "./vault_reference_extractor.ts";
+import { vaultCallsForAnalysis } from "./vault_reference_extractor.ts";
 
 /** What names the vault. */
 export type VaultReferenceSourceKind = "definition" | "workflow" | "datastore";
@@ -137,17 +134,10 @@ function scanVaultGetCalls(
   const walk = (value: unknown): void => {
     if (typeof value === "string") {
       for (const span of scanExpressions(value)) {
-        for (const call of findVaultGetCalls(span.inner)) {
-          // Groups: [2]=quoted vault, [3]=unquoted vault.
-          const quoted = call[2];
-          const bare = call[3];
-          if (quoted !== undefined) {
-            if (quoted === vaultName) found.named = true;
-          } else if (bare !== undefined && isDynamicVaultArgument(bare)) {
-            found.dynamic = true;
-          } else if (bare === vaultName) {
-            found.named = true;
-          }
+        for (const call of vaultCallsForAnalysis(span.inner)) {
+          const vault = call.args[0];
+          if (vault.literal === vaultName) found.named = true;
+          else if (vault.literal === undefined) found.dynamic = true;
         }
       }
     } else if (Array.isArray(value)) {

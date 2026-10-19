@@ -25,44 +25,14 @@
  */
 
 import { type ASTNode, Environment } from "cel-js";
-import { lexSegments } from "./cel_string_lexer.ts";
+import {
+  prepareVaultSource,
+  rewriteHyphenatedModelRefs,
+} from "./vault_call_syntax.ts";
 
-/**
- * A model name with at least one hyphen, followed by a model accessor.
- *
- * The name is one `[a-zA-Z0-9_]+` run, a hyphen, then any mix of those
- * characters and hyphens. It matches exactly the names the older
- * `[a-zA-Z0-9_]+(?:-[a-zA-Z0-9_-]+)+` form matched, without that form's
- * nested quantifier over hyphens, which backtracks exponentially on a long
- * hyphenated name followed by a character that fails the match.
- */
-const HYPHENATED_MODEL_REF =
-  /model\.([a-zA-Z0-9_]+-[a-zA-Z0-9_-]+)\.(input|resource|file|execution|definition)/g;
-
-/**
- * Transforms model references with hyphenated names to bracket notation.
- *
- * CEL interprets hyphens as subtraction operators, so `model.deploy-vpc.resource`
- * would be parsed as `(model.deploy) - (vpc.resource)`. This function transforms
- * hyphenated model names to bracket notation:
- *   model.deploy-vpc.resource → model["deploy-vpc"].resource
- *
- * Text inside string literals and comments is left alone, so a string such
- * as `literal('{{ model.my-app.resource.x }}')` reaches the method verbatim.
- *
- * @param expression - The CEL expression to transform
- * @returns The expression with hyphenated model names using bracket notation
- */
+/** Preserves the existing public model-name transformation. */
 export function transformHyphenatedModelRefs(expression: string): string {
-  if (!expression.includes("model.")) return expression;
-  let out = "";
-  for (const seg of lexSegments(expression)) {
-    const text = expression.slice(seg.start, seg.end);
-    out += seg.kind === "code"
-      ? text.replace(HYPHENATED_MODEL_REF, 'model["$1"].$2')
-      : text;
-  }
-  return out;
+  return rewriteHyphenatedModelRefs(expression).text;
 }
 
 /**
@@ -122,7 +92,7 @@ export function typeChecksAsConstant(celExpression: string): boolean {
  */
 function parseForEvaluation(celExpression: string): ASTNode | undefined {
   try {
-    return EVALUATION_GRAMMAR.parse(transformHyphenatedModelRefs(celExpression))
+    return EVALUATION_GRAMMAR.parse(prepareVaultSource(celExpression).text)
       .ast;
   } catch {
     return undefined;

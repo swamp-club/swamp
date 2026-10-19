@@ -1,15 +1,15 @@
 ---
 audience: maintainer
 enables: [behaviors, workflows, vaults, serve]
-last-verified: 2026-10-16 @ 051bfb0e
+last-verified: 2026-10-19 @ dc3fb7a59
 ---
 
 # Typed Secrets for Expressions
 
 **Status:** implementation plan. Phases 0, 1 and 2 have shipped
 (swamp-club#3510, swamp-club#3511, swamp-club#3512, swamp-club#3551,
-swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phase 3.1
-(swamp-club#3619) behind the internal option. This revision replaces the
+swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1 and 3.2
+(swamp-club#3619, swamp-club#3625) behind the internal option. This revision replaces the
 earlier engine-2 plan, and [Why this design](#why-this-design) says what
 changed. Until Phase 4 ships, [expressions](./expressions.md) describes current
 behavior.
@@ -363,7 +363,15 @@ Section 3.3 go through. `swamp behavior evaluate` and `swamp workflow evaluate`
 defer `vault.get` as a runtime expression and evaluate none, so they read
 nothing, as before, and guards, asserts and `forEach` bind no `vault` in the
 current engine. From Phase 3, where `vault.get` is a CEL function, every entry
-point that evaluates one runs the check.
+point that evaluates one runs the check. Phase 3.2 implements this in the
+test-only `CelEvaluator.evaluateAsync` path, with `EvaluationScope.secretBag`
+and `EvaluationScope.vault` supplying the issuing registry, vault service,
+probe redactor and authored field path. It checks all direct calls before
+executing the expression, including unselected branches. The synchronous API
+refuses direct vault calls before I/O and directs callers to `evaluateAsync`;
+expressions without vault calls remain synchronous. Missing check scope fails
+closed. The checker retains its unavailable/access-denied codes and provider
+failures, and its registry owns the positive/in-flight cache.
 
 ## 4. CEL semantics
 
@@ -584,24 +592,38 @@ Phase 4.
 method builds a reference and reads nothing. Section 3.4 checks that the key
 exists.
 
-Arguments are ordinary CEL, and a `Secret` argument is refused. Before parsing,
-the template scanner rewrites legacy bare-token arguments into quoted strings.
-It rewrites only tokens that today's grammar reads as literal names, which are
-those `isDynamicVaultArgument` rejects. `vault.get(my-vault, KEY)` keeps
-working, and `prod-vault` is never parsed as subtraction. A bare token with a
-`.` is already CEL.
+Arguments are CEL expressions, with the legacy literal-name rule applied
+first: a bare token without `.` is a literal, including numeric-looking tokens
+and punctuation. `vault.get(my-vault, KEY)` keeps working. Quoted and backtick
+arguments retain their raw interiors, including backslashes, because the legacy
+resolver did not decode CEL escapes in names. `vault_call_syntax.ts` rewrites
+only direct call arguments outside strings/comments and maps normalized offsets
+back to authored text, including the existing hyphenated-model rewrite. The
+module sits below the template scanner to avoid a parser import cycle.
 
-This retires the regular-expression rewrite (`resolveVaultExpressions`,
-`findVaultGetCalls`). It keeps the rule that refuses any other use of the
-`vault` namespace (`assertNoUnresolvedVault`). Aliases such as
-`cel.bind(v, vault, v.get(...))`, `dyn(vault).get(...)` and
-`[vault].map(m, m.get(...))` stay refused, so every reference is a direct call
-that the existence check in Section 3.4 finds before the expression runs.
+The shared AST walk finds direct root calls and rejects other free uses of
+`vault`. Aliases such as `cel.bind(v, vault, v.get(...))`,
+`dyn(vault).get(...)` and `[vault].map(m, m.get(...))` stay refused. Calls whose
+arguments depend on surrounding comprehension or `cel.bind` locals are refused:
+up-front evaluation does not introduce local-binding semantics. A `Secret`
+argument is refused inside the fault/boundary scope before string conversion or
+result release.
 
-One AST-based extractor, run over the text after the bare-token rewrite, finds
-those calls. It replaces every consumer of `findVaultGetCalls`: the existence
-check, `vaults:` list validation (`vault_reference_extractor.ts`), foreign-root
-attribution, the dispatch allowlist, and `freeRoots` in the parse-only grammars.
+Phase 3.2 checks each pair once per call site, then binds a private receiver
+holding that checked pair and its authored location. Runtime calls reuse those
+arguments, so a changing getter cannot switch reference identity after checking.
+The receiver creates a `Secret`, records a Secret read for the container rule,
+and performs no provider I/O. Its types and refusal signatures are registered
+only with the internal option enabled.
+
+The AST records feed static extraction, model/workflow validation, foreign-root
+attribution, vault removal checks and the dispatch allowlist; parse-only
+`freeRoots` uses the same normalization. Until production rollout, an option-off
+compatibility filter retains exactly the calls accepted by `findVaultGetCalls`,
+including malformed-call attribution and the legacy resolver's treatment of
+shadowed names. New typed syntax therefore cannot widen remote authorization.
+`resolveVaultExpressions` and its matcher remain the production execution path;
+typed evaluation bypasses that replacement path.
 
 ### 4.5 Effectful functions
 
@@ -1075,10 +1097,17 @@ container rule, with an AST scan that decides scalar-ness; the boundary
 conversion, which reads bindings through views that never fire a getter the
 expression does not read; the codes `secret_operation_unsupported` and
 `secret_destination_refused`; the Phase 1.2 pins on the production type; and
-the production half of the coverage test. Nothing yet produces a `Secret` from
-a real source: a data-origin reference with no sentinel cannot leave CEL until
-3.3 issues one. A fitness test keeps the `Secret` modules inside
+the production half of the coverage test. A data-origin reference with no
+sentinel cannot leave CEL until 3.3 issues one. A fitness test keeps the `Secret` modules inside
 `src/infrastructure/cel/` and the option out of production code.
+
+Phase 3.2 (swamp-club#3625) adds the reference-only `vault.get` receiver and
+up-front asynchronous checking described in Sections 3.4 and 4.4, still enabled
+only by tests. Counting-provider integration tests cover has/probe paths,
+concurrent positive checks, retry after failure, revocation, refusal without a
+delivery load, and exact canary delivery after rotation through `SecretLoader`.
+Accessors, destinations, production entry points, workflows/queries and remote
+transport remain later slices.
 
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any
@@ -1180,7 +1209,8 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Refusals and the container rule (Section 4.3) | `src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`, `secret_registrations.ts`, `container_comparison.ts`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                            |
 | Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`typedSecrets`, `EvaluationScope`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
 | Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts`, `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`                                                                                                                                      |
-| Vault rewrite and dynamic arguments           | `src/domain/expressions/model_resolver.ts` (`resolveVaultExpressions`), `vault_reference_extractor.ts`                                                                                                                                                                                                                                                                |
+| Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (`resolveVaultExpressions`, option off)                                                                                                                                                                                                                                                                |
+| Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
 | Sentinels and shell placement                 | `src/domain/vaults/secret_bag_registry.ts`, `vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                                                                                                                                                       |
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
 | Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
