@@ -1,5 +1,5 @@
 {
-  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard). Copy verbatim; the swamp copy is the source. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier, given the registry's answer; `scorecardMessage`, where present, is the scorecard's wording of the same finding.",
+  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard). Copy verbatim; the swamp copy is the source. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier, given the registry's answer; `scorecardMessage`, where present, is the scorecard's wording of the same finding. Each expected finding's `costsPoint` says whether it costs the rubric's dependency-trust point: every error, every `not-audited` and every `deprecated-version` does; push still only warns on `deprecated-version` until swamp-club#3354.",
   "resolution": [
     {
       "name": "exact pin",
@@ -194,7 +194,8 @@
         {
           "severity": "warning",
           "message": "version 1.0.0 is deprecated: Use 2.x",
-          "cause": "deprecated-version"
+          "cause": "deprecated-version",
+          "costsPoint": true
         }
       ]
     },
@@ -218,7 +219,13 @@
           }
         }
       },
-      "expect": [{ "severity": "error", "message": "package is deprecated" }]
+      "expect": [
+        {
+          "severity": "error",
+          "message": "package is deprecated",
+          "costsPoint": true
+        }
+      ]
     },
     {
       "name": "good pin, latest deprecated",
@@ -254,7 +261,8 @@
         {
           "severity": "warning",
           "message": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version this push resolves",
-          "cause": "loose-specifier"
+          "cause": "loose-specifier",
+          "costsPoint": false
         }
       ],
       "scorecardMessage": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version the registry resolved"
@@ -274,7 +282,8 @@
         {
           "severity": "warning",
           "message": "npm:pkg is unpinned; audited 1.2.0, the version this push resolves",
-          "cause": "loose-specifier"
+          "cause": "loose-specifier",
+          "costsPoint": false
         }
       ],
       "scorecardMessage": "npm:pkg is unpinned; audited 1.2.0, the version the registry resolved"
@@ -294,7 +303,8 @@
         {
           "severity": "warning",
           "message": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version this push resolves",
-          "cause": "loose-specifier"
+          "cause": "loose-specifier",
+          "costsPoint": false
         }
       ],
       "scorecardMessage": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version the registry resolved"
@@ -316,7 +326,8 @@
         {
           "severity": "warning",
           "message": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version this push resolves (from deno.lock)",
-          "cause": "loose-specifier"
+          "cause": "loose-specifier",
+          "costsPoint": false
         }
       ],
       "scorecardMessage": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version the registry resolved (from deno.lock)"
@@ -348,7 +359,8 @@
         {
           "severity": "warning",
           "message": "version 0.225.0 is yanked on JSR",
-          "cause": "jsr-yanked"
+          "cause": "jsr-yanked",
+          "costsPoint": false
         }
       ]
     },
@@ -365,7 +377,8 @@
         {
           "severity": "error",
           "message": "version 0.0.999 not found on JSR",
-          "cause": "jsr-missing"
+          "cause": "jsr-missing",
+          "costsPoint": true
         }
       ]
     },
@@ -382,7 +395,8 @@
         {
           "severity": "error",
           "message": "version ^9.0.0 not found on JSR",
-          "cause": "jsr-missing"
+          "cause": "jsr-missing",
+          "costsPoint": true
         }
       ]
     },
@@ -396,7 +410,8 @@
         {
           "severity": "error",
           "message": "JSR package not found",
-          "cause": "jsr-missing"
+          "cause": "jsr-missing",
+          "costsPoint": true
         }
       ]
     },
@@ -413,7 +428,8 @@
         {
           "severity": "error",
           "message": "invalid JSR package name",
-          "cause": "jsr-missing"
+          "cause": "jsr-missing",
+          "costsPoint": true
         }
       ]
     },
@@ -427,7 +443,8 @@
         {
           "severity": "warning",
           "message": "not audited: JSR lookup failed (HTTP 503)",
-          "cause": "not-audited"
+          "cause": "not-audited",
+          "costsPoint": true
         }
       ]
     },
@@ -444,7 +461,8 @@
         {
           "severity": "warning",
           "message": "jsr:@std/assert@1 is a range; audited 1.0.2, the version this push resolves",
-          "cause": "loose-specifier"
+          "cause": "loose-specifier",
+          "costsPoint": false
         }
       ],
       "scorecardMessage": "jsr:@std/assert@1 is a range; audited 1.0.2, the version the registry resolved"

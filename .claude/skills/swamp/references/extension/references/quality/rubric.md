@@ -201,6 +201,11 @@ jsr.io.
 - Deprecated packages (the shipped version and latest both deprecated)
 - A JSR package or version that does not exist (`cause: "jsr-missing"`)
 
+**Pinned deprecated version (fails the factor, does not block yet):** a shipped
+npm version that is deprecated while the package's latest is not
+(`cause: "deprecated-version"`) is a push warning, waived by `--yes`, but it
+loses the factor, as on the registry scorecard. Pin a supported version.
+
 **Not audited (fails the factor, does not block):** a dependency whose OSV.dev,
 npm or JSR lookup failed, or whose specifier no published version matches, is
 reported as not audited (`cause: "not-audited"` with a `reason`) and never as
@@ -208,7 +213,6 @@ passed. Re-run when all three services are reachable to earn the factor.
 
 **Warnings (displayed but do not block or cost the factor):**
 
-- A deprecated shipped version whose latest is not (`deprecated-version`)
 - An unpinned, range or dist-tag specifier (`loose-specifier`)
 - A yanked JSR version (`jsr-yanked`)
 - MEDIUM severity vulnerabilities

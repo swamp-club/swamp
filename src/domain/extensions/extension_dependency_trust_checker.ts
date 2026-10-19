@@ -957,6 +957,19 @@ export async function checkDependencyTrust(
   };
 }
 
+/**
+ * The findings that cost the rubric's dependency-trust factor besides an
+ * unaudited dependency: every error, and a deprecated shipped version, which
+ * push only warns about (it waits for swamp-club#3354 to block) but the
+ * registry's scorecard already scores against.
+ */
+export function dependencyTrustBlockerCount(
+  result: DependencyTrustResult,
+): number {
+  return result.errors.length +
+    result.warnings.filter((w) => w.cause === "deprecated-version").length;
+}
+
 /** How many dependencies a lookup failure left unaudited. */
 export function notAuditedCount(result: DependencyTrustResult): number {
   return new Set(

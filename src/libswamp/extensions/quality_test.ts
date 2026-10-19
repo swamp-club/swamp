@@ -648,6 +648,20 @@ for (
       2,
     ],
     [
+      "a pinned deprecated version loses the dependency-trust factor",
+      {
+        errors: [],
+        warnings: [{
+          dependency: "leftpad",
+          message: "version 1.0.0 is deprecated: use leftpad@2",
+          cause: "deprecated-version" as const,
+        }],
+        audited: [],
+        passed: true,
+      },
+      0,
+    ],
+    [
       "a missing JSR version loses the dependency-trust factor",
       {
         errors: [{

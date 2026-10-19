@@ -27,7 +27,9 @@ import {
 } from "./dependency_version_resolution.ts";
 import {
   checkDependencyTrust,
+  dependencyTrustBlockerCount,
   type Fetcher,
+  notAuditedCount,
 } from "./extension_dependency_trust_checker.ts";
 
 // The vectors the registry scorecard (swamp-club#3353) copies, so push and
@@ -58,7 +60,12 @@ interface FindingVector {
   locked?: string[];
   npm?: Record<string, unknown>;
   jsr?: { status: number; body: unknown };
-  expect: { severity: string; message: string; cause?: string }[];
+  expect: {
+    severity: string;
+    message: string;
+    cause?: string;
+    costsPoint: boolean;
+  }[];
   /** The scorecard's wording of the same finding, where it differs. */
   scorecardMessage?: string;
 }
@@ -143,7 +150,14 @@ for (const v of vectors.findings) {
       severity,
       message,
       ...(cause ? { cause } : {}),
+      costsPoint: severity === "error" || cause === "not-audited" ||
+        cause === "deprecated-version",
     }));
     assertEquals(reported, v.expect);
+    // The rubric counts exactly the findings marked as costing the point.
+    assertEquals(
+      dependencyTrustBlockerCount(result) + notAuditedCount(result) > 0,
+      v.expect.some((e) => e.costsPoint),
+    );
   });
 }

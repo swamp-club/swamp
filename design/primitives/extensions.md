@@ -1950,9 +1950,10 @@ downloads, age) do not apply.
 Dependency trust is a rubric factor (`dependency-trust`, worth 2 points) in both
 `swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores
 when every dependency passes the trust gates with no hard errors. In the CLI an
-unaudited dependency loses the factor the same way a hard error does; the
-`deprecated-version`, `loose-specifier` and `jsr-yanked` warnings do not cost
-it.
+unaudited dependency loses the factor the same way a hard error does, and so
+does a `deprecated-version` warning (a pinned deprecated version), matching the
+registry's scorecard; `dependencyTrustBlockerCount` counts the errors and those
+warnings. The `loose-specifier` and `jsr-yanked` warnings do not cost it.
 
 ## Registry
 

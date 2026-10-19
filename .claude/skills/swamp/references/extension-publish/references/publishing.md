@@ -595,7 +595,8 @@ Findings with a `cause` in `warnings.dependencyTrust`:
 | `jsr-missing`        | the JSR package or version does not exist (or the name is invalid)              | error    |
 
 A deprecated package (the shipped version and latest both deprecated) stays an
-error. Pin exact versions to clear `loose-specifier`.
+error. A `deprecated-version` warning also loses the `dependency-trust` quality
+factor. Pin exact, supported versions to clear both warnings.
 
 An unaudited dependency is never passed; in `swamp extension quality` it is
 marked `?` and loses the `dependency-trust` factor. Every warning with a cause

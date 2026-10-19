@@ -581,9 +581,10 @@ function dependencyTrustRow(
   // factor exactly as a blocker does.
   const passed = noBlockers && notAuditedCount === 0;
   const remediation = blockerCount > 0
-    ? `${blockerCount} dependency blocker(s) found (deprecated packages, ` +
-      `HIGH/CRITICAL vulnerabilities or missing JSR versions). See the ` +
-      `blocker details above, then update or replace the flagged dependencies.`
+    ? `${blockerCount} dependency blocker(s) found (deprecated packages or ` +
+      `pinned deprecated versions, HIGH/CRITICAL vulnerabilities, or missing ` +
+      `JSR versions). See the details above, then update or replace the ` +
+      `flagged dependencies.`
     : notAuditedCount > 0
     ? `${notAuditedCount} dependency(ies) not audited because an OSV, npm or ` +
       `JSR lookup failed. Re-run when all three are reachable.`
