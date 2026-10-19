@@ -62,7 +62,7 @@ async function render(
   };
 }
 
-Deno.test("renderServerExtensionChange: log mode without a reload warns to run serve reload", async () => {
+Deno.test("renderServerExtensionChange: log mode without a reload warns to restart serve, or reload it with --hot-reload", async () => {
   const { stdout, records } = await render(
     { reloadCommand: RELOAD_COMMAND },
     "log",
@@ -70,7 +70,9 @@ Deno.test("renderServerExtensionChange: log mode without a reload warns to run s
   assertEquals(stdout, []);
   assertEquals(records.length, 1);
   assertEquals(records[0].level, "warning");
+  assertStringIncludes(records[0].text, "Restart it");
   assertStringIncludes(records[0].text, RELOAD_COMMAND);
+  assertStringIncludes(records[0].text, "--hot-reload");
 });
 
 Deno.test("renderServerExtensionChange: log mode after a reload says serve runs the change, without the warning", async () => {
@@ -83,7 +85,7 @@ Deno.test("renderServerExtensionChange: log mode after a reload says serve runs 
   );
   assertEquals(records.length, 1);
   assertEquals(records[0].level, "info");
-  assertStringIncludes(records[0].text, "reloaded 3 extension type(s)");
+  assertStringIncludes(records[0].text, "Serve reloaded 3 extension type(s)");
 });
 
 Deno.test("renderServerExtensionChange: log mode warns on a successful reload's soft errors", async () => {
@@ -131,11 +133,15 @@ Deno.test("renderServerExtensionChange: json mode prints the reload outcome as i
   assertEquals(JSON.parse(stdout[0]), { serveReload });
 });
 
-Deno.test("renderServerExtensionChange: json mode prints nothing when serve did not reload", async () => {
+Deno.test("renderServerExtensionChange: json mode says serve did not reload, with the reload command", async () => {
   const { stdout, records } = await render(
     { reloadCommand: RELOAD_COMMAND },
     "json",
   );
-  assertEquals(stdout, []);
   assertEquals(records, []);
+  assertEquals(stdout.length, 1);
+  assertEquals(JSON.parse(stdout[0]), {
+    serveReload: null,
+    reloadCommand: RELOAD_COMMAND,
+  });
 });

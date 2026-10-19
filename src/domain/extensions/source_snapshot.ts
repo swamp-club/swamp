@@ -17,14 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { parse } from "@std/path";
+import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import { hashFile, type SourceModuleLookup } from "./bundle_freshness.ts";
 
 /**
  * The source files a registered extension type was loaded from, as they
- * stood when it was registered: one line per file with its content hash. A long-lived process compares it with the files on disk before it
- * bundles the source again (swamp-club#3594), so it never ships code other
- * than the code it loaded. Holds no catalog reference: the catalog a reload
- * registered from is closed by the time a run needs the bundle.
+ * stood before it was bundled and imported: one line per file with its
+ * content hash. A long-lived process compares it with the files on disk
+ * before it bundles the source again (swamp-club#3594), so it never ships
+ * code other than the code it loaded. Holds no catalog reference: the
+ * catalog a reload registered from is closed by the time a run needs the
+ * bundle.
  */
 export interface SourceSnapshot {
   readonly files: readonly string[];
@@ -32,19 +36,19 @@ export interface SourceSnapshot {
 }
 
 /**
- * Snapshots `absolutePath` and the local modules the catalog recorded for
- * it. Without recorded modules only the entry file is covered.
+ * Snapshots `absolutePath` and the local modules it imports: those the
+ * catalog recorded, or, when it recorded none (a pulled extension whose
+ * bundle shipped pre-built), its relative-import closure.
  */
 export async function captureSourceSnapshot(
   absolutePath: string,
   modules: SourceModuleLookup,
 ): Promise<SourceSnapshot> {
-  const files = [
-    ...new Set([
-      absolutePath,
-      ...(modules.findSourceModules(absolutePath) ?? []),
-    ]),
-  ];
+  const recorded = modules.findSourceModules(absolutePath);
+  const imported = recorded ??
+    (await resolveLocalImports([absolutePath], parse(absolutePath).root))
+      .resolvedFiles;
+  const files = [...new Set([absolutePath, ...imported])];
   return { files, signature: await signFiles(files) };
 }
 
@@ -79,9 +83,12 @@ export class StaleExtensionSourceError extends Error {
       `Behavior type ${typeNormalized}${
         extensionName ? ` (extension ${extensionName})` : ""
       } changed on disk after swamp serve loaded it, so serve will not send ` +
-        `workers code it does not run itself. Reload serve ` +
-        `('swamp serve reload', with --hot-reload) or restart it to run ` +
-        `the changed extension.`,
+        `workers code it does not run itself. ` +
+        (extensionName
+          ? `Restart serve, or run 'swamp serve reload' (add --server <url> ` +
+            `for a remote serve) if it was started with --hot-reload.`
+          : `Run the step again: serve picks up the edited behavior before ` +
+            `each run.`),
     );
     this.name = "StaleExtensionSourceError";
   }

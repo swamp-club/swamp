@@ -49,7 +49,7 @@ export interface RegisteredBundle {
    * fingerprint never names assets other than those it hashed
    * (swamp-club#3594). Undefined for a bundle with no assets.
    */
-  assetHashes?: Readonly<Record<string, string>>;
+  assetHashes?: ReadonlyMap<string, string>;
 }
 
 /** The content hash a bundle fingerprint records for one asset file. */

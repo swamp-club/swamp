@@ -247,18 +247,14 @@ Deno.test("DispatchService: extension bundles register by content fingerprint", 
   assertEquals(registered?.filesRoot, "/ext/files");
 });
 
-Deno.test("DispatchService: a definition's fingerprint and assets are pinned once, so an asset changed on disk never pairs with its old JS (swamp-club#3594)", async () => {
+Deno.test("DispatchService: an edited asset ships under a new fingerprint with the definition's JS and the asset's new hash (swamp-club#3594)", async () => {
   const filesRoot = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(join(filesRoot, "a.txt"), "v1");
-    let factoryCalls = 0;
     const h = createHarness();
     const extensionDef: ModelDefinition = {
       ...builtinModelDef,
-      bundleSourceFactory: () => {
-        factoryCalls++;
-        return Promise.resolve("export const model = 1;");
-      },
+      bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
       extensionFilesRoot: filesRoot,
       extensionAdditionalFiles: ["a.txt", "missing.txt"],
     };
@@ -269,39 +265,23 @@ Deno.test("DispatchService: a definition's fingerprint and assets are pinned onc
     const [first, second] = h.dispatchCalls.map((c) =>
       c.params.bundleFingerprint
     );
-    assertEquals(second, first);
-    assertEquals(factoryCalls, 1);
-    const registered = h.bundles.get(first);
-    assertEquals(registered?.assetHashes, {
-      "a.txt": await hashAssetBytes(new TextEncoder().encode("v1")),
-    });
-  } finally {
-    await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
-  }
-});
-
-Deno.test("DispatchService: a replaced definition gets a fingerprint of its own assets (swamp-club#3594)", async () => {
-  const filesRoot = await Deno.makeTempDir();
-  try {
-    await Deno.writeTextFile(join(filesRoot, "a.txt"), "v1");
-    const h = createHarness();
-    const define = (): ModelDefinition => ({
-      ...builtinModelDef,
-      bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
-      extensionFilesRoot: filesRoot,
-      extensionAdditionalFiles: ["a.txt"],
-    });
-    await h.service.executeRemote(stepRequest({ modelDef: define() }));
-    await Deno.writeTextFile(join(filesRoot, "a.txt"), "v2");
-    await h.service.executeRemote(stepRequest({ modelDef: define() }));
-
-    const [first, second] = h.dispatchCalls.map((c) =>
-      c.params.bundleFingerprint
-    );
     assertEquals(second === first, false);
-    assertEquals(h.bundles.get(second)?.assetHashes, {
-      "a.txt": await hashAssetBytes(new TextEncoder().encode("v2")),
-    });
+    assertEquals(
+      h.bundles.get(first)?.assetHashes,
+      new Map([[
+        "a.txt",
+        await hashAssetBytes(new TextEncoder().encode("v1")),
+      ]]),
+    );
+    const latest = h.bundles.get(second);
+    assertEquals(latest?.js, "export const model = 1;");
+    assertEquals(
+      latest?.assetHashes,
+      new Map([[
+        "a.txt",
+        await hashAssetBytes(new TextEncoder().encode("v2")),
+      ]]),
+    );
   } finally {
     await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
   }

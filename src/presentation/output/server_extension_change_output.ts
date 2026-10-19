@@ -18,14 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import type { ExtensionChangeServeReload } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
-
-/** How a --hot-reload serve reloaded itself after the change. */
-export interface ServerExtensionReload {
-  status: "ok" | "failed";
-  reloadedCount: number;
-  errors: string[];
-}
 
 export interface ServerExtensionChangeData {
   /**
@@ -33,15 +27,16 @@ export interface ServerExtensionChangeData {
    * did not reload: it runs without --hot-reload, or predates
    * swamp-club#3594.
    */
-  serveReload?: ServerExtensionReload;
+  serveReload?: ExtensionChangeServeReload;
   /** The command that reloads the serve instance by hand. */
   reloadCommand: string;
 }
 
 /**
  * Says whether a serve instance runs an extension change made with
- * `--server` (pull, update, install, rm). JSON mode prints the reload
- * outcome as its own document, and nothing when serve did not reload.
+ * `--server` (pull, update, install, rm). JSON mode always prints its own
+ * `serveReload` document: the reload outcome, or `null` with the reload
+ * command when serve did not reload.
  */
 export function renderServerExtensionChange(
   data: ServerExtensionChangeData,
@@ -49,21 +44,23 @@ export function renderServerExtensionChange(
 ): void {
   const { serveReload, reloadCommand } = data;
   if (mode === "json") {
-    if (serveReload) {
-      // deno-lint-ignore no-console
-      console.log(JSON.stringify({ serveReload }, null, 2));
-    }
+    // deno-lint-ignore no-console
+    console.log(JSON.stringify(
+      serveReload ? { serveReload } : { serveReload: null, reloadCommand },
+      null,
+      2,
+    ));
     return;
   }
   const logger = getSwampLogger(["cli", "remote"]);
   if (!serveReload) {
     logger
-      .warn`Extension state changed on the serve instance — run ${reloadCommand} to pick up the changes`;
+      .warn`The serve instance did not reload after the extension change; its runs keep the old code, and remote steps of a changed type fail until it does. Restart it, or run ${reloadCommand} if it was started with --hot-reload`;
     return;
   }
   if (serveReload.status === "ok") {
     logger
-      .info`The serve instance reloaded ${serveReload.reloadedCount} extension type(s); its next runs use the change`;
+      .info`Serve reloaded ${serveReload.reloadedCount} extension type(s); new runs use the updated extensions`;
     for (const error of serveReload.errors) {
       logger.warn`Serve reload: ${error}`;
     }

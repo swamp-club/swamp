@@ -746,7 +746,7 @@ export class DataPlane {
     const files: string[] = [];
     for (const relPath of additionalFiles) {
       // Only the files the fingerprint hashed (swamp-club#3594).
-      if (assetHashes && !(relPath in assetHashes)) continue;
+      if (assetHashes && !assetHashes.has(relPath)) continue;
       const target = resolve(join(root, relPath));
       if (
         !target.startsWith(root + "/") && target !== root &&
@@ -770,7 +770,7 @@ export class DataPlane {
     target: string,
     fingerprint: string,
     relPath: string,
-    assetHashes: Readonly<Record<string, string>> | undefined,
+    assetHashes: ReadonlyMap<string, string> | undefined,
   ): Promise<Response> {
     let bytes: Uint8Array;
     try {
@@ -779,16 +779,16 @@ export class DataPlane {
       return errorResponse(404, `No asset '${relPath}' in bundle`);
     }
     // A fingerprint names the bytes it hashed. An asset changed on disk
-    // since, e.g. by an extension pull serve has not reloaded, is refused
-    // rather than shipped under it (swamp-club#3594).
+    // since the dispatch took it is refused rather than shipped under it;
+    // the next dispatch fingerprints the new bytes (swamp-club#3594).
     if (
       assetHashes &&
-      assetHashes[relPath] !== await hashAssetBytes(bytes)
+      assetHashes.get(relPath) !== await hashAssetBytes(bytes)
     ) {
       return errorResponse(
         409,
-        `Asset '${relPath}' changed after serve loaded its extension; ` +
-          `reload or restart swamp serve to run the changed extension`,
+        `Asset '${relPath}' changed after this step was dispatched; ` +
+          `run the step again to use the changed file`,
       );
     }
     return new Response(bytes.buffer as ArrayBuffer, {

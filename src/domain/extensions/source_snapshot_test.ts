@@ -91,6 +91,22 @@ Deno.test("sourceSnapshotChanged: covers the local modules the catalog recorded"
   });
 });
 
+Deno.test("sourceSnapshotChanged: without recorded modules, covers the entry's relative imports", async () => {
+  await withSources(async (_dir, entry, helper) => {
+    await Deno.writeTextFile(
+      entry,
+      'import { h } from "./_lib/helper.ts";\nexport const v = h;\n',
+    );
+    const snapshot = await captureSourceSnapshot(entry, NO_MODULES);
+    assertEquals(snapshot.files.includes(helper), true);
+    assertEquals(await sourceSnapshotChanged(snapshot), false);
+
+    // A pull that changes only a helper module.
+    await Deno.writeTextFile(helper, "export const h = 2;\n");
+    assertEquals(await sourceSnapshotChanged(snapshot), true);
+  });
+});
+
 Deno.test("StaleExtensionSourceError: names the type and extension and says how to recover", () => {
   const error = new StaleExtensionSourceError("@acme/thing", "@acme/ext");
   assertEquals(error.name, "StaleExtensionSourceError");

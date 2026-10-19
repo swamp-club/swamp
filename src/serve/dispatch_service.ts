@@ -212,16 +212,6 @@ export class DispatchService {
    * promise to learn which worker was pinned.
    */
   readonly #affinityInflight = new Map<string, Promise<string>>();
-  /**
-   * Each definition's bundle fingerprint, computed once from the JS and
-   * assets it ships (swamp-club#3594). Keyed by the definition, so a
-   * reload, which registers a new one, starts fresh.
-   */
-  readonly #bundleFingerprints = new WeakMap<
-    ModelDefinition,
-    Promise<string>
-  >();
-
   constructor(options: DispatchServiceOptions) {
     this.#options = options;
     this.#queueTimeoutMs = options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
@@ -1007,35 +997,21 @@ export class DispatchService {
     }
   }
 
+  /**
+   * Registers the definition's bundle under a fingerprint of its JS and of
+   * its assets as read now. The JS is what the definition's factory built
+   * from the source serve registered; the assets are read at each dispatch,
+   * as serve's own runs read them, so an edited asset ships under a new
+   * fingerprint. The recorded asset hashes let the data plane refuse bytes
+   * that changed after the fingerprint was taken (swamp-club#3594).
+   */
   async #ensureBundle(modelDef: ModelDefinition): Promise<string> {
     if (!modelDef.bundleSourceFactory) {
       // Built-in model: the worker's own binary carries it; enrollment
       // already guaranteed version lockstep.
       return `${BUILTIN_BUNDLE_PREFIX}${modelDef.type.normalized}`;
     }
-    let pending = this.#bundleFingerprints.get(modelDef);
-    if (!pending) {
-      const registering = this.#registerBundle(modelDef);
-      pending = registering;
-      this.#bundleFingerprints.set(modelDef, registering);
-      // A failure is retried by the next dispatch, not cached.
-      registering.catch(() => {
-        if (this.#bundleFingerprints.get(modelDef) === registering) {
-          this.#bundleFingerprints.delete(modelDef);
-        }
-      });
-    }
-    return await pending;
-  }
-
-  /**
-   * Registers the definition's bundle under a fingerprint of the JS and
-   * the assets as read now. The assets are hashed once, with the JS, so
-   * the fingerprint never pairs one version's JS with another's assets
-   * (swamp-club#3594); the data plane serves only assets that still match.
-   */
-  async #registerBundle(modelDef: ModelDefinition): Promise<string> {
-    const js = await modelDef.bundleSourceFactory!();
+    const js = await modelDef.bundleSourceFactory();
     const filesRoot = modelDef.extensionFilesRoot;
     const additionalFiles = modelDef.extensionAdditionalFiles;
     if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
@@ -1047,14 +1023,14 @@ export class DispatchService {
       });
       return fingerprint;
     }
-    const assetHashes: Record<string, string> = {};
+    const assetHashes = new Map<string, string>();
     const parts: string[] = [js];
     for (const relPath of [...additionalFiles].sort()) {
       try {
         const hash = await hashAssetBytes(
           await Deno.readFile(join(filesRoot, relPath)),
         );
-        assetHashes[relPath] = hash;
+        assetHashes.set(relPath, hash);
         parts.push(`${relPath}:${hash}`);
       } catch {
         parts.push(`${relPath}:missing`);

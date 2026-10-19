@@ -714,7 +714,7 @@ Deno.test("DataPlane: /bundle/{fp}/files skips declared files missing on disk", 
   });
 });
 
-Deno.test("DataPlane: an asset changed since its fingerprint was taken is refused, without its path (swamp-club#3594)", async () => {
+Deno.test("DataPlane: an asset changed after its fingerprint was taken is refused, without its path (swamp-club#3594)", async () => {
   await withHarness(async (h) => {
     const assetsRoot = join(h.tempDir, "assets");
     await Deno.mkdir(assetsRoot, { recursive: true });
@@ -724,9 +724,9 @@ Deno.test("DataPlane: an asset changed since its fingerprint was taken is refuse
       js: "export {};",
       filesRoot: assetsRoot,
       additionalFiles: ["a.txt"],
-      assetHashes: {
-        "a.txt": await hashAssetBytes(new TextEncoder().encode("v1")),
-      },
+      assetHashes: new Map([
+        ["a.txt", await hashAssetBytes(new TextEncoder().encode("v1"))],
+      ]),
     });
 
     const served = await h.plane.handle(
@@ -757,9 +757,9 @@ Deno.test("DataPlane: /bundle/{fp}/files lists only the assets the fingerprint h
       js: "export {};",
       filesRoot: assetsRoot,
       additionalFiles: ["hashed.txt", "late.txt"],
-      assetHashes: {
-        "hashed.txt": await hashAssetBytes(new TextEncoder().encode("x")),
-      },
+      assetHashes: new Map([
+        ["hashed.txt", await hashAssetBytes(new TextEncoder().encode("x"))],
+      ]),
     });
 
     const resp = await h.plane.handle(request("/bundle/fp-listed/files"));

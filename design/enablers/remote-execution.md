@@ -1048,26 +1048,26 @@ orchestrator's HTTP/2 data plane (`GET /bundle/{fingerprint}`) and loads it
 worker needs nothing pre-installed.
 
 The fingerprint is `sha256Hex(js)` over the bundled source, together with a
-hash of each declared asset's bytes when the extension has `additionalFiles`.
-It is computed once per behavior definition, on its first dispatch, and reused
-for later dispatches of that definition (see `DispatchService.#ensureBundle`).
-A worker caches what it has fetched, so a bundle ships at most once per worker
-per version.
+hash of each declared asset's bytes when the extension has `additionalFiles`,
+computed at dispatch time (see `DispatchService.#ensureBundle`). A worker
+caches what it has fetched, so a bundle ships at most once per worker per
+version.
 
-A fingerprint names one fixed set of bytes (swamp-club#3594). The bundle is
-built only from the source the definition was registered from: the definition
-records the content of its source files at registration
-(`src/domain/extensions/source_snapshot.ts`), and once they changed on disk,
-for example after a `--server` pull serve has not reloaded, bundling refuses
-with `StaleExtensionSourceError` rather than ship workers code serve does not
-run itself. The step fails until a reload registers the definition again. A
-repo-local model edited between the per-run refresh and the dispatch is
-refused the same way. A bundle already built for the definition keeps
-shipping, since it is the code serve runs. The data plane likewise serves an
-asset only while its bytes match the hash in the fingerprint, and answers 409
-otherwise; the listing route lists only the assets the fingerprint hashed. This
-mirrors the versioned-handle data cache: code and data both cache by content or
-version identity and travel over the same h2 data plane.
+A fingerprint names one fixed set of bytes (swamp-club#3594). The JS is what
+the definition's `bundleSourceFactory` built, once, from the source the
+definition was registered from: the definition records the content of its
+source files and their relative imports before they are bundled and imported
+(`src/domain/extensions/source_snapshot.ts`). Once they changed on disk, for
+example after a `--server` pull serve has not reloaded, bundling refuses with
+`StaleExtensionSourceError` rather than ship workers code serve does not run
+itself; the step fails until serve registers the definition again (a reload or
+restart for a pulled extension, the next run's refresh for a repo-local one). A
+bundle already built for the definition keeps shipping, since it is the code
+serve runs. Assets are read at each dispatch, as serve's own runs read them, so
+an edited asset ships under a new fingerprint. The data plane serves an asset
+only while its bytes match the hash in the fingerprint, and answers 409 for one
+changed between the dispatch and the fetch; the listing route lists only the
+assets the fingerprint hashed.
 
 Built-in behaviors ship **no bundle**. The dispatch carries a `builtin:<type>`
 sentinel, and the worker resolves the behavior from its own binary's registry.
@@ -1658,10 +1658,10 @@ every run instead; see
    (`swamp extension pull @name --force`)
 3. A pull, update, install or rm made through serve (`--server`) reloads
    serve's extensions itself once the change is on disk (swamp-club#3594): the
-   response carries a `serveReload` outcome, and the CLI reports it (in
-   `--json` mode as its own `{ "serveReload": … }` document). A change made
-   any other way, such as a pull on the host without `--server`, needs a
-   reload:
+   response carries a `serveReload` outcome, and the CLI reports it. In
+   `--json` mode it prints its own `{ "serveReload": … }` document, with
+   `null` and the reload command when serve did not reload. A change made any
+   other way, such as a pull on the host without `--server`, needs a reload:
    - **Local**: `swamp serve reload` reads `.swamp/serve.pid` and sends SIGHUP
    - **Remote**: `swamp serve reload --server wss://host:port` sends a
      `serve.reload` WebSocket request (requires admin authorization)
