@@ -1067,9 +1067,24 @@ export class SwampClubClient {
           `You do not have permission to revoke tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
         );
       }
-      if (res.status === 404) {
+      let serverError: unknown;
+      try {
+        serverError = (JSON.parse(text) as { error?: unknown })?.error;
+      } catch {
+        serverError = undefined;
+      }
+      // an older swamp-club answers an unknown token with 422
+      if (
+        (res.status === 404 || res.status === 422) &&
+        serverError === "Token not found"
+      ) {
         throw new UserError(
           `Token "${tokenId}" not found in collective "${collectiveSlug}".`,
+        );
+      }
+      if (res.status === 404) {
+        throw new UserError(
+          `Collective "${collectiveSlug}" not found.`,
         );
       }
       throw new UserError(

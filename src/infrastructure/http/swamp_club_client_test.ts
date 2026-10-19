@@ -1241,7 +1241,47 @@ Deno.test("SwampClubClient - revokeCollectiveToken reports an unknown outcome wh
   }
 });
 
-Deno.test("SwampClubClient - revokeCollectiveToken surfaces the server error on 422", async () => {
+Deno.test("SwampClubClient - revokeCollectiveToken reports an unknown token on 404 Token not found", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Token not found" }, { status: 404 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      'Token "tok-1" not found in collective "myorg".',
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokeCollectiveToken reports an unknown collective on 404 Not found", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Not found" }, { status: 404 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      'Collective "myorg" not found.',
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokeCollectiveToken reports an unknown token on an older server's 422", async () => {
   const mock = startMockServer(() =>
     Response.json({ error: "Token not found" }, { status: 422 })
   );
@@ -1252,8 +1292,30 @@ Deno.test("SwampClubClient - revokeCollectiveToken surfaces the server error on 
       () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
       UserError,
     );
-    assertStringIncludes(err.message, "HTTP 422");
-    assertStringIncludes(err.message, "Token not found");
+    assertEquals(
+      err.message,
+      'Token "tok-1" not found in collective "myorg".',
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokeCollectiveToken surfaces any other 422 verbatim", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Invalid token id" }, { status: 422 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      'Failed to revoke collective token (HTTP 422): {"error":"Invalid token id"}',
+    );
   } finally {
     await mock.shutdown();
   }
