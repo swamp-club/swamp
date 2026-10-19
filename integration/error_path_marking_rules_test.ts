@@ -109,7 +109,7 @@ const PINNED: readonly string[] = [
   // expression's place in a definition, and an extension-relative name.
   // Marking them would only cost diagnostics.
   "src/domain/models/data_writer.ts: `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,",
-  "src/domain/vaults/vault_secret_bag.ts: `The secret '${key}' in vault '${vaultName}' at ${entry.location} was not loaded before delivery`,",
+  "src/domain/vaults/vault_secret_bag.ts: `The secret '${key}' in vault '${vaultName}' (at ${entry.location}) was not loaded before delivery`,",
   'src/infrastructure/http/swamp_club_client.ts: `Request to ${this.serverUrl}${path} timed out after ${seconds}s.`, "timeout",',
   "src/libswamp/auth/server_login.ts: `${serverUrl} returned a response that is not JSON to ${method} ${path} ` + `(HTTP ${resp.status}). ",
   "src/libswamp/auth/server_login.ts: `Could not reach ${serverUrl} (${method} ${path}): ${ describeCauses(err) }`,",

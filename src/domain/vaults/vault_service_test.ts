@@ -639,6 +639,7 @@ Deno.test("VaultService.get: refresh warnings carry neither the command's output
     assertEquals(messages.length, 1);
     assertStringIncludes(messages[0], "TOKEN");
     assertStringIncludes(messages[0], "Returning stale value");
+    assertStringIncludes(messages[0], "run the refresh command by hand");
     assertEquals(messages[0].includes(LEAK), false);
   }
 });

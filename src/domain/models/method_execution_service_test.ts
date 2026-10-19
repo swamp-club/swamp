@@ -5061,7 +5061,7 @@ Deno.test("executeWorkflow - a load failure fails the step before any check or m
         { secretLoader: loader },
       ),
     Error,
-    "Failed to load secret 'missing' from vault 'v' at globalArguments.token",
+    "Failed to load secret 'missing' from vault 'v' (at globalArguments.token)",
   );
   assertEquals(error.message.includes("other-s3cret"), false);
   assertEquals(delivered.check, undefined);

@@ -246,7 +246,7 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     assertStringIncludes(error.message, "vault.get(test-vault, missing-key)");
     assertStringIncludes(
       error.message,
-      "Secret 'missing-key' not found in vault 'test-vault' (at methods.run.arguments.cmd)",
+      "vault.get(test-vault, missing-key) (at methods.run.arguments.cmd): Secret 'missing-key' not found in vault 'test-vault'",
     );
     assertEquals(error.code, "secret_reference_unavailable");
   });

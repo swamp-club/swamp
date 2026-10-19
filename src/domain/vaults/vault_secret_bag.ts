@@ -345,7 +345,7 @@ export class VaultSecretBag {
     if (value === undefined) {
       const { vaultName, key } = entry.reference;
       throw new Error(
-        `The secret '${key}' in vault '${vaultName}' at ${entry.location} was not loaded before delivery`,
+        `The secret '${key}' in vault '${vaultName}' (at ${entry.location}) was not loaded before delivery`,
       );
     }
     return value;

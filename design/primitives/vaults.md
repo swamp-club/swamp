@@ -187,7 +187,8 @@ When `VaultService.get()` is called with refresh options configured:
 4. If the command fails, or succeeds with empty stdout, log a warning and
    return the stale value. An empty result is never written back. The warning
    names the key and the vault, never the command's output or the error it
-   threw: a refresh command prints the secret it mints.
+   threw (a refresh command prints the secret it mints), and says to run the
+   command by hand to see why it failed.
 
 This is invisible to callers: a `vault.get()` in CEL expressions and workflows
 refreshes when its value is loaded for delivery, with no extra workflow code.

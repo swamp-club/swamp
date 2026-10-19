@@ -2164,7 +2164,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a missing key fails at evaluat
           "unrestricted",
         ),
       Error,
-      "Secret 'missing' not found in vault 'v' (at methods.run.arguments.cmd)",
+      "(at methods.run.arguments.cmd): Secret 'missing' not found in vault 'v'",
     );
     assertEquals(
       (error as { code?: string }).code,

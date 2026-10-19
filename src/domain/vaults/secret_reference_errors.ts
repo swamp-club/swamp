@@ -24,7 +24,8 @@ import type { SecretReference } from "./secret_bag_registry.ts";
 /**
  * A vault.get() reference names a key its vault does not hold, as the
  * vault's existence check answers it. The message names the vault, the key
- * and where the reference is written, never a value.
+ * and where the reference is written, never a value, in the shape every
+ * reference error takes: `<what failed> (at <path>): <reason>`.
  */
 export class SecretReferenceUnavailableError extends UserError {
   constructor(
@@ -33,7 +34,7 @@ export class SecretReferenceUnavailableError extends UserError {
     location: string,
   ) {
     super(
-      `Failed to resolve vault expression ${call}: Secret '${reference.key}' not found in vault '${reference.vaultName}' (at ${location})`,
+      `Failed to resolve vault expression ${call} (at ${location}): Secret '${reference.key}' not found in vault '${reference.vaultName}'`,
       "secret_reference_unavailable",
     );
     this.name = "SecretReferenceUnavailableError";
@@ -42,9 +43,10 @@ export class SecretReferenceUnavailableError extends UserError {
 
 /**
  * The error a vault reference fails with, `context` saying which reference
- * and where: a refusal by the run's vault access keeps its
- * `vault_access_denied` code, and any other error keeps its text, on one
- * line, as the eager read reported it. A missing key is already its own.
+ * and where it is written (`<what failed> (at <path>)`): a refusal by the
+ * run's vault access keeps its `vault_access_denied` code, and any other
+ * error keeps its text, on one line, as the eager read reported it. A
+ * missing key is already its own.
  */
 export function secretReferenceError(context: string, error: unknown): Error {
   if (error instanceof SecretReferenceUnavailableError) return error;

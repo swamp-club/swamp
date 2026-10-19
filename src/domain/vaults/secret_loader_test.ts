@@ -115,7 +115,7 @@ Deno.test("SecretLoader.load: a failed read names the vault, the key and the loc
   const error = await assertRejects(
     () => loaderOver(service).load(bag, sentinel),
     Error,
-    "Failed to load secret 'missing' from vault 'v' at methods.run.arguments.cmd: ",
+    "Failed to load secret 'missing' from vault 'v' (at methods.run.arguments.cmd): ",
   );
   assertEquals(error.message.includes("other-s3cret"), false);
 });
@@ -132,7 +132,7 @@ Deno.test("SecretLoader.load: a load runs under the run's vault access, and a re
     const error = await assertRejects(
       () => loaderOver(service).load(bag, sentinel),
       UserError,
-      "Failed to load secret 'a' from vault 'v' at loc: Reading vault 'v' is refused",
+      "Failed to load secret 'a' from vault 'v' (at loc): Reading vault 'v' is refused",
     );
     assertEquals(error.code, "vault_access_denied");
   });

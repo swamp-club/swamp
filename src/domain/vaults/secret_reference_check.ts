@@ -83,7 +83,7 @@ export async function checkSecretReference(
     });
   } catch (error) {
     throw secretReferenceError(
-      `Failed to resolve vault expression ${options.call}`,
+      `Failed to resolve vault expression ${options.call} (at ${options.location})`,
       error,
     );
   }

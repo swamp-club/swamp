@@ -402,7 +402,7 @@ Deno.test("load at delivery: a missing key fails the step at evaluation with sec
         assertEquals(status, "failed");
         assertStringIncludes(
           errors.join("\n"),
-          `Secret 'absent' not found in vault '${VAULT}' (at `,
+          `): Secret 'absent' not found in vault '${VAULT}'`,
         );
         assertEquals(deliveries, []);
         assertEquals(await auditedReads(repoDir), { loads: [], probes: [] });
@@ -632,7 +632,7 @@ Deno.test("load at delivery: a local_encryption secret its vault cannot decrypt 
     const message = errors.join("\n");
     assertStringIncludes(
       message,
-      `Failed to load secret 'token' from vault '${VAULT}' at `,
+      `Failed to load secret 'token' from vault '${VAULT}' (at `,
     );
     assertEquals(message.includes("s3cret-value"), false);
     assertEquals(deliveries, []);

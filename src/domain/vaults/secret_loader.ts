@@ -88,7 +88,7 @@ export class SecretLoader {
           value = await vaultService.get(vaultName, key, LOAD_PURPOSE);
         } catch (error) {
           throw secretReferenceError(
-            `Failed to load secret '${key}' from vault '${vaultName}' at ${location}`,
+            `Failed to load secret '${key}' from vault '${vaultName}' (at ${location})`,
             error,
           );
         }

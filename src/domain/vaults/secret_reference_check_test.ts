@@ -127,7 +127,7 @@ Deno.test("checkSecretReference: a key has() denies fails with secret_reference_
       assertEquals(error.code, "secret_reference_unavailable");
       assertEquals(
         error.message,
-        `Failed to resolve vault expression ${CALL}: Secret 'token' not found in vault 'erp' (at ${LOCATION})`,
+        `Failed to resolve vault expression ${CALL} (at ${LOCATION}): Secret 'token' not found in vault 'erp'`,
       );
       await assertRejects(() => check(service, registry, "token"));
       assertEquals(ctx.getOperationsByMethod("has").length, 2);
@@ -156,7 +156,7 @@ Deno.test("checkSecretReference: a refusal by the run's vault access keeps its c
         assertEquals(error.code, "vault_access_denied");
         assertStringIncludes(
           error.message,
-          `Failed to resolve vault expression ${CALL}: Reading vault 'erp' is refused`,
+          `Failed to resolve vault expression ${CALL} (at ${LOCATION}): Reading vault 'erp' is refused`,
         );
       });
       assertEquals(ctx.getOperationsByMethod("has").length, 1);
@@ -177,7 +177,7 @@ Deno.test("checkSecretReference: a provider that refuses its own credentials fai
         const error = await assertRejects(
           () => check(service, new SecretBagRegistry(), "token"),
           Error,
-          `Failed to resolve vault expression ${CALL}: Access denied to secret 'token'`,
+          `Failed to resolve vault expression ${CALL} (at ${LOCATION}): Access denied to secret 'token'`,
         );
         assertEquals(error instanceof SecretReferenceUnavailableError, false);
         assertEquals(error.message.includes("s3cret"), false);
@@ -194,7 +194,7 @@ Deno.test("checkSecretReference: an unknown vault fails with the vault service's
   );
   assertStringIncludes(
     error.message,
-    `Failed to resolve vault expression ${CALL}`,
+    `Failed to resolve vault expression ${CALL} (at ${LOCATION}): `,
   );
   assertEquals(error.message.includes("\n"), false);
 });
