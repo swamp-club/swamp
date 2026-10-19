@@ -114,7 +114,8 @@ export const RUN_COMMIT_STATUSES = [
  * failed or cancelled run's record is its outcome), and discards on an
  * error. `fn` must therefore resolve with the run's terminal status, not
  * throw, when the run fails or is cancelled: a throw discards the run's
- * record.
+ * record back to what its last checkpoint committed, since a run
+ * checkpoints as it saves its record (swamp-club#3587).
  */
 export function runOutcomeDisposition(
   outcome: CommitLogOutcome<{ readonly status: string }>,

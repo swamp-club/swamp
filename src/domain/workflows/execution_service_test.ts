@@ -1740,6 +1740,78 @@ Deno.test("workflow step applies child workflow's input defaults", async () => {
   });
 });
 
+Deno.test("WorkflowExecutionService: every run save is checkpointed after it is saved, a nested child run's included (swamp-club#3587)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    const childWorkflow = Workflow.create({
+      name: "child-workflow",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "child-step",
+          task: StepTask.modelMethod("some-model", "run", {}),
+        })],
+      })],
+    });
+    await workflowRepo.save(childWorkflow);
+    const parentWorkflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "call-child",
+          task: StepTask.workflow("child-workflow", {}),
+        })],
+      })],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    const checkpoints: { runId: string; status: string; saved: boolean }[] = [];
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+    service.runCheckpointer = {
+      async checkpoint(run) {
+        const stored = await runRepo.findById(
+          createWorkflowId(run.workflowId),
+          run.id,
+        );
+        checkpoints.push({
+          runId: run.id,
+          status: run.status,
+          saved: stored?.status === run.status,
+        });
+      },
+    };
+
+    let parentRunId: string | undefined;
+    for await (const event of service.run(parentWorkflow.name)) {
+      if (event.kind === "started" && parentRunId === undefined) {
+        parentRunId = event.runId;
+      }
+    }
+
+    assert(parentRunId !== undefined);
+    const childRunIds = new Set(
+      checkpoints.map((c) => c.runId).filter((id) => id !== parentRunId),
+    );
+    assertEquals(childRunIds.size, 1, "the child run is checkpointed");
+    assert(checkpoints.every((c) => c.saved), "each save lands first");
+    const last = (runId: string) =>
+      checkpoints.filter((c) => c.runId === runId).at(-1)?.status;
+    assertEquals(last(parentRunId), "succeeded");
+    assertEquals(last([...childRunIds][0]), "succeeded");
+  });
+});
+
 Deno.test("workflow step carries parent-authored runtime expressions into the child's provenance", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -8471,6 +8543,10 @@ class RecordingRunTracker implements RunTrackerRepository {
     if (this.reactivateError) throw this.reactivateError;
     this.reactivations.push({ runId, pid, hostname, instanceId });
     return this.reactivateResult;
+  }
+
+  reopenCompleted(_runId: string, _pid: number, _hostname: string): boolean {
+    return false;
   }
 
   findById(_runId: string): ActiveRun | null {

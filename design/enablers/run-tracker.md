@@ -134,6 +134,16 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    record and write it only while it is still `running` under that pid. A
    record with no row is left alone: it carries no hostname, so on a shared
    datastore its pid says nothing about whether it is alive.
+   On a v3 datastore the record is the one the run's last checkpoint
+   committed, which interrupted-writer recovery puts back before any of
+   these paths runs ("Interrupted runs" in `datastores.md`,
+   swamp-club#3587). When the owner's root fails to commit its final
+   record after an earlier checkpoint landed, the committed record still
+   says `running` while the owner has already completed the row; the owner
+   then puts the row back to `running` under its own pid
+   (`reopenCompleted`), so the same settling finds the run once the owner
+   is gone. If the run had suspended, it settles as `interrupted` rather
+   than `suspended`, and is resumed from there.
    `swamp workflow resume` on such a run, named with `--run` or the latest
    run, names `workflow recover` instead of saying to wait. Every path that
    interrupts a record after its owner died (`settleDeadOwnerRun`, the serve

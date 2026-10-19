@@ -710,7 +710,9 @@ block with `status` (`approved` | `rejected` | `timed_out`), actor identity,
 timestamp, and optional reason (`ApprovalView` in
 `src/libswamp/workflows/workflow_run_view.ts`).
 
-**Persistence:** The run record survives process restarts. Approve and resume
+**Persistence:** The run record survives process restarts, a crash included:
+on a v3 datastore the run checkpoints as it saves its record, so it
+comes back at its last checkpoint (swamp-club#3587). Approve and resume
 can happen from any machine with access to the repo (or a synced datastore).
 
 **forEach compatibility:** A `forEach` expansion of a `manual_approval` step

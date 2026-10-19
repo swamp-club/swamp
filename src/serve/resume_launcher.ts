@@ -88,6 +88,7 @@ import type { SignalWaitStore } from "../domain/workflows/signal_wait_store.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import { WorkflowRunCheckpointer } from "../infrastructure/persistence/workflow_run_checkpointer.ts";
 import { runGeneratorWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import {
   resumeRunVaultScope,
@@ -314,6 +315,7 @@ export async function startDetachedResume(
     // Assigned in the root below, which control flow analysis cannot see.
     let ephemeral = null as ReturnType<typeof createEphemeralStore> | null;
     let terminal: BufferTerminal = { kind: "done" };
+    const runCheckpointer = new WorkflowRunCheckpointer(ctx.repoContext);
     try {
       // The root covers the resume and its terminal frame; its flush is the
       // post-resume push. The cleanup and the parent's auto-resume run after
@@ -342,6 +344,7 @@ export async function startDetachedResume(
               ctx.datastoreConfig,
               stepLockHook,
               ctx.runTracker,
+              { runCheckpointer },
             );
 
             ephemeral = createEphemeralStore(
@@ -470,7 +473,10 @@ export async function startDetachedResume(
             }
           }
         },
-      );
+      ).catch(async (error) => {
+        await runCheckpointer.restoreUncommittedRuns(() => ctx.runTracker);
+        throw error;
+      }).finally(() => runCheckpointer.close());
       if (!buffer.finished) {
         const unconfirmed = await confirmRunReplicated(
           ctx,

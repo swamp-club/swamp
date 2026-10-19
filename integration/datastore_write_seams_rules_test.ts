@@ -987,6 +987,12 @@ const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   // lockfile's v3 publish commits the lockfile at its root's checkpoint.
   "src/infrastructure/persistence/repo_unit_of_work.ts: runInCommitLogEngineRoot (x2)",
   "src/infrastructure/datastore_v3/v3_lockfile_sync.ts: createV3LockfileSync",
+  // swamp-club#3587: a workflow run checkpoints as it saves its record, so a
+  // crashed v3 run keeps its record and its completed steps' data;
+  // checkpointFrom hands the run's open units' changes to the root, whose
+  // checkpoint commits them. It pushes nothing on v2.
+  "src/domain/workflows/execution_service.ts: WorkflowExecutionService",
+  "src/infrastructure/datastore_v3/commit_log_unit_of_work.ts: checkpointFrom",
 ];
 
 // ---------------------------------------------------------------------------

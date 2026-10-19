@@ -85,6 +85,7 @@ Deno.test("createV3LockfileSync: the publish commits the lockfile at its root's 
         }),
       hasOpenUnit: () =>
         commitLogParentFor(hook, currentUnitOfWork()) !== undefined,
+      checkpointOpenUnit: () => Promise.resolve("no-unit"),
       runRoot: (_rootOptions, fn) =>
         runInCommitLogRoot({ markDirty: hook }, options, (root) => fn(root)),
     });
