@@ -349,18 +349,23 @@ async function adoptExistingDefinition(
     for (const [key, value] of Object.entries(routedGlobal)) {
       existing.definition.setGlobalArgument(key, value);
     }
-    const leakedArgs = findLiteralSensitiveGlobalArgs(
-      modelDef.globalArguments,
-      existing.definition.globalArguments,
-    );
-    if (leakedArgs.length > 0) {
-      return {
-        ok: false,
-        error: validationFailed(
-          literalSensitiveGlobalArgsMessage(leakedArgs),
-        ),
-      };
-    }
+  }
+  // Checked whether or not this run changed the globals: a hand-edited
+  // definition skips the save-time refusal. The persisted form is checked,
+  // never the real values, which may hold plaintext read through data.
+  const leakedArgs = findLiteralSensitiveGlobalArgs(
+    modelDef.globalArguments,
+    existing.definition.globalArguments,
+  );
+  if (leakedArgs.length > 0) {
+    return {
+      ok: false,
+      error: validationFailed(
+        literalSensitiveGlobalArgsMessage(leakedArgs),
+      ),
+    };
+  }
+  if (globalArgsDiffer) {
     await deps.saveDefinition(existing.type, existing.definition);
   }
 

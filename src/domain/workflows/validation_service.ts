@@ -37,6 +37,7 @@ import {
 import { extractVaultReferences } from "../expressions/vault_reference_extractor.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
+import { literalSensitiveGlobalArgsMessage } from "../models/sensitive_field_extractor.ts";
 import { findForeignTaskText } from "./expression_evaluators.ts";
 
 /**
@@ -87,6 +88,11 @@ export type MethodResolution =
     requiredArgs: string[];
     definitionProvidedArgs?: string[];
     definitionProvidedArgValues?: Record<string, unknown>;
+    /**
+     * Paths of sensitive global arguments the stored definition holds as a
+     * literal secret, which the step refuses when it runs.
+     */
+    literalSensitiveGlobals?: string[];
   }
   | { status: "model_not_found" }
   | { status: "method_not_found"; modelType: string }
@@ -956,6 +962,16 @@ export class DefaultWorkflowValidationService
           ),
         ];
       case "resolved": {
+        if (resolution.literalSensitiveGlobals?.length) {
+          return [
+            WorkflowValidationResult.fail(
+              checkName,
+              literalSensitiveGlobalArgsMessage(
+                resolution.literalSensitiveGlobals,
+              ),
+            ),
+          ];
+        }
         const provided = new Set<string>([
           ...Object.keys(inputs ?? {}),
           ...Object.keys(globalArgs ?? {}),

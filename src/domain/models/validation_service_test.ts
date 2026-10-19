@@ -3238,3 +3238,138 @@ Deno.test("validateModel: a model name missing its prefix beside a vault read ke
     false,
   );
 });
+
+const sensitiveGlobalsModel: ModelDefinition = defineModel({
+  type: ModelType.create("test/sensitive-globals-validation"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({
+    token: z.string().meta({ sensitive: true }).optional(),
+    message: z.string().optional(),
+  }),
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  },
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals fails Global arguments for a literal sensitive global (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "literal-token",
+    globalArguments: { token: "GLOBAL-CANARY" },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'token'");
+  assertEquals(globalResult?.error?.includes("GLOBAL-CANARY"), false);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals catches a literal next to an expression field (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "literal-token-mixed",
+    globalArguments: {
+      token: "GLOBAL-CANARY",
+      message: "${{ inputs.message }}",
+    },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals passes a vault.get sensitive global (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "vault-token",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, true);
+});
+
+Deno.test("validateModel: a literal sensitive global passes without refuseLiteralSensitiveGlobals (swamp-club#3555)", async () => {
+  const service = new DefaultModelValidationService();
+  // A copy holding a run's real values, which may be plaintext read through data.
+  const definition = Definition.create({
+    name: "real-values",
+    globalArguments: { token: "Pl41n-s3cret" },
+  });
+  const { results } = await service.validateModel(
+    definition,
+    sensitiveGlobalsModel,
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, true);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals catches a literal an upgrade moves into a sensitive field (swamp-club#3555)", async () => {
+  const modelDef = renamingModel(
+    (old) => {
+      const { token, ...rest } = old;
+      return { ...rest, apiKey: token };
+    },
+    {
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+    },
+  );
+  const definition = Definition.create({
+    name: "stale-token",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { token: "GLOBAL-CANARY" },
+  });
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    modelDef,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'apiKey'");
+  assertEquals(globalResult?.error?.includes("GLOBAL-CANARY"), false);
+});
+
+Deno.test("validateModel: refuseLiteralSensitiveGlobals reports a schema error beside the literal (swamp-club#3555)", async () => {
+  const definition = Definition.create({
+    name: "literal-and-typo",
+    globalArguments: { token: "GLOBAL-CANARY", nope: "x" },
+  });
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    sensitiveGlobalsModel,
+    undefined,
+    undefined,
+    { refuseLiteralSensitiveGlobals: true },
+  );
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "'token'");
+  assertStringIncludes(globalResult?.error ?? "", "Unknown global argument");
+});

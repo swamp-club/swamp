@@ -49,6 +49,10 @@ import {
 } from "./template_syntax_scan.ts";
 import { CalVer } from "./calver.ts";
 import {
+  findLiteralSensitiveGlobalArgs,
+  literalSensitiveGlobalArgsMessage,
+} from "./sensitive_field_extractor.ts";
+import {
   DefinitionUpgradeService,
   MALFORMED_TYPE_VERSION_CODE,
 } from "./definition_upgrade_service.ts";
@@ -348,6 +352,13 @@ export interface ModelValidationOptions {
    * Every other check still reads the definition.
    */
   authoredGlobalArguments?: Record<string, unknown>;
+  /**
+   * Fail Global arguments when a field marked sensitive holds a literal
+   * secret. Set only when the definition is the one stored on disk: a copy
+   * holding the real values a run resolved may hold plaintext read through
+   * data where the stored definition holds its vault reference.
+   */
+  refuseLiteralSensitiveGlobals?: boolean;
 }
 
 /**
@@ -478,6 +489,38 @@ export function expressionPathErrorInModelWords(
  * Default implementation of the model validation service.
  */
 export class DefaultModelValidationService implements ModelValidationService {
+  /**
+   * Paths of sensitive global arguments that hold a literal secret in a
+   * stored definition, read after its upgrade chain: a run saves the upgraded
+   * copy, and an upgrade can move a literal into a sensitive field. Pass only
+   * a definition as stored (see
+   * {@link ModelValidationOptions.refuseLiteralSensitiveGlobals}).
+   */
+  findLiteralSensitiveGlobals(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): string[] {
+    return this.literalSensitiveGlobals(
+      this.upgradeInMemory(definition, modelDef).definition,
+      modelDef,
+    );
+  }
+
+  /**
+   * A literal secret in a sensitive field sits in cleartext in the stored
+   * file; a hand-edited one never met the save-time refusal. Without an
+   * upgrade, or when it fails, the copy is the definition itself.
+   */
+  private literalSensitiveGlobals(
+    upgraded: Definition,
+    modelDef: ModelDefinition,
+  ): string[] {
+    return findLiteralSensitiveGlobalArgs(
+      modelDef.globalArguments,
+      upgraded.globalArguments,
+    );
+  }
+
   async validateModel(
     definition: Definition,
     modelDef: ModelDefinition,
@@ -489,12 +532,27 @@ export class DefaultModelValidationService implements ModelValidationService {
     // would: after the upgrade chain, applied in memory and never saved
     // (swamp-club#3196). Every other check reads the definition as authored.
     const upgrade = this.upgradeInMemory(definition, modelDef);
+    const leakedArgs = options?.refuseLiteralSensitiveGlobals
+      ? this.literalSensitiveGlobals(upgrade.definition, modelDef)
+      : [];
+    const globalArgsResult = upgrade.failure
+      ? Promise.resolve(upgrade.failure)
+      : this.validateGlobalArguments(upgrade.definition, modelDef);
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
       this.validateTypeVersion(definition),
-      upgrade.failure
-        ? Promise.resolve(upgrade.failure)
-        : this.validateGlobalArguments(upgrade.definition, modelDef),
+      leakedArgs.length > 0
+        // Any other problem with the global arguments is reported with it.
+        ? globalArgsResult.then((result) =>
+          ValidationResult.fail(
+            "Global arguments",
+            [
+              literalSensitiveGlobalArgsMessage(leakedArgs),
+              ...(result.passed || !result.error ? [] : [result.error]),
+            ].join("\n"),
+          )
+        )
+        : globalArgsResult,
       this.validateMethodArguments(definition, modelDef),
     ];
 

@@ -265,6 +265,8 @@ export function createModelValidateDeps(
         modelDef as any,
         definitionRepo,
         checkContext,
+        // Definitions are read straight from the repository, as stored.
+        { refuseLiteralSensitiveGlobals: true },
       );
       return {
         results: outcome.results,

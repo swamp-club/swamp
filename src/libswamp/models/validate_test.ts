@@ -35,6 +35,11 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { join } from "@std/path";
+import { z } from "zod";
+import {
+  defineModel,
+  type ModelDefinition,
+} from "../../domain/models/model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -122,6 +127,53 @@ Deno.test(
         // Reached by UUID while models/ holds another "shared".
         assertEquals(await deps.isAutoDefinition(auto, type), true);
         assertEquals(await deps.isAutoDefinition(autoOnly, type), true);
+      } finally {
+        store.close();
+      }
+    });
+  },
+);
+
+Deno.test(
+  "createModelValidateDeps: validateModel refuses a literal sensitive global argument (swamp-club#3555)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const type = ModelType.create("test/sensitive-validate");
+      const modelDef: ModelDefinition = defineModel({
+        type,
+        version: "2026.01.01.1",
+        globalArguments: z.object({
+          token: z.string().meta({ sensitive: true }).optional(),
+        }),
+        methods: {
+          run: {
+            description: "Run",
+            arguments: z.object({}),
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+        },
+      });
+      const definition = Definition.create({
+        name: "hand-edited",
+        globalArguments: { token: "GLOBAL-CANARY" },
+      });
+      const store = new CatalogStore(":memory:");
+      try {
+        const deps = createModelValidateDeps(
+          dir,
+          undefined,
+          undefined,
+          new FileSystemUnifiedDataRepository(dir, undefined, store),
+          store,
+        );
+        const { results } = await deps.validateModel(
+          definition,
+          modelDef,
+          type,
+        );
+        const globalResult = results.find((r) => r.name === "Global arguments");
+        assertEquals(globalResult?.passed, false);
+        assertStringIncludes(globalResult?.error ?? "", "'token'");
       } finally {
         store.close();
       }

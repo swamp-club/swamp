@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   DefaultWorkflowValidationService,
   type MethodResolution,
@@ -907,6 +907,37 @@ Deno.test("validateStepInputs: fails only on truly missing args when definition 
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, false);
   assertEquals(inputResult?.error, "Missing required inputs: region");
+});
+
+Deno.test("validateStepInputs: fails a step whose definition holds a literal sensitive global (swamp-club#3555)", async () => {
+  const resolver = mockResolver({
+    "deploy.run": {
+      status: "resolved",
+      requiredArgs: [],
+      literalSensitiveGlobals: ["apiKey"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("deploy", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertStringIncludes(inputResult?.error ?? "", "'apiKey'");
+  assertStringIncludes(inputResult?.error ?? "", "vault.get");
 });
 
 Deno.test("validateStepInputs: definition and step inputs overlap on the same key (no double-count, still passes)", async () => {
