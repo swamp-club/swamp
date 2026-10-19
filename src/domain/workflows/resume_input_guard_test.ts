@@ -154,7 +154,7 @@ Deno.test("checkResumeInputOverrides: refuses changing an input the gate and app
   );
   assertStringIncludes(
     message,
-    `To cancel it: 'swamp workflow cancel gated-destroy --run ${run.id}'. Then start a new run with all its inputs (swamp workflow run gated-destroy --input 'target=<value>')`,
+    `To cancel it: 'swamp workflow cancel gated-destroy --run ${run.id}'. Then start a new run with all its inputs (swamp workflow run gated-destroy --input ...)`,
   );
   assertEquals(message.includes("protected"), false, "message leaks a value");
   assertEquals(message.includes("scratch"), false, "message leaks a value");
@@ -542,20 +542,29 @@ Deno.test("checkResumeInputOverrides: a definition that cannot be read reads eve
         { stepName: "destroy" },
       ],
     });
-  // Missing, or failing to load: what the step ran cannot be told.
-  await refusal(
+  // Missing, or failing to load: what the step ran cannot be told, and the
+  // refusal says so rather than claiming the step read the input.
+  const missing = await refusal(
     wf,
     ran(),
     { other: "x" },
     undefined,
     () => Promise.resolve(undefined),
   );
-  await refusal(
-    wf,
-    ran(),
-    { other: "x" },
-    undefined,
-    () => Promise.reject(new Error("unreadable")),
+  assertStringIncludes(
+    missing,
+    'Input "other" counts as used by step "gate" (its behavior definition was not found).',
+  );
+  assertEquals(missing.includes("already used"), false, missing);
+  assertStringIncludes(
+    await refusal(
+      wf,
+      ran(),
+      { other: "x" },
+      undefined,
+      () => Promise.reject(new Error("unreadable")),
+    ),
+    'counts as used by step "gate" (its behavior definition could not be read)',
   );
 
   // A model named by an expression is not looked up at all.
@@ -628,7 +637,7 @@ Deno.test("checkResumeInputOverrides: a record the workflow no longer has reads 
   });
   assertStringIncludes(
     await refusal(wf, run, { anything: "x" }),
-    'used by step "gate"',
+    'Input "anything" counts as used by step "gate" (it is not in the workflow any more).',
   );
 });
 
@@ -754,8 +763,70 @@ Deno.test("checkResumeInputOverrides: a workflow edited since the run started re
   // As it ran: only "gate" and "destroy" read target, and an unread input
   // can still be supplied.
   await accepts(wf, await withPlan(wf), { other: "x" });
-  // Edited since: its finished steps read every input.
-  await refusal(wf, await withPlan(authored), { other: "x" });
+  // Edited since: its finished steps read every input, and the refusal says
+  // why instead of naming steps that do not read it.
+  const edited = await refusal(wf, await withPlan(authored), { other: "x" });
+  assertStringIncludes(
+    edited,
+    'The workflow changed since the run started, so every step that ran counts as reading every input, including "other".',
+  );
+  assertEquals(edited.includes("already used by"), false, edited);
+});
+
+Deno.test("checkResumeInputOverrides: an edited workflow names real readers apart from the assumed ones", async () => {
+  // The user's case: only the step after the gate was edited to read token.
+  const asRun = Workflow.create({
+    name: "edited-after-gate",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          shell("show", "echo ${{ inputs.target }}"),
+          approval("approve", "Proceed?", ["show"]),
+          shell("use", "echo", ["approve"]),
+        ],
+      }),
+    ],
+  });
+  const onDisk = Workflow.create({
+    name: "edited-after-gate",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          shell("show", "echo ${{ inputs.target }}"),
+          approval("approve", "Proceed?", ["show"]),
+          shell("use", "echo tok=${{ inputs.token }}", ["approve"]),
+        ],
+      }),
+    ],
+  });
+  const data = storedRun(asRun, "suspended", {
+    main: [
+      { stepName: "show", status: "succeeded" },
+      { stepName: "approve", status: "succeeded" },
+      { stepName: "use" },
+    ],
+  }).toData();
+  data.runPlan = {
+    fingerprint: "evaluated",
+    definitionFingerprint: await computeWorkflowFingerprint(asRun),
+  };
+  const run = WorkflowRun.fromData(data);
+  const message = await refusal(onDisk, run, {
+    token: "x",
+    target: "other",
+  });
+  // show really reads target; nothing that ran reads token.
+  assertStringIncludes(
+    message,
+    'Input "target" was already used by step "show"',
+  );
+  assertStringIncludes(
+    message,
+    'the workflow changed since the run started, so every step that ran counts as reading every input, including "token"',
+  );
+  assertEquals(message.includes('"token" was already used'), false, message);
 });
 
 Deno.test("checkResumeInputOverrides: --from is named only when it resets every step that used the input", async () => {
@@ -926,7 +997,11 @@ Deno.test("checkResumeInputOverrides: a run replaying the evaluated cache reads 
   const data = approvedRun(wf).toData();
   data.replayedEvaluatedCache = true;
   const replayed = WorkflowRun.fromData(data);
-  await refusal(edited, replayed, { target: "protected" });
+  const message = await refusal(edited, replayed, { target: "protected" });
+  assertStringIncludes(
+    message,
+    'The run replayed the evaluated cache (--last-evaluated), whose steps may differ from the workflow on disk, so every step that ran counts as reading every input, including "target".',
+  );
   // The same value is still no change.
   await accepts(edited, replayed, { target: "scratch" });
   // Without the flag, the edited workflow alone decides.

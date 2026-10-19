@@ -717,7 +717,13 @@ since), or once the run replayed the evaluated cache (`replayedEvaluatedCache`).
 A run recorded before either existed is read against the workflow on disk. A
 behavior definition edited since the run is read as it is now: nothing records
 what it held, and whoever may edit it may edit the guarded step's own definition
-too.
+too. The refusal keeps the two apart: a step an expression of which reads the
+input "already used" it; a step only assumed to read every input is named with
+why (its behavior definition was not found or could not be read, its behavior is
+named by an expression, or it is not in the workflow any more); and a run-wide
+reason (the run replayed the evaluated cache, or the workflow changed since the
+run started) is said once, as every step that ran counting as reading every
+input.
 
 The way out is a new run, or, for a failed run, `--from` the first step that
 read a refused key, which the refusal names only when retrying from it resets

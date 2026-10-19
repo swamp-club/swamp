@@ -51,6 +51,11 @@ interface StepReads {
   readonly names: ReadonlySet<string>;
   /** It reads `inputs` whole, by a computed key, or in text that does not parse. */
   readonly opaque: boolean;
+  /**
+   * Set when the step is only assumed to read every input, because what it
+   * read cannot be told: why, for the refusal to say.
+   */
+  readonly assumed?: string;
 }
 
 /**
@@ -62,8 +67,27 @@ export type DefinitionData = (
   modelIdOrName: string,
 ) => Promise<unknown | undefined>;
 
-const READS_EVERYTHING: StepReads = { names: new Set(), opaque: true };
 const READS_NOTHING: StepReads = { names: new Set(), opaque: false };
+
+/** A step assumed to read every input, and why. */
+function assumedToReadEverything(because: string): StepReads {
+  return { names: new Set(), opaque: true, assumed: because };
+}
+
+const NOT_IN_WORKFLOW = "it is not in the workflow any more";
+const NAMED_BY_EXPRESSION = "its behavior is named by an expression";
+const DEFINITION_UNREADABLE = "its behavior definition could not be read";
+const DEFINITION_NOT_FOUND = "its behavior definition was not found";
+
+/** Who a refused input counts as read by. */
+interface Readers {
+  /** Steps an expression of which reads it. */
+  readonly read: string[];
+  /** Steps assumed to read it, each with why. */
+  readonly assumed: { step: string; because: string }[];
+  /** Read by every finished step, for the run-wide reason. */
+  everyStep: boolean;
+}
 
 /**
  * Refuses a resume whose inputs change a value a finished step read. Throws
@@ -85,7 +109,7 @@ export async function checkResumeInputOverrides(
 
   const definitions = new Map<string, Promise<StepReads>>();
   const definitionReads = (name: string, missing: StepReads) => {
-    const cacheKey = `${missing.opaque}\0${name}`;
+    const cacheKey = `${missing.assumed ?? ""}\0${name}`;
     let reads = definitions.get(cacheKey);
     if (!reads) {
       reads = readsOfDefinition(definitionData, name, missing);
@@ -93,34 +117,54 @@ export async function checkResumeInputOverrides(
     }
     return reads;
   };
-  // Edited since the run started, or replaying the evaluated cache, whose
-  // source may predate the workflow on disk: what its finished steps read
-  // can no longer be told from the workflow on disk.
+  // Replaying the evaluated cache, or edited since the run started: what
+  // the run's finished steps read can no longer be told from the workflow on
+  // disk, so every one of them counts as reading every input.
   const recorded = run.runPlan?.definitionFingerprint;
-  const workflowReads = run.replayedEvaluatedCache ||
-      (recorded !== undefined &&
-        recorded !== await computeWorkflowFingerprint(workflow))
-    ? READS_EVERYTHING
-    : readsOfExpressions(workflowExpressions(workflow));
-  const readersByKey = new Map<string, string[]>();
+  const runWide = run.replayedEvaluatedCache
+    ? "the run replayed the evaluated cache (--last-evaluated), whose steps may differ from the workflow on disk"
+    : recorded !== undefined &&
+        recorded !== await computeWorkflowFingerprint(workflow)
+    ? "the workflow changed since the run started"
+    : undefined;
+  const workflowReads = readsOfExpressions(workflowExpressions(workflow));
+  const readersByKey = new Map<string, Readers>();
+  const readersOf = (key: string) => {
+    let readers = readersByKey.get(key);
+    if (!readers) {
+      readers = { read: [], assumed: [], everyStep: false };
+      readersByKey.set(key, readers);
+    }
+    return readers;
+  };
   for (const jobRun of run.jobs) {
     for (const stepRun of jobRun.steps) {
       if (!ranAndStays(stepRun, reset)) continue;
-      const reads = union([
+      const sources = [
         workflowReads,
         ...await readsOf(workflow, jobRun, stepRun, definitionReads),
-      ]);
+      ];
+      const reads = union(sources.filter((r) => r.assumed === undefined));
+      const assumed = sources.find((r) => r.assumed !== undefined)?.assumed;
+      const step = stepRun.stepName;
       for (const key of changed) {
-        if (!reads.opaque && !reads.names.has(key)) continue;
-        const readers = readersByKey.get(key) ?? [];
-        if (!readers.includes(stepRun.stepName)) readers.push(stepRun.stepName);
-        readersByKey.set(key, readers);
+        if (reads.opaque || reads.names.has(key)) {
+          const readers = readersOf(key);
+          if (!readers.read.includes(step)) readers.read.push(step);
+        } else if (runWide !== undefined) {
+          readersOf(key).everyStep = true;
+        } else if (assumed !== undefined) {
+          const readers = readersOf(key);
+          if (!readers.assumed.some((a) => a.step === step)) {
+            readers.assumed.push({ step, because: assumed });
+          }
+        }
       }
     }
   }
   if (readersByKey.size === 0) return;
   throw new UserError(
-    refusalMessage(workflow, run, readersByKey),
+    refusalMessage(workflow, run, readersByKey, runWide, reset),
     "resume_input_consumed",
   );
 }
@@ -187,20 +231,25 @@ async function readsOf(
       const task = s.task.data;
       if (task.type !== "model_method") continue;
       if (task.modelIdOrName) {
-        found.push(await definitionReads(task.modelIdOrName, READS_EVERYTHING));
+        found.push(
+          await definitionReads(
+            task.modelIdOrName,
+            assumedToReadEverything(DEFINITION_NOT_FOUND),
+          ),
+        );
       } else if (task.modelType && task.modelName) {
         // Direct execution adopts an existing definition of that name and
         // keeps its method arguments; with none, the definition is created
         // from the step's own arguments, read above.
         found.push(
           evaluated(task.modelType)
-            ? READS_EVERYTHING
+            ? assumedToReadEverything(NAMED_BY_EXPRESSION)
             : await definitionReads(task.modelName, READS_NOTHING),
         );
       }
     }
   }
-  if (!matched) found.push(READS_EVERYTHING);
+  if (!matched) found.push(assumedToReadEverything(NOT_IN_WORKFLOW));
   return found;
 }
 
@@ -214,12 +263,12 @@ async function readsOfDefinition(
   name: string,
   missing: StepReads,
 ): Promise<StepReads> {
-  if (evaluated(name)) return READS_EVERYTHING;
+  if (evaluated(name)) return assumedToReadEverything(NAMED_BY_EXPRESSION);
   let data: unknown;
   try {
     data = await definitionData(name);
   } catch {
-    return READS_EVERYTHING;
+    return assumedToReadEverything(DEFINITION_UNREADABLE);
   }
   if (data === undefined) return missing;
   return readsOfExpressions(
@@ -270,35 +319,66 @@ function stepExpressions(step: Step): string[] {
 }
 
 /**
- * Names each refused input and the steps that read it, never a value: inputs
- * may hold secrets. A failed run can retry from a step, which runs it and
- * every step after it again; a suspended run cannot.
+ * Names each refused input and why it counts as read, never a value: inputs
+ * may hold secrets. A step an expression of which reads it "already used" it;
+ * one only assumed to read every input says why; a run-wide reason (the run
+ * replayed the evaluated cache, or the workflow changed) is said once. A
+ * failed run can retry from a step, which runs it and every step after it
+ * again; a suspended run cannot.
  */
 function refusalMessage(
   workflow: Workflow,
   run: WorkflowRun,
-  readersByKey: ReadonlyMap<string, readonly string[]>,
+  readersByKey: ReadonlyMap<string, Readers>,
+  runWide: string | undefined,
+  reset: ResumeReset | undefined,
 ): string {
   const quoted = (names: readonly string[]) =>
     names.map((n) => `"${n}"`).join(", ");
+  const plural = (n: number, one: string, many: string) => n === 1 ? one : many;
   // Keys the same steps read are named together, to stay within serve's
   // error limit.
   const keysByReaders = new Map<
     string,
     { readers: readonly string[]; keys: string[] }
   >();
+  const keysByAssumption = new Map<string, string[]>();
+  const everyStepKeys: string[] = [];
   for (const [key, readers] of readersByKey) {
-    const group = keysByReaders.get(quoted(readers)) ?? { readers, keys: [] };
-    group.keys.push(key);
-    keysByReaders.set(quoted(readers), group);
+    if (readers.read.length > 0) {
+      const group = keysByReaders.get(quoted(readers.read)) ??
+        { readers: readers.read, keys: [] };
+      group.keys.push(key);
+      keysByReaders.set(quoted(readers.read), group);
+    } else if (readers.everyStep) {
+      everyStepKeys.push(key);
+    } else {
+      const why = readers.assumed.map((a) => `step "${a.step}" (${a.because})`)
+        .join(", ");
+      keysByAssumption.set(why, [...keysByAssumption.get(why) ?? [], key]);
+    }
   }
-  const parts = [...keysByReaders.values()].map(({ readers, keys }) =>
-    `${keys.length === 1 ? "input" : "inputs"} ${quoted(keys)} ${
-      keys.length === 1 ? "was" : "were"
-    } already used by ${readers.length === 1 ? "step" : "steps"} ${
-      quoted(readers)
-    }`
-  );
+  const parts = [
+    ...[...keysByReaders.values()].map(({ readers, keys }) =>
+      `${plural(keys.length, "input", "inputs")} ${quoted(keys)} ${
+        plural(keys.length, "was", "were")
+      } already used by ${plural(readers.length, "step", "steps")} ${
+        quoted(readers)
+      }`
+    ),
+    ...[...keysByAssumption].map(([why, keys]) =>
+      `${plural(keys.length, "input", "inputs")} ${quoted(keys)} ${
+        plural(keys.length, "counts", "count")
+      } as used by ${why}`
+    ),
+    ...(everyStepKeys.length > 0 && runWide !== undefined
+      ? [
+        `${runWide}, so every step that ran counts as reading every input, including ${
+          quoted(everyStepKeys)
+        }`,
+      ]
+      : []),
+  ];
   // A key the run has no value for cannot be compared: a run replaying a
   // cache written before its evaluation inputs were recorded keeps none.
   const unrecorded = [...readersByKey.keys()].filter((key) =>
@@ -307,7 +387,7 @@ function refusalMessage(
   const noValue = unrecorded.length === 0
     ? ""
     : unrecorded.length < readersByKey.size
-    ? ` The run recorded no value for ${quoted(unrecorded)} to compare with.`
+    ? ` The run recorded no ${quoted(unrecorded)} to compare with.`
     : readersByKey.size === 1
     ? " The run recorded no value for it to compare with."
     : " The run recorded none of them to compare with.";
@@ -318,9 +398,13 @@ function refusalMessage(
     .join(" ");
   const name = quoteShellWord(workflow.name);
   const newRun =
-    `a new run with all its inputs (swamp workflow run ${name} ${inputArgs})`;
+    `a new run with all its inputs (swamp workflow run ${name} --input ...)`;
   const from = run.status === "failed"
-    ? retryStepResetting(workflow, run, readersByKey)
+    ? retryStepResetting(
+      workflow,
+      run,
+      readerSteps(run, readersByKey, reset),
+    )
     : undefined;
   const wayOut = from !== undefined
     ? `Retry from "${from}" (swamp workflow resume ${name} --run ${run.id} --from ${
@@ -332,7 +416,7 @@ function refusalMessage(
     ? `${suspendedWayOut(workflow, run)} Then start ${newRun}.`
     : `Start ${newRun}.`;
   // The run id first: serve cuts an error at 512 characters.
-  return `Run ${run.id} is unchanged: resume cannot change an input a step already ran with. ${
+  return `Run ${run.id} is unchanged: an input a step already ran with cannot change. ${
     capitalize(parts.join("; "))
   }.${noValue} ${wayOut}`;
 }
@@ -351,12 +435,32 @@ function capitalize(text: string): string {
  * the earliest in dependency order. The hint then falls back to a new run:
  * less helpful, never wrong.
  */
+/** Every step a refused input counts as read by, however it counts. */
+function readerSteps(
+  run: WorkflowRun,
+  readersByKey: ReadonlyMap<string, Readers>,
+  reset: ResumeReset | undefined,
+): Set<string> {
+  const steps = new Set<string>();
+  for (const readers of readersByKey.values()) {
+    for (const step of readers.read) steps.add(step);
+    for (const { step } of readers.assumed) steps.add(step);
+    if (readers.everyStep) {
+      for (const jobRun of run.jobs) {
+        for (const stepRun of jobRun.steps) {
+          if (ranAndStays(stepRun, reset)) steps.add(stepRun.stepName);
+        }
+      }
+    }
+  }
+  return steps;
+}
+
 function retryStepResetting(
   workflow: Workflow,
   run: WorkflowRun,
-  readersByKey: ReadonlyMap<string, readonly string[]>,
+  readers: ReadonlySet<string>,
 ): string | undefined {
-  const readers = new Set([...readersByKey.values()].flat());
   const first = run.jobs.flatMap((j) => j.steps)
     .find((s) => readers.has(s.stepName));
   if (!first) return undefined;
