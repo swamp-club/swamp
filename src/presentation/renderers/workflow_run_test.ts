@@ -157,6 +157,31 @@ Deno.test("ConsoleWorkflowRunRenderer: succeeded run shows Starting, pipe output
   assertStringIncludes(output, "Completed");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: data name portability warning shows as a warning line", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const outputAt = events.findIndex((e) => e.kind === "method_output");
+  events.splice(outputAt + 1, 0, {
+    kind: "method_event",
+    jobId: "extract",
+    stepId: "fetch",
+    modelName: "my-api",
+    methodName: "extract",
+    event: {
+      type: "data_name_portability_warning",
+      message: "Data name 'a:b' contains ':'",
+    },
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "warning");
+  assertStringIncludes(output, "Data name 'a:b' contains ':'");
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: failed run shows Failed with error", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
@@ -918,6 +943,17 @@ Deno.test("JsonWorkflowRunRenderer: superseded_runs and vault warning go to stde
         message: "use double quotes",
       },
     });
+    handlers.method_event({
+      kind: "method_event",
+      jobId: "main",
+      stepId: "deploy",
+      modelName: "deploy-shell",
+      methodName: "execute",
+      event: {
+        type: "data_name_portability_warning",
+        message: "Data name 'a:b' contains ':'",
+      },
+    });
     assertEquals(stdout.length, 0);
     assertEquals(stderr.map((line) => JSON.parse(line)), [
       { event: "superseded_runs", cancelledRunIds: ["run-0"] },
@@ -930,6 +966,11 @@ Deno.test("JsonWorkflowRunRenderer: superseded_runs and vault warning go to stde
         warning: "sensitive_value_in_command_line",
         modelName: "deploy-shell",
         message: "use double quotes",
+      },
+      {
+        warning: "data_name_portability",
+        modelName: "deploy-shell",
+        message: "Data name 'a:b' contains ':'",
       },
     ]);
   } finally {

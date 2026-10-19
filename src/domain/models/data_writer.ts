@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 import { getLogger } from "@logtape/logtape";
-import { Data, isReservedDataName } from "../data/mod.ts";
+import { Data, dataNamePortability, isReservedDataName } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
 import type {
   DeferredWriteReceipt,
@@ -553,6 +553,39 @@ function redactOutsideVaultReferences(
 }
 
 /**
+ * Applies {@link dataNamePortability} to a data name about to be written
+ * (swamp-club#3568). Throws when this host cannot store the name; otherwise
+ * emits one warning per name for a name that will not store correctly on
+ * Windows, so an author on Linux or macOS sees it. The name is never changed.
+ */
+function checkDataNamePortability(
+  name: string,
+  modelType: ModelType,
+  os: typeof Deno.build.os,
+  warned: Set<string>,
+  onEvent?: (event: MethodExecutionEvent) => void,
+): void {
+  const portability = dataNamePortability(name, os);
+  if (portability.kind === "refuse") {
+    throw wordedError(
+      wordedText((w) =>
+        `Data name '${name}' in ${w.noun} '${modelType.normalized}' ${portability.problem}, ` +
+        `so this Windows host cannot store it. Use a different name.`
+      ),
+    );
+  }
+  if (portability.kind === "warn" && !warned.has(name)) {
+    warned.add(name);
+    onEvent?.({
+      type: "data_name_portability_warning",
+      message: `Data name '${name}' ${portability.problem}, ` +
+        `so it will not store correctly on Windows. ` +
+        `Use a different name to keep this data portable.`,
+    });
+  }
+}
+
+/**
  * Creates a writeResource function bound to a specific execution context.
  *
  * The returned function validates data against the resource's Zod schema (warn on failure),
@@ -591,6 +624,7 @@ export function createResourceWriter(
   onEvent?: (event: MethodExecutionEvent) => void,
   redactor?: SecretRedactor,
   deferred = false,
+  os: typeof Deno.build.os = Deno.build.os,
 ): {
   writeResource: (
     specName: string,
@@ -603,6 +637,7 @@ export function createResourceWriter(
 } {
   const handles: DataHandle[] = [];
   const deferredReceipts: DeferredWriteReceipt[] = [];
+  const portabilityWarned = new Set<string>();
   const writerLogger = getLogger([
     "swamp",
     "data-writer",
@@ -726,6 +761,14 @@ export function createResourceWriter(
         }
       }
     }
+
+    checkDataNamePortability(
+      instanceName,
+      modelType,
+      os,
+      portabilityWarned,
+      onEvent,
+    );
 
     // Process sensitive fields before serialization
     const hasSensitiveFields = effectiveSpec.sensitiveOutput ||
@@ -1152,6 +1195,7 @@ export function createFileWriterFactory(
   runtimeTags?: Record<string, string>,
   definitionName?: string,
   deferred = false,
+  os: typeof Deno.build.os = Deno.build.os,
 ): {
   createFileWriter: (
     specName: string,
@@ -1164,6 +1208,7 @@ export function createFileWriterFactory(
   const handles: DataHandle[] = [];
   const writers: DefaultDataWriter[] = [];
   const deferredReceipts: DeferredWriteReceipt[] = [];
+  const portabilityWarned = new Set<string>();
 
   const createFileWriter = (
     specName: string,
@@ -1256,6 +1301,14 @@ export function createFileWriterFactory(
         }
       }
     }
+
+    checkDataNamePortability(
+      instanceName,
+      modelType,
+      os,
+      portabilityWarned,
+      callbacks?.onEvent,
+    );
 
     const resolvedOptions: ResolvedDataWriterOptions = {
       name: instanceName,

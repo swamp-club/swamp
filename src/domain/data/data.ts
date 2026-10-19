@@ -45,6 +45,70 @@ export function isReservedDataName(name: string): boolean {
 }
 
 /**
+ * Printable characters the Windows file API rejects in a file name; it also
+ * rejects the control characters U+0001 to U+001F.
+ */
+const WINDOWS_FORBIDDEN_CHARACTERS = '<>:"|?*';
+
+/** Device names Windows reserves, alone or followed by an extension. */
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+/**
+ * Whether a data name can be stored as a file name on every platform
+ * (swamp-club#3568). `problem` completes the sentence "Data name 'x' ...".
+ */
+export type DataNamePortability =
+  | { kind: "ok" }
+  | { kind: "warn" | "refuse"; problem: string };
+
+/**
+ * Checks a data name against Windows file-name rules, since the filesystem
+ * datastore stores each data name as a directory name.
+ *
+ * A character the Windows file API rejects is refused on Windows, where the
+ * write would fail anyway, and warned about elsewhere so an author on Linux
+ * or macOS sees it. A reserved device name or a trailing dot or space is only
+ * warned about, on every platform: Windows may strip or accept these, so
+ * refusing them could break a write that works today. The name is never
+ * changed, so nothing already stored moves.
+ */
+export function dataNamePortability(
+  name: string,
+  os: typeof Deno.build.os,
+): DataNamePortability {
+  const forbidden = [...name].find((c) =>
+    WINDOWS_FORBIDDEN_CHARACTERS.includes(c) || (c > "\0" && c < " ")
+  );
+  if (forbidden !== undefined) {
+    const shown = forbidden < " "
+      ? `the control character U+${
+        forbidden.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")
+      }`
+      : `'${forbidden}'`;
+    return {
+      kind: os === "windows" ? "refuse" : "warn",
+      problem: `contains ${shown}, which Windows does not allow in file names`,
+    };
+  }
+  if (WINDOWS_RESERVED_NAME.test(name)) {
+    return { kind: "warn", problem: "is a device name Windows reserves" };
+  }
+  if (name.endsWith(".")) {
+    return {
+      kind: "warn",
+      problem: "ends with a dot, which Windows drops from file names",
+    };
+  }
+  if (name.endsWith(" ")) {
+    return {
+      kind: "warn",
+      problem: "ends with a space, which Windows drops from file names",
+    };
+  }
+  return { kind: "ok" };
+}
+
+/**
  * Properties required to create a new Data entity.
  */
 export interface CreateDataProps {

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { Data, isReservedDataName } from "./data.ts";
+import { Data, dataNamePortability, isReservedDataName } from "./data.ts";
 import type { OwnerDefinition } from "./data_metadata.ts";
 
 function createTestOwner(): OwnerDefinition {
@@ -961,4 +961,97 @@ Deno.test("isReservedDataName: returns false for non-reserved names", () => {
   assertEquals(isReservedDataName("vms"), false);
   assertEquals(isReservedDataName("my-data"), false);
   assertEquals(isReservedDataName("latest-version"), false);
+});
+
+Deno.test("dataNamePortability: refuses each Windows-forbidden character on windows and warns elsewhere", () => {
+  for (const c of ["<", ">", ":", '"', "|", "?", "*"]) {
+    const name = `owner${c}repo`;
+    const windows = dataNamePortability(name, "windows");
+    assertEquals(windows.kind, "refuse");
+    if (windows.kind === "refuse") {
+      assertEquals(
+        windows.problem,
+        `contains '${c}', which Windows does not allow in file names`,
+      );
+    }
+    assertEquals(dataNamePortability(name, "linux").kind, "warn");
+    assertEquals(dataNamePortability(name, "darwin").kind, "warn");
+  }
+});
+
+Deno.test("dataNamePortability: names a control character by code point", () => {
+  for (let code = 1; code < 32; code++) {
+    const result = dataNamePortability(
+      `a${String.fromCharCode(code)}b`,
+      "windows",
+    );
+    assertEquals(result.kind, "refuse");
+    if (result.kind === "refuse") {
+      assertEquals(
+        result.problem,
+        `contains the control character U+${
+          code.toString(16).toUpperCase().padStart(4, "0")
+        }, which Windows does not allow in file names`,
+      );
+    }
+  }
+});
+
+Deno.test("dataNamePortability: reserved device names only warn, on every os", () => {
+  const reserved = [
+    "CON",
+    "con",
+    "Prn",
+    "AUX",
+    "nul",
+    "COM1",
+    "com9",
+    "LPT1",
+    "lpt9",
+    "NUL.txt",
+    "con.tar.gz",
+  ];
+  for (const name of reserved) {
+    for (const os of ["linux", "darwin", "windows"] as const) {
+      assertEquals(dataNamePortability(name, os), {
+        kind: "warn",
+        problem: "is a device name Windows reserves",
+      });
+    }
+  }
+});
+
+Deno.test("dataNamePortability: a trailing dot or space only warns, on every os", () => {
+  for (const os of ["linux", "darwin", "windows"] as const) {
+    assertEquals(dataNamePortability("trailing.", os), {
+      kind: "warn",
+      problem: "ends with a dot, which Windows drops from file names",
+    });
+    assertEquals(dataNamePortability("trailing ", os), {
+      kind: "warn",
+      problem: "ends with a space, which Windows drops from file names",
+    });
+  }
+});
+
+Deno.test("dataNamePortability: ordinary names are ok on every os", () => {
+  const names = [
+    "main",
+    "owner-repo-branches",
+    "result-prod",
+    "COM10",
+    "CONSOLE",
+    "LPT0",
+    "a.b",
+    ".hidden",
+    "with space",
+    "café",
+    "token-main",
+    "log",
+  ];
+  for (const name of names) {
+    for (const os of ["linux", "darwin", "windows"] as const) {
+      assertEquals(dataNamePortability(name, os), { kind: "ok" }, name);
+    }
+  }
 });

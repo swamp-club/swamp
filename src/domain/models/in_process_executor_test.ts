@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import type { MethodExecutionEvent } from "./method_events.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import {
@@ -220,6 +221,56 @@ Deno.test("InProcessExecutor: collects writer handles when method returns no dat
   // returned no dataHandles
   assertEquals(result.outputs.length > 0, true);
   assertEquals(result.outputs[0].kind, "persisted");
+});
+
+// The executor hands its onEvent to both writers, so a data name portability
+// warning reaches the run's output for files as well as resources
+// (swamp-club#3568). On Windows these names are refused instead.
+Deno.test({
+  name:
+    "InProcessExecutor: both writers emit data name portability warnings to the context",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const executor: MethodExecutor = {
+      execute: async (_def, _method, context) => {
+        await context.writeResource!("output", "a:b", { value: "test" });
+        context.createFileWriter!("blob", "c?d");
+        return {};
+      },
+    };
+    const modelDef: ModelDefinition = {
+      ...testModelDef,
+      files: {
+        blob: {
+          contentType: "text/plain",
+          lifetime: "ephemeral",
+          garbageCollection: 10,
+        },
+      },
+    };
+    const events: MethodExecutionEvent[] = [];
+    const context: MethodContext = {
+      ...createMockContext(),
+      onEvent: (e: MethodExecutionEvent) => events.push(e),
+    };
+
+    const result = await new InProcessExecutor(
+      executor,
+      testDefinition,
+      testMethod,
+      modelDef,
+      context,
+      "test",
+    ).execute(createMockRequest());
+
+    assertEquals(result.status, "success");
+    const warnings = events.flatMap((e) =>
+      e.type === "data_name_portability_warning" ? [e.message] : []
+    );
+    assertEquals(warnings.length, 2);
+    assertStringIncludes(warnings[0], "'a:b'");
+    assertStringIncludes(warnings[1], "'c?d'");
+  },
 });
 
 Deno.test("InProcessExecutor: uses explicit dataHandles when method returns them", async () => {

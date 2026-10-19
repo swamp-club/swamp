@@ -332,11 +332,21 @@ Deno.test("ConsoleModelMethodRunRenderer: handles method_event types", () => {
         error: "field required",
       },
     });
+    handlers.method_event({
+      kind: "method_event",
+      modelName: "test-model",
+      methodName: "run",
+      event: {
+        type: "data_name_portability_warning",
+        message: "Data name 'a:b' contains ':'",
+      },
+    });
   });
   const output = lines.join("\n");
   assertStringIncludes(output, "password");
   assertStringIncludes(output, "Warning");
   assertStringIncludes(output, "field required");
+  assertStringIncludes(output, "Data name 'a:b' contains ':'");
 });
 
 // --- JsonModelMethodRunRenderer tests ---
@@ -426,6 +436,15 @@ Deno.test("JsonModelMethodRunRenderer: vault single-quote warning goes to stderr
         message: "use double quotes",
       },
     });
+    renderer.handlers().method_event({
+      kind: "method_event",
+      modelName: "test-model",
+      methodName: "run",
+      event: {
+        type: "data_name_portability_warning",
+        message: "Data name 'a:b' contains ':'",
+      },
+    });
     assertEquals(stdout.length, 0);
     assertEquals(stderr.map((line) => JSON.parse(line)), [
       {
@@ -437,6 +456,11 @@ Deno.test("JsonModelMethodRunRenderer: vault single-quote warning goes to stderr
         warning: "sensitive_value_in_command_line",
         modelName: "test-model",
         message: "use double quotes",
+      },
+      {
+        warning: "data_name_portability",
+        modelName: "test-model",
+        message: "Data name 'a:b' contains ':'",
       },
     ]);
   } finally {

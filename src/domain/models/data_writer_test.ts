@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { z } from "zod";
 import {
   createFileWriterFactory,
@@ -35,6 +40,7 @@ import {
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
+import type { MethodExecutionEvent } from "./method_events.ts";
 import { sensitiveOutputTargetVaults } from "./sensitive_output_vault.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
@@ -2709,4 +2715,220 @@ Deno.test("createResourceWriter: a secret holding an escape sequence written bac
   );
 
   assertEquals(repo.persisted().includes("MIIEsecretbody"), false);
+});
+
+// --- data name portability (swamp-club#3568) ---
+
+/** A mock repository that counts every call that could write data. */
+function createCountingRepo(): UnifiedDataRepository & {
+  writes: () => number;
+  savedNames: () => string[];
+} {
+  const repo = createMockRepo();
+  let writes = 0;
+  const savedNames: string[] = [];
+  return {
+    ...repo,
+    save: (type, id, data, content) => {
+      writes++;
+      savedNames.push(data.name);
+      return repo.save(type, id, data, content);
+    },
+    saveDeferred: (type, id, data, content) => {
+      writes++;
+      savedNames.push(data.name);
+      return repo.saveDeferred(type, id, data, content);
+    },
+    allocateVersion: (type, id, data, options) => {
+      writes++;
+      savedNames.push(data.name);
+      return repo.allocateVersion(type, id, data, options);
+    },
+    writes: () => writes,
+    savedNames: () => savedNames,
+  };
+}
+
+function portabilityWarnings(events: MethodExecutionEvent[]): string[] {
+  return events.flatMap((e) =>
+    e.type === "data_name_portability_warning" ? [e.message] : []
+  );
+}
+
+function resourceWriterOn(
+  repo: UnifiedDataRepository,
+  os: typeof Deno.build.os,
+  events: MethodExecutionEvent[],
+  dataOutputOverrides?: Parameters<typeof createResourceWriter>[5],
+) {
+  return createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    dataOutputOverrides,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    (e) => events.push(e),
+    undefined,
+    false,
+    os,
+  ).writeResource;
+}
+
+function fileWriterOn(
+  repo: UnifiedDataRepository,
+  os: typeof Deno.build.os,
+  events: MethodExecutionEvent[],
+  dataOutputOverrides?: Parameters<typeof createFileWriterFactory>[5],
+) {
+  return createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+    undefined,
+    dataOutputOverrides,
+    { onEvent: (e) => events.push(e) },
+    undefined,
+    undefined,
+    undefined,
+    false,
+    os,
+  ).createFileWriter;
+}
+
+for (const os of ["linux", "darwin"] as const) {
+  Deno.test(`createResourceWriter: on ${os} a Windows-forbidden name is written unchanged with one warning`, async () => {
+    const repo = createCountingRepo();
+    const events: MethodExecutionEvent[] = [];
+    const writeResource = resourceWriterOn(repo, os, events);
+
+    await writeResource("item", "owner:repo:branches", { value: "a" });
+    await writeResource("item", "owner:repo:branches", { value: "b" });
+
+    assertEquals(repo.savedNames(), [
+      "owner:repo:branches",
+      "owner:repo:branches",
+    ]);
+    const warnings = portabilityWarnings(events);
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "'owner:repo:branches'");
+    assertStringIncludes(warnings[0], "contains ':'");
+  });
+
+  Deno.test(`createFileWriter: on ${os} a Windows-forbidden name is written unchanged with one warning`, async () => {
+    const repo = createCountingRepo();
+    const events: MethodExecutionEvent[] = [];
+    const createFileWriter = fileWriterOn(repo, os, events);
+
+    await createFileWriter("log", "a?b").writeText("x");
+    await createFileWriter("log", "a?b").writeText("y");
+
+    assertEquals(repo.savedNames(), ["a?b", "a?b"]);
+    const warnings = portabilityWarnings(events);
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "contains '?'");
+  });
+}
+
+Deno.test("createResourceWriter: on windows a Windows-forbidden name is refused before any write", async () => {
+  const repo = createCountingRepo();
+  const events: MethodExecutionEvent[] = [];
+  const writeResource = resourceWriterOn(repo, "windows", events);
+
+  const error = await assertRejects(() =>
+    writeResource("item", "owner:repo:branches", { value: "a" })
+  );
+  assertStringIncludes(
+    (error as Error).message,
+    "Data name 'owner:repo:branches'",
+  );
+  assertStringIncludes((error as Error).message, "contains ':'");
+  assertEquals(repo.writes(), 0);
+  assertEquals(portabilityWarnings(events), []);
+});
+
+Deno.test("createFileWriter: on windows a Windows-forbidden name is refused before any write", () => {
+  const repo = createCountingRepo();
+  const events: MethodExecutionEvent[] = [];
+  const createFileWriter = fileWriterOn(repo, "windows", events);
+
+  assertThrows(
+    () => createFileWriter("log", "a|b"),
+    Error,
+    "contains '|'",
+  );
+  assertEquals(repo.writes(), 0);
+});
+
+Deno.test("createResourceWriter: on windows a reserved device name or trailing dot is written with a warning", async () => {
+  const repo = createCountingRepo();
+  const events: MethodExecutionEvent[] = [];
+  const writeResource = resourceWriterOn(repo, "windows", events);
+
+  await writeResource("item", "CON", { value: "a" });
+  await writeResource("item", "trailing.", { value: "a" });
+
+  assertEquals(repo.savedNames(), ["CON", "trailing."]);
+  assertEquals(portabilityWarnings(events).length, 2);
+});
+
+Deno.test("createResourceWriter: a portable name writes with no warning on every os", async () => {
+  for (const os of ["linux", "darwin", "windows"] as const) {
+    const repo = createCountingRepo();
+    const events: MethodExecutionEvent[] = [];
+    const writeResource = resourceWriterOn(repo, os, events);
+
+    await writeResource("item", "owner-repo-branches", { value: "a" });
+
+    assertEquals(repo.savedNames(), ["owner-repo-branches"]);
+    assertEquals(portabilityWarnings(events), []);
+  }
+});
+
+Deno.test("createResourceWriter: the portability check covers the vary suffix", async () => {
+  const overrides = [{ specName: "item", resolvedVarySuffix: "us:east" }];
+
+  const events: MethodExecutionEvent[] = [];
+  const repo = createCountingRepo();
+  await resourceWriterOn(repo, "linux", events, overrides)("item", "plain", {
+    value: "a",
+  });
+  assertEquals(repo.savedNames(), ["plain-us:east"]);
+  assertStringIncludes(portabilityWarnings(events)[0], "'plain-us:east'");
+
+  const windowsRepo = createCountingRepo();
+  await assertRejects(
+    () =>
+      resourceWriterOn(windowsRepo, "windows", [], overrides)("item", "plain", {
+        value: "a",
+      }),
+    Error,
+    "'plain-us:east'",
+  );
+  assertEquals(windowsRepo.writes(), 0);
+});
+
+Deno.test("createFileWriter: the portability check covers the vary suffix", async () => {
+  const overrides = [{ specName: "log", resolvedVarySuffix: "us:east" }];
+
+  const events: MethodExecutionEvent[] = [];
+  const repo = createCountingRepo();
+  await fileWriterOn(repo, "linux", events, overrides)("log", "plain")
+    .writeText("x");
+  assertEquals(repo.savedNames(), ["plain-us:east"]);
+  assertStringIncludes(portabilityWarnings(events)[0], "'plain-us:east'");
+
+  const windowsRepo = createCountingRepo();
+  assertThrows(
+    () => fileWriterOn(windowsRepo, "windows", [], overrides)("log", "plain"),
+    Error,
+    "'plain-us:east'",
+  );
+  assertEquals(windowsRepo.writes(), 0);
 });

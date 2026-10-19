@@ -612,6 +612,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             break;
           case "vault_single_quote_warning":
           case "sensitive_value_in_command_line":
+          case "data_name_portability_warning":
             writeOutput(
               this.pipe.statusLine(
                 displayName,
@@ -1302,6 +1303,12 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         } else if (e.event.type === "sensitive_value_in_command_line") {
           unguardedConsole.error(JSON.stringify({
             warning: "sensitive_value_in_command_line",
+            modelName: e.modelName,
+            message: e.event.message,
+          }));
+        } else if (e.event.type === "data_name_portability_warning") {
+          unguardedConsole.error(JSON.stringify({
+            warning: "data_name_portability",
             modelName: e.modelName,
             message: e.event.message,
           }));

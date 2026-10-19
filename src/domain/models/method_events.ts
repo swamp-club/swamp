@@ -54,6 +54,14 @@ export type MethodExecutionEvent =
   }
   | {
     /**
+     * A written data name cannot be stored on Windows as written
+     * (swamp-club#3568). The write went ahead on this host.
+     */
+    type: "data_name_portability_warning";
+    message: string;
+  }
+  | {
+    /**
      * A sensitive value read through data stays in the command line because
      * the shell cannot expand an environment variable where it sits.
      */

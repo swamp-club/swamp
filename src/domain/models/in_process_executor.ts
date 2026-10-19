@@ -206,7 +206,7 @@ export class InProcessExecutor {
       files,
       this.context.tagOverrides,
       this.context.dataOutputOverrides,
-      undefined, // callbacks
+      { onEvent: this.context.onEvent },
       this.definition.tags,
       this.context.runtimeTags,
       this.definition.name,
