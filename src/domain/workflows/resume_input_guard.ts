@@ -33,10 +33,11 @@ import { extractExpressions } from "../expressions/expression_parser.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import type { Job } from "./job.ts";
-import { evaluated } from "./resume_reset.ts";
+import { evaluated, planFailedRunResume } from "./resume_reset.ts";
 import type { ResumeReset } from "./resume_reset.ts";
 import type { Step } from "./step.ts";
 import type { Workflow } from "./workflow.ts";
+import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { JobRun, StepRun, WorkflowRun } from "./workflow_run.ts";
 
 /** The inputs one step's expressions read. */
@@ -56,6 +57,7 @@ export type DefinitionData = (
 ) => Promise<unknown | undefined>;
 
 const READS_EVERYTHING: StepReads = { names: new Set(), opaque: true };
+const READS_NOTHING: StepReads = { names: new Set(), opaque: false };
 
 /**
  * Refuses a resume whose inputs change a value a finished step read. Throws
@@ -76,15 +78,22 @@ export async function checkResumeInputOverrides(
   if (changed.length === 0) return;
 
   const definitions = new Map<string, Promise<StepReads>>();
-  const definitionReads = (modelIdOrName: string) => {
-    let reads = definitions.get(modelIdOrName);
+  const definitionReads = (name: string, missing: StepReads) => {
+    const cacheKey = `${missing.opaque}\0${name}`;
+    let reads = definitions.get(cacheKey);
     if (!reads) {
-      reads = readsOfDefinition(definitionData, modelIdOrName);
-      definitions.set(modelIdOrName, reads);
+      reads = readsOfDefinition(definitionData, name, missing);
+      definitions.set(cacheKey, reads);
     }
     return reads;
   };
-  const workflowReads = readsOfExpressions(workflowExpressions(workflow));
+  // Edited since the run started: what its finished steps read can no longer
+  // be told from the workflow on disk.
+  const recorded = run.runPlan?.definitionFingerprint;
+  const workflowReads = recorded !== undefined &&
+      recorded !== await computeWorkflowFingerprint(workflow)
+    ? READS_EVERYTHING
+    : readsOfExpressions(workflowExpressions(workflow));
   const readersByKey = new Map<string, string[]>();
   for (const jobRun of run.jobs) {
     for (const stepRun of jobRun.steps) {
@@ -119,7 +128,7 @@ function changedKeys(
 ): string[] {
   const merged = deepMerge({ ...stored }, resumeInputs);
   return Object.keys(resumeInputs).filter((key) =>
-    !(key in stored) ||
+    !Object.hasOwn(stored, key) ||
     canonicalJson(merged[key]) !== canonicalJson(stored[key])
   );
 }
@@ -153,7 +162,7 @@ async function readsOf(
   workflow: Workflow,
   jobRun: JobRun,
   stepRun: StepRun,
-  definitionReads: (modelIdOrName: string) => Promise<StepReads>,
+  definitionReads: (name: string, missing: StepReads) => Promise<StepReads>,
 ): Promise<StepReads[]> {
   const named = workflow.jobs.find((job) => job.name === jobRun.jobName);
   const jobs = named ? [named] : workflow.jobs.filter((j) => evaluated(j.name));
@@ -168,8 +177,18 @@ async function readsOf(
       matched = true;
       found.push(readsOfExpressions(stepExpressions(s)));
       const task = s.task.data;
-      if (task.type === "model_method" && task.modelIdOrName) {
-        found.push(await definitionReads(task.modelIdOrName));
+      if (task.type !== "model_method") continue;
+      if (task.modelIdOrName) {
+        found.push(await definitionReads(task.modelIdOrName, READS_EVERYTHING));
+      } else if (task.modelType && task.modelName) {
+        // Direct execution adopts an existing definition of that name and
+        // keeps its method arguments; with none, the definition is created
+        // from the step's own arguments, read above.
+        found.push(
+          evaluated(task.modelType)
+            ? READS_EVERYTHING
+            : await definitionReads(task.modelName, READS_NOTHING),
+        );
       }
     }
   }
@@ -178,21 +197,23 @@ async function readsOf(
 }
 
 /**
- * What a definition reads. One named by an expression, missing, or failing
- * to load reads everything: what the step ran cannot be told.
+ * What a definition reads. One named by an expression, or failing to load,
+ * reads everything: what the step ran cannot be told. `missing` is what a
+ * step that names no existing definition read.
  */
 async function readsOfDefinition(
   definitionData: DefinitionData,
-  modelIdOrName: string,
+  name: string,
+  missing: StepReads,
 ): Promise<StepReads> {
-  if (evaluated(modelIdOrName)) return READS_EVERYTHING;
+  if (evaluated(name)) return READS_EVERYTHING;
   let data: unknown;
   try {
-    data = await definitionData(modelIdOrName);
+    data = await definitionData(name);
   } catch {
     return READS_EVERYTHING;
   }
-  if (data === undefined) return READS_EVERYTHING;
+  if (data === undefined) return missing;
   return readsOfExpressions(
     extractExpressions(data).map((e) => e.celExpression),
   );
@@ -258,16 +279,14 @@ function refusalMessage(
     } ${quoted(readers)}`
   );
   const keys = [...readersByKey.keys()];
-  const readers = new Set([...readersByKey.values()].flat());
-  const firstReader = run.jobs.flatMap((j) => j.steps)
-    .find((s) => readers.has(s.stepName))!.stepName;
   const newRun = `swamp workflow run ${workflow.name} ${
     keys.map((k) => `--input ${k}=<value>`).join(" ")
   }`;
-  const wayOut = run.status === "failed"
-    ? `Retry from a step at or before the first that used them, which runs it and every step after it again (swamp workflow resume ${workflow.name} --run ${run.id} --from ${
-      stepTemplate(run, firstReader)
-    }), or start a new run (${newRun}).`
+  const from = run.status === "failed"
+    ? retryStepResetting(workflow, run, readersByKey)
+    : undefined;
+  const wayOut = from !== undefined
+    ? `Retry from "${from}", which runs it and every step after it again (swamp workflow resume ${workflow.name} --run ${run.id} --from ${from}), or start a new run (${newRun}).`
     : `Start a new run with the new value (${newRun}).`;
   // The run id first: serve cuts an error at 512 characters.
   return `Run ${run.id} is unchanged: resume cannot change an input a step already ran with. ${
@@ -279,11 +298,26 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** The template name `--from` takes for a stored step: a forEach iteration's template. */
-function stepTemplate(run: WorkflowRun, stepName: string): string {
-  for (const jobRun of run.jobs) {
-    const stepRun = jobRun.steps.find((s) => s.stepName === stepName);
-    if (stepRun) return stepRun.forEachTemplate ?? stepName;
+/**
+ * The first reader, as `--from` names it (a forEach iteration by its
+ * template), when retrying from it resets every step that read a refused
+ * input. Undefined when no single reader's retry does: readers in parallel
+ * branches, or a step `--from` cannot name.
+ */
+function retryStepResetting(
+  workflow: Workflow,
+  run: WorkflowRun,
+  readersByKey: ReadonlyMap<string, readonly string[]>,
+): string | undefined {
+  const readers = new Set([...readersByKey.values()].flat());
+  const first = run.jobs.flatMap((j) => j.steps)
+    .find((s) => readers.has(s.stepName));
+  if (!first) return undefined;
+  const template = first.forEachTemplate ?? first.stepName;
+  try {
+    const reset = planFailedRunResume(workflow, run, template);
+    return [...readers].every((r) => reset.steps.has(r)) ? template : undefined;
+  } catch {
+    return undefined;
   }
-  return stepName;
 }

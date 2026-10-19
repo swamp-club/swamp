@@ -702,16 +702,24 @@ or a retry), reopened after an abort, or skipped for its dependency or its job;
 a guarded skip read its guard. A record reads every input named in its authored
 step (task, prompt, `forEach.in`, `guard`, placement, name, an assert's
 `expr`), in its job's and the workflow's own fields (placement and tags every
-step inherits), and in the behavior definition a `modelIdOrName` step runs,
-which is evaluated with the run's inputs in scope. Reads are `inputs.X`,
-`inputs["X"]`, `run.inputs.X` or `run.inputs["X"]`; reading `inputs`,
-`run.inputs` or `run` whole or by a computed key reads them all. A record whose
-job or step name is an expression is read against every authored job or step
-whose name is one. What cannot be told reads every input: a definition that is
-missing, fails to load, or is named by an expression, and a record that matches
-no authored step (the workflow was edited since).
-The way out is a new run, or, for a failed run, `--from` a step at or before the
-first that read the key, which runs it again. An approval binds only what its
+step inherits), and in the behavior definition the step runs, which is
+evaluated with the run's inputs in scope: the one `modelIdOrName` names, or the
+existing definition a `modelType` + `modelName` step adopts (with none, the
+step's own arguments created it). Reads are `inputs.X`, `inputs["X"]`,
+`run.inputs.X` or `run.inputs["X"]`; reading `inputs`, `run.inputs` or `run`
+whole or by a computed key reads them all. A record whose job or step name is
+an expression is read against every authored job or step whose name is one.
+What cannot be told reads every input: a `modelIdOrName` definition that is
+missing, a definition that fails to load or is named by an expression, a record
+that matches no authored step, and every record once the workflow's fingerprint
+differs from the `runPlan.definitionFingerprint` recorded at run start (the
+workflow was edited since). A behavior definition edited since the run is read
+as it is now: nothing records what it held, and whoever may edit it may edit
+the guarded step's own definition too.
+
+The way out is a new run, or, for a failed run, `--from` the first step that
+read a refused key, which the refusal names only when retrying from it resets
+every step that read one (readers in parallel branches leave only a new run). An approval binds only what its
 prompt or earlier steps read: a `Proceed?` prompt over a step that reads
 `target` does not pin `target`, so a gate that must pin a value names it in its
 prompt or checks it in an earlier step.
