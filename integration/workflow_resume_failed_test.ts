@@ -86,12 +86,12 @@ import { isProcessGone } from "../src/infrastructure/runtime/process.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
-
-// Import models barrel to trigger built-in registration.
-import "../src/domain/models/models.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+
+// Import models barrel to trigger built-in registration.
+import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 

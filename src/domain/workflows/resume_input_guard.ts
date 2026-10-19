@@ -310,6 +310,10 @@ function capitalize(text: string): string {
  * template), when retrying from it resets every step that read a refused
  * input. Undefined when no single reader's retry does: readers in parallel
  * branches, or a step `--from` cannot name.
+ *
+ * The first reader is taken in record order, which across jobs may not be
+ * the earliest in dependency order. The hint then falls back to a new run:
+ * less helpful, never wrong.
  */
 function retryStepResetting(
   workflow: Workflow,

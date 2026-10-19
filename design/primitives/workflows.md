@@ -719,10 +719,10 @@ the guarded step's own definition too.
 
 The way out is a new run, or, for a failed run, `--from` the first step that
 read a refused key, which the refusal names only when retrying from it resets
-every step that read one (readers in parallel branches leave only a new run). An approval binds only what its
-prompt or earlier steps read: a `Proceed?` prompt over a step that reads
-`target` does not pin `target`, so a gate that must pin a value names it in its
-prompt or checks it in an earlier step.
+every step that read one (readers in parallel branches leave only a new run). An
+approval binds only what its prompt or earlier steps read: a `Proceed?` prompt
+over a step that reads `target` does not pin `target`, so a gate that must pin a
+value names it in its prompt or checks it in an earlier step.
 
 The run records the merged inputs it resumes with (`captureInputs` in
 `resumeWorkflow`, after the resume's provenance is derived), so the run record,
@@ -733,11 +733,11 @@ bindings never snapshot a resume-only value.
 Resume inputs are ordinary inputs once merged. Their values are substituted and
 persisted wherever run inputs are: evaluated definitions, step data of behaviors
 that record their arguments, the run record, and child runs they are forwarded
-to. They are not a secret channel. A credential minted
-during a gate is stored with `swamp vault put` while the run is suspended, and
-the post-gate step reads it with `vault.get(...)`, which is resolved per step,
-redacted in step data, and left raw in evaluated definitions. Resume passes at
-most the vault key name (swamp-club#2585).
+to. They are not a secret channel. A credential minted during a gate is stored
+with `swamp vault put` while the run is suspended, and the post-gate step reads
+it with `vault.get(...)`, which is resolved per step, redacted in step data, and
+left raw in evaluated definitions. Resume passes at most the vault key name
+(swamp-club#2585).
 
 **Input persistence:** A run's effective inputs are captured on the run record
 at run start (`run.captureInputs` in

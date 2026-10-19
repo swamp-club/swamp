@@ -310,7 +310,7 @@ Deno.test("checkResumeInputOverrides: a guarded skip read its guard", async () =
   await refusal(wf, run, { skip: false });
 });
 
-Deno.test("checkResumeInputOverrides: path 1 - --from the approval is refused, --from the gate is not", async () => {
+Deno.test("checkResumeInputOverrides: --from the approval is refused, --from the gate is not", async () => {
   const wf = gatedDestroy();
   const run = storedRun(wf, "failed", {
     main: [
