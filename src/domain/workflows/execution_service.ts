@@ -206,6 +206,8 @@ import {
 import { buildMethodContext } from "../models/method_context.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
+import { reservedWorkflowRunTag } from "./reserved_workflow_tags.ts";
+import { wordedError } from "../behavior_wording.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
 import { Definition } from "../definitions/definition.ts";
@@ -3691,6 +3693,15 @@ export class WorkflowExecutionService {
         // Refused before anything runs: a wait opened where its records
         // cannot be shared would accept a signal nothing ever applies.
         if (holdsSignalWait(found)) await this.openSignalWaits(found.name);
+        // Refused before any step runs, so a reserved tag a later step
+        // supplies cannot fail the run after earlier steps' side effects
+        // (swamp-club#3635).
+        const reservedTag = await reservedWorkflowRunTag(
+          found,
+          options?.runtimeTags,
+          this.definitionRepo,
+        );
+        if (reservedTag) throw wordedError(reservedTag);
 
         // Provenance for the runtime pass, collected from the workflow as
         // loaded from disk. Taken here rather than from the evaluation below

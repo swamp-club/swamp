@@ -39,6 +39,7 @@ import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
 import { literalSensitiveGlobalArgsMessage } from "../models/sensitive_field_extractor.ts";
 import { findForeignTaskText } from "./expression_evaluators.ts";
+import { reservedWorkflowTags } from "./reserved_workflow_tags.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -93,6 +94,12 @@ export type MethodResolution =
      * literal secret, which the step refuses when it runs.
      */
     literalSensitiveGlobals?: string[];
+    /**
+     * The refusal of a reserved tag key in the definition's tags or the
+     * type's spec defaults, which the step refuses when it runs
+     * (swamp-club#3635).
+     */
+    reservedTagRefusal?: string;
   }
   | { status: "model_not_found" }
   | { status: "method_not_found"; modelType: string }
@@ -234,7 +241,28 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
+    // 17. Reserved tag keys in the workflow's tags or a step's overrides
+    results.push(...this.validateReservedTags(workflow));
+
     return results;
+  }
+
+  /**
+   * Reserved tag keys the workflow declares: in its own tags or a step's data
+   * output overrides. A run refuses them before any step runs
+   * (swamp-club#3635).
+   */
+  private validateReservedTags(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const found = reservedWorkflowTags(workflow);
+    if (found.length === 0) return [WorkflowValidationResult.pass("Tags")];
+    return found.map(({ step, refusal }) =>
+      WorkflowValidationResult.fail(
+        step ? `Tags for '${step.stepName}' in job '${step.jobName}'` : "Tags",
+        refusal.text,
+      )
+    );
   }
 
   /**
@@ -974,6 +1002,15 @@ export class DefaultWorkflowValidationService
             ),
           ]
           : [];
+        const reservedTags = resolution.reservedTagRefusal
+          ? [
+            WorkflowValidationResult.fail(
+              `Tags for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
+              resolution.reservedTagRefusal,
+            ),
+          ]
+          : [];
+        const definitionProblems = [...literalGlobals, ...reservedTags];
         const provided = new Set<string>([
           ...Object.keys(inputs ?? {}),
           ...Object.keys(globalArgs ?? {}),
@@ -984,14 +1021,17 @@ export class DefaultWorkflowValidationService
         );
         if (missing.length > 0) {
           return [
-            ...literalGlobals,
+            ...definitionProblems,
             WorkflowValidationResult.fail(
               checkName,
               `Missing required inputs: ${missing.join(", ")}`,
             ),
           ];
         }
-        return [...literalGlobals, WorkflowValidationResult.pass(checkName)];
+        return [
+          ...definitionProblems,
+          WorkflowValidationResult.pass(checkName),
+        ];
       }
     }
   }

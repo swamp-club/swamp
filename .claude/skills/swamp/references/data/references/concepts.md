@@ -20,8 +20,9 @@ Standard tags categorize data:
 | `type=file`       | Binary/text file artifacts (including logs)     |
 | `specName=<name>` | Output spec key name (for `data.findBySpec()`)  |
 
-Tag keys starting with `_swamp.` are reserved for swamp. A run refuses one from
-a definition, spec, workflow, `--tag` or data output override; never write them.
+Tag keys starting with `_swamp.` are reserved for swamp. `behavior validate` and
+`workflow validate` fail on one in a definition, spec, workflow or data output
+override, and a run refuses it, `--tag` included; never write them.
 
 ## Lifetime Types
 

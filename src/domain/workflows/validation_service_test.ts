@@ -3145,3 +3145,108 @@ Deno.test("passes literal() around an unlisted root in step inputs", async () =>
     [],
   );
 });
+
+// Reserved tags (swamp-club#3635)
+
+const RESERVED_TAG = { "_swamp.sensitiveFields": JSON.stringify(["stdout"]) };
+
+function twoStepWorkflow(
+  props: {
+    tags?: Record<string, string>;
+    overrideTags?: Record<string, string>;
+  },
+): Workflow {
+  return Workflow.create({
+    name: "two-steps",
+    ...(props.tags ? { tags: props.tags } : {}),
+    jobs: [
+      Job.create({
+        name: "a",
+        steps: [
+          Step.create({ name: "a", task: StepTask.model("probe", "run") }),
+        ],
+      }),
+      Job.create({
+        name: "b",
+        steps: [
+          Step.create({
+            name: "b",
+            task: StepTask.model("probe", "run"),
+            ...(props.overrideTags
+              ? {
+                dataOutputOverrides: [{
+                  specName: "result",
+                  tags: props.overrideTags,
+                }],
+              }
+              : {}),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("validate: Tags passes when the workflow declares no reserved tag", async () => {
+  const results = await service.validate(
+    twoStepWorkflow({ tags: { team: "infra" }, overrideTags: { tier: "1" } }),
+  );
+  assertEquals(results.find((r) => r.name === "Tags")?.passed, true);
+  assertEquals(results.some((r) => r.name.startsWith("Tags for")), false);
+});
+
+Deno.test("validate: fails a reserved key in the workflow's tags", async () => {
+  const results = await service.validate(
+    twoStepWorkflow({ tags: RESERVED_TAG }),
+  );
+  const tags = results.find((r) => r.name === "Tags");
+  assertEquals(tags?.passed, false);
+  assertStringIncludes(
+    tags?.error ?? "",
+    "Tag '_swamp.sensitiveFields' from the workflow's tags is reserved",
+  );
+  assertEquals((tags?.error ?? "").includes('["stdout"]'), false);
+});
+
+Deno.test("validate: fails a reserved key in a later step's data output override", async () => {
+  const results = await service.validate(
+    twoStepWorkflow({ overrideTags: RESERVED_TAG }),
+  );
+  const tags = results.find((r) => r.name === "Tags for 'b' in job 'b'");
+  assertEquals(tags?.passed, false);
+  assertStringIncludes(
+    tags?.error ?? "",
+    "from the data output override for spec 'result' is reserved",
+  );
+  assertEquals(results.find((r) => r.name === "Tags"), undefined);
+});
+
+Deno.test("validateStepInputs: fails a step whose definition or spec defaults hold a reserved tag", async () => {
+  const refusal =
+    "Tag '_swamp.sensitiveFields' from the behavior definition's tags is reserved: tag keys starting with '_swamp.' are written by swamp alone. Remove it.";
+  const svc = new DefaultWorkflowValidationService(
+    mockResolver({
+      "probe.run": {
+        status: "resolved",
+        requiredArgs: [],
+        reservedTagRefusal: refusal,
+      },
+    }),
+  );
+
+  const results = await svc.validate(twoStepWorkflow({}));
+
+  for (const step of ["a", "b"]) {
+    const tags = results.find((r) =>
+      r.name === `Tags for '${step}' in job '${step}' (probe)`
+    );
+    assertEquals(tags?.passed, false);
+    assertEquals(tags?.error, refusal);
+  }
+  // Reported beside the step's inputs, not in place of them.
+  assertEquals(
+    results.find((r) => r.name === "Step inputs for 'a' in job 'a' (probe.run)")
+      ?.passed,
+    true,
+  );
+});

@@ -159,12 +159,26 @@ Tag keys under the `_swamp.` prefix are reserved for swamp. Readers trust them
 as swamp's own: `_swamp.sensitiveFields` chooses which fields resolve vault
 references, so the vaulting step must be the only way one reaches a record
 (swamp-club#3635). A key under the prefix from any user source is refused, never
-dropped. `DefaultMethodExecutionService.executeWorkflow` refuses the sources
-known before the method runs (definition, spec defaults, workflow tags, `--tag`,
-data output overrides), so the run fails ahead of the method's side effects. The
-writers refuse every source again on each write, including the method's own
-`overrides.tags` (`assertNoReservedRunTags` and `assertNoReservedTags` in
-`data_writer.ts`; `RESERVED_TAG_PREFIX` and `isReservedTagKey` in `data.ts`).
+dropped, and as early as the source is known:
+
+- `behavior validate` fails its Tags check on the definition's tags and the
+  type's spec defaults. `workflow validate` fails on the workflow's tags, each
+  step's data output overrides, and the definition and spec defaults of each
+  step that names a stored definition.
+- A workflow run refuses `--tag`, the workflow's tags, every step's data output
+  overrides, and the tags of each definition a step names literally, before any
+  step runs (`reservedWorkflowRunTag` in
+  `src/domain/workflows/reserved_workflow_tags.ts`). A later step's tag cannot
+  fail the run after earlier steps' side effects.
+- `DefaultMethodExecutionService.executeWorkflow` refuses every source known
+  before the method runs (definition, spec defaults, workflow tags, `--tag`,
+  data output overrides), which also covers steps named by an expression.
+- The writers refuse every source again on each write, including the method's
+  own `overrides.tags`.
+
+The refusal is `reservedRunTagRefusal` and `reservedTagRefusal` in
+`data_writer.ts` (`assertNoReservedRunTags` and `assertNoReservedTags` throw
+them); `RESERVED_TAG_PREFIX` and `isReservedTagKey` are in `data.ts`.
 `integration/reserved_tag_rules_test.ts` pins the files that may spell a
 reserved key.
 

@@ -39,6 +39,7 @@ import type {
   DataWriterCallbacks,
   FileOutputSpec,
   FileWriterOverrides,
+  ModelDefinition,
   ResolvedDataWriterOptions,
   ResourceOutputSpec,
   ResourceWriteOverrides,
@@ -49,6 +50,7 @@ import { isReservedVaultName } from "../vaults/vault_name.ts";
 import {
   type BehaviorWords,
   wordedError,
+  type WordedText,
   wordedText,
 } from "../behavior_wording.ts";
 import { currentVaultAccess } from "../vaults/run_vault_access.ts";
@@ -897,79 +899,132 @@ const typeAuthorRemedy = (w: BehaviorWords) =>
   `The ${w.noun} type's author must remove it.`;
 
 /**
- * Refuses a tag key under {@link RESERVED_TAG_PREFIX} from a source swamp does
- * not control (swamp-club#3635). Readers trust `_swamp.*` tags as swamp's own,
- * and {@link SENSITIVE_FIELDS_TAG} chooses which fields resolve vault
- * references, so the vaulting step must be the only way one reaches a record.
- * The message names the key and its source, never the value, which may be
- * sensitive.
+ * The refusal of a tag key under {@link RESERVED_TAG_PREFIX} from a source
+ * swamp does not control (swamp-club#3635), or undefined when `tags` holds
+ * none. Readers trust `_swamp.*` tags as swamp's own, and
+ * {@link SENSITIVE_FIELDS_TAG} chooses which fields resolve vault references,
+ * so the vaulting step must be the only way one reaches a record. The message
+ * names the key and its source, never the value, which may be sensitive.
  *
  * @param tags - The tags from one source, if any
  * @param source - Completes "Tag 'x' from …"
  * @param remedy - The sentence that says how to fix it
  */
-export function assertNoReservedTags(
+export function reservedTagRefusal(
   tags: Record<string, string> | undefined,
   source: (w: BehaviorWords) => string,
   remedy: (w: BehaviorWords) => string = () => "Remove it.",
-): void {
-  if (!tags) return;
+): WordedText | undefined {
+  if (!tags) return undefined;
   const key = findReservedTagKey(tags);
-  if (key === undefined) return;
-  throw wordedError(
-    wordedText((w) =>
-      `Tag '${key}' from ${source(w)} is reserved: tag keys starting with ` +
-      `'${RESERVED_TAG_PREFIX}' are written by swamp alone. ${remedy(w)}`
-    ),
+  if (key === undefined) return undefined;
+  return wordedText((w) =>
+    `Tag '${key}' from ${source(w)} is reserved: tag keys starting with ` +
+    `'${RESERVED_TAG_PREFIX}' are written by swamp alone. ${remedy(w)}`
   );
 }
 
-/** The tag sources of one method run that exist before the method runs. */
+/** Throws the {@link reservedTagRefusal} of `tags`, if there is one. */
+export function assertNoReservedTags(
+  tags: Record<string, string> | undefined,
+  source: (w: BehaviorWords) => string,
+  remedy?: (w: BehaviorWords) => string,
+): void {
+  const refusal = reservedTagRefusal(tags, source, remedy);
+  if (refusal) throw wordedError(refusal);
+}
+
+/**
+ * The tag sources of one method run that exist before the method runs. A
+ * caller checking only workflow-authored sources leaves out `modelType`.
+ */
 export interface RunTagSources {
-  modelType: ModelType;
+  modelType?: ModelType;
   definitionTags?: Record<string, string>;
-  specs?: Array<{
+  specs?: ReadonlyArray<{
     kind: "resource" | "file";
     specName: string;
     tags?: Record<string, string>;
   }>;
   tagOverrides?: Record<string, string>;
   runtimeTags?: Record<string, string>;
-  dataOutputOverrides?: Array<{
+  dataOutputOverrides?: ReadonlyArray<{
     specName: string;
     tags?: Record<string, string>;
   }>;
 }
 
 /**
- * Refuses a reserved tag key in any source of a method run that is known
+ * The first refusal of a reserved tag key in any source of a method run known
  * before the method runs: the definition, spec defaults, workflow tags,
- * `--tag` and data output overrides. The method execution service calls it
- * before anything executes; the writers call it again on every write, with
- * the method's own write overrides, as the backstop.
+ * `--tag` and data output overrides. Validation reports it; a run throws it.
+ */
+export function reservedRunTagRefusal(
+  sources: RunTagSources,
+): WordedText | undefined {
+  const inType = (w: BehaviorWords) =>
+    sources.modelType
+      ? ` in ${w.noun} type '${sources.modelType.normalized}'`
+      : "";
+  const refusals = [
+    () =>
+      reservedTagRefusal(
+        sources.definitionTags,
+        (w) => `the ${w.noun} definition's tags`,
+      ),
+    ...(sources.specs ?? []).map((spec) => () =>
+      reservedTagRefusal(
+        spec.tags,
+        (w) =>
+          `the default tags of ${spec.kind} spec '${spec.specName}'${
+            inType(w)
+          }`,
+        typeAuthorRemedy,
+      )
+    ),
+    () => reservedTagRefusal(sources.tagOverrides, () => "the workflow's tags"),
+    () => reservedTagRefusal(sources.runtimeTags, () => "--tag"),
+    ...(sources.dataOutputOverrides ?? []).map((override) => () =>
+      reservedTagRefusal(
+        override.tags,
+        () => `the data output override for spec '${override.specName}'`,
+      )
+    ),
+  ];
+  for (const refusal of refusals) {
+    const found = refusal();
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** The default tags of every resource and file spec a type declares. */
+export function outputSpecTags(
+  modelDef: Pick<ModelDefinition, "resources" | "files">,
+): NonNullable<RunTagSources["specs"]> {
+  return [
+    ...Object.entries(modelDef.resources ?? {}).map(([specName, spec]) => ({
+      kind: "resource" as const,
+      specName,
+      tags: spec.tags,
+    })),
+    ...Object.entries(modelDef.files ?? {}).map(([specName, spec]) => ({
+      kind: "file" as const,
+      specName,
+      tags: spec.tags,
+    })),
+  ];
+}
+
+/**
+ * Throws the {@link reservedRunTagRefusal} of a method run's sources. The
+ * method execution service calls it before anything executes; the writers
+ * call it again on every write, with the method's own write overrides, as
+ * the backstop.
  */
 export function assertNoReservedRunTags(sources: RunTagSources): void {
-  const type = sources.modelType.normalized;
-  assertNoReservedTags(
-    sources.definitionTags,
-    (w) => `the ${w.noun} definition's tags`,
-  );
-  for (const spec of sources.specs ?? []) {
-    assertNoReservedTags(
-      spec.tags,
-      (w) =>
-        `the default tags of ${spec.kind} spec '${spec.specName}' in ${w.noun} type '${type}'`,
-      typeAuthorRemedy,
-    );
-  }
-  assertNoReservedTags(sources.tagOverrides, () => "the workflow's tags");
-  assertNoReservedTags(sources.runtimeTags, () => "--tag");
-  for (const override of sources.dataOutputOverrides ?? []) {
-    assertNoReservedTags(
-      override.tags,
-      () => `the data output override for spec '${override.specName}'`,
-    );
-  }
+  const refusal = reservedRunTagRefusal(sources);
+  if (refusal) throw wordedError(refusal);
 }
 
 /**

@@ -20727,3 +20727,159 @@ Deno.test("run: a first save that fails yields no started event (swamp-club#1090
     assertEquals(kinds.includes("started"), false);
   });
 });
+
+// ---------- Reserved tags refused before any step runs (swamp-club#3635) ----------
+
+const RESERVED_RUN_TAG = {
+  "_swamp.sensitiveFields": JSON.stringify(["stdout"]),
+};
+
+/** Job a runs probe; job b, after it, names `bModel` and may override tags. */
+function reservedTagWorkflow(opts: {
+  tags?: Record<string, string>;
+  bOverrideTags?: Record<string, string>;
+  bModel?: string;
+}): Workflow {
+  return Workflow.create({
+    name: `reserved-${crypto.randomUUID().slice(0, 8)}`,
+    ...(opts.tags ? { tags: opts.tags } : {}),
+    jobs: [
+      Job.create({
+        name: "a",
+        steps: [
+          Step.create({ name: "a", task: StepTask.model("probe", "run") }),
+        ],
+      }),
+      Job.create({
+        name: "b",
+        dependsOn: [{ job: "a", condition: TriggerCondition.succeeded() }],
+        steps: [
+          Step.create({
+            name: "b",
+            task: StepTask.model(opts.bModel ?? "probe", "run"),
+            ...(opts.bOverrideTags
+              ? {
+                dataOutputOverrides: [{
+                  specName: "result",
+                  tags: opts.bOverrideTags,
+                }],
+              }
+              : {}),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+async function runReservedTagWorkflow(
+  workflow: Workflow,
+  options: {
+    runtimeTags?: Record<string, string>;
+    definitionTags?: Record<string, string>;
+  } = {},
+): Promise<{ error: unknown; executedSteps: string[] }> {
+  let outcome: { error: unknown; executedSteps: string[] } | undefined;
+  await withTempDir(async (tempDir) => {
+    if (options.definitionTags) {
+      await new YamlDefinitionRepository(tempDir).save(
+        ModelType.create("command/shell"),
+        Definition.create({
+          name: "tagged",
+          type: "command/shell",
+          tags: options.definitionTags,
+        }),
+      );
+    }
+    const workflowRepo = new InMemoryWorkflowRepository();
+    await workflowRepo.save(workflow);
+    const executor = new MockStepExecutor();
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+      let error: unknown;
+      try {
+        await service.execute(workflow.name, {
+          runtimeTags: options.runtimeTags,
+        });
+      } catch (e) {
+        error = e;
+      }
+      outcome = { error, executedSteps: executor.executedSteps };
+    } finally {
+      catalogStore.close();
+    }
+  });
+  return outcome!;
+}
+
+Deno.test("run: a reserved tag in a later step's data output override is refused before any step runs", async () => {
+  const { error, executedSteps } = await runReservedTagWorkflow(
+    reservedTagWorkflow({ bOverrideTags: RESERVED_RUN_TAG }),
+  );
+
+  assertEquals(executedSteps, []);
+  assertStringIncludes(
+    (error as Error).message,
+    "Step 'b' in job 'b': Tag '_swamp.sensitiveFields' from the data output override for spec 'result' is reserved",
+  );
+  assertEquals((error as Error).message.includes('["stdout"]'), false);
+});
+
+Deno.test("run: a reserved tag in the workflow's tags is refused before any step runs", async () => {
+  const { error, executedSteps } = await runReservedTagWorkflow(
+    reservedTagWorkflow({ tags: RESERVED_RUN_TAG }),
+  );
+
+  assertEquals(executedSteps, []);
+  assertStringIncludes(
+    (error as Error).message,
+    "Tag '_swamp.sensitiveFields' from the workflow's tags is reserved",
+  );
+});
+
+Deno.test("run: a reserved --tag is refused before any step runs", async () => {
+  const { error, executedSteps } = await runReservedTagWorkflow(
+    reservedTagWorkflow({}),
+    { runtimeTags: RESERVED_RUN_TAG },
+  );
+
+  assertEquals(executedSteps, []);
+  assertStringIncludes(
+    (error as Error).message,
+    "Tag '_swamp.sensitiveFields' from --tag is reserved",
+  );
+});
+
+Deno.test("run: a reserved tag on a later step's stored definition is refused before any step runs", async () => {
+  const { error, executedSteps } = await runReservedTagWorkflow(
+    reservedTagWorkflow({ bModel: "tagged" }),
+    { definitionTags: RESERVED_RUN_TAG },
+  );
+
+  assertEquals(executedSteps, []);
+  assertStringIncludes(
+    (error as Error).message,
+    "Step 'b' in job 'b': Tag '_swamp.sensitiveFields' from the tags of behavior definition 'tagged' is reserved",
+  );
+});
+
+Deno.test("run: a workflow without reserved tags runs every step", async () => {
+  const { error, executedSteps } = await runReservedTagWorkflow(
+    reservedTagWorkflow({
+      tags: { team: "infra" },
+      bOverrideTags: { tier: "1" },
+    }),
+    { runtimeTags: { env: "prod" } },
+  );
+
+  assertEquals(error, undefined);
+  assertEquals(executedSteps, ["a/a", "b/b"]);
+});

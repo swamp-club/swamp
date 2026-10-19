@@ -39,6 +39,10 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { DefaultModelValidationService } from "../../domain/models/validation_service.ts";
+import {
+  outputSpecTags,
+  reservedRunTagRefusal,
+} from "../../domain/models/data_writer.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { zodToJsonSchema } from "../types/schema_helpers.ts";
@@ -195,6 +199,11 @@ function createModelMethodResolver(
         // The step refuses these when it runs; read from the stored file.
         literalSensitiveGlobals: new DefaultModelValidationService()
           .findLiteralSensitiveGlobals(definition, modelDef),
+        reservedTagRefusal: reservedRunTagRefusal({
+          modelType,
+          definitionTags: definition.tags,
+          specs: outputSpecTags(modelDef),
+        })?.text,
       };
     },
   };
@@ -232,7 +241,14 @@ async function resolveByType(
     new Set([...methodRequired, ...globalRequired]),
   );
 
-  return { status: "resolved", requiredArgs };
+  return {
+    status: "resolved",
+    requiredArgs,
+    reservedTagRefusal: reservedRunTagRefusal({
+      modelType: type,
+      specs: outputSpecTags(modelDef),
+    })?.text,
+  };
 }
 
 /**

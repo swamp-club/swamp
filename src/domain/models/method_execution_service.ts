@@ -43,7 +43,11 @@ import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
-import { assertNoReservedRunTags, modelRequiresVault } from "./data_writer.ts";
+import {
+  assertNoReservedRunTags,
+  modelRequiresVault,
+  outputSpecTags,
+} from "./data_writer.ts";
 import { sensitiveOutputTargets } from "./sensitive_output_vault.ts";
 import {
   currentVaultAccess,
@@ -651,14 +655,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       assertNoReservedRunTags({
         modelType: context.modelType,
         definitionTags: definition.tags,
-        specs: [
-          ...Object.entries(modelDef.resources ?? {}).map((
-            [specName, spec],
-          ) => ({ kind: "resource" as const, specName, tags: spec.tags })),
-          ...Object.entries(modelDef.files ?? {}).map((
-            [specName, spec],
-          ) => ({ kind: "file" as const, specName, tags: spec.tags })),
-        ],
+        specs: outputSpecTags(modelDef),
         tagOverrides: context.tagOverrides,
         runtimeTags: context.runtimeTags,
         dataOutputOverrides: context.dataOutputOverrides,
