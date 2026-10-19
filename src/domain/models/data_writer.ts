@@ -512,6 +512,47 @@ export async function processSensitiveResourceData(
 }
 
 /**
+ * Redacts registered secrets from the serialized resource payload, except
+ * inside the vault references {@link processSensitiveResourceData} put at
+ * `vaultedPaths`. A generated vault key embeds the instance name, which can
+ * contain a resolved secret, so redacting the reference would point it at a
+ * key the vault does not hold (swamp-club#3585). The text is split at each
+ * reference's JSON literal, and the text between them is redacted as the
+ * whole payload was before.
+ */
+function redactOutsideVaultReferences(
+  data: Record<string, unknown>,
+  vaultedPaths: string[],
+  redactor: SecretRedactor,
+): string {
+  // A sensitive object with a sensitive field inside holds that field's
+  // reference rather than its own, so only string values are references.
+  const literals = new Set<string>();
+  for (const path of vaultedPaths) {
+    const reference = getNestedValue(data, path);
+    if (typeof reference === "string") literals.add(JSON.stringify(reference));
+  }
+
+  let pieces = [{ text: JSON.stringify(data), reference: false }];
+  for (const literal of literals) {
+    pieces = pieces.flatMap((piece) => {
+      if (piece.reference) return [piece];
+      const [first, ...rest] = piece.text.split(literal);
+      return [
+        { text: first, reference: false },
+        ...rest.flatMap((text) => [
+          { text: literal, reference: true },
+          { text, reference: false },
+        ]),
+      ];
+    });
+  }
+  return pieces.map((piece) =>
+    piece.reference ? piece.text : redactor.redact(piece.text)
+  ).join("");
+}
+
+/**
  * Creates a writeResource function bound to a specific execution context.
  *
  * The returned function validates data against the resource's Zod schema (warn on failure),
@@ -700,8 +741,9 @@ export function createResourceWriter(
           `Create a vault using: swamp vault create <type> <name>`,
       );
     }
+    let vaultedPaths: string[] = [];
     if (vaultService && methodName && hasSensitiveFields) {
-      const vaultedPaths = await processSensitiveResourceData(
+      vaultedPaths = await processSensitiveResourceData(
         data,
         effectiveSpec,
         vaultService,
@@ -754,8 +796,8 @@ export function createResourceWriter(
       deferred,
     );
 
-    const serialized = redactor
-      ? redactor.redact(JSON.stringify(data))
+    const serialized = redactor?.hasSecrets
+      ? redactOutsideVaultReferences(data, vaultedPaths, redactor)
       : JSON.stringify(data);
     const handle = await writer.writeText(serialized);
     handle.attributes = { ...data };

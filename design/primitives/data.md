@@ -165,7 +165,10 @@ derived `type/modelId/method/spec/instance/field.path`. The vault is
 behavior has such a spec. With no vault configured, the write fails rather than
 saving the secret. The whole serialised payload then passes through the
 run's `SecretRedactor`, which also scrubs log output
-(`src/domain/secrets/secret_redactor.ts`). On read, `resolveVaultRefsInData`
+(`src/domain/secrets/secret_redactor.ts`), except the vault references just
+written: a derived key embeds the instance name, which can hold a value
+resolved from a vault, and masking it would point the reference at a key the
+vault does not hold (swamp-club#3585). On read, `resolveVaultRefsInData`
 expands the references and registers the values with the redactor
 (`data_writer.ts`, `data_record_mapper.ts`).
 
