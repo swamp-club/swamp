@@ -32,13 +32,15 @@
 // although `has()` is in the allowed set.
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { Environment, TypeError as CelTypeError } from "cel-js";
-import { pin } from "./cel_js_pin_test_helpers.ts";
 import {
   createSecret,
+  pin,
+  secretEnvironmentOptions,
+} from "./cel_js_pin_test_helpers.ts";
+import {
   registerAllowedSet,
   registerSecretType,
-  secretEnvironmentOptions,
-} from "./cel_js_secret_test_helpers.ts";
+} from "../secret_registrations.ts";
 
 class Vault {}
 

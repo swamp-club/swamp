@@ -34,6 +34,9 @@ import { assertEquals, assertInstanceOf } from "@std/assert";
 import { Environment, type EvaluationError, type ParseError } from "cel-js";
 import type { TypeError as CelTypeError } from "cel-js";
 import denoConfig from "../../../../deno.json" with { type: "json" };
+import { SECRET_OPERATION_UNSUPPORTED } from "../../../domain/expressions/errors.ts";
+import { type Fault, runInFaultScope } from "../secret_fault_context.ts";
+import { type Secret, vaultReferenceSecret } from "../secret_value.ts";
 
 function pinnedCelJsVersion(): string {
   const specifier = (denoConfig.imports as Record<string, string>)["cel-js"];
@@ -136,4 +139,81 @@ export function readMaybeAsync(
     );
   }
   return flag;
+}
+
+/**
+ * The production `Secret` (design Section 3.1) holding one vault reference,
+ * written `vault/key`. The typed-secrets pins observe cel-js against what
+ * ships, so a dependency upgrade is checked against it.
+ */
+export function createSecret(reference: string): Secret {
+  const [vaultName, key] = reference.split("/");
+  return vaultReferenceSecret({ vaultName, key }, "pin");
+}
+
+/**
+ * Run `fn` inside a fresh fault scope, handing it the scope's live fault
+ * list, which it reads after `fn` returns or its promise settles.
+ */
+export function withFaultContext<T>(fn: (faults: Fault[]) => T): T {
+  return runInFaultScope((scope) => fn(scope.faults));
+}
+
+/** The fault an operator, function or trap refusal records. */
+export function fault(operation: string): Fault {
+  return { operation, code: SECRET_OPERATION_UNSUPPORTED };
+}
+
+/** The options the review probes and the internal environment use. */
+export function secretEnvironmentOptions(): ConstructorParameters<
+  typeof Environment
+>[0] {
+  return {
+    unlistedVariablesAreDyn: true,
+    enableOptionalTypes: true,
+    homogeneousAggregateLiterals: false,
+  };
+}
+
+/**
+ * A plain object whose every property is an enumerable getter that pushes
+ * `<label>.<key>` to `reads` before answering, so a pin can see which values
+ * cel-js read. The container rule relies on this read being observable.
+ */
+export function recordingObject<T extends Record<string, unknown>>(
+  label: string,
+  entries: T,
+  reads: string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(entries)) {
+    Object.defineProperty(out, key, {
+      enumerable: true,
+      get() {
+        reads.push(`${label}.${key}`);
+        return value;
+      },
+    });
+  }
+  return out;
+}
+
+/** An array whose every element is an enumerable getter, like above. */
+export function recordingList(
+  label: string,
+  items: readonly unknown[],
+  reads: string[],
+): unknown[] {
+  const out: unknown[] = [];
+  items.forEach((value, index) => {
+    Object.defineProperty(out, index, {
+      enumerable: true,
+      get() {
+        reads.push(`${label}[${index}]`);
+        return value;
+      },
+    });
+  });
+  out.length = items.length;
+  return out;
 }

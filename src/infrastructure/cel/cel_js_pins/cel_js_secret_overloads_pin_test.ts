@@ -53,20 +53,20 @@ import {
 import {
   assertCelError,
   assertPlainError,
+  createSecret,
+  fault,
   pin,
   readMaybeAsync,
+  secretEnvironmentOptions,
+  withFaultContext,
 } from "./cel_js_pin_test_helpers.ts";
 import {
-  createSecret,
   type RefusalRegistration,
-  refuse,
   registerAllowedSet,
   registerSecretRefusals,
   registerSecretType,
-  secretEnvironmentOptions,
-  SecretRefusedError,
-  withFaultContext,
-} from "./cel_js_secret_test_helpers.ts";
+} from "../secret_registrations.ts";
+import { refuse, SecretRefusal } from "../secret_fault_context.ts";
 import {
   equalityTypes,
   functionRefusalSignatures,
@@ -75,7 +75,7 @@ import {
   SWAMP_FUNCTION_SIGNATURES,
   SWAMP_NAMESPACE_TYPES,
   typeNamesInDefinitions,
-} from "./cel_js_secret_refusal_inventory.ts";
+} from "../cel_js_secret_refusal_inventory.ts";
 
 const s = createSecret("v/k");
 const t = createSecret("v/k2");
@@ -113,7 +113,7 @@ function internalEnvironment(): {
   registerAllowedSet(env);
   const registration = registerSecretRefusals(env, {
     customTypes: SWAMP_NAMESPACE_TYPES,
-    swamp: true,
+    swampSignatures: SWAMP_FUNCTION_SIGNATURES,
   });
   return { env, registration };
 }
@@ -127,12 +127,12 @@ function assertRefused(
   withFaultContext((faults) => {
     const error = assertThrows(
       () => env.evaluate(expression, context),
-      SecretRefusedError,
-      `Secret refuses ${operation}`,
+      SecretRefusal,
+      `secret refuses ${operation}`,
       expression,
     );
     assertEquals(error.operation, operation, expression);
-    assertEquals(faults, [{ operation }], expression);
+    assertEquals(faults, [fault(operation)], expression);
   });
 }
 
@@ -379,7 +379,7 @@ Deno.test(
         partial.evaluate("data.latest(s, s) == 'x' || true", context),
         true,
       );
-      assertEquals(faults, [{ operation: "latest(Secret, Secret)" }]);
+      assertEquals(faults, [fault("latest(Secret, Secret)")]);
     });
   },
 );
@@ -486,7 +486,7 @@ Deno.test(
     ];
     withFaultContext((faults) => {
       assertEquals(env.evaluate("s < null || true", { s }), true);
-      assertEquals(faults, [{ operation: "Secret < null" }]);
+      assertEquals(faults, [fault("Secret < null")]);
     });
     for (const [expression, operation] of cases) {
       assertRefused(env, expression, operation);

@@ -31,19 +31,25 @@
 import { assertEquals, assertInstanceOf, assertThrows } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { Environment, EvaluationError } from "cel-js";
-import { assertCelError, pin } from "./cel_js_pin_test_helpers.ts";
 import {
+  assertCelError,
   createSecret,
-  type Fault,
-  recordedFaults,
-  recordFault,
+  fault,
+  pin,
+  secretEnvironmentOptions,
+  withFaultContext,
+} from "./cel_js_pin_test_helpers.ts";
+import {
   registerAllowedSet,
   registerSecretRefusals,
   registerSecretType,
-  secretEnvironmentOptions,
-  SecretRefusedError,
-  withFaultContext,
-} from "./cel_js_secret_test_helpers.ts";
+} from "../secret_registrations.ts";
+import {
+  type Fault,
+  recordedFaults,
+  recordFault,
+  SecretRefusal,
+} from "../secret_fault_context.ts";
 
 const s = createSecret("v/k");
 
@@ -66,9 +72,9 @@ function refusingEnvironment(): Environment {
     });
 }
 
-const EQUALS_STRING: Fault = { operation: "Secret == string" };
-const EQUALS_INT: Fault = { operation: "Secret == int" };
-const TO_PRIMITIVE: Fault = { operation: "Symbol(Symbol.toPrimitive)" };
+const EQUALS_STRING: Fault = fault("Secret == string");
+const EQUALS_INT: Fault = fault("Secret == int");
+const TO_PRIMITIVE: Fault = fault("Symbol(Symbol.toPrimitive)");
 
 Deno.test(
   pin(
@@ -136,8 +142,8 @@ Deno.test(
       withFaultContext((faults) => {
         assertThrows(
           () => env.evaluate(expression, { s, m }),
-          SecretRefusedError,
-          "Secret refuses Symbol(Symbol.toPrimitive)",
+          SecretRefusal,
+          "secret refuses Symbol(Symbol.toPrimitive)",
           expression,
         );
         assertEquals(faults, [TO_PRIMITIVE], expression);
@@ -228,8 +234,8 @@ Deno.test(
     withFaultContext((faults) => {
       assertThrows(
         () => env.evaluate("s == 'x' || false", { s }),
-        SecretRefusedError,
-        "Secret refuses Secret == string",
+        SecretRefusal,
+        "secret refuses Secret == string",
       );
       assertEquals(faults, [EQUALS_STRING]);
     });
@@ -291,14 +297,14 @@ Deno.test(
     const env = refusingEnvironment();
     assertThrows(
       () => env.evaluate("s == 'x'", { s }),
-      SecretRefusedError,
-      "Secret refuses Secret == string",
+      SecretRefusal,
+      "secret refuses Secret == string",
     );
     assertEquals(env.evaluate("s == 'x' || true", { s }), true);
     assertEquals(env.evaluate("faultsSeen()", {}), -1n);
     withFaultContext((faults) => {
       assertEquals(recordFault("someone listens"), true);
-      assertEquals(faults, [{ operation: "someone listens" }]);
+      assertEquals(faults, [fault("someone listens")]);
     });
     assertCelError(
       () => env.evaluate("nope()", {}),

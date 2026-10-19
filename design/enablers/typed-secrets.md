@@ -8,7 +8,8 @@ last-verified: 2026-10-16 @ 051bfb0e
 
 **Status:** implementation plan. Phases 0, 1 and 2 have shipped
 (swamp-club#3510, swamp-club#3511, swamp-club#3512, swamp-club#3551,
-swamp-club#3557, swamp-club#3558, swamp-club#3562). This revision replaces the
+swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phase 3.1
+(swamp-club#3619) behind the internal option. This revision replaces the
 earlier engine-2 plan, and [Why this design](#why-this-design) says what
 changed. Until Phase 4 ships, [expressions](./expressions.md) describes current
 behavior.
@@ -402,9 +403,9 @@ cannot change what is loaded.
 
 The Phase 1.1 suite pins these facts about cel-js 7.6.1
 (`src/infrastructure/cel/cel_js_pins/`). The Phase 1.2 suite beside it
-(`cel_js_secret_*_pin_test.ts`) pins how cel-js treats the `Secret` of Section
-3.1 and the refusal inventory of Section 4.3; its observations are listed under
-Phase 1.2 in Section 11. A dependency upgrade must pass both.
+(`cel_js_secret_*_pin_test.ts`) pins how cel-js treats the production `Secret`
+of Section 3.1 and the refusal inventory of Section 4.3; its observations are
+listed under Phase 1.2 in Section 11. A dependency upgrade must pass both.
 
 1. Async custom function inputs are awaited. Derived `!=`, container `isEqual`,
    and `listIncludes` consume equality-handler returns synchronously, and a
@@ -461,7 +462,8 @@ Refusal uses registrations. It does not rewrite expressions.
 1. **Run time.** The internal environment registers a refusing overload for
    `Secret` wherever a `Secret` can reach a built-in operator, function or
    conversion, or one of swamp's own registrations. The refusal inventory
-   (`cel_js_secret_refusal_inventory.ts`, Phase 1.2) classifies every
+   (`src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`) classifies
+   every
    secret-capable position, a receiver or a parameter typed `string`, `dyn`,
    a type variable, or a list, map or optional of anything, as one of five
    dispositions: a refusal, a named delivery (`dyn(dyn)`, `cel.bind`, the
@@ -481,7 +483,14 @@ Refusal uses registrations. It does not rewrite expressions.
    a list that holds a secret fails with cel-js's own
    `invalid_list_element_type` before any handler runs, and a `list<dyn>.join`
    overload never intercepts it; it records no fault and reveals nothing, and
-   stays a known unrecorded failure. Every
+   stays a known unrecorded failure. A few more failures on a `Secret` record
+   no fault, so `||`, `&&`, `exists` and `all` can absorb them: a `Secret` in a
+   parameter that is not secret-capable, such as the `int` of `substring`,
+   meets a missing-overload error; a `Secret` as a logical operand, a ternary
+   condition or a macro predicate result is not a `bool`; and selecting or
+   indexing a `Secret` finds no field. Each answers exactly as today's
+   sentinel text answers, a string in the same place, so no expression changes
+   meaning, and none reveals anything. Every
    overload is synchronous, and functions use `{ async: false }`. Equality is
    one refusing `Secret == T` overload for each type cel-js can name in a
    signature, `Secret` and swamp's own namespace types among them, and a
@@ -562,9 +571,13 @@ fault, and `||` could absorb it. A `Secret` in the vary list of `data.latest`,
 `data.version` or `data.listVersions` is the argument walk: no signature can
 refuse a list element, so the handler walks the list and refuses with
 `secret_destination_refused`, because a lookup key cannot use the stand-in that
-a data-name suffix gets. The test proves the inventory is complete; Phase 3
-adds the production half, that `getDefinitions()` on the internal environment
-and the query view contains every refusal signature the inventory yields.
+a data-name suffix gets. The test proves the inventory is complete, and its
+production half (Phase 3.1) proves that `getDefinitions()` on the internal
+environment, with the option on, holds exactly the function refusals the
+inventory yields for it, and with the option off what it held before.
+`getDefinitions()` lists no operators, so the operator refusals are proven
+through the evaluator. The query view's half moves with Section 6.2 into
+Phase 4.
 
 ### 4.4 `vault.get`
 
@@ -610,7 +623,10 @@ effect follows the same four rules:
    each `Secret` becomes a sentinel in the synthetic step's bag. The step loads
    it under its own attempt, as Section 3.3 loads method arguments. No `Secret`
    reaches the step delegate, step creation or persistence. This is what happens
-   today, where the sentinel reaches the step and the bag resolves it.
+   today, where the sentinel reaches the step and the bag resolves it. Until
+   this conversion lands (Phase 3.5), the internal option refuses a `Secret`
+   anywhere in `inputs` with `secret_destination_refused`, before the delegate
+   starts, and hands the delegate a plain copy of the rest.
 4. **Results go through the accessor adapter.** `model.method` returns the
    step's latest resource or its raw result. Tagged fields in it become `Secret`
    values through the adapter in Section 6.1, as `data.latest` returns them, so
@@ -931,11 +947,12 @@ proceed alongside Phases 3 and 4.
 Phase 1.1 (swamp-club#3510, shipped) pins the facts in Section 4.2.
 
 Phase 1.2 (swamp-club#3551, shipped) pins what this design relies on, in
-`cel_js_secret_*_pin_test.ts` beside the Phase 1.1 suite, with the `Secret`
-fixture in `cel_js_secret_test_helpers.ts`, the refusal inventory in
-`cel_js_secret_refusal_inventory.ts` and the coverage fitness test in
-`integration/cel_secret_refusal_coverage_rules_test.ts`. Each claim, as
-observed on cel-js 7.6.1:
+`cel_js_secret_*_pin_test.ts` beside the Phase 1.1 suite, with the refusal
+inventory in `cel_js_secret_refusal_inventory.ts` and the coverage fitness test
+in `integration/cel_secret_refusal_coverage_rules_test.ts`. It first observed a
+`Secret` test fixture; since Phase 3.1 the pins observe the production `Secret`,
+its registrations and its fault context, and the inventory lives in
+`src/infrastructure/cel/`. Each claim, as observed on cel-js 7.6.1:
 
 - cel-js recognizes the Proxy-based `Secret` by its constructor. Building a
   macro range over it records a fault and throws; cel-js absorbs the error like
@@ -1050,6 +1067,20 @@ Behind the internal option:
 - The `model.method` rules in Section 4.5, and the production half of the
   refusal coverage test in Section 4.3.
 
+Phase 3.1 (swamp-club#3619, shipped) is the core, behind the internal option
+(`CelEvaluator` with `typedSecrets`, set only by tests): the production
+`Secret`, its traps and its module-owned factories; the fault context; every
+refusal the inventory yields for the internal environment, with the vary-list
+walk and, until 3.5, a refusal of a `Secret` in `model.method` inputs; the
+container rule, with an AST scan that decides scalar-ness; the boundary
+conversion, which reads bindings through views that never fire a getter the
+expression does not read; the codes `secret_operation_unsupported` and
+`secret_destination_refused`; the Phase 1.2 pins on the production type; and
+the production half of the coverage test. Nothing yet produces a `Secret` from
+a real source: a data-origin reference with no sentinel cannot leave CEL until
+3.3 issues one. A fitness test keeps the `Secret` modules inside
+`src/infrastructure/cel/` and the option out of production code.
+
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any
 load. Non-secret behavior is unchanged.
@@ -1142,24 +1173,27 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 
 ## 13. Source map
 
-| Concern                              | Current implementation                                                                                                                                                                                                           |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CEL environments and coercion        | `src/infrastructure/cel/cel_evaluator.ts`, `src/domain/expressions/cel_grammar.ts`, `cel_runtime.ts`                                                                                                                             |
-| Pinned cel-js behavior (Section 4.2) | `src/infrastructure/cel/cel_js_pins/`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                   |
-| Expression passes and templates      | `src/domain/expressions/expression_evaluation_service.ts`, `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts` |
-| Vault rewrite and dynamic arguments  | `src/domain/expressions/model_resolver.ts` (`resolveVaultExpressions`), `vault_reference_extractor.ts`                                                                                                                           |
-| Sentinels and shell placement        | `src/domain/vaults/secret_bag_registry.ts`, `vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                  |
-| Vault access scope                   | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                      |
-| Existence check (Section 3.4)        | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
-| Loading at delivery (Section 3.3)    | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`) |
-| Sensitive values and persisted form  | `src/domain/secrets/run_sensitive_values.ts`, `persisted_sensitive_form.ts`, `secret_redactor.ts`, `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts`                                |
-| Sensitive fields and schema metadata | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                |
-| Queries                              | `src/domain/data/data_query_service.ts`                                                                                                                                                                                          |
-| Method boundary and checks           | `src/domain/models/method_execution_service.ts`, `method_context.ts`, `model.ts`                                                                                                                                                 |
-| Nested invocations and triggers      | `src/domain/models/model_invocation_service.ts`, `src/domain/workflows/trigger_input_resolver.ts`                                                                                                                                |
-| Workflow execution and forEach       | `src/domain/workflows/execution_service.ts`, `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts`                                                                                                               |
-| Remote execution                     | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`                                                                                               |
-| Sink inventory and canaries          | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                          |
-| Remote baseline                      | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                            |
+| Concern                                       | Current implementation                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CEL environments and coercion                 | `src/infrastructure/cel/cel_evaluator.ts`, `src/domain/expressions/cel_grammar.ts`, `cel_runtime.ts`                                                                                                                                                                                                                                                                  |
+| Pinned cel-js behavior (Section 4.2)          | `src/infrastructure/cel/cel_js_pins/`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                                                                                                        |
+| The `Secret` value (Section 3.1)              | `src/infrastructure/cel/secret_value.ts`, `secret_fault_context.ts` (the fault context)                                                                                                                                                                                                                                                                               |
+| Refusals and the container rule (Section 4.3) | `src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`, `secret_registrations.ts`, `container_comparison.ts`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                            |
+| Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`typedSecrets`, `EvaluationScope`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
+| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts`, `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`                                                                                                                                      |
+| Vault rewrite and dynamic arguments           | `src/domain/expressions/model_resolver.ts` (`resolveVaultExpressions`), `vault_reference_extractor.ts`                                                                                                                                                                                                                                                                |
+| Sentinels and shell placement                 | `src/domain/vaults/secret_bag_registry.ts`, `vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                                                                                                                                                       |
+| Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
+| Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
+| Loading at delivery (Section 3.3)             | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`)                                                                                       |
+| Sensitive values and persisted form           | `src/domain/secrets/run_sensitive_values.ts`, `persisted_sensitive_form.ts`, `secret_redactor.ts`, `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts`                                                                                                                                                                     |
+| Sensitive fields and schema metadata          | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                                                                                                                                                     |
+| Queries                                       | `src/domain/data/data_query_service.ts`                                                                                                                                                                                                                                                                                                                               |
+| Method boundary and checks                    | `src/domain/models/method_execution_service.ts`, `method_context.ts`, `model.ts`                                                                                                                                                                                                                                                                                      |
+| Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts`, `src/domain/workflows/trigger_input_resolver.ts`                                                                                                                                                                                                                                                                     |
+| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts`, `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts`                                                                                                                                                                                                                                                    |
+| Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`                                                                                                                                                                                                                                    |
+| Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
+| Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |
 
 Implementation PRs update this map as they add seams.
