@@ -20736,12 +20736,13 @@ const RESERVED_RUN_TAG = {
 
 /** Job a runs probe; job b, after it, names `bModel` and may override tags. */
 function reservedTagWorkflow(opts: {
+  name?: string;
   tags?: Record<string, string>;
   bOverrideTags?: Record<string, string>;
   bModel?: string;
 }): Workflow {
   return Workflow.create({
-    name: `reserved-${crypto.randomUUID().slice(0, 8)}`,
+    name: opts.name ?? `reserved-${crypto.randomUUID().slice(0, 8)}`,
     ...(opts.tags ? { tags: opts.tags } : {}),
     jobs: [
       Job.create({
@@ -20777,6 +20778,8 @@ async function runReservedTagWorkflow(
   options: {
     runtimeTags?: Record<string, string>;
     definitionTags?: Record<string, string>;
+    /** Cached as the workflow's last evaluation, and run with it. */
+    lastEvaluated?: Workflow;
   } = {},
 ): Promise<{ error: unknown; executedSteps: string[] }> {
   let outcome: { error: unknown; executedSteps: string[] } | undefined;
@@ -20789,6 +20792,15 @@ async function runReservedTagWorkflow(
           type: "command/shell",
           tags: options.definitionTags,
         }),
+      );
+    }
+    if (options.lastEvaluated) {
+      const { YamlEvaluatedWorkflowRepository } = await import(
+        "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
+      );
+      await new YamlEvaluatedWorkflowRepository(tempDir).save(
+        options.lastEvaluated,
+        undefined,
       );
     }
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -20808,6 +20820,7 @@ async function runReservedTagWorkflow(
       try {
         await service.execute(workflow.name, {
           runtimeTags: options.runtimeTags,
+          lastEvaluated: options.lastEvaluated !== undefined,
         });
       } catch (e) {
         error = e;
@@ -20882,4 +20895,23 @@ Deno.test("run: a workflow without reserved tags runs every step", async () => {
 
   assertEquals(error, undefined);
   assertEquals(executedSteps, ["a/a", "b/b"]);
+});
+
+Deno.test("run: with --last-evaluated, a reserved tag in the cached steps is refused before any step runs", async () => {
+  const name = `reserved-cached-${crypto.randomUUID().slice(0, 8)}`;
+  const { error, executedSteps } = await runReservedTagWorkflow(
+    reservedTagWorkflow({ name }),
+    {
+      lastEvaluated: reservedTagWorkflow({
+        name,
+        bOverrideTags: RESERVED_RUN_TAG,
+      }),
+    },
+  );
+
+  assertEquals(executedSteps, []);
+  assertStringIncludes(
+    (error as Error).message,
+    "Step 'b' in job 'b': Tag '_swamp.sensitiveFields' from the data output override for spec 'result' is reserved",
+  );
 });

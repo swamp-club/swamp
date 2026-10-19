@@ -168,8 +168,9 @@ dropped, and as early as the source is known:
 - A workflow run refuses `--tag`, the workflow's tags, every step's data output
   overrides, and the tags of each definition a step names literally, before any
   step runs (`reservedWorkflowRunTag` in
-  `src/domain/workflows/reserved_workflow_tags.ts`). A later step's tag cannot
-  fail the run after earlier steps' side effects.
+  `src/domain/workflows/reserved_workflow_tags.ts`), and with `--last-evaluated`
+  checks the cached steps it runs as well. A later step's tag cannot fail the
+  run after earlier steps' side effects.
 - `DefaultMethodExecutionService.executeWorkflow` refuses every source known
   before the method runs (definition, spec defaults, workflow tags, `--tag`,
   data output overrides), which also covers steps named by an expression.

@@ -242,7 +242,9 @@ export class DefaultWorkflowValidationService
     }
 
     // 17. Reserved tag keys in the workflow's tags or a step's overrides
-    results.push(...this.validateReservedTags(workflow));
+    for (const result of this.validateReservedTags(workflow)) {
+      results.push(result);
+    }
 
     return results;
   }

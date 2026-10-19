@@ -3758,6 +3758,14 @@ export class WorkflowExecutionService {
           );
           // Use the fully evaluated workflow (forEach expanded, expressions resolved)
           workflow = restored.workflow;
+          // The cached steps run, not the source's, so their reserved tags
+          // are refused before any of them runs too (swamp-club#3635).
+          const cachedReservedTag = await reservedWorkflowRunTag(
+            workflow,
+            options?.runtimeTags,
+            this.definitionRepo,
+          );
+          if (cachedReservedTag) throw wordedError(cachedReservedTag);
           sanitizedTasks = restored.sanitizedTasks;
           // A cache without provenance predates it and replays as it always
           // did (swamp-club#3205).
