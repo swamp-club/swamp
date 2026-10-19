@@ -2159,14 +2159,17 @@ Deno.test("createResourceWriter: vary values the key sanitizer would fold togeth
 });
 
 Deno.test("createResourceWriter: a vary suffix outside the verbatim form is hashed to a fixed-length key segment", async () => {
-  const hashed = /^\+[0-9a-f]{32}$/;
+  const hashed = /^h-[0-9a-f]{32}$/;
   for (
     const suffix of [
       "o'brien",
       "x@y",
       "us east",
       '{"region":"us"}',
-      "a".repeat(65),
+      // Azure Key Vault names refuse . and _.
+      "ip-10-0-0-1.ec2.internal",
+      "v1_2",
+      "a".repeat(33),
       // An ARN as coerceToSuffix hands it over, with / already turned to --.
       "arn:aws:iam::123456789012:role--" + "r".repeat(180),
     ]
@@ -2178,10 +2181,18 @@ Deno.test("createResourceWriter: a vary suffix outside the verbatim form is hash
 
 Deno.test("createResourceWriter: a short vary suffix of key-safe characters is kept as written", async () => {
   for (
-    const suffix of ["us", "prod-us-east-1", "v1.2_rc", "a".repeat(64)]
+    const suffix of ["us", "prod-us-east-1", "a".repeat(32)]
   ) {
     assertEquals(await varyKeySegment(suffix), suffix);
   }
+});
+
+Deno.test("createResourceWriter: a vary suffix kept as written is never longer than its hashed form", async () => {
+  // A suffix that would be kept at the longest length, and one character over
+  // it: keeping the first must not make its key longer than hashing would.
+  const kept = await varyKeySegment("k".repeat(32));
+  const hashed = await varyKeySegment("k".repeat(33));
+  assert(kept.length < hashed.length, `${kept} vs ${hashed}`);
 });
 
 Deno.test("createResourceWriter: a long vary value still stores its secret in a file-backed vault", async () => {
@@ -2189,7 +2200,7 @@ Deno.test("createResourceWriter: a long vary value still stores its secret in a 
   // filesystems cap at 255 bytes.
   const suffix = "v".repeat(200);
   const segment = await varyKeySegment(suffix);
-  assertEquals(segment.length, 33);
+  assertEquals(segment.length, 34);
   await assertEachVaryValueReadsItsOwnSecret([suffix, "v".repeat(201)]);
 });
 

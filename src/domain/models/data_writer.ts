@@ -366,24 +366,32 @@ export function sanitizeVaultKey(key: string): string {
     .replace(/\0/g, "");
 }
 
-/** Longest vary suffix a generated vault key carries as written. */
-const MAX_VERBATIM_VARY_SUFFIX_LENGTH = 64;
+/** Bytes of a vary suffix's SHA-256 a hashed key segment carries. */
+const VARY_SUFFIX_DIGEST_BYTES = 16;
+
+/**
+ * Longest vary suffix a generated vault key carries as written: shorter than
+ * the hashed form (`h-` and 32 hex digits), so keeping a suffix never makes a
+ * key longer than hashing it would.
+ */
+const MAX_VERBATIM_VARY_SUFFIX_LENGTH = 32;
 
 /**
  * The form a vary suffix takes inside a generated vault key
- * (swamp-club#3633). A short suffix of letters, digits, `.`, `_` and `-` is
- * kept as written, so the key names the instance the record is stored under.
- * Any other suffix becomes `+` and the first 32 hex digits of its SHA-256:
+ * (swamp-club#3633). A suffix of at most 32 letters, digits and `-` is kept
+ * as written, so the key names the instance the record is stored under. Any
+ * other suffix becomes `h-` and the first 32 hex digits of its SHA-256:
  * other characters do not survive into a readable key ({@link sanitizeVaultKey}
  * drops `@`, so `x@y` and `xy` would share one; a `'` ends the key inside its
- * vault reference), and a long value would overflow the filename a
- * file-backed vault stores the key under. `+` never appears in a suffix kept
- * as written, so the two forms cannot produce the same key.
+ * vault reference; Azure Key Vault names allow only letters, digits and `-`),
+ * and a long value would overflow the file name a file-backed vault stores the
+ * key under. The hashed form is longer than any suffix kept as written, so the
+ * two forms cannot produce the same key.
  */
 async function varySuffixVaultKeySegment(suffix: string): Promise<string> {
   if (
     suffix.length <= MAX_VERBATIM_VARY_SUFFIX_LENGTH &&
-    /^[A-Za-z0-9._-]+$/.test(suffix)
+    /^[A-Za-z0-9-]+$/.test(suffix)
   ) {
     return suffix;
   }
@@ -391,10 +399,12 @@ async function varySuffixVaultKeySegment(suffix: string): Promise<string> {
     "SHA-256",
     new TextEncoder().encode(suffix),
   );
-  const hex = Array.from(new Uint8Array(digest).slice(0, 16))
+  const hex = Array.from(
+    new Uint8Array(digest).slice(0, VARY_SUFFIX_DIGEST_BYTES),
+  )
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return `+${hex}`;
+  return `h-${hex}`;
 }
 
 /**

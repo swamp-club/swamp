@@ -252,7 +252,9 @@ async function persistedResources(
  * Runs a workflow whose forEach step writes a sensitive token per value of
  * `envs`, varying the `creds` spec on that input, against a temp repo with a
  * local_encryption vault. Hands `check` the persisted records by data name
- * and the repo's vault service.
+ * and the repo's vault service. `names` lengthens the behavior type and
+ * method, and nests the token under `credentials`, as a realistic
+ * provider-style behavior would.
  */
 async function withVaryWorkflowRun(
   envs: string[],
@@ -260,6 +262,11 @@ async function withVaryWorkflowRun(
     records: Map<string, Record<string, unknown>>,
     vaultService: VaultService,
   ) => Promise<void>,
+  names: { typePrefix: string; methodName: string; nested: boolean } = {
+    typePrefix: "test/vary-secret-writer",
+    methodName: "write",
+    nested: false,
+  },
 ): Promise<void> {
   await initializeLogging({});
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-3633-" });
@@ -275,8 +282,9 @@ async function withVaryWorkflowRun(
     // A per-run type, so the registration holds under --repeats.
     const WriteArgs = z.object({ environment: z.string() });
     const modelType = ModelType.create(
-      `test/vary-secret-writer-${crypto.randomUUID()}`,
+      `${names.typePrefix}-${crypto.randomUUID()}`,
     );
+    const tokenSchema = z.string().meta({ sensitive: true });
     modelRegistry.register({
       type: modelType,
       version: "2026.10.19.1",
@@ -284,20 +292,25 @@ async function withVaryWorkflowRun(
       resources: {
         creds: {
           description: "Per-environment credentials",
-          schema: z.object({ token: z.string().meta({ sensitive: true }) }),
+          schema: names.nested
+            ? z.object({ credentials: z.object({ token: tokenSchema }) })
+            : z.object({ token: tokenSchema }),
           lifetime: "infinite",
           garbageCollection: 5,
         },
       },
       methods: {
-        write: {
+        [names.methodName]: {
           description: "Writes the environment's token",
           arguments: WriteArgs,
           execute: async (args, context) => {
             const { environment } = WriteArgs.parse(args);
-            const handle = await context.writeResource!("creds", "creds", {
-              token: `token-for-${environment}`,
-            });
+            const token = `token-for-${environment}`;
+            const handle = await context.writeResource!(
+              "creds",
+              "creds",
+              names.nested ? { credentials: { token } } : { token },
+            );
             return { dataHandles: [handle] };
           },
         },
@@ -315,7 +328,7 @@ async function withVaryWorkflowRun(
               task: StepTask.directExecution(
                 modelType.normalized,
                 "writer",
-                "write",
+                names.methodName,
                 { environment: "${{ self.env }}" },
               ),
               forEach: { item: "env", in: "${{ inputs.envs }}" },
@@ -401,4 +414,31 @@ Deno.test("Integration: vary values the key sanitizer would fold together, or to
       assertEquals(record.token, `token-for-${env}`, env);
     }
   });
+});
+
+Deno.test("Integration: a vary write by a long-named behavior stays within local_encryption's file name limit (swamp-club#3633)", async () => {
+  // These names alone give a key of over 210 bytes, close to the 255-byte
+  // file name local_encryption stores it under. Before the vary suffix was
+  // capped at the hashed form's length, a 61-character value overflowed it.
+  const envs = ["k".repeat(32), "s".repeat(61), "ip-10-0-0-1.ec2.internal"];
+  await withVaryWorkflowRun(
+    envs,
+    async (records, vaultService) => {
+      for (const env of envs) {
+        const record = structuredClone(records.get(`creds-${env}`) ?? {});
+        await resolveVaultRefsInData(record, vaultService);
+        assertEquals(
+          (record.credentials as Record<string, unknown> | undefined)?.token,
+          `token-for-${env}`,
+          env,
+        );
+      }
+    },
+    {
+      typePrefix:
+        "@user/very-long-vendor-name/service-category/resource-type-name",
+      methodName: "createOrUpdateResourceConfiguration",
+      nested: true,
+    },
+  );
 });

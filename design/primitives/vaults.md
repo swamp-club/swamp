@@ -658,16 +658,23 @@ For a vary write ([data.md §The record](./data.md#the-record)) the instance
 segment is the data name, `-`, and the vary suffix in its key form, so each vary
 instance has its own key (`varySuffixVaultKeySegment()` in `data_writer.ts`):
 
-- A suffix of at most 64 letters, digits, `.`, `_` and `-` is kept as written,
-  so the segment matches the stored name: varied on `prod`, the write above
-  uses `...-createKeyPair-result-result-prod-KeyMaterial`.
-- Any other suffix becomes `+` and the first 32 hex digits of its SHA-256
-  (`...-result-result-+3f9c...-KeyMaterial`). Kept as written, such a suffix
+- A suffix of at most 32 letters, digits and `-` is kept as written, so the
+  segment matches the stored name: varied on `prod`, the write above uses
+  `...-createKeyPair-result-result-prod-KeyMaterial`.
+- Any other suffix becomes `h-` and the first 32 hex digits of its SHA-256
+  (`...-result-result-h-3f9c...-KeyMaterial`). Kept as written, such a suffix
   would lose characters to `sanitizeVaultKey()` (`x@y` and `xy` would share a
-  key), could end the key early inside its single-quoted reference (`'`), or,
-  at length, put the key past the 255-byte file name a `local_encryption`
-  vault stores it under. `+` never occurs in a suffix kept as written, so the
-  two forms cannot meet.
+  key), could end the key early inside its single-quoted reference (`'`), or
+  be refused by a provider with a narrow name alphabet (Azure Key Vault allows
+  only letters, digits and `-`, so `.` and `_` are hashed too). The hashed
+  form is 34 characters, longer than any suffix kept as written, so the two
+  forms cannot meet, and a vary write's key is at most 35 bytes longer than
+  the same write's key without vary.
+
+The rest of the key is not shortened. A behavior whose type, method, spec and
+field names already make a key close to the 255-byte file name a
+`local_encryption` vault stores it under can still overflow it, with or without
+vary; capping the whole key is swamp-club#3641.
 
 Before swamp-club#3633 the key used the data name without the suffix, so every
 vary instance of a spec and data name shared one secret and the last write won.
