@@ -98,6 +98,8 @@ interface World {
       readonly captureWarnings?: boolean;
       /** How long it waits for a lock; 30 s by default. */
       readonly lockTimeoutMs?: number;
+      /** Its Litestream binary cannot be found. */
+      readonly binaryMissing?: boolean;
     },
   ): Promise<Machine>;
   /** What the published lineages say, as a reader sees them. */
@@ -184,6 +186,9 @@ async function withMachines(
         ...(machineOptions.gated === true ? { gated: true } : {}),
         ...(machineOptions.captureWarnings === true
           ? { captureWarnings: true }
+          : {}),
+        ...(machineOptions.binaryMissing === true
+          ? { binaryMissing: true }
           : {}),
       });
       return {
@@ -1049,6 +1054,25 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 restore: a fresh checkout whose restore cannot run refuses to read with the restore's code (swamp-club#3642)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      const b = await world.machine("b", { binaryMissing: true });
+      const refused = await assertRejects(() => read(b), MachineError);
+      assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+      assertStringIncludes(
+        refused.message,
+        "no Litestream binary on this host",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 restore: a fresh checkout that cannot take the restore lock refuses to read (swamp-club#3642)",
   ignore,
   async fn() {
@@ -1105,7 +1129,7 @@ Deno.test({
       await hideCurrentLineage(world, a);
       assertEquals(await read(b), { commits: 2, restored: null });
       const warned = (await b.send({ kind: "warnings" }) as string[]).filter(
-        (message) => message.includes("last restored state"),
+        (message) => message.includes("could not be brought up to date"),
       );
       assertEquals(warned.length, 1, JSON.stringify(warned));
       assertStringIncludes(

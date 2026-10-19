@@ -74,6 +74,8 @@ export type MachineRequest =
     readonly gated?: boolean;
     /** Keeps the datastore's warnings for `warnings`. */
     readonly captureWarnings?: boolean;
+    /** Its Litestream binary cannot be found, as on a host without one. */
+    readonly binaryMissing?: boolean;
   }
   /** Takes the lease with a short TTL, so a pause lets it expire. */
   | {
@@ -266,6 +268,12 @@ async function handle(request: MachineRequest): Promise<unknown> {
         timings: TEST_TIMINGS,
         ...(request.gated === true
           ? { resolveBinary: () => gatedBinary(request) }
+          : {}),
+        ...(request.binaryMissing === true
+          ? {
+            resolveBinary: () =>
+              Promise.reject(new Error("no Litestream binary on this host")),
+          }
           : {}),
       });
       return undefined;

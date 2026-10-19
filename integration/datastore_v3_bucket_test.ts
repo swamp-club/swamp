@@ -71,7 +71,7 @@ import {
 import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import { V3ReplicationError } from "../src/domain/datastore_v3/litestream_replication.ts";
 import { V3_RESTORE_FAILED_CODE } from "../src/infrastructure/datastore_v3/litestream/litestream_restorer.ts";
-import type { UserError } from "../src/domain/errors.ts";
+import { UserError } from "../src/domain/errors.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   createDatastoreSetupDeps,
@@ -936,10 +936,13 @@ async function freshCheckoutRefusesUnreadableReplica(
   await hide();
   await withSidecar(root, async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const refused = await assertRejects(() => restoredCommits(second));
-      assertEquals((refused as UserError).code, V3_RESTORE_FAILED_CODE);
+      const refused = await assertRejects(
+        () => restoredCommits(second),
+        UserError,
+      );
+      assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
       assertStringIncludes(
-        (refused as Error).message,
+        refused.message,
         "Restoring the v3 datastore copy failed",
       );
     }

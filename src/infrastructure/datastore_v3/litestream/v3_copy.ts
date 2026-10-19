@@ -82,6 +82,7 @@ import {
   installByLink,
   restoreV3Copy,
   V3_RESTORE_FAILED_CODE,
+  V3RestoreError,
   type V3RestoreResult,
 } from "./litestream_restorer.ts";
 import {
@@ -225,8 +226,11 @@ export async function makeV3CopyCurrent(
   const paths = await copyPaths(copy);
   const registry = lineageRegistryFor(copy.datastorePath);
   // The cheap check, without any lock: a current copy stops here.
-  const firstLocal = await localState(paths);
-  const first = decideLocalCopy(firstLocal, await registry.read(root), root);
+  const first = decideLocalCopy(
+    await localState(paths),
+    await registry.read(root),
+    root,
+  );
   if (first.kind === "none") {
     // A bucket datastore has no shared commits.db to seed from.
     return options.mode === "write" &&
@@ -248,7 +252,8 @@ export async function makeV3CopyCurrent(
         options.mode,
         copy,
         "another swamp process is restoring this checkout's copy",
-        { neverRestored: copyNeverRestored(firstLocal) },
+        // As the copy stands now: that process may have restored it.
+        { neverRestored: copyNeverRestored(await localState(paths)) },
       );
     }
     // Another process may have restored while this one waited.
@@ -324,6 +329,11 @@ export async function makeV3CopyCurrent(
       // copy that never was: it would read as an empty datastore.
       if (options.mode === "read" && !neverRestored) {
         return refuseOrSkip("read", copy, messageOf(error), { cause: error });
+      }
+      // A reader's refusal carries the restore's code whatever stopped it
+      // (the binary missing, the install failing).
+      if (options.mode === "read" && !(error instanceof V3RestoreError)) {
+        throw new V3RestoreError(messageOf(error), { cause: error });
       }
       throw error;
     }
@@ -531,7 +541,7 @@ function refuseOrSkip(
     throw error;
   }
   logger
-    .warn`Reading this checkout's last restored state of the v3 datastore at ${copy.datastorePath}, because bringing it up to date failed: ${reason}`;
+    .warn`Reading this checkout's last restored state of the v3 datastore at ${copy.datastorePath}: it could not be brought up to date: ${reason}`;
   return {};
 }
 
