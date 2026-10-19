@@ -66,9 +66,9 @@ const SENTINEL_MARK = "__SWAMP_VSEC_";
 /**
  * Whether cel-js reads `value` as a map: an object whose prototype is
  * `Object.prototype` or `null`. A `Secret`, a class instance, a `Map` or a
- * `Set` is not one.
+ * `Set` is not one. The accessor adapter shares this reading.
  */
-function isPlainMap(value: unknown): value is Record<string, unknown> {
+export function isPlainMap(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }

@@ -392,6 +392,13 @@ Deno.test("CelEvaluator data secrets: a missing vault scope fails closed, and th
     ),
     REF_A,
   );
+  // A refused synchronous result issues no sentinel, even a whole record.
+  assertThrows(
+    () =>
+      f.evaluator.evaluate("model.web.resource.creds.main", f.context, f.scope),
+    InvalidExpressionError,
+    "requires evaluateAsync",
+  );
   assertEquals(f.bag.registry.isEmpty, true);
 });
 

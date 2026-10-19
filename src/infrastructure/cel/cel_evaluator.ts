@@ -1023,18 +1023,29 @@ export class CelEvaluator {
       faults.recording = false;
       this.refuseFaulted(faults, run, expression);
       if (result instanceof Promise) throw unresolvedPromiseError(expression);
-      const released = this.releaseWithSecrets(result, run, expression);
       // Authorization is asynchronous, so a record with tagged fields cannot
       // be read here, as vault.get cannot (typed-secrets 3.3; Phase 4 gives
-      // the synchronous passes an authorization step of their own).
-      if (faults.sensitiveReferences.size > 0) {
-        throw new InvalidExpressionError(
-          "a record with sensitive fields requires evaluateAsync for the authorization of its references",
-          expression,
-        );
-      }
+      // the synchronous passes an authorization step of their own). Checked
+      // before release, so no sentinel is issued for a result that is
+      // refused, and again after it, since release adapts records the
+      // expression returned unread.
+      this.refuseSynchronousSensitiveReads(faults, expression);
+      const released = this.releaseWithSecrets(result, run, expression);
+      this.refuseSynchronousSensitiveReads(faults, expression);
       return released;
     });
+  }
+
+  private refuseSynchronousSensitiveReads(
+    faults: FaultScope,
+    expression: string,
+  ): void {
+    if (faults.sensitiveReferences.size > 0) {
+      throw new InvalidExpressionError(
+        "a record with sensitive fields requires evaluateAsync for the authorization of its references",
+        expression,
+      );
+    }
   }
 
   /** {@link evaluateAsync} with typed secrets on, as {@link evaluateWithSecrets}. */
@@ -1179,7 +1190,9 @@ export class CelEvaluator {
    * lazy view, so `model.<name>.resource` records read with their tagged
    * fields as Secrets (typed-secrets 3.3). A context whose `model` is the
    * method receiver {@link wrapNamespaces} installs, or that has none, is
-   * returned as it is. The copy keeps the caller's context untouched.
+   * returned as it is. The copy keeps the caller's context untouched. The
+   * map holds only this repository's records, so a context with no data
+   * namespace to name the reader's own adapts every record it holds.
    */
   private withModelView(
     wrappedContext: Record<string, unknown>,
@@ -1188,7 +1201,7 @@ export class CelEvaluator {
     const data = wrappedContext["data"];
     const view = modelMapView(
       model,
-      data instanceof CelDataNamespace ? data.namespace : "",
+      data instanceof CelDataNamespace ? data.namespace : undefined,
     );
     if (view === model) return wrappedContext;
     const context: Record<string, unknown> = Object.create(

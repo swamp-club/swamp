@@ -234,7 +234,7 @@ Deno.test("adaptDataRecord: content and attributes stay one object for a JSON re
   assert(isSecret(attributesOf(raw.view).password));
 });
 
-Deno.test("adaptDataRecord: the star tag names every own top-level field, which must be absent, null or a stored reference", () => {
+Deno.test("adaptDataRecord: under the star tag every leaf at any depth must be absent, null or a stored reference, and a container holds only references", () => {
   const { view, scope } = adapt(
     record({ a: REF_A, b: null, c: REF_B }, starTag),
   );
@@ -243,18 +243,43 @@ Deno.test("adaptDataRecord: the star tag names every own top-level field, which 
   assert(isSecret(attributesOf(view).c));
   assertEquals(scope.sensitiveReferences.size, 2);
 
+  // A schema that marks a parent and a child inside it sensitive leaves the
+  // child's reference inside a container at the top level.
+  const nested = adapt(
+    record(
+      { config: { token: REF_A, deeper: { key: REF_B } }, n: null },
+      starTag,
+    ),
+  );
+  const config = attributesOf(nested.view).config as Record<string, unknown>;
+  assert(isSecret(config.token));
+  assert(isSecret((config.deeper as Record<string, unknown>).key));
+  assertEquals(
+    (secretParts(config.token)![0] as { location: string }).location,
+    `${LOCATION}, field 'config.token'`,
+  );
+  assertEquals(nested.scope.sensitiveReferences.size, 2);
+
   assertRefusesInvalid(
     record({ a: REF_A, d: "plain-s3cret" }, starTag),
     "field 'd' is not a stored vault reference",
   );
   assertRefusesInvalid(
-    record({ nested: { a: REF_A } }, starTag),
-    "field 'nested' is not a stored vault reference",
+    record({ config: { token: REF_A, plain: "plain-s3cret" } }, starTag),
+    "field 'config.plain' is not a stored vault reference",
+  );
+  assertRefusesInvalid(
+    record({ n: 1 }, starTag),
+    "field 'n' is not a stored vault reference",
   );
   const unsafe = JSON.parse('{"__proto__": "x"}') as Record<string, unknown>;
   assertRefusesInvalid(
     record(unsafe, starTag),
     "the unsafe field name '__proto__'",
+  );
+  assertRefusesInvalid(
+    record({ config: JSON.parse('{"constructor": "x"}') }, starTag),
+    "the unsafe field name 'constructor'",
   );
   // No tagged field with a value: nothing to refuse and nothing recorded.
   const empty = adapt(record({}, starTag));
@@ -263,7 +288,7 @@ Deno.test("adaptDataRecord: the star tag names every own top-level field, which 
 
 Deno.test("adaptDataRecord: nested paths view their containers, absent and null stay, and the writer's parent-and-child artifact is accepted in both orders", () => {
   const original = record(
-    { credentials: { apiKey: REF_A, other: "o" }, n: null, plain: "p" },
+    { credentials: { apiKey: REF_A, gone: null }, n: null, plain: "p" },
     pathsTag("credentials.apiKey", "credentials", "n", "missing.x"),
   );
   const { view, scope } = adapt(original);
@@ -274,7 +299,7 @@ Deno.test("adaptDataRecord: nested paths view their containers, absent and null 
       (original.attributes as Record<string, unknown>).credentials,
   );
   assert(isSecret(credentials.apiKey));
-  assertEquals(credentials.other, "o");
+  assertEquals(credentials.gone, null);
   assertEquals(attributesOf(view).n, null);
   assertEquals("missing" in attributesOf(view), false);
   assertEquals(attributesOf(view).plain, "p");
@@ -289,12 +314,55 @@ Deno.test("adaptDataRecord: nested paths view their containers, absent and null 
   );
   assert(isSecret(attributesOf(childFirst.view).credentials));
 
+  // A deeper container on the way to a tagged leaf is accepted too.
+  const deep = adapt(
+    record({ a: { b: { c: REF_A } } }, pathsTag("a", "a.b.c")),
+  );
+  const b = (attributesOf(deep.view).a as Record<string, unknown>).b as Record<
+    string,
+    unknown
+  >;
+  assert(isSecret(b.c));
+
   // A container at a path that is a prefix of no other tagged path is not
   // what the writer stores.
   assertRefusesInvalid(
     record({ credentials: { apiKey: REF_A } }, pathsTag("credentials")),
     "field 'credentials' is not a stored vault reference",
   );
+  // Nor is an untagged leaf inside a container at a tagged path, at any depth.
+  assertRefusesInvalid(
+    record(
+      { credentials: { apiKey: REF_A, other: "plain-s3cret" } },
+      pathsTag("credentials.apiKey", "credentials"),
+    ),
+    "field 'credentials.other' is not a tagged field of a sensitive container",
+  );
+  assertRefusesInvalid(
+    record({ a: { b: { c: REF_A, x: 1 } } }, pathsTag("a", "a.b.c")),
+    "field 'a.b.x' is not a tagged field of a sensitive container",
+  );
+});
+
+Deno.test("adaptDataRecord: with no known namespace every record is adapted, as the model map's are, and with one a record of another namespace stays as stored", () => {
+  const theirs = record({ a: REF_A }, pathsTag("a"), { namespace: "infra" });
+  runInFaultScope(() => {
+    const view = adaptDataRecord(theirs, undefined, "model.<name>.resource");
+    assert(view !== theirs);
+    assert(isSecret(attributesOf(view as Record<string, unknown>).a));
+    assertStrictEquals(adaptDataRecord(theirs, "", "data.latest"), theirs);
+  });
+  runInFaultScope(() => {
+    const view = modelMapView(
+      { web: { resource: { creds: { main: theirs } } } },
+      undefined,
+    ) as Record<string, unknown>;
+    const main = ((((view.web as Record<string, unknown>).resource as Record<
+      string,
+      unknown
+    >).creds as Record<string, unknown>).main) as Record<string, unknown>;
+    assert(isSecret(attributesOf(main).a));
+  });
 });
 
 Deno.test("adaptDataRecord: a tagged value that is not absent, null or a stored reference refuses with secret_reference_invalid and no value", () => {

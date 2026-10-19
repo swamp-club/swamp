@@ -1161,8 +1161,8 @@ export function parseStoredVaultReference(
   return match ? { vaultName: match[1], key: match[2] } : undefined;
 }
 
-/** A path segment that would reach a prototype rather than a field. */
-const UNSAFE_PATH_SEGMENTS: ReadonlySet<string> = new Set([
+/** A path segment, or field name, that would reach a prototype rather than a field. */
+export const UNSAFE_PATH_SEGMENTS: ReadonlySet<string> = new Set([
   "__proto__",
   "constructor",
   "prototype",

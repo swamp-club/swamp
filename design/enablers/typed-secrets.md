@@ -326,13 +326,16 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   returned without selecting into them, the evaluator authorizes each distinct
   reference through `VaultService.authorizeRead`, sequentially and uncached,
   and a denial fails the evaluation as the read-time denial does with the
-  option off. A typed evaluation with no vault scope fails closed. The
-  synchronous `evaluate` fails closed on any recorded reference, naming
-  `evaluateAsync`, because the check is asynchronous; Phase 4 gives the
-  synchronous passes (`forEach` expansion, step names) an authorization step
-  of their own, for example in `prepare`, before it enables them. With the
-  option off the accessors still read tagged fields, and that read authorizes
-  each reference under the run's `RunVaultAccess` and re-throws a denial.
+  option off. A typed evaluation with no vault scope fails closed; with a
+  scope but no ambient `RunVaultAccess` the check passes, as the option-off
+  read does outside a run. The synchronous `evaluate` fails closed on any
+  recorded reference, before and after release so that no sentinel is issued
+  for a refused result, naming `evaluateAsync`, because the check is
+  asynchronous; Phase 4 gives the synchronous passes (`forEach` expansion,
+  step names) an authorization step of their own, for example in `prepare`,
+  before it enables them. With the option off the accessors still read tagged
+  fields, and that read authorizes each reference under the run's
+  `RunVaultAccess` and re-throws a denial.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key
   under the run's `RunVaultAccess`, as a load would, so a grant revoked mid-run
   fails the next check. It then asks the provider:
@@ -729,19 +732,23 @@ never mutated. The model map is viewed lazily, so the `model.<name>.resource`
 loaders fire only when CEL reads them, and a model indexed by name and by id
 reads one view.
 
-An absent tag means no sensitive fields. The star value names every own
-top-level field of the attributes, each of which the writer stores as a
-reference or leaves null. A path list is walked through own properties only,
-as the writer walks it. Some records fail with `secret_reference_invalid`
-before they reach CEL. That happens for a malformed tag, an unsafe path, or a
-tagged non-null value that is not a stored reference. A stored reference is the
-anchored text `${{ vault.get('v', 'k') }}`. A tagged value that is absent or
-null stays that way. A tagged path that is a strict prefix of another tagged
-path may hold a container instead: the writer stores a child's reference inside
-its parent when both are marked sensitive, in either order. The refusal names
-the accessor, the model, the record id, the version and the field path, never
-the data name, which a vary suffix can fill from a resolved secret, and never a
-value. Reference-looking text outside a tagged path stays ordinary text.
+An absent tag means no sensitive fields. Under the star value every field is
+sensitive at any depth: the writer stores each top-level field as a reference
+or leaves it null, and a container appears only where a schema marks a parent
+and a child inside it sensitive, holding the child's reference, so every leaf
+at any depth must be absent, null or a stored reference. A path list is walked
+through own properties only, as the writer walks it. Some records fail with
+`secret_reference_invalid` before they reach CEL. That happens for a malformed
+tag, an unsafe path, or a tagged non-null value that is not a stored reference.
+A stored reference is the anchored text `${{ vault.get('v', 'k') }}`. A tagged
+value that is absent or null stays that way. A tagged path that is a strict
+prefix of another tagged path may hold a container instead: the writer stores
+a child's reference inside its parent when both are marked sensitive, in either
+order, and such a container holds nothing but its tagged descendants, so an
+untagged leaf inside it is refused too. The refusal names the accessor, the
+model, the record id, the version and the field path, never the data name,
+which a vary suffix can fill from a resolved secret, and never a value.
+Reference-looking text outside a tagged path stays ordinary text.
 Records a workflow step merges into `model.<name>.resource` with resolved
 plaintext under their tag (`fromResourceHandle`) fail with
 `secret_reference_invalid` on the typed path until Phase 4 keeps live records
@@ -992,7 +999,9 @@ removes the option. Turning it on waits for swamp-club#3635, which reserves the
 `_swamp.sensitiveFields`: the accessor adapter trusts own-namespace tags. A
 catalog pull already stores only the pulled namespace's rows
 (swamp-club#3636), so a foreign export cannot pose as the reader's own
-namespace. Its release notes carry the table in Section 10.1. The Phase 2
+namespace. It also waits for the query view of Section 6.2 (Phase 4): until
+then `data.query` returns tagged fields as reference text on the typed path
+and authorizes nothing. Its release notes carry the table in Section 10.1. The Phase 2
 release notes say that a provider without `has` gets one probe read at
 evaluation as well as its load at delivery. Phases 2 and 5 ship on their own.
 

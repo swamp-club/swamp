@@ -28,15 +28,18 @@
  *   that namespace's tags must not choose which of this repository's secrets
  *   are read (swamp-club#3306), and its references name vaults this
  *   repository does not have. A record with no tag is returned as it is.
- * - A tagged record is validated whole before CEL sees it. The tag is read
- *   strictly. The star value tags every own top-level field of the
- *   attributes; a list tags each dot-path, walked through own properties
- *   only, as the writer's own lookup walks. A tagged value that is absent or
- *   null stays so, a stored reference becomes a Secret, and a tagged path
- *   that is a strict prefix of another tagged path may hold a container
- *   instead, which is the writer's parent-and-child artifact. Anything else
- *   refuses with `secret_reference_invalid`, recording the fault first so an
- *   absorbing operator cannot hide it. The refusal names the accessor, the
+ * - A tagged record is validated whole before CEL sees it, against what the
+ *   writer can store. The tag is read strictly. Under the star value every
+ *   field is sensitive at any depth: the writer stores each top-level field
+ *   as a reference, and a container appears only where a schema marks a
+ *   parent and a child inside it sensitive, holding the child's reference.
+ *   Under a path list each path is walked through own properties only, as
+ *   the writer's own lookup walks; a tagged value that is absent or null
+ *   stays so, a stored reference becomes a Secret, and a tagged path that is
+ *   a strict prefix of another tagged path may hold a container whose leaves
+ *   are all tagged, which is the writer's parent-and-child artifact. Anything
+ *   else refuses with `secret_reference_invalid`, recording the fault first so
+ *   an absorbing operator cannot hide it. The refusal names the accessor, the
  *   model, the record id, the version and the field path: never the data
  *   name, which a vary suffix can fill from a resolved secret
  *   (swamp-club#3585), and never a value.
@@ -62,7 +65,10 @@ import {
   readSensitiveFieldsTag,
   type SensitiveFieldsTag,
   SensitiveFieldsTagInvalidError,
+  UNSAFE_PATH_SEGMENTS,
 } from "../../domain/models/data_writer.ts";
+import type { SecretReference } from "../../domain/vaults/secret_bag_registry.ts";
+import { isPlainMap } from "./secret_boundary.ts";
 import {
   recordSecretRead,
   recordSensitiveReference,
@@ -88,27 +94,15 @@ interface RecordLike {
   readonly version: number;
 }
 
-/** A path segment that would reach a prototype rather than a field. */
-const UNSAFE_FIELD_NAMES: ReadonlySet<string> = new Set([
-  "__proto__",
-  "constructor",
-  "prototype",
-]);
-
-/** Whether cel-js reads `value` as a map: a plain object, any prototype. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === null || prototype === Object.prototype;
-}
-
 function isRecordLike(
   value: unknown,
 ): value is RecordLike & Record<string, unknown> {
-  return isPlainObject(value) && isPlainObject(value.tags) &&
-    isPlainObject(value.attributes) && typeof value.namespace === "string";
+  return isPlainMap(value) && isPlainMap(value.tags) &&
+    isPlainMap(value.attributes) && typeof value.namespace === "string";
+}
+
+function isContainer(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function defineValue(target: object, key: string, value: unknown): void {
@@ -145,19 +139,6 @@ function describeRecord(record: RecordLike, accessor: DataAccessor): string {
   return `model '${record.modelName}' record ${record.id} version ${record.version} (${accessor})`;
 }
 
-function refuseInvalid(
-  record: RecordLike,
-  accessor: DataAccessor,
-  reason: string,
-): never {
-  return refuse(
-    `an invalid sensitive-field reference in ${
-      describeRecord(record, accessor)
-    }: ${reason}`,
-    SECRET_REFERENCE_INVALID,
-  );
-}
-
 /** The value at `path` walked through own properties only, or undefined. */
 function valueAt(
   attributes: Record<string, unknown>,
@@ -165,9 +146,10 @@ function valueAt(
 ): unknown {
   let current: unknown = attributes;
   for (const segment of path) {
-    if (typeof current !== "object" || current === null) return undefined;
-    if (!Object.hasOwn(current, segment)) return undefined;
-    current = (current as Record<string, unknown>)[segment];
+    if (!isContainer(current) || !Object.hasOwn(current, segment)) {
+      return undefined;
+    }
+    current = current[segment];
   }
   return current;
 }
@@ -191,65 +173,136 @@ function nodeAt(root: PathNode, path: readonly string[]): PathNode {
   return node;
 }
 
-/** The paths a tag names on `record`, as segment lists. */
-function taggedPaths(
-  record: RecordLike,
-  tag: SensitiveFieldsTag,
-  accessor: DataAccessor,
-): readonly (readonly string[])[] {
-  if (tag.kind === "paths") return tag.paths;
-  return Object.keys(record.attributes).map((key) => {
-    if (UNSAFE_FIELD_NAMES.has(key)) {
-      refuseInvalid(record, accessor, `the unsafe field name '${key}'`);
-    }
-    return [key];
-  });
-}
+const pathKey = (path: readonly string[]): string => path.join("\u0000");
 
 /**
- * Validates every tagged path of `record`, records each reference it holds,
- * and returns the trie of Secrets the view hands out.
+ * Validates every sensitive field of `record` against what the writer can
+ * store, records each reference it holds, and returns the trie of Secrets
+ * the view hands out.
  */
-function validate(
-  record: RecordLike,
-  tag: SensitiveFieldsTag,
-  accessor: DataAccessor,
-): PathNode {
-  const root: PathNode = { children: new Map() };
-  const paths = taggedPaths(record, tag, accessor);
-  // A path that is a strict prefix of another tagged path may hold a
-  // container: the writer stores the child's reference inside it.
-  const prefixes = new Set<string>();
-  for (const path of paths) {
-    for (let length = 1; length < path.length; length++) {
-      prefixes.add(path.slice(0, length).join("\u0000"));
+class Validation {
+  private readonly root: PathNode = { children: new Map() };
+  private readonly location: string;
+
+  constructor(
+    private readonly record: RecordLike,
+    private readonly accessor: DataAccessor,
+  ) {
+    this.location = `${accessor} of ${describeRecord(record, accessor)}`;
+  }
+
+  private refuse(reason: string): never {
+    return refuse(
+      `an invalid sensitive-field reference in ${
+        describeRecord(this.record, this.accessor)
+      }: ${reason}`,
+      SECRET_REFERENCE_INVALID,
+    );
+  }
+
+  private leaf(path: readonly string[], reference: SecretReference): void {
+    recordSensitiveReference(reference);
+    nodeAt(this.root, path).secret = dataReferenceSecret(
+      reference,
+      `${this.location}, field '${path.join(".")}'`,
+    );
+  }
+
+  private notReference(path: readonly string[]): never {
+    return this.refuse(
+      `field '${path.join(".")}' is not a stored vault reference`,
+    );
+  }
+
+  private assertSafeName(name: string): void {
+    if (UNSAFE_PATH_SEGMENTS.has(name)) {
+      this.refuse(`the unsafe field name '${name}'`);
     }
   }
-  const location = `${accessor} of ${describeRecord(record, accessor)}`;
-  for (const path of paths) {
-    const value = valueAt(record.attributes, path);
-    if (value === undefined || value === null) continue;
+
+  /**
+   * Under the star tag every leaf, at any depth, is absent, null or a
+   * stored reference; containers only ever hold a child's reference.
+   */
+  private walkAll(value: unknown, path: string[]): void {
+    if (value === undefined || value === null) return;
     const reference = typeof value === "string"
       ? parseStoredVaultReference(value)
       : undefined;
     if (reference !== undefined) {
-      recordSensitiveReference(reference);
-      nodeAt(root, path).secret = dataReferenceSecret(
-        reference,
-        `${location}, field '${path.join(".")}'`,
-      );
-      continue;
+      this.leaf(path, reference);
+      return;
     }
-    if (typeof value === "object" && prefixes.has(path.join("\u0000"))) {
-      continue;
+    if (!isContainer(value)) this.notReference(path);
+    for (const key of Object.keys(value)) {
+      this.assertSafeName(key);
+      this.walkAll(value[key], [...path, key]);
     }
-    refuseInvalid(
-      record,
-      accessor,
-      `field '${path.join(".")}' is not a stored vault reference`,
-    );
   }
-  return root;
+
+  /**
+   * A container the writer left at a tagged parent path holds nothing but
+   * its tagged descendants: every leaf in it is at a tagged path, where the
+   * tagged path's own entry decides, or holds nothing.
+   */
+  private assertTaggedLeaves(
+    value: Record<string, unknown>,
+    path: readonly string[],
+    tagged: ReadonlySet<string>,
+  ): void {
+    for (const key of Object.keys(value)) {
+      const childPath = [...path, key];
+      if (tagged.has(pathKey(childPath))) continue;
+      const child = value[key];
+      if (child === undefined || child === null) continue;
+      if (isContainer(child)) {
+        this.assertTaggedLeaves(child, childPath, tagged);
+        continue;
+      }
+      this.refuse(
+        `field '${
+          childPath.join(".")
+        }' is not a tagged field of a sensitive container`,
+      );
+    }
+  }
+
+  run(tag: SensitiveFieldsTag): PathNode {
+    if (tag.kind === "all") {
+      for (const key of Object.keys(this.record.attributes)) {
+        this.assertSafeName(key);
+        this.walkAll(this.record.attributes[key], [key]);
+      }
+      return this.root;
+    }
+    if (tag.kind !== "paths") return this.root;
+    const tagged = new Set(tag.paths.map(pathKey));
+    // A path that is a strict prefix of another tagged path may hold a
+    // container: the writer stores the child's reference inside it.
+    const prefixes = new Set<string>();
+    for (const path of tag.paths) {
+      for (let length = 1; length < path.length; length++) {
+        prefixes.add(pathKey(path.slice(0, length)));
+      }
+    }
+    for (const path of tag.paths) {
+      const value = valueAt(this.record.attributes, path);
+      if (value === undefined || value === null) continue;
+      const reference = typeof value === "string"
+        ? parseStoredVaultReference(value)
+        : undefined;
+      if (reference !== undefined) {
+        this.leaf(path, reference);
+        continue;
+      }
+      if (isContainer(value) && prefixes.has(pathKey(path))) {
+        this.assertTaggedLeaves(value, path, tagged);
+        continue;
+      }
+      this.notReference(path);
+    }
+    return this.root;
+  }
 }
 
 /**
@@ -273,7 +326,7 @@ function viewOf(original: object, node: PathNode): object {
       return;
     }
     const viewed = child !== undefined && child.children.size > 0 &&
-        typeof value === "object" && value !== null
+        isContainer(value)
       ? viewOf(value, child)
       : value;
     defineValue(view, key, viewed);
@@ -293,29 +346,42 @@ function viewOf(original: object, node: PathNode): object {
 }
 
 /**
- * `record` as CEL reads it: unchanged when it is not a record, belongs to
- * another namespace or carries no tag; otherwise a new record whose tagged
- * fields are data-origin Secrets, validated whole first.
+ * `record` as CEL reads it: unchanged when it is not a record, belongs to a
+ * namespace other than `ownNamespace` or carries no tag; otherwise a new
+ * record whose tagged fields are data-origin Secrets, validated whole first.
+ * `ownNamespace` is undefined when every record is the reader's own by
+ * construction, as the model map's are: the resolver builds it from the
+ * local repository alone.
  */
 export function adaptDataRecord(
   record: unknown,
-  ownNamespace: string,
+  ownNamespace: string | undefined,
   accessor: DataAccessor,
 ): unknown {
   if (!isRecordLike(record)) return record;
-  if (record.namespace !== ownNamespace) return record;
+  if (ownNamespace !== undefined && record.namespace !== ownNamespace) {
+    return record;
+  }
   let tag: SensitiveFieldsTag;
   try {
     tag = readSensitiveFieldsTag(record.tags);
   } catch (error) {
     if (error instanceof SensitiveFieldsTagInvalidError) {
-      refuseInvalid(record, accessor, error.message);
+      refuse(
+        `an invalid sensitive-field reference in ${
+          describeRecord(record, accessor)
+        }: ${error.message}`,
+        SECRET_REFERENCE_INVALID,
+      );
     }
     throw error;
   }
   if (tag.kind === "none") return record;
   if (tag.kind === "paths" && tag.paths.length === 0) return record;
-  const attributes = viewOf(record.attributes, validate(record, tag, accessor));
+  const attributes = viewOf(
+    record.attributes,
+    new Validation(record, accessor).run(tag),
+  );
   const view: Record<string, unknown> = Object.create(
     Object.getPrototypeOf(record),
   );
@@ -358,10 +424,15 @@ export function adaptDataResult(
  * reads it, every other key is passed through, and the original lazy
  * `resource` and `file` loaders fire only when CEL reads them. One view per
  * original object, so a model indexed by name and by id reads alike. Any
- * value that is not a plain map is returned as it is.
+ * value that is not a plain map is returned as it is. The map holds only
+ * this repository's records, so with `ownNamespace` undefined every record
+ * is adapted; a known namespace is checked as well, as defense in depth.
  */
-export function modelMapView(model: unknown, ownNamespace: string): unknown {
-  if (!isPlainObject(model)) return model;
+export function modelMapView(
+  model: unknown,
+  ownNamespace: string | undefined,
+): unknown {
+  if (!isPlainMap(model)) return model;
   const views = new WeakMap<object, object>();
   const shared = (original: object, build: () => object): object => {
     const existing = views.get(original);
@@ -390,17 +461,15 @@ export function modelMapView(model: unknown, ownNamespace: string): unknown {
   const specsView = (specs: Record<string, unknown>): object =>
     lazyMap(specs, (key) => {
       const instances = specs[key];
-      return isPlainObject(instances) ? instancesView(instances) : instances;
+      return isPlainMap(instances) ? instancesView(instances) : instances;
     });
   const modelDataView = (modelData: Record<string, unknown>): object =>
     lazyMap(modelData, (key) => {
       const value = modelData[key];
-      return key === "resource" && isPlainObject(value)
-        ? specsView(value)
-        : value;
+      return key === "resource" && isPlainMap(value) ? specsView(value) : value;
     });
   return lazyMap(model, (key) => {
     const value = model[key];
-    return isPlainObject(value) ? modelDataView(value) : value;
+    return isPlainMap(value) ? modelDataView(value) : value;
   });
 }
