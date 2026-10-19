@@ -1935,7 +1935,8 @@ default lock handling.
 
 The audit summary carries the source text (`specifier`; for a mapped import,
 the specifier the map resolves it to), the bare import as written
-(`importedAs`, mapped imports only), the resolved `version` and
+(`importedAs`, mapped imports only; `extension quality`'s log mode prints it
+as `(as "<bare name>")` on the dependency's line), the resolved `version` and
 `resolvedFrom` (`exact`, `lockfile` or `registry`). Every finding for a
 mapped import ends `(imported as "<bare name>" via deno.json)`, and blocks or
 warns exactly as it would written out. npm

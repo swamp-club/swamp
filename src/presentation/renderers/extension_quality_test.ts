@@ -629,3 +629,41 @@ Deno.test("createExtensionQualityRenderer: an unaudited dependency is marked ? w
   assertEquals(doc.dependencyTrust.audited[0].reason, reason);
   assertEquals(doc.dependencyTrust.warnings[1].cause, "not-audited");
 });
+
+Deno.test("createExtensionQualityRenderer: an audited dependency a bare import reached names that import in log mode", () => {
+  const manifestDir = resolve("/ext");
+  const trust: DependencyTrustResult = {
+    passed: true,
+    errors: [],
+    warnings: [],
+    audited: [{
+      name: "@types/uuid",
+      specifier: "npm:@types/uuid@10.0.0",
+      importedAs: "uuid-types",
+      version: "10.0.0",
+      registry: "npm",
+      license: "MIT",
+      weeklyDownloads: null,
+      publishedAgo: null,
+      passed: true,
+    }, {
+      name: "ms",
+      specifier: "npm:ms@2.1.3",
+      version: "2.1.3",
+      registry: "npm",
+      license: "MIT",
+      weeklyDownloads: null,
+      publishedAgo: null,
+      passed: true,
+    }],
+  };
+  const log = capture(() =>
+    createExtensionQualityRenderer("log").handlers({
+      manifestDir,
+      cwd: manifestDir,
+    }).completed(completedEvent(makeScore(), { dependencyTrustResult: trust }))
+  ).join("\n");
+  assertStringIncludes(log, '"✓" "@types/uuid"@"10.0.0" (as "uuid-types")');
+  assertStringIncludes(log, '"✓" "ms"@"2.1.3"');
+  assertEquals(log.includes('"ms"@"2.1.3" (as'), false);
+});
