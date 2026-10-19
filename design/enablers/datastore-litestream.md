@@ -947,9 +947,14 @@ the one before it is current.
 Restores of one copy are serialized by `restore.lock`, and the copy's
 sidecar is stopped for the restore (`LitestreamReplicator.quiesce`, which
 holds `use.lock` exclusively so none starts meanwhile). A read-only command
-that cannot get either within the lock timeout reads its copy as it is; a
-writer fails. A reader in a checkout another process is writing does not
-restore: that writer keeps the copy current.
+that cannot get either within the lock timeout, or whose restore fails,
+reads a copy that was restored before as it is, and warns that it shows
+the checkout's last restored state; a writer fails. So does a reader of a
+copy that was never restored (no `commits.db`, or neither `copy.json` nor
+its own writer's `lineage.json`), with `datastore_v3_restore_failed`: that
+copy would read as an empty datastore (swamp-club#3642). A reader in a
+checkout another process is writing does not restore: that writer keeps
+the copy current.
 
 **The checkout after a restore.** When the commit at the read model's cursor
 changed (a foreign lineage, or dropped commits that were never

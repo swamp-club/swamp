@@ -70,6 +70,8 @@ import {
 } from "../src/domain/datastore_v3/repository_changes.ts";
 import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import { V3ReplicationError } from "../src/domain/datastore_v3/litestream_replication.ts";
+import { V3_RESTORE_FAILED_CODE } from "../src/infrastructure/datastore_v3/litestream/litestream_restorer.ts";
+import { UserError } from "../src/domain/errors.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   createDatastoreSetupDeps,
@@ -914,6 +916,58 @@ Deno.test({
   },
 });
 
+/**
+ * A fresh checkout's first read, after `hide` made the replica's lineage
+ * unreadable while its records still name it: it fails with the restore's
+ * error instead of reading an empty datastore, every time (swamp-club#3642).
+ */
+async function freshCheckoutRefusesUnreadableReplica(
+  root: string,
+  bucket: Bucket,
+  hide: () => Promise<void>,
+  options: { readonly providerReplica?: boolean } = {},
+): Promise<void> {
+  const first = join(root, "first");
+  await initRepo(first);
+  assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+  const second = join(root, "second");
+  await cloneRepo(first, second);
+  await withSidecar(root, () => writeIn(first, 2), options);
+  await hide();
+  await withSidecar(root, async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const refused = await assertRejects(
+        () => restoredCommits(second),
+        UserError,
+      );
+      assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+      assertStringIncludes(
+        refused.message,
+        "Restoring the v3 datastore copy failed",
+      );
+    }
+  }, options);
+}
+
+Deno.test({
+  name:
+    "v3 bucket: a fresh checkout whose restore fails refuses to read instead of reading an empty datastore (swamp-club#3642)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      await freshCheckoutRefusesUnreadableReplica(
+        root,
+        bucket,
+        () =>
+          Deno.rename(
+            join(root, "replica", "_litestream"),
+            join(root, "replica", "_litestream.hidden"),
+          ),
+      );
+    });
+  },
+});
+
 const S3_ENDPOINT = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_ENDPOINT");
 
 Deno.test({
@@ -945,6 +999,47 @@ Deno.test({
       replicaTarget: {
         type: "s3",
         bucket: Deno.env.get("SWAMP_TEST_LITESTREAM_S3_BUCKET") ?? "swamp-test",
+        prefix,
+        region: "us-east-1",
+        endpoint: S3_ENDPOINT!,
+        forcePathStyle: true,
+      },
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: on S3, a fresh checkout whose restore fails refuses to read (opt-in, swamp-club#3642)",
+  ignore: SIDECAR_TESTS_IGNORED || S3_ENDPOINT === undefined,
+  async fn() {
+    const prefix = `v3-bucket-${crypto.randomUUID()}`;
+    const s3Bucket = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_BUCKET") ??
+      "swamp-test";
+    await withRoot(async (root, bucket) => {
+      // The lineage's objects go; the records naming it stay.
+      await freshCheckoutRefusesUnreadableReplica(root, bucket, async () => {
+        const listing = await (await fetch(
+          `${S3_ENDPOINT}/${s3Bucket}?list-type=2&prefix=${prefix}/_litestream/`,
+          { signal: AbortSignal.timeout(10_000) },
+        )).text();
+        const keys = [...listing.matchAll(/<Key>([^<]+)<\/Key>/g)].map((
+          match,
+        ) => match[1]);
+        assert(keys.length > 0, "the lineage was replicated");
+        for (const key of keys) {
+          const removed = await fetch(`${S3_ENDPOINT}/${s3Bucket}/${key}`, {
+            method: "DELETE",
+            signal: AbortSignal.timeout(10_000),
+          });
+          await removed.body?.cancel();
+          assert(removed.ok, `deleting ${key}: ${removed.status}`);
+        }
+      }, { providerReplica: true });
+    }, {
+      replicaTarget: {
+        type: "s3",
+        bucket: s3Bucket,
         prefix,
         region: "us-east-1",
         endpoint: S3_ENDPOINT!,

@@ -226,6 +226,24 @@ export function decideLocalCopy(
 }
 
 /**
+ * Whether the copy never held the datastore's state (swamp-club#3642): it
+ * has no `commits.db` (`local` undefined), or neither a restore nor its own
+ * writer's lineage ever recorded what it holds. An empty file a reader left
+ * while it waited for another restore is such a copy. A reader whose restore
+ * fails reads a copy that was restored before as it is; a copy that never
+ * was would read as an empty datastore, so its read fails instead.
+ */
+export function copyNeverRestored(
+  local: {
+    readonly copy?: LocalCopyState;
+    readonly lineage?: ReplicationLineage;
+  } | undefined,
+): boolean {
+  return local === undefined ||
+    (local.copy === undefined && local.lineage === undefined);
+}
+
+/**
  * Whether a writer that took the lease at `fence` may continue the lineage
  * it recorded in `previous`, given what is published. It may only while no
  * other writer can have written since: its lineage was started (published)
