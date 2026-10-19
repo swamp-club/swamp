@@ -204,6 +204,27 @@ Deno.test("validateCaCertFile: rejects a directory", async () => {
   }
 });
 
+Deno.test({
+  name: "validateCaCertFile: rejects a file it cannot read",
+  // Windows has no POSIX modes, and root reads a mode-000 file.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const file = join(dir, "ca.pem");
+      await Deno.writeTextFile(file, "pem");
+      await Deno.chmod(file, 0o000);
+      await assertRejects(
+        () => validateCaCertFile(file),
+        UserError,
+        `--ca-cert file not readable: ${file}`,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
 Deno.test("validateCaCertFile: resolves a relative path to an absolute one", async () => {
   const dir = await Deno.makeTempDir();
   try {

@@ -400,6 +400,11 @@ The headers go on the WebSocket upgrade request (via Deno 2.x's non-standard
 request. They are pure pass-through: `swamp serve` does not read or require
 them. Values may contain secrets and are never logged.
 
+`swamp worker daemon enable` copies the variable from the shell that runs it
+into the service definition. sudo's default `env_reset` drops it, so a system
+service enabled with sudo needs `sudo -E` or
+`sudo --preserve-env=SWAMP_SERVE_EXTRA_HEADERS`.
+
 Reserved names (`Authorization`, `Host`, `Upgrade`, `Connection`) are rejected
 so they cannot clash with swamp's protocol headers. Values with control
 characters are rejected to prevent header injection.

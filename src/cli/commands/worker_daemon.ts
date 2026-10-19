@@ -96,6 +96,16 @@ export async function validateCaCertFile(rawPath: string): Promise<string> {
     }
     throw err;
   }
+  // The service reads the file on every start, so a file that exists but
+  // cannot be read would make it restart forever.
+  try {
+    await Deno.readTextFile(resolved);
+  } catch (err: unknown) {
+    if (err instanceof Deno.errors.PermissionDenied) {
+      throw new UserError(`--ca-cert file not readable: ${resolved}`);
+    }
+    throw err;
+  }
   return resolved;
 }
 
@@ -242,7 +252,7 @@ export function collectWorkerEnv(options: AnyOptions): Record<string, string> {
 export const workerDaemonEnableCommand = new Command()
   .name("enable")
   .description(
-    "Enable swamp worker as a system daemon (launchd/systemd). SWAMP_SERVE_EXTRA_HEADERS set in this shell is written into the service, as worker connect would read it.",
+    "Enable swamp worker as a system daemon (launchd/systemd). SWAMP_SERVE_EXTRA_HEADERS set in this shell is written into the service, as worker connect would read it; sudo drops it unless run as sudo -E or sudo --preserve-env=SWAMP_SERVE_EXTRA_HEADERS.",
   )
   .arguments("[url:string]")
   .option(
@@ -317,7 +327,7 @@ export const workerDaemonEnableCommand = new Command()
   )
   .example(
     "Enable through a reverse-proxy that requires a tunnel token",
-    "SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123' swamp worker daemon enable wss://orch.internal:9090 --token tok.secret",
+    "export SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123'; sudo --preserve-env=SWAMP_SERVE_EXTRA_HEADERS swamp worker daemon enable wss://orch.internal:9090 --token tok.secret",
   )
   .action(async function (options: AnyOptions, urlArg?: string) {
     const ctx = createContext(options as GlobalOptions, [
