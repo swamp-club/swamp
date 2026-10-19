@@ -180,3 +180,40 @@ Deno.test("SecretLoader.load: a stale refresh hook refreshes on load, and the ex
     }
   }
 });
+
+Deno.test("SecretLoader.load: a data-origin reference loads like a vault reference, once per distinct reference, and a legacy data entry is not read", async () => {
+  const { service, reads } = mockVault({ a: "value-a", p: "value-p" });
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const vault = bag.addSecret({ vaultName: "v", key: "a" }, "loc");
+  const location =
+    "data.latest of model 'db' record r1 version 1 (data.latest), field 'password'";
+  const first = bag.addDataReference({ vaultName: "v", key: "p" }, location);
+  const second = bag.addDataReference({ vaultName: "v", key: "p" }, location);
+  const legacy = bag.addDataSecret("from-data", { vaultName: "v", key: "d" });
+  const redacted: string[] = [];
+  const text = `${vault} ${first} ${second} ${legacy}`;
+  const view = await loaderOver(service, redacted).load(bag, { run: text });
+  assertEquals(reads.map((read) => read.key).sort(), ["a", "p"]);
+  assertEquals(redacted.sort(), ["value-a", "value-p"]);
+  assertEquals(view.resolveRaw(text), "value-a value-p value-p from-data");
+  // The bag itself holds only the legacy entry's value, never a loaded one.
+  assertEquals(bag.rawValues, ["from-data"]);
+  assertThrows(() => bag.resolveRaw(first), Error, "was not loaded");
+});
+
+Deno.test("SecretLoader.load: a failed data-origin load names the vault, the key and the record it was read from, never a value", async () => {
+  const { service } = mockVault({ other: "other-s3cret" });
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const location =
+    "data.latest of model 'db' record r1 version 1 (data.latest), field 'password'";
+  const sentinel = bag.addDataReference(
+    { vaultName: "v", key: "missing" },
+    location,
+  );
+  const error = await assertRejects(
+    () => loaderOver(service).load(bag, sentinel),
+    Error,
+    `Failed to load secret 'missing' from vault 'v' (at ${location}): `,
+  );
+  assertEquals(error.message.includes("other-s3cret"), false);
+});

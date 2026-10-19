@@ -32,12 +32,15 @@ import {
   createResourceWriter,
   modelRequiresVault,
   parseSensitiveFieldsTag,
+  parseStoredVaultReference,
   processSensitiveResourceData,
+  readSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
   resolveVaultRefsInData,
   sanitizeVaultKey,
   SENSITIVE_FIELDS_ALL,
   SENSITIVE_FIELDS_TAG,
+  SensitiveFieldsTagInvalidError,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
@@ -3453,4 +3456,118 @@ Deno.test("createResourceWriter: a data output override for another spec is not 
 
   const handle = await writeResource("item", "main", { value: "v" });
   assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], undefined);
+});
+
+// --- readSensitiveFieldsTag and parseStoredVaultReference (typed-secrets 3.3) ---
+
+Deno.test("readSensitiveFieldsTag: an absent tag means no sensitive fields, and the star value every top-level field", () => {
+  assertEquals(readSensitiveFieldsTag({}), { kind: "none" });
+  assertEquals(
+    readSensitiveFieldsTag({ [SENSITIVE_FIELDS_TAG]: SENSITIVE_FIELDS_ALL }),
+    { kind: "all" },
+  );
+});
+
+Deno.test("readSensitiveFieldsTag: the writer's list of dot-paths is read as segment lists", () => {
+  assertEquals(
+    readSensitiveFieldsTag({
+      [SENSITIVE_FIELDS_TAG]: JSON.stringify([
+        "apiKey",
+        "config.token",
+        "a.b.c",
+      ]),
+    }),
+    {
+      kind: "paths",
+      paths: [["apiKey"], ["config", "token"], ["a", "b", "c"]],
+    },
+  );
+  assertEquals(readSensitiveFieldsTag({ [SENSITIVE_FIELDS_TAG]: "[]" }), {
+    kind: "paths",
+    paths: [],
+  });
+});
+
+Deno.test("readSensitiveFieldsTag: a tag the writer could not have produced throws, naming the reason and never the tag", () => {
+  const cases: Array<[unknown, string]> = [
+    ["not-json {", "not JSON"],
+    ['"apiKey"', "not a list of path strings"],
+    ['{"apiKey": true}', "not a list of path strings"],
+    ["[1]", "not a list of path strings"],
+    ['["apiKey", null]', "not a list of path strings"],
+    ["null", "not a list of path strings"],
+    ['[""]', "an empty path"],
+    ['["a..b"]', "an empty path segment"],
+    ['[".a"]', "an empty path segment"],
+    ['["a."]', "an empty path segment"],
+    ['["__proto__.x"]', "the unsafe path segment '__proto__'"],
+    ['["a.constructor"]', "the unsafe path segment 'constructor'"],
+    ['["prototype"]', "the unsafe path segment 'prototype'"],
+    [42, "not text"],
+    [["apiKey"], "not text"],
+  ];
+  for (const [raw, reason] of cases) {
+    const error = assertThrows(
+      () => readSensitiveFieldsTag({ [SENSITIVE_FIELDS_TAG]: raw as string }),
+      SensitiveFieldsTagInvalidError,
+      reason,
+      String(raw),
+    );
+    assertEquals(error.reason, reason);
+    assertEquals(
+      error.message,
+      `The ${SENSITIVE_FIELDS_TAG} tag is invalid: ${reason}`,
+    );
+    assertEquals(error.message.includes("apiKey"), false, String(raw));
+  }
+});
+
+Deno.test("readSensitiveFieldsTag: unlike parseSensitiveFieldsTag, a malformed tag is never read as absent", () => {
+  const tags = { [SENSITIVE_FIELDS_TAG]: "not-json" };
+  assertEquals(parseSensitiveFieldsTag(tags), null);
+  assertThrows(
+    () => readSensitiveFieldsTag(tags),
+    SensitiveFieldsTagInvalidError,
+  );
+});
+
+Deno.test("parseStoredVaultReference: exactly one anchored stored reference, in the writer's spacing or any", () => {
+  const reference = {
+    vaultName: "my-vault",
+    key: "test-model-abc-run-creds-main-apiKey",
+  };
+  for (
+    const text of [
+      "${{ vault.get('my-vault', 'test-model-abc-run-creds-main-apiKey') }}",
+      "${{vault.get('my-vault','test-model-abc-run-creds-main-apiKey')}}",
+      "${{   vault.get(  'my-vault' ,  'test-model-abc-run-creds-main-apiKey'  )   }}",
+    ]
+  ) {
+    assertEquals(parseStoredVaultReference(text), reference, text);
+  }
+});
+
+Deno.test("parseStoredVaultReference: text that is not one whole stored reference is not a reference", () => {
+  for (
+    const text of [
+      "",
+      "plain",
+      "prefix ${{ vault.get('v', 'k') }}",
+      "${{ vault.get('v', 'k') }} suffix",
+      "${{ vault.get('v', 'k') }}${{ vault.get('v', 'k') }}",
+      '${{ vault.get("v", "k") }}',
+      "${{ vault.get(v, k) }}",
+      "${{ vault.get('v') }}",
+      "${{ vault.get('', 'k') }}",
+      "${{ env.HOME }}",
+      "${{ 'x' + vault.get('v', 'k') }}",
+      "${{ vault.get('v', 'k') }}\n",
+    ]
+  ) {
+    assertEquals(
+      parseStoredVaultReference(text),
+      undefined,
+      JSON.stringify(text),
+    );
+  }
 });

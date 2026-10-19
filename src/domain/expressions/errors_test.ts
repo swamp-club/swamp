@@ -27,6 +27,7 @@ import {
   ModelNotFoundError,
   SECRET_DESTINATION_REFUSED,
   SECRET_OPERATION_UNSUPPORTED,
+  SECRET_REFERENCE_INVALID,
   SecretRefusedError,
   UnresolvedExpressionError,
 } from "./errors.ts";
@@ -160,4 +161,21 @@ Deno.test("SecretRefusedError: a UserError carrying its stable code, the operati
     new SecretRefusedError(SECRET_DESTINATION_REFUSED, "a", "b").code,
     "secret_destination_refused",
   );
+});
+
+Deno.test("SecretRefusedError: secret_reference_invalid is a stable code, and its message reads as a record error", () => {
+  const operation =
+    "an invalid sensitive-field reference in model 'db' record r1 version 2 (data.latest): field 'password' is not a stored vault reference";
+  const error = new SecretRefusedError(
+    SECRET_REFERENCE_INVALID,
+    operation,
+    "data.latest('db', 'main').attributes.password",
+  );
+  assertInstanceOf(error, UserError);
+  assertEquals(error.code, "secret_reference_invalid");
+  assertEquals(
+    error.message,
+    `Expression refused a secret (secret_reference_invalid): ${operation}, in data.latest('db', 'main').attributes.password`,
+  );
+  assertEquals(error.cause, undefined);
 });

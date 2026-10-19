@@ -25,8 +25,10 @@ import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { SecretBoundary } from "./secret_boundary.ts";
 import {
   composeSecrets,
+  dataReferenceSecret,
   isSecret,
   type Secret,
+  secretParts,
   vaultReferenceSecret,
 } from "./secret_value.ts";
 
@@ -141,6 +143,48 @@ Deno.test("SecretBoundary: structures round-trip, with Optionals at any depth", 
       const optional = boundary.release(Optional.of(bound)) as Optional;
       assertEquals(optional.value(), original);
     }),
+    { numRuns: 200 },
+  );
+});
+
+Deno.test("SecretBoundary: data-origin references round-trip through their sentinels with their origin and location kept", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.oneof(fc.string(), fc.nat({ max: 1 })), {
+        minLength: 1,
+        maxLength: 6,
+      }),
+      (pieces) => {
+        const { bag } = run(0);
+        const boundary = new SecretBoundary(bag);
+        const secrets = [0, 1].map((i) =>
+          dataReferenceSecret({ vaultName: "v", key: `d${i}` }, `loc${i}`)
+        );
+        const operands: (Secret | string)[] = pieces.map((piece) =>
+          typeof piece === "number" ? secrets[piece] : piece
+        );
+        if (operands.every((operand) => typeof operand === "string")) return;
+        const composed = operands.reduce((a, b) =>
+          typeof a === "string" && typeof b === "string"
+            ? a + b
+            : composeSecrets(a, b)
+        );
+        const text = boundary.release(composed) as string;
+        const rebound = new SecretBoundary(bag).bind({ v: text }).v as Secret;
+        assert(isSecret(rebound));
+        const parts = secretParts(rebound)!.filter((part) =>
+          typeof part !== "string"
+        ) as { dataOrigin: boolean; location?: string }[];
+        for (const part of parts) {
+          assertEquals(part.dataOrigin, true);
+          assert(part.location === "loc0" || part.location === "loc1");
+        }
+        assertEquals(boundary.release(rebound), text);
+        for (const entry of bag.registry.all()) {
+          assertEquals("value" in entry, false);
+        }
+      },
+    ),
     { numRuns: 200 },
   );
 });

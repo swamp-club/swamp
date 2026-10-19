@@ -123,6 +123,18 @@ export function vaultReferenceSecret(
   return secretFromParts([{ reference, dataOrigin: false, location }]);
 }
 
+/**
+ * A `Secret` holding one sensitive-field reference a data read brought into
+ * CEL (typed-secrets 3.3), read at `location`: the record and the field it
+ * was read from, for a load's errors. Only the accessor adapter creates one.
+ */
+export function dataReferenceSecret(
+  reference: SecretReference,
+  location: string,
+): Secret {
+  return secretFromParts([{ reference, dataOrigin: true, location }]);
+}
+
 /** Whether `value` is a `Secret` this module created. */
 export function isSecret(value: unknown): value is Secret {
   return typeof value === "object" && value !== null && states.has(value);

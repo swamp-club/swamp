@@ -46,6 +46,7 @@ import type {
 } from "./model.ts";
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
+import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
 import {
   type BehaviorWords,
@@ -1147,6 +1148,98 @@ export function parseSensitiveFieldsTag(
  */
 const VAULT_REF_REGEX =
   /^\$\{\{\s*vault\.get\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*\}\}$/;
+
+/**
+ * The vault name and key of `text` when it is exactly one stored reference:
+ * the anchored text {@link processSensitiveResourceData} writes at a vaulted
+ * path. Undefined for any other text, reference-looking or not.
+ */
+export function parseStoredVaultReference(
+  text: string,
+): SecretReference | undefined {
+  const match = VAULT_REF_REGEX.exec(text);
+  return match ? { vaultName: match[1], key: match[2] } : undefined;
+}
+
+/** A path segment that would reach a prototype rather than a field. */
+const UNSAFE_PATH_SEGMENTS: ReadonlySet<string> = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+
+/**
+ * The strict reading of a record's {@link SENSITIVE_FIELDS_TAG}: no tag,
+ * every top-level field, or the writer's dot-paths as segment lists.
+ */
+export type SensitiveFieldsTag =
+  | { readonly kind: "none" }
+  | { readonly kind: "all" }
+  | {
+    readonly kind: "paths";
+    readonly paths: readonly (readonly string[])[];
+  };
+
+/**
+ * A {@link SENSITIVE_FIELDS_TAG} the writer could not have produced. The
+ * message names the reason only, never the tag's text, which can be data
+ * from outside this repository.
+ */
+export class SensitiveFieldsTagInvalidError extends Error {
+  constructor(readonly reason: string) {
+    super(`The ${SENSITIVE_FIELDS_TAG} tag is invalid: ${reason}`);
+    this.name = "SensitiveFieldsTagInvalidError";
+  }
+}
+
+/**
+ * Reads the {@link SENSITIVE_FIELDS_TAG} strictly, as the expression-facing
+ * accessors do (design/enablers/typed-secrets.md Section 6.1): an absent tag
+ * means no sensitive fields, the star value means every top-level field, and
+ * anything else must be the JSON list of dot-paths the writer stores. A tag
+ * that is not text, not JSON, not a list of strings, or that holds an empty
+ * path, an empty segment or an unsafe segment throws
+ * {@link SensitiveFieldsTagInvalidError}. Unlike {@link parseSensitiveFieldsTag},
+ * a malformed tag is never read as absent.
+ */
+export function readSensitiveFieldsTag(
+  tags: Record<string, string>,
+): SensitiveFieldsTag {
+  const raw: unknown = tags[SENSITIVE_FIELDS_TAG];
+  if (raw === undefined) return { kind: "none" };
+  if (typeof raw !== "string") {
+    throw new SensitiveFieldsTagInvalidError("not text");
+  }
+  if (raw === SENSITIVE_FIELDS_ALL) return { kind: "all" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new SensitiveFieldsTagInvalidError("not JSON");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every((path) => typeof path === "string")
+  ) {
+    throw new SensitiveFieldsTagInvalidError("not a list of path strings");
+  }
+  const paths = (parsed as string[]).map((path) => {
+    if (path === "") throw new SensitiveFieldsTagInvalidError("an empty path");
+    const segments = path.split(".");
+    for (const segment of segments) {
+      if (segment === "") {
+        throw new SensitiveFieldsTagInvalidError("an empty path segment");
+      }
+      if (UNSAFE_PATH_SEGMENTS.has(segment)) {
+        throw new SensitiveFieldsTagInvalidError(
+          `the unsafe path segment '${segment}'`,
+        );
+      }
+    }
+    return segments;
+  });
+  return { kind: "paths", paths };
+}
 
 /**
  * Recursively walks an object/array and resolves any string values that match

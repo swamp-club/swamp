@@ -44,6 +44,7 @@ import {
   SECRET_OPERATION_UNSUPPORTED,
   SecretRefusedError,
 } from "../../domain/expressions/errors.ts";
+import type { DataReadOptions } from "../../domain/expressions/model_resolver.ts";
 import type { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import {
   INTERNAL_FUNCTION_SIGNATURES,
@@ -57,12 +58,21 @@ import {
   refuseUnboundSecrets,
   SecretBoundary,
 } from "./secret_boundary.ts";
-import { type FaultScope, runInFaultScope } from "./secret_fault_context.ts";
+import {
+  type FaultScope,
+  runInFaultScope,
+  SecretRefusal,
+} from "./secret_fault_context.ts";
 import {
   registerAllowedSet,
   registerSecretRefusals,
   registerSecretType,
 } from "./secret_registrations.ts";
+import {
+  adaptDataResult,
+  type DataAccessor,
+  modelMapView,
+} from "./sensitive_record_adapter.ts";
 
 /**
  * Result of expression validation.
@@ -249,6 +259,17 @@ export class CelDataNamespace {
   }
 
   /**
+   * The reader's own namespace, as the delegate carries it: the namespace
+   * whose records' tagged fields are this repository's to read. Empty, the
+   * solo default a context built without a repository uses, when the
+   * delegate carries none.
+   */
+  get namespace(): string {
+    const namespace = this.delegate["namespace"];
+    return typeof namespace === "string" ? namespace : "";
+  }
+
+  /**
    * Records `call` when the lookup resolved to no record. Delegates return
    * either a value or a Promise; the Promise arm returns the derived promise
    * so the miss is recorded before cel-js selects a field off the result.
@@ -307,14 +328,23 @@ export class CelDataNamespace {
     return paragraphs;
   }
 
-  latest(modelName: string, dataName: string, varyValues?: unknown[]): unknown {
+  latest(
+    modelName: string,
+    dataName: string,
+    varyValues?: unknown[],
+    options?: DataReadOptions,
+  ): unknown {
     const fn = this.delegate["latest"];
     if (typeof fn === "function") {
       const resolvedName = varyValues && varyValues.length > 0
         ? composeDataName(dataName, varyValues.map((v) => String(v)))
         : dataName;
       return this.recordMiss(
-        (fn as (m: string, d: string) => unknown)(modelName, resolvedName),
+        (fn as (m: string, d: string, o?: DataReadOptions) => unknown)(
+          modelName,
+          resolvedName,
+          options,
+        ),
         `data.latest("${modelName}", "${resolvedName}")`,
         resolvedName === dataName
           ? { accessor: "latest", modelName, dataName }
@@ -592,6 +622,21 @@ export function createInternalCelEnvironment(
       ? <T>(value: T, operation: string) =>
         detachForDestination(value, operation) as T
       : <T>(value: T) => value;
+  // Records an accessor answers: with typed secrets on, the reader's
+  // own-namespace records are read as stored and their tagged fields become
+  // data-origin Secrets (typed-secrets 3.3). Gated here, on the option, so a
+  // namespace instance built earlier and reused is adapted all the same.
+  const fromAccessor: (
+    receiver: CelDataNamespace,
+    result: unknown,
+    accessor: DataAccessor,
+  ) => unknown = options.typedSecrets
+    ? (receiver, result, accessor) =>
+      adaptDataResult(result, receiver.namespace, accessor)
+    : (_receiver, result) => result;
+  const readOptions: DataReadOptions | undefined = options.typedSecrets
+    ? { sensitiveFields: "stored" }
+    : undefined;
 
   // Register namespace types so cel-js recognizes them via constructor
   // matching instead of trying to infer them as maps.
@@ -616,7 +661,11 @@ export function createInternalCelEnvironment(
   env.registerFunction(
     "CelDataNamespace.latest(string, string): dyn",
     (receiver: CelDataNamespace, modelName: string, dataName: string) =>
-      receiver.latest(modelName, dataName),
+      fromAccessor(
+        receiver,
+        receiver.latest(modelName, dataName, undefined, readOptions),
+        "data.latest",
+      ),
   );
 
   env.registerFunction(
@@ -626,7 +675,12 @@ export function createInternalCelEnvironment(
       modelName: string,
       dataName: string,
       version: unknown,
-    ) => receiver.version(modelName, dataName, version),
+    ) =>
+      fromAccessor(
+        receiver,
+        receiver.version(modelName, dataName, version),
+        "data.version",
+      ),
   );
 
   env.registerFunction(
@@ -644,10 +698,15 @@ export function createInternalCelEnvironment(
       dataName: string,
       varyValues: unknown[],
     ) =>
-      receiver.latest(
-        modelName,
-        dataName,
-        toDestination(varyValues, "the vary values of data.latest"),
+      fromAccessor(
+        receiver,
+        receiver.latest(
+          modelName,
+          dataName,
+          toDestination(varyValues, "the vary values of data.latest"),
+          readOptions,
+        ),
+        "data.latest",
       ),
   );
 
@@ -660,11 +719,15 @@ export function createInternalCelEnvironment(
       varyValues: unknown[],
       version: unknown,
     ) =>
-      receiver.version(
-        modelName,
-        dataName,
-        toDestination(varyValues, "the vary values of data.version"),
-        version,
+      fromAccessor(
+        receiver,
+        receiver.version(
+          modelName,
+          dataName,
+          toDestination(varyValues, "the vary values of data.version"),
+          version,
+        ),
+        "data.version",
       ),
   );
 
@@ -686,13 +749,21 @@ export function createInternalCelEnvironment(
   env.registerFunction(
     "CelDataNamespace.findByTag(string, string): dyn",
     (receiver: CelDataNamespace, tagKey: string, tagValue: string) =>
-      receiver.findByTag(tagKey, tagValue),
+      fromAccessor(
+        receiver,
+        receiver.findByTag(tagKey, tagValue),
+        "data.findByTag",
+      ),
   );
 
   env.registerFunction(
     "CelDataNamespace.findBySpec(string, string): dyn",
     (receiver: CelDataNamespace, modelName: string, specName: string) =>
-      receiver.findBySpec(modelName, specName),
+      fromAccessor(
+        receiver,
+        receiver.findBySpec(modelName, specName),
+        "data.findBySpec",
+      ),
   );
 
   env.registerFunction(
@@ -952,7 +1023,17 @@ export class CelEvaluator {
       faults.recording = false;
       this.refuseFaulted(faults, run, expression);
       if (result instanceof Promise) throw unresolvedPromiseError(expression);
-      return this.releaseWithSecrets(result, run, expression);
+      const released = this.releaseWithSecrets(result, run, expression);
+      // Authorization is asynchronous, so a record with tagged fields cannot
+      // be read here, as vault.get cannot (typed-secrets 3.3; Phase 4 gives
+      // the synchronous passes an authorization step of their own).
+      if (faults.sensitiveReferences.size > 0) {
+        throw new InvalidExpressionError(
+          "a record with sensitive fields requires evaluateAsync for the authorization of its references",
+          expression,
+        );
+      }
+      return released;
     });
   }
 
@@ -1018,8 +1099,50 @@ export class CelEvaluator {
       }
       faults.recording = false;
       this.refuseFaulted(faults, run, expression);
-      return this.releaseWithSecrets(result, run, expression);
+      // Release first: it adapts records the expression returned unread, and
+      // their references must be authorized too.
+      const released = this.releaseWithSecrets(result, run, expression);
+      await this.authorizeSensitiveReferences(
+        faults,
+        scope,
+        expression,
+        wrappedContext,
+      );
+      return released;
     });
+  }
+
+  /**
+   * Authorizes every sensitive-field reference the evaluation's records hold
+   * under the run's vault access, selected or not, before the result is used
+   * (design/enablers/typed-secrets.md Section 3.4). A policy decision only:
+   * no existence check, probe or load. A denial fails the evaluation as the
+   * read-time denial does with typed secrets off, and a missing scope fails
+   * closed.
+   */
+  private async authorizeSensitiveReferences(
+    faults: FaultScope,
+    scope: EvaluationScope,
+    expression: string,
+    wrappedContext: Record<string, unknown>,
+  ): Promise<void> {
+    if (faults.sensitiveReferences.size === 0) return;
+    if (scope.vault === undefined) {
+      throw new InvalidExpressionError(
+        "a record with sensitive fields requires the run's vault check scope",
+        expression,
+      );
+    }
+    for (const reference of faults.sensitiveReferences.values()) {
+      try {
+        await scope.vault.service.authorizeRead(
+          reference.vaultName,
+          reference.key,
+        );
+      } catch (error) {
+        throw this.evaluationError(error, expression, wrappedContext);
+      }
+    }
   }
 
   /**
@@ -1040,7 +1163,8 @@ export class CelEvaluator {
     const boundary = scope.secretBag === undefined
       ? undefined
       : new SecretBoundary(scope.secretBag);
-    const bindings = boundary?.bind(wrappedContext) ?? wrappedContext;
+    const context = this.withModelView(wrappedContext);
+    const bindings = boundary?.bind(context) ?? context;
     return {
       evaluate: () => program(bindings),
       analysis,
@@ -1048,6 +1172,36 @@ export class CelEvaluator {
       containerComparison: hasContainerComparison(program.ast),
       boundary,
     };
+  }
+
+  /**
+   * The context with a plain model map replaced by the accessor adapter's
+   * lazy view, so `model.<name>.resource` records read with their tagged
+   * fields as Secrets (typed-secrets 3.3). A context whose `model` is the
+   * method receiver {@link wrapNamespaces} installs, or that has none, is
+   * returned as it is. The copy keeps the caller's context untouched.
+   */
+  private withModelView(
+    wrappedContext: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const model = wrappedContext["model"];
+    const data = wrappedContext["data"];
+    const view = modelMapView(
+      model,
+      data instanceof CelDataNamespace ? data.namespace : "",
+    );
+    if (view === model) return wrappedContext;
+    const context: Record<string, unknown> = Object.create(
+      Object.getPrototypeOf(wrappedContext),
+      Object.getOwnPropertyDescriptors(wrappedContext),
+    );
+    Object.defineProperty(context, "model", {
+      value: view,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    return context;
   }
 
   /**
@@ -1084,7 +1238,9 @@ export class CelEvaluator {
   /**
    * Converts a result at the boundary, before the adapter's own
    * post-processing: each `Secret` leaves as its sentinel, and with no
-   * run's bag to issue into, a `Secret` result is refused.
+   * run's bag to issue into, a `Secret` result is refused. Release reads a
+   * record the expression returned without selecting into it, so a record
+   * the accessor adapter refuses there keeps its code.
    */
   private releaseWithSecrets(
     result: unknown,
@@ -1099,6 +1255,9 @@ export class CelEvaluator {
       return coerceBigInts(unwrapOptional(run.boundary.release(result)));
     } catch (error) {
       if (error instanceof SecretRefusedError) throw error;
+      if (error instanceof SecretRefusal) {
+        throw new SecretRefusedError(error.code, error.operation, expression);
+      }
       throw new InvalidExpressionError(
         error instanceof Error ? error.message : String(error),
         expression,

@@ -49,6 +49,7 @@ import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import { vaultReferenceText } from "../src/domain/secrets/run_sensitive_values.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import {
+  holdsValue,
   isIssuedEntry,
   SENTINEL_EXACT,
 } from "../src/domain/vaults/secret_bag_registry.ts";
@@ -311,7 +312,7 @@ Deno.test(
       assertEquals(prefixesOf(values).size, 3);
       for (const entry of entries) {
         assert(isIssuedEntry(entry));
-        assertEquals(entry.dataOrigin && entry.value, SECRET);
+        assertEquals(holdsValue(entry) && entry.value, SECRET);
         assertEquals(entry.dataOrigin, true);
         assertEquals(entry.encoding, "raw");
         assertEquals(values.sourceOf(SECRET), entry.reference);

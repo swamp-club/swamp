@@ -18,8 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  holdsValue,
   isIssuedEntry,
-  type VaultReferenceEntry,
+  type ReferenceOnlyEntry,
 } from "./secret_bag_registry.ts";
 import { secretReferenceError } from "./secret_reference_errors.ts";
 import type { ProbeRedactor } from "./secret_reference_check.ts";
@@ -30,11 +31,13 @@ import type { VaultService } from "./vault_service.ts";
 export const LOAD_PURPOSE = "expression:vault-resolve";
 
 /**
- * Loads vault.get() values at delivery (design/enablers/typed-secrets.md
+ * Loads secret values at delivery (design/enablers/typed-secrets.md
  * Section 3.3). Sentinels stand for references, and nothing reads a value
  * until a trusted consumer receives it: a method's arguments, its
  * pre-flight checks, the shell environment, a remote dispatch, or one of
- * the inline destinations that take a value today.
+ * the inline destinations that take a value today. A vault.get() reference
+ * and a sensitive-field reference a typed data read issued (typed-secrets
+ * 3.3) load alike; a legacy data entry already holds its value.
  *
  * Each load reads through `VaultService.get`, inside the run's ambient vault
  * access, so the principal's grants and the workflow's `vaults:` list apply
@@ -51,19 +54,20 @@ export class SecretLoader {
   ) {}
 
   /**
-   * A delivery view of `bag` that holds a value for every vault reference
-   * of the run whose sentinel occurs in `data`: one read per distinct
+   * A delivery view of `bag` that holds a value for every reference-only
+   * entry of the run whose sentinel occurs in `data`: one read per distinct
    * reference, for this attempt only. `bag` itself is returned when `data`
    * carries none. A failed read throws before anything is delivered, naming
-   * the vault, the key and where the reference is written, never a value.
+   * the vault, the key and where the reference is written or was read from,
+   * never a value.
    */
   async load(bag: VaultSecretBag, data: unknown): Promise<VaultSecretBag> {
-    const references = new Map<string, VaultReferenceEntry>();
+    const references = new Map<string, ReferenceOnlyEntry>();
     const walk = (value: unknown): void => {
       if (typeof value === "string") {
         for (const match of value.matchAll(VaultSecretBag.SENTINEL_PATTERN)) {
           const entry = bag.registry.entryOf(match[0]);
-          if (entry && isIssuedEntry(entry) && !entry.dataOrigin) {
+          if (entry && isIssuedEntry(entry) && !holdsValue(entry)) {
             references.set(match[0], entry);
           }
         }

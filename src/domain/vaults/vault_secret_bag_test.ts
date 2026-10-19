@@ -1100,3 +1100,97 @@ Deno.test("VaultSecretBag.addDataSecret: two references with one value share the
     key: "a",
   });
 });
+
+// --- typed-secrets 3.3: value-less data-origin references ---
+
+const DATA_LOCATION =
+  "data.latest of model 'db' record r1 version 2 (data.latest), field 'password'";
+
+Deno.test("VaultSecretBag.addDataReference: a data-origin reference holds no value, only its reference and where it was read", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addDataReference(REF, DATA_LOCATION);
+  assertEquals(bag.registry.entryOf(sentinel), {
+    sentinel,
+    reference: REF,
+    encoding: "raw",
+    dataOrigin: true,
+    location: DATA_LOCATION,
+  });
+  assertEquals(bag.rawValues, []);
+  assertEquals(bag.toEntries(), []);
+  assertEquals(bag.isEmpty, false);
+  // Two reads of one reference are two sentinels: no value is known to
+  // share by, unlike addDataSecret.
+  assertEquals(bag.addDataReference(REF, DATA_LOCATION) !== sentinel, true);
+});
+
+Deno.test("VaultSecretBag: an unloaded data-origin reference is never delivered as a value, and the error names where it was read", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addDataReference(REF, DATA_LOCATION);
+  for (
+    const read of [
+      () => bag.resolveRaw(sentinel),
+      () => bag.resolveForShell(`echo ${sentinel}`),
+      () => bag.resolveForPowerShell(`echo ${sentinel}`),
+      () => bag.entriesFor({ run: sentinel }),
+    ]
+  ) {
+    const error = assertThrows(read, Error, "was not loaded before delivery");
+    assertEquals(error.message.includes(DATA_LOCATION), true);
+  }
+});
+
+Deno.test("VaultSecretBag: a loaded data-origin reference delivers as a data value, through the environment on both shells", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addDataReference(REF, DATA_LOCATION);
+  const view = bag.withLoaded(new Map([[sentinel, "loaded-value"]]));
+  assertEquals(view.resolveRaw(`x=${sentinel}`), "x=loaded-value");
+  assertEquals(view.resolveDeep({ run: sentinel }), { run: "loaded-value" });
+  assertEquals(view.resolveForShell(`echo ${sentinel} "${sentinel}"`), {
+    command: 'echo "${__SWAMP_VAULT_0}" "${__SWAMP_VAULT_0}"',
+    env: { __SWAMP_VAULT_0: "loaded-value" },
+    dataInCommandLine: false,
+    singleQuoted: [],
+  });
+  // A quoted here-document is placed as a data entry's value is placed
+  // today, and says so (typed-secrets 3.4 turns it into a refusal).
+  const heredoc = view.resolveForShell(`cat <<'EOF'\n${sentinel}\nEOF`);
+  assertEquals(heredoc.dataInCommandLine, true);
+  assertEquals(heredoc.command.includes("loaded-value"), true);
+  assertEquals(
+    view.resolveForPowerShell(`echo ${sentinel}`).command,
+    'echo "$env:__SWAMP_VAULT_0"',
+  );
+  const shipped = { sentinel, value: "loaded-value", dataOrigin: true };
+  assertEquals(view.toEntries(), [shipped]);
+  assertEquals(view.entriesFor({ run: sentinel }), [shipped]);
+  assertEquals(
+    VaultSecretBag.fromEntries(view.toEntries()).resolveRaw(sentinel),
+    "loaded-value",
+  );
+  // The bag itself still holds nothing.
+  assertEquals(bag.rawValues, []);
+  assertEquals(bag.toEntries(), []);
+});
+
+Deno.test("VaultSecretBag.rehomeSentinels: a data-origin reference moves as a reference, with its location and no value", () => {
+  const registry = new SecretBagRegistry();
+  const source = new VaultSecretBag(registry);
+  const target = new VaultSecretBag(registry);
+  const sentinel = source.addDataReference(REF, DATA_LOCATION);
+  const rehomed = source.rehomeSentinels(
+    `a ${sentinel} ${sentinel}`,
+    target,
+  ) as string;
+  const [r1, r2] = rehomed.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(r1, r2);
+  assertEquals(r1 !== sentinel, true);
+  assertEquals(registry.entryOf(r1), {
+    sentinel: r1,
+    reference: REF,
+    encoding: "raw",
+    dataOrigin: true,
+    location: DATA_LOCATION,
+  });
+  assertEquals(target.rawValues, []);
+});
