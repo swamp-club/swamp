@@ -25,7 +25,9 @@
 //   register, record or convert a `Secret`: everything else sees sentinels.
 // - Until Phase 4 turns typed secrets on for every entry point, no production
 //   code sets the internal option: no `new CelEvaluator(` passes an argument,
-//   and no file but cel_evaluator.ts builds the internal environment.
+//   and no file but cel_evaluator.ts builds the internal environment. The
+//   scan reads those two call shapes only; a factory or wrapper that forwards
+//   options to either would pass it, so give such a wrapper its own check.
 
 import { assert } from "@std/assert";
 import {

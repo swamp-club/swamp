@@ -463,9 +463,8 @@ Refusal uses registrations. It does not rewrite expressions.
    `Secret` wherever a `Secret` can reach a built-in operator, function or
    conversion, or one of swamp's own registrations. The refusal inventory
    (`src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`) classifies
-   every
-   secret-capable position, a receiver or a parameter typed `string`, `dyn`,
-   a type variable, or a list, map or optional of anything, as one of five
+   every secret-capable position, a receiver or a parameter typed `string`,
+   `dyn`, a type variable, or a list, map or optional of anything, as one of five
    dispositions: a refusal, a named delivery (`dyn(dyn)`, `cel.bind`, the
    optional accessors `of`, `value` and `orValue`, and `model.method` inputs,
    Section 4.5), an argument walk (the vary list, below), a container (`size`

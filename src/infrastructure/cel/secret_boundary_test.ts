@@ -212,6 +212,20 @@ Deno.test("SecretBoundary.release: converts a Secret inside an Optional, at any 
   assertEquals(boundary.release(Optional.of(secret)), Optional.of(sentinel));
 });
 
+Deno.test("SecretBoundary.release: converts a Secret inside a Map, and refuseUnboundSecrets sees one there", () => {
+  const { bag, sentinel } = issuingBag();
+  const boundary = new SecretBoundary(bag);
+  const secret = boundary.bind({ v: sentinel }).v;
+  assertEquals(
+    boundary.release(new Map([["k", secret]])),
+    new Map([["k", sentinel]]),
+  );
+  assertThrows(
+    () => refuseUnboundSecrets(new Map([["k", secret]]), "e"),
+    SecretRefusedError,
+  );
+});
+
 Deno.test("SecretBoundary.release: a data-origin reference with no sentinel fails closed", () => {
   const { bag } = issuingBag();
   const secret = secretFromParts([{ reference, dataOrigin: true }]);

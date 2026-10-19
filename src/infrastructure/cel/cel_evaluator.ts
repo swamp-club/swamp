@@ -914,12 +914,12 @@ export class CelEvaluator {
         if (error instanceof InvalidExpressionError) throw error;
         throw this.evaluationError(error, expression, wrappedContext);
       }
+      // Handle a Promise the synchronous path cannot await before anything
+      // can throw: a refusal absorbed beside an async call rejects it.
+      if (result instanceof Promise) result.catch(() => {});
       faults.recording = false;
       this.refuseFaulted(faults, run, expression);
-      if (result instanceof Promise) {
-        result.catch(() => {});
-        throw unresolvedPromiseError(expression);
-      }
+      if (result instanceof Promise) throw unresolvedPromiseError(expression);
       return this.releaseWithSecrets(result, run, expression);
     });
   }

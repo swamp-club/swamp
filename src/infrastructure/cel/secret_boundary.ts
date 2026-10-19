@@ -123,6 +123,11 @@ export class SecretBoundary {
         : value;
     }
     if (Array.isArray(value)) return value.map((item) => this.release(item));
+    if (value instanceof Map) {
+      return new Map(
+        [...value].map(([key, item]) => [key, this.release(item)]),
+      );
+    }
     if (isPlainMap(value)) {
       const out: Record<string, unknown> = Object.create(null);
       for (const key of Object.keys(value)) {
@@ -271,6 +276,7 @@ function containsSecret(value: unknown): boolean {
     return value.hasValue() && containsSecret(value.value());
   }
   if (Array.isArray(value)) return value.some(containsSecret);
+  if (value instanceof Map) return [...value.values()].some(containsSecret);
   if (isPlainMap(value)) {
     return Object.keys(value).some((key) => containsSecret(value[key]));
   }

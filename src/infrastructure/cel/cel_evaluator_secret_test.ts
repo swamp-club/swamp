@@ -62,9 +62,9 @@ function fixture() {
     key: "C",
   });
   const calls: string[] = [];
-  const record = (name: string) => (...args: unknown[]) => {
+  const record = (name: string) => () => {
     calls.push(name);
-    return name === "connected" ? [] : args.length > 99 ? args : null;
+    return name === "connected" ? [] : null;
   };
   const context: Record<string, unknown> = {
     s,
@@ -512,6 +512,34 @@ Deno.test("CelEvaluator typed secrets: a refusal absorbed across an await still 
     await evaluator.evaluateAsync("s + 'z'", f.context, { secretBag: f.bag }),
     `${f.s}z`,
   );
+});
+
+Deno.test("CelEvaluator typed secrets: a synchronous refusal beside an async call leaves no rejection unhandled", async () => {
+  for (const latest of [async () => ({ id: "r" }), async () => null]) {
+    const f = fixture();
+    f.context.data = { latest };
+    const error = assertThrows(
+      () => evaluate("s == 'x' || data.latest('m', 'd') == null", f),
+      SecretRefusedError,
+    );
+    assertEquals(error.operation, "Secret == string");
+    // Let the abandoned Promise settle; the test sanitizer fails the test on
+    // an unhandled rejection.
+    await Promise.resolve();
+  }
+  const rejecting = fixture();
+  rejecting.context.data = {
+    latest: () => Promise.reject(new Error("unavailable")),
+  };
+  assertThrows(
+    () =>
+      evaluate(
+        "inputs.rec.password != null && data.latest('m', 'd') in ['x']",
+        rejecting,
+      ),
+    SecretRefusedError,
+  );
+  await Promise.resolve();
 });
 
 Deno.test("CelEvaluator typed secrets: synchronous evaluation returns synchronous results", () => {
