@@ -857,20 +857,74 @@ export function serveReloadStatus(
   return result.errors.includes(RELOAD_IN_PROGRESS_ERROR) ? "busy" : "failed";
 }
 
-export async function performServeReload(
+/** The reload {@link performServeReload} is running, if any. */
+let inFlightReload: Promise<ServeReloadResponse> | null = null;
+
+/**
+ * The reload {@link reloadAfterExtensionChange} queued behind the one in
+ * flight. It is cleared as soon as its turn comes, so a change made after
+ * it started queues another reload rather than sharing one that may have
+ * read the old files.
+ */
+let queuedReload: Promise<ServeReloadResponse> | null = null;
+
+/**
+ * Reloads serve's extensions after an extension change this process made,
+ * such as a `--server` pull (swamp-club#3594). Unlike
+ * {@link performServeReload} it never answers busy: while a reload runs, it
+ * waits for that one and then reloads again, because the running reload may
+ * have read the files before the change. Callers that arrive while a reload
+ * is queued share it.
+ */
+export function reloadAfterExtensionChange(
+  repoDir: string,
+  lockfilePath: string,
+  options?: ServeReloadOptions,
+): Promise<ServeReloadResponse> {
+  if (queuedReload) return queuedReload;
+  const running = inFlightReload;
+  if (!running) return performServeReload(repoDir, lockfilePath, options);
+  const queued: Promise<ServeReloadResponse> = running
+    .then(() => {}, () => {})
+    .then(() => {
+      if (queuedReload === queued) queuedReload = null;
+      return reloadAfterExtensionChange(repoDir, lockfilePath, options);
+    });
+  queuedReload = queued;
+  return queued;
+}
+
+export function performServeReload(
   repoDir: string,
   lockfilePath: string,
   options?: ServeReloadOptions,
   pulledExtensionsRoot?: string,
 ): Promise<ServeReloadResponse> {
   if (reloading) {
-    return {
+    return Promise.resolve({
       success: false,
       reloadedCount: 0,
       errors: [RELOAD_IN_PROGRESS_ERROR],
-    };
+    });
   }
+  const run = runServeReload(
+    repoDir,
+    lockfilePath,
+    options,
+    pulledExtensionsRoot,
+  ).finally(() => {
+    if (inFlightReload === run) inFlightReload = null;
+  });
+  inFlightReload = run;
+  return run;
+}
 
+async function runServeReload(
+  repoDir: string,
+  lockfilePath: string,
+  options?: ServeReloadOptions,
+  pulledExtensionsRoot?: string,
+): Promise<ServeReloadResponse> {
   reloading = true;
   const errors: string[] = [];
   let reloadedCount = 0;

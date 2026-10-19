@@ -1047,11 +1047,27 @@ orchestrator's HTTP/2 data plane (`GET /bundle/{fingerprint}`) and loads it
 `bundleSourceFactory` builds (see the removed execution-drivers design), so the
 worker needs nothing pre-installed.
 
-The fingerprint is `sha256Hex(js)` over the bundled source, computed inline at
-dispatch time (see `DispatchService.#ensureBundle`). A worker caches what it
-has fetched, so a bundle ships at most once per worker per version. This
-mirrors the versioned-handle data cache: code and data both cache by content or
-version identity and travel over the same h2 data plane.
+The fingerprint is `sha256Hex(js)` over the bundled source, together with a
+hash of each declared asset's bytes when the extension has `additionalFiles`,
+computed at dispatch time (see `DispatchService.#ensureBundle`). A worker
+caches what it has fetched, so a bundle ships at most once per worker per
+version.
+
+A fingerprint names one fixed set of bytes (swamp-club#3594). The JS is what
+the definition's `bundleSourceFactory` built, once, from the source the
+definition was registered from: the definition records the content of its
+source files and their relative imports before they are bundled and imported
+(`src/domain/extensions/source_snapshot.ts`). Once they changed on disk, for
+example after a `--server` pull serve has not reloaded, bundling refuses with
+`StaleExtensionSourceError` rather than ship workers code serve does not run
+itself; the step fails until serve registers the definition again (a reload or
+restart for a pulled extension, the next run's refresh for a repo-local one). A
+bundle already built for the definition keeps shipping, since it is the code
+serve runs. Assets are read at each dispatch, as serve's own runs read them, so
+an edited asset ships under a new fingerprint. The data plane serves an asset
+only while its bytes match the hash in the fingerprint, and answers 409 for one
+changed between the dispatch and the fetch; the listing route lists only the
+assets the fingerprint hashed.
 
 Built-in behaviors ship **no bundle**. The dispatch carries a `builtin:<type>`
 sentinel, and the worker resolves the behavior from its own binary's registry.
@@ -1644,7 +1660,12 @@ every run instead; see
 1. Start serve with `swamp serve --hot-reload`
 2. Push updated extension code, then pull it
    (`swamp extension pull @name --force`)
-3. Trigger a reload:
+3. A pull, update, install or rm made through serve (`--server`) reloads
+   serve's extensions itself once the change is on disk (swamp-club#3594): the
+   response carries a `serveReload` outcome, and the CLI reports it. In
+   `--json` mode it prints its own `{ "serveReload": … }` document, with
+   `null` and the reload command when serve did not reload. A change made any
+   other way, such as a pull on the host without `--server`, needs a reload:
    - **Local**: `swamp serve reload` reads `.swamp/serve.pid` and sends SIGHUP
    - **Remote**: `swamp serve reload --server wss://host:port` sends a
      `serve.reload` WebSocket request (requires admin authorization)
@@ -1661,6 +1682,18 @@ refused with `hot_reload_disabled` (`src/serve/handlers/admin_handlers.ts`).
 Besides extension types, a reload re-reads the trigger overrides from the config
 file serve was started with (`--config`, or `.swamp/serve.yaml`) and refreshes
 the extension trust list.
+
+The reload after an extension change made through serve is narrower. The
+admin extension handlers call `ConnectionContext.extensionChangeReloader`, which
+`serve.ts` sets only with `--hot-reload`, after the lockfile transaction has
+committed. It runs `reloadAfterExtensionChange()` with the config poller's
+scope: pulled types, newly pulled extensions, extension workflows and the trust
+list, but not `serve.yaml`, so a pull never applies unrelated pending config
+edits. Unlike `performServeReload()` it never answers busy: while a reload runs,
+it waits for that one and then reloads again, since the running reload may have
+read the files before the change. Callers that arrive while a reload is queued
+share it. A failed reload does not fail the request, which already changed the
+extension; its errors reach the client through `sanitizeErrorForClient`.
 
 `reloadPulledExtensions()`:
 

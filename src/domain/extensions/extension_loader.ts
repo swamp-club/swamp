@@ -43,6 +43,10 @@ import {
   type SourceModuleLookup,
   type TypelessRow,
 } from "./bundle_freshness.ts";
+import {
+  captureSourceSnapshot,
+  type SourceSnapshot,
+} from "./source_snapshot.ts";
 import type { ModuleGraphReaderFactory } from "./extension_source_graph.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import {
@@ -318,6 +322,22 @@ export class ExtensionLoader {
   /** The catalog's recorded source modules, or none without a catalog. */
   private sourceModules(): SourceModuleLookup {
     return this.repository?.getCatalogStore() ?? NO_RECORDED_SOURCE_MODULES;
+  }
+
+  /**
+   * The source a type is registered from, as it stands now, so a
+   * long-lived process can tell when the source changed under it
+   * (swamp-club#3594). Undefined when the files cannot be read.
+   */
+  private async sourceSnapshot(
+    absolutePath: string,
+    modules: SourceModuleLookup = this.sourceModules(),
+  ): Promise<SourceSnapshot | undefined> {
+    try {
+      return await captureSourceSnapshot(absolutePath, modules);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -626,6 +646,7 @@ export class ExtensionLoader {
       module: Record<string, unknown>;
       absolutePath: string;
       baseDir: string;
+      snapshot: SourceSnapshot | undefined;
     }> = [];
     const secondaryFiles: Array<{
       file: string;
@@ -645,6 +666,9 @@ export class ExtensionLoader {
           continue;
         }
 
+        // Taken before bundling, so an edit landing meanwhile reads as a
+        // change rather than as the code that was loaded (swamp-club#3594).
+        const snapshot = await this.sourceSnapshot(absolutePath);
         const bundled = await this.bundleWithCache(
           absolutePath,
           file,
@@ -656,7 +680,7 @@ export class ExtensionLoader {
         const module = await this.importBundle(bundled.js, file, baseDir);
 
         if (primaryExport(module, this.adapter)) {
-          primaryFiles.push({ file, module, absolutePath, baseDir });
+          primaryFiles.push({ file, module, absolutePath, baseDir, snapshot });
         } else if (
           this.adapter.secondaryExportKey &&
           module[this.adapter.secondaryExportKey]
@@ -680,7 +704,9 @@ export class ExtensionLoader {
       repoDir: this.repoDir,
     };
 
-    for (const { file, module, absolutePath, baseDir } of primaryFiles) {
+    for (
+      const { file, module, absolutePath, baseDir, snapshot } of primaryFiles
+    ) {
       try {
         const exported = primaryExport(module, this.adapter);
         const parsed = this.adapter.validatePrimaryExport(exported);
@@ -746,6 +772,7 @@ export class ExtensionLoader {
               this.repoDir,
             ),
             sourceFingerprint: fingerprint,
+            sourceSnapshot: snapshot,
           },
         );
         result.loaded.push(file);
@@ -1546,6 +1573,9 @@ export class ExtensionLoader {
   ): Promise<void> {
     if (this.adapter.isFullyLoaded(entry.type_normalized)) return;
 
+    // Taken before the import, so an edit landing meanwhile reads as a
+    // change rather than as the code that was loaded (swamp-club#3594).
+    const snapshot = await this.sourceSnapshot(entry.source_path);
     const module = await this.importBundleByPath({
       bundlePath: entry.bundle_path,
       sourcePath: entry.source_path,
@@ -1580,6 +1610,7 @@ export class ExtensionLoader {
           this.repoDir,
         ),
         sourceFingerprint: entry.source_fingerprint || undefined,
+        sourceSnapshot: snapshot,
       },
     );
   }
@@ -2080,6 +2111,9 @@ export class ExtensionLoader {
       }
     }
 
+    // Taken before bundling, so an edit landing meanwhile reads as a
+    // change rather than as the code that was loaded (swamp-club#3594).
+    const snapshot = await this.sourceSnapshot(absolutePath, catalog);
     const bundled = await this.bundleWithCache(
       absolutePath,
       relativePath,
@@ -2209,6 +2243,7 @@ export class ExtensionLoader {
               this.repoDir,
             ),
             sourceFingerprint: effectiveFingerprint,
+            sourceSnapshot: snapshot,
           },
         );
       } else if (this.adapter.updateSourceFingerprint) {

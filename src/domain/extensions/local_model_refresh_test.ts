@@ -41,6 +41,7 @@ import {
   createLocalModelRefresher,
   refreshLocalModels,
 } from "./local_model_refresh.ts";
+import { StaleExtensionSourceError } from "./source_snapshot.ts";
 
 const NO_DIRS = { localDirs: [], additionalDirs: [] };
 
@@ -251,6 +252,53 @@ Deno.test("refreshLocalModels: an edited pulled model is left to hot-reload", as
     await refresh();
 
     assertStrictEquals(modelRegistry.get(type("pulled")), before);
+  }, async ({ pulledModelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(pulledModelsDir, "p.ts"),
+      modelCode(type("pulled"), "v1"),
+    );
+  });
+});
+
+Deno.test("bundleSourceFactory: a pulled model changed on disk without a reload refuses to bundle the new source (swamp-club#3594)", async () => {
+  await withRepo(async ({ repoDir, pulledModelsDir, refresh, type }) => {
+    const before = await loaded(type("pulled"));
+    const source = join(pulledModelsDir, "p.ts");
+
+    await Deno.writeTextFile(source, modelCode(type("pulled"), "v2"));
+    await refresh();
+
+    const error = await assertRejects(
+      () => before!.bundleSourceFactory!(),
+      StaleExtensionSourceError,
+    );
+    assertStringIncludes(error.message, type("pulled"));
+    assertEquals(error.message.includes(repoDir), false);
+
+    // The refusal is not memoized: once the source the type was loaded
+    // from is back, the bundle is built from it.
+    await Deno.writeTextFile(source, modelCode(type("pulled"), "v1"));
+    assertStringIncludes(await before!.bundleSourceFactory!(), '"v1"');
+  }, async ({ pulledModelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(pulledModelsDir, "p.ts"),
+      modelCode(type("pulled"), "v1"),
+    );
+  });
+});
+
+Deno.test("bundleSourceFactory: a bundle built before the source changed is kept for the definition (swamp-club#3594)", async () => {
+  await withRepo(async ({ pulledModelsDir, type }) => {
+    const before = await loaded(type("pulled"));
+    const first = await before!.bundleSourceFactory!();
+
+    await Deno.writeTextFile(
+      join(pulledModelsDir, "p.ts"),
+      modelCode(type("pulled"), "v2"),
+    );
+
+    assertStrictEquals(await before!.bundleSourceFactory!(), first);
+    assertStringIncludes(first, '"v1"');
   }, async ({ pulledModelsDir, type }) => {
     await Deno.writeTextFile(
       join(pulledModelsDir, "p.ts"),

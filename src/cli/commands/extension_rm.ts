@@ -53,9 +53,10 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
-  warnServerReloadNeeded,
+  serverReloadCommand,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { renderServerExtensionChange } from "../../presentation/output/server_extension_change_output.ts";
 import type { ExtensionRmResponse } from "../../serve/protocol.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 
@@ -92,7 +93,7 @@ export const extensionRemoveCommand = withRemoteOptions(
       options,
     );
     const response = await requestServerResponse<ExtensionRmResponse>(
-      { server, token },
+      { server, token, timeoutMs: 300_000 },
       {
         type: "extension.rm",
         payload: { extensionName: ref.name },
@@ -108,7 +109,10 @@ export const extensionRemoveCommand = withRemoteOptions(
       })(),
       renderer.handlers(),
     );
-    warnServerReloadNeeded(server);
+    renderServerExtensionChange({
+      serveReload: response.serveReload,
+      reloadCommand: serverReloadCommand(server),
+    }, ctx.outputMode);
     return;
   }
 

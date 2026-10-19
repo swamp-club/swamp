@@ -26,6 +26,7 @@ import type {
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { FreshnessKind } from "./bundle_freshness.ts";
 import type { ExtensionContributor } from "./extension_precedence.ts";
+import type { SourceSnapshot } from "./source_snapshot.ts";
 import { UserError } from "../errors.ts";
 
 export type LoaderKind =
@@ -65,6 +66,8 @@ export interface RegistrationContext {
   repoDir: string | null;
   extensionName?: string;
   sourceFingerprint?: string;
+  /** The source as it stood at registration (swamp-club#3594). */
+  sourceSnapshot?: SourceSnapshot;
 }
 
 export interface KindAdapter {

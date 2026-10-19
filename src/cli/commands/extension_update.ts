@@ -63,9 +63,10 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
-  warnServerReloadNeeded,
+  serverReloadCommand,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { renderServerExtensionChange } from "../../presentation/output/server_extension_change_output.ts";
 import type { ExtensionUpdateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -126,7 +127,10 @@ export const extensionUpdateCommand = withRemoteOptions(
       renderer.handlers(),
     );
     if (!options.check) {
-      warnServerReloadNeeded(server);
+      renderServerExtensionChange({
+        serveReload: response.serveReload,
+        reloadCommand: serverReloadCommand(server),
+      }, cliCtx.outputMode);
     }
     return;
   }

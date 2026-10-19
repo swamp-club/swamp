@@ -55,7 +55,7 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { isHiddenFromWorker } from "./worker_control_plane_visibility.ts";
-import type { BundleRegistry } from "./bundle_registry.ts";
+import { type BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   extractTraceContext,
@@ -673,7 +673,7 @@ export class DataPlane {
 
   // ── /bundle routes ─────────────────────────────────────────────────────
 
-  #handleBundle(req: Request, segments: string[]): Response {
+  async #handleBundle(req: Request, segments: string[]): Promise<Response> {
     if (req.method !== "GET") {
       return errorResponse(405, "Bundles are read-only");
     }
@@ -718,7 +718,12 @@ export class DataPlane {
           "Asset not declared in manifest additionalFiles",
         );
       }
-      return this.#serveAssetFile(target, fingerprint, relPath);
+      return await this.#serveAssetFile(
+        target,
+        fingerprint,
+        relPath,
+        bundle.assetHashes,
+      );
     }
 
     return errorResponse(404, "Unknown bundle route");
@@ -733,13 +738,15 @@ export class DataPlane {
   #listDeclaredAssetFiles(
     bundle: import("./bundle_registry.ts").RegisteredBundle,
   ): Response {
-    const { filesRoot, additionalFiles } = bundle;
+    const { filesRoot, additionalFiles, assetHashes } = bundle;
     if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
       return json({ files: [] });
     }
     const root = resolve(filesRoot);
     const files: string[] = [];
     for (const relPath of additionalFiles) {
+      // Only the files the fingerprint hashed (swamp-club#3594).
+      if (assetHashes && !assetHashes.has(relPath)) continue;
       const target = resolve(join(root, relPath));
       if (
         !target.startsWith(root + "/") && target !== root &&
@@ -759,16 +766,30 @@ export class DataPlane {
     return json({ files });
   }
 
-  #serveAssetFile(
+  async #serveAssetFile(
     target: string,
     fingerprint: string,
     relPath: string,
-  ): Response {
+    assetHashes: ReadonlyMap<string, string> | undefined,
+  ): Promise<Response> {
     let bytes: Uint8Array;
     try {
       bytes = Deno.readFileSync(target);
     } catch {
       return errorResponse(404, `No asset '${relPath}' in bundle`);
+    }
+    // A fingerprint names the bytes it hashed. An asset changed on disk
+    // since the dispatch took it is refused rather than shipped under it;
+    // the next dispatch fingerprints the new bytes (swamp-club#3594).
+    if (
+      assetHashes &&
+      assetHashes.get(relPath) !== await hashAssetBytes(bytes)
+    ) {
+      return errorResponse(
+        409,
+        `Asset '${relPath}' changed after this step was dispatched; ` +
+          `run the step again to use the changed file`,
+      );
     }
     return new Response(bytes.buffer as ArrayBuffer, {
       headers: {

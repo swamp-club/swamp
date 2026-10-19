@@ -77,7 +77,7 @@ import type { ModelMethodRunner } from "./worker_gateway.ts";
 import type { WorkerSnapshot } from "./worker_gateway.ts";
 import { WorkerNotDispatchableError } from "./worker_gateway.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
-import type { BundleRegistry } from "./bundle_registry.ts";
+import { type BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RemoteLockHolder } from "../domain/datastore/lock_holder_marker.ts";
 import { extractVaultReferences } from "../domain/expressions/vault_reference_extractor.ts";
@@ -212,7 +212,6 @@ export class DispatchService {
    * promise to learn which worker was pinned.
    */
   readonly #affinityInflight = new Map<string, Promise<string>>();
-
   constructor(options: DispatchServiceOptions) {
     this.#options = options;
     this.#queueTimeoutMs = options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
@@ -998,6 +997,14 @@ export class DispatchService {
     }
   }
 
+  /**
+   * Registers the definition's bundle under a fingerprint of its JS and of
+   * its assets as read now. The JS is what the definition's factory built
+   * from the source serve registered; the assets are read at each dispatch,
+   * as serve's own runs read them, so an edited asset ships under a new
+   * fingerprint. The recorded asset hashes let the data plane refuse bytes
+   * that changed after the fingerprint was taken (swamp-club#3594).
+   */
   async #ensureBundle(modelDef: ModelDefinition): Promise<string> {
     if (!modelDef.bundleSourceFactory) {
       // Built-in model: the worker's own binary carries it; enrollment
@@ -1005,41 +1012,38 @@ export class DispatchService {
       return `${BUILTIN_BUNDLE_PREFIX}${modelDef.type.normalized}`;
     }
     const js = await modelDef.bundleSourceFactory();
-    const fingerprint = await this.#bundleFingerprint(
-      js,
-      modelDef.extensionFilesRoot,
-      modelDef.extensionAdditionalFiles,
-    );
-    this.#options.bundles.register(fingerprint, {
-      js,
-      filesRoot: modelDef.extensionFilesRoot,
-      additionalFiles: modelDef.extensionAdditionalFiles,
-    });
-    return fingerprint;
-  }
-
-  async #bundleFingerprint(
-    js: string,
-    filesRoot: string | undefined,
-    additionalFiles: string[] | undefined,
-  ): Promise<string> {
+    const filesRoot = modelDef.extensionFilesRoot;
+    const additionalFiles = modelDef.extensionAdditionalFiles;
     if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
-      return sha256Hex(js);
+      const fingerprint = await sha256Hex(js);
+      this.#options.bundles.register(fingerprint, {
+        js,
+        filesRoot,
+        additionalFiles,
+      });
+      return fingerprint;
     }
+    const assetHashes = new Map<string, string>();
     const parts: string[] = [js];
     for (const relPath of [...additionalFiles].sort()) {
-      const absPath = join(filesRoot, relPath);
       try {
-        const content = await Deno.readFile(absPath);
-        const hash = await sha256Hex(
-          new TextDecoder().decode(content),
+        const hash = await hashAssetBytes(
+          await Deno.readFile(join(filesRoot, relPath)),
         );
+        assetHashes.set(relPath, hash);
         parts.push(`${relPath}:${hash}`);
       } catch {
         parts.push(`${relPath}:missing`);
       }
     }
-    return sha256Hex(parts.join("\0"));
+    const fingerprint = await sha256Hex(parts.join("\0"));
+    this.#options.bundles.register(fingerprint, {
+      js,
+      filesRoot,
+      additionalFiles,
+      assetHashes,
+    });
+    return fingerprint;
   }
 
   #pendingTransition(

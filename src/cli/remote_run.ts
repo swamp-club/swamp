@@ -50,7 +50,6 @@ import { FileServerCredentialRepository } from "../infrastructure/persistence/se
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
-import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   gutterLine,
   STATUS_COLORS,
@@ -900,19 +899,6 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
       "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE)",
     )
     .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION) as T;
-}
-
-/**
- * Logs a warning after a state-modifying extension operation completes on a
- * serve instance, reminding the user to reload so the running registries
- * pick up the change.
- */
-export function warnServerReloadNeeded(server: string): void {
-  const logger = getSwampLogger(["cli", "remote"]);
-  logger
-    .warn`Extension state changed on the serve instance — run ${
-    serverReloadCommand(server)
-  } to pick up the changes`;
 }
 
 /**

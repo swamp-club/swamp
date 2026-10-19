@@ -98,7 +98,7 @@ without it the default file is optional.
 | `--max-signal-wait-timeout` | `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT` | 1 y | Longest `timeout` a `wait_for_signal` step may ask for on this server; at most one year; a step that asks for more fails when it would start waiting |
 | `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
-| `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
+| `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; an extension pull, update, install or rm made through serve reloads it (swamp-club#3594); not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
 | `--remote-only` | `SWAMP_REMOTE_ONLY` | `false` | User steps run only on workers |
 | `--dashboard` | `SWAMP_DASHBOARD` | `false` | Serves `/dashboard/*` when the build embeds the SPA |
@@ -1238,7 +1238,14 @@ Grants replicate as data, but each instance loads its snapshot on its own poll.
 Instances may therefore see a grant change up to one poll interval apart (30 s
 by default).
 
-Extension registries are indexed at startup. With `managedConfig` active, the
+Extension registries are indexed at startup. With `--hot-reload`, an
+extension pull, update, install or rm made through serve (`--server`) reloads
+the instance that ran it once the change is on disk, and the response reports
+the outcome (swamp-club#3594). Without `--hot-reload`, that instance keeps
+running the old code until it restarts, and a dispatch of a changed type is
+refused rather than shipping workers code serve does not run (see
+[remote-execution](../enablers/remote-execution.md#shipping-extension-code)).
+With `managedConfig` active, the
 config poller runs even without a sync service. After each pull of `config/` it
 hashes the config-tier lockfile and calls `performServeReload` when the hash
 differs from the last one it acted on. The baseline is the hash at boot. So a

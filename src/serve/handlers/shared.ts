@@ -402,6 +402,13 @@ export interface ConnectionContext {
   scheduledExecution?: ScheduledExecutionService;
   /** Reloads extension workflow directories and rescans schedules during hot reload. */
   workflowReloader?: () => Promise<number>;
+  /**
+   * Reloads serve's extensions after an extension pull, update, install or
+   * rm through serve. Set only with --hot-reload (swamp-club#3594).
+   */
+  extensionChangeReloader?: () => Promise<
+    import("../protocol.ts").ServeReloadResponse
+  >;
   /** Reloads webhook endpoint config from serve.yaml during hot reload. */
   webhookUpdater?: (
     configs: readonly import("../serve_config.ts").WebhookConfigEntry[],
