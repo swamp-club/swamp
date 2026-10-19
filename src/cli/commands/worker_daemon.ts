@@ -32,6 +32,7 @@ import {
 } from "../../presentation/output/worker_daemon_output.ts";
 import { toServiceMode } from "../../presentation/output/serve_daemon_output.ts";
 import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
 import { parseExtraHeaders } from "../../domain/auth/extra_headers.ts";
 import {
@@ -44,6 +45,8 @@ import {
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+const logger = getSwampLogger(["worker", "daemon"]);
 
 export function collectWorkerExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
@@ -100,12 +103,15 @@ export async function validateCaCertFile(rawPath: string): Promise<string> {
  * Refuses, before anything is written, every value `swamp worker connect`
  * would refuse when the service starts — otherwise the service restarts
  * on the same error forever. Labels are checked in the comma-joined form
- * the service reads back from SWAMP_WORKER_LABELS.
+ * the service reads back from SWAMP_WORKER_LABELS. Returns the --label
+ * values the service will read as different labels than `worker connect`
+ * would (a comma inside a value starts another label), so the caller can
+ * warn about them.
  */
 export function validateWorkerDaemonOptions(
   url: string,
   options: AnyOptions,
-): void {
+): string[] {
   validateOrchestratorUrl(url);
   if (options.maxDispatches !== undefined) {
     validateMaxDispatches(options.maxDispatches as number);
@@ -116,19 +122,30 @@ export function validateWorkerDaemonOptions(
   if (options.concurrency !== undefined) {
     parseConcurrency(options.concurrency as string);
   }
-  const labels = options.label as string[] | undefined;
-  if (labels && labels.length > 0) {
-    parseLabels(labels);
+  const changedLabels: string[] = [];
+  for (const label of (options.label as string[] | undefined) ?? []) {
+    const asFlag = parseLabels([label]);
+    let asService: Record<string, string>;
     try {
-      parseCommaSeparatedLabels(labels.join(","));
-    } catch {
+      asService = parseCommaSeparatedLabels(label);
+    } catch (err: unknown) {
+      if (label.includes(",")) {
+        throw new UserError(
+          `--label '${label}' cannot be read back by the service — it ` +
+            "receives labels comma-separated, so each comma must start " +
+            "another key=value",
+        );
+      }
+      const detail = err instanceof Error ? err.message : String(err);
       throw new UserError(
-        "A --label value contains a comma the service cannot read back — " +
-          "the service receives labels comma-separated, so each comma must " +
-          "start another key=value",
+        `--label '${label}' cannot be read back by the service: ${detail}`,
       );
     }
+    if (JSON.stringify(asService) !== JSON.stringify(asFlag)) {
+      changedLabels.push(label);
+    }
   }
+  return changedLabels;
 }
 
 /**
@@ -224,7 +241,9 @@ export function collectWorkerEnv(options: AnyOptions): Record<string, string> {
 
 export const workerDaemonEnableCommand = new Command()
   .name("enable")
-  .description("Enable swamp worker as a system daemon (launchd/systemd)")
+  .description(
+    "Enable swamp worker as a system daemon (launchd/systemd). SWAMP_SERVE_EXTRA_HEADERS set in this shell is written into the service, as worker connect would read it.",
+  )
   .arguments("[url:string]")
   .option(
     "--user",
@@ -329,7 +348,17 @@ export const workerDaemonEnableCommand = new Command()
           "  swamp worker daemon enable wss://orchestrator:9090 --token <name>.<secret>",
       );
     }
-    validateWorkerDaemonOptions(urlArg, options);
+    for (const label of validateWorkerDaemonOptions(urlArg, options)) {
+      logger.warn(
+        "--label {label} reaches the service as {labels} — it receives labels comma-separated, so a comma inside a value starts another label",
+        {
+          label,
+          labels: Object.entries(parseCommaSeparatedLabels(label))
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" "),
+        },
+      );
+    }
 
     // The service runs from the cache dir (or /), so a path relative to the
     // shell that ran `daemon enable` must be made absolute here.

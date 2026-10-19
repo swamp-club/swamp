@@ -218,13 +218,25 @@ Deno.test("validateCaCertFile: resolves a relative path to an absolute one", asy
   }
 });
 
-Deno.test("validateWorkerDaemonOptions: accepts the values worker connect accepts", () => {
-  validateWorkerDaemonOptions("wss://orch:9090", {
-    maxDispatches: 5,
-    idleTimeout: "30m",
-    concurrency: "auto",
-    label: ["tier=ci", "a=x,y=z"],
-  });
+Deno.test("validateWorkerDaemonOptions: accepts valid values and reports no changed labels", () => {
+  assertEquals(
+    validateWorkerDaemonOptions("wss://orch:9090", {
+      maxDispatches: 5,
+      idleTimeout: "30m",
+      concurrency: "auto",
+      label: ["tier=ci", "zone=eu-1"],
+    }),
+    [],
+  );
+});
+
+Deno.test("validateWorkerDaemonOptions: returns labels the service reads differently", () => {
+  assertEquals(
+    validateWorkerDaemonOptions("wss://orch:9090", {
+      label: ["tier=ci", "a=x,y=z", "b=v "],
+    }),
+    ["a=x,y=z", "b=v "],
+  );
 });
 
 Deno.test("validateWorkerDaemonOptions: refuses values worker connect refuses at start", () => {
@@ -235,7 +247,16 @@ Deno.test("validateWorkerDaemonOptions: refuses values worker connect refuses at
     ["wss://orch", { idleTimeout: "soon" }, "Invalid duration format"],
     ["wss://orch", { concurrency: "0" }, "--concurrency must be"],
     ["wss://orch", { label: ["noequals"] }, "Invalid label 'noequals'"],
-    ["wss://orch", { label: ["a=b,c"] }, "comma the service cannot read back"],
+    [
+      "wss://orch",
+      { label: ["tier=ci", "a=b,c"] },
+      "--label 'a=b,c' cannot be read back by the service — it receives labels comma-separated",
+    ],
+    [
+      "wss://orch",
+      { label: ["a= "] },
+      "--label 'a= ' cannot be read back by the service: Invalid label 'a='",
+    ],
   ];
   for (const [url, options, message] of cases) {
     assertThrows(
