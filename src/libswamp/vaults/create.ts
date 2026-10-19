@@ -30,8 +30,13 @@ import {
   defaultLocalEncryptionConfig,
   findNonDefaultKeySourceFields,
   isLocalEncryptionType,
+  withRuntimeBaseDir,
   withServerDefaultKeySource,
 } from "../../domain/vaults/local_encryption_key_source.ts";
+import {
+  findLocalEncryptionLeftovers,
+  secretsDirForDisplay,
+} from "../../domain/vaults/local_encryption_vault_provider.ts";
 import {
   isValidVaultName,
   VAULT_NAME_RULE,
@@ -101,6 +106,15 @@ export interface VaultCreateDeps {
   resolveExtensionVaultType: (type: string) => Promise<void>;
   getVaultTypeInfo: (type: string) => VaultTypeInfo | undefined;
   findByName: (name: string) => Promise<boolean>;
+  /**
+   * The storage directory a local_encryption vault of this name and config
+   * would read, when an earlier vault left a key or secrets there
+   * (swamp-club#3614).
+   */
+  findLeftoverSecrets: (
+    name: string,
+    config: Record<string, unknown>,
+  ) => Promise<string | undefined>;
   save: (config: VaultConfig) => Promise<void>;
   listAvailableTypes: () => string[];
 }
@@ -134,6 +148,12 @@ export async function createVaultCreateDeps(
       const existing = await repo.findByName(name);
       return existing !== null;
     },
+    findLeftoverSecrets: (name, config) =>
+      findLocalEncryptionLeftovers(
+        withRuntimeBaseDir("local_encryption", config, repoDir)
+          .base_dir as string,
+        name,
+      ),
     save: (config) => repo.save(config),
     listAvailableTypes: () => vaultTypeRegistry.getAll().map((v) => v.type),
   };
@@ -156,6 +176,28 @@ function createRerunHint(vaultType: string, name: string): RerunHint {
         shellSingleQuote(example)
       }`
       : "Re-run with a corrected --config.";
+}
+
+/**
+ * Refuses a local_encryption vault whose storage directory already holds an
+ * earlier vault's key or secrets (swamp-club#3614). Shared with vault migrate.
+ */
+export function leftoverSecretsError(
+  action: "create" | "migrate",
+  vaultName: string,
+  directory: string,
+): SwampError {
+  const remedy = action === "create"
+    ? `Restore that vault's config to keep using them, or remove the ` +
+      `directory to start this vault empty.`
+    : `Remove the directory to migrate into an empty vault.`;
+  return {
+    code: "already_exists",
+    message: `Cannot ${action} vault '${vaultName}': ${directory} already ` +
+      `holds a key or secrets left by an earlier vault named '${vaultName}'. ` +
+      remedy,
+    details: { entityType: "Vault secrets", name: vaultName },
+  };
 }
 
 /** Creates a new vault configuration. */
@@ -277,6 +319,26 @@ export async function* vaultCreate(
         } else {
           // Built-in vault type: resolve defaults
           providerConfig = resolveBuiltInProviderConfig(input.vaultType);
+        }
+
+        // A new local_encryption vault starts with no storage: whatever an
+        // earlier vault of this name left would otherwise be adopted.
+        if (isLocalEncryptionType(input.vaultType)) {
+          const leftover = await deps.findLeftoverSecrets(
+            input.name,
+            providerConfig,
+          );
+          if (leftover !== undefined) {
+            yield {
+              kind: "error",
+              error: leftoverSecretsError(
+                "create",
+                input.name,
+                secretsDirForDisplay(leftover, input.repoDir),
+              ),
+            };
+            return;
+          }
         }
 
         // Create and save

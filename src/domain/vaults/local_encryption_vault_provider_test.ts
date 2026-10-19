@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   countLocalEncryptionSecrets,
+  findLocalEncryptionLeftovers,
   type LocalEncryptionConfig,
   localEncryptionSecretsDir,
   localEncryptionSecretsWithin,
@@ -1391,6 +1392,89 @@ Deno.test("moveLocalEncryptionSecrets: refuses a file under the new name without
     assertEquals(
       await Deno.readTextFile(secretsDir(dir, "new-vault")),
       "not a dir",
+    );
+  });
+});
+
+Deno.test("findLocalEncryptionLeftovers: nothing when the directory is missing or empty", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(await findLocalEncryptionLeftovers(dir, "fresh"), undefined);
+    await Deno.mkdir(secretsDir(dir, "fresh"), { recursive: true });
+    assertEquals(await findLocalEncryptionLeftovers(dir, "fresh"), undefined);
+  });
+});
+
+Deno.test("findLocalEncryptionLeftovers: names the directory when secrets and a key are stored", async () => {
+  await withTempDir(async (dir) => {
+    await new LocalEncryptionVaultProvider("old", {
+      auto_generate: true,
+      base_dir: dir,
+    }).put("API_TOKEN", "s3cret");
+
+    assertEquals(
+      await findLocalEncryptionLeftovers(dir, "old"),
+      localEncryptionSecretsDir(dir, "old"),
+    );
+  });
+});
+
+Deno.test("findLocalEncryptionLeftovers: a generated key alone is leftover storage", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(secretsDir(dir, "old"), { recursive: true });
+    await Deno.writeTextFile(join(secretsDir(dir, "old"), ".key"), "key");
+
+    assertEquals(
+      await findLocalEncryptionLeftovers(dir, "old"),
+      localEncryptionSecretsDir(dir, "old"),
+    );
+  });
+});
+
+Deno.test("findLocalEncryptionLeftovers: annotations alone are leftover storage", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(secretsDir(dir, "old"), ".annotations"), {
+      recursive: true,
+    });
+
+    assertEquals(
+      await findLocalEncryptionLeftovers(dir, "old"),
+      localEncryptionSecretsDir(dir, "old"),
+    );
+  });
+});
+
+Deno.test("findLocalEncryptionLeftovers: a file in the directory's place is leftover storage", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(secretsDir(dir, "old"), ".."), { recursive: true });
+    await Deno.writeTextFile(secretsDir(dir, "old"), "not a dir");
+
+    assertEquals(
+      await findLocalEncryptionLeftovers(dir, "old"),
+      localEncryptionSecretsDir(dir, "old"),
+    );
+  });
+});
+
+Deno.test("findLocalEncryptionLeftovers: a symlink is leftover storage, even to an empty directory", async () => {
+  await withTempDir(async (dir) => {
+    const target = join(dir, "elsewhere");
+    await Deno.mkdir(target);
+    await Deno.mkdir(join(secretsDir(dir, "old"), ".."), { recursive: true });
+    await Deno.symlink(target, secretsDir(dir, "old"), { type: "dir" });
+
+    assertEquals(
+      await findLocalEncryptionLeftovers(dir, "old"),
+      localEncryptionSecretsDir(dir, "old"),
+    );
+  });
+});
+
+Deno.test("findLocalEncryptionLeftovers: refuses a name that is not one path segment", async () => {
+  await withTempDir(async (dir) => {
+    await assertRejects(
+      () => findLocalEncryptionLeftovers(dir, "../data"),
+      Error,
+      "single path segment",
     );
   });
 });

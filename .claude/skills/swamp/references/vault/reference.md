@@ -68,6 +68,12 @@ swamp vault create @hashicorp/vault my-hcv --config '{"address": "https://vault.
 }
 ```
 
+`vault create` and `vault migrate` to `local_encryption` refuse a name whose
+`.swamp/secrets/local_encryption/{vault-name}/` already holds a key or secrets
+from an earlier vault of that name (its config was deleted, or a removal left
+it). To keep those secrets, restore the old vault's config; to start empty,
+delete the directory and run the command again.
+
 After creation, edit the config if needed:
 
 ```bash

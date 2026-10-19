@@ -32,6 +32,10 @@ import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { MockVaultProvider } from "../../domain/vaults/mock_vault_provider.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
+  localEncryptionSecretsDir,
+  LocalEncryptionVaultProvider,
+} from "../../domain/vaults/local_encryption_vault_provider.ts";
+import {
   createVaultMigrateDeps,
   vaultMigrate,
   type VaultMigrateDeps,
@@ -70,6 +74,7 @@ function makeDeps(
     },
     createProvider: (_type, name) =>
       new MockVaultProvider(name, Object.fromEntries(targetSecrets)),
+    findLeftoverSecrets: () => Promise.resolve(undefined),
     loadSourceVaultService: async () => {
       // Create a minimal vault service with the source provider
       const { VaultService } = await import(
@@ -662,6 +667,120 @@ Deno.test("createVaultMigrateDeps: without an injected repository, uses the vaul
     assertEquals(
       (await deps.findVaultConfig("my-vault"))?.id,
       SOURCE_CONFIG.id,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Leftover local_encryption storage (swamp-club#3614)
+// ---------------------------------------------------------------------------
+
+const LEFTOVER = join(
+  "/tmp",
+  ".swamp",
+  "secrets",
+  "local_encryption",
+  "my-vault",
+);
+
+Deno.test("vaultMigratePreview: refuses a local_encryption target whose storage an earlier vault left", async () => {
+  const deps = makeDeps({
+    findLeftoverSecrets: () => Promise.resolve(LEFTOVER),
+  });
+
+  const error = await assertRejects(() =>
+    vaultMigratePreview(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "local_encryption",
+      repoDir: "/tmp",
+    })
+  ) as { code: string; message: string };
+
+  assertEquals(error.code, "already_exists");
+  assertStringIncludes(
+    error.message,
+    `Cannot migrate vault 'my-vault': ${
+      join(".swamp", "secrets", "local_encryption", "my-vault")
+    } already holds a key or secrets`,
+  );
+  assertStringIncludes(
+    error.message,
+    "Remove the directory to migrate into an empty vault.",
+  );
+});
+
+Deno.test("vaultMigrate: refuses a local_encryption target whose storage an earlier vault left, before copying anything", async () => {
+  let providers = 0;
+  let saved = false;
+  const deps = makeDeps({
+    findLeftoverSecrets: () => Promise.resolve(LEFTOVER),
+    createProvider: (_type, name) => {
+      providers++;
+      return new MockVaultProvider(name);
+    },
+    saveConfig: () => {
+      saved = true;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultMigrateEvent>(
+    vaultMigrate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "local_encryption",
+      repoDir: "/tmp",
+    }),
+  );
+
+  const last = events.at(-1) as Extract<VaultMigrateEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "already_exists");
+  assertEquals(events.some((e) => e.kind === "copying_secret"), false);
+  assertEquals(providers, 0);
+  assertEquals(saved, false);
+});
+
+Deno.test("vaultMigrate: other target types never look for local_encryption storage", async () => {
+  let checked = false;
+  const deps = makeDeps({
+    findVaultConfig: () =>
+      Promise.resolve(
+        VaultConfig.create("vault-1", "my-vault", "local_encryption", {}),
+      ),
+    findLeftoverSecrets: () => {
+      checked = true;
+      return Promise.resolve(LEFTOVER);
+    },
+  });
+
+  const events = await collect<VaultMigrateEvent>(
+    vaultMigrate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "mock",
+      repoDir: "/tmp",
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(checked, false);
+});
+
+Deno.test("createVaultMigrateDeps: finds storage an earlier local_encryption vault left", async () => {
+  await withTempDir(async (dir) => {
+    const deps = await createVaultMigrateDeps(dir);
+    assertEquals(
+      await deps.findLeftoverSecrets("my-vault", { auto_generate: true }),
+      undefined,
+    );
+
+    await new LocalEncryptionVaultProvider("my-vault", {
+      auto_generate: true,
+      base_dir: dir,
+    }).put("STALE", "from-an-earlier-vault");
+
+    assertEquals(
+      await deps.findLeftoverSecrets("my-vault", { auto_generate: true }),
+      localEncryptionSecretsDir(dir, "my-vault"),
     );
   });
 });
