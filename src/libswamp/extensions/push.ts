@@ -522,6 +522,7 @@ export interface ExtensionPushPrepareDeps {
     options?: {
       denoConfigPath?: string;
       packageJsonDir?: string;
+      readOnlyLock?: ReadOnlyLock;
       env?: Record<string, string>;
     },
   ) => Promise<string>;
@@ -646,7 +647,10 @@ import {
 import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
 import { checkDependencyTrust } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
-import { bundleExtension } from "../../domain/models/bundle.ts";
+import {
+  bundleExtension,
+  type ReadOnlyLock,
+} from "../../domain/models/bundle.ts";
 import {
   contentFileName,
   extractContentMetadata,
@@ -691,6 +695,7 @@ import type {
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type ExtensionProject,
+  readOnlyLockFor,
   readProjectLockfile,
 } from "../../infrastructure/runtime/deno_lockfile_reader.ts";
 import {
@@ -2903,10 +2908,15 @@ async function bundleAndArchive(
   denoPath: string,
   ctx: LibSwampContext,
 ): Promise<{ archiveBytes: Uint8Array; totalBundles: number }> {
-  const bundleOptions = input.denoConfigPath
+  const project = input.denoConfigPath
     ? { denoConfigPath: input.denoConfigPath }
     : input.packageJsonDir
     ? { packageJsonDir: input.packageJsonDir }
+    : undefined;
+  // Push never writes the author's lockfile: a stale lock fails the bundle
+  // rather than being rewritten, so the lock the audit read is what ships.
+  const bundleOptions = project
+    ? { ...project, readOnlyLock: await readOnlyLockFor(project) }
     : undefined;
 
   assertDistinctModelArchivePaths(input);

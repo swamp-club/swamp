@@ -20,7 +20,12 @@
 import { fromFileUrl, toFileUrl } from "@std/path";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
-import { denoProjectArgs } from "../../domain/models/bundle.ts";
+import {
+  denoProjectArgs,
+  isStaleLockfile,
+  staleLockfileError,
+} from "../../domain/models/bundle.ts";
+import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
 import type {
   LocalEdge,
   LocalModule,
@@ -188,15 +193,23 @@ async function fileExists(path: string): Promise<boolean> {
  * the graph is the one the bundle is built from.
  */
 export class DenoInfoModuleGraphReader implements ModuleGraphReader {
+  /**
+   * @param options.readOnlyLock - Never write the project's lockfile, as push
+   *   and quality bundle: `--frozen` when it has one, `--no-lock` when not.
+   */
   constructor(
     private readonly denoPath: string,
     private readonly env?: Record<string, string>,
+    private readonly options?: { readOnlyLock?: boolean },
   ) {}
 
   async read(
     entryPoint: string,
     project: ModuleGraphProject,
   ): Promise<SourceModuleGraph> {
+    const readOnlyLock = this.options?.readOnlyLock
+      ? await readOnlyLockFor(project)
+      : undefined;
     // A file URL, not the path: deno info resolves its argument through the
     // import map first, which reads a Windows path (C:\...) as a URL with
     // the scheme c: and reports it as an external module.
@@ -204,7 +217,7 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
       args: [
         "info",
         "--json",
-        ...denoProjectArgs(project),
+        ...denoProjectArgs({ ...project, readOnlyLock }),
         toFileUrl(entryPoint).href,
       ],
       stdout: "piped",
@@ -215,9 +228,17 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     });
     const output = await command.output();
     if (!output.success) {
-      const details = stripAnsiCode(
-        new TextDecoder().decode(output.stderr).trim(),
-      ) || `deno info exited with code ${output.code}`;
+      const stderr = new TextDecoder().decode(output.stderr);
+      if (readOnlyLock?.lockPath && isStaleLockfile(stderr)) {
+        throw staleLockfileError(
+          readOnlyLock.lockPath,
+          entryPoint,
+          project,
+          stderr,
+        );
+      }
+      const details = stripAnsiCode(stderr.trim()) ||
+        `deno info exited with code ${output.code}`;
       throw markErrorPaths(
         new UserError(
           `Could not read the module graph of ${entryPoint}, so push cannot ` +

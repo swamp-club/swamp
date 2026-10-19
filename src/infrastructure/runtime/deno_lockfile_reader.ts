@@ -24,6 +24,7 @@ import type {
   DependencyRegistry,
   LockedDependencyVersions,
 } from "../../domain/extensions/dependency_version_resolution.ts";
+import type { ReadOnlyLock } from "../../domain/models/bundle.ts";
 
 const logger = getLogger(["swamp", "extensions", "lockfile"]);
 
@@ -201,4 +202,42 @@ export async function readProjectLockfile(
 ): Promise<LockedDependencyVersions | undefined> {
   const path = await lockfilePathFor(project);
   return path ? await readDenoLockfile(path) : undefined;
+}
+
+/**
+ * The lockfile push leaves untouched for `project`: the lock the bundler
+ * honours when it exists on disk, so the bundle runs `--frozen`; otherwise
+ * none, so it runs `--no-lock` and creates no lock. A `deno.json` that is not
+ * plain JSON may set its own lock, which this reader cannot see, so the
+ * `deno.lock` beside it is used when present rather than bundling without
+ * the lock the project has.
+ */
+export async function readOnlyLockFor(
+  project: ExtensionProject,
+): Promise<ReadOnlyLock> {
+  let path = await lockfilePathFor(project);
+  if (
+    !path && project.denoConfigPath &&
+    !(await isPlainJson(project.denoConfigPath))
+  ) {
+    path = join(dirname(project.denoConfigPath), "deno.lock");
+  }
+  return path && await isFile(path) ? { lockPath: path } : {};
+}
+
+async function isPlainJson(path: string): Promise<boolean> {
+  try {
+    JSON.parse(await Deno.readTextFile(path));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile;
+  } catch {
+    return false;
+  }
 }

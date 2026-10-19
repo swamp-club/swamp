@@ -432,7 +432,9 @@ export const extensionPushCommand = new Command()
         repoContext,
         logger: cliCtx.logger,
         extensionsDir,
-        moduleGraphReader: await createModuleGraphReader(),
+        moduleGraphReader: await createModuleGraphReader({
+          readOnlyLock: true,
+        }),
       });
       const {
         manifest: sourceManifest,

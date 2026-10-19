@@ -2423,6 +2423,30 @@ Deno.test("extensionPushPrepare: the dependency audit gets the project the bundl
   });
 });
 
+Deno.test("extensionPushPrepare: bundles never write the extension's lockfile", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": "export const a = 1;\n",
+    "deno.json": "{}",
+    "deno.lock": '{"version":"5"}',
+  }, async (dir, paths) => {
+    const options: unknown[] = [];
+    const deps = makePrepareDeps({
+      bundleEntryPoint: (_entryPoint, _denoPath, bundleOptions) => {
+        options.push(bundleOptions?.readOnlyLock);
+        return Promise.resolve("export const a = 1;\n");
+      },
+    });
+    const input = {
+      ...acceptanceInput(dir, [paths["models/a.ts"]]),
+      denoConfigPath: paths["deno.json"],
+    };
+    await extensionPushPrepare(ctx, deps, input);
+    await Deno.remove(paths["deno.lock"]);
+    await extensionPushPrepare(ctx, deps, input);
+    assertEquals(options, [{ lockPath: paths["deno.lock"] }, {}]);
+  });
+});
+
 Deno.test("extensionPushPrepare: a missing JSR version fails the dependency-trust gate", async () => {
   await withCollectFixture({}, async (_dir, input) => {
     const missing = {
