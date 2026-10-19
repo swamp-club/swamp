@@ -46,6 +46,7 @@ const CEL_ADAPTER = "src/infrastructure/cel";
 
 /** The modules that make, register, record or convert a `Secret`. */
 const SECRET_MODULES: ReadonlySet<string> = new Set([
+  "src/infrastructure/cel/cel_vault_namespace.ts",
   "src/infrastructure/cel/secret_value.ts",
   "src/infrastructure/cel/secret_registrations.ts",
   "src/infrastructure/cel/secret_fault_context.ts",

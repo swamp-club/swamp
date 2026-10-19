@@ -66,6 +66,7 @@ import {
   registerSecretRefusals,
   registerSecretType,
 } from "../secret_registrations.ts";
+import { CelVaultNamespace } from "../cel_vault_namespace.ts";
 import { refuse, SecretRefusal } from "../secret_fault_context.ts";
 import {
   equalityTypes,
@@ -74,8 +75,14 @@ import {
   secretCapableBuiltins,
   SWAMP_FUNCTION_SIGNATURES,
   SWAMP_NAMESPACE_TYPES,
+  TYPED_VAULT_NAMESPACE_TYPES,
   typeNamesInDefinitions,
 } from "../cel_js_secret_refusal_inventory.ts";
+
+const namespaceTypes = [
+  ...SWAMP_NAMESPACE_TYPES,
+  ...TYPED_VAULT_NAMESPACE_TYPES,
+];
 
 const s = createSecret("v/k");
 const t = createSecret("v/k2");
@@ -84,6 +91,7 @@ const namespaces = {
   file: new CelFileNamespace({}),
   model: new CelModelNamespace({}),
   workers: new CelWorkersNamespace({}),
+  vault: new CelVaultNamespace({ vaultName: "prod", key: "token" }, "test"),
 };
 
 function secretEnvironment(): Environment {
@@ -103,7 +111,8 @@ function internalEnvironment(): {
     .registerType("CelFileNamespace", CelFileNamespace)
     .registerType("CelDataNamespace", CelDataNamespace)
     .registerType("CelWorkersNamespace", CelWorkersNamespace)
-    .registerType("CelModelNamespace", CelModelNamespace);
+    .registerType("CelModelNamespace", CelModelNamespace)
+    .registerType("CelVaultNamespace", CelVaultNamespace);
   for (const signature of SWAMP_FUNCTION_SIGNATURES) {
     const handler = signature.endsWith("dyn): dyn")
       ? (...args: unknown[]) => args[args.length - 1]
@@ -112,7 +121,7 @@ function internalEnvironment(): {
   }
   registerAllowedSet(env);
   const registration = registerSecretRefusals(env, {
-    customTypes: SWAMP_NAMESPACE_TYPES,
+    customTypes: namespaceTypes,
     swampSignatures: SWAMP_FUNCTION_SIGNATURES,
   });
   return { env, registration };
@@ -154,14 +163,14 @@ Deno.test(
     assertEquals(functionRefusalSignatures(builtins).length, 56);
     assertEquals(
       functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES).length,
-      41,
+      44,
     );
     assertEquals(operatorRefusalSignatures().length, 293);
-    assertEquals(operatorRefusalSignatures(SWAMP_NAMESPACE_TYPES).length, 369);
+    assertEquals(operatorRefusalSignatures(namespaceTypes).length, 388);
 
     const { registration } = internalEnvironment();
-    assertEquals(registration.operators.length, 369);
-    assertEquals(registration.functions.length, 97);
+    assertEquals(registration.operators.length, 388);
+    assertEquals(registration.functions.length, 100);
   },
 );
 
@@ -188,6 +197,7 @@ Deno.test(
       ["OptionalNamespace", "optional"],
       ["Secret", "t"],
       ["CelDataNamespace", "data"],
+      ["CelVaultNamespace", "vault"],
     ];
     for (const [type, value] of values) {
       const operation = `Secret == ${type}`;

@@ -86,6 +86,8 @@ import {
   SWAMP_FUNCTION_SIGNATURES,
   SWAMP_NAMESPACE_TYPES,
   SWAMP_OPERATOR_SIGNATURES,
+  TYPED_VAULT_FUNCTION_SIGNATURES,
+  TYPED_VAULT_NAMESPACE_TYPES,
   typeNamesInDefinitions,
 } from "../src/infrastructure/cel/cel_js_secret_refusal_inventory.ts";
 
@@ -250,7 +252,7 @@ Deno.test("SWAMP_OPERATOR_SIGNATURES equals the operators the internal environme
 Deno.test("SWAMP_NAMESPACE_TYPES equals the receiver types the internal environment registers", async () => {
   assertEquals(
     await registeredAcrossFiles("registerType"),
-    [...SWAMP_NAMESPACE_TYPES].sort(),
+    [...SWAMP_NAMESPACE_TYPES, ...TYPED_VAULT_NAMESPACE_TYPES].sort(),
   );
 });
 
@@ -273,7 +275,7 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
     }
   }
   assertEquals(counts, {
-    refusal: 75,
+    refusal: 77,
     "named-delivery": 6,
     "argument-walk": 3,
     container: 16,
@@ -284,7 +286,7 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
   assertEquals(functionRefusalSignatures(builtins).length, 56);
   assertEquals(
     functionRefusalSignatures([...SWAMP_FUNCTION_SIGNATURES]).length,
-    41,
+    44,
   );
   assertEquals(
     functionRefusalSignatures(INTERNAL_FUNCTION_SIGNATURES).length,
@@ -311,8 +313,9 @@ Deno.test("production half: with typed secrets on, the internal environment defi
   const expected = [
     ...functionRefusalSignatures(builtins),
     ...functionRefusalSignatures(INTERNAL_FUNCTION_SIGNATURES),
+    ...functionRefusalSignatures(TYPED_VAULT_FUNCTION_SIGNATURES),
   ].sort();
-  assertEquals(expected.length, 94);
+  assertEquals(expected.length, 97);
   const secretBearing = definedFunctions(
     createInternalCelEnvironment({ typedSecrets: true }),
   ).filter((signature) => {

@@ -29,6 +29,16 @@ import {
   literal,
   LITERAL_FUNCTION_SIGNATURE,
 } from "../../domain/expressions/cel_grammar.ts";
+import {
+  analyzeVaultCalls,
+  type VaultCallAnalysis,
+} from "../../domain/expressions/vault_call_syntax.ts";
+import {
+  assertDirectVaultCalls,
+  CelVaultNamespace,
+  prepareCheckedVaultCalls,
+  type VaultEvaluationScope,
+} from "./cel_vault_namespace.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
 import {
   SECRET_OPERATION_UNSUPPORTED,
@@ -38,6 +48,8 @@ import type { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import {
   INTERNAL_FUNCTION_SIGNATURES,
   SWAMP_NAMESPACE_TYPES,
+  TYPED_VAULT_FUNCTION_SIGNATURES,
+  TYPED_VAULT_NAMESPACE_TYPES,
 } from "./cel_js_secret_refusal_inventory.ts";
 import { hasContainerComparison } from "./container_comparison.ts";
 import {
@@ -561,6 +573,8 @@ export interface EvaluationScope {
    * result leaves as a sentinel issued into it.
    */
   readonly secretBag?: VaultSecretBag;
+  /** Required for direct typed vault calls; checks use the run's services. */
+  readonly vault?: VaultEvaluationScope;
 }
 
 /**
@@ -731,10 +745,20 @@ export function createInternalCelEnvironment(
 
   if (options.typedSecrets) {
     registerSecretType(env);
+    env.registerType("CelVaultNamespace", CelVaultNamespace);
+    env.registerFunction(
+      "CelVaultNamespace.get(string, string): Secret",
+      (receiver: CelVaultNamespace, vault: string, key: string) =>
+        receiver.get(vault, key),
+      { async: false },
+    );
     registerAllowedSet(env);
     registerSecretRefusals(env, {
-      customTypes: SWAMP_NAMESPACE_TYPES,
-      swampSignatures: INTERNAL_FUNCTION_SIGNATURES,
+      customTypes: [...SWAMP_NAMESPACE_TYPES, ...TYPED_VAULT_NAMESPACE_TYPES],
+      swampSignatures: [
+        ...INTERNAL_FUNCTION_SIGNATURES,
+        ...TYPED_VAULT_FUNCTION_SIGNATURES,
+      ],
     });
   }
   return env;
@@ -758,6 +782,8 @@ function unresolvedPromiseError(expression: string): InvalidExpressionError {
 /** One evaluation with typed secrets on, parsed and bound. */
 interface SecretEvaluation {
   readonly evaluate: () => unknown;
+  readonly analysis: VaultCallAnalysis;
+  readonly bindings: Record<string, unknown>;
   /** Whether the expression holds a container comparison. */
   readonly containerComparison: boolean;
   /** The conversion, when the evaluation has a run's bag. */
@@ -907,6 +933,12 @@ export class CelEvaluator {
       let result: unknown;
       try {
         run = this.beginWithSecrets(expression, wrappedContext, scope);
+        if (run.analysis.calls.length > 0) {
+          throw new InvalidExpressionError(
+            "vault.get requires evaluateAsync for its up-front reference checks",
+            expression,
+          );
+        }
         result = run.evaluate();
       } catch (error) {
         faults.recording = false;
@@ -934,13 +966,54 @@ export class CelEvaluator {
     return await runInFaultScope(async (faults) => {
       let run: SecretEvaluation | undefined;
       let result: unknown;
+      let checking = false;
+      let executing = false;
       try {
+        // Reject aliases before context preparation or argument evaluation can
+        // start external work. Every direct call is checked, even in dead branches.
+        const analysis = analyzeVaultCalls(expression);
+        assertDirectVaultCalls(analysis, expression);
+        if (analysis.calls.length > 0 && (!scope.secretBag || !scope.vault)) {
+          throw new InvalidExpressionError(
+            "vault.get requires the run's secret bag and vault check scope",
+            expression,
+          );
+        }
         await prepareExpressionContext(expression, context);
-        run = this.beginWithSecrets(expression, wrappedContext, scope);
-        result = await run.evaluate();
+        // Preparation can issue sentinels. Bind only after it completes so
+        // the boundary sees the registry and context that execution will read.
+        run = this.beginWithSecrets(
+          expression,
+          wrappedContext,
+          scope,
+          analysis,
+        );
+        let execute = run.evaluate;
+        if (run.analysis.calls.length > 0 && scope.secretBag && scope.vault) {
+          checking = true;
+          execute = await prepareCheckedVaultCalls(
+            this.env,
+            run.analysis,
+            expression,
+            run.bindings,
+            scope.secretBag,
+            scope.vault,
+            () => this.refuseFaulted(faults, run, expression),
+          );
+          checking = false;
+        }
+        executing = true;
+        result = await execute();
       } catch (error) {
         faults.recording = false;
         this.refuseFaulted(faults, run, expression);
+        // Reference checks have their own domain error contract. In particular,
+        // preserve unavailable/access-denied codes and the provider's failure.
+        if (
+          checking || (!executing && error instanceof InvalidExpressionError)
+        ) {
+          throw error;
+        }
         throw this.evaluationError(error, expression, wrappedContext);
       }
       faults.recording = false;
@@ -950,7 +1023,7 @@ export class CelEvaluator {
   }
 
   /**
-   * Parses the expression once, scans it for a container comparison, and
+   * Parses normalized source, scans it for a container comparison, and
    * binds the context through the boundary conversion. Calling the parsed
    * program is what `env.evaluate` does, so no state lands on a shared
    * program (fact 7).
@@ -959,16 +1032,19 @@ export class CelEvaluator {
     expression: string,
     wrappedContext: Record<string, unknown>,
     scope: EvaluationScope,
+    analysis: VaultCallAnalysis = analyzeVaultCalls(expression),
   ): SecretEvaluation {
-    const transformedExpr = transformHyphenatedModelRefs(expression);
-    this.warnDeprecatedPatterns(transformedExpr);
-    const program = this.env.parse(transformedExpr);
+    assertDirectVaultCalls(analysis, expression);
+    this.warnDeprecatedPatterns(analysis.source.text);
+    const program = this.env.parse(analysis.source.text);
     const boundary = scope.secretBag === undefined
       ? undefined
       : new SecretBoundary(scope.secretBag);
     const bindings = boundary?.bind(wrappedContext) ?? wrappedContext;
     return {
       evaluate: () => program(bindings),
+      analysis,
+      bindings,
       containerComparison: hasContainerComparison(program.ast),
       boundary,
     };
@@ -1058,7 +1134,11 @@ export class CelEvaluator {
     try {
       // Attempt to parse the expression — ParseResult is callable, not a
       // success/error union.  If parse() doesn't throw, the syntax is valid.
-      this.env.parse(transformHyphenatedModelRefs(expression));
+      if (this.typedSecrets) {
+        const analysis = analyzeVaultCalls(expression);
+        assertDirectVaultCalls(analysis, expression);
+        this.env.parse(analysis.source.text);
+      } else this.env.parse(transformHyphenatedModelRefs(expression));
       return { valid: true };
     } catch (error) {
       return {

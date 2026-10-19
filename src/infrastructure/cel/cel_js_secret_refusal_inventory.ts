@@ -205,6 +205,14 @@ export const INTERNAL_FUNCTION_SIGNATURES: readonly string[] = [
   "CelModelNamespace.method(string, string, dyn): dyn",
 ];
 
+/** Registrations added only when typed secrets are enabled. */
+export const TYPED_VAULT_FUNCTION_SIGNATURES: readonly string[] = [
+  "CelVaultNamespace.get(string, string): Secret",
+];
+export const TYPED_VAULT_NAMESPACE_TYPES: readonly string[] = [
+  "CelVaultNamespace",
+];
+
 /**
  * swamp's own registrations in the query view (data_query_service.ts). Its
  * refusals arrive with the query view (design Section 6.2, Phase 4).
@@ -222,6 +230,7 @@ export const QUERY_VIEW_FUNCTION_SIGNATURES: readonly string[] = [
 export const SWAMP_FUNCTION_SIGNATURES: readonly string[] = [
   ...INTERNAL_FUNCTION_SIGNATURES,
   ...QUERY_VIEW_FUNCTION_SIGNATURES,
+  ...TYPED_VAULT_FUNCTION_SIGNATURES,
 ];
 
 /**

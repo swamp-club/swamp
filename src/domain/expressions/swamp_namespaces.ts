@@ -29,8 +29,8 @@ import { InvalidExpressionError } from "./errors.ts";
 import { extractExpressions } from "./expression_parser.ts";
 import { levenshteinDistance } from "../string_distance.ts";
 import {
-  findVaultGetCalls,
   isDynamicVaultArgument,
+  vaultCallsForAnalysis,
 } from "./vault_reference_extractor.ts";
 
 export { BINDING_MACROS, parsesAsCel } from "./cel_grammar.ts";
@@ -368,29 +368,20 @@ export function failedOnForeignRoot(error: unknown): boolean {
 function parseForAttribution(celExpression: string): ASTNode {
   let text = "";
   let last = 0;
-  for (const call of findVaultGetCalls(celExpression)) {
-    // Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
-    //         [4]=quote2, [5]=quoted key,   [6]=unquoted key
-    const vaultName = attributedVaultArg(call[1], call[2], call[3]);
-    const secretKey = attributedVaultArg(call[4], call[5], call[6]);
-    text += celExpression.slice(last, call.index) +
+  for (const call of vaultCallsForAnalysis(celExpression)) {
+    const vaultName = attributedVaultArg(call.args[0]);
+    const secretKey = attributedVaultArg(call.args[1]);
+    text += celExpression.slice(last, call.start) +
       `vault.get(${vaultName}, ${secretKey})`;
-    last = call.index + call[0].length;
+    last = call.end;
   }
   text += celExpression.slice(last);
   return parseCel(transformHyphenatedModelRefs(text)).ast;
 }
 
-function attributedVaultArg(
-  quote: string | undefined,
-  quoted: string | undefined,
-  bare: string | undefined,
-): string {
-  // The matcher takes a backtick-quoted name, which CEL has no syntax for.
-  if (quoted !== undefined) {
-    return quote === "`" ? "''" : `${quote}${quoted}${quote}`;
-  }
-  return bare !== undefined && readsOnlySwampBindings(bare) ? bare : "''";
+function attributedVaultArg(arg: { text: string; literal?: string }): string {
+  if (arg.literal !== undefined) return JSON.stringify(arg.literal);
+  return readsOnlySwampBindings(arg.text) ? arg.text : "''";
 }
 
 /** Whether an unquoted `vault.get` argument is CEL over swamp's namespaces. */
@@ -407,12 +398,12 @@ function readsOnlySwampBindings(bareToken: string): boolean {
  */
 export function unresolvableVaultArguments(celExpression: string): string[] {
   const args: string[] = [];
-  for (const call of findVaultGetCalls(celExpression)) {
-    for (const bare of [call[3], call[6]]) {
+  for (const call of vaultCallsForAnalysis(celExpression)) {
+    for (const arg of call.args) {
       if (
-        bare !== undefined && isDynamicVaultArgument(bare) &&
-        !isSwampExpression(bare, WIDEST_SWAMP_SCOPE)
-      ) args.push(bare);
+        arg.literal === undefined && isDynamicVaultArgument(arg.text) &&
+        !isSwampExpression(arg.text, WIDEST_SWAMP_SCOPE)
+      ) args.push(arg.text);
     }
   }
   return args;

@@ -19,6 +19,11 @@
 
 import { lexSegments } from "./cel_string_lexer.ts";
 import { scanExpressions } from "./expression_scanner.ts";
+import {
+  analyzeVaultCalls,
+  isDynamicVaultArgument,
+} from "./vault_call_syntax.ts";
+export { isDynamicVaultArgument } from "./vault_call_syntax.ts";
 
 /**
  * One `vault.get(vaultName, secretKey)` call. Each argument is quoted or a
@@ -60,17 +65,6 @@ export function findVaultGetCalls(celExpression: string): RegExpExecArray[] {
   return calls;
 }
 
-/**
- * Whether an unquoted `vault.get` argument is evaluated as CEL before the
- * lookup. One holding a `.` is a member access (`inputs.vaultName`); any
- * other is a literal name (`my-vault`, `API_KEY`), used verbatim. The
- * resolver and the swamp-expression classifier both read an argument through
- * this one rule, so they always agree.
- */
-export function isDynamicVaultArgument(bareToken: string): boolean {
-  return bareToken.includes(".");
-}
-
 /** Whether `vault` at `at` is a root identifier rather than a member. */
 function isNamespaceRoot(text: string, at: number): boolean {
   let i = at - 1;
@@ -90,6 +84,59 @@ function literalVaultArg(
 ): string | undefined {
   if (quoted !== undefined) return quoted;
   return bare !== undefined && !isDynamicVaultArgument(bare) ? bare : undefined;
+}
+
+/** An analysis call restricted to the syntax the option-off resolver accepts. */
+export interface AnalyzedVaultCall {
+  readonly start: number;
+  readonly end: number;
+  readonly authored: string;
+  readonly args: readonly {
+    readonly text: string;
+    readonly literal?: string;
+  }[];
+}
+
+/**
+ * Shared AST analysis with an option-off compatibility filter. Malformed CEL
+ * still needs legacy attribution (vault.get(t, db..x) must fail at evaluation,
+ * not pass through as foreign text). The resolver also replaces calls under
+ * macro bindings without regard to shadowing. Preserve those legacy records
+ * until rollout; new typed evaluation uses analyzeVaultCalls directly.
+ */
+export function vaultCallsForAnalysis(expression: string): AnalyzedVaultCall[] {
+  const legacy = findVaultGetCalls(expression);
+  if (legacy.length === 0) return [];
+  let calls = new Map<number, AnalyzedVaultCall>();
+  try {
+    calls = new Map(
+      analyzeVaultCalls(expression).calls.map((call) => [
+        call.start,
+        call,
+      ]),
+    );
+  } catch {
+    // Keep malformed legacy calls attributable to swamp.
+  }
+  return legacy.map((match) => {
+    const call = calls.get(match.index);
+    if (
+      call?.end === match.index + match[0].length && call.args.length === 2 &&
+      call.args[0].literal === literalVaultArg(match[2], match[3]) &&
+      call.args[1].literal === literalVaultArg(match[5], match[6])
+    ) return call;
+    return {
+      start: match.index,
+      end: match.index + match[0].length,
+      authored: match[0],
+      args: [[match[2], match[3]], [match[5], match[6]]].map((
+        [quoted, bare],
+      ) => ({
+        text: quoted !== undefined ? JSON.stringify(quoted) : bare,
+        literal: literalVaultArg(quoted, bare),
+      })),
+    };
+  });
 }
 
 export interface VaultReference {
@@ -126,9 +173,9 @@ function collectVaultReferences(
 ): void {
   if (typeof data === "string") {
     for (const span of scanExpressions(data)) {
-      for (const vaultMatch of findVaultGetCalls(span.inner)) {
-        const vaultName = literalVaultArg(vaultMatch[2], vaultMatch[3]);
-        const secretKey = literalVaultArg(vaultMatch[5], vaultMatch[6]);
+      for (const call of vaultCallsForAnalysis(span.inner)) {
+        const vaultName = call.args[0].literal;
+        const secretKey = call.args[1].literal;
 
         if (vaultName !== undefined && secretKey !== undefined) {
           const key = `${vaultName}\0${secretKey}`;

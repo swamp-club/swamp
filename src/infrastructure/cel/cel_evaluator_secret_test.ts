@@ -48,7 +48,11 @@ import {
   secretCapableBuiltins,
   SWAMP_FUNCTION_SIGNATURES,
   SWAMP_NAMESPACE_TYPES,
+  TYPED_VAULT_FUNCTION_SIGNATURES,
+  TYPED_VAULT_NAMESPACE_TYPES,
 } from "./cel_js_secret_refusal_inventory.ts";
+
+import { CelVaultNamespace } from "./cel_vault_namespace.ts";
 
 const evaluator = new CelEvaluator({ typedSecrets: true });
 
@@ -92,6 +96,10 @@ function fixture() {
       query: record("query"),
     },
     file: { contents: record("contents") },
+    vaultReceiver: new CelVaultNamespace(
+      { vaultName: "prod", key: "A" },
+      "test",
+    ),
     workers: { connected: record("connected") },
     modelMethod: { method: record("method") },
   };
@@ -163,6 +171,7 @@ const OPERAND: Readonly<Record<string, string>> = {
   CelDataNamespace: "data",
   CelWorkersNamespace: "workers",
   CelModelNamespace: "model",
+  CelVaultNamespace: "vaultReceiver",
 };
 
 /** The expressions that reach one operator refusal signature. */
@@ -195,6 +204,7 @@ const ARGUMENT: Readonly<Record<string, string>> = {
   CelDataNamespace: "data",
   CelFileNamespace: "file",
   CelModelNamespace: "model",
+  CelVaultNamespace: "vaultReceiver",
 };
 
 /** The call that reaches one function refusal, with a second secret too. */
@@ -222,12 +232,16 @@ function internalFunctionRefusals(): string[] {
   return [
     ...functionRefusalSignatures(builtins),
     ...functionRefusalSignatures(INTERNAL_FUNCTION_SIGNATURES),
+    ...functionRefusalSignatures(TYPED_VAULT_FUNCTION_SIGNATURES),
   ];
 }
 
 Deno.test("CelEvaluator typed secrets: every operator refusal the inventory yields refuses with its code, absorbed or not", () => {
-  const signatures = operatorRefusalSignatures(SWAMP_NAMESPACE_TYPES);
-  assertEquals(signatures.length, 369);
+  const signatures = operatorRefusalSignatures([
+    ...SWAMP_NAMESPACE_TYPES,
+    ...TYPED_VAULT_NAMESPACE_TYPES,
+  ]);
+  assertEquals(signatures.length, 388);
   for (const signature of signatures) {
     for (const expression of operatorExpressions(signature)) {
       for (const form of absorbed(expression)) {
@@ -239,7 +253,7 @@ Deno.test("CelEvaluator typed secrets: every operator refusal the inventory yiel
 
 Deno.test("CelEvaluator typed secrets: every function refusal the inventory yields refuses with its code, absorbed or not, with two secrets too", () => {
   const signatures = internalFunctionRefusals();
-  assertEquals(signatures.length, 94);
+  assertEquals(signatures.length, 97);
   for (const signature of signatures) {
     for (const form of absorbed(functionExpression(signature))) {
       assertRefused(form, signature);
