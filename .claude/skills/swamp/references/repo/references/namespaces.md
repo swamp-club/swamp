@@ -113,6 +113,11 @@ This fetches `.catalog-export.json` from each foreign namespace and imports it
 into the local catalog. After pulling, `data.query` can reference behaviors from
 those namespaces.
 
+Each export speaks only for its own namespace. The pull refuses the repository's
+own namespace and any value not shaped like a namespace. It drops export rows
+that name another namespace, warns with the count, and reports it as
+`rejectedRows` in the JSON output.
+
 Foreign content (the actual data attributes) is fetched on demand when a CEL
 expression accesses them — it is not persisted locally.
 
