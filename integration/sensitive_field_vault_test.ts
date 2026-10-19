@@ -30,6 +30,22 @@ import { ModelType } from "../src/domain/models/model_type.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { processSensitiveResourceData } from "../src/domain/models/data_writer.ts";
+import { basename, dirname, join } from "@std/path";
+import { walk } from "@std/fs";
+import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import "../src/domain/models/models.ts";
+import { modelRegistry } from "../src/domain/models/model.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlVaultConfigRepository } from "../src/infrastructure/persistence/yaml_vault_config_repository.ts";
+import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
+import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
+import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
+import { initializeTestRepo } from "./test_helpers.ts";
 
 Deno.test("Integration: sensitive output fields stored in vault with references in persisted data", async () => {
   const modelType = ModelType.create("test/sensitive-output");
@@ -202,4 +218,149 @@ Deno.test("Integration: custom vaultKey from schema metadata", async () => {
     await vaultService.get("test-vault", "generated-api-key"),
     "sk-live-abc123def456",
   );
+});
+
+/**
+ * The persisted payloads of the resources the given behavior type wrote,
+ * keyed by data name (the directory holding each version).
+ */
+async function persistedResources(
+  repoDir: string,
+  modelType: ModelType,
+): Promise<Map<string, Record<string, unknown>>> {
+  const byName = new Map<string, Record<string, unknown>>();
+  const root = join(
+    repoDir,
+    ".swamp",
+    "data",
+    ...modelType.normalized.split("/"),
+  );
+  for await (const entry of walk(root, { includeDirs: false })) {
+    if (entry.name !== "raw") continue;
+    const name = basename(dirname(dirname(entry.path)));
+    // Method summary reports are written beside the resources.
+    if (name.startsWith("report-")) continue;
+    byName.set(name, JSON.parse(await Deno.readTextFile(entry.path)));
+  }
+  return byName;
+}
+
+Deno.test("Integration: a forEach step varying on its input vaults each instance's sensitive field under its own key (swamp-club#3633)", async () => {
+  await initializeLogging({});
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-3633-" });
+  try {
+    await initializeTestRepo(repoDir);
+    await new YamlVaultConfigRepository(repoDir).save(
+      VaultConfig.create(crypto.randomUUID(), "secrets", "local_encryption", {
+        auto_generate: true,
+        base_dir: repoDir,
+      }),
+    );
+
+    // A per-run type, so the registration holds under --repeats.
+    const WriteArgs = z.object({ environment: z.string() });
+    const modelType = ModelType.create(
+      `test/vary-secret-writer-${crypto.randomUUID()}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.10.19.1",
+      globalArguments: z.object({}),
+      resources: {
+        creds: {
+          description: "Per-environment credentials",
+          schema: z.object({ token: z.string().meta({ sensitive: true }) }),
+          lifetime: "infinite",
+          garbageCollection: 5,
+        },
+      },
+      methods: {
+        write: {
+          description: "Writes the environment's token",
+          arguments: WriteArgs,
+          execute: async (args, context) => {
+            const { environment } = WriteArgs.parse(args);
+            const handle = await context.writeResource!("creds", "creds", {
+              token: `token-for-${environment}`,
+            });
+            return { dataHandles: [handle] };
+          },
+        },
+      },
+    });
+
+    const workflow = Workflow.create({
+      name: "vary-secrets",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "write-${{ self.env }}",
+              task: StepTask.directExecution(
+                modelType.normalized,
+                "writer",
+                "write",
+                { environment: "${{ self.env }}" },
+              ),
+              forEach: { item: "env", in: "${{ inputs.envs }}" },
+              dataOutputOverrides: [{
+                specName: "creds",
+                vary: ["environment"],
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    await new YamlWorkflowRepository(repoDir).save(workflow);
+
+    const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
+      await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+    let status: string | undefined;
+    const events: string[] = [];
+    await executeWorkflowWithLocks(
+      resolved,
+      repoContext,
+      datastoreConfig,
+      { workflowIdOrName: workflow.name, inputs: { envs: ["dev", "prod"] } },
+      new AbortController().signal,
+      (event: WorkflowRunEvent) => {
+        if (event.kind === "completed") status = event.run.status;
+        if (event.kind !== "started") {
+          events.push(JSON.stringify(event).slice(0, 600));
+        }
+      },
+      syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+    assertEquals(status, "succeeded", events.join("\n"));
+
+    const records = await persistedResources(repoDir, modelType);
+    assertEquals([...records.keys()].sort(), ["creds-dev", "creds-prod"]);
+
+    const vaultService = await VaultService.fromRepository(repoDir);
+    const keys = new Set<string>();
+    for (const env of ["dev", "prod"]) {
+      const reference = String(records.get(`creds-${env}`)?.token);
+      const match = /vault\.get\('([^']+)', '([^']+)'\)/.exec(reference);
+      if (!match) throw new Error(`Not a vault reference: ${reference}`);
+      const [, vaultName, vaultKey] = match;
+      keys.add(vaultKey);
+      assertStringIncludes(vaultKey, `-creds-creds-${env}-token`);
+      // Each record's reference reads back its own environment's value.
+      assertEquals(
+        await vaultService.get(vaultName, vaultKey),
+        `token-for-${env}`,
+      );
+    }
+    assertEquals(keys.size, 2);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
 });

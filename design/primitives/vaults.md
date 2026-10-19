@@ -654,6 +654,14 @@ For example, `@user/aws/ec2-keypair` (id `abc-123`, method `createKeyPair`,
 spec `result`, instance `result`) with field `KeyMaterial` becomes
 `user-aws-ec2-keypair-abc-123-createKeyPair-result-result-KeyMaterial`.
 
+The instance name is the name the record is stored under, vary suffix included
+([data.md §The record](./data.md#the-record)), so each vary instance has its
+own key: the same write varied on `prod` uses instance `result-prod` and the key
+`...-createKeyPair-result-result-prod-KeyMaterial`. Before swamp-club#3633 the
+key used the name without the suffix, so every vary instance of a spec and data
+name shared one secret and the last write won. Records written then still name
+that shared key until their instance is written again.
+
 Set a custom key with `vaultKey` in field metadata:
 
 ```typescript

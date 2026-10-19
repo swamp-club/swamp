@@ -2019,6 +2019,154 @@ Deno.test("createResourceWriter: an empty vaultName override is ignored, so sens
   );
 });
 
+/** The key a stored vault reference names: the one a reader resolves. */
+function referencedVaultKey(reference: unknown): string {
+  const match = /vault\.get\('[^']+', '([^']+)'\)/.exec(String(reference));
+  if (!match) throw new Error(`Not a vault reference: ${String(reference)}`);
+  return match[1];
+}
+
+const varySensitiveResources: Record<string, ResourceOutputSpec> = {
+  creds: {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+      pinned: z.string().meta({ sensitive: true, vaultKey: "pinned-key" })
+        .optional(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+};
+
+function varyResourceWriter(
+  vaultService: VaultService,
+  resolvedVarySuffix?: string,
+) {
+  return createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    varySensitiveResources,
+    undefined, // tagOverrides
+    resolvedVarySuffix === undefined
+      ? undefined
+      : [{ specName: "creds", resolvedVarySuffix }], // dataOutputOverrides
+    undefined, // definitionTags
+    undefined, // runtimeTags
+    undefined, // definitionName
+    vaultService,
+    "create", // methodName
+  ).writeResource;
+}
+
+Deno.test("createResourceWriter: vary instances keep their own secret for a sensitive field (swamp-club#3633)", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+
+  const us = { secret: "US-SECRET" };
+  const eu = { secret: "EU-SECRET" };
+  const usHandle = await varyResourceWriter(vaultService, "us")(
+    "creds",
+    "creds",
+    us,
+  );
+  const euHandle = await varyResourceWriter(vaultService, "eu")(
+    "creds",
+    "creds",
+    eu,
+  );
+
+  assertEquals([usHandle.name, euHandle.name], ["creds-us", "creds-eu"]);
+  const usKey = referencedVaultKey(us.secret);
+  const euKey = referencedVaultKey(eu.secret);
+  assertEquals(
+    usKey,
+    sanitizeVaultKey(
+      `${modelType.normalized}/${modelId}/create/creds/creds-us/secret`,
+    ),
+  );
+  assertEquals(
+    euKey,
+    sanitizeVaultKey(
+      `${modelType.normalized}/${modelId}/create/creds/creds-eu/secret`,
+    ),
+  );
+  // Each record's reference reads back its own instance's value.
+  assertEquals(await vaultService.get("v", usKey), "US-SECRET");
+  assertEquals(await vaultService.get("v", euKey), "EU-SECRET");
+});
+
+Deno.test("createResourceWriter: a multi-dimension vary suffix lands in the generated vault key", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+
+  const data = { secret: "s" };
+  await varyResourceWriter(vaultService, "prod-us-east-1")(
+    "creds",
+    "creds",
+    data,
+  );
+
+  assertEquals(
+    referencedVaultKey(data.secret),
+    sanitizeVaultKey(
+      `${modelType.normalized}/${modelId}/create/creds/creds-prod-us-east-1/secret`,
+    ),
+  );
+});
+
+Deno.test("createResourceWriter: a field's explicit vaultKey is not changed by a vary suffix", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+
+  const data = { secret: "s", pinned: "p" };
+  await varyResourceWriter(vaultService, "us")("creds", "creds", data);
+
+  assertEquals(referencedVaultKey(data.pinned), "pinned-key");
+});
+
+Deno.test("createResourceWriter: without a vary suffix the generated vault key is built from the data name", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+
+  const data = { secret: "s" };
+  await varyResourceWriter(vaultService)("creds", "creds", data);
+
+  assertEquals(
+    referencedVaultKey(data.secret),
+    sanitizeVaultKey(
+      `${modelType.normalized}/${modelId}/create/creds/creds/secret`,
+    ),
+  );
+});
+
+Deno.test("createResourceWriter: a vary write is decided with the suffixed key it is stored under", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+  const decided: (string | undefined)[] = [];
+
+  const data = { secret: "s" };
+  await runWithVaultAccess(
+    RunVaultAccess.create({
+      policy: {
+        principal: "user:bot",
+        decide: (_vault, _action, secretKey) => {
+          decided.push(secretKey);
+          return { allowed: true, reason: "granted" };
+        },
+      },
+    }),
+    () => varyResourceWriter(vaultService, "us")("creds", "creds", data),
+  );
+
+  // The store decides before any put, and the put decides again: both name
+  // the key the reference points at.
+  const storedKey = referencedVaultKey(data.secret);
+  assertStringIncludes(storedKey, "-creds-us-secret");
+  assertEquals(decided.length > 0, true);
+  assertEquals(decided.filter((key) => key !== storedKey), []);
+});
+
 Deno.test("processSensitiveResourceData: falls back to vaultNames[0] when no default configured", async () => {
   const spec: ResourceOutputSpec = {
     schema: z.object({

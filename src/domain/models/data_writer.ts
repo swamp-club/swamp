@@ -794,7 +794,9 @@ export function createResourceWriter(
         modelId,
         methodName,
         specName,
-        name,
+        // The stored name, vary suffix included: each vary instance keeps its
+        // own secret (swamp-club#3633).
+        instanceName,
         { onEvent },
       );
       if (vaultedPaths.length > 0) {
