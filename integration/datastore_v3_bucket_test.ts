@@ -1018,6 +1018,7 @@ Deno.test({
       await freshCheckoutRefusesUnreadableReplica(root, bucket, async () => {
         const listing = await (await fetch(
           `${S3_ENDPOINT}/${s3Bucket}?list-type=2&prefix=${prefix}/_litestream/`,
+          { signal: AbortSignal.timeout(10_000) },
         )).text();
         const keys = [...listing.matchAll(/<Key>([^<]+)<\/Key>/g)].map((
           match,
@@ -1026,6 +1027,7 @@ Deno.test({
         for (const key of keys) {
           const removed = await fetch(`${S3_ENDPOINT}/${s3Bucket}/${key}`, {
             method: "DELETE",
+            signal: AbortSignal.timeout(10_000),
           });
           await removed.body?.cancel();
           assert(removed.ok, `deleting ${key}: ${removed.status}`);

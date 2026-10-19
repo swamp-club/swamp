@@ -96,6 +96,8 @@ interface World {
       readonly gated?: boolean;
       /** It keeps its datastore warnings for a `warnings` request. */
       readonly captureWarnings?: boolean;
+      /** How long it waits for a lock; 30 s by default. */
+      readonly lockTimeoutMs?: number;
     },
   ): Promise<Machine>;
   /** What the published lineages say, as a reader sees them. */
@@ -175,7 +177,7 @@ async function withMachines(
         privateRoot,
         datastorePath,
         repoDir: join(root, machineOptions.checkout ?? name),
-        lockTimeoutMs: 30_000,
+        lockTimeoutMs: machineOptions.lockTimeoutMs ?? 30_000,
         ...(machineOptions.namespace !== undefined
           ? { namespace: machineOptions.namespace }
           : {}),
@@ -1041,6 +1043,50 @@ Deno.test({
       const b = await world.machine("b");
       const refused = await assertRejects(() => read(b), MachineError);
       assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a fresh checkout that cannot take the restore lock refuses to read (swamp-club#3642)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      // The copy's directory, as another process restoring it made it; no
+      // commits.db yet.
+      const copyDb = await withMockedEnv(
+        { [V3_REPLICA_ENV]: world.replica },
+        () =>
+          Promise.resolve(
+            v3CommitsDbPath(world.datastorePath, join(world.root, "b")),
+          ),
+      );
+      await Deno.mkdir(dirname(copyDb), { recursive: true });
+      const b = await world.machine("b", { lockTimeoutMs: 500 });
+      // That process holds the restore lock throughout.
+      const lockPath = await b.send({ kind: "restoreLock" }) as string;
+      await Deno.mkdir(dirname(lockPath), { recursive: true });
+      const lock = await Deno.open(lockPath, {
+        read: true,
+        write: true,
+        create: true,
+      });
+      await lock.lock(true);
+      try {
+        const refused = await assertRejects(() => read(b), MachineError);
+        assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+        assertStringIncludes(
+          refused.message,
+          "another swamp process is restoring this checkout's copy",
+        );
+      } finally {
+        await lock.unlock();
+        lock.close();
+      }
+      assertEquals((await read(b)).commits, 2);
     });
   },
 });
