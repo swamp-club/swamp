@@ -76,6 +76,7 @@ Deno.test("buildFindingsReport: an unaccepted finding becomes an unresolved warn
       message: "Line 9 uses Deno.Command() to spawn subprocesses.",
       remediation: "prefer primitives",
     }],
+    dependencyWarnings: [],
     reviewWarnings: [secret, review],
     acceptances: { accepted: [] },
     commentSites: OPEN,
@@ -111,6 +112,7 @@ Deno.test("buildFindingsReport: two sidecar findings give two entries for one ac
       line: 1,
       message: "IPv4 literal",
     })),
+    dependencyWarnings: [],
     reviewWarnings: [],
     acceptances: { accepted: [] },
     commentSites: OPEN,
@@ -129,6 +131,7 @@ Deno.test("buildFindingsReport: a collapsed testing-completeness finding expands
   const files = [join(DIR, "models", "b.ts"), join(DIR, "models", "c.ts")];
   const report = buildFindingsReport({
     safetyWarnings: [],
+    dependencyWarnings: [],
     reviewWarnings: [{
       ruleId: "testing-completeness",
       dimension: "Testing Completeness",
@@ -169,6 +172,7 @@ Deno.test("buildFindingsReport: declared acceptances are carried as given, and b
   const report = buildFindingsReport(
     {
       safetyWarnings: [],
+      dependencyWarnings: [],
       reviewWarnings: [],
       acceptances,
       commentSites: {},
@@ -178,6 +182,7 @@ Deno.test("buildFindingsReport: declared acceptances are carried as given, and b
   assertEquals(report, { declaredAcceptances: acceptances });
   const generatedOnly = buildFindingsReport({
     safetyWarnings: [],
+    dependencyWarnings: [],
     reviewWarnings: [],
     acceptances: {
       accepted: [],
@@ -190,6 +195,7 @@ Deno.test("buildFindingsReport: declared acceptances are carried as given, and b
     buildFindingsReport(
       {
         safetyWarnings: [],
+        dependencyWarnings: [],
         reviewWarnings: [],
         acceptances: { accepted: [] },
         commentSites: {},
@@ -210,6 +216,7 @@ Deno.test("buildFindingsReport: a finding on a line no comment can go above keep
       message: "Line 5 has a base64 run",
       remediation: "load it from a file",
     }],
+    dependencyWarnings: [],
     reviewWarnings: [],
     acceptances: { accepted: [] },
     commentSites: { [modelB]: { 4: "", 6: "" } },
@@ -342,5 +349,52 @@ Deno.test("renderFindingsReport: one line per option, quoting a sidecar file nam
     "    or accept on the line above: <!-- swamp-quality-ignore ipv4-address-literals -->",
     "  testing-completeness — models/b.ts: No sibling test",
     "    or accept at the top of the file: // swamp-quality-ignore testing-completeness",
+  ]);
+});
+
+Deno.test("buildFindingsReport: dependency warnings with a cause become unresolved warnings with their fix; advisories without a cause stay out", () => {
+  const report = buildFindingsReport({
+    safetyWarnings: [],
+    reviewWarnings: [],
+    dependencyWarnings: [{
+      dependency: "@std/assert",
+      message:
+        "version 0.225.0 was withdrawn (yanked) by its author on JSR. Newest version that isn't yanked: 0.225.3.",
+      cause: "jsr-yanked",
+      suggestedVersion: "0.225.3",
+      remediation:
+        "Pin jsr:@std/assert@0.225.3 (or the newest non-yanked version your code supports).",
+    }, {
+      dependency: "left-pad",
+      message: 'license "WTFPL" not in allowlist',
+    }],
+    acceptances: { accepted: [] },
+    commentSites: {},
+  }, DIR);
+  assertEquals(report.unresolvedWarnings, [{
+    ruleId: "jsr-yanked",
+    file: "(dependency)",
+    message:
+      "@std/assert: version 0.225.0 was withdrawn (yanked) by its author on JSR. Newest version that isn't yanked: 0.225.3.",
+    remediation:
+      "Pin jsr:@std/assert@0.225.3 (or the newest non-yanked version your code supports).",
+  }]);
+});
+
+Deno.test("renderFindingsReport: a dependency warning prints its fix and no acceptance line", () => {
+  const lines: string[] = [];
+  const logger = { info: (m: string) => lines.push(m) } as unknown as Logger;
+  renderFindingsReport(logger, {
+    unresolvedWarnings: [{
+      ruleId: "loose-specifier",
+      file: "(dependency)",
+      message: "express: npm:express@^4 is a range; audited 4.21.1",
+      remediation: "Pin the exact version this push resolved (4.21.1).",
+    }],
+  }, { manifestDir: DIR, display: (path) => path });
+  assertEquals(lines, [
+    "Unresolved warnings:",
+    "  loose-specifier — (dependency): express: npm:express@^4 is a range; audited 4.21.1",
+    "    fix: Pin the exact version this push resolved (4.21.1).",
   ]);
 });

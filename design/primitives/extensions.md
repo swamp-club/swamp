@@ -2001,6 +2001,15 @@ wording is pinned by
 swamp-club's scorecard (swamp-club#3353) copies. swamp-club#3354 makes
 deprecated pins and loose specifiers errors after a two-week window.
 
+Every finding with a cause carries a `remediation`, and `jsr-yanked` and
+`deprecated-version` findings carry a `suggestedVersion` when another stable
+version exists (the newest in the shipped version's major, or its minor for
+0.x, else the newest overall; yanked, deprecated and prerelease versions never
+qualify). When the lockfile chose the shipped version, the remediation also
+says to refresh it. The findings report that closes push, dry run and
+`extension quality` lists each of them under Unresolved warnings with
+`file` `(dependency)` and its remediation as the `fix:` line.
+
 ### Not audited
 
 A dependency whose npm registry, OSV.dev or JSR lookup fails (an error status,

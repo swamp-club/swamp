@@ -291,6 +291,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             {
               safetyWarnings: findings.safetyWarnings,
               reviewWarnings: findings.reviewRulesResult.warnings,
+              dependencyWarnings: dependencyTrustResult.warnings,
               acceptances: findings.acceptances,
               commentSites: findings.commentSites,
             },
@@ -436,6 +437,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
               {
                 safetyWarnings: findings.safetyWarnings,
                 reviewWarnings: findings.reviewRulesResult.warnings,
+                dependencyWarnings: dependencyTrustResult.warnings,
                 acceptances: findings.acceptances,
                 commentSites: findings.commentSites,
               },

@@ -846,6 +846,7 @@ export const extensionPushCommand = new Command()
         {
           safetyWarnings: prepared.safetyWarnings,
           reviewWarnings: prepared.reviewRulesResult.warnings,
+          dependencyWarnings: prepared.dependencyTrustResult.warnings,
           acceptances: prepared.acceptances,
           commentSites: prepared.commentSites,
         },

@@ -356,6 +356,7 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
     );
     const report = buildFindingsReport({
       safetyWarnings: first.safetyWarnings,
+      dependencyWarnings: [],
       reviewWarnings: first.reviewRulesResult.warnings,
       acceptances: first.acceptances,
       commentSites: first.commentSites,

@@ -26,6 +26,7 @@ import {
   type ShippedVersion,
   type ShippedVersionSource,
   specifierKind,
+  suggestVersion,
 } from "./dependency_version_resolution.ts";
 
 export { resolveAuditVersion };
@@ -54,6 +55,13 @@ export interface DependencyTrustIssue {
   message: string;
   /** Present on not-audited and the shipped-version findings only. */
   cause?: DependencyTrustCause;
+  /**
+   * The version to move to, on `jsr-yanked` and `deprecated-version`
+   * findings when another stable version exists.
+   */
+  suggestedVersion?: string;
+  /** How to resolve a finding that has a cause. */
+  remediation?: string;
 }
 
 export interface DependencyAuditSummary {
@@ -141,6 +149,8 @@ interface NpmPackageFacts {
   latestDeprecated?: boolean;
   /** npm's deprecation notice for the version that ships. */
   deprecationReason?: string;
+  /** The newest stable version that is not deprecated, when one exists. */
+  suggestedVersion?: string;
   maintainerCount: number;
   weeklyDownloads: number | null;
   lastPublish: string | null;
@@ -491,12 +501,25 @@ function factsFor(packument: NpmPackument, version: string): NpmPackageFacts {
   const latestNotice = deprecationOf(latest?.deprecated ?? pkg.deprecated);
   const notice = deprecationOf(shipped?.deprecated ?? pkg.deprecated);
   const maintainers = shipped?.maintainers ?? pkg.maintainers;
+  const suggestion = notice === null ? null : suggestVersion(
+    version,
+    packument.publishedVersions,
+    new Set(
+      packument.publishedVersions.filter((v) =>
+        deprecationOf(packument.manifests[v]?.deprecated ?? pkg.deprecated) !==
+          null
+      ),
+    ),
+  );
   return {
     version,
     license: licenseOf(shipped?.license ?? pkg.license),
     deprecated: notice !== null,
     latestDeprecated: latestNotice !== null,
     ...(notice ? { deprecationReason: sanitiseNotice(notice) } : {}),
+    ...(notice !== null && suggestion !== null
+      ? { suggestedVersion: suggestion }
+      : {}),
     maintainerCount: Array.isArray(maintainers) ? maintainers.length : 0,
     weeklyDownloads: packument.weeklyDownloads,
     lastPublish: packument.lastPublish,
@@ -602,6 +625,12 @@ export function evaluateNpmTrustGates(
         facts.deprecationReason ? `: ${facts.deprecationReason}` : ""
       }`,
       cause: "deprecated-version",
+      ...(facts.suggestedVersion
+        ? { suggestedVersion: facts.suggestedVersion }
+        : {}),
+      remediation: facts.suggestedVersion
+        ? `Move to ${facts.suggestedVersion}, the newest version that isn't deprecated.`
+        : "Move to a non-deprecated version of the package.",
     });
   }
 
@@ -656,6 +685,16 @@ function specifierText(spec: DependencySpecifier): string {
   }`;
 }
 
+/** What to add to a fix when the lockfile, not the source, chose the version. */
+function lockRefreshNote(
+  shipped: ShippedVersion,
+  lock: LockedDependencyVersions | undefined,
+): string {
+  return shipped.from === "lockfile" && lock
+    ? ` Then refresh ${lock.source} so it records the new version.`
+    : "";
+}
+
 /**
  * An unpinned, range or dist-tag specifier's finding, naming the version
  * this push resolves; null for an exact pin.
@@ -681,6 +720,8 @@ function looseSpecifierFinding(
       specifierText(spec)
     } is ${phrase}; audited ${shipped.version}, the version this push resolves${from}`,
     cause: "loose-specifier",
+    remediation:
+      `Pin the exact version this push resolved (${shipped.version}) to ensure that the audited version is the one that ships.`,
   };
 }
 
@@ -732,6 +773,7 @@ function notAudited(
       dependency: spec.name,
       message: `not audited: ${reason}`,
       cause: "not-audited",
+      remediation: "Re-run when OSV, npm and JSR are reachable.",
     }],
     summary: { ...summary, passed: false, cause: "not-audited", reason },
   };
@@ -819,6 +861,12 @@ async function auditNpmPackage(
       ? evaluateNpmTrustGates(name, facts, vulns, thresholds)
       : evaluateVulns(name, vulns);
     if (shipped) {
+      const note = lockRefreshNote(shipped, lock);
+      for (const w of warnings) {
+        if (w.cause === "deprecated-version" && w.remediation) {
+          w.remediation += note;
+        }
+      }
       const loose = looseSpecifierFinding(spec, shipped, lock);
       if (loose) warnings.push(loose);
     }
@@ -899,10 +947,25 @@ async function auditJsrPackage(
 
     const warnings: DependencyTrustIssue[] = [];
     if (meta.value.yanked.has(shipped.version)) {
+      const suggested = suggestVersion(
+        shipped.version,
+        meta.value.versions,
+        meta.value.yanked,
+      );
       warnings.push({
         dependency: name,
-        message: `version ${shipped.version} is yanked on JSR`,
+        message:
+          `version ${shipped.version} was withdrawn (yanked) by its author on JSR. ${
+            suggested
+              ? `Newest version that isn't yanked: ${suggested}.`
+              : "No other version is available."
+          }`,
         cause: "jsr-yanked",
+        ...(suggested ? { suggestedVersion: suggested } : {}),
+        remediation: (suggested
+          ? `Pin jsr:${name}@${suggested} (or the newest non-yanked version your code supports).`
+          : "Wait for the author to publish a replacement, or replace the dependency.") +
+          lockRefreshNote(shipped, lock),
       });
     }
     const loose = looseSpecifierFinding(spec, shipped, lock);
