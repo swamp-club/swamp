@@ -1090,6 +1090,11 @@ export async function* repairPreV3Records(
 
       try {
         const { destination, moved } = await deps.moveAside();
+        // Another process moved them since they were found.
+        if (moved.length === 0) {
+          yield { kind: "not_needed", swampDir: deps.swampDir };
+          return;
+        }
         yield {
           kind: "completed",
           data: { ...data, recordDirs: [...moved], destination },

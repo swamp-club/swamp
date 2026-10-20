@@ -1642,3 +1642,17 @@ Deno.test("repairPreV3Records: a move that fails says the moved directories stay
   assertStringIncludes(last.error.message, "run the repair again");
   assertStringIncludes(last.error.message, "a new directory");
 });
+
+Deno.test("repairPreV3Records: records gone by the time they would move are reported as nothing to do (swamp-club#3690)", async () => {
+  const events = await collect<RepairPreV3RecordsEvent>(
+    repairPreV3Records(
+      createLibSwampContext(),
+      preV3Deps(
+        ["data"],
+        () => Promise.resolve({ destination: "/x", moved: [] }),
+      ),
+      { confirm: true },
+    ),
+  );
+  assertEquals(events.at(-1), { kind: "not_needed", swampDir: "/repo/.swamp" });
+});

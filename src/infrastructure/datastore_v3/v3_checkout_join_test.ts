@@ -300,3 +300,20 @@ Deno.test("movePreV3CheckoutRecords: a namespace named like a record directory m
     await assertV3CheckoutJoinable(repoDir, "data");
   });
 });
+
+Deno.test("preV3CheckoutRecordDirs and movePreV3CheckoutRecords: a namespace that is no slug is refused before any path outside .swamp is walked or moved", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    // A record outside the repo that `../..` would reach.
+    await Deno.mkdir(join(dir, "data"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "data", "outside"), "not the repo's");
+    for (const namespace of ["../..", "a/b", "UPPER"]) {
+      await assertRejects(() => preV3CheckoutRecordDirs(repoDir, namespace));
+      await assertRejects(() => movePreV3CheckoutRecords(repoDir, namespace));
+    }
+    assertEquals(
+      await Deno.readTextFile(join(dir, "data", "outside")),
+      "not the repo's",
+    );
+  });
+});

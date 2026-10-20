@@ -4457,17 +4457,18 @@ v3 setup's check skips those files too.
   files no commit owns. Version listing and allocation read version
   directories on disk, so the checkouts would diverge for good.
 - **The repair.** `swamp doctor datastores --repair` previews, and `-y` moves
-  each record file into `.swamp/pre-v3-records/<UTC stamp>-<suffix>/`,
-  keeping its path relative to `.swamp/`. The checkout's own files stay where
-  they are. The repair then removes the directories the move emptied, because
-  version listing reads version directories on disk. The stamp has no character Windows refuses in a path, and the
-  suffix keeps runs apart. It also removes the v2 catalog. The next command
-  catches up from the datastore. `pre-v3-records` is not a datastore
-  directory, so the read model never writes or removes a file there. This is
-  not the swamp-club#3617 `at-risk/` directory: at-risk copies are tracked
-  rows retried against the datastore's chunks. The moved records are not in
-  the v3 datastore: bringing them in needs migrating records to v3 (Phase 6).
-  For every other v3 case, `--repair` stays refused.
+  each record file into `.swamp/pre-v3-records/<UTC stamp>-<suffix>/`, keeping
+  its path relative to `.swamp/`. The checkout's own files stay where they
+  are. The repair then removes the directories the move emptied, because
+  version listing reads version directories on disk. The stamp has no
+  character Windows refuses in a path, and the suffix keeps runs apart. It
+  also removes the v2 catalog. The next command catches up from the datastore.
+  `pre-v3-records` is not a datastore directory, so the read model never
+  writes or removes a file there. This is not the swamp-club#3617 `at-risk/`
+  directory: at-risk copies are tracked rows retried against the datastore's
+  chunks. The moved records are not in the v3 datastore: bringing them in
+  needs migrating records to v3 (Phase 6). For every other v3 case, `--repair`
+  stays refused.
 - **Known limit.** A checkout that already has v3 state, is switched back to
   a v2 `.swamp.yaml`, writes records, and then returns to v3 is not checked
   again. The check is for the first open only, so that later opens cost

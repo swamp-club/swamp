@@ -34,6 +34,7 @@
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import { CATALOG_FILES } from "../../domain/datastore/datastore_config.ts";
+import { restoreNamespace } from "../../domain/data/namespace.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   checkoutRecordSubdirs,
@@ -112,6 +113,9 @@ function recordRoots(
   repoDir: string,
   namespace?: string,
 ): { readonly dir: string; readonly prefix: string }[] {
+  // The namespace comes from .swamp.yaml: one that is no namespace slug
+  // (`../..`, a path) is refused before it names a path to walk or move.
+  if (namespace) restoreNamespace(namespace);
   return [
     { dir: swampPath(repoDir), prefix: "" },
     ...(namespace
