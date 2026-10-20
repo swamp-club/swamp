@@ -27,6 +27,7 @@ import {
   groupKeys,
   groupValue,
   groupWorkers,
+  hostMapDrawMode,
   isEligible,
   isVisible,
   OUTCOME_MS,
@@ -226,4 +227,11 @@ Deno.test("workerSummary: busy, idle, and connected workers that cannot take wor
     ]),
     { busy: 1, idle: 1, unavailable: 2 },
   );
+});
+
+Deno.test("hostMapDrawMode: skips while hidden, snaps once back, animates otherwise", () => {
+  assertEquals(hostMapDrawMode({ hidden: true, skipped: false }), "skip");
+  assertEquals(hostMapDrawMode({ hidden: true, skipped: true }), "skip");
+  assertEquals(hostMapDrawMode({ hidden: false, skipped: true }), "snap");
+  assertEquals(hostMapDrawMode({ hidden: false, skipped: false }), "animate");
 });

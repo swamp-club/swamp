@@ -139,6 +139,22 @@ export function assignSlots(
   return slots;
 }
 
+/**
+ * How the host map draws a render. `skip` while the tab is hidden: browsers
+ * pause animation frames there, so a transition scheduled then never starts
+ * and is never freed (swamp-club#3660). `snap` on the first draw after a
+ * skipped one: straight to the current layout, without replaying what
+ * changed while hidden. `animate` otherwise.
+ */
+export type HostMapDrawMode = "skip" | "snap" | "animate";
+
+export function hostMapDrawMode(
+  { hidden, skipped }: { hidden: boolean; skipped: boolean },
+): HostMapDrawMode {
+  if (hidden) return "skip";
+  return skipped ? "snap" : "animate";
+}
+
 /** Workers that count as up: connected and able to take work. */
 export function isUp(worker: FleetWorker): boolean {
   return worker.status === "idle" || worker.status === "busy";

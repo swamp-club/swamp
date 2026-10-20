@@ -22,6 +22,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream.ts";
 import { useFleetData } from "../client/useFleetData.ts";
+import { useTabVisible } from "../client/run_activity.ts";
 import {
   clampTtlMinutes,
   formatTtl,
@@ -125,11 +126,15 @@ export function Workers(
 
   const fleet = useFleetData(health?.workers, ttlMinutes);
   const ttlMs = ttlMinutes * 60_000;
+  const tabVisible = useTabVisible();
 
+  // The clock stops while the tab is hidden and catches up on return.
   useEffect(() => {
+    if (!tabVisible) return;
+    setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(timer);
-  }, []);
+  }, [tabVisible]);
 
   // Slots keep their dispatch across refreshes; ended leases show briefly.
   const slotsRef = useRef(new Map<string, Slot[]>());
@@ -363,6 +368,7 @@ export function Workers(
               selectedName={selectedName}
               onSelect={setSelectedName}
               label={`Workers grouped by ${groupLabel(activeGroupBy)}`}
+              hidden={!tabVisible}
             />
           </div>
           {selected && (
