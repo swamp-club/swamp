@@ -290,6 +290,27 @@ Deno.test("buildAttestation: gate counts and passes when nothing failed", () => 
   });
 });
 
+Deno.test("buildAttestation: records Codex from the evaluated review shell", () => {
+  const runs = sources();
+  runs[1].definition = {
+    jobs: [{
+      name: "reviews",
+      steps: [{
+        name: "code-review",
+        task: {
+          modelName: "review-code-run-reviews",
+          inputs: { run: "codex exec --model gpt-6-astra --sandbox read-only" },
+        },
+      }],
+    }],
+  };
+  const doc = buildAttestation(runs, env());
+  assertEquals(
+    (doc.reviewConfig as Record<string, unknown>)["code-review"],
+    { model: "gpt-6-astra", ran: true, reason: undefined },
+  );
+});
+
 Deno.test("buildAttestation: a failed step fails the gate and keeps its error", () => {
   const failing = sources();
   failing[0].run.jobs[1].steps[0] = {

@@ -413,8 +413,8 @@ export function describeSkip(reason: SkipReason | undefined): string {
 }
 
 /**
- * The model name each step ran under, from the workflow definition at the
- * verified commit with `${{ run.id }}` substituted.
+ * The model name each step ran under, from the provenance-checked evaluated
+ * workflow with any remaining `${{ run.id }}` substituted.
  *
  * The run record does not carry it. Reconstructing it from the definition ties
  * the name in the attestation to the file whose hash the attestation also
@@ -440,9 +440,9 @@ export function modelNames(
 }
 
 /**
- * The claude model each review was invoked with, read out of the review step's
- * own shell at the verified commit. Recorded so the attestation says which
- * reviewer produced the verdict, not merely that a review ran.
+ * The reviewer model each review was invoked with, read out of the evaluated
+ * review step's shell after checking it against the committed definition.
+ * This records the selected model when the workflow chooses it from inputs.
  */
 export function reviewModels(workflow: WorkflowDef): Map<string, string> {
   const models = new Map<string, string>();
@@ -456,7 +456,7 @@ export function reviewModels(workflow: WorkflowDef): Map<string, string> {
 
 // -- Attestation ------------------------------------------------------------
 
-/** A verification workflow's run paired with its definition at the commit. */
+/** A verification run paired with its provenance-checked evaluated definition. */
 export interface RunSource {
   key: string;
   name: string;
@@ -1238,7 +1238,7 @@ async function main(): Promise<number> {
       return 1;
     }
 
-    sources.push({ ...source, definition: definition as WorkflowDef });
+    sources.push({ ...source, definition: evaluated as WorkflowDef });
   }
 
   const configIntegrity: Record<string, unknown> = {};

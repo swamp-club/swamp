@@ -457,7 +457,7 @@ export const AttestationSchema = z.object({
     z.string(),
     z.object({
       model: z.string().optional().describe(
-        "The claude model the review was invoked with.",
+        "The reviewer model the review was invoked with.",
       ),
       ran: z.boolean(),
       reason: z.string().optional().describe(

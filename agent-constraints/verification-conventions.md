@@ -23,11 +23,11 @@ lint, test, and compile failures are reported accurately.
 
 ## Agent Reviews (Host Workflow)
 
-Reviews run as a swamp workflow on the host (not in a container) so the claude
+Reviews run as a swamp workflow on the host (not in a container) so the reviewer
 CLI has full project context — CLAUDE.md, skills, and the codebase. Like the
 build workflow, reviews run in a fresh `git worktree` at the verified commit
-(`/tmp/swamp-verify-reviews-<run-id>`) so that `claude -p`'s Read/Glob/Grep
-tools see the committed file state, not the caller's working tree.
+(`/tmp/swamp-verify-reviews-<run-id>`) so the reviewer's tools see the committed
+file state, not the caller's working tree.
 
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
@@ -35,14 +35,21 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
   --input branch=<branch>
 ```
 
+The default reviewer is Claude (`claude-opus-5-5`). Select Codex (`gpt-6-astra`)
+with `--input reviewer=codex`. Codex runs with a read-only sandbox and approvals
+disabled; its final response file is checked by the same verdict script as
+Claude's output. A provider failure or missing verdict fails the step. The
+attestation records the selected model from the evaluated workflow after
+checking that workflow against the committed definition.
+
 The workflow:
 
 1. Creates a clean worktree at the verified commit
 2. Detects changed files via `@swamp/git` diff (full diff, then `nameOnly` for
    the file list used by guards)
 3. Runs applicable reviews in parallel using `command/shell` steps that invoke
-   `claude -p` with the review prompt + diff, with `workingDir` set to the
-   worktree
+   the selected reviewer with the review prompt + diff, with `workingDir` set
+   to the worktree
 4. Each review uses the factory pattern — one `reviewer` model, called once per
    review type with different prompt files and models
 5. Review diffs use `git merge-base origin/main HEAD` so only the branch's own
@@ -55,7 +62,7 @@ The workflow:
 
 Reviews are guarded by file path — they skip when no relevant files changed:
 
-| Review | Guard (run when any match) | Model |
+| Review | Guard (run when any match) | Default model |
 | --- | --- | --- |
 | code-review | always | claude-opus-5-5 |
 | adversarial-review | `src/cli/`, `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-5-5 |
@@ -89,12 +96,17 @@ against a branch you know touches the guarded paths and check the step status is
 
 ### Authentication
 
-The claude CLI authenticates via one of two methods:
+The Claude CLI authenticates via one of two methods:
 
 1. **`~/.config/swamp/verify.env`** — if this file exists with
    `ANTHROPIC_API_KEY=sk-ant-...`, export it before running the workflow.
 2. **claude.ai login** — if no env file exists, the CLI uses your existing
    claude.ai login. No additional setup needed.
+
+For `reviewer=codex`, install and authenticate the Codex CLI before launching
+the workflow. Provider session limits fail the review; select an available
+reviewer and start a new `verify-reviews` run for the same commit instead of
+reusing a failed result.
 
 The skill verification workflow also needs:
 
