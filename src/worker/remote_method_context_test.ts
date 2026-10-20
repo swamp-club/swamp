@@ -33,7 +33,11 @@ import {
 import { definitionFromExecution } from "./exec_dispatch.ts";
 import { z } from "zod";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
-import type { MethodDefinition } from "../domain/models/model.ts";
+import type {
+  MethodDefinition,
+  ResourceOutputSpec,
+} from "../domain/models/model.ts";
+import { ResourceSensitiveFieldsInvalidError } from "../domain/vaults/secret_reference_errors.ts";
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
   type DispatchParams,
@@ -82,6 +86,7 @@ function harness(
   overrideDispatch?: DispatchParams,
   onEvent?: (event: Record<string, unknown>) => void,
   dataTags?: Record<string, string>,
+  resourceSpecs?: Record<string, ResourceOutputSpec>,
 ) {
   const calls: StubCall[] = [];
   // The orchestrator side of the control socket, with stub verb handlers.
@@ -235,6 +240,7 @@ function harness(
     dispatch: overrideDispatch ?? dispatch(),
     scratchDir,
     extensionFilesDir,
+    resourceSpecs,
     signal: new AbortController().signal,
     onEvent,
   });
@@ -306,6 +312,82 @@ Deno.test("remote context: readResource resolves vault references in sensitive f
       secretKey: "refresh-tok",
     });
   });
+});
+
+/** The bundle's view of `state-main`: `refreshToken` is schema-sensitive. */
+const STATE_SPECS: Record<string, ResourceOutputSpec> = {
+  state: {
+    description: "a resource with one schema-sensitive field",
+    schema: z.object({
+      username: z.string(),
+      refreshToken: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  },
+};
+
+const UNTAGGED_STATE = {
+  username: "alice",
+  refreshToken: "${{ vault.get('my-vault', 'refresh-tok') }}",
+};
+
+Deno.test("remote context: readResource resolves an untagged record from the bundle's resource schema (swamp-club#3530)", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(
+      dir,
+      undefined,
+      UNTAGGED_STATE,
+      undefined,
+      undefined,
+      { specName: "state" },
+      STATE_SPECS,
+    );
+    const value = await h.context.readResource!("state-main");
+    assertEquals(value, { username: "alice", refreshToken: "s3cret" });
+    assertEquals(
+      h.calls.filter((c) => c.method === "resolveSecret").map((c) => c.params),
+      [{ vaultName: "my-vault", secretKey: "refresh-tok" }],
+    );
+  });
+});
+
+Deno.test("remote context: readResource leaves an untagged record unresolved without resource specs", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(
+      dir,
+      undefined,
+      UNTAGGED_STATE,
+      undefined,
+      undefined,
+      { specName: "state" },
+    );
+    assertEquals(await h.context.readResource!("state-main"), UNTAGGED_STATE);
+    assertEquals(h.calls.filter((c) => c.method === "resolveSecret"), []);
+  });
+});
+
+Deno.test("remote context: readResource refuses a malformed sensitive-fields tag before any vault read (swamp-club#3530)", async () => {
+  for (const malformed of ['["refreshToken"', "[1,2]"]) {
+    await withScratch(async (dir) => {
+      const h = harness(
+        dir,
+        undefined,
+        UNTAGGED_STATE,
+        undefined,
+        undefined,
+        { specName: "state", "_swamp.sensitiveFields": malformed },
+        STATE_SPECS,
+      );
+      const error = await assertRejects(
+        () => h.context.readResource!("state-main"),
+        ResourceSensitiveFieldsInvalidError,
+        "state-main",
+      );
+      assertEquals(error.code, "secret_reference_invalid", malformed);
+      assertEquals(h.calls.filter((c) => c.method === "resolveSecret"), []);
+    });
+  }
 });
 
 Deno.test("remote context: readResource returns null for missing data", async () => {

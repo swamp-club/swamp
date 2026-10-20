@@ -770,8 +770,11 @@ registry (`DataReferenceEntry`, `VaultSecretBag.addDataReference`), which
 outputs and `model.method` results are Phases 4 and 3.5.
 
 Extension `readResource` is a trusted plaintext API. It keeps resolving tagged
-fields, including the legacy resource-schema fallback for untagged records.
-Expression-facing accessors add no fallback. The accessors live in
+fields, including the resource-schema fallback for untagged records, on both
+executors: the worker builds the same reader with the verified bundle's specs,
+and a malformed present tag already fails it with `secret_reference_invalid`
+(swamp-club#3530). Expression-facing accessors add no fallback. The accessors
+live in
 `src/domain/expressions/model_resolver.ts`,
 `src/domain/data/data_record_mapper.ts` and
 `src/domain/workflows/step_output_resolver.ts`.
@@ -950,7 +953,8 @@ Phase 5 removes plaintext from dispatch:
   turns the allowlist off, and a workflow step's references reach serve
   unresolved. This resolves swamp-club#3529.
 - `readResource` keeps its own authorization and uses the same route for tagged
-  fields.
+  fields, and for the fields the resource-schema fallback names for an untagged
+  record, from the verified bundle's definition (swamp-club#3530).
 
 Redaction stays after the trusted boundary. Worker result errors are already
 scrubbed on both hops, by the runner before the result frame and by serve
@@ -976,7 +980,7 @@ delivery instead of an expression.
 | A secret in a task selector, placement value, path, `workingDir`, environment key, or `model.method` model or method name | Used as plaintext                                             | `secret_destination_refused`                                                      |
 | A guard or assert predicate whose result holds a secret                                                                   | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
 | A data-origin value in a quoted here-document or in PowerShell single quotes                                              | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
-| A malformed sensitive-fields tag or stored reference                                                                      | Treated as absent, or left as text                            | `secret_reference_invalid`                                                        |
+| A malformed sensitive-fields tag or stored reference                                                                      | Treated as absent by the accessors, or left as text; `readResource` already refuses the tag (swamp-club#3530) | `secret_reference_invalid`                                                        |
 | An own-namespace tagged field read by `data.version`, `findBySpec`, `findByTag`, a wildcard `data.latest` or `model.<name>.resource` | The stored reference text                                     | A `Secret`, as `data.latest` returns it                                           |
 | A tagged field the run's vault access refuses, in any record those readers return, including a set read where the expression uses another record | The reference text is returned                                | The evaluation fails with the access error, before its result is used            |
 | `in`, or `==` or `!=` with no scalar-literal or `null` operand, in an expression that reads a secret                      | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
@@ -1308,7 +1312,7 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Method boundary and checks                    | `src/domain/models/method_execution_service.ts`, `method_context.ts`, `model.ts`                                                                                                                                                                                                                                                                                      |
 | Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts`, `src/domain/workflows/trigger_input_resolver.ts`                                                                                                                                                                                                                                                                     |
 | Workflow execution and forEach                | `src/domain/workflows/execution_service.ts`, `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts`                                                                                                                                                                                                                                                    |
-| Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`                                                                                                                                                                                                                                    |
+| Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |
 

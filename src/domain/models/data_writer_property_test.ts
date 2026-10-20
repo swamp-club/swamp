@@ -20,7 +20,13 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { z } from "zod";
-import { createResourceWriter, SENSITIVE_FIELDS_TAG } from "./data_writer.ts";
+import {
+  createResourceWriter,
+  getSensitiveFieldsForResolution,
+  parseSensitiveFieldsTag,
+  SENSITIVE_FIELDS_TAG,
+} from "./data_writer.ts";
+import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
 import { isReservedTagKey } from "../data/data.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
@@ -246,5 +252,54 @@ Deno.test("createResourceWriter: a user-supplied reserved tag is always refused,
         assertEquals(reserved, drawn.sensitive ? [SENSITIVE_FIELDS_TAG] : []);
       },
     ),
+  );
+});
+
+/** Dot-paths as the vaulting step writes them into the tag. */
+const arbFieldPaths = fc.array(
+  fc.stringMatching(/^[a-z]{1,6}(?:\.[a-z]{1,6}){0,2}$/),
+  { maxLength: 4 },
+);
+
+Deno.test("sensitive-fields tag: a JSON array of paths round-trips through both parses, and the strict reading refuses every tag the lenient parse reads as absent", () => {
+  const specs = { creds: spec };
+
+  fc.assert(
+    fc.property(arbFieldPaths, (paths) => {
+      const tags = {
+        specName: "creds",
+        [SENSITIVE_FIELDS_TAG]: JSON.stringify(paths),
+      };
+      assertEquals(parseSensitiveFieldsTag(tags), paths);
+      // A present tag wins: the schema's own paths are never consulted.
+      assertEquals(
+        getSensitiveFieldsForResolution(tags, specs, "inst"),
+        paths,
+      );
+    }),
+  );
+
+  // For every tag text: a tag the lenient parse reads as absent is one the
+  // strict reading refuses, and whenever the strict reading accepts a tag it
+  // returns what the lenient parse does. The strict reading also refuses
+  // tags the lenient parse accepts (an empty or unsafe path segment).
+  fc.assert(
+    fc.property(fc.string(), (raw) => {
+      const tags = { specName: "creds", [SENSITIVE_FIELDS_TAG]: raw };
+      const lenient = parseSensitiveFieldsTag(tags);
+      let strict: string[] | "*" | null | undefined;
+      let refused = false;
+      try {
+        strict = getSensitiveFieldsForResolution(tags, specs, "inst");
+      } catch (error) {
+        assert(error instanceof ResourceSensitiveFieldsInvalidError, raw);
+        refused = true;
+      }
+      if (lenient === null) {
+        assert(refused, raw);
+      } else if (!refused) {
+        assertEquals(strict, lenient, raw);
+      }
+    }),
   );
 });

@@ -24,9 +24,10 @@
  * bridge (runner channel → supervisor bridge → serve CapabilityService, with
  * the dispatch registry wired as `swamp serve` wires it) and a real
  * DataPlaneClient holding a per-dispatch credential against the harness's
- * port-0 data plane. Pins how serve authorizes the read, what the remote
- * reader does with an untagged legacy record (next to the local reader), and
- * how a malformed sensitive-fields tag is treated.
+ * port-0 data plane. Pins how serve authorizes the read, and that the remote
+ * reader, fed the verified bundle's resource specs as exec_dispatch feeds it,
+ * reads an untagged record and a malformed sensitive-fields tag exactly as
+ * the local reader does (swamp-club#3530).
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
@@ -41,6 +42,7 @@ import {
   SENSITIVE_FIELDS_TAG,
 } from "../src/domain/models/data_writer.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
+import { ResourceSensitiveFieldsInvalidError } from "../src/domain/vaults/secret_reference_errors.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import { extractVaultReferences } from "../src/domain/expressions/vault_reference_extractor.ts";
 import type { VaultExtractionResult } from "../src/domain/expressions/vault_reference_extractor.ts";
@@ -214,6 +216,7 @@ async function withFixture(
         client,
         dispatch,
         scratchDir: dir,
+        resourceSpecs: RESOURCE_SPECS,
         signal: abort.signal,
       });
       await fn({
@@ -356,31 +359,30 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: readResource: an untagged legacy record is not resolved remotely, while the local reader resolves it from the schema",
+    "remote secrets baseline: readResource: an untagged record resolves from the resource schema remotely as locally (swamp-club#3530)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const key = `rr-legacy-${crypto.randomUUID()}`;
-    const secret = canary("rr-legacy");
-    // No allowlist at all, so a resolveSecret the remote reader issued would
-    // succeed: the raw reference coming back means it issued none.
+    const key = `rr-untagged-${crypto.randomUUID()}`;
+    const secret = canary("rr-untagged");
+    // No allowlist at all, so the resolveSecret the remote reader issues for
+    // the schema-sensitive field is allowed. Under a dispatch's default empty
+    // allowlist serve refuses it (swamp-club#3529), as for a tagged field: the
+    // read then fails loudly where, before swamp-club#3530, it returned the
+    // raw reference text.
     await withFixture(async (f) => {
       await f.o.putSecret(key, secret);
-      await seedResource(f.o, f.typeA, f.modelIdA, "legacy", {
+      await seedResource(f.o, f.typeA, f.modelIdA, "untagged", {
         password: vaultRef(key),
         note: "n",
       });
 
-      // Suspected functional bug (swamp-club#3530):
-      // the remote reader has only the sensitive-fields tag and no resource
-      // schema fallback, so an untagged record's vault reference is
-      // returned unresolved.
-      assertEquals(await f.context.readResource!("legacy"), {
-        password: vaultRef(key),
+      // Both readers fall back to the resource schema and resolve it.
+      assertEquals(await f.context.readResource!("untagged"), {
+        password: secret,
         note: "n",
       });
-      // The local reader falls back to the resource schema and resolves it.
-      assertEquals(await readLocally(f, "legacy"), {
+      assertEquals(await readLocally(f, "untagged"), {
         password: secret,
         note: "n",
       });
@@ -390,7 +392,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: readResource: a malformed sensitive-fields tag is treated as absent",
+    "remote secrets baseline: readResource: a malformed sensitive-fields tag fails the read on both executors (swamp-club#3530)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -404,20 +406,22 @@ Deno.test({
           note: "n",
         }, { [SENSITIVE_FIELDS_TAG]: malformed });
 
-        // Remote: no error and no resolution (no allowlist is in force, so
-        // a resolveSecret would have succeeded). Typed-secrets §9 requires
-        // a malformed present tag to fail instead.
-        assertEquals(
-          await f.context.readResource!("malformed"),
-          { password: vaultRef(key), note: "n" },
-          malformed,
-        );
-        // Local: the malformed tag falls through to the schema fallback.
-        assertEquals(
-          await readLocally(f, "malformed"),
-          { password: secret, note: "n" },
-          malformed,
-        );
+        // A present tag that is not the vaulting step's is refused rather
+        // than read as absent, on both executors, with the refusal naming
+        // the record (typed-secrets Section 6.1).
+        for (
+          const read of [
+            () => f.context.readResource!("malformed"),
+            () => readLocally(f, "malformed"),
+          ]
+        ) {
+          const error = await assertRejects(
+            read,
+            ResourceSensitiveFieldsInvalidError,
+            "malformed",
+          );
+          assertEquals(error.code, "secret_reference_invalid", malformed);
+        }
       }, null);
     }
   },

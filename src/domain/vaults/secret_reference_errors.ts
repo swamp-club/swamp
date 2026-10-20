@@ -42,6 +42,25 @@ export class SecretReferenceUnavailableError extends UserError {
 }
 
 /**
+ * `readResource` refused a stored record whose sensitive-fields tag the
+ * writer could not have produced (`SensitiveFieldsTagInvalidError`, the
+ * strict reading in `src/domain/models/data_writer.ts`), rather than guess
+ * which fields hold references (design/enablers/typed-secrets.md Section
+ * 6.1). The message names the record and repeats the reading's reason, which
+ * never includes the tag's text.
+ */
+export class ResourceSensitiveFieldsInvalidError extends UserError {
+  constructor(readonly instanceName: string, cause: Error) {
+    super(
+      `Failed to read sensitive fields of resource '${instanceName}': ${cause.message}`,
+      "secret_reference_invalid",
+    );
+    this.name = "ResourceSensitiveFieldsInvalidError";
+    this.cause = cause;
+  }
+}
+
+/**
  * The error a vault reference fails with, `context` saying which reference
  * and where it is written (`<what failed> (at <path>)`): a refusal by the
  * run's vault access keeps its `vault_access_denied` code, and any other

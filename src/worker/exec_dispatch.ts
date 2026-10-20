@@ -206,6 +206,7 @@ export async function runDispatchRunner(
       dispatch,
       scratchDir,
       extensionFilesDir: filesDir ?? modelDef.extensionFilesRoot,
+      resourceSpecs: modelDef.resources,
       signal,
       onEvent: (event) => {
         channel.call("runner.event", { event: { ...event } }, {
