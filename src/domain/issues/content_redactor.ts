@@ -258,17 +258,12 @@ const CONNECTION_STRING_RE =
 // longer dotted run.
 const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 
-// IPv6 candidates, in one pattern so placeholders number in text order: the
-// full form (exactly eight groups), a run holding one "::" (validated by
-// isCompressedIpv6), and the MAC shape (six two-hex groups), which the old
-// loose pattern redacted as an address. Any other colon run, such as a
-// fast-check replay path (992:3:11:17:17:12) or a timestamp, is not an address.
-// The lookarounds refuse a match that starts or ends inside a longer colon
-// run, while still allowing a label colon before it (remote_addr:<addr>; a
-// colon is refused only after a word that could itself be a group) and a
-// message colon after it (<addr>: no route).
-const IPV6_RE =
-  /(?<![0-9A-Za-z])(?<!(?<![0-9A-Za-z_])[0-9A-Fa-f]{1,4}:)(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?|(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})(?![0-9A-Za-z]|:[0-9A-Za-z:])/g;
+// IPv6 candidates: every run of hex groups joined by two or more colons. The
+// run is taken whole and judged by isAddressLikeColonRun, so an address is
+// redacted whatever text touches it (remote_addr:<addr>, <addr>: no route,
+// <addr>:8080) while a run that cannot hold one (a fast-check replay path such
+// as 992:3:11:17:17:12, a timestamp) is kept.
+const IPV6_RE = /(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4}/g;
 
 // Home directory paths with usernames — captures the prefix and username
 // separately so we can reconstruct positionally.
@@ -334,13 +329,24 @@ function isSafeIpv6(ip: string): boolean {
   return false;
 }
 
-// A "::" run is an address only when it names at least one and at most seven
-// groups, since "::" stands for one or more zero groups out of eight.
-function isCompressedIpv6(s: string): boolean {
-  const sides = s.split("::");
-  if (sides.length !== 2) return false;
-  const groups = sides.flatMap((side) => side === "" ? [] : side.split(":"));
-  return groups.length >= 1 && groups.length <= 7;
+// A colon run can hold an address when it has a "::", eight or more groups
+// (an address with a port or a label group either side), or six consecutive
+// two-hex groups (a MAC). Anything else, such as fewer than eight groups of
+// mixed widths with no "::", can hold none. A run of one or two groups ending
+// in "::" that a word follows (f::new) is a code path.
+function isAddressLikeColonRun(run: string, gluedToWord: boolean): boolean {
+  const groups = run.split(":").filter((group) => group !== "");
+  if (groups.length === 0) return false;
+  if (groups.length >= 8) return true;
+  if (run.includes("::")) {
+    return !(gluedToWord && run.endsWith("::") && groups.length < 3);
+  }
+  let twoHexRun = 0;
+  for (const group of groups) {
+    twoHexRun = group.length === 2 ? twoHexRun + 1 : 0;
+    if (twoHexRun === 6) return true;
+  }
+  return false;
 }
 
 // The hash labels above, in their joined form (sha512-<hash>), for the generic
@@ -874,12 +880,21 @@ function applyRedactions(
   );
 
   // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
-  result = result.replace(IPV6_RE, (match) => {
-    if (match.includes("::") && !isCompressedIpv6(match)) return match;
-    if (isSafeIpv6(match)) return match;
-    count("IP address");
-    return placeholders.get("IP", match);
-  });
+  result = result.replace(
+    IPV6_RE,
+    (match: string, offset: number, source: string) => {
+      // One colon at either end is a label or message colon, not part of
+      // the run: remote_addr:<addr>, <addr>: no route.
+      const lead = /^(?::(?!:)|:::)/.test(match) ? ":" : "";
+      const trail = /(?:[^:]:|:::)$/.test(match) ? ":" : "";
+      const run = match.slice(lead.length, match.length - trail.length);
+      const glued = /[A-Za-z0-9_]/.test(source[offset + match.length] ?? "");
+      if (!isAddressLikeColonRun(run, glued)) return match;
+      if (isSafeIpv6(run)) return match;
+      count("IP address");
+      return `${lead}${placeholders.get("IP", run)}${trail}`;
+    },
+  );
 
   // 13. IPv4 (the regex requires exactly 4 octets, so 3-segment version
   //     strings like "1.23.4" never match — no version guard needed)

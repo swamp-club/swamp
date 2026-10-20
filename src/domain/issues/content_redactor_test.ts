@@ -1072,7 +1072,7 @@ Deno.test("redactIssueContent: a fast-check replay path is not an IP address", (
       "fast-check reported seed -1781746823, path 992:3:11:17:17:12, endOnFailure true",
       'path: "3:1:0:0:2:1"',
       "groups 1:2:3:4:5:6:7",
-      "too long 1:2:3:4:5:6:7:8:9",
+      "code Self::new and f::new",
     ]
   ) {
     const result = redactIssueContent(input);
@@ -1119,6 +1119,9 @@ Deno.test("redactIssueContent: an address next to a label colon or a message col
       ["connect 2001:db8::1: refused", "connect [IP-1]: refused"],
       ["ipv6:2001:db8::5 up", "ipv6:[IP-1] up"],
       ["id:2001:db8::5 up", "id:[IP-1] up"],
+      ["dial 2001:db8:85a3:0:0:8a2e:370:7334:8080", "dial [IP-1]"],
+      ["mac aa:bb:cc:dd:ee:ff:8080 up", "mac [IP-1] up"],
+      ["addr 2001:db8::1x up", "addr [IP-1]x up"],
     ]
   ) {
     assertEquals(redactIssueContent(input).text, expected, input);

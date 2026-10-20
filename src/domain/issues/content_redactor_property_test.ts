@@ -253,7 +253,7 @@ Deno.test("redactIssueContent: a colon run that is not an address survives", () 
   fc.assert(
     fc.property(
       fc.array(arbHexGroup, { minLength: 3, maxLength: 7 }).filter((groups) =>
-        !(groups.length === 6 && groups.every((g) => g.length === 2))
+        !groups.join(":").match(/(?:^|:)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}(?::|$)/)
       ),
       arbBefore,
       arbAfter,
