@@ -2100,7 +2100,7 @@ Deno.test(
       assertEquals(warnings.length, 1);
       assertStringIncludes(
         warnings[0],
-        relative(repoDir, join(under, "inner.txt")),
+        lockPath(repoDir, join(under, "inner.txt")),
       );
     });
   },
@@ -2141,10 +2141,10 @@ Deno.test(
       });
       assertEquals(await installedTree(repoDir), freshTree);
       assertEquals(warnings.length, 1);
-      assertStringIncludes(warnings[0], relative(repoDir, extra));
+      assertStringIncludes(warnings[0], lockPath(repoDir, extra));
       assertStringIncludes(
         warnings[0],
-        relative(repoDir, join(extRoot, "models", "new_only.ts")),
+        lockPath(repoDir, join(extRoot, "models", "new_only.ts")),
       );
     });
   },
@@ -2340,7 +2340,7 @@ Deno.test(
       assertEquals(await readTree(target), targetBefore);
       assertEquals(result?.pruned, []);
       assertEquals(warnings.length, 1);
-      assertStringIncludes(warnings[0], relative(repoDir, extRoot));
+      assertStringIncludes(warnings[0], lockPath(repoDir, extRoot));
       assertStringIncludes(warnings[0], target);
     });
   },
@@ -3402,7 +3402,7 @@ Deno.test(
       );
       assertStringIncludes(
         error.message,
-        relative(repoDir, join(root, "lib", "cmp.ts")),
+        lockPath(repoDir, join(root, "lib", "cmp.ts")),
       );
     });
   },
@@ -3443,7 +3443,7 @@ Deno.test(
       );
       assertStringIncludes(
         error.message,
-        relative(repoDir, join(root, "lib", "cmp.ts")),
+        lockPath(repoDir, join(root, "lib", "cmp.ts")),
       );
     });
   },

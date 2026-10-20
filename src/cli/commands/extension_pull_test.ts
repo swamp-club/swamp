@@ -159,8 +159,9 @@ Deno.test("detectConflicts uses nested path for bundles, not basename", async ()
       repoDir,
     );
 
-    // Should detect the conflict at the nested path, not the flat basename
-    assertEquals(conflicts, [join(".swamp", "bundles", "k8s", "netpol.js")]);
+    // Should detect the conflict at the nested path, not the flat basename,
+    // in the lockfile's / form on every OS
+    assertEquals(conflicts, [".swamp/bundles/k8s/netpol.js"]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
