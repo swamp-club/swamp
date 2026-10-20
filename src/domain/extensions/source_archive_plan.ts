@@ -438,8 +438,8 @@ const REWRITABLE_TARGET_RE = /^(?:npm|jsr|node|https?):/;
 const UNSAFE_TARGET_RE = /["'`\\\r\n\u2028\u2029]|\$\{/;
 
 /**
- * The offsets of the string literals Babel parses as the module specifier
- * of an import: a static import or `export ... from`, a dynamic `import()`
+ * The offsets, with their values, of the string literals Babel parses as
+ * the module specifier of an import: a static import or `export ... from`, a dynamic `import()`
  * and a `typeof import()` type. Undefined when `source` does not parse. The
  * token scanner cannot tell a regex literal from a string, so only a span
  * the parser confirms is rewritten (swamp-club#3637).
@@ -447,16 +447,16 @@ const UNSAFE_TARGET_RE = /["'`\\\r\n\u2028\u2029]|\$\{/;
 function importSourceOffsets(
   source: string,
   jsx: boolean,
-): Set<number> | undefined {
+): Map<number, string> | undefined {
   const program = parseExtensionSource(source, { jsx });
   if (!program) return undefined;
-  const offsets = new Set<number>();
+  const offsets = new Map<number, string>();
   const add = (node: unknown) => {
     if (
       isNode(node) && node.type === "StringLiteral" &&
-      typeof node.start === "number"
+      typeof node.start === "number" && typeof node.value === "string"
     ) {
-      offsets.add(node.start);
+      offsets.set(node.start, node.value);
     }
   };
   // Explicit stack: extension source can nest deeply.
@@ -563,7 +563,6 @@ export function planBareImports(
   const sites = findImportSpecifiers(source).filter((site) =>
     isBareSpecifier(site.specifier)
   );
-  if (sites.length === 0) return plan;
   const confirmed = importSourceOffsets(source, /\.[jt]sx$/.test(sourcePath));
   const asWritten = new Set<string>();
   for (const { specifier, span, offset } of sites) {
@@ -587,6 +586,21 @@ export function planBareImports(
       from: specifier,
       to: shippedTarget(target.replace(/^(npm|jsr):\//, "$1:")),
     });
+  }
+  // A bare import the parser sees but the scanner missed (a quote in a
+  // regex literal earlier on its line can hide it) is never rewritten —
+  // the dependency audit reads through the same scanner, so a rewrite would
+  // ship it unaudited — and ships as written, so the finding names it.
+  if (confirmed) {
+    const scanned = new Set(sites.map((site) => site.offset));
+    for (const [offset, specifier] of confirmed) {
+      if (scanned.has(offset) || !isBareSpecifier(specifier)) continue;
+      const target = imports && isRewritableSpecifierText(specifier)
+        ? resolveBareImport(specifier, imports)
+        : undefined;
+      if (target !== undefined && isLocalTarget(target)) continue;
+      asWritten.add(specifier);
+    }
   }
   plan.shippedAsWritten = [...asWritten].sort();
   return plan;

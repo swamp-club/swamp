@@ -586,6 +586,16 @@ Deno.test("planBareImports: a scanner site the parser shows is not an import is 
   assertEquals(plan, { rewrites: [], shippedAsWritten: [], unsafe: [] });
 });
 
+Deno.test("planBareImports: a bare import the scanner misses ships as written and is named, never rewritten", () => {
+  const plan = planBareImports(
+    'const re = /"/; import ms from "ms";\nimport { posix } from "@std/path/posix";\n',
+    IMPORTS,
+    "/m.ts",
+  );
+  assertEquals(plan.rewrites.map((r) => r.from), ["@std/path/posix"]);
+  assertEquals(plan.shippedAsWritten, ["ms"]);
+});
+
 Deno.test("planBareImports: a .tsx module with JSX is parsed and rewritten", () => {
   const source = 'import ms from "ms";\nexport const v = <div>{ms(1)}</div>;\n';
   const plan = planBareImports(source, IMPORTS, "/reports/view.tsx");
