@@ -1131,6 +1131,8 @@ Deno.test("redactIssueContent: an address next to a label colon or a message col
       ["lvl:warn:aa:bb:cc:dd:ee:ff", "lvl:warn:[IP-1]"],
       ["client:ip:2001:db8::5 x", "client:ip:[IP-1] x"],
       ["src:2001:db8::1:dst:2001:db8::2", "src:[IP-1]:dst:[IP-2]"],
+      ["mapped 2001:db8:1:2:3:4:192.0.2.1 x", "mapped [IP-1] x"],
+      ["mapped ::ffff:192.0.2.1 x", "mapped [IP-1] x"],
     ]
   ) {
     assertEquals(redactIssueContent(input).text, expected, input);
@@ -1150,6 +1152,8 @@ Deno.test("redactIssueContent: generic words or a nearby secret label do not kee
       `GITHUB_TOKEN git ${hex}`,
       `password for git: ${hex}`,
       `the api token for commit ${hex}`,
+      `X-Hub-Signature: sha1=${hex}`,
+      `hmac sha1 ${hex}`,
     ]
   ) {
     assertStringIncludes(

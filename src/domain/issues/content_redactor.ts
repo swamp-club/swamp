@@ -210,7 +210,8 @@ const GIT_ID_CONTEXT_RE =
 
 // A secret label anywhere in the same window outweighs the git word: in
 // "the api token for commit <hex>" the value is the token.
-const SECRET_LABEL_RE = /token|key|password|passwd|secret|auth|credential/i;
+const SECRET_LABEL_RE =
+  /token|key|password|passwd|secret|auth|credential|signature|hmac/i;
 
 // Git object ids are 40 (sha1) or 64 (sha256) hex characters.
 const GIT_ID_LENGTHS = new Set([40, 64]);
@@ -266,11 +267,16 @@ const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 // Foo::bar) and runs that cannot hold an address (a fast-check replay path
 // such as 992:3:11:17:17:12, a timestamp) are kept. The lookbehind starts a
 // match only at the start of a word, so a long run without colons is scanned
-// once.
-const IPV6_RE = /(?<![0-9A-Za-z_])[0-9A-Za-z_]*(?::[0-9A-Za-z_]*){2,}/g;
+// once. A dotted-quad tail (2001:db8::192.0.2.1) is taken with the token so an
+// address with an embedded IPv4 part is judged, and redacted, whole.
+const IPV6_RE =
+  /(?<![0-9A-Za-z_])[0-9A-Za-z_]*(?::[0-9A-Za-z_]*){2,}(?:(?<=:\d{1,3})(?:\.\d{1,3}){3}(?![.\d]))?/g;
 
 // One IPv6 group, or the empty group either side of "::".
 const HEX_GROUP_RE = /^[0-9A-Fa-f]{0,4}$/;
+
+// An embedded IPv4 tail, which stands for the last two groups.
+const IPV4_TAIL_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
 // Home directory paths with usernames — captures the prefix and username
 // separately so we can reconstruct positionally.
@@ -347,7 +353,9 @@ function isAddressLikeColonRun(run: string, strict: boolean): boolean {
   // All zeros is the unspecified address, and the shape of passwd fields
   // (root:x:0:0::/root): nothing to hide.
   if (groups.every((group) => /^0+$/.test(group))) return false;
-  if (groups.length >= 8) return true;
+  const width = groups.length +
+    (IPV4_TAIL_RE.test(groups.at(-1) ?? "") ? 1 : 0);
+  if (width >= 8) return true;
   if (!strict && run.includes("::")) return true;
   let twoHexRun = 0;
   for (const group of groups) {
@@ -754,7 +762,9 @@ function redactColonToken(
 ): string {
   const parts = token.split(":");
   const n = parts.length;
-  const isGroup = parts.map((part) => HEX_GROUP_RE.test(part));
+  const isGroup = parts.map((part, k) =>
+    HEX_GROUP_RE.test(part) || (k === n - 1 && IPV4_TAIL_RE.test(part))
+  );
   // Output text per part (null once folded into a placeholder), and whether
   // the colon before a part is dropped because a placeholder spans it.
   const pieces: Array<string | null> = [...parts];
