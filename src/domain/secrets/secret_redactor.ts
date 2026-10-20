@@ -95,6 +95,7 @@ export class SecretRedactor {
     const inspected = Deno.inspect(value, {
       colors: false,
       strAbbreviateSize: Infinity,
+      breakLength: Infinity,
     });
     const quote = inspected[0];
     const body = inspected.slice(1, -1).replaceAll(`\\${quote}`, quote);

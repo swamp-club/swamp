@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { getPrettyFormatter } from "@logtape/pretty";
 import {
   createStderrSink,
   escapeLogTemplate,
@@ -550,6 +551,40 @@ Deno.test("createStderrSink: writes the line as it is when no redactor is active
   sink(recordHolding("plain-secret-3526"));
   assertEquals(written.length, 1);
   assertStringIncludes(written[0], "plain-secret-3526");
+});
+
+Deno.test("createStderrSink: masks structured secrets before pretty wrapping and leaves the record intact", () => {
+  const secret = `START-${"word ".repeat(60)}\n${"line\n".repeat(20)}-END`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const handle = runFileSink.registerRedactor(redactor);
+  const value = { token: secret };
+  const record = {
+    ...recordHolding(secret),
+    message: ["value ", value, ""],
+    properties: { v: value },
+  };
+  const written: string[] = [];
+  const sink = createStderrSink(
+    getPrettyFormatter({
+      colors: false,
+      wordWrap: true,
+      properties: true,
+      inspectOptions: { colors: false },
+    }),
+    (text) => written.push(text),
+  );
+  try {
+    sink(record);
+    const output = written.join("");
+    assertEquals(output.includes("START-"), false, output);
+    assertEquals(output.includes("-END"), false, output);
+    assertStringIncludes(output, "***");
+    assertEquals(record.message[1], { token: secret });
+    assertEquals(record.properties.v.token, secret);
+  } finally {
+    runFileSink.unregisterRedactor(handle);
+  }
 });
 
 Deno.test("initializeLogging: stderrOnly masks an active redactor's secrets under both formatters", async () => {

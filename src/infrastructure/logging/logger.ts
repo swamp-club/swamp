@@ -94,19 +94,35 @@ export function createStderrSink(
   write: (text: string) => void = writeStderr,
 ): Sink {
   return (record) => {
-    // Scrub string values before inspection or word-wrapping can change
-    // their representation. Keep the final pass for structured values and
-    // secrets spanning adjacent message parts, without mutating the record
-    // that other sinks receive.
+    if (!runFileSink.hasActiveSecrets) {
+      write(formatter(record));
+      return;
+    }
+    // Render complete values and mask them before layout can wrap or
+    // abbreviate a secret inside a structured value. Collapse the message
+    // to a literal so the formatter only lays out already-scrubbed text.
+    // Other sinks still receive the original record.
     const redactString = (value: unknown) =>
       typeof value === "string" ? runFileSink.redactActive(value) : value;
+    const render = (value: unknown) =>
+      runFileSink.redactActive(Deno.inspect(redactString(value), {
+        colors: false,
+        strAbbreviateSize: Infinity,
+        breakLength: Infinity,
+        iterableLimit: Infinity,
+      }));
+    const message = record.message.map((value, index) =>
+      index % 2 === 0 ? String(value) : render(value)
+    ).join("");
     const redacted = {
       ...record,
-      message: record.message.map(redactString),
+      message: [runFileSink.redactActive(message)],
       properties: Object.fromEntries(
         Object.entries(record.properties).map(([key, value]) => [
           key,
-          redactString(value),
+          value !== null && typeof value === "object"
+            ? render(value)
+            : redactString(value),
         ]),
       ),
     };

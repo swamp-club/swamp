@@ -21,7 +21,7 @@ import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { SecretRedactor } from "./secret_redactor.ts";
 
-Deno.test("SecretRedactor: inspected secrets remain masked across quote styles and enclosing text", () => {
+Deno.test("SecretRedactor: unwrapped inspected secrets remain masked across quote styles and enclosing text", () => {
   fc.assert(
     fc.property(
       fc.array(
@@ -38,7 +38,7 @@ Deno.test("SecretRedactor: inspected secrets remain masked across quote styles a
           "\x1b",
           "${x}",
         ),
-        { minLength: 1, maxLength: 30 },
+        { minLength: 1, maxLength: 100 },
       ),
       (chars) => {
         const secret = `secret-${chars.join("")}-value`;
@@ -49,6 +49,7 @@ Deno.test("SecretRedactor: inspected secrets remain masked across quote styles a
             const rendered = Deno.inspect(value, {
               colors: false,
               strAbbreviateSize: Infinity,
+              breakLength: Infinity,
             });
             const redacted = redactor.redact(rendered);
             assertEquals(redacted.includes("secret-"), false, rendered);

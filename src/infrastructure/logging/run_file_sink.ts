@@ -170,6 +170,13 @@ export class RunFileSink {
     this.redactors.delete(handle);
   }
 
+  /** Whether formatting must preserve complete values until they are masked. */
+  get hasActiveSecrets(): boolean {
+    return [...this.writers.values()].some((writer) =>
+      writer.redactor?.hasSecrets
+    ) || [...this.redactors.values()].some((redactor) => redactor.hasSecrets);
+  }
+
   /**
    * Redacts `text` using every currently-active redactor.
    *

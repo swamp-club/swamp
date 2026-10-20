@@ -59,9 +59,12 @@ function formatArg(a: unknown): string {
   if (typeof a === "number") return String(a);
   try {
     return JSON.stringify(a) ??
-      Deno.inspect(a, { strAbbreviateSize: Infinity });
+      Deno.inspect(a, { strAbbreviateSize: Infinity, breakLength: Infinity });
   } catch {
-    return Deno.inspect(a, { strAbbreviateSize: Infinity });
+    return Deno.inspect(a, {
+      strAbbreviateSize: Infinity,
+      breakLength: Infinity,
+    });
   }
 }
 
@@ -125,6 +128,7 @@ export async function withConsoleGuard<T>(
             ...args[1] as Deno.InspectOptions | undefined,
             // Truncating a secret before redaction would expose its prefix.
             strAbbreviateSize: Infinity,
+            breakLength: Infinity,
           })
           : args.map(formatArg).join(" ");
         for (const logArray of allActiveLogs) {

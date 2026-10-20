@@ -353,7 +353,7 @@ Deno.test("withConsoleGuard: console.dir masks a secret learned during execution
   const stderr: string[] = [];
   const logs: string[] = [];
   setConsoleGuardStderrWriter((line) => stderr.push(line));
-  const secret = 'learned"secret\\value'.repeat(20);
+  const secret = 'learned"secret\\value\n'.repeat(20);
   try {
     await withConsoleGuard(
       () => {
@@ -368,7 +368,10 @@ Deno.test("withConsoleGuard: console.dir masks a secret learned during execution
       "{token:'***'}",
     ]);
     assertEquals(logs, [
-      Deno.inspect({ token: secret }, { strAbbreviateSize: Infinity }),
+      Deno.inspect({ token: secret }, {
+        strAbbreviateSize: Infinity,
+        breakLength: Infinity,
+      }),
     ]);
     assertEquals(console.dir, originalDir);
   } finally {
