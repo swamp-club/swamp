@@ -734,7 +734,7 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 
 | Operation        | Backed by                                                                             | Transport | Notes                                                                                                             |
 | ---------------- | ------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------- |
-| `getData`        | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`    | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes                     |
+| `getData`        | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`    | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes (dispatch-scoped)   |
 | `queryData`      | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading | ws        | CEL predicate over the catalog; always live. Control-plane records excluded (below). `select` projection rejected |
 | `listVersions`   | `repo.listVersions`                                                                   | ws        | Version history for one item. No dispatch-scope assertion; control-plane types list nothing                       |
 | `deleteData`     | `repo.delete`, `repo.removeLatestMarker`                                              | ws        | Used by lifecycle/GC-aware methods                                                                                |
@@ -1243,12 +1243,14 @@ semantics and needs almost no new code:
   layer.
 - **Reads are dispatch-scoped.** `getData` is refused for a behavior type
   outside the active dispatch's scope (`#assertDispatchScope` in
-  `src/serve/capability_service.ts`). `queryData` caps predicate length and
+  `src/serve/capability_service.ts`), and the data plane's bytes route
+  (`GET /data/{type}/{id}/{name}/{v}`) repeats that check on the `ModelType`
+  normalized form before its lookup and ETag branch, answering 403
+  (`#readArtifact` in `src/serve/data_plane.ts`); a worker with no resolvable
+  dispatch is refused there too. `queryData` caps predicate length and
   post-filters results, rejecting outright any query that touches access-control
   or infrastructure behavior data. `listVersions` is the one verb with no scope
-  assertion. The data plane's bytes route (`GET /data/{type}/{id}/{name}/{v}`)
-  does not repeat the behavior-type check: it checks only the credential and
-  the control-plane hidden list (swamp-club#3528).
+  assertion.
 
 ## Scheduling, fan-out, and provisioning
 
