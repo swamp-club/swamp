@@ -418,6 +418,7 @@ Deno.test("checkDependencyTrust: an OSV error response leaves the dependency not
     dependency: "some-pkg",
     message: "not audited: OSV lookup failed (HTTP 503)",
     cause: "not-audited",
+    remediation: "Re-run when OSV, npm and JSR are reachable.",
   }]);
   const [summary] = result.audited;
   assertEquals(summary.passed, false);
@@ -461,6 +462,7 @@ Deno.test("checkDependencyTrust: npm down with a pinned version still queries OS
     dependency: "some-pkg",
     message: "not audited: npm registry lookup failed (HTTP 500)",
     cause: "not-audited",
+    remediation: "Re-run when OSV, npm and JSR are reachable.",
   }]);
   const [summary] = result.audited;
   assertEquals(summary.version, "1.0.0");
@@ -529,6 +531,7 @@ Deno.test("checkDependencyTrust: both services down names both lookups", async (
     message: "not audited: npm registry lookup failed (error sending " +
       "request); OSV lookup failed (HTTP 502)",
     cause: "not-audited",
+    remediation: "Re-run when OSV, npm and JSR are reachable.",
   }]);
   assertEquals(result.audited[0].passed, false);
   assertEquals(notAuditedCount(result), 1);
@@ -711,6 +714,7 @@ Deno.test("checkDependencyTrust: a range nothing satisfies is not audited", asyn
     message:
       "not audited: OSV not queried (no published version matches ^9.0.0)",
     cause: "not-audited",
+    remediation: "Change the specifier to a version the registry publishes.",
   }]);
   const [summary] = result.audited;
   assertEquals(summary.version, "^9.0.0");
@@ -837,6 +841,8 @@ Deno.test("checkDependencyTrust: a deprecated pin warns when latest is not depre
       dependency: "pkg",
       message: "version 1.0.0 is deprecated: Use 2.x instead [31m",
       cause: "deprecated-version",
+      suggestedVersion: "2.0.0",
+      remediation: "Move to 2.0.0, the newest version that isn't deprecated.",
     },
   );
   // License and maintainers come from the pinned version too.
@@ -936,6 +942,8 @@ Deno.test("checkDependencyTrust: a range warns naming the version it resolves", 
     message:
       "npm:express@^4.18.0 is a range; audited 4.21.1, the version this push resolves",
     cause: "loose-specifier",
+    remediation:
+      "Pin the exact version this push resolved (4.21.1) to ensure that the audited version is the one that ships.",
   }]);
   assertEquals(result.audited[0].specifier, "npm:express@^4.18.0");
   assertEquals(result.audited[0].resolvedFrom, "registry");
@@ -1015,6 +1023,8 @@ Deno.test("checkDependencyTrust: the lock decides a range's version and the find
     message:
       "npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock)",
     cause: "loose-specifier",
+    remediation:
+      "Pin the exact version this push resolved (4.18.2) to ensure that the audited version is the one that ships.",
   }]);
   assertEquals(result.audited[0].resolvedFrom, "lockfile");
 });
@@ -1062,6 +1072,7 @@ Deno.test("checkDependencyTrust: an invalid npm name is not audited and never fe
     dependency: "bad name?x",
     message: "not audited: invalid npm package name",
     cause: "not-audited",
+    remediation: "Correct the package name in the import.",
   }]);
 });
 
@@ -1125,9 +1136,98 @@ Deno.test("checkDependencyTrust: a yanked JSR version warns", async () => {
   assertEquals(result.errors, []);
   assertEquals(result.warnings, [{
     dependency: "@std/assert",
-    message: "version 0.225.0 is yanked on JSR",
+    message:
+      "version 0.225.0 was withdrawn (yanked) by its author on JSR. Newest version that isn't yanked: 0.225.1.",
     cause: "jsr-yanked",
+    suggestedVersion: "0.225.1",
+    remediation:
+      "Pin jsr:@std/assert@0.225.1 (or the newest non-yanked version your code supports).",
   }]);
+});
+
+Deno.test("checkDependencyTrust: a yanked JSR version says when no other version exists", async () => {
+  const result = await checkDependencyTrust(
+    [jsrSpec("@std/assert", "0.1.0")],
+    jsrFetcher({
+      status: 200,
+      body: {
+        latest: null,
+        versions: { "0.1.0": { yanked: true }, "0.2.0-rc.1": {} },
+      },
+    }),
+  );
+  assertEquals(result.warnings, [{
+    dependency: "@std/assert",
+    message:
+      "version 0.1.0 was withdrawn (yanked) by its author on JSR. No other version is available.",
+    cause: "jsr-yanked",
+    remediation:
+      "Wait for the author to publish a replacement, or replace the dependency.",
+  }]);
+});
+
+Deno.test("checkDependencyTrust: a yanked JSR version the lock chose says to refresh the lock", async () => {
+  const result = await checkDependencyTrust(
+    [jsrSpec("@std/assert", "^0.225.0")],
+    jsrFetcher({ status: 200, body: JSR_META }),
+    DEFAULT_TRUST_THRESHOLDS,
+    undefined,
+    lockOf({ "jsr:@std/assert": ["0.225.0"] }),
+  );
+  const yanked = result.warnings.find((w) => w.cause === "jsr-yanked");
+  assertEquals(yanked?.suggestedVersion, "0.225.1");
+  assertEquals(
+    yanked?.remediation,
+    "Pin jsr:@std/assert@0.225.1 (or the newest non-yanked version your code supports). Then refresh deno.lock so it records the new version.",
+  );
+});
+
+Deno.test("checkDependencyTrust: a yanked JSR suggestion ignores versions that are not semver", async () => {
+  const result = await checkDependencyTrust(
+    [jsrSpec("@std/assert", "1.0.0")],
+    jsrFetcher({
+      status: 200,
+      body: {
+        latest: "1.0.0",
+        versions: {
+          "1.0.0": { yanked: true },
+          "9.9.9\u202e hidden": {},
+          "1.0.1": {},
+        },
+      },
+    }),
+  );
+  assertEquals(result.warnings[0].suggestedVersion, "1.0.1");
+});
+
+Deno.test("checkDependencyTrust: a deprecated pin suggests the newest version that is not deprecated", async () => {
+  const body = {
+    ...DEPRECATION_BODY,
+    versions: {
+      "1.0.0": {
+        license: "MIT",
+        maintainers: [{ name: "a" }],
+        deprecated: "old",
+      },
+      "2.0.0": { license: "MIT", maintainers: [{ name: "a" }] },
+    },
+  };
+  const deprecated = await checkDependencyTrust(
+    [npmSpec("pkg", "1.0.0")],
+    routedFetcher(healthyRoutes({
+      ...body,
+      versions: {
+        "1.0.0": body.versions["1.0.0"],
+        "1.1.0": { ...body.versions["1.0.0"] },
+        "2.0.0": body.versions["2.0.0"],
+      },
+      "dist-tags": { latest: "2.0.0" },
+    })),
+  );
+  const finding = deprecated.warnings.find((w) =>
+    w.cause === "deprecated-version"
+  );
+  assertEquals(finding?.suggestedVersion, "2.0.0");
 });
 
 Deno.test("checkDependencyTrust: a missing JSR version is an error", async () => {
@@ -1212,6 +1312,8 @@ Deno.test("checkDependencyTrust: an unpinned JSR import resolves to latest", asy
     message:
       "jsr:@std/assert is unpinned; audited 1.0.2, the version this push resolves",
     cause: "loose-specifier",
+    remediation:
+      "Pin the exact version this push resolved (1.0.2) to ensure that the audited version is the one that ships.",
   }]);
 });
 
@@ -1254,6 +1356,7 @@ for (
       dependency: "@std/assert",
       message: `not audited: JSR lookup failed (${reason})`,
       cause: "not-audited",
+      remediation: "Re-run when OSV, npm and JSR are reachable.",
     }]);
     assertEquals(result.audited[0].passed, false);
     assertEquals(notAuditedCount(result), 1);
@@ -1267,6 +1370,10 @@ Deno.test("checkDependencyTrust: an npm pin the packument does not list is not a
   );
   assertEquals(result.audited[0].passed, false);
   assertEquals(result.audited[0].reason, "npm lists no version 9.9.9");
+  assertEquals(
+    result.warnings.find((w) => w.cause === "not-audited")?.remediation,
+    "Change the specifier to a version the registry publishes.",
+  );
   assertEquals(result.audited[0].license, null);
 });
 
@@ -1353,6 +1460,8 @@ Deno.test("checkDependencyTrust: a mapped range resolves from the lock and its f
     message:
       'npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock) (imported as "express" via deno.json)',
     cause: "loose-specifier",
+    remediation:
+      "Pin the exact version this push resolved (4.18.2) to ensure that the audited version is the one that ships.",
   }]);
 });
 
@@ -1395,6 +1504,49 @@ Deno.test("checkDependencyTrust: a mapped import whose lookup fails is not audit
   );
   assertEquals(result.audited[0].passed, false);
   assertEquals(result.audited[0].importedAs, "pkg");
+});
+
+Deno.test("checkDependencyTrust: a deprecated npm version the lock chose says to refresh the lock", async () => {
+  const body = {
+    ...DEPRECATION_BODY,
+    versions: {
+      "1.0.0": {
+        license: "MIT",
+        maintainers: [{ name: "a" }],
+        deprecated: "old",
+      },
+      "2.0.0": { license: "MIT", maintainers: [{ name: "a" }] },
+    },
+  };
+  const result = await checkDependencyTrust(
+    [npmSpec("pkg", "^1.0.0")],
+    routedFetcher(healthyRoutes(body)),
+    DEFAULT_TRUST_THRESHOLDS,
+    undefined,
+    lockOf({ "npm:pkg": ["1.0.0"] }),
+  );
+  const deprecated = result.warnings.find((w) =>
+    w.cause === "deprecated-version"
+  );
+  assertEquals(
+    deprecated?.remediation,
+    "Move to 2.0.0, the newest version that isn't deprecated. Then refresh deno.lock so it records the new version.",
+  );
+});
+
+Deno.test("checkDependencyTrust: an unreachable registry keeps the re-run fix", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("some-pkg", "1.0.0")],
+    routedFetcher({
+      [OSV_URL]: { status: 503, body: {} },
+      [NPM_URL]: { status: 200, body: HEALTHY_NPM_BODY },
+      [DOWNLOADS_URL]: { status: 200, body: { downloads: 50_000 } },
+    }),
+  );
+  assertEquals(
+    result.warnings[0].remediation,
+    "Re-run when OSV, npm and JSR are reachable.",
+  );
 });
 
 Deno.test("dependencyTrustBlockerCount: counts errors, deprecated versions and yanked versions, not loose specifiers", () => {

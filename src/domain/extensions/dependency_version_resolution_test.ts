@@ -24,6 +24,7 @@ import {
   type PublishedPackage,
   resolveShippedVersion,
   specifierKind,
+  suggestVersion,
 } from "./dependency_version_resolution.ts";
 
 const NPM: PublishedPackage = {
@@ -158,4 +159,49 @@ Deno.test("resolveShippedVersion: the lock's entry for the specifier beats a hig
     resolveShippedVersion("npm", "x", "~1.2.0", lock, NPM),
     { version: "1.2.0", from: "lockfile" },
   );
+});
+
+Deno.test("suggestVersion: prefers the newest in the same major", () => {
+  assertEquals(
+    suggestVersion(
+      "1.2.0",
+      ["1.2.0", "1.3.0", "1.4.1", "2.0.0"],
+      new Set(["1.2.0", "1.4.1"]),
+    ),
+    "1.3.0",
+  );
+});
+
+Deno.test("suggestVersion: a 0.x version stays on its minor", () => {
+  assertEquals(
+    suggestVersion(
+      "0.225.0",
+      ["0.224.5", "0.225.0", "0.225.3", "0.226.0"],
+      new Set(["0.225.0"]),
+    ),
+    "0.225.3",
+  );
+});
+
+Deno.test("suggestVersion: falls back to the newest overall", () => {
+  assertEquals(
+    suggestVersion("1.0.0", ["1.0.0", "0.9.0", "2.0.0"], new Set(["1.0.0"])),
+    "2.0.0",
+  );
+});
+
+Deno.test("suggestVersion: skips excluded, prerelease and unparsable versions", () => {
+  assertEquals(
+    suggestVersion(
+      "1.0.0",
+      ["1.0.0", "1.1.0-rc.1", "1.2.0", "not a version\u202e", "1.3.0"],
+      new Set(["1.2.0"]),
+    ),
+    "1.3.0",
+  );
+});
+
+Deno.test("suggestVersion: null when nothing else qualifies", () => {
+  assertEquals(suggestVersion("1.0.0", ["1.0.0"], new Set()), null);
+  assertEquals(suggestVersion("1.0.0", [], new Set()), null);
 });

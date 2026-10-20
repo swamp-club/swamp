@@ -623,7 +623,7 @@
       "expect": [
         {
           "severity": "warning",
-          "message": "version 0.225.0 is yanked on JSR",
+          "message": "version 0.225.0 was withdrawn (yanked) by its author on JSR. Newest version that isn't yanked: 1.0.0.",
           "cause": "jsr-yanked",
           "pointsLost": 2
         }
