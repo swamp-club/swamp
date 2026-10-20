@@ -87,6 +87,9 @@ import {
   sensitiveVaultReferences,
 } from "../domain/models/data_writer.ts";
 
+/** How many verified resource claims the service remembers at once. */
+const CLAIM_CACHE_LIMIT = 256;
+
 const capLogger = getSwampLogger(["serve", "capability"]);
 
 /** Runs `fn` held to `scope`, or unscoped when there is none. */
@@ -163,6 +166,14 @@ export class CapabilityService {
   readonly #dispatches: DispatchRegistry | undefined;
   readonly #createVaultService: () => Promise<VaultService>;
   #vaultService: Promise<VaultService> | null = null;
+  /**
+   * The references each verified resource claim admits, keyed by dispatch,
+   * record name and version, so a read that resolves several tagged fields
+   * of one record reads and parses it once. A version's content never
+   * changes, and the key holds the dispatch, so an entry is never answered
+   * for another. Bounded: the oldest entry goes when it is full.
+   */
+  readonly #claimReferences = new Map<string, ReadonlySet<string>>();
 
   constructor(options: CapabilityServiceOptions) {
     this.#repoDir = options.repoDir;
@@ -505,41 +516,55 @@ export class CapabilityService {
       new Error(
         `resolveSecret: secret '${secretKey}' is not a tagged sensitive field of resource '${claim.name}' (${reason})`,
       );
-    const repo = this.#repoForWorker(workerName, dispatch.dispatchId);
-    const record = await repo.findByName(
-      dispatch.modelType,
-      dispatch.modelId,
-      claim.name,
-      claim.version,
-    );
-    if (record === null) {
-      throw refused("no such resource of the dispatched behavior");
+    const cacheKey =
+      `${dispatch.dispatchId}\u0000${claim.name}\u0000${claim.version}`;
+    let admitted = this.#claimReferences.get(cacheKey);
+    if (admitted === undefined) {
+      const repo = this.#repoForWorker(workerName, dispatch.dispatchId);
+      const record = await repo.findByName(
+        dispatch.modelType,
+        dispatch.modelId,
+        claim.name,
+        claim.version,
+      );
+      if (record === null) {
+        throw refused("no such resource of the dispatched behavior");
+      }
+      const sensitiveFields = parseSensitiveFieldsTag(record.tags);
+      if (sensitiveFields === null) {
+        throw refused("the record has no sensitive fields");
+      }
+      const content = await repo.getContent(
+        dispatch.modelType,
+        dispatch.modelId,
+        claim.name,
+        claim.version,
+      );
+      if (content === null) throw refused("the record has no content");
+      let data: unknown;
+      try {
+        data = JSON.parse(new TextDecoder().decode(content));
+      } catch {
+        throw refused("the record is not JSON");
+      }
+      if (data === null || typeof data !== "object" || Array.isArray(data)) {
+        throw refused("the record is not an object");
+      }
+      admitted = new Set(
+        sensitiveVaultReferences(
+          data as Record<string, unknown>,
+          sensitiveFields,
+        ).map((ref) => `${ref.vaultName}\u0000${ref.key}`),
+      );
+      if (this.#claimReferences.size >= CLAIM_CACHE_LIMIT) {
+        const oldest = this.#claimReferences.keys().next().value;
+        if (oldest !== undefined) this.#claimReferences.delete(oldest);
+      }
+      this.#claimReferences.set(cacheKey, admitted);
     }
-    const sensitiveFields = parseSensitiveFieldsTag(record.tags);
-    if (sensitiveFields === null) {
-      throw refused("the record has no sensitive fields");
+    if (!admitted.has(`${vaultName}\u0000${secretKey}`)) {
+      throw refused("its sensitive fields do not reference it");
     }
-    const content = await repo.getContent(
-      dispatch.modelType,
-      dispatch.modelId,
-      claim.name,
-      claim.version,
-    );
-    if (content === null) throw refused("the record has no content");
-    let data: unknown;
-    try {
-      data = JSON.parse(new TextDecoder().decode(content));
-    } catch {
-      throw refused("the record is not JSON");
-    }
-    if (data === null || typeof data !== "object" || Array.isArray(data)) {
-      throw refused("the record is not an object");
-    }
-    const admitted = sensitiveVaultReferences(
-      data as Record<string, unknown>,
-      sensitiveFields,
-    ).some((ref) => ref.vaultName === vaultName && ref.key === secretKey);
-    if (!admitted) throw refused("its sensitive fields do not reference it");
   }
 
   async resolveSecret(

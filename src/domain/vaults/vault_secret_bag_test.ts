@@ -927,7 +927,7 @@ Deno.test("VaultSecretBag.entriesFor: the bag's own entries, then the run's entr
   assertEquals(new VaultSecretBag(registry).entriesFor({}), []);
 });
 
-Deno.test("VaultSecretBag.referencesFor: the bag's own references, loaded or not, then the run's references the arguments carry (swamp-club#3529)", () => {
+Deno.test("VaultSecretBag.referencesFor: the references behind the sentinels the arguments carry, whichever bag issued them, loaded or not (swamp-club#3529)", () => {
   const registry = new SecretBagRegistry();
   const runStart = new VaultSecretBag(registry);
   const step = new VaultSecretBag(registry);
@@ -940,23 +940,25 @@ Deno.test("VaultSecretBag.referencesFor: the bag's own references, loaded or not
   issue(step, "other-method");
   const args = { run: `echo ${early}`, nested: [{ x: `${own} ${early}` }] };
   const expected = [
-    { vaultName: "v", key: "own" },
-    { vaultName: "v", key: "other-method" },
     { vaultName: "v", key: "early" },
+    { vaultName: "v", key: "own" },
   ];
   // The same list before and after a load: a reference no attempt loaded
-  // is listed, not thrown on.
+  // is listed, not thrown on. The reference the arguments do not carry
+  // (other-method) is not.
   assertEquals(step.referencesFor(args), expected);
   assertEquals(loaded(step).referencesFor(args), expected);
-  assertEquals(step.referencesFor({ run: "plain" }), expected.slice(0, 2));
+  assertEquals(step.referencesFor({ run: "plain" }), []);
   assertEquals(new VaultSecretBag(registry).referencesFor({}), []);
 });
 
 Deno.test("VaultSecretBag.referencesFor: one reference per vault and key, and an entry without a reference is skipped", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const first = bag.addSecret({ vaultName: "v", key: "k" }, "a");
-  bag.addSecret({ vaultName: "v", key: "k" }, "b");
-  assertEquals(bag.referencesFor({}), [{ vaultName: "v", key: "k" }]);
+  const second = bag.addSecret({ vaultName: "v", key: "k" }, "b");
+  assertEquals(bag.referencesFor([first, second]), [
+    { vaultName: "v", key: "k" },
+  ]);
   // A worker's rebuilt bag holds values without references.
   const rebuilt = VaultSecretBag.fromEntries([
     { sentinel: first, value: "x", dataOrigin: false },

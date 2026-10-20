@@ -1379,3 +1379,47 @@ Deno.test("resolveSecret: a claim never admits an annotation read or a denyliste
   // Neither refusal consulted the record.
   assertEquals(lookups, []);
 });
+
+Deno.test("resolveSecret: a record's verified references are read once per dispatch, record and version", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+  const { service, lookups } = createServiceWithRecord(dispatches, {
+    ...TAGGED,
+    tags: { "_swamp.sensitiveFields": "*" },
+    content: {
+      password: "${{ vault.get('default', 'generated-key') }}",
+      "dotted.key": "${{ vault.get('default', 'dotted-key') }}",
+      nested: { deep: "${{ vault.get('default', 'nested-key') }}" },
+    },
+  }, { "generated-key": "s3cret", "dotted-key": "d0tted", "nested-key": "n" });
+  const claim = { name: "state-main", version: 2 };
+  const read = (secretKey: string) =>
+    service.resolveSecret("worker-1", {
+      vaultName: "default",
+      secretKey,
+      resource: claim,
+    });
+  assertEquals((await read("generated-key")).value, "s3cret");
+  // Under the star tag a dotted top-level key is a location of its own,
+  // and a reference nested below a key is not one the writer made.
+  assertEquals((await read("dotted-key")).value, "d0tted");
+  await assertRejects(
+    () => read("nested-key"),
+    Error,
+    "its sensitive fields do not reference it",
+  );
+  // Three reads of one record: one lookup.
+  assertEquals(lookups.length, 1);
+  // Another version is its own record.
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "generated-key",
+        resource: { name: "state-main", version: 3 },
+      }),
+    Error,
+    "no such resource of the dispatched behavior",
+  );
+  assertEquals(lookups.length, 2);
+});

@@ -84,12 +84,15 @@ const SUCCESS: DispatchResult = {
 
 /** The resource spec of a vaulting type: `password` is schema-sensitive. */
 const VAULTING_SPEC = "secret";
+/** The resource spec of a vaulting type whose every field is sensitive. */
+const VAULTING_ALL_SPEC = "all";
 
 /**
  * Registers a per-run model type whose `read` method takes one string. With
  * `withResource`, the type also declares a `secret` resource whose
- * `password` field is schema-sensitive, so a dispatch of it can write that
- * resource over the data plane.
+ * `password` field is schema-sensitive and an `all` resource with
+ * `sensitiveOutput`, so a dispatch of it can write those resources over the
+ * data plane.
  */
 function registerReaderType(withResource = false): ModelType {
   const type = ModelType.create(
@@ -110,6 +113,13 @@ function registerReaderType(withResource = false): ModelType {
             }),
             lifetime: "infinite" as const,
             garbageCollection: 5,
+          },
+          [VAULTING_ALL_SPEC]: {
+            description: "a resource whose every top-level field is sensitive",
+            schema: z.record(z.string(), z.string()),
+            lifetime: "infinite" as const,
+            garbageCollection: 5,
+            sensitiveOutput: true,
           },
         },
       }
@@ -603,12 +613,13 @@ Deno.test({
         const type = registerReaderType(true);
         const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
         const worker = await connectInMemoryWorker(o, workerName);
-        const observed: {
-          tags?: Record<string, string>;
-          content?: Record<string, unknown>;
-          targetClaim?: { value?: unknown; refused?: string };
-          storedClaim?: { value?: unknown; refused?: string };
-        } = {};
+        interface Observed {
+          tags: Record<string, string>;
+          content: Record<string, unknown>;
+          targetClaim: { value?: unknown; refused?: string };
+          storedClaims: Array<{ value?: unknown; refused?: string }>;
+        }
+        const observed: Record<string, Observed> = {};
         answerDispatches(o, worker, workerName, async ({ params, active }) => {
           const { dispatchCredential } = params as DispatchParams & {
             dispatchCredential?: string;
@@ -617,68 +628,97 @@ Deno.test({
             baseUrl: o.dataPlaneUrl,
             credential: () => dispatchCredential ?? "",
           });
-          // The worker writes the crafted text as the sensitive value.
-          await client.writeResource({
-            specName: VAULTING_SPEC,
-            name: "crafted",
-            data: { password: crafted, note: "n" },
-          });
           const repo = o.repoContext.unifiedDataRepo;
-          const record = await repo.findByName(
-            active.modelType,
-            active.modelId,
-            "crafted",
-          );
-          if (!record) throw new Error("the crafted resource was not stored");
-          const bytes = await repo.getContent(
-            active.modelType,
-            active.modelId,
-            "crafted",
-            record.version,
-          );
-          observed.tags = record.tags;
-          observed.content = JSON.parse(new TextDecoder().decode(bytes!));
-          const claim = { name: "crafted", version: record.version };
-          // A claim for the secret the crafted text names ...
-          observed.targetClaim = await tryResolve(
-            o,
-            workerName,
-            params.dispatchId,
-            BASELINE_VAULT,
-            target,
-            claim,
-          );
-          // ... and one for the reference the writer stored instead.
-          const [stored] = sensitiveVaultReferences(
-            observed.content!,
-            parseSensitiveFieldsTag(record.tags),
-          );
-          observed.storedClaim = await tryResolve(
-            o,
-            workerName,
-            params.dispatchId,
-            stored.vaultName,
-            stored.key,
-            claim,
-          );
+          // The worker writes the crafted text as a sensitive value: a
+          // schema-sensitive field, and under sensitiveOutput a top-level
+          // key holding a dot, which the writer must address by its name.
+          const writes = [
+            {
+              specName: VAULTING_SPEC,
+              name: "crafted",
+              data: { password: crafted, note: "n" },
+            },
+            {
+              specName: VAULTING_ALL_SPEC,
+              name: "crafted-all",
+              data: { "a.b": crafted, note: "n" },
+            },
+          ];
+          for (const write of writes) {
+            await client.writeResource(write);
+            const record = await repo.findByName(
+              active.modelType,
+              active.modelId,
+              write.name,
+            );
+            if (!record) throw new Error(`${write.name} was not stored`);
+            const bytes = await repo.getContent(
+              active.modelType,
+              active.modelId,
+              write.name,
+              record.version,
+            );
+            const content = JSON.parse(new TextDecoder().decode(bytes!));
+            const claim = { name: write.name, version: record.version };
+            observed[write.name] = {
+              tags: record.tags,
+              content,
+              // A claim for the secret the crafted text names ...
+              targetClaim: await tryResolve(
+                o,
+                workerName,
+                params.dispatchId,
+                BASELINE_VAULT,
+                target,
+                claim,
+              ),
+              // ... and one for each reference the writer stored instead.
+              storedClaims: [],
+            };
+            for (
+              const stored of sensitiveVaultReferences(
+                content,
+                parseSensitiveFieldsTag(record.tags),
+              )
+            ) {
+              observed[write.name].storedClaims.push(
+                await tryResolve(
+                  o,
+                  workerName,
+                  params.dispatchId,
+                  stored.vaultName,
+                  stored.key,
+                  claim,
+                ),
+              );
+            }
+          }
         });
 
         await o.dispatchService.executeRemote(
           remoteRequest(type, { value: "plain" }),
         );
 
-        // The writer vaulted the crafted text under a key of its own and
-        // tagged the field, which never holds the crafted reference ...
-        assertEquals(parseSensitiveFieldsTag(observed.tags!), ["password"]);
-        assertNotEquals(observed.content!.password, crafted);
-        // ... so the claim for the named secret is refused, and the claim
-        // for the stored reference yields the crafted text, never the
-        // secret it names.
-        assertEquals(observed.targetClaim, {
-          refused:
-            `resolveSecret: secret '${target}' is not a tagged sensitive field of resource 'crafted' (its sensitive fields do not reference it)`,
-        });
-        assertEquals(observed.storedClaim, { value: crafted });
+        // The writer vaulted the crafted text under keys of its own and
+        // tagged the fields, which never hold the crafted reference ...
+        const schema = observed["crafted"];
+        const all = observed["crafted-all"];
+        assertEquals(parseSensitiveFieldsTag(schema.tags), ["password"]);
+        assertNotEquals(schema.content.password, crafted);
+        assertEquals(parseSensitiveFieldsTag(all.tags), "*");
+        assertNotEquals(all.content["a.b"], crafted);
+        assertNotEquals(all.content.note, "n");
+        // ... so the claim for the named secret is refused, and the claims
+        // for the stored references yield the crafted text and the note,
+        // never the secret the text names.
+        for (const name of ["crafted", "crafted-all"]) {
+          assertEquals(observed[name].targetClaim, {
+            refused:
+              `resolveSecret: secret '${target}' is not a tagged sensitive field of resource '${name}' (its sensitive fields do not reference it)`,
+          });
+        }
+        assertEquals(schema.storedClaims, [{ value: crafted }]);
+        assertEquals(all.storedClaims, [{ value: crafted }, { value: "n" }]);
       } finally {
         await o.shutdown();
       }

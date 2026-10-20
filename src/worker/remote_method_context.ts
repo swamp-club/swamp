@@ -663,10 +663,12 @@ export function createRemoteMethodContext(
     );
     const resolvedVersion = dataRecord?.version;
 
+    // The record findByName returned, which follows a rename, is the one
+    // read and claimed: its own name at its version.
     const content = await dataRepository.getContent(
       modelType,
       execution.modelId,
-      instanceName,
+      dataRecord?.name ?? instanceName,
       resolvedVersion ?? version,
     );
     if (content === null) {
@@ -687,7 +689,7 @@ export function createRemoteMethodContext(
         data,
         sensitiveFields,
         createRemoteVaultService(options, redactor, {
-          name: instanceName,
+          name: dataRecord.name,
           version: dataRecord.version,
         }),
         redactor,

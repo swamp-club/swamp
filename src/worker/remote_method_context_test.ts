@@ -109,7 +109,8 @@ function harness(
       found: true,
       dataId: "11111111-2222-4333-8444-555555555555",
       version: 4,
-      name: p.dataName,
+      // A lookup of the old name follows the rename to the current one.
+      name: p.dataName === "old-name" ? "new-name" : p.dataName,
       contentType: "application/json",
       size: 17,
       contentPath: `/data/x/m-1/${p.dataName}/4`,
@@ -395,6 +396,32 @@ Deno.test("remote context: readResource refuses a malformed sensitive-fields tag
       assertEquals(h.calls.filter((c) => c.method === "resolveSecret"), []);
     });
   }
+});
+
+Deno.test("remote context: readResource reads and claims the record a renamed lookup returned, by its current name (swamp-club#3529)", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(
+      dir,
+      undefined,
+      { refreshToken: "${{ vault.get('my-vault', 'refresh-tok') }}" },
+      undefined,
+      undefined,
+      { "_swamp.sensitiveFields": JSON.stringify(["refreshToken"]) },
+    );
+    assertEquals(await h.context.readResource!("old-name"), {
+      refreshToken: "s3cret",
+    });
+    const names = h.calls.filter((c) => c.method === "getData").map((c) =>
+      (c.params as { dataName: string }).dataName
+    );
+    assertEquals(names, ["old-name", "new-name"]);
+    const resolveCall = h.calls.find((c) => c.method === "resolveSecret");
+    assertEquals(resolveCall?.params, {
+      vaultName: "my-vault",
+      secretKey: "refresh-tok",
+      resource: { name: "new-name", version: 4 },
+    });
+  });
 });
 
 Deno.test("remote context: readResource returns null for missing data", async () => {

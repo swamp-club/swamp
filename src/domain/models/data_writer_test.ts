@@ -3800,7 +3800,7 @@ Deno.test("createResourceWriter: a redactor masking only sentinels serializes te
   });
 });
 
-Deno.test("sensitiveVaultReferences: names the references at the listed paths, nested values included, and nothing elsewhere (swamp-club#3529)", () => {
+Deno.test("sensitiveVaultReferences: names the whole-string reference at each listed path and nothing nested below or elsewhere (swamp-club#3529)", () => {
   const data = {
     password: "${{ vault.get('v', 'a') }}",
     creds: {
@@ -3810,24 +3810,26 @@ Deno.test("sensitiveVaultReferences: names the references at the listed paths, n
     untrusted: "${{ vault.get('v', 'd') }}",
     note: "n",
   };
+  // The writer vaults the whole value at a listed path, so a reference
+  // nested below one is not the writer's and is not named.
   assertEquals(
     sensitiveVaultReferences(data, ["password", "creds", "missing"]),
-    [
-      { vaultName: "v", key: "a" },
-      { vaultName: "v", key: "b" },
-      { vaultName: "v", key: "c" },
-    ],
+    [{ vaultName: "v", key: "a" }],
   );
   assertEquals(sensitiveVaultReferences(data, ["creds.key"]), [
     { vaultName: "v", key: "b" },
   ]);
-  assertEquals(sensitiveVaultReferences(data, ["note"]), []);
+  assertEquals(sensitiveVaultReferences(data, ["note", "creds.list"]), []);
 });
 
-Deno.test("sensitiveVaultReferences: the star tag names every whole-string reference once; no tag names none", () => {
+Deno.test("sensitiveVaultReferences: the star tag names each top-level key's whole-string reference by its own name, once; no tag names none", () => {
   const data = {
     a: "${{ vault.get('v', 'a') }}",
-    b: { c: "${{ vault.get('v', 'a') }}", d: "${{ vault.get('w', 'a') }}" },
+    // A dotted key is a top-level key of its own under the star tag.
+    "b.c": "${{ vault.get('w', 'a') }}",
+    repeat: "${{ vault.get('v', 'a') }}",
+    // Nested below a top-level key: not where the writer puts a reference.
+    nested: { d: "${{ vault.get('v', 'nested') }}" },
     // Not a whole-string reference, so not one the resolver resolves.
     e: "text ${{ vault.get('v', 'x') }}",
   };
@@ -3837,4 +3839,37 @@ Deno.test("sensitiveVaultReferences: the star tag names every whole-string refer
   ]);
   assertEquals(sensitiveVaultReferences(data, null), []);
   assertEquals(sensitiveVaultReferences(data, []), []);
+});
+
+Deno.test("processSensitiveResourceData: under sensitiveOutput a top-level key holding a dot is vaulted by its own name, not read as a nested path (swamp-club#3529)", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ note: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+    sensitiveOutput: true,
+  };
+  const crafted = "${{ vault.get('other', 'target') }}";
+  const data: Record<string, unknown> = { note: "n", "a.b": crafted };
+  const vaultService = createTestVaultService();
+  const vaulted = await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "all",
+    "main",
+  );
+  assertEquals(vaulted.sort(), ["a.b", "note"]);
+  assertEquals(Object.keys(data).sort(), ["a.b", "note"]);
+  // The crafted text is a value the vault holds, behind a reference the
+  // writer made; the key is never written as a nested path.
+  const stored = data["a.b"] as string;
+  assertEquals(stored === crafted, false);
+  assertStringIncludes(stored, "vault.get('test-vault'");
+  // Under the star tag the dotted key is a location of its own.
+  const [, dotted] = sensitiveVaultReferences(data, SENSITIVE_FIELDS_ALL);
+  assertEquals(sensitiveVaultReferences({ x: stored }, ["x"]), [dotted]);
+  assertEquals(await vaultService.get("test-vault", dotted.key), crafted);
 });

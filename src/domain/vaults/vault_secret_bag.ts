@@ -590,18 +590,18 @@ export class VaultSecretBag {
   }
 
   /**
-   * The references behind what a dispatch of `args` carries: every entry
-   * this bag issued that has a reference, loaded or not, then any other run
-   * entry whose sentinel occurs in `args`, in issue order and without
-   * repeats. Serve admits these to the dispatch's own secret reads, since
-   * the arguments it ships hold the values and not the references
-   * (swamp-club#3529). Read through the registry and never through a
-   * value, so an unloaded reference is listed rather than thrown on, and an
-   * entry without a reference (a bag a worker rebuilt from shipped entries)
-   * is skipped.
+   * The references behind the sentinels `args` carry, whichever bag of the
+   * run issued them, in order of first occurrence and without repeats.
+   * Serve admits these to the dispatch's own secret reads, since the
+   * arguments it ships hold the values and not the references
+   * (swamp-club#3529); a reference the arguments do not carry, such as one
+   * for a method the dispatch does not run, is not listed. Read through the
+   * registry and never through a value, so an unloaded reference is listed
+   * rather than thrown on, and an entry without a reference (a bag a worker
+   * rebuilt from shipped entries) is skipped.
    */
   referencesFor(args: unknown): SecretReference[] {
-    const sentinels = [...this.issued];
+    const sentinels: string[] = [];
     this.collectRunSentinels(args, sentinels);
     const references: SecretReference[] = [];
     const seen = new Set<string>();

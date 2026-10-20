@@ -306,41 +306,57 @@ Deno.test("sensitive-fields tag: a JSON array of paths round-trips through both 
   );
 });
 
-/** A record of nested values with vault references among its strings. */
+/**
+ * A record in the shape the writer leaves it: a string (a vault reference
+ * or plain text) or null at every tagged location, and anything at all
+ * elsewhere. Under the star tag every top-level key is a tagged location,
+ * dotted keys included; with listed paths the tagged keys and the untagged
+ * keys come from disjoint alphabets.
+ */
 const arbRefName = fc.stringMatching(/^[a-z0-9_-]{1,6}$/);
 const arbReferenceText = fc.tuple(arbRefName, arbRefName).map(([v, k]) =>
   `\${{ vault.get('${v}', '${k}') }}`
 );
-const arbLeaf = fc.oneof(
+const arbTaggedValue = fc.oneof(
   arbReferenceText,
   fc.stringMatching(/^[a-z ]{0,6}$/),
-  fc.integer(),
-  fc.boolean(),
   fc.constant(null),
 );
-const arbKey = fc.stringMatching(/^[a-z]{1,3}$/);
+const arbLeaf = fc.oneof(
+  arbTaggedValue,
+  fc.integer(),
+  fc.boolean(),
+);
+const arbUntaggedKey = fc.stringMatching(/^u[a-z]{0,2}$/);
 const { node: arbNode } = fc.letrec((tie) => ({
   node: fc.oneof(
     { depthSize: "small" },
     arbLeaf,
     fc.array(tie("node"), { maxLength: 3 }),
-    fc.dictionary(arbKey, tie("node"), { maxKeys: 3 }),
+    fc.dictionary(arbUntaggedKey, tie("node"), { maxKeys: 3 }),
   ),
 }));
-const arbRecord = fc.dictionary(arbKey, arbNode, { minKeys: 1, maxKeys: 4 });
-const arbSensitiveFields = fc.oneof(
-  fc.constant("*" as const),
-  fc.array(fc.stringMatching(/^[a-z]{1,3}(\.[a-z]{1,3})?$/), {
-    maxLength: 4,
-  }),
+const arbWriterShaped = fc.oneof(
+  fc.dictionary(fc.stringMatching(/^[a-z.]{1,4}$/), arbTaggedValue, {
+    minKeys: 1,
+    maxKeys: 4,
+  }).map((record) => ({ record, sensitiveFields: "*" as const })),
+  fc.tuple(
+    fc.dictionary(fc.stringMatching(/^t[a-z]{0,2}$/), arbTaggedValue, {
+      maxKeys: 3,
+    }),
+    fc.dictionary(arbUntaggedKey, arbNode, { maxKeys: 3 }),
+  ).map(([tagged, untagged]) => ({
+    record: { ...untagged, ...tagged },
+    sensitiveFields: Object.keys(tagged),
+  })),
 );
 
-Deno.test("sensitiveVaultReferences: names exactly the references resolveSensitiveVaultRefs reads for the same record, in first-read order (swamp-club#3529)", async () => {
+Deno.test("sensitiveVaultReferences: for a record in the writer's shape, names exactly the references resolveSensitiveVaultRefs reads, in first-read order (swamp-club#3529)", async () => {
   await fc.assert(
     fc.asyncProperty(
-      arbRecord,
-      arbSensitiveFields,
-      async (record, sensitiveFields) => {
+      arbWriterShaped,
+      async ({ record, sensitiveFields }) => {
         const reads: string[] = [];
         const countingVault = {
           get: (vaultName: string, key: string) => {

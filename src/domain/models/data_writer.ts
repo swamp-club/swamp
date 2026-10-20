@@ -468,12 +468,19 @@ export async function processSensitiveResourceData(
 ): Promise<string[]> {
   const sensitiveFields = extractSensitiveFields(spec.schema);
 
-  // If sensitiveOutput is true, add all top-level data keys not already marked
+  // Under sensitiveOutput every top-level key is sensitive. Each is read and
+  // written by its own name, never as a dot path: a key holding a dot would
+  // otherwise be looked up as a nested path, skipped, and persisted as
+  // written under the `*` tag that promises every field was vaulted
+  // (swamp-club#3529). A key with a dot is added even when the schema names
+  // that path, since the schema path means the nested field.
+  const ownKeys = new Set<string>();
   if (spec.sensitiveOutput) {
     const existingPaths = new Set(sensitiveFields.map((f) => f.path));
     for (const key of Object.keys(data)) {
-      if (!existingPaths.has(key)) {
+      if (!existingPaths.has(key) || key.includes(".")) {
         sensitiveFields.push({ path: key });
+        ownKeys.add(key);
       }
     }
   }
@@ -485,7 +492,9 @@ export async function processSensitiveResourceData(
     originalValue: unknown;
   }[] = [];
   for (const field of sensitiveFields) {
-    const value = getNestedValue(snapshot, field.path);
+    const value = ownKeys.has(field.path)
+      ? snapshot[field.path]
+      : getNestedValue(snapshot, field.path);
     if (value !== undefined && value !== null) {
       fieldsWithValues.push({ field, originalValue: value });
     }
@@ -559,7 +568,7 @@ export async function processSensitiveResourceData(
     const vaultRef = `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
 
     // Apply vault reference to data
-    if (field.path.includes(".")) {
+    if (!ownKeys.has(field.path) && field.path.includes(".")) {
       setNestedValue(data, field.path, vaultRef);
     } else {
       data[field.path] = vaultRef;
@@ -1331,19 +1340,27 @@ export async function resolveSensitiveVaultRefs(
 }
 
 /**
- * The vault references a record's sensitive fields hold: at each path the
- * sensitive-fields tag lists (nested values included), or anywhere in the
- * record for the `*` tag, in document order and without repeats. Exactly
- * the references {@link resolveSensitiveVaultRefs} resolves for the same
- * record, so serve can authorize a worker's read of a tagged field against
- * the record itself (swamp-club#3529). A null `sensitiveFields` (no tag, or
- * a malformed one, as {@link parseSensitiveFieldsTag} reads it) names none.
+ * The vault references a record's sensitive fields hold, in the shape
+ * {@link processSensitiveResourceData} leaves them: one whole-string
+ * reference exactly at each tagged location, which is the value at each
+ * path the sensitive-fields tag lists, or the value of each top-level key
+ * by its own name for the `*` tag. Listed in document order without
+ * repeats, so serve can authorize a worker's read of a tagged field
+ * against the record itself (swamp-club#3529). A null `sensitiveFields`
+ * (no tag, or a malformed one, as {@link parseSensitiveFieldsTag} reads it)
+ * names none.
  *
- * That authorization rests on two guards of the write path:
- * {@link processSensitiveResourceData} vaults every present value of a
- * sensitive field, reference text included, so a tagged field only ever
- * holds a reference the writer generated; and the tag sits under
- * {@link RESERVED_TAG_PREFIX}, which swamp alone writes.
+ * Nothing nested inside a tagged location is named: the writer vaults the
+ * whole value there, so a reference below it is not one the writer made.
+ * {@link resolveSensitiveVaultRefs} still walks below a tagged location for
+ * records written before that shape was relied on; a remote read of such a
+ * record fails closed on serve while a local read resolves it.
+ *
+ * That authorization rests on two guards of the write path: the writer
+ * vaults every present value of a sensitive field, reference text included,
+ * so a tagged location only ever holds a reference the writer generated;
+ * and the tag sits under {@link RESERVED_TAG_PREFIX}, which swamp alone
+ * writes.
  */
 export function sensitiveVaultReferences(
   data: Record<string, unknown>,
@@ -1352,25 +1369,18 @@ export function sensitiveVaultReferences(
   const references: SecretReference[] = [];
   const seen = new Set<string>();
   const collect = (value: unknown): void => {
-    if (typeof value === "string") {
-      const match = VAULT_REF_REGEX.exec(value);
-      if (match) {
-        const [, vaultName, key] = match;
-        const id = `${vaultName}\u0000${key}`;
-        if (!seen.has(id)) {
-          seen.add(id);
-          references.push({ vaultName, key });
-        }
-      }
-    } else if (Array.isArray(value)) {
-      value.forEach(collect);
-    } else if (value !== null && typeof value === "object") {
-      Object.values(value as Record<string, unknown>).forEach(collect);
-    }
+    if (typeof value !== "string") return;
+    const match = VAULT_REF_REGEX.exec(value);
+    if (!match) return;
+    const [, vaultName, key] = match;
+    const id = `${vaultName}\u0000${key}`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    references.push({ vaultName, key });
   };
   if (sensitiveFields === null) return references;
   if (sensitiveFields === SENSITIVE_FIELDS_ALL) {
-    collect(data);
+    for (const key of Object.keys(data)) collect(data[key]);
   } else {
     for (const fieldPath of sensitiveFields) {
       collect(getNestedValue(data, fieldPath));
