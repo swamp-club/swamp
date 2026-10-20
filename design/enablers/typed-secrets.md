@@ -839,10 +839,11 @@ workflows, serve and workers. Beyond the caches and run records, the sinks found
 at review time are these: the `step_skipped` event and debug log (raw
 `guardResult`), `stepRun.error` and `assertResult`, `failureReason`,
 `.runs-index.json` (`inputs`, `tags`, `failureReason`), `outputs/*.yaml`
-(`error`), the step-lease `error` (the worker's unredacted `result.error`), the
-worker's debug log of runner stderr, `run_tracker.db` pending-run payloads,
-control-plane wait records, `_catalog.db` tags, the serve audit WAL and store at
-each detail level, the CLI command audit, and on v3 every record's copy in
+(`error`), the step-lease `error` (the worker's `result.error`, scrubbed by
+value on both hops since swamp-club#3525), the worker's debug log of runner
+stderr, `run_tracker.db` pending-run payloads, control-plane wait records,
+`_catalog.db` tags, the serve audit WAL and store at each detail level, the CLI
+command audit, and on v3 every record's copy in
 `commits.db` and `_blobs/`. The checked-in inventory,
 integration/secret_sink_inventory.json, is the list every phase gate is measured
 against. Its rules test fails when this section or the code names a destination
@@ -951,9 +952,11 @@ Phase 5 removes plaintext from dispatch:
 - `readResource` keeps its own authorization and uses the same route for tagged
   fields.
 
-Redaction stays after the trusted boundary. Worker result errors and runner
-stderr are sanitized before they reach logs or lease records. Off loopback,
-serve keeps requiring TLS and an auth mode (`assertOffLoopbackSecurity`).
+Redaction stays after the trusted boundary. Worker result errors are already
+scrubbed on both hops, by the runner before the result frame and by serve
+before the lease record and the step error (swamp-club#3525); runner stderr
+follows (swamp-club#3526). Off loopback, serve keeps requiring TLS and an auth
+mode (`assertOffLoopbackSecurity`).
 
 ## 10. Compatibility and rollout
 

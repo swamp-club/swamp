@@ -22,24 +22,19 @@
  *
  * Pins where a secret the step was dispatched with, or one the worker
  * learns during the dispatch, ends up redacted and where it travels
- * verbatim: the worker's result error and the step lease it is stored on,
- * the runner's stderr logs and the supervisor's re-log of them, serve's
- * per-dispatch redactor, and the data-plane write routes. Typed-secrets
- * Phase 5 changes several of these on purpose (design/enablers/
- * typed-secrets.md §7.1 and §9); a failure here means one of them changed.
+ * verbatim: the runner's stderr logs and the supervisor's re-log of them,
+ * serve's per-dispatch redactor, and the data-plane write routes. The
+ * worker's result error and the step lease it is stored on are redacted on
+ * both hops since swamp-club#3525. Typed-secrets Phase 5 changes several of
+ * the remaining ones on purpose (design/enablers/typed-secrets.md §7.1 and
+ * §9); a failure here means one of them changed.
  *
  * All in-process except the supervisor test, which spawns the baseline
  * runner entry (a runner, not the CLI): the supervisor reads runner stderr
  * only from a child process.
  */
 
-import {
-  assert,
-  assertEquals,
-  assertExists,
-  assertRejects,
-  assertStringIncludes,
-} from "@std/assert";
+import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -190,7 +185,7 @@ function stepRequest(
 
 Deno.test({
   name:
-    "remote secrets baseline: output protection: the worker result error carries the secret verbatim while result logs are redacted",
+    "remote secrets baseline: output protection: the worker result error is redacted like the result logs (swamp-club#3525)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -204,10 +199,10 @@ Deno.test({
       });
 
       assertEquals(result.status, "error");
-      // Disclosure (swamp-club#3525): the thrown message goes
-      // into result.error unredacted, though the runner holds a redactor
-      // that knows the value. Only result.logs are scrubbed.
-      assertStringIncludes(result.error ?? "", secret);
+      // The thrown message goes through the runner's dispatch redactor on
+      // its way into result.error, as result.logs always did
+      // (swamp-club#3525).
+      assertEquals(result.error, "method failed holding ***");
       assertEquals(result.logs.filter((line) => line.includes(secret)), []);
       assert(result.logs.includes("console line ***"));
       // Output events streamed to serve before the result are scrubbed.
@@ -221,7 +216,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: output protection: the step lease's fail record stores the worker error verbatim",
+    "remote secrets baseline: output protection: the step lease's fail record stores the worker error redacted (swamp-club#3525)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -249,15 +244,16 @@ Deno.test({
         });
 
         const secret = canary("lease-error");
-        await assertRejects(
+        const error = await assertRejects(
           () =>
             o.dispatchService.executeRemote(stepRequest({
               methodArgs: { secret },
               secretValues: [secret],
             })),
           Error,
-          secret,
+          "method failed holding ***",
         );
+        assertEquals(error.message.includes(secret), false);
 
         assertExists(leaseId);
         const leaseDef = await o.repoContext.definitionRepo.findByName(
@@ -273,10 +269,11 @@ Deno.test({
         assertExists(content);
         const lease = JSON.parse(decoder.decode(content));
         assertEquals(lease.state, "failed");
-        // Disclosure (swamp-club#3525): serve passes the worker's
-        // result.error to the lease unredacted, though its own dispatch
-        // redactor holds the value.
-        assertStringIncludes(lease.error, secret);
+        // The worker's result.error reaches the lease through serve's own
+        // dispatch redactor as well, so a worker that predates the
+        // runner-side scrub cannot put the value in the record
+        // (swamp-club#3525).
+        assertEquals(lease.error, "method failed holding ***");
       } finally {
         await o.shutdown();
       }
@@ -344,7 +341,7 @@ Deno.test({
                 secretValues: [secret],
               })),
             Error,
-            secret,
+            "method failed holding ***",
           );
         });
         const dispatchId = logs.map((log) =>

@@ -772,13 +772,24 @@ export class DispatchService {
         }
       }
       if (result.status === "error") {
+        // The worker scrubs its result error before sending it
+        // (swamp-club#3525). Scrub it again here with the registration's
+        // redactor, which also holds every value resolveSecret delivered
+        // mid-dispatch (swamp-club#3527): a worker built before those fixes
+        // still enrolls on the same protocol version, and the lease record is
+        // durable.
+        const redactor = this.#options.dispatches.forDispatch(
+          workerName,
+          dispatchId,
+        )?.redactor;
+        const scrub = (text: string) => redactor?.redact(text) ?? text;
         leaseSettled = true;
         await this.#leaseTransition("fail", {
           leaseId,
-          error: result.error ?? "remote execution failed",
+          error: scrub(result.error ?? "remote execution failed"),
         });
         throw markErrorPaths(
-          new Error(result.error ?? "Remote execution failed"),
+          new Error(scrub(result.error ?? "Remote execution failed")),
           result.errorPaths ?? [],
         );
       }
