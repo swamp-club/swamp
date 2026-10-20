@@ -250,6 +250,28 @@ Deno.test("redactIssueContent: long hex without git context never survives", () 
   );
 });
 
+Deno.test("redactIssueContent: a code path with :: survives", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom("std", "Foo", "Self", "self", "Module", "fc", "x"),
+      fc.array(
+        fc.stringOf(
+          fc.constantFrom(..."abcdefghijkmnoprstuvwxyzABC_".split("")),
+          {
+            minLength: 1,
+            maxLength: 10,
+          },
+        ).filter((word) => /[g-zG-Z_]/.test(word[0])),
+        { minLength: 1, maxLength: 3 },
+      ),
+      (root, segments) => {
+        const input = `use ${root}::${segments.join("::")};`;
+        assertEquals(redactIssueContent(input).text, input);
+      },
+    ),
+  );
+});
+
 Deno.test("redactIssueContent: a colon run that is not an address survives", () => {
   fc.assert(
     fc.property(
@@ -269,12 +291,15 @@ Deno.test("redactIssueContent: a colon run that is not an address survives", () 
 
 // Words glued to an address with no separator: the redactor cannot always
 // tell where the word ends, so these only require that the address does not
-// survive whole.
+// survive whole. A word glued straight onto "::", or onto one group and then
+// "::" (srcaddr::1:2, srcaddr0::1:2), reads exactly like a code path
+// (Foo::bar, Hashed::abc) and is kept, so those are left out.
 const arbGluedBefore = fc.constantFrom("srcaddr", "x", "0x", "ipv6:", "id:");
 
 Deno.test("redactIssueContent: an IPv6 address glued to a word never survives whole", () => {
   fc.assert(
     fc.property(arbGluedBefore, arbIpv6, arbAfter, (before, address, after) => {
+      fc.pre(before.endsWith(":") || !/^[0-9a-f]{0,4}::/i.test(address));
       const result = redactIssueContent(`t ${before}${address}${after} e`);
       assert(!result.text.includes(address), result.text);
       assert(result.summary.totalRedactions >= 1, result.text);

@@ -1121,9 +1121,8 @@ Deno.test("redactIssueContent: an address next to a label colon or a message col
       ["id:2001:db8::5 up", "id:[IP-1] up"],
       ["dial 2001:db8:85a3:0:0:8a2e:370:7334:8080", "dial [IP-1]"],
       ["mac aa:bb:cc:dd:ee:ff:8080 up", "mac [IP-1] up"],
-      ["addr 2001:db8::1x up", "addr [IP-1]x up"],
       ["x2001:db8:85a3:0:0:8a2e:370:7334 y", "x[IP-1] y"],
-      ["srcaddr2001:db8::7 y", "srcaddr[IP-1] y"],
+      ["ipv6:2001:db8::5x up", "ipv6:2001:db8::5x up"],
     ]
   ) {
     assertEquals(redactIssueContent(input).text, expected, input);
@@ -1150,5 +1149,27 @@ Deno.test("redactIssueContent: generic words or a nearby secret label do not kee
       "[REDACTED-SECRET-1]",
       input,
     );
+  }
+});
+
+Deno.test("redactIssueContent: code paths with :: are not IP addresses", () => {
+  for (
+    const input of [
+      "use std::collections::HashMap;",
+      "Foo::bar()",
+      "std::fs::read",
+      "Module::Class::method",
+      "fc::assert(fc.property(...))",
+      "self::add_one",
+      "code Self::new and f::new",
+      "Hashed::abc",
+      "AWS::EC2::VPC",
+      'resource: "model:AWS::EC2::*"',
+      "path a:b:c:d:e:f:g:word and cafe:feed:dead:beef:face:bead:fade:west",
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, input);
+    assertEquals(result.summary.totalRedactions, 0, input);
   }
 });

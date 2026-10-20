@@ -258,14 +258,17 @@ const CONNECTION_STRING_RE =
 // longer dotted run.
 const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 
-// IPv6 candidates: every run of hex groups joined by two or more colons. The
-// run is taken whole and judged by isAddressLikeColonRun, so an address is
-// redacted whatever text touches it (remote_addr:<addr>, <addr>: no route,
-// <addr>:8080) while a run that cannot hold one (a fast-check replay path such
-// as 992:3:11:17:17:12, a timestamp) is kept.
-// No lookbehind: a run glued to a preceding word (x2001:db8:…) must still
-// start at its first group, or the shortened run would pass as a non-address.
-const IPV6_RE = /(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4}/g;
+// IPv6 candidates: every token of word characters joined by two or more
+// colons, taken whole and judged by redactColonToken. Reading the whole token
+// lets one rule see both the address and the words around it, so an address is
+// redacted whatever touches it (remote_addr:<addr>, <addr>: no route,
+// <addr>:8080, x2001:db8:…) while code paths (std::collections::HashMap,
+// Foo::bar) and runs that cannot hold an address (a fast-check replay path
+// such as 992:3:11:17:17:12, a timestamp) are kept.
+const IPV6_RE = /[0-9A-Za-z_]*(?::[0-9A-Za-z_]*){2,}/g;
+
+// One IPv6 group, or the empty group either side of "::".
+const HEX_GROUP_RE = /^[0-9A-Fa-f]{0,4}$/;
 
 // Home directory paths with usernames — captures the prefix and username
 // separately so we can reconstruct positionally.
@@ -331,18 +334,17 @@ function isSafeIpv6(ip: string): boolean {
   return false;
 }
 
-// A colon run can hold an address when it has a "::", eight or more groups
-// (an address with a port or a label group either side), or six consecutive
-// two-hex groups (a MAC). Anything else, such as fewer than eight groups of
-// mixed widths with no "::", can hold none. A run of one or two groups ending
-// in "::" that a word follows (f::new) is a code path.
-function isAddressLikeColonRun(run: string, gluedToWord: boolean): boolean {
+// A colon run can hold an address when it has eight or more groups (an
+// address with a port or a label group either side) or six consecutive
+// two-hex groups (a MAC), or, unless it is strict, a "::". Anything else, such
+// as fewer than eight groups of mixed widths with no "::", can hold none.
+// Strict is for a run that touches a word with no single colon between them
+// (Foo::bar, x2001:…), where "::" is as likely a code path as an address.
+function isAddressLikeColonRun(run: string, strict: boolean): boolean {
   const groups = run.split(":").filter((group) => group !== "");
   if (groups.length === 0) return false;
   if (groups.length >= 8) return true;
-  if (run.includes("::")) {
-    return !(gluedToWord && run.endsWith("::") && groups.length < 3);
-  }
+  if (!strict && run.includes("::")) return true;
   let twoHexRun = 0;
   for (const group of groups) {
     twoHexRun = group.length === 2 ? twoHexRun + 1 : 0;
@@ -731,6 +733,68 @@ function isInsideCode(
   );
 }
 
+/**
+ * Redacts the IPv6 address or MAC in one colon token, if it holds one. Every
+ * inner part must be a hex group, or the token is code or prose. An edge part
+ * may be a word glued to a group (ipv6 in ipv6:<addr>, x in x2001:…): the run
+ * is judged first without that group, keeping the word and a one-colon label
+ * whole, then with it, strictly, so a full address glued to a word is still
+ * caught. One colon at either end of the run stays outside the placeholder.
+ */
+function redactColonToken(
+  token: string,
+  placeholders: PlaceholderMap,
+  count: (category: string) => void,
+): string {
+  const parts = token.split(":");
+  const inner = parts.slice(1, -1);
+  if (!inner.every((part) => HEX_GROUP_RE.test(part))) return token;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const headGroup = HEX_GROUP_RE.test(first)
+    ? first
+    : first.match(/[0-9A-Fa-f]{1,4}$/)?.[0] ?? "";
+  const headWord = first.slice(0, first.length - headGroup.length);
+  const tailGroup = HEX_GROUP_RE.test(last)
+    ? last
+    : last.match(/^[0-9A-Fa-f]{1,4}/)?.[0] ?? "";
+  const tailWord = last.slice(tailGroup.length);
+
+  const judge = (candidate: string, strict: boolean): string | null => {
+    const lead = /^(?::(?!:)|:::)/.test(candidate) ? ":" : "";
+    const trail = /(?:[^:]:|:::)$/.test(candidate) ? ":" : "";
+    const run = candidate.slice(lead.length, candidate.length - trail.length);
+    if (!isAddressLikeColonRun(run, strict)) return null;
+    if (isSafeIpv6(run)) return candidate;
+    count("IP address");
+    return `${lead}${placeholders.get("IP", run)}${trail}`;
+  };
+
+  // Without the glued edge groups. Exactly "::" right against a word
+  // (Foo::bar) is judged strictly; a label colon before "::"
+  // (remote_addr:::1:2) is not.
+  const core = [
+    headWord ? "" : headGroup,
+    ...inner,
+    tailWord ? "" : tailGroup,
+  ].join(":");
+  const touchesWord = (headWord !== "" && inner[0] === "" && inner[1] !== "") ||
+    (tailWord !== "" && inner[inner.length - 1] === "" &&
+      inner[inner.length - 2] !== "");
+  const coreResult = judge(core, touchesWord);
+  if (coreResult !== null) {
+    return (headWord ? first : "") + coreResult + (tailWord ? last : "");
+  }
+
+  // With them: only a full address or MAC counts.
+  if ((headWord && headGroup) || (tailWord && tailGroup)) {
+    const full = [headGroup, ...inner, tailGroup].join(":");
+    const fullResult = judge(full, true);
+    if (fullResult !== null) return headWord + fullResult + tailWord;
+  }
+  return token;
+}
+
 function applyRedactions(
   text: string,
   placeholders: PlaceholderMap,
@@ -884,37 +948,7 @@ function applyRedactions(
   // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
   result = result.replace(
     IPV6_RE,
-    (match: string, offset: number, source: string) => {
-      const followedByWord = /[A-Za-z0-9_]/.test(
-        source[offset + match.length] ?? "",
-      );
-      // Returns the replacement for a candidate run, or null when it holds
-      // no address. One colon at either end is a label or message colon, not
-      // part of the run: remote_addr:<addr>, <addr>: no route.
-      const judge = (candidate: string): string | null => {
-        const lead = /^(?::(?!:)|:::)/.test(candidate) ? ":" : "";
-        const trail = /(?:[^:]:|:::)$/.test(candidate) ? ":" : "";
-        const run = candidate.slice(
-          lead.length,
-          candidate.length - trail.length,
-        );
-        if (!isAddressLikeColonRun(run, followedByWord)) return null;
-        if (isSafeIpv6(run)) return candidate;
-        count("IP address");
-        return `${lead}${placeholders.get("IP", run)}${trail}`;
-      };
-      // A run glued to a preceding word starts partway into it. When that
-      // partial group is one character, it is the last letter of a label
-      // (ipv6:<addr>, id:<addr>): judge the run without it first, so the
-      // label stays whole. A longer one (x2001:db8:…) is the address's own
-      // first group, so the full run is judged.
-      const cut = match.indexOf(":");
-      if (cut === 1 && /[0-9A-Za-z]/.test(source[offset - 1] ?? "")) {
-        const tail = judge(match.slice(cut));
-        if (tail !== null) return match.slice(0, cut) + tail;
-      }
-      return judge(match) ?? match;
-    },
+    (token: string) => redactColonToken(token, placeholders, count),
   );
 
   // 13. IPv4 (the regex requires exactly 4 octets, so 3-segment version
