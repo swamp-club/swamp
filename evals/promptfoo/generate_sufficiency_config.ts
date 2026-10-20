@@ -32,10 +32,8 @@ import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
-  assertRouteSupports,
   cliProviderEntry,
-  defaultRoute,
-  ROUTES,
+  resolveRoute,
   type Route,
 } from "./provider_route.ts";
 
@@ -149,15 +147,11 @@ async function main(): Promise<void> {
   }
 
   const provider = PROVIDER_REGISTRY[modelAlias];
-  const route = (args.route ?? defaultRoute(modelAlias, {
-    GITHUB_ACTIONS: Deno.env.get("GITHUB_ACTIONS"),
-  })) as Route;
-  if (!ROUTES.includes(route)) {
-    console.error(`Error: unknown route "${route}". Valid routes: ${ROUTES.join(", ")}`);
-    Deno.exit(1);
-  }
+  let route: Route;
   try {
-    assertRouteSupports(modelAlias, route);
+    route = resolveRoute(modelAlias, args.route, {
+      GITHUB_ACTIONS: Deno.env.get("GITHUB_ACTIONS"),
+    });
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     Deno.exit(1);
@@ -242,9 +236,7 @@ async function main(): Promise<void> {
       description: `[${item.guide}:${label}] ${item.query.slice(0, 50)}`,
       vars: {
         query: item.query,
-        guide_content: route === "cli"
-          ? rawBlock(guideContents[item.guide])
-          : guideContents[item.guide],
+        guide_content: rawBlock(guideContents[item.guide]),
       },
       assert: [
         {

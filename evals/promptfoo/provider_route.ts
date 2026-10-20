@@ -53,6 +53,25 @@ export function defaultRoute(
   return alias in CLI_MODELS ? "cli" : "api";
 }
 
+/**
+ * The route for `alias`: the requested one when given, else the default.
+ * Throws on an unknown route or a model with no CLI route.
+ */
+export function resolveRoute(
+  alias: string,
+  requested: string | undefined,
+  env: { GITHUB_ACTIONS?: string },
+): Route {
+  const route = requested ?? defaultRoute(alias, env);
+  if (!(ROUTES as readonly string[]).includes(route)) {
+    throw new Error(
+      `unknown route "${route}". Valid routes: ${ROUTES.join(", ")}`,
+    );
+  }
+  assertRouteSupports(alias, route as Route);
+  return route as Route;
+}
+
 /** Throws when `alias` cannot run on `route`. */
 export function assertRouteSupports(alias: string, route: Route): void {
   if (route === "cli" && !(alias in CLI_MODELS)) {

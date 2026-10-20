@@ -40,6 +40,19 @@ export function buildSchema(toolNames) {
   };
 }
 
+/**
+ * Flags that cut `claude -p` off from tools, MCP servers and user settings, so
+ * a case is answered from the prompt alone. Shared with the runner's preflight.
+ * `--bare` is not an option: it only accepts an API key.
+ */
+export const ISOLATION_FLAGS = [
+  "--tools",
+  "",
+  "--strict-mcp-config",
+  "--setting-sources",
+  "",
+];
+
 /** Arguments for `claude`; the prompt is passed separately on stdin-free argv. */
 export function buildArgs(prompt, config) {
   const args = [
@@ -47,11 +60,7 @@ export function buildArgs(prompt, config) {
     prompt,
     "--model",
     config.model,
-    "--tools",
-    "",
-    "--strict-mcp-config",
-    "--setting-sources",
-    "",
+    ...ISOLATION_FLAGS,
     "--system-prompt",
     config.systemPrompt,
     "--json-schema",

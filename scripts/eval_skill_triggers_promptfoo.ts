@@ -42,10 +42,9 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { installPromptfooDeps } from "./promptfoo_install.ts";
+import { ISOLATION_FLAGS } from "../evals/promptfoo/claude_cli_provider.mjs";
 import {
-  assertRouteSupports,
-  defaultRoute,
-  ROUTES,
+  resolveRoute,
   type Route,
 } from "../evals/promptfoo/provider_route.ts";
 
@@ -132,11 +131,7 @@ async function cliPreflightCheck(model: string): Promise<void> {
         "hi",
         "--model",
         model,
-        "--tools",
-        "",
-        "--strict-mcp-config",
-        "--setting-sources",
-        "",
+        ...ISOLATION_FLAGS,
         "--output-format",
         "json",
       ],
@@ -442,17 +437,11 @@ async function main(): Promise<void> {
     Deno.exit(1);
   }
 
-  const route = (args.route ?? defaultRoute(model, {
-    GITHUB_ACTIONS: Deno.env.get("GITHUB_ACTIONS"),
-  })) as Route;
-  if (!ROUTES.includes(route)) {
-    console.error(
-      `Error: unknown route "${route}". Valid routes: ${ROUTES.join(", ")}`,
-    );
-    Deno.exit(1);
-  }
+  let route: Route;
   try {
-    assertRouteSupports(model, route);
+    route = resolveRoute(model, args.route, {
+      GITHUB_ACTIONS: Deno.env.get("GITHUB_ACTIONS"),
+    });
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     Deno.exit(1);

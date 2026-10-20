@@ -28,6 +28,7 @@ import {
   assertRouteSupports,
   cliProviderEntry,
   defaultRoute,
+  resolveRoute,
 } from "../evals/promptfoo/provider_route.ts";
 
 const TOOLS = ["swamp", "swamp-getting-started", "no_match"];
@@ -107,4 +108,12 @@ Deno.test("cliProviderEntry: points promptfoo at the local provider file", () =>
   assertEquals(entry.id, "file://claude_cli_provider.mjs");
   assertEquals(entry.config.model, "sonnet");
   assertEquals(entry.config.toolNames, TOOLS);
+});
+
+Deno.test("resolveRoute: honors a request, else the default, and rejects bad ones", () => {
+  assertEquals(resolveRoute("opus", undefined, {}), "cli");
+  assertEquals(resolveRoute("opus", "api", {}), "api");
+  assertEquals(resolveRoute("opus", undefined, { GITHUB_ACTIONS: "true" }), "api");
+  assertThrows(() => resolveRoute("opus", "bogus", {}), Error, "unknown route");
+  assertThrows(() => resolveRoute("fable", "cli", {}), Error, "no CLI route");
 });
