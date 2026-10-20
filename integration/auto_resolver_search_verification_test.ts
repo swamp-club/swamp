@@ -56,6 +56,7 @@ function recordingOutput(): AutoResolveOutputPort & { events: string[] } {
     collectiveNotTrusted: record("collectiveNotTrusted"),
     localSourceFailed: record("localSourceFailed"),
     noStableVersion: record("noStableVersion"),
+    installBusy: record("installBusy"),
   };
 }
 

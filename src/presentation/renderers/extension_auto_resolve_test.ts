@@ -20,8 +20,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { setColorEnabled } from "@std/fmt/colors";
 import {
+  installBusyMessage,
   renderAutoResolveAlreadyInstalled,
   renderAutoResolveCollectiveNotTrusted,
+  renderAutoResolveInstallBusy,
   renderAutoResolveInstalled,
   renderAutoResolveInstalledWithoutType,
   renderAutoResolveInstalling,
@@ -286,6 +288,55 @@ Deno.test("renderAutoResolveNetworkError: log mode shows Error not Warning", () 
   assertStringIncludes(output, "Error");
   assertEquals(output.includes("Warning"), false);
   assertStringIncludes(output, "connection refused");
+});
+
+const LOCK_HOLDER = { holder: "ci@runner-3", hostname: "runner-3", pid: 4242 };
+
+Deno.test("renderAutoResolveInstallBusy: log mode names the type and the lock holder", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstallBusy(
+      "@swamp/gcs-datastore",
+      "@swamp/gcs-datastore",
+      LOCK_HOLDER,
+      180_000,
+      "log",
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Error");
+  assertStringIncludes(
+    output,
+    "auto-resolution failed for type @swamp/gcs-datastore: another swamp process (ci@runner-3, pid 4242) was still installing @swamp/gcs-datastore after 180s; retry once it finishes",
+  );
+});
+
+Deno.test("renderAutoResolveInstallBusy: json mode reports install_busy with the holder fields", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveInstallBusy(
+      "@swamp/gcs-datastore",
+      "@swamp/gcs-datastore",
+      LOCK_HOLDER,
+      180_000,
+      "json",
+    );
+  });
+  const event = JSON.parse(lines[0]);
+  assertEquals(event.event, "auto_resolve");
+  assertEquals(event.status, "failed");
+  assertEquals(event.reason, "install_busy");
+  assertEquals(event.type, "@swamp/gcs-datastore");
+  assertEquals(event.extension, "@swamp/gcs-datastore");
+  assertEquals(event.holder, "ci@runner-3");
+  assertEquals(event.hostname, "runner-3");
+  assertEquals(event.pid, 4242);
+  assertEquals(event.waitedMs, 180_000);
+});
+
+Deno.test("installBusyMessage: an unreadable lock file still explains the wait", () => {
+  assertEquals(
+    installBusyMessage("@t/ext", null, 179_600),
+    "another swamp process was still installing @t/ext after 180s; retry once it finishes",
+  );
 });
 
 // --- log mode: soft-failure renderers remain Warning ---

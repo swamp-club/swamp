@@ -30,6 +30,9 @@ import { UserError } from "../../domain/errors.ts";
 import { RegistryUnavailableError } from "../../domain/extensions/registry_unavailable_error.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
+/** Backoff waits resolve at once, so retries never slow the suite. */
+const noSleep = () => Promise.resolve();
+
 for (
   const visibility of [undefined, "public", "private", null, "PRIVATE", true]
 ) {
@@ -47,6 +50,8 @@ for (
     try {
       const client = new ExtensionApiClient(
         `http://localhost:${server.addr.port}`,
+        {},
+        { sleep: noSleep },
       );
       const confirm = () =>
         client.confirmPush({
@@ -90,6 +95,8 @@ async function confirmWithWarnings(warnings: unknown) {
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     return await client.confirmPush({
       name: "@test/ext",
@@ -196,7 +203,9 @@ Deno.test("ExtensionApiClient constructor stores server URL", () => {
 });
 
 Deno.test("ExtensionApiClient.getLatestVersion throws UserError on connection failure", async () => {
-  const client = new ExtensionApiClient("http://localhost:1");
+  const client = new ExtensionApiClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.getLatestVersion("@test/ext", "fake-key"),
     UserError,
@@ -205,7 +214,9 @@ Deno.test("ExtensionApiClient.getLatestVersion throws UserError on connection fa
 });
 
 Deno.test("ExtensionApiClient.initiatePush throws UserError on connection failure", async () => {
-  const client = new ExtensionApiClient("http://localhost:1");
+  const client = new ExtensionApiClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () =>
       client.initiatePush({
@@ -222,7 +233,9 @@ Deno.test("ExtensionApiClient.initiatePush throws UserError on connection failur
 });
 
 Deno.test("ExtensionApiClient.confirmPush throws UserError on connection failure", async () => {
-  const client = new ExtensionApiClient("http://localhost:1");
+  const client = new ExtensionApiClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () =>
       client.confirmPush({
@@ -248,7 +261,9 @@ Deno.test("ExtensionApiClient.checkResponse strips HTML error pages", async () =
     });
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.getLatestVersion("@test/ext", "fake-key"),
     UserError,
@@ -268,7 +283,9 @@ Deno.test("ExtensionApiClient.checkResponse strips HTML without content-type hea
     });
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.getLatestVersion("@test/ext", "fake-key"),
     UserError,
@@ -286,7 +303,9 @@ Deno.test("ExtensionApiClient.checkResponse preserves JSON error messages", asyn
     });
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.getLatestVersion("@test/ext", "fake-key"),
     UserError,
@@ -296,7 +315,9 @@ Deno.test("ExtensionApiClient.checkResponse preserves JSON error messages", asyn
 });
 
 Deno.test("ExtensionApiClient.downloadArchive throws UserError on connection failure", async () => {
-  const client = new ExtensionApiClient("http://localhost:1");
+  const client = new ExtensionApiClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.downloadArchive("@test/ext", "2026.02.26.1", "fake-key"),
     UserError,
@@ -308,7 +329,9 @@ Deno.test("ExtensionApiClient.uploadArchive throws UserError on failure", async 
   // Non-existent URL
   const error = await assertRejects(
     () => {
-      const client = new ExtensionApiClient("http://localhost:1");
+      const client = new ExtensionApiClient("http://localhost:1", {}, {
+        sleep: noSleep,
+      });
       return client.uploadArchive(
         "http://localhost:1/fake-upload",
         new Uint8Array([0x1F, 0x8B]),
@@ -332,7 +355,9 @@ Deno.test("ExtensionApiClient.searchExtensions builds correct URL with params", 
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.searchExtensions({
     q: "aws",
     collective: "stack72",
@@ -363,7 +388,9 @@ Deno.test("ExtensionApiClient.searchExtensions repeats platform and label params
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.searchExtensions({
     platform: ["aws", "docker"],
     label: ["deploy", "infra"],
@@ -387,7 +414,9 @@ Deno.test("ExtensionApiClient.searchExtensions repeats contentType params", asyn
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.searchExtensions({
     contentType: ["models", "workflows"],
   });
@@ -412,7 +441,9 @@ Deno.test("ExtensionApiClient.searchExtensions sends no params when empty", asyn
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.searchExtensions({});
   const url = new URL(capturedUrl);
   assertEquals(url.pathname, "/api/v1/extensions/search");
@@ -421,7 +452,9 @@ Deno.test("ExtensionApiClient.searchExtensions sends no params when empty", asyn
 });
 
 Deno.test("ExtensionApiClient.searchExtensions throws UserError on connection failure", async () => {
-  const client = new ExtensionApiClient("http://localhost:1");
+  const client = new ExtensionApiClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.searchExtensions({ q: "test" }),
     UserError,
@@ -445,7 +478,9 @@ Deno.test("ExtensionApiClient.yankExtension sends POST with reason to version ya
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const result = await client.yankExtension(
     "@test/ext",
     "2026.02.26.1",
@@ -477,7 +512,9 @@ Deno.test("ExtensionApiClient.yankExtension sends POST to extension yank endpoin
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.yankExtension(
     "@test/ext",
     null,
@@ -498,7 +535,9 @@ Deno.test("ExtensionApiClient.yankExtension throws UserError on 410 already yank
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () =>
       client.yankExtension(
@@ -524,7 +563,9 @@ Deno.test("ExtensionApiClient.yankExtension includes channel in body when provid
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.yankExtension(
     "@test/ext",
     null,
@@ -539,7 +580,9 @@ Deno.test("ExtensionApiClient.yankExtension includes channel in body when provid
 });
 
 Deno.test("ExtensionApiClient.yankExtension throws UserError on connection failure", async () => {
-  const client = new ExtensionApiClient("http://localhost:1");
+  const client = new ExtensionApiClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () =>
       client.yankExtension(
@@ -572,7 +615,9 @@ Deno.test("ExtensionApiClient.unyankExtension sends POST with reason to version 
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const result = await client.unyankExtension(
     "@test/ext",
     "2026.02.26.1",
@@ -603,7 +648,9 @@ Deno.test("ExtensionApiClient.unyankExtension sends POST to extension unyank end
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.unyankExtension(
     "@test/ext",
     null,
@@ -628,7 +675,9 @@ Deno.test("ExtensionApiClient.unyankExtension sends POST with no body and no Con
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.unyankExtension(
     "@test/ext",
     null,
@@ -653,7 +702,9 @@ Deno.test("ExtensionApiClient.unyankExtension includes channel in body when prov
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   await client.unyankExtension(
     "@test/ext",
     null,
@@ -676,7 +727,9 @@ Deno.test("ExtensionApiClient.unyankExtension throws UserError on 409 not yanked
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () =>
       client.unyankExtension(
@@ -700,7 +753,9 @@ Deno.test("ExtensionApiClient.unyankExtension throws UserError on 404 not found"
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () =>
       client.unyankExtension(
@@ -717,7 +772,9 @@ Deno.test("ExtensionApiClient.unyankExtension throws UserError on 404 not found"
 });
 
 Deno.test("ExtensionApiClient.unyankExtension throws UserError on connection failure", async () => {
-  const client = new ExtensionApiClient("http://localhost:1");
+  const client = new ExtensionApiClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () =>
       client.unyankExtension(
@@ -757,7 +814,9 @@ Deno.test("ExtensionApiClient version-scoped methods URL-encode version path seg
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
 
   // A version containing characters that would corrupt the URL if spliced raw:
   // `?` would start a query string, `#` would truncate the path, `/` would
@@ -814,8 +873,6 @@ Deno.test("ExtensionApiClient version-scoped methods URL-encode version path seg
   }
 });
 
-const noSleep = () => Promise.resolve();
-
 Deno.test("ExtensionApiClient: 429 surfaces Retry-After in UserError", async () => {
   const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
     return new Response("rate limited", {
@@ -848,6 +905,8 @@ Deno.test("ExtensionApiClient: 429 on search surfaces sign-in hint", async () =>
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const err = await assertRejects(
       () => client.searchExtensions({ q: "aws" }),
@@ -923,6 +982,8 @@ Deno.test("ExtensionApiClient: reads the scope from the body when the header is 
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const err = await assertRejects(
       () => client.searchExtensions({ q: "aws" }),
@@ -1091,6 +1152,8 @@ Deno.test("ExtensionApiClient sends no identity headers when constructed without
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     await client.searchExtensions({});
     assertEquals(captured.authorization, null);
@@ -1227,7 +1290,9 @@ Deno.test("ExtensionApiClient.checkResponse surfaces scope-specific 403 message"
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.getLatestVersion("@test/ext", "fake-key"),
     UserError,
@@ -1249,7 +1314,9 @@ Deno.test("ExtensionApiClient.checkResponse passes through non-scope 403 message
     );
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.getLatestVersion("@test/ext", "fake-key"),
     UserError,
@@ -1269,7 +1336,9 @@ Deno.test("ExtensionApiClient.checkResponse includes URL in error message", asyn
     });
   });
   const addr = server.addr;
-  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`, {}, {
+    sleep: noSleep,
+  });
   const error = await assertRejects(
     () => client.getChecksum("@hivemq/asdlc-factory", "2026.06.27.1"),
     UserError,
@@ -1302,6 +1371,8 @@ Deno.test("ExtensionApiClient.downloadArchive returns the archive bytes under th
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     assertEquals(
       await client.downloadArchive("@test/ext", "2026.09.29.1"),
@@ -1319,6 +1390,8 @@ Deno.test("ExtensionApiClient.downloadArchive refuses a Content-Length over the 
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const error = await assertRejects(
       () => client.downloadArchive("@test/ext", "2026.09.29.1"),
@@ -1344,6 +1417,8 @@ Deno.test("ExtensionApiClient.downloadArchive stops reading a body with no Conte
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const error = await assertRejects(
       () => client.downloadArchive("@test/ext", "2026.09.29.1"),
@@ -1367,6 +1442,8 @@ Deno.test("ExtensionApiClient.listVersions: sends every channel filter and the p
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const result = await client.listVersions("@test/ext", {
       channel: ["stable", "rc", "beta"],
@@ -1396,6 +1473,8 @@ Deno.test("ExtensionApiClient.listVersions: an unknown extension lists no versio
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const result = await client.listVersions("@test/none");
     assertEquals(result.versions, []);
@@ -1483,6 +1562,8 @@ async function refusalMessage(
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     const error = await assertRejects(
       () =>
@@ -1557,6 +1638,8 @@ async function listedVersions(versions: unknown[]) {
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     return (await client.listVersions("@test/ext", {}, "test-key")).versions;
   } finally {
@@ -1619,7 +1702,7 @@ Deno.test("ExtensionApiClient: a timed-out request throws RegistryUnavailableErr
   const err = await assertRejects(
     () => client.getExtension("@swamp/s3-datastore"),
     RegistryUnavailableError,
-    "Request to http://registry.test timed out. Is the server running?",
+    "Request to http://registry.test GET /api/v1/extensions/%40swamp%2Fs3-datastore timed out after 6 attempts over",
   );
   assertEquals(err.name, "UserError");
   assertEquals(err.cause, timeout);
@@ -1631,8 +1714,9 @@ Deno.test("ExtensionApiClient: a failed connection throws RegistryUnavailableErr
   const err = await assertRejects(
     () => client.searchExtensions({ q: "s3" }),
     RegistryUnavailableError,
-    "Could not connect to http://registry.test: error sending request",
+    "Could not connect to http://registry.test (GET /api/v1/extensions/search after 6 attempts over",
   );
+  assertStringIncludes(err.message, "): error sending request");
   assertEquals(err.cause, failure);
 });
 
@@ -1645,7 +1729,7 @@ Deno.test("ExtensionApiClient: a 5xx response throws RegistryUnavailableError", 
   await assertRejects(
     () => client.getExtension("@swamp/s3-datastore"),
     RegistryUnavailableError,
-    "Extension API error (HTTP 503): upstream unavailable",
+    "Extension API error (HTTP 503 after 6 attempts over",
   );
 });
 
@@ -1713,6 +1797,8 @@ Deno.test("ExtensionApiClient.searchExtensions sends licensed=true only when ask
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     await client.searchExtensions({ q: "aws", licensed: true });
     await client.searchExtensions({ q: "aws" });
@@ -1744,6 +1830,8 @@ Deno.test("ExtensionApiClient.getLatestVersionDetail carries the version's licen
   try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
     );
     assertEquals(
       (await client.getLatestVersionDetail("@a/b"))?.license,
@@ -1754,5 +1842,209 @@ Deno.test("ExtensionApiClient.getLatestVersionDetail carries the version's licen
     assertEquals(absent !== null && "license" in absent, false);
   } finally {
     await server.shutdown();
+  }
+});
+
+/** A fetcher that answers each request with the next step, recording requests. */
+function scriptedFetch(
+  steps: ((url: string, init?: RequestInit) => Response | Error)[],
+) {
+  const requests: { url: string; init?: RequestInit }[] = [];
+  const fetch = (url: string | URL, init?: RequestInit) => {
+    requests.push({ url: String(url), init });
+    const step = steps[Math.min(requests.length - 1, steps.length - 1)];
+    const value = step(String(url), init);
+    return value instanceof Error
+      ? Promise.reject(value)
+      : Promise.resolve(value);
+  };
+  return { fetch, requests };
+}
+
+const SIGNED_URL =
+  "https://storage.test/bucket/ext.tgz?X-Goog-Signature=topsecret";
+
+/** Answers the download-URL lookup with a redirect to {@link SIGNED_URL}. */
+const redirectToSignedUrl = () =>
+  new Response(null, { status: 302, headers: { location: SIGNED_URL } });
+
+Deno.test("ExtensionApiClient: a read that times out once is retried and succeeds", async () => {
+  const { fetch, requests } = scriptedFetch([
+    () => new DOMException("Signal timed out.", "TimeoutError"),
+    () => Response.json({ name: "@swamp/s3-datastore" }),
+  ]);
+  const client = new ExtensionApiClient("http://registry.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  const info = await client.getExtension("@swamp/s3-datastore");
+  assertEquals(info?.name, "@swamp/s3-datastore");
+  assertEquals(requests.length, 2);
+});
+
+Deno.test("ExtensionApiClient: a write is never retried on a connection failure", async () => {
+  const { fetch, requests } = scriptedFetch([
+    () => new TypeError("connection reset"),
+  ]);
+  const client = new ExtensionApiClient("http://registry.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  await assertRejects(
+    () => client.yankExtension("@test/ext", null, null, "reason", "key"),
+    RegistryUnavailableError,
+    "Could not connect to http://registry.test (POST",
+  );
+  assertEquals(requests.length, 1);
+});
+
+Deno.test("ExtensionApiClient: a caller's signal and the per-attempt timeout both apply", async () => {
+  const { fetch, requests } = scriptedFetch([
+    () => Response.json({ name: "@test/ext" }),
+  ]);
+  const client = new ExtensionApiClient("http://registry.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  const controller = new AbortController();
+  await client.getExtension("@test/ext", undefined, controller.signal);
+  const sent = requests[0].init?.signal;
+  // A combined signal, not the caller's own, so the attempt timeout holds.
+  assertFalse(sent === controller.signal);
+  controller.abort();
+  assertEquals(sent?.aborted, true);
+});
+
+Deno.test("ExtensionApiClient: a retried failure names no query string or credential", async () => {
+  const { fetch } = scriptedFetch([(url) =>
+    new TypeError(
+      `error sending request for url (${url}): client error (Connect)`,
+    )]);
+  const client = new ExtensionApiClient("http://registry.test", {
+    bearerToken: "swamp_secret_token",
+  }, { sleep: noSleep, fetch });
+  const err = await assertRejects(
+    () => client.searchExtensions({ q: "private-query" }, "api-key-secret"),
+    RegistryUnavailableError,
+  );
+  assertStringIncludes(err.message, "after 6 attempts");
+  assertFalse(err.message.includes("private-query"));
+  assertFalse(err.message.includes("secret"));
+});
+
+Deno.test("ExtensionApiClient.downloadArchive: retries a body lost mid-read", async () => {
+  const brokenBody = () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2]));
+          controller.error(new TypeError("connection reset"));
+        },
+      }),
+    );
+  const { fetch, requests } = scriptedFetch([
+    redirectToSignedUrl,
+    brokenBody,
+    () => new Response(new Uint8Array([1, 2, 3])),
+  ]);
+  const client = new ExtensionApiClient("http://registry.test", {
+    bearerToken: "swamp_secret_token",
+    userAgent: "swamp-cli/test",
+  }, { sleep: noSleep, fetch });
+  const bytes = await client.downloadArchive("@test/ext", "1.0.0", "api-key");
+  assertEquals([...bytes], [1, 2, 3]);
+  const downloads = requests.filter((r) => r.url === SIGNED_URL);
+  assertEquals(downloads.length, 2);
+  for (const download of downloads) {
+    const headers = new Headers(download.init?.headers);
+    assertFalse(headers.has("x-api-key"));
+    assertFalse(headers.has("authorization"));
+    assertFalse(headers.has("user-agent"));
+  }
+});
+
+Deno.test("ExtensionApiClient.downloadArchive: does not retry a refused signed URL", async () => {
+  const { fetch, requests } = scriptedFetch([
+    redirectToSignedUrl,
+    () => new Response("expired", { status: 403 }),
+  ]);
+  const client = new ExtensionApiClient("http://registry.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  await assertRejects(
+    () => client.downloadArchive("@test/ext", "1.0.0"),
+    UserError,
+    "Failed to download extension archive (HTTP 403).",
+  );
+  assertEquals(requests.filter((r) => r.url === SIGNED_URL).length, 1);
+});
+
+Deno.test("ExtensionApiClient.downloadArchive: an exhausted download names attempts but not the signature", async () => {
+  const { fetch } = scriptedFetch([
+    redirectToSignedUrl,
+    (url) =>
+      new TypeError(
+        `error sending request for url (${url}): client error (Connect): dns error`,
+      ),
+  ]);
+  const client = new ExtensionApiClient("http://registry.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  const err = await assertRejects(
+    () => client.downloadArchive("@test/ext", "1.0.0"),
+    UserError,
+    "Extension download failed after 6 attempts over",
+  );
+  assertStringIncludes(err.message, "https://storage.test/bucket/ext.tgz");
+  assertFalse(err.message.includes("topsecret"));
+});
+
+Deno.test("ExtensionApiClient: download lookups and checksum honour a caller's signal", async () => {
+  const controller = new AbortController();
+  controller.abort(new DOMException("Signal timed out.", "TimeoutError"));
+  const { fetch, requests } = scriptedFetch([
+    (_url, init) => init?.signal?.reason ?? new Error("no signal"),
+  ]);
+  const client = new ExtensionApiClient("http://registry.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  for (
+    const call of [
+      () =>
+        client.getDownloadUrl(
+          "@t/e",
+          "1",
+          undefined,
+          undefined,
+          controller.signal,
+        ),
+      () =>
+        client.downloadArchive(
+          "@t/e",
+          "1",
+          undefined,
+          undefined,
+          controller.signal,
+        ),
+      () =>
+        client.getChecksum(
+          "@t/e",
+          "1",
+          undefined,
+          undefined,
+          controller.signal,
+        ),
+    ]
+  ) {
+    const before = requests.length;
+    await assertRejects(
+      call,
+      RegistryUnavailableError,
+      "timed out: its deadline passed",
+    );
+    assertEquals(requests.length - before, 1);
   }
 });

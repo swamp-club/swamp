@@ -38,6 +38,7 @@ import type {
   AutoResolveOutputPort,
   ExtensionInstallerPort,
   InstallationInspection,
+  InstallLockHolder,
 } from "../domain/extensions/extension_auto_resolver.ts";
 import {
   ConflictError,
@@ -66,6 +67,7 @@ import type { OutputMode } from "../presentation/output/output.ts";
 import {
   renderAutoResolveAlreadyInstalled,
   renderAutoResolveCollectiveNotTrusted,
+  renderAutoResolveInstallBusy,
   renderAutoResolveInstalled,
   renderAutoResolveInstalledWithoutType,
   renderAutoResolveInstalling,
@@ -84,17 +86,31 @@ const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 // Re-exported for existing importers; they live with SWAMP_SUBDIRS.
 export { isBundleArtifactPath, isPulledSkillPath };
 
+/**
+ * Registry deadline shared by every call one auto-install makes, the
+ * extension and each dependency it pulls. Below the install-lock wait, so
+ * a process holding the lock always releases it before a waiter gives up,
+ * with room left for the local extract and bundle work the deadline does
+ * not cover (swamp-club#3656).
+ */
+export const AUTO_RESOLVE_INSTALL_DEADLINE_MS = 150_000;
+
 interface InstallerAdapterConfig {
-  getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
+  getExtension: (
+    name: string,
+    signal?: AbortSignal,
+  ) => Promise<ExtensionRegistryInfo | null>;
   downloadArchive: (
     name: string,
     version: string,
     channel?: string,
+    signal?: AbortSignal,
   ) => Promise<Uint8Array>;
   getChecksum: (
     name: string,
     version: string,
     channel?: string,
+    signal?: AbortSignal,
   ) => Promise<string | null>;
   /** Full path to the upstream_extensions.json lockfile. */
   lockfilePath: string;
@@ -278,6 +294,10 @@ export function createAutoResolveInstallerAdapter(
     },
 
     async install(extensionName: string) {
+      // One deadline for the whole install, shared by a forced re-run
+      // after a conflict, so retries inside it cannot hold the install
+      // lock past EXTENSION_INSTALL_LOCK_MAX_WAIT_MS.
+      const deadline = AbortSignal.timeout(AUTO_RESOLVE_INSTALL_DEADLINE_MS);
       async function runInstall(force: boolean) {
         const lockfileRepo = await LockfileRepository.create(lockfilePath);
         const pinnedEntry = await findPinnedEntry(extensionName);
@@ -295,9 +315,11 @@ export function createAutoResolveInstallerAdapter(
           version: pinnedEntry?.version ?? null,
         };
         const installCtx = {
-          getExtension,
-          downloadArchive,
-          getChecksum,
+          getExtension: (name: string) => getExtension(name, deadline),
+          downloadArchive: (name: string, version: string, channel?: string) =>
+            downloadArchive(name, version, channel, deadline),
+          getChecksum: (name: string, version: string, channel?: string) =>
+            getChecksum(name, version, channel, deadline),
           logger,
           lockfileRepository: lockfileRepo,
           skillsDirs: [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)],
@@ -530,8 +552,11 @@ export function createAutoResolveInstallerAdapter(
  * installs its dependencies, which another extension may share.
  */
 const EXTENSION_INSTALL_LOCK_KEY = ".extension-install.lock";
-/** Long enough for another process to download and install an extension. */
-const EXTENSION_INSTALL_LOCK_MAX_WAIT_MS = 180_000;
+/**
+ * Long enough for another process to download and install an extension:
+ * its registry calls stop at AUTO_RESOLVE_INSTALL_DEADLINE_MS.
+ */
+export const EXTENSION_INSTALL_LOCK_MAX_WAIT_MS = 180_000;
 const EXTENSION_INSTALL_LOCK_RETRY_INTERVAL_MS = 100;
 
 /** Catalog row states that mean a source failed to load (as in doctor). */
@@ -623,6 +648,14 @@ export function createAutoResolveOutputAdapter(
     },
     noStableVersion(extension: string) {
       renderAutoResolveNoStableVersion(extension, mode);
+    },
+    installBusy(
+      type: string,
+      extension: string,
+      holder: InstallLockHolder | null,
+      waitedMs: number,
+    ) {
+      renderAutoResolveInstallBusy(type, extension, holder, waitedMs, mode);
     },
   };
 }
