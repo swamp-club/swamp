@@ -53,7 +53,10 @@ import {
   type RunnerBootstrapParams,
   RunnerBootstrapParamsSchema,
 } from "./runner_protocol.ts";
-import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  runFileSink,
+} from "../infrastructure/logging/logger.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 
 const logger = getSwampLogger(["worker", "runner"]);
@@ -154,20 +157,28 @@ export async function runDispatchRunner(
   const start = performance.now();
   const logs: string[] = [];
   let getHandles: () => DataHandle[] = () => [];
-  // Console lines travel to the orchestrator's run log in the result, so
-  // they are scrubbed like streamed output (swamp-club#3080), and so is the
-  // error message, which serve stores on the step lease (swamp-club#3525).
-  // The shipped values are known from the first frame; the method context's
-  // redactor takes over once it exists, since it also learns what the method
-  // reads.
-  const shipped = dispatchRedactor(dispatch.secretValues);
-  let redact = (text: string) => shipped.redact(text);
 
   let result: DispatchResult;
 
   const scratchDir = await Deno.makeTempDir({
     prefix: `swamp-dispatch-${dispatch.dispatchId.slice(0, 8)}-`,
   });
+
+  // One redactor for the dispatch, known from the first frame and shared with
+  // the method context so the secrets a method learns on the way join it.
+  // Console lines travel to the orchestrator's run log in the result, so they
+  // are scrubbed like streamed output (swamp-club#3080), and so is the error
+  // message, which serve stores on the step lease (swamp-club#3525). It is
+  // also an active process redactor until the dispatch is over: this
+  // process's stderr is read and re-logged by the worker supervisor, so the
+  // stderr sink and the console guard mask the dispatch's secrets before a
+  // line leaves (swamp-club#3526). Nothing before this point handles a secret
+  // (the bootstrap frame is parsed, not logged, and the scratch directory is
+  // named after the dispatch id), and nothing after the finally below writes
+  // to stderr, so releasing it there covers every path, the failure warning
+  // included. Keep secret-bearing work below this line.
+  const redactor = dispatchRedactor(dispatch.secretValues);
+  const redactorHandle = runFileSink.registerRedactor(redactor);
 
   try {
     // Built inside the try so a TLS client failure fails this dispatch
@@ -208,6 +219,7 @@ export async function runDispatchRunner(
       extensionFilesDir: filesDir ?? modelDef.extensionFilesRoot,
       resourceSpecs: modelDef.resources,
       signal,
+      redactor,
       onEvent: (event) => {
         channel.call("runner.event", { event: { ...event } }, {
           timeoutMs: null,
@@ -216,7 +228,6 @@ export async function runDispatchRunner(
       },
     });
     getHandles = remote.getHandles;
-    redact = remote.redact;
 
     const executor = new DefaultMethodExecutionService();
     const methodResult = await withConsoleGuard(
@@ -233,7 +244,7 @@ export async function runDispatchRunner(
     result = {
       status: "success",
       outputs: toOutputs(handles),
-      logs: logs.map(redact),
+      logs: logs.map((line) => redactor.redact(line)),
       durationMs,
     };
   } catch (error) {
@@ -243,13 +254,14 @@ export async function runDispatchRunner(
 
     result = {
       status: "error",
-      error: redact(message),
+      error: redactor.redact(message),
       errorPaths: dispatchErrorPaths(error),
       outputs: toOutputs(getHandles()),
-      logs: logs.map(redact),
+      logs: logs.map((line) => redactor.redact(line)),
       durationMs,
     };
   } finally {
+    runFileSink.unregisterRedactor(redactorHandle);
     await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
   }
 

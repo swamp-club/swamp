@@ -22,12 +22,13 @@
  *
  * Pins where a secret the step was dispatched with, or one the worker
  * learns during the dispatch, ends up redacted and where it travels
- * verbatim: the runner's stderr logs and the supervisor's re-log of them,
- * serve's per-dispatch redactor, and the data-plane write routes. The
- * worker's result error and the step lease it is stored on are redacted on
- * both hops since swamp-club#3525. Typed-secrets Phase 5 changes several of
- * the remaining ones on purpose (design/enablers/typed-secrets.md §7.1 and
- * §9); a failure here means one of them changed.
+ * verbatim: serve's per-dispatch redactor and the data-plane write routes.
+ * The worker's result error and the step lease it is stored on are redacted
+ * on both hops since swamp-club#3525, and the runner's stderr and the
+ * supervisor's re-log of it are masked since swamp-club#3526; the cases for
+ * them guard that. Typed-secrets Phase 5 changes several of the remaining
+ * ones on purpose (design/enablers/typed-secrets.md §7.1 and §9); a failure
+ * here means one of them changed.
  *
  * All in-process except the supervisor test, which spawns the baseline
  * runner entry (a runner, not the CLI): the supervisor reads runner stderr
@@ -64,6 +65,7 @@ import {
   BASELINE_VAULT,
   canary,
   captureLogs,
+  captureRunnerStderr,
   connectInMemoryWorker,
   logsHolding,
   startBaselineOrchestrator,
@@ -283,13 +285,13 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: output protection: the runner's own logs hold the method log line and the failure unredacted",
+    "remote secrets baseline: output protection: the runner's stderr masks the method log line, the console line and the failure (swamp-club#3526)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     await withTempDir(async (cacheDirPath) => {
       const secret = canary("runner-log");
-      const logs = await captureLogs(async () => {
+      const lines = await captureRunnerStderr(async () => {
         await runInProcess({
           sessionCredential: "unused",
           dataPlaneUrl: "http://127.0.0.1:9",
@@ -298,24 +300,38 @@ Deno.test({
         });
       });
 
-      // Disclosure (swamp-club#3526): the method logger writes
-      // through to the runner's own sink before the scrubbed copy is
-      // streamed, and the failure is logged with the raw message. The
-      // runner's sink is its stderr, which the supervisor reads.
-      const holding = logsHolding(logs, secret).map((log) =>
-        `${log.category} ${log.level}: ${log.text}`
+      // The method logger still writes through to the runner's own sink
+      // before the scrubbed copy is streamed, and the failure is still
+      // logged with the raw message, but the runner registers its dispatch
+      // redactor as an active process redactor, so the stderr sink and the
+      // console guard mask all three lines before a supervisor can read them.
+      const dump = `runner stderr:\n${lines.join("\n")}`;
+      assertEquals(lines.filter((line) => line.includes(secret)), []);
+      assert(
+        lines.some((line) =>
+          line.includes('worker·method-context: method log line "***"')
+        ),
+        `the method log line is present and masked; ${dump}`,
       );
-      assertEquals(holding.sort(), [
-        `worker.method-context info: method log line ${secret}`,
-        `worker.runner warning: Runner dispatch failed: method failed holding ${secret}`,
-      ]);
+      assert(
+        lines.some((line) =>
+          line.includes(
+            'worker·runner: Runner dispatch failed: "method failed holding ***"',
+          )
+        ),
+        `the failure line is present and masked; ${dump}`,
+      );
+      assert(
+        lines.includes("console line ***"),
+        `the console line is present and masked; ${dump}`,
+      );
     });
   },
 });
 
 Deno.test({
   name:
-    "remote secrets baseline: output protection: the supervisor re-logs runner stderr, secret included, at debug",
+    "remote secrets baseline: output protection: the supervisor's debug re-log of runner stderr holds no secret (swamp-club#3526)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -349,19 +365,30 @@ Deno.test({
         ).find((id) => id !== undefined);
         assertExists(dispatchId, "the supervisor logged runner stderr");
 
-        // Disclosure (swamp-club#3526): every runner stderr line
-        // is re-logged on the worker at debug, unredacted.
-        const relogged = logsHolding(logs, secret).filter((log) =>
+        // Every runner stderr line is re-logged on the worker at debug. The
+        // runner masks its own stderr and the supervisor scrubs the shipped
+        // values once more, so none of them holds the secret
+        // (swamp-club#3526).
+        const relogged = logs.filter((log) =>
           log.category === "worker.dispatch" && log.level === "debug" &&
           log.text.startsWith(`Runner [${dispatchId}]: `)
         );
+        assertEquals(logsHolding(relogged, secret), []);
         assert(
-          relogged.some((log) => log.text.includes("method log line")),
-          "the method log line is re-logged",
+          relogged.some((log) => log.text.includes('method log line "***"')),
+          "the method log line is re-logged, masked",
         );
         assert(
-          relogged.some((log) => log.text.includes("Runner dispatch failed")),
-          "the runner's failure line is re-logged",
+          relogged.some((log) =>
+            log.text.includes(
+              'Runner dispatch failed: "method failed holding ***"',
+            )
+          ),
+          "the runner's failure line is re-logged, masked",
+        );
+        assert(
+          relogged.some((log) => log.text.endsWith("console line ***")),
+          "the console line is re-logged, masked",
         );
       } finally {
         await o.shutdown();

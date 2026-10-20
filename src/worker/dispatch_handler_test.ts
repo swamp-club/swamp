@@ -25,7 +25,9 @@ import {
 import {
   buildRunnerEnvironment,
   runnerSpawnOptions,
+  scrubRunnerStderr,
 } from "./dispatch_handler.ts";
+import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { RpcChannel, type RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   DispatchParamsSchema,
@@ -383,4 +385,34 @@ Deno.test("runnerSpawnOptions: the built environment replaces the worker's inste
   assertEquals(options.clearEnv, true);
   assertEquals(options.env, { PATH: "/bin" });
   assertEquals(options.args, ["worker", "exec-dispatch"]);
+});
+
+Deno.test("scrubRunnerStderr: masks shipped values on every line and keeps the re-log's line split (swamp-club#3526)", () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("shipped-secret");
+
+  assertEquals(
+    scrubRunnerStderr(
+      "\n[INF] method log line shipped-secret\n\nconsole line shipped-secret\n",
+      redactor,
+    ),
+    ["[INF] method log line ***", "", "console line ***"],
+  );
+});
+
+Deno.test("scrubRunnerStderr: returns no lines for blank stderr and passes lines through when nothing is shipped", () => {
+  const empty = new SecretRedactor();
+  assertEquals(scrubRunnerStderr("   \n", empty), []);
+  assertEquals(scrubRunnerStderr("plain line\n", empty), ["plain line"]);
+});
+
+Deno.test("scrubRunnerStderr: masks a secret that spans lines, as a PEM key written raw to stderr does", () => {
+  const redactor = new SecretRedactor();
+  const key = "-----BEGIN KEY-----\nabc123\n-----END KEY-----";
+  redactor.addSecret(key);
+
+  assertEquals(
+    scrubRunnerStderr(`error: leaked ${key}\nnext line\n`, redactor),
+    ["error: leaked ***", "next line"],
+  );
 });

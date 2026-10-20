@@ -23,6 +23,8 @@ import {
   unguardedConsole,
   withConsoleGuard,
 } from "./console_guard.ts";
+import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
+import { SecretRedactor } from "../secrets/mod.ts";
 
 Deno.test("withConsoleGuard: captures console.log into logs array", async () => {
   const logs: string[] = [];
@@ -314,5 +316,32 @@ Deno.test("withConsoleGuard: restores the console in place before the first guar
   } finally {
     console.log = originalLog;
     setConsoleGuardStderrWriter(undefined);
+  }
+});
+
+Deno.test("withConsoleGuard: masks an active redactor's secrets on stderr but keeps the captured line raw (swamp-club#3526)", async () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("guarded-secret-3526");
+  const handle = runFileSink.registerRedactor(redactor);
+  const stderr: string[] = [];
+  setConsoleGuardStderrWriter((line) => stderr.push(line));
+  const logs: string[] = [];
+
+  try {
+    await withConsoleGuard(
+      () => {
+        console.log("token guarded-secret-3526 seen");
+      },
+      logs,
+      { jsonMode: true },
+    );
+
+    // The writer, default or injected, only ever sees the scrubbed line; the
+    // captured copy is raw because its consumers redact it themselves.
+    assertEquals(stderr, ["token *** seen"]);
+    assertEquals(logs, ["token guarded-secret-3526 seen"]);
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
+    runFileSink.unregisterRedactor(handle);
   }
 });

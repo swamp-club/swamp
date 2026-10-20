@@ -30,6 +30,7 @@ import {
   dispatchRedactor,
   UnsupportedOnRemoteWorkerError,
 } from "./remote_method_context.ts";
+import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { definitionFromExecution } from "./exec_dispatch.ts";
 import { z } from "zod";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
@@ -87,6 +88,7 @@ function harness(
   onEvent?: (event: Record<string, unknown>) => void,
   dataTags?: Record<string, string>,
   resourceSpecs?: Record<string, ResourceOutputSpec>,
+  redactor?: SecretRedactor,
 ) {
   const calls: StubCall[] = [];
   // The orchestrator side of the control socket, with stub verb handlers.
@@ -243,6 +245,7 @@ function harness(
     resourceSpecs,
     signal: new AbortController().signal,
     onEvent,
+    redactor,
   });
   return {
     context,
@@ -855,6 +858,30 @@ Deno.test("remote context: the worker resolves shipped args as the orchestrator 
     // shell model reads the unresolved run and delivers it through env vars.
     assertEquals(seenArgs?.run, d.execution.methodArgs.run);
     assertEquals(seenUnresolved?.run, d.unresolvedMethodArgs!.run);
+  });
+});
+
+Deno.test("remote context: a redactor the caller supplies is the one the context uses and extends (swamp-club#3526)", async () => {
+  await withScratch((dir) => {
+    const redactor = new SecretRedactor();
+    const h = harness(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      redactor,
+    );
+    assertEquals(h.context.redactor, redactor);
+
+    // What the method learns lands in the caller's instance, so a process
+    // sink registered with it (the runner's stderr) masks it too.
+    h.context.redactor!.addSecret("learned-value");
+    assertEquals(h.redact("saw learned-value"), "saw ***");
+    assertEquals(redactor.redact("saw learned-value"), "saw ***");
+    return Promise.resolve();
   });
 });
 

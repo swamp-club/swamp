@@ -63,6 +63,8 @@ import { bridgeCapabilityVerbs } from "./runner_bridge.ts";
 import type { RunnerBootstrapParams } from "./runner_protocol.ts";
 import { RUNNER_CANCEL_GRACE_MS } from "./runner_protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { SecretRedactor } from "../domain/secrets/mod.ts";
+import { dispatchRedactor } from "./remote_method_context.ts";
 
 const logger = getSwampLogger(["worker", "dispatch"]);
 
@@ -259,6 +261,25 @@ export function runnerSpawnOptions(
   };
 }
 
+/**
+ * The lines of a runner's stderr as the supervisor logs them, scrubbed with
+ * `redactor`. The runner masks its own stderr with the same shipped values
+ * and whatever it learned since (swamp-club#3526); this second pass covers
+ * bytes written outside its sinks and a runner that died before it
+ * registered its redactor. Those raw bytes keep a secret's real newlines, so
+ * the whole stream is scrubbed before it is cut into lines: a PEM key split
+ * first would never match as a whole. Typed-secrets Phase 5 removes
+ * `secretValues` from dispatch, and this pass goes with it.
+ */
+export function scrubRunnerStderr(
+  stderr: string,
+  redactor: SecretRedactor,
+): string[] {
+  const scrubbed = redactor.redact(stderr).trim();
+  if (!scrubbed) return [];
+  return scrubbed.split("\n");
+}
+
 async function handleDispatch(
   rawParams: unknown,
   ctx: RpcHandlerContext,
@@ -386,16 +407,15 @@ async function handleDispatch(
 
     const durationMs = performance.now() - start;
 
-    // Log child stderr.
+    // Log child stderr, scrubbed of the dispatch's shipped secrets.
     if (stderrChunks.length > 0) {
       const stderr = new TextDecoder().decode(concatChunks(stderrChunks));
-      if (stderr.trim()) {
-        for (const line of stderr.trim().split("\n")) {
-          logger.debug("Runner [{dispatchId}]: {line}", {
-            dispatchId: params.dispatchId,
-            line,
-          });
-        }
+      const redactor = dispatchRedactor(params.secretValues);
+      for (const line of scrubRunnerStderr(stderr, redactor)) {
+        logger.debug("Runner [{dispatchId}]: {line}", {
+          dispatchId: params.dispatchId,
+          line,
+        });
       }
     }
 

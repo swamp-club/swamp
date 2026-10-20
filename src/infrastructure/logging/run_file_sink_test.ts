@@ -631,3 +631,70 @@ Deno.test("RunFileSink: mixed scoped and unscoped writers route correctly", asyn
     sink.unregister(unscopedHandle);
   });
 });
+
+Deno.test("RunFileSink.registerRedactor: a file-less redactor scrubs through redactActive until it is unregistered", () => {
+  const sink = new RunFileSink();
+  const redactor = new SecretRedactor();
+  redactor.addSecret("dispatch-secret");
+
+  const handle = sink.registerRedactor(redactor);
+  assertEquals(sink.redactActive("got dispatch-secret"), "got ***");
+  // Not a file writer: nothing was opened, nothing to close.
+  assertEquals(sink.activeCount, 0);
+
+  sink.unregisterRedactor(handle);
+  assertEquals(sink.redactActive("got dispatch-secret"), "got dispatch-secret");
+});
+
+Deno.test("RunFileSink.registerRedactor: secrets added after registration are scrubbed too", () => {
+  const sink = new RunFileSink();
+  const redactor = new SecretRedactor();
+  const handle = sink.registerRedactor(redactor);
+  try {
+    assertEquals(sink.redactActive("learned-later"), "learned-later");
+    redactor.addSecret("learned-later");
+    assertEquals(sink.redactActive("learned-later"), "***");
+  } finally {
+    sink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("RunFileSink.unregisterRedactor: unknown and undefined handles are no-ops", () => {
+  const sink = new RunFileSink();
+  const redactor = new SecretRedactor();
+  redactor.addSecret("kept-secret");
+  const handle = sink.registerRedactor(redactor);
+  try {
+    sink.unregisterRedactor(undefined);
+    sink.unregisterRedactor("no-such-handle");
+    assertEquals(sink.redactActive("kept-secret"), "***");
+  } finally {
+    sink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("RunFileSink.redactActive: unions file-less and file-backed redactors", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const fileRedactor = new SecretRedactor();
+    fileRedactor.addSecret("file-secret");
+    const dispatchRedactor = new SecretRedactor();
+    dispatchRedactor.addSecret("dispatch-secret");
+
+    const fileHandle = await sink.register(
+      [],
+      join(dir, "run.log"),
+      fileRedactor,
+    );
+    const handle = sink.registerRedactor(dispatchRedactor);
+    try {
+      assertEquals(
+        sink.redactActive("file-secret and dispatch-secret"),
+        "*** and ***",
+      );
+    } finally {
+      sink.unregisterRedactor(handle);
+      sink.unregister(fileHandle);
+    }
+  });
+});

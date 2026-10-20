@@ -1074,7 +1074,11 @@ proceed alongside Phases 3 and 4.
   black-box scan cannot separate the hops. It is in-process apart from one
   supervisor test that spawns a runner fixture, not the CLI. It pins current
   behavior for Phase 5 and is not a zero-plaintext gate. Each disclosure it pins
-  has its own issue.
+  has its own issue. The runner-stderr disclosure (swamp-club#3526) closed ahead
+  of Phase 5: the runner registers its dispatch redactor as an active process
+  redactor, so its stderr sink and console guard mask the dispatch's secrets,
+  and the supervisor scrubs the shipped values again before re-logging; the
+  baseline's two cases for it now assert the masking.
 
 ### Phase 1: CEL feasibility on the pinned dependency
 
@@ -1387,5 +1391,6 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |
+| Runner stderr sanitisation (swamp-club#3526)  | `src/infrastructure/logging/run_file_sink.ts` (`registerRedactor`, `redactActive`), `logger.ts` (`createStderrSink`), `src/domain/models/console_guard.ts`, `src/worker/exec_dispatch.ts` (`runDispatchRunner`), `dispatch_handler.ts` (`scrubRunnerStderr`) |
 
 Implementation PRs update this map as they add seams.

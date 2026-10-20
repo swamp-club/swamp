@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
+
 type ConsoleMethod = (...args: unknown[]) => void;
 
 const CAPTURED_METHODS = ["log", "info", "debug", "warn", "error"] as const;
@@ -88,8 +90,9 @@ export interface ConsoleGuardOptions {
 
 // Redirects console methods to a capture array during fn execution.
 // In JSON mode, captures console output from extension code into `logs`
-// and writes each line to stderr to prevent stdout pollution. In non-JSON mode,
-// console output flows to stdout normally (the renderer is not involved).
+// and writes each line to stderr to prevent stdout pollution, scrubbed with
+// the active redactors first. In non-JSON mode, console output flows to
+// stdout normally (the renderer is not involved).
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
@@ -113,7 +116,11 @@ export async function withConsoleGuard<T>(
         for (const logArray of allActiveLogs) {
           logArray.push(line);
         }
-        writeStderr(line);
+        // Every active redactor applies before the line reaches stderr,
+        // whichever writer is installed: in the dispatch runner that stream
+        // is read and re-logged by the worker supervisor (swamp-club#3526).
+        // The captured copy stays raw; its consumers redact it themselves.
+        writeStderr(runFileSink.redactActive(line));
       };
     }
   }
