@@ -689,7 +689,7 @@ Deno.test("extensionQuality: a dependency that was not audited loses the depende
 for (
   const [label, result, earned] of [
     [
-      "a loose specifier warning keeps the dependency-trust factor",
+      "a loose specifier warning loses one point of the dependency-trust factor",
       {
         errors: [],
         warnings: [{
@@ -701,7 +701,21 @@ for (
         audited: [],
         passed: true,
       },
-      2,
+      1,
+    ],
+    [
+      "a yanked JSR version loses the dependency-trust factor",
+      {
+        errors: [],
+        warnings: [{
+          dependency: "@std/assert",
+          message: "version 0.0.1 is yanked on JSR",
+          cause: "jsr-yanked" as const,
+        }],
+        audited: [],
+        passed: true,
+      },
+      0,
     ],
     [
       "a pinned deprecated version loses the dependency-trust factor",

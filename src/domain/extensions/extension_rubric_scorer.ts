@@ -205,6 +205,8 @@ export interface AnalysisFactors {
   dependencyTrustBlockerCount: number;
   /** Dependencies a failed OSV, npm or JSR lookup left unaudited. */
   dependencyNotAuditedCount: number;
+  /** Dependencies with a loose specifier: they cost one of the two points. */
+  dependencyLooseCount: number;
 }
 
 /**
@@ -221,6 +223,7 @@ export function computeAnalysisFactors(input: {
   dependencyTrustPassed?: boolean;
   dependencyTrustBlockerCount?: number;
   dependencyNotAuditedCount?: number;
+  dependencyLooseCount?: number;
 }): AnalysisFactors {
   const { entrypointUrls, readme, hasLicenseFile, doc, rawLintOutput } = input;
 
@@ -263,6 +266,7 @@ export function computeAnalysisFactors(input: {
     dependencyTrustPassed: input.dependencyTrustPassed ?? false,
     dependencyTrustBlockerCount: input.dependencyTrustBlockerCount ?? 0,
     dependencyNotAuditedCount: input.dependencyNotAuditedCount ?? 0,
+    dependencyLooseCount: input.dependencyLooseCount ?? 0,
   };
 }
 
@@ -442,6 +446,7 @@ export function composeScore(
       factors.dependencyTrustPassed,
       factors.dependencyTrustBlockerCount,
       factors.dependencyNotAuditedCount,
+      factors.dependencyLooseCount,
     ),
   ];
 
@@ -576,26 +581,36 @@ function dependencyTrustRow(
   noBlockers: boolean,
   blockerCount: number,
   notAuditedCount: number,
+  looseCount: number,
 ): RubricFactor {
   // An unaudited dependency is unknown, not partly trusted: it loses the
-  // factor exactly as a blocker does.
-  const passed = noBlockers && notAuditedCount === 0;
+  // factor exactly as a blocker does. A loose specifier alone costs one of
+  // the two points.
+  const full = noBlockers && notAuditedCount === 0;
+  const earnedPoints = !full ? 0 : looseCount > 0 ? 1 : 2;
+  const looseText = `${looseCount} loose dependency specifier(s) ` +
+    `(loose-specifier) cost 1 of 2 points. Pin an exact, published ` +
+    `version to earn the second point.`;
   const remediation = blockerCount > 0
-    ? `${blockerCount} dependency blocker(s) found (deprecated packages or ` +
-      `pinned deprecated versions, HIGH/CRITICAL vulnerabilities, or missing ` +
-      `JSR versions). See the details above, then update or replace the ` +
-      `flagged dependencies.`
+    ? `${blockerCount} dependency blocker(s) found (deprecated packages, ` +
+      `pinned deprecated versions or yanked JSR versions, HIGH/CRITICAL ` +
+      `vulnerabilities, or missing JSR versions). See the details above, ` +
+      `then update or replace the flagged dependencies.` +
+      (looseCount > 0 ? ` Also: ${looseText}` : "")
     : notAuditedCount > 0
     ? `${notAuditedCount} dependency(ies) not audited because an OSV, npm or ` +
-      `JSR lookup failed. Re-run when all three are reachable.`
+      `JSR lookup failed. Re-run when all three are reachable.` +
+      (looseCount > 0 ? ` Also: ${looseText}` : "")
+    : looseCount > 0
+    ? looseText
     : "Resolve dependency trust issues — update or replace flagged dependencies.";
   return {
     id: "dependency-trust",
     label: "Dependencies pass trust gates",
-    earnedPoints: passed ? 2 : 0,
+    earnedPoints,
     maxPoints: 2,
-    status: passed ? "earned" : "missing",
-    remediation: passed ? undefined : remediation,
+    status: earnedPoints === 2 ? "earned" : "missing",
+    remediation: earnedPoints === 2 ? undefined : remediation,
   };
 }
 
@@ -709,6 +724,7 @@ export async function scoreExtensionTarball(
     dependencyTrustPassed?: boolean;
     dependencyTrustBlockerCount?: number;
     dependencyNotAuditedCount?: number;
+    dependencyLooseCount?: number;
     importMap?: Record<string, string>;
     privateSource?: PrivateSourceStanding;
   },
@@ -776,6 +792,7 @@ export async function scoreExtensionTarball(
       dependencyTrustPassed: options?.dependencyTrustPassed,
       dependencyTrustBlockerCount: options?.dependencyTrustBlockerCount,
       dependencyNotAuditedCount: options?.dependencyNotAuditedCount,
+      dependencyLooseCount: options?.dependencyLooseCount,
     });
 
     return composeScore(analysisFactors, manifest, options?.privateSource);

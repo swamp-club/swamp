@@ -28,9 +28,16 @@ import {
 import {
   checkDependencyTrust,
   dependencyTrustBlockerCount,
+  type DependencyTrustCause,
+  type DependencyTrustResult,
   type Fetcher,
+  looseSpecifierCount,
   notAuditedCount,
 } from "./extension_dependency_trust_checker.ts";
+import {
+  composeScore,
+  computeAnalysisFactors,
+} from "./extension_rubric_scorer.ts";
 
 // The vectors the registry scorecard (swamp-club#3353) copies, so push and
 // the scorecard resolve and word findings the same way.
@@ -64,7 +71,7 @@ interface FindingVector {
     severity: string;
     message: string;
     cause?: string;
-    costsPoint: boolean;
+    pointsLost: number;
   }[];
   /** The scorecard's wording of the same finding, where it differs. */
   scorecardMessage?: string;
@@ -73,6 +80,11 @@ interface FindingVector {
 const vectors = JSON.parse(await Deno.readTextFile(VECTORS_PATH)) as {
   resolution: ResolutionVector[];
   findings: FindingVector[];
+  scoring: {
+    name: string;
+    findings: { severity: string; cause?: string; dependency: string }[];
+    earnedPoints: number;
+  }[];
 };
 
 function lockOf(versions: string[] | undefined, lockedFor?: string) {
@@ -150,14 +162,70 @@ for (const v of vectors.findings) {
       severity,
       message,
       ...(cause ? { cause } : {}),
-      costsPoint: severity === "error" || cause === "not-audited" ||
-        cause === "deprecated-version",
+      pointsLost: cause === "loose-specifier"
+        ? 1
+        : severity === "error" || cause === "not-audited" ||
+            cause === "deprecated-version" || cause === "jsr-yanked"
+        ? 2
+        : 0,
     }));
     assertEquals(reported, v.expect);
-    // The rubric counts exactly the findings marked as costing the point.
+    // The rubric loses points for exactly the findings marked as costing them.
+    const lost = Math.max(0, ...v.expect.map((e) => e.pointsLost));
     assertEquals(
-      dependencyTrustBlockerCount(result) + notAuditedCount(result) > 0,
-      v.expect.some((e) => e.costsPoint),
+      factorOf(result).earnedPoints,
+      2 - lost,
     );
+  });
+}
+
+function factorOf(result: DependencyTrustResult) {
+  const factors = computeAnalysisFactors({
+    entrypointUrls: [],
+    readme: null,
+    hasLicenseFile: false,
+    doc: { nodes: [] } as unknown as Parameters<
+      typeof computeAnalysisFactors
+    >[0]["doc"],
+    rawLintOutput: "",
+    dependencyTrustPassed: dependencyTrustBlockerCount(result) === 0,
+    dependencyTrustBlockerCount: dependencyTrustBlockerCount(result),
+    dependencyNotAuditedCount: notAuditedCount(result),
+    dependencyLooseCount: looseSpecifierCount(result),
+  });
+  return composeScore(
+    factors,
+    {
+      description: "d",
+      platforms: [],
+      labels: [],
+      models: [],
+      workflows: [],
+      vaults: [],
+      datastores: [],
+      reports: [],
+      skills: [],
+    } as unknown as Parameters<typeof composeScore>[1],
+  )
+    .factors.find((f) => f.id === "dependency-trust")!;
+}
+
+for (const sc of vectors.scoring) {
+  Deno.test(`dependency audit vectors: scores ${sc.name}`, () => {
+    const result: DependencyTrustResult = {
+      errors: [],
+      warnings: [],
+      audited: [],
+      passed: true,
+    };
+    for (const f of sc.findings) {
+      const issue = {
+        dependency: f.dependency,
+        message: "m",
+        ...(f.cause ? { cause: f.cause as DependencyTrustCause } : {}),
+      };
+      (f.severity === "error" ? result.errors : result.warnings).push(issue);
+    }
+    assertEquals(factorOf(result).earnedPoints, sc.earnedPoints);
   });
 }

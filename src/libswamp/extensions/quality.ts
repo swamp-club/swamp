@@ -45,6 +45,7 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   dependencyTrustBlockerCount,
   type DependencyTrustResult,
+  looseSpecifierCount,
   notAuditedCount,
 } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
@@ -338,6 +339,9 @@ export async function* extensionQuality(
             prepared.dependencyTrustResult,
           ),
           dependencyNotAuditedCount: notAuditedCount(
+            prepared.dependencyTrustResult,
+          ),
+          dependencyLooseCount: looseSpecifierCount(
             prepared.dependencyTrustResult,
           ),
           importMap,
