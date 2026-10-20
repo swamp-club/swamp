@@ -97,7 +97,7 @@ jobs:
           type: succeeded
     steps:
       - name: skill-review
-        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f == 'scripts/eval_skill_triggers_promptfoo.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f == 'scripts/eval_skill_triggers_promptfoo.ts' || f == 'scripts/promptfoo_install.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
@@ -108,7 +108,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
 
       - name: skill-trigger-eval
-        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f == 'scripts/eval_skill_triggers_promptfoo.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f == 'scripts/eval_skill_triggers_promptfoo.ts' || f == 'scripts/promptfoo_install.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"

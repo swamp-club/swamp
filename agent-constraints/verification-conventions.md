@@ -156,7 +156,8 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
 
 The workflow detects changed files and guards both steps behind a skill-path
 filter (`.claude/skills/**`, `CLAUDE.md`, `scripts/review_skills.ts`,
-`scripts/eval_skill_triggers_promptfoo.ts`, `evals/promptfoo/**`). When no
+`scripts/eval_skill_triggers_promptfoo.ts`, `scripts/promptfoo_install.ts`,
+`evals/promptfoo/**`). When no
 skill files changed, both steps are skipped.
 
 | Step | Command | Env Var | Missing Behavior |
