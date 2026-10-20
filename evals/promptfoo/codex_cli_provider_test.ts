@@ -30,11 +30,8 @@ import {
   buildPrompt,
   callCodex,
   parseCliOutput,
-} from "../evals/promptfoo/codex_cli_provider.mjs";
-import {
-  cliProviderEntry,
-  resolveRoute,
-} from "../evals/promptfoo/provider_route.ts";
+} from "./codex_cli_provider.mjs";
+import { cliProviderEntry, resolveRoute } from "./provider_route.ts";
 
 const config = {
   model: "gpt-6-astra",

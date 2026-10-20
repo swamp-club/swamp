@@ -86,6 +86,7 @@
     ".vault-test-vault/",
     "resources/",
     "evals/",
+    "!evals/promptfoo/*_test.ts",
     ".swamp/",
     ".claude/worktrees/"
   ]
