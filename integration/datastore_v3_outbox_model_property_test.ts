@@ -586,6 +586,22 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     }
   };
 
+  /**
+   * Abandons the open unit and marks its unlanded groups failed, unless the
+   * unit says they may land: a drop or discard it could not record
+   * (swamp-club#3645), as a flush's end does.
+   */
+  const endAbandoned = async (ending: CommitLogUnitOfWork) => {
+    try {
+      await ending.abandon();
+    } catch (error) {
+      if (!(error instanceof MayLandLaterError)) throw error;
+      coverage.mayLand++;
+      return;
+    }
+    await reportFailed(unitNo);
+  };
+
   const recover = async () => {
     recovering = true;
     const report = await recoverCommitOutbox(
@@ -726,8 +742,7 @@ async function runModel(commands: readonly Command[]): Promise<void> {
         }
         case "abandon":
           if (unit === undefined) break;
-          await unit.abandon();
-          await reportFailed(unitNo);
+          await endAbandoned(unit);
           unit = undefined;
           break;
         case "acknowledge":
@@ -738,8 +753,7 @@ async function runModel(commands: readonly Command[]): Promise<void> {
         case "restart": {
           // A live process ends its unit first; a killed one left it.
           if (unit !== undefined) {
-            await unit.abandon();
-            await reportFailed(unitNo);
+            await endAbandoned(unit);
             unit = undefined;
           }
           await takeLease(command.takeover);
@@ -833,10 +847,24 @@ const DISCARD_THEN_CUT: Command[][] = [
   ],
 ];
 
+/**
+ * An aged entry dropped by a retry whose discard and mark both fail: the
+ * abandon at the restart says the commit may land (swamp-club#3645).
+ */
+const ABANDON_MAY_LAND: Command[] = [
+  STAGE,
+  { kind: "checkpoint", fault: "fail-append-and-discard" },
+  { kind: "age" },
+  { kind: "checkpoint", fault: "fail-append-discard-and-mark" },
+  { kind: "restart", takeover: false },
+];
+
 Deno.test("v3 outbox (model): over random interleavings no commit lands after its failure, a takeover or off its head, no run names refused data, and no commit names a missing chunk", async () => {
   await fc.assert(fc.asyncProperty(arbInterleaving, runModel), {
     numRuns: 1000,
-    examples: DISCARD_THEN_CUT.map((commands): [Command[]] => [commands]),
+    examples: [...DISCARD_THEN_CUT, ABANDON_MAY_LAND].map((
+      commands,
+    ): [Command[]] => [commands]),
   });
 });
 

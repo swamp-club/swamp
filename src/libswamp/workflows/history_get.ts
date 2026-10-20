@@ -40,6 +40,7 @@ import {
   StepOutputResolver,
 } from "../../domain/workflows/step_output_resolver.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -194,6 +195,11 @@ export function createWorkflowHistoryGetDeps(
   injectedWorkflowRepo?: WorkflowRepository,
   canRead?: ResourceReadPolicy,
   signalWaits?: SignalWaitSupport,
+  /**
+   * The repository context's lookup, so a run record or step output the
+   * v3 read model could not materialise fails loudly (swamp-club#3617).
+   */
+  unreadableContent?: UnreadableContentLookup,
 ): WorkflowHistoryGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -203,6 +209,9 @@ export function createWorkflowHistoryGetDeps(
     repoDir,
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
+    undefined,
+    undefined,
+    unreadableContent,
   );
   return {
     isPartialId,
@@ -226,6 +235,10 @@ export function createWorkflowHistoryGetDeps(
           undefined,
           undefined,
           namespaceFromResolver(datastoreResolver),
+          undefined,
+          undefined,
+          undefined,
+          unreadableContent,
         );
         const resolver = new StepOutputResolver({
           readAttributes: createDataRepositoryAttributeReader(dataRepo),

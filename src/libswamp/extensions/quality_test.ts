@@ -520,6 +520,62 @@ Deno.test("extensionQuality: bare import specifiers are scored locally but repor
   );
 });
 
+Deno.test("extensionQuality: bare imports the deno.json import map resolves leave the extension registry-scorable", async () => {
+  await withQualityFixture(
+    BARE_IMPORT_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const denoConfigPath = join(repoDir, "deno.json");
+      await Deno.writeTextFile(
+        denoConfigPath,
+        JSON.stringify({ imports: { zod: "npm:zod@^4" } }),
+      );
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest, {
+        prepareInput: { denoConfigPath },
+        hashInput: { denoConfigPath },
+      });
+      const data = completedData(
+        await collect(
+          extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
+        ),
+      );
+      assertEquals(data.registryScorable, true);
+      assertEquals(
+        data.findings.reviewRulesResult.warnings.some((w) =>
+          w.ruleId === "bare-specifiers"
+        ),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("extensionQuality: an import-map target that could escape its string literal fails quality as it fails push", async () => {
+  await withQualityFixture(
+    BARE_IMPORT_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const denoConfigPath = join(repoDir, "deno.json");
+      await Deno.writeTextFile(
+        denoConfigPath,
+        JSON.stringify({ imports: { zod: 'npm:zod@4"; globalThis.x = 1; "' } }),
+      );
+      const input = makeQualityInput(repoDir, makeManifest(), {
+        prepareInput: { denoConfigPath },
+        hashInput: { denoConfigPath },
+      });
+      const events = await collect(
+        extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
+      );
+      const failure = events.find((e) => e.kind === "error");
+      assert(failure?.kind === "error", "quality must fail");
+      assertStringIncludes(
+        failure.error.message,
+        'Fix the import map entry for "zod"',
+      );
+    },
+  );
+});
+
 Deno.test("extensionQuality: a cache hit still reports bare import specifiers as unscorable", async () => {
   await withQualityFixture(
     BARE_IMPORT_MODEL_SOURCE,
@@ -633,7 +689,7 @@ Deno.test("extensionQuality: a dependency that was not audited loses the depende
 for (
   const [label, result, earned] of [
     [
-      "a loose specifier warning keeps the dependency-trust factor",
+      "a loose specifier warning loses one point of the dependency-trust factor",
       {
         errors: [],
         warnings: [{
@@ -645,7 +701,21 @@ for (
         audited: [],
         passed: true,
       },
-      2,
+      1,
+    ],
+    [
+      "a yanked JSR version loses the dependency-trust factor",
+      {
+        errors: [],
+        warnings: [{
+          dependency: "@std/assert",
+          message: "version 0.0.1 is yanked on JSR",
+          cause: "jsr-yanked" as const,
+        }],
+        audited: [],
+        passed: true,
+      },
+      0,
     ],
     [
       "a pinned deprecated version loses the dependency-trust factor",

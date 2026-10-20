@@ -77,3 +77,33 @@ Deno.test("ChunkStore: different content gives different references", async () =
     { numRuns: 300 },
   );
 });
+
+Deno.test("ChunkStore.refOf: cuts content exactly as write does, however it is streamed (swamp-club#3617)", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.uint8Array({ maxLength: 300 }),
+      fc.integer({ min: 1, max: 40 }),
+      fc.array(fc.integer({ min: 1, max: 50 }), { maxLength: 8 }),
+      async (content, maxChunkBytes, pieces) => {
+        const storage = new MemoryStorage({ maxChunkBytes });
+        const store = new ChunkStore(storage);
+        const found = await store.refOf(streamOf(content, pieces), live());
+        assertEquals(storage.chunks.size, 0);
+        const ref = await store.write(NS, content, live());
+        assert(found.ref.equals(ref));
+        assertEquals(
+          found.parts.map(({ sha256, size }) => ({ sha256, size })),
+          ref.parts ?? [{ sha256: ref.sha256, size: ref.size }],
+        );
+        // Offsets tile the content.
+        let offset = 0;
+        for (const part of found.parts) {
+          assertEquals(part.offset, offset);
+          offset += part.size;
+        }
+        assertEquals(offset, content.length);
+      },
+    ),
+    { numRuns: 300 },
+  );
+});

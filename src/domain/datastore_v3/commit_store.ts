@@ -287,6 +287,13 @@ export interface CommitStore {
   ): Promise<CompactionReport>;
 
   /**
+   * The compaction point: the last change-feed position folded into the
+   * compacted base; 0 before any compaction. One cheap read
+   * (swamp-club#3617).
+   */
+  compactionPoint(): Promise<number>;
+
+  /**
    * The compacted base, a page at a time, in a fixed order. Pass the
    * previous page's `next`, undefined to start.
    */

@@ -17,7 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { UNREADABLE_CONTENT_CODE } from "../../domain/datastore/unreadable_content.ts";
+import { UserError } from "../../domain/errors.ts";
+import {
+  captureUnreadableWarnings,
+  fakeUnreadableLookup,
+} from "./unreadable_records_test_helpers.ts";
 import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { ensureDir } from "@std/fs";
 import { dirname, join, SEPARATOR } from "@std/path";
@@ -1821,3 +1832,176 @@ Deno.test(
     });
   },
 );
+
+/** An output of `definitionId` started at `startedAt`, not saved. */
+function outputAt(definitionId: string, startedAt: string): ModelOutput {
+  return ModelOutput.create({
+    definitionId: createDefinitionId(definitionId),
+    methodName: "create",
+    startedAt: new Date(startedAt),
+    provenance: defaultProvenance,
+  });
+}
+
+/** A repository whose lookup holds the given outputs as unreadable. */
+function repoWithUnreadable(
+  dir: string,
+  unreadable: { type: ModelType; method: string; output: ModelOutput }[],
+) {
+  const paths = unreadable.map(({ type, method, output }) =>
+    new YamlOutputRepository(dir).getPath(type, method, output)
+  );
+  const fake = fakeUnreadableLookup(paths);
+  return {
+    repo: new YamlOutputRepository(dir, undefined, undefined, fake.lookup),
+    paths,
+    ...fake,
+  };
+}
+
+Deno.test("YamlOutputRepository.findLatestByDefinition: fails with the error of an unreadable output that started after the latest readable one, and answers past an older one (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const defId = crypto.randomUUID();
+    const older = outputAt(defId, "2023-01-01T00:00:00Z");
+    const readable = outputAt(defId, "2023-01-02T00:00:00Z");
+    const newer = outputAt(defId, "2023-01-03T00:00:00Z");
+    // Another definition's later unreadable output does not count.
+    const otherDefinition = outputAt(
+      crypto.randomUUID(),
+      "2023-01-04T00:00:00Z",
+    );
+    const { repo, errors, paths } = repoWithUnreadable(dir, [
+      { type: testType, method: "create", output: newer },
+      { type: testType, method: "create", output: older },
+      { type: testType, method: "create", output: otherDefinition },
+    ]);
+    await repo.save(testType, "create", readable);
+    const error = await assertRejects(() =>
+      repo.findLatestByDefinition(testType, createDefinitionId(defId))
+    );
+    assertEquals(error, errors.get(paths[0]));
+
+    // Without the newer one, the readable output is the latest.
+    const { repo: olderOnly } = repoWithUnreadable(dir, [
+      { type: testType, method: "create", output: older },
+    ]);
+    assertEquals(
+      (await olderOnly.findLatestByDefinition(
+        testType,
+        createDefinitionId(defId),
+      ))?.id,
+      readable.id,
+    );
+    // With no readable output at all, an unreadable one is the latest.
+    const lost = crypto.randomUUID();
+    const { repo: none, errors: noneErrors, paths: nonePaths } =
+      repoWithUnreadable(dir, [
+        {
+          type: testType,
+          method: "update",
+          output: outputAt(lost, "2020-01-01T00:00:00Z"),
+        },
+      ]);
+    assertEquals(
+      await assertRejects(() =>
+        none.findLatestByDefinition(testType, createDefinitionId(lost))
+      ),
+      noneErrors.get(nonePaths[0]),
+    );
+  });
+});
+
+Deno.test("YamlOutputRepository.findById: a miss where the method has unreadable outputs fails as not found naming them, whether the id is theirs or mistyped; a miss without is null (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const lost = outputAt(crypto.randomUUID(), "2023-01-01T00:00:00Z");
+    const { repo, paths } = repoWithUnreadable(dir, [
+      { type: testType, method: "create", output: lost },
+    ]);
+    const kept = outputAt(crypto.randomUUID(), "2023-01-02T00:00:00Z");
+    await repo.save(testType, "create", kept);
+    assertEquals(
+      (await repo.findById(testType, "create", kept.id))?.id,
+      kept.id,
+    );
+    // An output id is not in its file name, so the lookup cannot tell the
+    // unreadable output's own id from a mistyped one: both are not found,
+    // naming the record that may be it, and neither carries the
+    // unreadable-content code, since a mistyped id is no read of it.
+    const mistyped = crypto.randomUUID();
+    for (const id of [lost.id, mistyped]) {
+      const error = await assertRejects(
+        () => repo.findById(testType, "create", createModelOutputId(id)),
+        UserError,
+      );
+      assertEquals(error.code, "not_found");
+      assert(error.code !== UNREADABLE_CONTENT_CODE);
+      assertStringIncludes(error.message, `${id} was not found`);
+      assertStringIncludes(error.message, paths[0]);
+    }
+    // Another method has none: its miss is a miss.
+    assertEquals(await repo.findById(testType, "update", lost.id), null);
+  });
+});
+
+Deno.test("YamlOutputRepository: listings keep their readable outputs and warn naming the unreadable ones in their scope (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const defId = crypto.randomUUID();
+    const readable = outputAt(defId, "2023-01-02T00:00:00Z");
+    const lostOfDefinition = outputAt(defId, "2023-01-01T00:00:00Z");
+    const lostOfOther = outputAt(crypto.randomUUID(), "2023-01-01T00:00:00Z");
+    const { repo, paths, stats } = repoWithUnreadable(dir, [
+      { type: testType, method: "create", output: lostOfDefinition },
+      { type: testType, method: "create", output: lostOfOther },
+    ]);
+    await repo.save(testType, "create", readable);
+
+    const byDefinition = await captureUnreadableWarnings(async () => {
+      assertEquals(
+        (await repo.findByDefinition(testType, createDefinitionId(defId)))
+          .map((o) => o.id),
+        [readable.id],
+      );
+    });
+    assertEquals(byDefinition.length, 1, byDefinition.join("\n"));
+    assertStringIncludes(byDefinition[0], paths[0]);
+    assert(!byDefinition[0].includes(paths[1]), byDefinition[0]);
+
+    const all = await captureUnreadableWarnings(async () => {
+      assertEquals(
+        (await repo.findAll(testType)).map((o) => o.id),
+        [readable.id],
+      );
+    });
+    // The definition's record was named already in this process.
+    assertEquals(all.length, 1, all.join("\n"));
+    assertStringIncludes(all[0], paths[1]);
+    assertEquals(stats.listings, 2);
+  });
+});
+
+Deno.test("YamlOutputRepository.findAllGlobalSince: warns only about unreadable outputs whose file name says they started at or after the cutoff (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const { repo, paths, stats } = repoWithUnreadable(dir, [
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(crypto.randomUUID(), "2020-01-01T00:00:00Z"),
+      },
+      {
+        type: registeredType,
+        method: "run",
+        output: outputAt(crypto.randomUUID(), "2030-01-01T00:00:00Z"),
+      },
+    ]);
+    const warnings = await captureUnreadableWarnings(async () => {
+      await repo.findAllGlobalSince(new Date("2025-01-01T00:00:00Z"));
+      await repo.findAllGlobal();
+    });
+    assertEquals(warnings.length, 2, warnings.join("\n"));
+    assertStringIncludes(warnings[0], paths[1]);
+    assert(!warnings[0].includes(paths[0]), warnings[0]);
+    // The whole-repository listing names the older one too, once.
+    assertStringIncludes(warnings[1], paths[0]);
+    assertEquals(stats.listings, 2);
+  });
+});

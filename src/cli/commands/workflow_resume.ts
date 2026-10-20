@@ -478,6 +478,7 @@ export const workflowResumeCommand = withRemoteOptions(
       unlocked.datastoreResolver,
       repoContext.autoGc,
       repoContext.unifiedDataRepo.fetchForeignContent,
+      repoContext.unreadableContent,
     );
 
     service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);

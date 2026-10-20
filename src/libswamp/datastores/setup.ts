@@ -68,7 +68,11 @@ import {
   datastoreBlockEngine,
   ensureSupportedDatastoreFormat,
 } from "../../infrastructure/persistence/datastore_format_guard.ts";
-import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
+import {
+  type DatastoreEngine,
+  InvalidDatastoreFormatMarkerError,
+  LostDatastoreFormatMarkerError,
+} from "../../domain/datastore/datastore_format.ts";
 import { REPO_LOCAL_STREAM_SUBDIRS } from "../../infrastructure/datastore_v3/record_path_guard.ts";
 import {
   initializeV3Datastore,
@@ -433,15 +437,24 @@ export async function* datastoreSetupFilesystem(
         return;
       }
 
-      let targetEngine: DatastoreEngine | void;
+      let targetEngine: DatastoreEngine | void = undefined;
       try {
         targetEngine = await deps.assertDatastoreFormat(input.repoDir, {
           type: "filesystem",
           path: input.datastorePath,
         });
       } catch (err) {
-        yield formatRefusal(err);
-        return;
+        // A v3 setup that stopped before its marker reached the disk leaves
+        // a skeleton whose marker is lost (swamp-club#3617): a re-run with
+        // --format 3 completes it, when it holds nothing else.
+        const resumable = input.format === 3 &&
+          (err instanceof LostDatastoreFormatMarkerError ||
+            err instanceof InvalidDatastoreFormatMarkerError) &&
+          (await deps.inspectV3Target(input.datastorePath)).kind === "empty";
+        if (!resumable) {
+          yield formatRefusal(err);
+          return;
+        }
       }
       // A target that is already a v3 datastore takes no v2 setup: v2's
       // migration would copy the repo's records into it, where a v3 checkout
@@ -2053,11 +2066,14 @@ export function createDatastoreSetupDeps(
         options.swampVersion ?? "unknown",
       ),
     assertDatastoreFormat: (repoDir, config, provider) =>
-      ensureSupportedDatastoreFormat(
-        repoDir,
-        config,
-        provider ? { resolveProvider: () => Promise.resolve(provider) } : {},
-      ),
+      ensureSupportedDatastoreFormat(repoDir, config, {
+        // A lost marker's advice names setup, not the repo's datastore
+        // (swamp-club#3617).
+        setupTarget: true,
+        ...(provider
+          ? { resolveProvider: () => Promise.resolve(provider) }
+          : {}),
+      }),
   };
 }
 
@@ -2203,7 +2219,8 @@ async function inspectV3Target(path: string): Promise<V3TargetState> {
     return { kind: "refused", reason: `${path} is not a directory` };
   }
   // A setup that stopped after writing the marker leaves a fresh skeleton;
-  // a re-run completes it.
+  // a re-run completes it, and writes the marker if a crash lost it
+  // (swamp-club#3617).
   if (await isFreshV3Skeleton(path)) return { kind: "empty" };
   for await (const entry of Deno.readDir(path)) {
     return {

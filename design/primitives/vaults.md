@@ -431,8 +431,9 @@ have their own sections. The group also has:
     so a copied file that kept its source's id would delete the source's
     config
   - A vault referenced by a definition (`vault.get`, a resource override
-    `vaultName`), a workflow (`vault.get`, its `vaults` list) or the datastore
-    config's `vault.get` is refused unless `--force`
+    `vaultName`), a workflow (`vault.get`, its `vaults` list, a step's data
+    output override `vaultName`) or the datastore config's `vault.get` is
+    refused unless `--force`
     (`src/domain/expressions/vault_reference_finder.ts`). A `vault.get` whose
     vault argument is evaluated is reported as a possible reference, never
     refused. Not scanned: a model type's spec- or field-level `vaultName`, and

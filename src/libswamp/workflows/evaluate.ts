@@ -75,7 +75,10 @@ import {
   prepareExpressionContext,
   prepareExpressionsIn,
 } from "../../infrastructure/cel/cel_evaluator.ts";
-import type { HydrateFileHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  HydrateFileHook,
+  UnreadableContentLookup,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -209,6 +212,11 @@ export function createWorkflowEvaluateDeps(
    * read another namespace's data see its attributes (swamp-club#3306).
    */
   fetchForeignContent?: ForeignContentFetcher,
+  /**
+   * The repository context's lookup, so an expression reading a record the
+   * v3 read model could not materialise fails loudly (swamp-club#3617).
+   */
+  unreadableContent?: UnreadableContentLookup,
 ): WorkflowEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -225,6 +233,7 @@ export function createWorkflowEvaluateDeps(
     undefined,
     undefined,
     fetchForeignContent,
+    unreadableContent,
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(

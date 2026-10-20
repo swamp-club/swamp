@@ -180,12 +180,18 @@ export class UnsupportedDatastoreFormatError extends UserError {
 export class InvalidDatastoreFormatMarkerError extends UserError {
   readonly source: string;
 
-  constructor(source: string, reason: string) {
+  /**
+   * `advice` replaces the default next step, for a marker a crash left blank
+   * beside a v3 commit log ({@link lostFormatMarkerAdvice}).
+   */
+  constructor(source: string, reason: string, advice?: string) {
     super(
       `The datastore format marker ${source} is not a valid format marker ` +
         `(${reason}). swamp will not use a datastore whose format it cannot ` +
-        `determine. Check who wrote it; if swamp did, report it with ` +
-        "`swamp issue bug`. Nothing was changed.",
+        `determine. ` +
+        (advice ??
+          "Check who wrote it; if swamp did, report it with `swamp issue bug`.") +
+        " Nothing was changed.",
       DATASTORE_FORMAT_MARKER_INVALID_CODE,
     );
     this.name = "InvalidDatastoreFormatMarkerError";
@@ -206,19 +212,103 @@ export class DatastoreFormatMismatchError extends UserError {
   readonly configured: number;
   readonly marked?: number;
 
-  constructor(configured: number, marked: number | undefined) {
+  /**
+   * `advice` replaces the default next step, for a v3 datastore whose
+   * marker a crash lost ({@link lostFormatMarkerAdvice}).
+   */
+  constructor(
+    configured: number,
+    marked: number | undefined,
+    advice?: string,
+  ) {
     super(
       `The datastore config in .swamp.yaml says format ${configured}, but ` +
         (marked === undefined
           ? "the datastore has no readable format marker"
           : `the datastore's format marker says format ${marked}`) +
-        ". Check that the datastore path is the one setup created, or run " +
-        "`swamp datastore setup` again. Nothing was changed.",
+        ". " +
+        (advice ??
+          "Check that the datastore path is the one setup created, or run " +
+            "`swamp datastore setup` again.") +
+        " Nothing was changed.",
       DATASTORE_FORMAT_MISMATCH_CODE,
     );
     this.name = "DatastoreFormatMismatchError";
     this.configured = configured;
     if (marked !== undefined) this.marked = marked;
+  }
+}
+
+/**
+ * Whether marker bytes are what a crash can leave of a marker
+ * (swamp-club#3617): nothing, or only whitespace and NUL bytes, as when a
+ * file's length reached the disk before its content did. Partial JSON is
+ * not: something wrote it.
+ */
+export function isBlankDatastoreFormatMarker(bytes: Uint8Array): boolean {
+  return bytes.every((byte) =>
+    byte === 0x00 || byte === 0x20 || byte === 0x09 || byte === 0x0a ||
+    byte === 0x0d
+  );
+}
+
+/**
+ * Where swamp met a filesystem datastore whose format marker a crash lost
+ * beside its v3 commit log (swamp-club#3617), which decides the way out:
+ * - `v3-config`: a `.swamp.yaml` config that says format 3;
+ * - `config`: a config that does not: a `.swamp.yaml` one that says format
+ *   2 or none, or a datastore override (`SWAMP_DATASTORE`, `--datastore`),
+ *   which names no format and which a filesystem config does not record;
+ * - `setup-target`: the directory `swamp datastore setup` was pointed at.
+ */
+export type LostFormatMarkerContext = "v3-config" | "config" | "setup-target";
+
+/** The next step for a lost format marker met in `context`. */
+export function lostFormatMarkerAdvice(
+  context: LostFormatMarkerContext,
+): string {
+  const lost =
+    "It holds a v3 commit log, so a crash may have lost its format marker.";
+  switch (context) {
+    case "v3-config":
+      return `${lost} Run \`swamp doctor datastores --repair\` to check ` +
+        "the datastore and restore the marker.";
+    case "config":
+      return `${lost} This repository's config does not use it as v3. If ` +
+        "a datastore override (SWAMP_DATASTORE or --datastore) points here, " +
+        "unset it. Then run `swamp doctor datastores --repair` in the " +
+        "repository whose .swamp.yaml uses this datastore with format 3, or " +
+        "check that the datastore path is the right one.";
+    case "setup-target":
+      return `${lost} If \`swamp datastore setup filesystem --format 3\` ` +
+        "stopped part-way here, run it again; otherwise run " +
+        "`swamp doctor datastores --repair` in the repository that uses " +
+        "this datastore.";
+  }
+}
+
+/**
+ * Thrown when a filesystem datastore has no format marker but holds a v3
+ * commit log, under a config that does not say format 3 (swamp-club#3617):
+ * a v3 datastore whose marker a crash lost. Opened as format 2 it would get
+ * v2 files written into it, so swamp refuses. A config that says format 3
+ * gets {@link DatastoreFormatMismatchError} instead, with the advice for
+ * that context.
+ */
+export class LostDatastoreFormatMarkerError extends UserError {
+  readonly datastorePath: string;
+  readonly context: LostFormatMarkerContext;
+
+  constructor(datastorePath: string, context: LostFormatMarkerContext) {
+    super(
+      `The datastore ${datastorePath} has no format marker. swamp will not ` +
+        "open it as format 2. " + lostFormatMarkerAdvice(context) +
+        " Nothing was changed.",
+      DATASTORE_FORMAT_MISMATCH_CODE,
+    );
+    this.name = "LostDatastoreFormatMarkerError";
+    this.datastorePath = datastorePath;
+    this.context = context;
   }
 }
 

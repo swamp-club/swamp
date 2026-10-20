@@ -122,17 +122,20 @@ export function createModelMethodHistoryLogsCommand(syntax: CommandSyntax) {
 
     cliCtx.logger.debug`Getting logs for method run: ${outputIdOrModelName}`;
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-      {
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      },
-    );
+    const { repoDir, repoContext, datastoreResolver } =
+      await requireInitializedRepoReadOnly(
+        {
+          repoDir: resolveRepoDir(options.repoDir),
+          outputMode: cliCtx.outputMode,
+        },
+      );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createModelMethodHistoryLogsDeps(
       repoDir,
       datastoreResolver,
+      repoContext.definitionRepo,
+      repoContext.unreadableContent,
     );
 
     const renderer = createModelMethodHistoryLogsRenderer(cliCtx.outputMode);

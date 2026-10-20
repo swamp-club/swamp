@@ -63,16 +63,25 @@
  * - **Damaged chunks** are deleted whatever their age, so the next write of
  *   that content finds it absent and stores it again (writes trust `has`).
  *   A damaged chunk a commit names already fails every read; the report
- *   says so.
+ *   says so. A chunk verifying finds damaged is moved aside first
+ *   ({@link ChunkQuarantine}, swamp-club#3617) and hashed again there: a
+ *   chunk stored again meanwhile (a checkout putting back the content it
+ *   holds) is good now and put back, never deleted. On a storage that
+ *   cannot move chunks aside, verifying only reports damage. Verifying
+ *   starts at a shard prefix (`verifyFrom`), so sweeps with a small budget
+ *   and different prefixes cover the whole namespace over time.
  *
  * @module
  */
 
 // node:crypto, as the chunk store hashes chunks.
 import { createHash } from "node:crypto";
-import type {
-  DatastoreStorage,
-  TempFileSweeper,
+import {
+  type ChunkQuarantine,
+  type DatastoreStorage,
+  isChunkDirectorySync,
+  isChunkQuarantine,
+  type TempFileSweeper,
 } from "../datastore/datastore_storage.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { storageNamespaceOf } from "./chunk_store.ts";
@@ -105,7 +114,11 @@ const RESTORE_TIMEOUT_MS = 5 * 60 * 1000;
 /** The most candidate bytes held at once before they are deleted. */
 const MAX_HELD_BYTES = 64 * 1024 * 1024;
 
-/** A chunk whose bytes do not match its SHA-256. It has been deleted. */
+/**
+ * A chunk whose bytes do not match its SHA-256. It has been deleted, unless
+ * verifying found it on a storage that cannot move chunks aside, which
+ * keeps it.
+ */
 export interface DamagedChunk {
   readonly sha256: string;
   /** True when a commit names it, so its reads were already failing. */
@@ -133,7 +146,7 @@ export interface ChunkCollectionReport {
   readonly keptTooNew: number;
   /** Chunks whose bytes were read and checked. */
   readonly verified: number;
-  /** Damaged chunks found, all deleted. */
+  /** Damaged chunks found (see {@link DamagedChunk}). */
   readonly damaged: readonly DamagedChunk[];
   /** Stale temp files removed. */
   readonly tempFilesRemoved: number;
@@ -185,6 +198,12 @@ export interface CollectOptions {
    */
   readonly verifyBytes?: number;
   /**
+   * Where verifying starts: a lowercase hex prefix. Chunks whose hash sorts
+   * at or after it are verified first, then the rest, each from a listing
+   * of its own; "" (the default) verifies in listing order.
+   */
+  readonly verifyFrom?: string;
+  /**
    * How many bytes of deletion candidates to read before deleting them;
    * {@link DEFAULT_SWEEP_READ_BYTES} unless given. Candidates past it are
    * kept for the next sweep.
@@ -229,6 +248,12 @@ export class ChunkCollector {
     const { signal } = options;
     const verifyBytes = options.verifyBytes ?? 0;
     requireNonNegative(verifyBytes, "verifyBytes");
+    const verifyFrom = options.verifyFrom ?? "";
+    if (!/^[0-9a-f]{0,64}$/.test(verifyFrom)) {
+      throw new Error(
+        `verifyFrom must be a lowercase hex prefix: ${verifyFrom}`,
+      );
+    }
     signal.throwIfAborted();
     if (this.#sweep === undefined) {
       return await this.#collect(namespace, options, verifyBytes);
@@ -260,7 +285,14 @@ export class ChunkCollector {
     // A pass of its own, so reading and hashing chunks never stretches the
     // time between the sweep seeing a chunk's age and deleting it.
     const { verified, damaged } = verifyBytes > 0
-      ? await this.#verify(namespace, ns, verifyBytes, cutoff, signal)
+      ? await this.#verify(
+        namespace,
+        ns,
+        verifyBytes,
+        options.verifyFrom ?? "",
+        cutoff,
+        signal,
+      )
       : { verified: 0, damaged: [] };
 
     let readBudget = options.sweepReadBytes ?? DEFAULT_SWEEP_READ_BYTES;
@@ -341,9 +373,23 @@ export class ChunkCollector {
         if (bytes === null) continue;
         readBudget -= bytes.length;
         if (sha256Hex(bytes) !== sha256) {
-          // Damaged: deleted like a verified one, never put back.
-          await this.#storage.delete(ns, sha256, signal);
-          damagedInSweep.push(sha256);
+          // Damaged: deleted, never put back. Moved aside first where the
+          // storage can, as when verifying; otherwise deleted at once, as an
+          // unreferenced candidate a commit lands on meanwhile is stored
+          // again by its writer's check. Only while it may still delete.
+          this.#assertMayDelete();
+          if (isChunkQuarantine(this.#storage)) {
+            const outcome = await this.#discardDamaged(
+              this.#storage,
+              ns,
+              sha256,
+              signal,
+            );
+            if (outcome !== "restored") damagedInSweep.push(sha256);
+          } else {
+            await this.#storage.delete(ns, sha256, signal);
+            damagedInSweep.push(sha256);
+          }
           continue;
         }
         held.push({ sha256, bytes });
@@ -401,6 +447,68 @@ export class ChunkCollector {
     };
   }
 
+  /** Runs `run` inside the sweep's batch, when it has one. */
+  async #inBatch(run: () => Promise<void>): Promise<void> {
+    if (this.#sweep?.batch !== undefined) await this.#sweep.batch(run);
+    else await run();
+  }
+
+  /**
+   * Moves a chunk found damaged aside and hashes it again there: removes it
+   * when still damaged, puts it back when good (stored again since it was
+   * read). A chunk gone meanwhile (deleted, or a moved-aside file another
+   * process's temp-file sweep removed) is done. A chunk moved aside but not
+   * judged, because reading it failed or the sweep aborted, is put back so
+   * a good one is never lost, though never over a chunk stored since it was
+   * moved aside; whatever is put back has its directory synced.
+   */
+  async #discardDamaged(
+    storage: ChunkQuarantine,
+    ns: string,
+    sha256: string,
+    signal: AbortSignal,
+  ): Promise<DiscardOutcome> {
+    const aside = await storage.quarantineChunk(ns, sha256, signal);
+    if (aside === undefined) return "gone";
+    let judged = false;
+    let restored = false;
+    try {
+      const bytes = await aside.read(signal);
+      if (bytes === null) {
+        judged = true;
+        return "gone";
+      }
+      if (sha256Hex(bytes) === sha256) {
+        await aside.putBack(signal);
+        judged = true;
+        restored = true;
+        return "restored";
+      }
+      await aside.remove(signal);
+      judged = true;
+      return "removed";
+    } finally {
+      // The sweep's own signal may have aborted.
+      const restoreSignal = AbortSignal.timeout(RESTORE_TIMEOUT_MS);
+      if (!judged) {
+        await aside.putBack(restoreSignal).then(
+          () => restored = true,
+          () => {},
+        );
+      }
+      if (restored && isChunkDirectorySync(this.#storage)) {
+        const synced = this.#storage.syncChunkDirectories(
+          ns,
+          [sha256],
+          restoreSignal,
+        );
+        // A failure already on its way out is the one reported.
+        if (judged) await synced;
+        else await synced.catch(() => {});
+      }
+    }
+  }
+
   /**
    * Re-checks the references of chunks just deleted and puts back the ones
    * a commit landed on meanwhile. Runs whether or not the sweep was aborted,
@@ -444,33 +552,60 @@ export class ChunkCollector {
   }
 
   /**
-   * Reads and hashes chunks in listing order until `budget` bytes are spent,
-   * deleting each damaged one whatever its age (see the module doc). A
-   * chunk is read whole, so the last one may go past the budget.
+   * Reads and hashes chunks until `budget` bytes are spent: those whose
+   * hash sorts at or after `from` first, then the rest, each from a listing
+   * of its own so nothing is held but the chunk being read. Each damaged
+   * one is discarded whatever its age (see the module doc). A chunk is read
+   * whole, so the last one may go past the budget.
    */
   async #verify(
     namespace: Namespace,
     ns: string,
     budget: number,
+    from: string,
     cutoff: Date,
     signal: AbortSignal,
   ): Promise<{ verified: number; damaged: DamagedChunk[] }> {
     let verified = 0;
     const rotten: string[] = [];
-    for await (const chunk of this.#storage.list(ns, signal)) {
+    const passes: ((sha256: string) => boolean)[] = from === ""
+      ? [() => true]
+      : [(sha256) => sha256 >= from, (sha256) => sha256 < from];
+    for (const admits of passes) {
       if (budget <= 0) break;
-      signal.throwIfAborted();
-      const bytes = await this.#storage.get(ns, chunk.sha256, signal);
-      // Null: deleted since the listing, so there is nothing to check.
-      if (bytes === null) continue;
-      budget -= bytes.length;
-      verified++;
-      if (verified % CHUNK_COLLECTION_BATCH === 0) {
-        await this.#sweep?.heartbeat();
+      for await (const chunk of this.#storage.list(ns, signal)) {
+        if (budget <= 0) break;
+        signal.throwIfAborted();
+        if (!admits(chunk.sha256)) continue;
+        const bytes = await this.#storage.get(ns, chunk.sha256, signal);
+        // Null: deleted since the listing, so there is nothing to check.
+        if (bytes === null) continue;
+        budget -= bytes.length;
+        verified++;
+        if (verified % CHUNK_COLLECTION_BATCH === 0) {
+          await this.#sweep?.heartbeat();
+        }
+        if (sha256Hex(bytes) === chunk.sha256) continue;
+        // Without a way to move it aside, a chunk stored again since the
+        // read could be deleted good: only reported (swamp-club#3617).
+        if (!isChunkQuarantine(this.#storage)) {
+          rotten.push(chunk.sha256);
+          continue;
+        }
+        const storage = this.#storage;
+        let outcome: DiscardOutcome | undefined;
+        this.#assertMayDelete();
+        // Inside the sweep's batch, where an overlapping writer waits.
+        await this.#inBatch(async () => {
+          outcome = await this.#discardDamaged(
+            storage,
+            ns,
+            chunk.sha256,
+            signal,
+          );
+        });
+        if (outcome !== "restored") rotten.push(chunk.sha256);
       }
-      if (sha256Hex(bytes) === chunk.sha256) continue;
-      await this.#storage.delete(ns, chunk.sha256, signal);
-      rotten.push(chunk.sha256);
     }
     const names = rotten.length === 0
       ? new Set<string>()
@@ -484,6 +619,13 @@ export class ChunkCollector {
     };
   }
 }
+
+/**
+ * What {@link ChunkCollector} did with a damaged chunk it moved aside:
+ * removed it, put it back because it hashed good there (stored again since
+ * it was read), or found it gone.
+ */
+type DiscardOutcome = "removed" | "restored" | "gone";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");

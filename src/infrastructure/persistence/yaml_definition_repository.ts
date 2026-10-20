@@ -65,8 +65,15 @@ import {
   swampPath,
 } from "./paths.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
+import {
+  unreadableRecordsUnder,
+  warnUnreadableLeftOut,
+} from "./unreadable_records.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
-import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  MarkDirtyHook,
+  UnreadableContentLookup,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   createDefinitionId,
@@ -145,6 +152,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     /** Pass `false` to disable secondary search. Omit to auto-compute from repoDir. */
     secondaryBaseDir?: string | false,
     private readonly markDirtyHook?: MarkDirtyHook,
+    /**
+     * Tells an auto-definition a v3 read model could not materialise from
+     * an absent one (swamp-club#3617), so a lookup by name that finds no
+     * definition fails loudly on it instead.
+     */
+    readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ?? resolveEffectiveDefinitionsDir(repoDir);
     this.secondaryBaseDir = secondaryBaseDir === false
@@ -206,7 +219,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         type,
         id,
       );
-      if (!located) return null;
+      if (!located) {
+        // An auto-definition stored under its id (a legacy or not
+        // filename-safe name) the datastore could not materialise fails
+        // loudly (swamp-club#3617). One stored under its name cannot be
+        // told from its id, so the miss names them, as findByIdGlobal does.
+        const typeDir = join(this.secondaryBaseDir, type.toDirectoryPath());
+        await this.throwIfUnreadable(join(typeDir, `${id}.yaml`));
+        await warnUnreadableLeftOut(this.unreadableContent, typeDir);
+        return null;
+      }
       this.idToActualPath.set(id, located.path);
       return located.definition;
     }
@@ -398,8 +420,70 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         });
         return secondaryMatch.definition;
       }
+      if (isFilenameSafeDefinitionName(name)) {
+        await this.throwIfUnreadable(
+          this.getNamePath(type, name, this.secondaryBaseDir),
+        );
+      }
     }
     return null;
+  }
+
+  /**
+   * Throws when the datastore recorded the auto-definition missing at
+   * `path` as unreadable (swamp-club#3617), so a lookup fails loudly instead
+   * of finding no definition. A file that is simply absent returns.
+   */
+  private async throwIfUnreadable(path: string): Promise<void> {
+    const error = await this.unreadableContent?.(path);
+    if (error !== undefined) throw error;
+  }
+
+  /**
+   * {@link throwIfUnreadable} for the file `name` names in each type
+   * directory of `base`: a lookup by name alone does not know the type its
+   * file was under. Asks every directory this checkout has under `base`, and
+   * every registered type's, since a type whose only definition could not be
+   * materialised has no directory here.
+   */
+  private async throwIfUnreadableByName(
+    base: string,
+    name: string,
+  ): Promise<void> {
+    // One query over `base` when the lookup can list, which also finds a
+    // definition of a type that is neither registered nor has a directory.
+    if (this.unreadableContent?.under !== undefined) {
+      for (
+        const entry of await unreadableRecordsUnder(
+          this.unreadableContent,
+          base,
+        )
+      ) {
+        if (basename(entry.path) === `${name}.yaml`) throw entry.error;
+      }
+      return;
+    }
+    const dirs = new Set<string>();
+    const walkDirs = async (dir: string): Promise<void> => {
+      dirs.add(dir);
+      let entries;
+      try {
+        entries = await readDirSorted(dir);
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory) await walkDirs(join(dir, entry.name));
+      }
+    };
+    await walkDirs(base);
+    for (const type of modelRegistry.types()) {
+      dirs.add(this.getTypeDir(type, base));
+    }
+    for (const dir of dirs) {
+      await this.throwIfUnreadable(join(dir, `${name}.yaml`));
+    }
   }
 
   /**
@@ -506,12 +590,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         if (hinted) return hinted;
         this.globalNameToActualPath.delete(name);
       }
-      return await this.searchDefinitionByName(
+      const secondary = await this.searchDefinitionByName(
         this.secondaryBaseDir,
         [],
         name,
         false,
       );
+      if (secondary) return secondary;
+      if (this.unreadableContent && isFilenameSafeDefinitionName(name)) {
+        await this.throwIfUnreadableByName(this.secondaryBaseDir, name);
+      }
     }
     return null;
   }
@@ -677,6 +765,23 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       const found = results.find((entry) => entry.definition.id === id);
       if (found) return found;
     }
+    if (this.secondaryBaseDir && this.unreadableContent) {
+      // An auto-definition stored under its id that the datastore could not
+      // materialise fails loudly; one stored under its name cannot be told
+      // from its id, so the miss names them (swamp-club#3617).
+      for (
+        const entry of await unreadableRecordsUnder(
+          this.unreadableContent,
+          this.secondaryBaseDir,
+        )
+      ) {
+        if (basename(entry.path) === `${id}.yaml`) throw entry.error;
+      }
+      await warnUnreadableLeftOut(
+        this.unreadableContent,
+        this.secondaryBaseDir,
+      );
+    }
     return null;
   }
 
@@ -698,6 +803,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       // and the last one read must not become where findById looks next —
       // that would let an auto-definition shadow a primary one.
       await this.collectAllDefinitions(dir, [], found, false);
+    }
+    if (this.secondaryBaseDir) {
+      await warnUnreadableLeftOut(
+        this.unreadableContent,
+        this.secondaryBaseDir,
+      );
     }
     return found;
   }

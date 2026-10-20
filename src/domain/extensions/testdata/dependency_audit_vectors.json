@@ -1,87 +1,169 @@
 {
-  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard). Copy verbatim; the swamp copy is the source. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier, given the registry's answer; `scorecardMessage`, where present, is the scorecard's wording of the same finding. Each expected finding's `costsPoint` says whether it costs the rubric's dependency-trust point: every error, every `not-audited` and every `deprecated-version` does; push still only warns on `deprecated-version` until swamp-club#3354.",
+  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard, swamp-club#3354 and swamp-club#3682 scoring). Copy verbatim; the swamp copy is the source. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier, given the registry's answer; `scorecardMessage`, where present, is the scorecard's wording of the same finding. Each expected finding's `pointsLost` is what it alone costs the rubric's 2-point dependency-trust factor: 2 for every error, `not-audited`, `deprecated-version` and `jsr-yanked`, 1 for `loose-specifier`, 0 otherwise. Push only warns on the warning causes. `scoring`: the factor's earned points (0, 1 or 2) for a combination of findings: any finding costing 2 gives 0; otherwise any loose finding gives 1, however many; otherwise 2. `loose-specifier` findings count per distinct dependency.",
   "resolution": [
     {
       "name": "exact pin",
       "registry": "npm",
       "spec": "1.2.0",
       "published": {
-        "versions": ["1.0.0", "1.2.0", "1.2.5"],
-        "distTags": { "latest": "1.2.5" }
+        "versions": [
+          "1.0.0",
+          "1.2.0",
+          "1.2.5"
+        ],
+        "distTags": {
+          "latest": "1.2.5"
+        }
       },
-      "expect": { "version": "1.2.0", "from": "exact", "kind": "exact" }
+      "expect": {
+        "version": "1.2.0",
+        "from": "exact",
+        "kind": "exact"
+      }
     },
     {
       "name": "= exact pin",
       "registry": "npm",
       "spec": "=1.2.0",
-      "published": { "versions": ["1.2.0"], "distTags": {} },
-      "expect": { "version": "1.2.0", "from": "exact", "kind": "exact" }
+      "published": {
+        "versions": [
+          "1.2.0"
+        ],
+        "distTags": {}
+      },
+      "expect": {
+        "version": "1.2.0",
+        "from": "exact",
+        "kind": "exact"
+      }
     },
     {
       "name": "v exact pin",
       "registry": "npm",
       "spec": "v1.2.0",
-      "published": { "versions": ["1.2.0"], "distTags": {} },
-      "expect": { "version": "1.2.0", "from": "exact", "kind": "exact" }
+      "published": {
+        "versions": [
+          "1.2.0"
+        ],
+        "distTags": {}
+      },
+      "expect": {
+        "version": "1.2.0",
+        "from": "exact",
+        "kind": "exact"
+      }
     },
     {
       "name": "caret range",
       "registry": "npm",
       "spec": "^1.0.0",
       "published": {
-        "versions": ["1.0.0", "1.2.5", "2.0.0"],
-        "distTags": { "latest": "2.0.0" }
+        "versions": [
+          "1.0.0",
+          "1.2.5",
+          "2.0.0"
+        ],
+        "distTags": {
+          "latest": "2.0.0"
+        }
       },
-      "expect": { "version": "1.2.5", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "1.2.5",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "tilde range",
       "registry": "npm",
       "spec": "~1.2.0",
       "published": {
-        "versions": ["1.2.0", "1.2.5", "1.3.0"],
-        "distTags": { "latest": "1.3.0" }
+        "versions": [
+          "1.2.0",
+          "1.2.5",
+          "1.3.0"
+        ],
+        "distTags": {
+          "latest": "1.3.0"
+        }
       },
-      "expect": { "version": "1.2.5", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "1.2.5",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "bare major",
       "registry": "npm",
       "spec": "1",
       "published": {
-        "versions": ["1.0.0", "1.9.0", "2.0.0"],
-        "distTags": { "latest": "2.0.0" }
+        "versions": [
+          "1.0.0",
+          "1.9.0",
+          "2.0.0"
+        ],
+        "distTags": {
+          "latest": "2.0.0"
+        }
       },
-      "expect": { "version": "1.9.0", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "1.9.0",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "prerelease excluded from a range",
       "registry": "npm",
       "spec": "^1.0.0",
       "published": {
-        "versions": ["1.0.0", "1.1.0-beta.1"],
-        "distTags": { "latest": "1.0.0" }
+        "versions": [
+          "1.0.0",
+          "1.1.0-beta.1"
+        ],
+        "distTags": {
+          "latest": "1.0.0"
+        }
       },
-      "expect": { "version": "1.0.0", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "1.0.0",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "unpinned is latest",
       "registry": "npm",
       "spec": null,
       "published": {
-        "versions": ["1.0.0", "2.0.0"],
-        "distTags": { "latest": "1.0.0" }
+        "versions": [
+          "1.0.0",
+          "2.0.0"
+        ],
+        "distTags": {
+          "latest": "1.0.0"
+        }
       },
-      "expect": { "version": "1.0.0", "from": "registry", "kind": "unpinned" }
+      "expect": {
+        "version": "1.0.0",
+        "from": "registry",
+        "kind": "unpinned"
+      }
     },
     {
       "name": "dist-tag",
       "registry": "npm",
       "spec": "next",
       "published": {
-        "versions": ["1.0.0", "2.0.0-rc.1"],
-        "distTags": { "latest": "1.0.0", "next": "2.0.0-rc.1" }
+        "versions": [
+          "1.0.0",
+          "2.0.0-rc.1"
+        ],
+        "distTags": {
+          "latest": "1.0.0",
+          "next": "2.0.0-rc.1"
+        }
       },
       "expect": {
         "version": "2.0.0-rc.1",
@@ -93,84 +175,169 @@
       "name": "range nothing satisfies",
       "registry": "npm",
       "spec": "^9.0.0",
-      "published": { "versions": ["1.0.0"], "distTags": { "latest": "1.0.0" } },
-      "expect": { "version": null, "kind": "range" }
+      "published": {
+        "versions": [
+          "1.0.0"
+        ],
+        "distTags": {
+          "latest": "1.0.0"
+        }
+      },
+      "expect": {
+        "version": null,
+        "kind": "range"
+      }
     },
     {
       "name": "lock decides a range",
       "registry": "npm",
       "spec": "^1.0.0",
-      "locked": ["1.0.0"],
+      "locked": [
+        "1.0.0"
+      ],
       "published": {
-        "versions": ["1.0.0", "1.2.5"],
-        "distTags": { "latest": "1.2.5" }
+        "versions": [
+          "1.0.0",
+          "1.2.5"
+        ],
+        "distTags": {
+          "latest": "1.2.5"
+        }
       },
-      "expect": { "version": "1.0.0", "from": "lockfile", "kind": "range" }
+      "expect": {
+        "version": "1.0.0",
+        "from": "lockfile",
+        "kind": "range"
+      }
     },
     {
       "name": "stale lock falls through",
       "registry": "npm",
       "spec": "^1.2.0",
-      "locked": ["1.0.0"],
+      "locked": [
+        "1.0.0"
+      ],
       "published": {
-        "versions": ["1.0.0", "1.2.5"],
-        "distTags": { "latest": "1.2.5" }
+        "versions": [
+          "1.0.0",
+          "1.2.5"
+        ],
+        "distTags": {
+          "latest": "1.2.5"
+        }
       },
-      "expect": { "version": "1.2.5", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "1.2.5",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "lock entry for the specifier beats a higher transitive copy",
       "registry": "npm",
       "spec": "^1.0.0",
-      "locked": ["1.0.0", "1.2.5"],
+      "locked": [
+        "1.0.0",
+        "1.2.5"
+      ],
       "lockedFor": "1.0.0",
       "published": {
-        "versions": ["1.0.0", "1.2.5"],
-        "distTags": { "latest": "1.2.5" }
+        "versions": [
+          "1.0.0",
+          "1.2.5"
+        ],
+        "distTags": {
+          "latest": "1.2.5"
+        }
       },
-      "expect": { "version": "1.0.0", "from": "lockfile", "kind": "range" }
+      "expect": {
+        "version": "1.0.0",
+        "from": "lockfile",
+        "kind": "range"
+      }
     },
     {
       "name": "jsr range skips yanked",
       "registry": "jsr",
       "spec": "^0.225.0",
       "published": {
-        "versions": ["0.225.0", "0.225.1", "0.225.2"],
-        "distTags": { "latest": "0.225.1" },
-        "yanked": ["0.225.2"]
+        "versions": [
+          "0.225.0",
+          "0.225.1",
+          "0.225.2"
+        ],
+        "distTags": {
+          "latest": "0.225.1"
+        },
+        "yanked": [
+          "0.225.2"
+        ]
       },
-      "expect": { "version": "0.225.1", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "0.225.1",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "jsr range falls back to yanked",
       "registry": "jsr",
       "spec": "~0.228.0",
       "published": {
-        "versions": ["0.228.0", "1.0.0"],
-        "distTags": { "latest": "1.0.0" },
-        "yanked": ["0.228.0"]
+        "versions": [
+          "0.228.0",
+          "1.0.0"
+        ],
+        "distTags": {
+          "latest": "1.0.0"
+        },
+        "yanked": [
+          "0.228.0"
+        ]
       },
-      "expect": { "version": "0.228.0", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "0.228.0",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "jsr range skips prereleases",
       "registry": "jsr",
       "spec": "1",
       "published": {
-        "versions": ["1.0.0", "1.1.0-rc.1"],
-        "distTags": { "latest": "1.0.0" }
+        "versions": [
+          "1.0.0",
+          "1.1.0-rc.1"
+        ],
+        "distTags": {
+          "latest": "1.0.0"
+        }
       },
-      "expect": { "version": "1.0.0", "from": "registry", "kind": "range" }
+      "expect": {
+        "version": "1.0.0",
+        "from": "registry",
+        "kind": "range"
+      }
     },
     {
       "name": "jsr unpinned is latest",
       "registry": "jsr",
       "spec": null,
       "published": {
-        "versions": ["1.0.0", "1.1.6"],
-        "distTags": { "latest": "1.1.6" }
+        "versions": [
+          "1.0.0",
+          "1.1.6"
+        ],
+        "distTags": {
+          "latest": "1.1.6"
+        }
       },
-      "expect": { "version": "1.1.6", "from": "registry", "kind": "unpinned" }
+      "expect": {
+        "version": "1.1.6",
+        "from": "registry",
+        "kind": "unpinned"
+      }
     }
   ],
   "findings": [
@@ -180,14 +347,27 @@
       "package": "pkg",
       "spec": "1.0.0",
       "npm": {
-        "dist-tags": { "latest": "2.0.0" },
+        "dist-tags": {
+          "latest": "2.0.0"
+        },
         "versions": {
           "1.0.0": {
             "license": "MIT",
-            "maintainers": [{ "name": "a" }],
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ],
             "deprecated": "Use 2.x"
           },
-          "2.0.0": { "license": "MIT", "maintainers": [{ "name": "a" }] }
+          "2.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
         }
       },
       "expect": [
@@ -195,7 +375,7 @@
           "severity": "warning",
           "message": "version 1.0.0 is deprecated: Use 2.x",
           "cause": "deprecated-version",
-          "costsPoint": true
+          "pointsLost": 2
         }
       ]
     },
@@ -205,16 +385,26 @@
       "package": "pkg",
       "spec": "1.0.0",
       "npm": {
-        "dist-tags": { "latest": "2.0.0" },
+        "dist-tags": {
+          "latest": "2.0.0"
+        },
         "versions": {
           "1.0.0": {
             "license": "MIT",
-            "maintainers": [{ "name": "a" }],
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ],
             "deprecated": "gone"
           },
           "2.0.0": {
             "license": "MIT",
-            "maintainers": [{ "name": "a" }],
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ],
             "deprecated": "gone"
           }
         }
@@ -223,7 +413,7 @@
         {
           "severity": "error",
           "message": "package is deprecated",
-          "costsPoint": true
+          "pointsLost": 2
         }
       ]
     },
@@ -233,12 +423,25 @@
       "package": "pkg",
       "spec": "1.0.0",
       "npm": {
-        "dist-tags": { "latest": "2.0.0" },
+        "dist-tags": {
+          "latest": "2.0.0"
+        },
         "versions": {
-          "1.0.0": { "license": "MIT", "maintainers": [{ "name": "a" }] },
+          "1.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          },
           "2.0.0": {
             "license": "MIT",
-            "maintainers": [{ "name": "a" }],
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ],
             "deprecated": "stub"
           }
         }
@@ -251,10 +454,26 @@
       "package": "pkg",
       "spec": "^1.0.0",
       "npm": {
-        "dist-tags": { "latest": "1.2.0" },
+        "dist-tags": {
+          "latest": "1.2.0"
+        },
         "versions": {
-          "1.0.0": { "license": "MIT", "maintainers": [{ "name": "a" }] },
-          "1.2.0": { "license": "MIT", "maintainers": [{ "name": "a" }] }
+          "1.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          },
+          "1.2.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
         }
       },
       "expect": [
@@ -262,7 +481,7 @@
           "severity": "warning",
           "message": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version this push resolves",
           "cause": "loose-specifier",
-          "costsPoint": false
+          "pointsLost": 1
         }
       ],
       "scorecardMessage": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version the registry resolved"
@@ -273,9 +492,18 @@
       "package": "pkg",
       "spec": null,
       "npm": {
-        "dist-tags": { "latest": "1.2.0" },
+        "dist-tags": {
+          "latest": "1.2.0"
+        },
         "versions": {
-          "1.2.0": { "license": "MIT", "maintainers": [{ "name": "a" }] }
+          "1.2.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
         }
       },
       "expect": [
@@ -283,7 +511,7 @@
           "severity": "warning",
           "message": "npm:pkg is unpinned; audited 1.2.0, the version this push resolves",
           "cause": "loose-specifier",
-          "costsPoint": false
+          "pointsLost": 1
         }
       ],
       "scorecardMessage": "npm:pkg is unpinned; audited 1.2.0, the version the registry resolved"
@@ -294,9 +522,18 @@
       "package": "pkg",
       "spec": "latest",
       "npm": {
-        "dist-tags": { "latest": "1.2.0" },
+        "dist-tags": {
+          "latest": "1.2.0"
+        },
         "versions": {
-          "1.2.0": { "license": "MIT", "maintainers": [{ "name": "a" }] }
+          "1.2.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
         }
       },
       "expect": [
@@ -304,7 +541,7 @@
           "severity": "warning",
           "message": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version this push resolves",
           "cause": "loose-specifier",
-          "costsPoint": false
+          "pointsLost": 1
         }
       ],
       "scorecardMessage": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version the registry resolved"
@@ -314,12 +551,30 @@
       "registry": "npm",
       "package": "pkg",
       "spec": "^1.0.0",
-      "locked": ["1.0.0"],
+      "locked": [
+        "1.0.0"
+      ],
       "npm": {
-        "dist-tags": { "latest": "1.2.0" },
+        "dist-tags": {
+          "latest": "1.2.0"
+        },
         "versions": {
-          "1.0.0": { "license": "MIT", "maintainers": [{ "name": "a" }] },
-          "1.2.0": { "license": "MIT", "maintainers": [{ "name": "a" }] }
+          "1.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          },
+          "1.2.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
         }
       },
       "expect": [
@@ -327,7 +582,7 @@
           "severity": "warning",
           "message": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version this push resolves (from deno.lock)",
           "cause": "loose-specifier",
-          "costsPoint": false
+          "pointsLost": 1
         }
       ],
       "scorecardMessage": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version the registry resolved (from deno.lock)"
@@ -339,7 +594,12 @@
       "spec": "1.0.0",
       "jsr": {
         "status": 200,
-        "body": { "latest": "1.0.0", "versions": { "1.0.0": {} } }
+        "body": {
+          "latest": "1.0.0",
+          "versions": {
+            "1.0.0": {}
+          }
+        }
       },
       "expect": []
     },
@@ -352,7 +612,12 @@
         "status": 200,
         "body": {
           "latest": "1.0.0",
-          "versions": { "0.225.0": { "yanked": true }, "1.0.0": {} }
+          "versions": {
+            "0.225.0": {
+              "yanked": true
+            },
+            "1.0.0": {}
+          }
         }
       },
       "expect": [
@@ -360,7 +625,7 @@
           "severity": "warning",
           "message": "version 0.225.0 was withdrawn (yanked) by its author on JSR. Newest version that isn't yanked: 1.0.0.",
           "cause": "jsr-yanked",
-          "costsPoint": false
+          "pointsLost": 2
         }
       ]
     },
@@ -371,14 +636,19 @@
       "spec": "0.0.999",
       "jsr": {
         "status": 200,
-        "body": { "latest": "1.0.0", "versions": { "1.0.0": {} } }
+        "body": {
+          "latest": "1.0.0",
+          "versions": {
+            "1.0.0": {}
+          }
+        }
       },
       "expect": [
         {
           "severity": "error",
           "message": "version 0.0.999 not found on JSR",
           "cause": "jsr-missing",
-          "costsPoint": true
+          "pointsLost": 2
         }
       ]
     },
@@ -389,14 +659,19 @@
       "spec": "^9.0.0",
       "jsr": {
         "status": 200,
-        "body": { "latest": "1.0.0", "versions": { "1.0.0": {} } }
+        "body": {
+          "latest": "1.0.0",
+          "versions": {
+            "1.0.0": {}
+          }
+        }
       },
       "expect": [
         {
           "severity": "error",
           "message": "version ^9.0.0 not found on JSR",
           "cause": "jsr-missing",
-          "costsPoint": true
+          "pointsLost": 2
         }
       ]
     },
@@ -405,13 +680,16 @@
       "registry": "jsr",
       "package": "@swamp-nonexistent/zzz",
       "spec": "1.0.0",
-      "jsr": { "status": 404, "body": null },
+      "jsr": {
+        "status": 404,
+        "body": null
+      },
       "expect": [
         {
           "severity": "error",
           "message": "JSR package not found",
           "cause": "jsr-missing",
-          "costsPoint": true
+          "pointsLost": 2
         }
       ]
     },
@@ -422,14 +700,19 @@
       "spec": "1.0.0",
       "jsr": {
         "status": 200,
-        "body": { "latest": "1.0.0", "versions": { "1.0.0": {} } }
+        "body": {
+          "latest": "1.0.0",
+          "versions": {
+            "1.0.0": {}
+          }
+        }
       },
       "expect": [
         {
           "severity": "error",
           "message": "invalid JSR package name",
           "cause": "jsr-missing",
-          "costsPoint": true
+          "pointsLost": 2
         }
       ]
     },
@@ -438,13 +721,16 @@
       "registry": "jsr",
       "package": "@std/assert",
       "spec": "1.0.0",
-      "jsr": { "status": 503, "body": null },
+      "jsr": {
+        "status": 503,
+        "body": null
+      },
       "expect": [
         {
           "severity": "warning",
           "message": "not audited: JSR lookup failed (HTTP 503)",
           "cause": "not-audited",
-          "costsPoint": true
+          "pointsLost": 2
         }
       ]
     },
@@ -455,17 +741,157 @@
       "spec": "1",
       "jsr": {
         "status": 200,
-        "body": { "latest": "1.0.2", "versions": { "1.0.2": {} } }
+        "body": {
+          "latest": "1.0.2",
+          "versions": {
+            "1.0.2": {}
+          }
+        }
       },
       "expect": [
         {
           "severity": "warning",
           "message": "jsr:@std/assert@1 is a range; audited 1.0.2, the version this push resolves",
           "cause": "loose-specifier",
-          "costsPoint": false
+          "pointsLost": 1
         }
       ],
       "scorecardMessage": "jsr:@std/assert@1 is a range; audited 1.0.2, the version the registry resolved"
+    }
+  ],
+  "scoring": [
+    {
+      "name": "clean",
+      "findings": [],
+      "earnedPoints": 2
+    },
+    {
+      "name": "other warnings only",
+      "findings": [
+        {
+          "severity": "warning",
+          "dependency": "a"
+        }
+      ],
+      "earnedPoints": 2
+    },
+    {
+      "name": "loose only",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "loose-specifier",
+          "dependency": "a"
+        }
+      ],
+      "earnedPoints": 1
+    },
+    {
+      "name": "many loose",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "loose-specifier",
+          "dependency": "a"
+        },
+        {
+          "severity": "warning",
+          "cause": "loose-specifier",
+          "dependency": "b"
+        }
+      ],
+      "earnedPoints": 1
+    },
+    {
+      "name": "yanked only",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "jsr-yanked",
+          "dependency": "a"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "yanked and loose",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "jsr-yanked",
+          "dependency": "a"
+        },
+        {
+          "severity": "warning",
+          "cause": "loose-specifier",
+          "dependency": "b"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "same dependency loose and yanked",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "loose-specifier",
+          "dependency": "a"
+        },
+        {
+          "severity": "warning",
+          "cause": "jsr-yanked",
+          "dependency": "a"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "deprecated pin",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "deprecated-version",
+          "dependency": "a"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "error",
+      "findings": [
+        {
+          "severity": "error",
+          "dependency": "a"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "unaudited",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "not-audited",
+          "dependency": "a"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "unaudited and loose",
+      "findings": [
+        {
+          "severity": "warning",
+          "cause": "not-audited",
+          "dependency": "a"
+        },
+        {
+          "severity": "warning",
+          "cause": "loose-specifier",
+          "dependency": "b"
+        }
+      ],
+      "earnedPoints": 0
     }
   ]
 }

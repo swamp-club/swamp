@@ -165,6 +165,7 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
           undefined,
           undefined,
           repoContext.unifiedDataRepo.fetchForeignContent,
+          repoContext.unreadableContent,
         );
 
         const renderer = createModelValidateRenderer(

@@ -2187,6 +2187,72 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
   catalog.close();
 });
 
+Deno.test("DataQueryService: a stale-looking row the unreadable-content lookup reports fails the query and getLatestRecord; one it does not know reads as before (swamp-club#3617)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-unreadable-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const unreadable = new UserError(
+    "record unreadable",
+    "datastore_v3_record_unreadable",
+  );
+  const asked: string[] = [];
+  let answer: UserError | undefined = unreadable;
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    (absPath) => {
+      asked.push(absPath);
+      return Promise.resolve(answer);
+    },
+  );
+  const service = new DataQueryService(catalog, dataRepo, {
+    filterStaleRows: true,
+  });
+  // A row whose backing file is absent, as an unmaterialised v3 record's is.
+  catalog.upsert(makeRow({
+    model_name: "lost-model",
+    data_name: "state",
+    type_normalized: "test/lost-type",
+    model_id: "lost-model-id",
+    version: 1,
+    is_latest: 1,
+  }));
+  try {
+    // A metadata predicate never reads the body, yet still fails loudly.
+    const error = await assertRejects(() =>
+      service.query('modelName == "lost-model"')
+    );
+    assertEquals(error, unreadable);
+    // data.latest's catalog lookup fails the same way.
+    assertEquals(
+      await assertRejects(() => service.getLatestRecord("lost-model", "state")),
+      unreadable,
+    );
+
+    answer = undefined;
+    assertEquals(await service.query('modelName == "lost-model"'), []);
+    assertEquals(
+      (await service.getLatestRecord("lost-model", "state"))?.attributes,
+      {},
+    );
+    assert(asked.length >= 4, "the lookup was asked each time");
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
 Deno.test("DataQueryService: filterStaleRows disabled preserves rows with missing backing files (remote datastore)", () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-no-stale-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");

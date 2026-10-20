@@ -21,9 +21,11 @@ import {
   assert,
   assertEquals,
   assertNotEquals,
+  assertRejects,
   assertStringIncludes,
 } from "@std/assert";
 import { copy } from "@std/fs";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "@std/path";
 import { z } from "zod";
 import { collect } from "../testing.ts";
@@ -53,8 +55,11 @@ import {
   DATASTORE_FORMAT_MARKER_INVALID_CODE,
   DATASTORE_FORMAT_UNSUPPORTED_CODE,
   InvalidDatastoreFormatMarkerError,
+  LostDatastoreFormatMarkerError,
+  lostFormatMarkerAdvice,
   UnsupportedDatastoreFormatError,
 } from "../../domain/datastore/datastore_format.ts";
+import { initializeV3Datastore } from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import { V3BucketExtensionTooOldError } from "../../domain/datastore/v3_hosting.ts";
@@ -4621,4 +4626,131 @@ Deno.test("datastoreSetupExtension: a repo already on v3 is refused before any b
   );
   assertEquals(events.at(-1)?.kind, "error");
   assertEquals(calls, []);
+});
+
+// --- swamp-club#3617: resuming a v3 setup whose marker a crash lost ---
+
+const LOST_REFUSALS = [
+  new LostDatastoreFormatMarkerError("/tmp/datastore", "setup-target"),
+  new InvalidDatastoreFormatMarkerError(
+    "/tmp/datastore/datastore-format.json",
+    "not valid JSON",
+    lostFormatMarkerAdvice("setup-target"),
+  ),
+];
+
+Deno.test("datastoreSetupFilesystem: --format 3 completes a fresh skeleton whose marker a crash lost (swamp-club#3617)", async () => {
+  for (const refusal of LOST_REFUSALS) {
+    const created: string[] = [];
+    const deps = makeDeps({
+      assertDatastoreFormat: () => Promise.reject(refusal),
+      inspectV3Target: () => Promise.resolve({ kind: "empty" }),
+      createV3Datastore: (path) => {
+        created.push(path);
+        return Promise.resolve();
+      },
+    });
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        deps,
+        makeFilesystemInput({ format: 3 }),
+      ),
+    );
+    assertEquals(events.map((e) => e.kind), ["validating", "completed"]);
+    assertEquals(created, ["/tmp/datastore"]);
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: a lost marker is refused unless setup is --format 3 over a fresh skeleton (swamp-club#3617)", async () => {
+  const cases: {
+    refusal: Error;
+    format?: 3;
+    target: "empty" | "refused";
+  }[] = [
+    ...LOST_REFUSALS.map((refusal) => ({
+      refusal,
+      format: 3 as const,
+      target: "refused" as const,
+    })),
+    ...LOST_REFUSALS.map((refusal) => ({ refusal, target: "empty" as const })),
+    {
+      refusal: new UnsupportedDatastoreFormatError({ format: 9 }, [2, 3]),
+      format: 3,
+      target: "empty",
+    },
+  ];
+  for (const { refusal, format, target } of cases) {
+    let created = false;
+    const deps = makeDeps({
+      assertDatastoreFormat: () => Promise.reject(refusal),
+      inspectV3Target: () =>
+        Promise.resolve(
+          target === "empty"
+            ? { kind: "empty" }
+            : { kind: "refused", reason: "/tmp/datastore is not empty" },
+        ),
+      createV3Datastore: () => {
+        created = true;
+        return Promise.resolve();
+      },
+    });
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        deps,
+        makeFilesystemInput(format ? { format } : {}),
+      ),
+    );
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error", refusal.name);
+    assertEquals(error.error.message, refusal.message);
+    assertEquals(error.error.code, (refusal as UserError).code);
+    assertEquals(created, false);
+  }
+});
+
+Deno.test("createDatastoreSetupDeps: a lost marker beside an unrelated SQLite commits.db is refused as a v3 target (swamp-club#3617)", async () => {
+  await withSetupTempDir(async (repoDir) => {
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const target = join(repoDir, "v3");
+    await Deno.mkdir(target);
+    // An SQLite file that is no commit log: user_version 0, no tables.
+    const db = new DatabaseSync(join(target, "commits.db"));
+    db.exec("CREATE TABLE t (x); DROP TABLE t");
+    db.close();
+    const target3 = await deps.inspectV3Target(target);
+    assertEquals(target3.kind, "refused");
+  });
+});
+
+Deno.test("createDatastoreSetupDeps: a lost-marker skeleton is refused as a setup target and taken by the v3 target check (swamp-club#3617)", async () => {
+  await withSetupTempDir(async (repoDir) => {
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const target = join(repoDir, "v3");
+    await initializeV3Datastore(target, "test");
+    await Deno.remove(join(target, "datastore-format.json"));
+    const error = await assertRejects(
+      () =>
+        deps.assertDatastoreFormat(repoDir, {
+          type: "filesystem",
+          path: target,
+        }),
+      LostDatastoreFormatMarkerError,
+    );
+    assertEquals(error.context, "setup-target");
+    assertEquals(error.code, "datastore_format_mismatch");
+    assertEquals((await deps.inspectV3Target(target)).kind, "empty");
+    await deps.createV3Datastore(target);
+    assertEquals(
+      await deps.assertDatastoreFormat(repoDir, {
+        type: "filesystem",
+        path: target,
+      }),
+      "v3",
+    );
+  });
 });

@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
-import { assertEquals, assertExists, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
+import { UserError } from "../errors.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
@@ -3805,6 +3806,187 @@ Deno.test("DataNamespace.namespace: the reader's own namespace, on the full and 
         new ModelResolver(defRepo).buildLightContext(new RunSensitiveValues())
           .data?.namespace,
         "",
+      );
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+// ============================================================================
+// Loud reads of records the v3 datastore could not materialise
+// (swamp-club#3617)
+// ============================================================================
+
+/**
+ * Saves STATE for model `vpc` in a repository shaped as a v3 checkout's: no
+ * hydrate hook, and a lookup that reports the evicted content unreadable
+ * (`answer`), or does not know it (undefined).
+ */
+async function setupUnreadableFixture(
+  repoDir: string,
+  answer: UserError | undefined,
+) {
+  await setupRepoDir(repoDir);
+  const defRepo = new YamlDefinitionRepository(repoDir);
+  const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+  const asked: string[] = [];
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    "" as Namespace,
+    false,
+    undefined,
+    undefined,
+    (absPath) => {
+      asked.push(absPath);
+      return Promise.resolve(answer);
+    },
+  );
+  const type = ModelType.create("test/model");
+  const model = Definition.create({ name: "vpc", globalArguments: {} });
+  await defRepo.save(type, model);
+  await dataRepo.save(
+    type,
+    model.id,
+    Data.create({
+      name: STATE.name,
+      contentType: STATE.contentType,
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: STATE.specName, modelName: "vpc" },
+      ownerDefinition: owner,
+    }),
+    new TextEncoder().encode(STATE.body),
+  );
+  await Deno.remove(dataRepo.getContentPath(type, model.id, STATE.name, 1));
+  const dqs = new DataQueryService(catalog, dataRepo);
+  await dqs.query('name == ""');
+  const resolver = new ModelResolver(defRepo, {
+    repoDir,
+    dataRepo,
+    dataQueryService: dqs,
+  });
+  return { resolver, catalog, asked };
+}
+
+const UNREADABLE = () =>
+  new UserError("record unreadable", "datastore_v3_record_unreadable");
+
+Deno.test("loud reads: the model map's resource attributes of an unreadable record fail with its error as the cause", async () => {
+  await withTempDir(async (repoDir) => {
+    const unreadable = UNREADABLE();
+    const { resolver, catalog } = await setupUnreadableFixture(
+      repoDir,
+      unreadable,
+    );
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      const error = await assertRejects(() =>
+        evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId")
+      );
+      // Not wrapped in a download error: the record's error, with its code.
+      assertEquals((error as Error).cause, unreadable);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("loud reads: data.latest and data.query of an unreadable record throw its error", async () => {
+  await withTempDir(async (repoDir) => {
+    const unreadable = UNREADABLE();
+    const { resolver, catalog } = await setupUnreadableFixture(
+      repoDir,
+      unreadable,
+    );
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      // Through the definition's coordinates, the catalog fallback and a
+      // query.
+      const thrown = [
+        await assertRejects(() => ctx.data!.latest("vpc", "main")),
+        await assertRejects(() =>
+          resolver.buildLightContext(new RunSensitiveValues()).data!.latest(
+            "vpc",
+            "main",
+          )
+        ),
+        await assertRejects(() =>
+          ctx.data!.query('modelName == "vpc" && attributes.vpcId != ""')
+        ),
+      ];
+      for (const error of thrown) assertEquals(error, unreadable);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("loud reads: content the lookup does not know reads as before", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, asked } = await setupUnreadableFixture(
+      repoDir,
+      undefined,
+    );
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      const record = await ctx.data!.latest("vpc", "main");
+      assertExists(record);
+      assertEquals(record.attributes, {});
+      assertEquals(record.path, "");
+      assert(asked.length > 0, "the lookup was asked about the absent file");
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("loud reads: data.version's content check rethrows an unreadable record's error", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const unreadable = UNREADABLE();
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    // The content is local when the query reads it; only the single-record
+    // lookup's own content check then reports it unreadable.
+    class UnreadableOnEnsure extends FileSystemUnifiedDataRepository {
+      override ensureContentLocal(): Promise<never> {
+        return Promise.reject(unreadable);
+      }
+    }
+    const dataRepo = new UnreadableOnEnsure(repoDir, undefined, catalog);
+    const type = ModelType.create("test/model");
+    const model = Definition.create({ name: "vpc", globalArguments: {} });
+    await defRepo.save(type, model);
+    await dataRepo.save(
+      type,
+      model.id,
+      Data.create({
+        name: STATE.name,
+        contentType: STATE.contentType,
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", specName: STATE.specName, modelName: "vpc" },
+        ownerDefinition: owner,
+      }),
+      new TextEncoder().encode(STATE.body),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      assertEquals(
+        await assertRejects(() => ctx.data!.version("vpc", "main", 1)),
+        unreadable,
       );
     } finally {
       catalog.close();

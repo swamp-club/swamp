@@ -30,11 +30,22 @@
  * loss would; the catch-up after it must repair the checkout. A step can
  * also reboot: one file written since the last reboot is lost or torn, and
  * the first catch-up in the new boot must repair it.
+ *
+ * The checkout-copy guard (swamp-club#3617) has a property of its own: over
+ * random writes, torn and lost chunks, catch-ups, recoveries and reboots,
+ * with the storage refusing puts at times, a chunk a commit names that had
+ * a good copy anywhere (stored, in a checkout file or moved aside) before a
+ * read model operation still has one after it.
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { ReadModelIncompleteError } from "../src/domain/datastore_v3/read_model.ts";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import fc from "fast-check";
 import type { Op } from "../src/domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../src/domain/datastore_v3/partition.ts";
@@ -53,11 +64,31 @@ import { READ_MODEL_STATE_FILE } from "../src/infrastructure/datastore_v3/sqlite
 import { DurableWriteBatch } from "../src/infrastructure/datastore_v3/atomic_stream_write.ts";
 import {
   catalogV3Path,
+  commitOf,
   readCatalog,
   readTree,
+  sha256Hex,
+  SmallChunkStorage,
+  TEST_CHUNK_BYTES,
   type V3Env,
   withV3Env,
 } from "./datastore_v3_read_model_helpers.ts";
+import { walk } from "@std/fs";
+import type { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
+import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
+import type {
+  ChunkDirectorySync,
+  ChunkStat,
+  ChunkStatReader,
+} from "../src/domain/datastore/datastore_storage.ts";
+import { putOp, tombstoneOp } from "../src/domain/datastore_v3/op.ts";
+import {
+  dataKey,
+  modelIntent,
+} from "../src/domain/datastore_v3/v3_test_helpers.ts";
+import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
+import type { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
+import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 
 const PARTITION = modelPartition();
 
@@ -268,5 +299,284 @@ Deno.test("read model: matches the partition reference model after every catch-u
       },
     ),
     { numRuns: 60 },
+  );
+});
+
+/** Contents over the inline limit, in several chunks each, none shared. */
+const CONTENTS = [0, 1, 2, 3].map((n) =>
+  new Uint8Array(9 * TEST_CHUNK_BYTES + 100 * n + 1).map((_, i) =>
+    (i * (n + 3) + n * 17 + (i >> 10) * 31) % 256
+  )
+);
+const GUARD_KEYS = [dataKey("k", 1), dataKey("l", 1)];
+
+/** The filesystem storage, reading sizes, refusing puts on demand. */
+class RefusingStatStorage extends SmallChunkStorage
+  implements ChunkStatReader, ChunkDirectorySync {
+  refuse = false;
+  override put(
+    namespace: string,
+    sha256: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ) {
+    if (this.refuse) return Promise.reject(new Error("AccessDenied"));
+    return super.put(namespace, sha256, bytes, signal);
+  }
+  statChunks(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Map<string, ChunkStat>> {
+    return (this.inner as FileSystemStorage).statChunks(
+      namespace,
+      hashes,
+      signal,
+    );
+  }
+  syncChunkDirectories(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    return (this.inner as FileSystemStorage).syncChunkDirectories(
+      namespace,
+      hashes,
+      signal,
+    );
+  }
+}
+
+const arbGuardStep = fc.oneof(
+  {
+    weight: 3,
+    arbitrary: fc.record({
+      kind: fc.constant("commit" as const),
+      key: fc.integer({ min: 0, max: 1 }),
+      content: fc.integer({ min: 0, max: 3 }),
+      // The writer's own checkout writes the file before it commits.
+      local: fc.boolean(),
+    }),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.record({
+      kind: fc.constant("tombstone" as const),
+      key: fc.integer({ min: 0, max: 1 }),
+    }),
+  },
+  {
+    weight: 3,
+    arbitrary: fc.record({
+      kind: fc.constant("damage" as const),
+      content: fc.integer({ min: 0, max: 3 }),
+      part: fc.integer({ min: 0, max: 8 }),
+      how: fc.constantFrom("tear" as const, "lose" as const),
+    }),
+  },
+  {
+    weight: 4,
+    arbitrary: fc.record({
+      kind: fc.constant("sync" as const),
+      op: fc.constantFrom(
+        "catch-up" as const,
+        "recover" as const,
+        "reboot" as const,
+      ),
+      refuse: fc.boolean(),
+    }),
+  },
+);
+
+function guardChunkFile(env: V3Env, sha256: string): string {
+  return join(
+    env.dir,
+    "datastore",
+    "_blobs",
+    "_default",
+    "sha256",
+    sha256.slice(0, 2),
+    sha256,
+  );
+}
+
+/**
+ * The chunks of `chunks` that have a good copy: stored whole, or a part of
+ * any file in the checkout's `.swamp`, the at-risk copies included.
+ */
+async function goodCopies(
+  env: V3Env,
+  chunks: ReadonlyMap<string, number>,
+): Promise<{ stored: Set<string>; anywhere: Set<string> }> {
+  const stored = new Set<string>();
+  for (const [sha256, size] of chunks) {
+    try {
+      const bytes = await Deno.readFile(guardChunkFile(env, sha256));
+      if (bytes.length === size && await sha256Hex(bytes) === sha256) {
+        stored.add(sha256);
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  const anywhere = new Set(stored);
+  try {
+    for await (
+      const entry of walk(swampPath(env.repoDir), { includeDirs: false })
+    ) {
+      if (entry.name.endsWith(".db") || entry.name.includes(".db-")) continue;
+      const bytes = await Deno.readFile(entry.path);
+      for (let at = 0; at < bytes.length; at += TEST_CHUNK_BYTES) {
+        const hash = await sha256Hex(bytes.subarray(at, at + TEST_CHUNK_BYTES));
+        if (chunks.has(hash)) anywhere.add(hash);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return { stored, anywhere };
+}
+
+Deno.test("read model guard: a referenced chunk with a good copy keeps one through every read model operation (swamp-club#3617)", async () => {
+  const coverage = { atRisk: 0, restored: 0, movedAside: 0, operations: 0 };
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(arbGuardStep, { minLength: 4, maxLength: 14 }),
+      async (steps) => {
+        await withV3Env(async (env) => {
+          const refs: BlobRef[] = [];
+          for (const content of CONTENTS) {
+            refs.push(
+              await env.chunkStore.refOf(content, AbortSignal.timeout(30_000))
+                .then((parts) => parts.ref),
+            );
+          }
+          /** Every chunk a landed commit names, with its size. */
+          const named = new Map<string, number>();
+          const storage = new RefusingStatStorage(env.storage.inner);
+          let boot = 1;
+          let now = Date.parse("2026-10-19T00:00:00Z");
+          let seq = 0;
+          for (const step of steps) {
+            const signal = AbortSignal.timeout(30_000);
+            if (step.kind === "commit") {
+              const key = GUARD_KEYS[step.key];
+              const content = CONTENTS[step.content];
+              // An older writer trusts a chunk it finds, torn or not.
+              const blob = await env.chunkStore.write(
+                SOLO_NAMESPACE,
+                content,
+                signal,
+              );
+              if (step.local) {
+                const path = join(
+                  swampPath(env.repoDir),
+                  ...key.toString().split("/"),
+                );
+                await Deno.mkdir(dirname(path), { recursive: true });
+                await Deno.writeFile(path, content);
+              }
+              await env.store.append(commitOf({
+                seq: ++seq,
+                partition: PARTITION,
+                namespace: "",
+                ops: [
+                  await putOp({
+                    intent: modelIntent({
+                      kind: "data.save",
+                      name: step.key === 0 ? "k" : "l",
+                      version: 1,
+                    }),
+                    key,
+                    blob,
+                  }),
+                ],
+              }));
+              for (const part of blob.parts ?? []) {
+                named.set(part.sha256, part.size);
+              }
+              continue;
+            }
+            if (step.kind === "tombstone") {
+              await env.store.append(commitOf({
+                seq: ++seq,
+                partition: PARTITION,
+                namespace: "",
+                ops: [tombstoneOp({
+                  intent: modelIntent({
+                    kind: "data.delete",
+                    name: step.key === 0 ? "k" : "l",
+                    version: 1,
+                  }),
+                  key: GUARD_KEYS[step.key],
+                })],
+              }));
+              continue;
+            }
+            if (step.kind === "damage") {
+              const part = refs[step.content].parts![step.part];
+              const path = guardChunkFile(env, part.sha256);
+              try {
+                if (step.how === "tear") await Deno.truncate(path, 7);
+                else await Deno.remove(path);
+              } catch (error) {
+                if (!(error instanceof Deno.errors.NotFound)) throw error;
+              }
+              continue;
+            }
+            const before = await goodCopies(env, named);
+            storage.refuse = step.refuse;
+            if (step.op === "reboot") boot++;
+            now += 2 * 60 * 60 * 1000;
+            const model = env.openReadModel({
+              chunkStore: new ChunkStore(storage),
+              bootIdentity: () => Promise.resolve(`boot-id:${boot}`),
+              clock: () => new Date(now),
+            });
+            try {
+              if (step.op === "recover") {
+                await model.recover("", {
+                  since: Number.MAX_SAFE_INTEGER,
+                  admits: () => true,
+                  signal,
+                });
+              } else {
+                await model.catchUp(signal);
+              }
+            } finally {
+              await model.close();
+            }
+            coverage.operations++;
+            const after = await goodCopies(env, named);
+            for (const sha256 of before.anywhere) {
+              assert(
+                after.anywhere.has(sha256),
+                `chunk ${sha256} lost its last good copy in a ${step.op}`,
+              );
+              if (!before.stored.has(sha256)) {
+                coverage.atRisk++;
+                if (after.stored.has(sha256)) coverage.restored++;
+              }
+            }
+            const atRisk = join(env.stateDir, "at-risk");
+            try {
+              for await (const _ of walk(atRisk, { includeDirs: false })) {
+                coverage.movedAside++;
+              }
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+          }
+        });
+      },
+    ),
+    { numRuns: 60 },
+  );
+  // Not vacuous: chunks whose only copy was a file were met, and stored
+  // again from it or moved aside.
+  console.log(`guard property coverage: ${JSON.stringify(coverage)}`);
+  assert(
+    coverage.atRisk > 0 && coverage.restored + coverage.movedAside > 0,
+    JSON.stringify(coverage),
   );
 });

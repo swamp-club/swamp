@@ -23,9 +23,12 @@ import {
   checkDependencyTrust,
   cvssToSeverity,
   DEFAULT_TRUST_THRESHOLDS,
+  dependencyTrustBlockerCount,
+  type DependencyTrustCause,
   evaluateNpmTrustGates,
   type Fetcher,
   licenseAllowed,
+  looseSpecifierCount,
   monthsSince,
   notAuditedCount,
   parseCvssV3BaseScore,
@@ -1543,5 +1546,44 @@ Deno.test("checkDependencyTrust: an unreachable registry keeps the re-run fix", 
   assertEquals(
     result.warnings[0].remediation,
     "Re-run when OSV, npm and JSR are reachable.",
+  );
+});
+
+Deno.test("dependencyTrustBlockerCount: counts errors, deprecated versions and yanked versions, not loose specifiers", () => {
+  const warning = (dependency: string, cause: DependencyTrustCause) => ({
+    dependency,
+    message: "m",
+    cause,
+  });
+  assertEquals(
+    dependencyTrustBlockerCount({
+      errors: [{ dependency: "a", message: "m" }],
+      warnings: [
+        warning("b", "deprecated-version"),
+        warning("c", "jsr-yanked"),
+        warning("d", "loose-specifier"),
+        warning("e", "not-audited"),
+      ],
+      audited: [],
+      passed: false,
+    }),
+    3,
+  );
+});
+
+Deno.test("looseSpecifierCount: counts distinct dependencies with a loose specifier", () => {
+  const loose = (dependency: string) => ({
+    dependency,
+    message: "m",
+    cause: "loose-specifier" as const,
+  });
+  assertEquals(
+    looseSpecifierCount({
+      errors: [],
+      warnings: [loose("a"), loose("a"), loose("b")],
+      audited: [],
+      passed: true,
+    }),
+    2,
   );
 });

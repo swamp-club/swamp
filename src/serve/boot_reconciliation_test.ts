@@ -25,6 +25,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
+import { UNREADABLE_CONTENT_CODE } from "../domain/datastore/unreadable_content.ts";
 import {
   type BootReconciliationDeps,
   checkTokenHealth,
@@ -94,7 +95,7 @@ interface SaveCall {
 
 function createHarness(
   items: Map<string, DataItem[]>,
-  opts?: { failSave?: boolean },
+  opts?: { failSave?: boolean; unreadable?: ReadonlySet<string> },
 ) {
   const saves: SaveCall[] = [];
   const contentMap = new Map<string, Uint8Array>();
@@ -128,6 +129,11 @@ function createHarness(
           dataName: string,
         ) => {
           const key = `${type.normalized}/${modelId}/${dataName}`;
+          if (opts?.unreadable?.has(key)) {
+            return Promise.reject(
+              new UserError(`${key} is unreadable`, UNREADABLE_CONTENT_CODE),
+            );
+          }
           return Promise.resolve(contentMap.get(key) ?? null);
         },
         save: (
@@ -196,6 +202,33 @@ Deno.test("sweepStaleRecords: expires active leases", async () => {
   assertEquals(typeof h.saves[0].content.endedAt, "string");
   assertEquals(h.saves[1].content.leaseId, "lease-2");
   assertEquals(h.saves[1].content.state, "expired");
+});
+
+Deno.test("sweepStaleRecords: an unreadable lease record is skipped, and the sweep goes on (swamp-club#3617)", async () => {
+  const h = createHarness(
+    new Map([
+      ["swamp/step-lease", [
+        {
+          modelName: "leases",
+          dataName: "data-torn",
+          modelType: "swamp/step-lease",
+          attrs: { leaseId: "lease-torn", state: "active" },
+        },
+        {
+          modelName: "leases",
+          dataName: "data-main",
+          modelType: "swamp/step-lease",
+          attrs: { leaseId: "lease-1", state: "active" },
+        },
+      ]],
+    ]),
+    { unreadable: new Set(["swamp/step-lease/def-leases/data-torn"]) },
+  );
+
+  const result = await sweepStaleRecords(h.deps);
+
+  assertEquals(result.leases, 1);
+  assertEquals(h.saves.map((save) => save.content.leaseId), ["lease-1"]);
 });
 
 Deno.test("sweepStaleRecords: orphans waiting pending dispatches", async () => {

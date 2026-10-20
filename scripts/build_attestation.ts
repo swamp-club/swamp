@@ -194,8 +194,10 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     jsonPath: ["scripts", "command-index"],
   },
   // The trigger evals decide whether the skills still route correctly, so the
-  // runner, the CLI provider that answers each case, and the generators that
-  // build the cases are pinned alongside the promptfoo package.json.
+  // runner, the CLI provider that answers each case, the generators that
+  // build the cases, and the installer and lockfile that decide which
+  // promptfoo dependency tree runs them are pinned alongside the promptfoo
+  // package.json.
   {
     path: "scripts/eval_skill_triggers_promptfoo.ts",
     jsonPath: ["scripts", "eval-skill-triggers-runner"],
@@ -219,6 +221,14 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
   {
     path: "evals/promptfoo/generate_sufficiency_config.ts",
     jsonPath: ["scripts", "eval-generate-sufficiency-config"],
+  },
+  {
+    path: "scripts/promptfoo_install.ts",
+    jsonPath: ["scripts", "eval-promptfoo-install"],
+  },
+  {
+    path: "evals/promptfoo/package-lock.json",
+    jsonPath: ["scripts", "eval-promptfoo-lockfile"],
   },
 ];
 

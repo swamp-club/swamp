@@ -215,6 +215,9 @@ Deno.test("vault remove: refuses a vault referenced by a definition, a workflow 
               Step.create({
                 name: "run",
                 task: StepTask.model("app", "run"),
+                dataOutputOverrides: [
+                  { specName: "state", vaultName: "trip-planner" },
+                ],
               }),
             ],
           }),
@@ -226,6 +229,10 @@ Deno.test("vault remove: refuses a vault referenced by a definition, a workflow 
     assertStringIncludes(message, "definition 'app' (vault.get)");
     assertStringIncludes(message, "definition 'app' (resource override)");
     assertStringIncludes(message, "workflow 'deploy' (vaults list)");
+    assertStringIncludes(
+      message,
+      "workflow 'deploy' (data output override)",
+    );
     assertStringIncludes(message, "datastore 'datastore' (vault.get)");
     assertEquals(
       (await repo.repoContext.vaultConfigRepo.findByName("trip-planner"))
@@ -234,7 +241,7 @@ Deno.test("vault remove: refuses a vault referenced by a definition, a workflow 
     );
 
     const { data } = await removeVault(repo, "trip-planner", true);
-    assertEquals(data.forcedReferences.length, 4);
+    assertEquals(data.forcedReferences.length, 5);
     assertEquals(
       await repo.repoContext.vaultConfigRepo.findByName("trip-planner"),
       null,

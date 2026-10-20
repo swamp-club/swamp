@@ -78,6 +78,9 @@ export async function workflowHistoryOutputsAction(
       repoDir,
       datastoreResolver,
       repoContext.workflowRepo,
+      undefined,
+      undefined,
+      repoContext.unreadableContent,
     );
 
     for await (

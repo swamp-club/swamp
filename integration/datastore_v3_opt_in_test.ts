@@ -76,7 +76,15 @@ import {
 import {
   V3WriterBusyError,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
-import { saveData, saveModel } from "./serve_request_harness.ts";
+import {
+  createServeCtx,
+  saveData,
+  saveModel,
+  sendRequest,
+} from "./serve_request_harness.ts";
+import { DatabaseSync } from "node:sqlite";
+import { readModelStateDir } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
+import { READ_MODEL_STATE_FILE } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
 import { runCli, runCliRejecting, UNSET_ENV } from "./usecase_sync_fixtures.ts";
 import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
 
@@ -741,20 +749,143 @@ Deno.test("v3 opt-in: a setup that stopped after the marker, or after the skelet
   }
 });
 
+/** Every file under `dir`, by relative path, with its bytes. */
+async function snapshotOf(
+  dir: string,
+): Promise<Map<string, Uint8Array | string>> {
+  const files = new Map<string, Uint8Array | string>();
+  for await (const entry of walk(dir, { includeDirs: true })) {
+    const rel = entry.path.slice(dir.length);
+    files.set(
+      rel,
+      entry.isFile
+        ? await Deno.readFile(entry.path)
+        : entry.isDirectory
+        ? "dir"
+        : "other",
+    );
+  }
+  return files;
+}
+
 Deno.test("v3 opt-in: doctor datastores --repair refuses on v3, and the check still runs", async () => {
-  await withV3RowRepos({}, async (repos) => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
     await withMockedEnv(UNSET_ENV, async () => {
       const json = ["--repo-dir", repos.repoA, "--json"];
+      await closeV3Datastores();
+      const before = await snapshotOf(datastorePath);
       for (const args of [["--repair"], ["--repair", "--yes"]]) {
         const error = await runCliRejecting({
           args: ["doctor", "datastores", ...args, ...json],
         });
         assertInstanceOf(error, UserError);
-        assertStringIncludes(error.message, "not available for v3");
+        // Pinned by swamp-uat.
+        assertEquals(
+          error.message,
+          "`swamp doctor datastores --repair` is not available for v3 " +
+            "datastores yet. A v3 checkout rebuilds its records and catalog " +
+            "from the commit log; run `swamp doctor datastores` to check it. " +
+            "Nothing was changed.",
+        );
       }
-      await runCli({ args: ["doctor", "datastores", ...json] });
+      // Nothing was changed: the datastore is byte-identical.
+      assertEquals(await snapshotOf(datastorePath), before);
+      const report = JSON.parse(
+        (await runCli({ args: ["doctor", "datastores", ...json] })).join("\n"),
+      );
+      // The v3 content check passes on a healthy checkout (swamp-club#3617).
+      assertEquals(report.overallStatus, "pass");
+      assertEquals(
+        report.healthFindings.find((f: { check: string }) =>
+          f.check === "v3_content"
+        )?.passed,
+        true,
+      );
     });
   });
+});
+
+Deno.test("v3 opt-in: serve's doctor datastores reports a v3 checkout's at-risk copies (swamp-club#3617)", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    const v3Content = async () => {
+      const frames = await sendRequest(createServeCtx(repos.serveRepo), {
+        type: "doctor.datastores",
+        id: crypto.randomUUID(),
+      });
+      const data = frames.find((frame) => frame.type === "doctor.datastores")
+        ?.payload?.data as {
+          healthFindings: { check: string; passed: boolean; message: string }[];
+        };
+      return data.healthFindings.find((f) => f.check === "v3_content");
+    };
+    assertEquals((await v3Content())?.passed, true);
+
+    const db = new DatabaseSync(
+      join(readModelStateDir(repos.repoA), READ_MODEL_STATE_FILE),
+    );
+    try {
+      db.exec("PRAGMA busy_timeout=5000");
+      db.prepare(
+        "INSERT INTO at_risk_copies (namespace, sha256, record_key, blob, size, created_at, last_attempt) VALUES ('', ?, 'data/m/held/1/raw', NULL, 9, 1, 1)",
+      ).run("b".repeat(64));
+    } finally {
+      db.close();
+    }
+    const finding = await v3Content();
+    assertEquals(finding?.passed, false);
+    assertStringIncludes(finding?.message ?? "", "data/m/held/1/raw");
+  });
+});
+
+Deno.test({
+  name:
+    "v3 opt-in: serve's doctor datastores reports a v3 content check that cannot read a read-only state directory as failed, and completes (swamp-club#3617)",
+  // Windows has no read-only directory mode; root ignores it.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos) => {
+      const stateDir = readModelStateDir(repos.repoA);
+      // Every connection closed, so its WAL files are gone.
+      await closeV3Datastores();
+      for (const suffix of ["-wal", "-shm"]) {
+        await Deno.remove(join(stateDir, READ_MODEL_STATE_FILE + suffix))
+          .catch(() => {});
+      }
+      await Deno.chmod(stateDir, 0o555);
+      try {
+        const frames = await sendRequest(createServeCtx(repos.serveRepo), {
+          type: "doctor.datastores",
+          id: crypto.randomUUID(),
+        });
+        const data = frames.find((frame) => frame.type === "doctor.datastores")
+          ?.payload?.data as {
+            healthFindings: {
+              check: string;
+              passed: boolean;
+              message: string;
+            }[];
+            v3ContentFinding?: unknown;
+          };
+        assert(data !== undefined, JSON.stringify(frames));
+        const finding = data.healthFindings.find((f) =>
+          f.check === "v3_content"
+        );
+        assertEquals(finding?.passed, false);
+        assertStringIncludes(
+          finding?.message ?? "",
+          "Could not inspect this v3 checkout's content: ",
+        );
+        // The other checks still report.
+        assertEquals(
+          data.healthFindings.find((f) => f.check === "health")?.passed,
+          true,
+        );
+        assertEquals(data.v3ContentFinding ?? null, null);
+      } finally {
+        await Deno.chmod(stateDir, 0o755);
+      }
+    });
+  },
 });
 
 Deno.test("v3 opt-in: a read-only context refuses any change staged through it", async () => {

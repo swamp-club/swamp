@@ -302,6 +302,7 @@ detection filter triggers on modifications to:
 - `CLAUDE.md`
 - `scripts/review_skills.ts`
 - `scripts/eval_skill_triggers_promptfoo.ts`
+- `scripts/promptfoo_install.ts`
 - `evals/promptfoo/**`
 
 ### PR Checks

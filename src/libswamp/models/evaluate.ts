@@ -30,6 +30,7 @@ import {
 } from "../../domain/models/model_lookup.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { ForeignContentFetcher } from "../../domain/data/repositories.ts";
+import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import {
   RunSensitiveValues,
   type WrittenReference,
@@ -145,6 +146,12 @@ export function createModelEvaluateDeps(
    * only by the repository built here; an injected repository carries its own.
    */
   fetchForeignContent?: ForeignContentFetcher,
+  /**
+   * The repository context's lookup, so a read of a record the v3 read model
+   * could not materialise fails loudly (swamp-club#3617). Used only by the
+   * repository built here; an injected repository carries its own.
+   */
+  unreadableContent?: UnreadableContentLookup,
 ): ModelEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -166,6 +173,7 @@ export function createModelEvaluateDeps(
     undefined,
     undefined,
     fetchForeignContent,
+    unreadableContent,
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const evaluationService = new ExpressionEvaluationService(

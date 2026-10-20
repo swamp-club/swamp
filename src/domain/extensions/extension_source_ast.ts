@@ -135,15 +135,18 @@ function isTypeOnly(node: AstNode): boolean {
 
 /**
  * Parses extension source as a module, or returns null when it does not
- * parse.
+ * parse. `jsx` adds JSX syntax, for a `.tsx` or `.jsx` module.
  */
-export function parseExtensionSource(source: string): AstNode | null {
+export function parseExtensionSource(
+  source: string,
+  options?: { jsx?: boolean },
+): AstNode | null {
   // Module only: Deno runs extensions as modules. A script-mode retry would
   // read `<!--` as a comment, which in a module is live code.
   try {
     const file = parse(source, {
       sourceType: "module",
-      plugins: BABEL_PLUGINS,
+      plugins: options?.jsx ? [...BABEL_PLUGINS, "jsx"] : BABEL_PLUGINS,
       allowReturnOutsideFunction: true,
       allowAwaitOutsideFunction: true,
       allowImportExportEverywhere: true,

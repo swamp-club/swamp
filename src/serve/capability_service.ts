@@ -34,6 +34,7 @@ import { createDataId } from "../domain/data/data_id.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
+import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import {
   type DefinitionLookupResult,
   findDefinitionByIdOrName,
@@ -482,9 +483,9 @@ export class CapabilityService {
   ): Promise<{ value: unknown }> {
     this.#assertVaultNotDenied(params.vaultName, "resolveSecret");
     this.#assertSecretKeyNotDenied(params.secretKey, "resolveSecret");
-    let scope: RunVaultAccess | undefined;
+    let dispatch: ActiveDispatch | null = null;
     if (this.#dispatches) {
-      const dispatch = this.#resolveDispatch(
+      dispatch = this.#resolveDispatch(
         workerName,
         params.dispatchId,
         "resolveSecret",
@@ -500,8 +501,8 @@ export class CapabilityService {
         params.secretKey,
         "resolveSecret",
       );
-      scope = dispatch.vaultAccess;
     }
+    const scope = dispatch?.vaultAccess;
     const vault = await this.#vault();
     // Held to the dispatching run's vault scope, as the same read in-process
     // would be (swamp-club#2676).
@@ -518,6 +519,14 @@ export class CapabilityService {
         params.secretKey,
         `serve:${workerName}`,
       );
+      // Serve is about to deliver this value to the dispatch, so the
+      // dispatch's redactor must know it before the reply leaves: the data
+      // plane scrubs the dispatch's resource writes with it
+      // (swamp-club#3527). A step dispatched without pre-dispatch secrets
+      // has no redactor yet, so the first delivery creates it.
+      if (dispatch) {
+        (dispatch.redactor ??= new SecretRedactor()).addSecret(value);
+      }
       return { value };
     });
   }

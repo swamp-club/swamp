@@ -22,6 +22,8 @@ import {
   isBareSpecifier,
   stripSourceComments,
 } from "../models/bundle.ts";
+import { LineIndex } from "./extension_source_ast.ts";
+import type { SpecifierSpan } from "./extension_source_graph.ts";
 
 export interface DependencySpecifier {
   name: string;
@@ -94,14 +96,24 @@ const DYNAMIC_IMPORT_RE =
 const IMPORT_POSITION_RE =
   /(?:^|[^.\w$])(?:(?:import|export)\b[^;]*\bfrom|import)\s*$|(?:^|[^.\w$])import\s*\(\s*$/;
 
+/** A quoted specifier in import position, by UTF-16 offsets of its quotes. */
+interface ImportedSpecifierAt {
+  specifier: string;
+  /** Offset of the opening quote. */
+  start: number;
+  /** Offset just past the closing quote; the line end when unterminated. */
+  end: number;
+  terminated: boolean;
+}
+
 /**
  * The quoted specifiers in import position. Each string literal is read as
  * a token, so text inside a string (`"run: import x from 'y'"`) is never
  * taken for an import, and only the code between it and the previous
  * literal is matched.
  */
-function importedSpecifiers(code: string): string[] {
-  const specifiers: string[] = [];
+function importedSpecifiersAt(code: string): ImportedSpecifierAt[] {
+  const specifiers: ImportedSpecifierAt[] = [];
   let codeStart = 0;
   let i = 0;
   while (i < code.length) {
@@ -115,12 +127,57 @@ function importedSpecifiers(code: string): string[] {
       end += code[end] === "\\" ? 2 : 1;
     }
     if (IMPORT_POSITION_RE.test(code.slice(codeStart, i))) {
-      specifiers.push(code.slice(i + 1, end));
+      const terminated = code[end] === quote;
+      specifiers.push({
+        specifier: code.slice(i + 1, end),
+        start: i,
+        end: terminated ? end + 1 : end,
+        terminated,
+      });
     }
     i = end + 1;
     codeStart = i;
   }
   return specifiers;
+}
+
+function importedSpecifiers(code: string): string[] {
+  return importedSpecifiersAt(code).map((s) => s.specifier);
+}
+
+/** An import specifier as the source writes it, and where. */
+export interface ImportSpecifierSite {
+  specifier: string;
+  /** Quotes included; zero-based line, code-point columns. */
+  span: SpecifierSpan;
+  /** UTF-16 offset of the opening quote in the source. */
+  offset: number;
+}
+
+/**
+ * Every import specifier `source` writes in import position, with its span,
+ * read the way the dependency audit reads them: comments and template
+ * literals blanked, string literals read as tokens. An unterminated
+ * literal is left out — it has no span to rewrite.
+ */
+export function findImportSpecifiers(source: string): ImportSpecifierSite[] {
+  const lines = new LineIndex(source);
+  const sourceLines = source.split("\n");
+  const at = (offset: number) => {
+    const { line, column } = lines.position(offset);
+    const text = sourceLines[line - 1];
+    return {
+      line: line - 1,
+      character: Array.from(text.slice(0, column - 1)).length,
+    };
+  };
+  return importedSpecifiersAt(stripSourceComments(source))
+    .filter((s) => s.terminated)
+    .map((s) => ({
+      specifier: s.specifier,
+      span: { start: at(s.start), end: at(s.end) },
+      offset: s.start,
+    }));
 }
 
 // Parses `npm:@scope/name@version`, `npm:name@version`, `npm:name`
@@ -237,6 +294,11 @@ export function extractSpecifiersFromSource(
   return results;
 }
 
+/**
+ * The dependencies of `sourceFiles`, which are the code modules the module
+ * graph reports (TypeScript or JavaScript in any extension), so every file
+ * push rewrites bare imports in is audited too (swamp-club#3637).
+ */
 export async function extractDependencySpecifiers(
   sourceFiles: string[],
   imports?: ImportMap,
@@ -244,7 +306,6 @@ export async function extractDependencySpecifiers(
   const seen = new Map<string, DependencySpecifier>();
 
   for (const file of sourceFiles) {
-    if (!file.endsWith(".ts")) continue;
     let source: string;
     try {
       source = await Deno.readTextFile(file);

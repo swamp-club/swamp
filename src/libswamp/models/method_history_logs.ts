@@ -31,6 +31,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import {
   type SwampError,
@@ -104,6 +105,12 @@ export async function createModelMethodHistoryLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  /**
+   * The repository context's lookup, so an output record the v3 read model
+   * could not materialise fails a lookup loudly and is named by a listing
+   * that leaves it out (swamp-club#3617).
+   */
+  unreadableContent?: UnreadableContentLookup,
 ): Promise<ModelMethodHistoryLogsDeps> {
   await modelRegistry.ensureLoaded();
   const dsPath = (subdir: string): string | undefined =>
@@ -113,6 +120,8 @@ export async function createModelMethodHistoryLogsDeps(
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
+    undefined,
+    unreadableContent,
   );
   return {
     isPartialId,

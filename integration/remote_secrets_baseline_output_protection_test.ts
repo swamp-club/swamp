@@ -375,7 +375,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: output protection: serve's dispatch redactor knows the pre-dispatch values only, and only the resource route uses it",
+    "remote secrets baseline: output protection: serve's dispatch redactor learns the values resolveSecret delivers, and only the resource route uses it",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -459,10 +459,9 @@ Deno.test({
         await o.dispatchService.executeRemote(request);
 
         assertEquals(observed.resolved, learned);
-        // Disclosure (swamp-club#3527): a value serve hands the
-        // worker through resolveSecret is never added to the dispatch's
-        // redactor, so serve-side scrubbing misses it.
-        assertEquals(observed.redactorView, `shipped=*** learned=${learned}`);
+        // The value serve handed the worker through resolveSecret joined the
+        // dispatch's redactor before the reply left (swamp-club#3527).
+        assertEquals(observed.redactorView, "shipped=*** learned=***");
 
         const read = async (stored?: { name: string; version: number }) => {
           assertExists(stored);
@@ -476,9 +475,9 @@ Deno.test({
           return decoder.decode(bytes);
         };
         // POST /data/resource scrubs with the dispatch redactor, so the
-        // shipped value is masked and the learned one is not.
+        // shipped value and the learned one are both masked.
         assertEquals(JSON.parse(await read(observed.resource)), {
-          note: `shipped=*** learned=${learned}`,
+          note: "shipped=*** learned=***",
         });
         // The file-writer routes have no redactor: a documented known limit
         // (design/enablers/remote-execution.md), not a new finding.

@@ -50,6 +50,8 @@ import {
 } from "../../domain/datastore/datastore_config.ts";
 import {
   DATASTORE_FORMAT_MARKER_FILE,
+  DATASTORE_FORMAT_MARKER_MAX_BYTES,
+  isBlankDatastoreFormatMarker,
   parseDatastoreFormatMarker,
   V3_DATASTORE_FORMAT,
 } from "../../domain/datastore/datastore_format.ts";
@@ -62,8 +64,14 @@ import {
   ChunkCollector,
 } from "../../domain/datastore_v3/chunk_collector.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
-import { COMPACTED_TXN_RETENTION_MS } from "../../domain/datastore_v3/commit_outbox.ts";
-import type { CompactionReport } from "../../domain/datastore_v3/commit_store.ts";
+import {
+  type CommitOutbox,
+  COMPACTED_TXN_RETENTION_MS,
+} from "../../domain/datastore_v3/commit_outbox.ts";
+import type {
+  CommitStore,
+  CompactionReport,
+} from "../../domain/datastore_v3/commit_store.ts";
 import {
   compactionBound,
   compactionTarget,
@@ -72,10 +80,11 @@ import {
 } from "../../domain/datastore_v3/compaction_policy.ts";
 import type { CommitWriter } from "../../domain/datastore_v3/commit.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
+import { syncDirectory } from "../persistence/sync_directory.ts";
 import { swampPath } from "../persistence/paths.ts";
 import type {
   CommitLogEngine,
@@ -103,8 +112,11 @@ import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { reconcileRefusedRuns } from "./refused_run_records.ts";
-import { SqliteCommitStore } from "./sqlite_commit_store.ts";
-import { SqliteReadModel } from "./sqlite_read_model.ts";
+import {
+  COMMIT_STORE_SCHEMA_VERSION,
+  SqliteCommitStore,
+} from "./sqlite_commit_store.ts";
+import { NOT_RELEASED, SqliteReadModel } from "./sqlite_read_model.ts";
 import { V3Catalog } from "./v3_catalog.ts";
 import {
   litestreamStateDirName,
@@ -132,6 +144,35 @@ export class ReadOnlyV3WriteError extends Error {
     );
     this.name = "ReadOnlyV3WriteError";
   }
+}
+
+/**
+ * Which of `hashes` the stored commits, the compacted base or the pending
+ * commits of `namespace` name, released chunks never counting: the chunks
+ * the checkout-copy guard stores again (swamp-club#3617). The outbox is
+ * asked first: a writer prepares a commit in the outbox, appends it to
+ * commits.db, then settles its entry, so asking commits.db first could
+ * read it before the append and the outbox after the settle, and miss a
+ * commit that named the chunk throughout.
+ */
+export async function referencedChunksOf(
+  commitStore: Pick<CommitStore, "referencedChunks">,
+  outbox: Pick<CommitOutbox, "referencedChunks">,
+  namespace: string,
+  hashes: readonly string[],
+): Promise<Set<string>> {
+  const names = await outbox.referencedChunks(namespace, hashes);
+  const rest = hashes.filter((hash) => !names.has(hash));
+  for (
+    const hash of await commitStore.referencedChunks(
+      namespace,
+      rest,
+      NOT_RELEASED,
+    )
+  ) {
+    names.add(hash);
+  }
+  return names;
 }
 
 /** The commit store's file at the root of a filesystem v3 datastore. */
@@ -296,6 +337,20 @@ export function datastoreKeyFilter(
   };
 }
 
+/** What {@link V3Datastore.collectChunks} verifies before it sweeps. */
+export interface V3ChunkVerify {
+  /** How many bytes of chunks to read and check. */
+  readonly bytes: number;
+  /** The shard prefix to start from; a random one unless given (tests). */
+  readonly from?: string;
+}
+
+/** A random two-hex-digit shard prefix, where a verify pass starts. */
+function randomShardPrefix(): string {
+  const [byte] = crypto.getRandomValues(new Uint8Array(1));
+  return byte.toString(16).padStart(2, "0");
+}
+
 /** One checkout's handle on a v3 datastore. */
 export interface V3Datastore {
   readonly datastorePath: string;
@@ -382,9 +437,14 @@ export interface V3Datastore {
   /**
    * Sweeps this datastore's unreferenced chunks in this checkout's namespace
    * past the default grace period (`swamp datastore gc`). Run it only while
-   * this process holds the writer lock.
+   * this process holds the writer lock. With `verify`, first reads and
+   * checks up to `verify.bytes` of chunks from a random shard prefix
+   * (serve's maintenance timer, swamp-club#3617).
    */
-  collectChunks(signal: AbortSignal): Promise<ChunkCollectionReport>;
+  collectChunks(
+    signal: AbortSignal,
+    verify?: V3ChunkVerify,
+  ): Promise<ChunkCollectionReport>;
   /**
    * Folds history the default policy no longer retains into the compacted
    * base, when enough has built up; resolves with what was folded, or
@@ -519,6 +579,11 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
     stateDir,
     catalog: new V3Catalog(catalogStore),
+    // The checkout-copy guard stores again the chunks stored commits, the
+    // compacted base or pending commits name, never released ones
+    // (swamp-club#3617).
+    referencedChunks: (ns, hashes) =>
+      referencedChunksOf(commitStore, outbox, ns, hashes),
   });
   // One sink for every engine on this handle: units serialize appends to a
   // partition per sink, so contexts that share the handle queue behind each
@@ -732,7 +797,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         },
       };
     },
-    async collectChunks(signal) {
+    async collectChunks(signal, verify) {
       options.assertCopyCurrent?.();
       await options.assertCollectable?.();
       const sweeper = crypto.randomUUID();
@@ -777,7 +842,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           ? { assertMayDelete: options.assertCopyCurrent }
           : {}),
         clock,
-      }).collect(unitNamespace, { signal });
+      }).collect(unitNamespace, {
+        signal,
+        ...(verify !== undefined && verify.bytes > 0
+          ? {
+            verifyBytes: verify.bytes,
+            verifyFrom: verify.from ?? randomShardPrefix(),
+          }
+          : {}),
+      });
     },
     compactIfDue(signal) {
       return compact(signal, clock());
@@ -818,6 +891,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
  * a format-3 marker, a `commits.db` with no commits and an empty `_blobs/`
  * (any of the last two may be missing), and nothing else. What a setup that
  * stopped after writing the marker leaves; a re-run of setup takes it.
+ *
+ * A setup that stopped before its marker reached the disk may have lost it
+ * (swamp-club#3617): a missing or blank marker is taken only under a
+ * stricter check, so that no datastore with history passes for a skeleton:
+ * a `commits.db` that is a regular file holding a v3 commit log with no
+ * partition heads and a compaction point of 0, or only what setup's open
+ * leaves before the schema is written (no pages, or WAL mode and no
+ * schema), and no replication or Litestream state.
  */
 export async function isFreshV3Skeleton(
   datastorePath: string,
@@ -837,20 +918,31 @@ export async function isFreshV3Skeleton(
     `${COMMIT_OUTBOX_FILE}-wal`,
     `${COMMIT_OUTBOX_FILE}-shm`,
   ]);
-  let hasMarker = false;
+  const names = new Set<string>();
   for await (const entry of Deno.readDir(datastorePath)) {
     if (!allowed.has(entry.name)) return false;
-    if (entry.name === DATASTORE_FORMAT_MARKER_FILE) hasMarker = true;
+    names.add(entry.name);
   }
-  if (!hasMarker) return false;
-  try {
-    const marker = parseDatastoreFormatMarker(
-      await Deno.readFile(join(datastorePath, DATASTORE_FORMAT_MARKER_FILE)),
-      DATASTORE_FORMAT_MARKER_FILE,
-    );
-    if (marker.format !== V3_DATASTORE_FORMAT) return false;
-  } catch {
+  const marker = await v3MarkerState(datastorePath);
+  if (marker === "other") return false;
+  const lost = marker !== "v3";
+  if (
+    lost && (names.has(replicationDirName(COMMITS_DB_FILE)) ||
+      names.has(litestreamStateDirName(COMMITS_DB_FILE)))
+  ) {
     return false;
+  }
+  // Without a regular-file commits.db nothing tells a lost marker's
+  // skeleton from another directory; checked before the outbox is opened,
+  // which would create it.
+  if (lost) {
+    try {
+      const info = await Deno.lstat(join(datastorePath, COMMITS_DB_FILE));
+      if (!info.isFile) return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
   }
   try {
     for await (const _ of Deno.readDir(join(datastorePath, "_blobs"))) {
@@ -876,6 +968,18 @@ export async function isFreshV3Skeleton(
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return true;
     throw error;
+  }
+  if (lost) {
+    try {
+      const facts = readCommitLogFacts(join(datastorePath, COMMITS_DB_FILE));
+      return facts.schemaVersion <= COMMIT_STORE_SCHEMA_VERSION &&
+        facts.compactionPoint === 0 &&
+        (facts.partitionHeads === 0 || facts.unschemaed);
+    } catch (error) {
+      logger
+        .debug`The commit log of ${datastorePath} could not be read, so it is not a fresh skeleton: ${error}`;
+      return false;
+    }
   }
   const store = SqliteCommitStore.open(join(datastorePath, COMMITS_DB_FILE));
   try {
@@ -929,20 +1033,56 @@ function queryNamespaces(db: DatabaseSync): string[] {
  * format marker first, then `commits.db` and `_blobs/`. A crash part-way
  * leaves either an unmarked empty directory or a fresh skeleton
  * ({@link isFreshV3Skeleton}); a re-run of setup takes either, and here
- * completes a skeleton without writing its marker again.
+ * completes a skeleton without writing its marker again, or writes the
+ * marker a crash lost (swamp-club#3617).
+ *
+ * The marker is durable before `commits.db` exists (swamp-club#3617): the
+ * parent of each directory this creates is synced first, the marker write
+ * syncs the datastore directory, and only then is `commits.db` created.
  */
 export async function initializeV3Datastore(
   datastorePath: string,
   writtenBy: string,
+  options: {
+    /** How a directory is synced (tests). */
+    readonly syncDirectory?: (dir: string) => Promise<void>;
+    /** How a blank marker is moved aside to remove it (tests). */
+    readonly rename?: (from: string, to: string) => Promise<void>;
+  } = {},
 ): Promise<void> {
+  const syncDir = options.syncDirectory ?? syncDirectory;
+  const created = await absentDirectories(datastorePath);
   await Deno.mkdir(datastorePath, { recursive: true });
+  for (const dir of created) await syncDir(dirname(dir));
   const resuming = await isFreshV3Skeleton(datastorePath);
-  if (!resuming) {
-    await writeDatastoreFormatMarker(datastorePath, {
-      format: V3_DATASTORE_FORMAT,
-      minReaderFormat: V3_DATASTORE_FORMAT,
-      writtenBy,
-    });
+  const marker = resuming ? await v3MarkerState(datastorePath) : "absent";
+  if (marker === "v3") {
+    // A marker an older swamp linked without syncing the directory.
+    await syncDir(datastorePath);
+  } else {
+    // A setup resuming beside this one may remove the blank marker and
+    // write the v3 one first, as a racing restore may.
+    if (marker === "blank") {
+      await removeBlankMarker(datastorePath, options.rename);
+    }
+    try {
+      await writeDatastoreFormatMarker(datastorePath, {
+        format: V3_DATASTORE_FORMAT,
+        minReaderFormat: V3_DATASTORE_FORMAT,
+        writtenBy,
+      }, { syncDirectory: syncDir });
+    } catch (error) {
+      // Only a resume lost a race: a fresh setup still refuses a marker
+      // that appeared meanwhile.
+      if (
+        !resuming || !(error instanceof UserError) ||
+        await v3MarkerState(datastorePath) !== "v3"
+      ) {
+        throw error;
+      }
+      // Durable before commits.db, whether or not the winner has synced.
+      await syncDir(datastorePath);
+    }
   }
   // While replicating, each checkout keeps its own copy (swamp-club#3482):
   // the datastore holds no commits.db.
@@ -953,4 +1093,243 @@ export async function initializeV3Datastore(
     await store.close();
   }
   await Deno.mkdir(join(datastorePath, "_blobs"), { recursive: true });
+}
+
+/**
+ * Restores the format marker of the filesystem v3 datastore at
+ * `datastorePath` that a crash lost (swamp-club#3617), for
+ * `swamp doctor datastores --repair -y` in a repository whose config says
+ * format 3. `commits.db` must be a regular file holding a v3 commit log at
+ * a schema this swamp reads; it is opened read-write, without changing its
+ * schema, so SQLite recovers a write-ahead log a crash left. A blank marker
+ * is replaced. A valid v3 marker, there already or written meanwhile by
+ * another restore, counts as restored. Resolves with the marker's path.
+ *
+ * @throws UserError when the datastore is not one whose marker can be
+ *   restored, or something else is at the marker path
+ */
+export async function restoreV3FormatMarker(
+  datastorePath: string,
+  writtenBy: string,
+  /** The marker writer's seams, and how a blank marker is moved aside (tests). */
+  options: Parameters<typeof writeDatastoreFormatMarker>[2] & {
+    readonly rename?: (from: string, to: string) => Promise<void>;
+  } = {},
+): Promise<string> {
+  const commitsDb = join(datastorePath, COMMITS_DB_FILE);
+  const markerPath = join(datastorePath, DATASTORE_FORMAT_MARKER_FILE);
+  const refuse = (reason: string) =>
+    markErrorPaths(
+      new UserError(
+        `The format marker of ${datastorePath} was not restored: ${reason}. ` +
+          "Nothing was changed.",
+      ),
+      [datastorePath],
+    );
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(commitsDb);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      throw refuse(`${commitsDb} does not exist`);
+    }
+    throw error;
+  }
+  if (!info.isFile) throw refuse(`${commitsDb} is not a regular file`);
+  let facts: CommitLogFacts;
+  try {
+    facts = readCommitLogFacts(commitsDb);
+  } catch (error) {
+    throw refuse(
+      `${commitsDb} could not be read as a v3 commit log (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
+  if (facts.schemaVersion > COMMIT_STORE_SCHEMA_VERSION) {
+    throw refuse(
+      `${commitsDb} is at schema version ${facts.schemaVersion}, newer than ` +
+        `this swamp's ${COMMIT_STORE_SCHEMA_VERSION}: upgrade swamp`,
+    );
+  }
+  if (facts.schemaVersion < 1 || facts.partitionHeads === undefined) {
+    throw refuse(`${commitsDb} is not a v3 commit log`);
+  }
+  const marker = await v3MarkerState(datastorePath);
+  if (marker === "v3") return markerPath;
+  if (marker === "other") {
+    throw refuse(`${markerPath} is not a marker a crash left blank`);
+  }
+  if (marker === "blank") {
+    await removeBlankMarker(datastorePath, options.rename);
+  }
+  try {
+    await writeDatastoreFormatMarker(datastorePath, {
+      format: V3_DATASTORE_FORMAT,
+      minReaderFormat: V3_DATASTORE_FORMAT,
+      writtenBy,
+    }, options);
+  } catch (error) {
+    // Another restore won the race: it wrote what this one would have.
+    if (
+      error instanceof UserError &&
+      await v3MarkerState(datastorePath) === "v3"
+    ) {
+      return markerPath;
+    }
+    throw error;
+  }
+  return markerPath;
+}
+
+/**
+ * Removes the blank marker of the datastore at `datastorePath`, which a
+ * check found blank (swamp-club#3617). Another setup or restore may have
+ * replaced it with a valid marker since, so it is first moved aside, and
+ * deleted only if what was moved is still blank; anything else is put back
+ * and left for the marker write that follows to find. Gone already is
+ * fine: another process removed it.
+ */
+async function removeBlankMarker(
+  datastorePath: string,
+  rename: (from: string, to: string) => Promise<void> = Deno.rename,
+): Promise<void> {
+  const path = join(datastorePath, DATASTORE_FORMAT_MARKER_FILE);
+  const aside = join(datastorePath, `.${crypto.randomUUID()}.tmp`);
+  try {
+    await rename(path, aside);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  const bytes = await Deno.readFile(aside);
+  if (!isBlankDatastoreFormatMarker(bytes)) {
+    // Another process's marker: put back without replacing one written
+    // meanwhile, which then stands instead.
+    try {
+      await Deno.link(aside, path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.AlreadyExists)) {
+        // A filesystem without hard links: an exclusive create.
+        await Deno.writeFile(path, bytes, { createNew: true }).catch(
+          (createError) => {
+            if (!(createError instanceof Deno.errors.AlreadyExists)) {
+              throw createError;
+            }
+          },
+        );
+      }
+    }
+  }
+  await Deno.remove(aside);
+}
+
+/**
+ * What is at a filesystem datastore's format marker path: a marker that
+ * says format 3 (`v3`), none (`absent`), a blank file a crash left
+ * (`blank`, swamp-club#3617), or anything else (`other`).
+ */
+async function v3MarkerState(
+  datastorePath: string,
+): Promise<"v3" | "absent" | "blank" | "other"> {
+  const path = join(datastorePath, DATASTORE_FORMAT_MARKER_FILE);
+  let bytes: Uint8Array;
+  try {
+    const info = await Deno.lstat(path);
+    if (!info.isFile || info.size > DATASTORE_FORMAT_MARKER_MAX_BYTES) {
+      return "other";
+    }
+    bytes = await Deno.readFile(path);
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound ? "absent" : "other";
+  }
+  if (isBlankDatastoreFormatMarker(bytes)) return "blank";
+  try {
+    const marker = parseDatastoreFormatMarker(
+      bytes,
+      DATASTORE_FORMAT_MARKER_FILE,
+    );
+    return marker.format === V3_DATASTORE_FORMAT ? "v3" : "other";
+  } catch {
+    return "other";
+  }
+}
+
+/** What a `commits.db` file says about its history (swamp-club#3617). */
+interface CommitLogFacts {
+  /** `PRAGMA user_version`: 0 for a file no schema was written to. */
+  readonly schemaVersion: number;
+  /** Rows in `partition_heads`; undefined when there is no such table. */
+  readonly partitionHeads: number | undefined;
+  /** The compaction point; 0 when there is none. */
+  readonly compactionPoint: number;
+  /**
+   * Whether the file holds only what opening a new `commits.db` leaves
+   * before its schema transaction commits: no schema at `user_version` 0,
+   * and no pages or WAL mode. An unrelated SQLite file is neither.
+   */
+  readonly unschemaed: boolean;
+}
+
+/**
+ * Reads {@link CommitLogFacts} from the `commits.db` file at `path`, which
+ * must exist. It is opened read-write, so SQLite recovers a write-ahead log
+ * a crash left, which a read-only open refuses to do, and its schema is
+ * never changed.
+ *
+ * @throws when the file is not an SQLite database
+ */
+function readCommitLogFacts(path: string): CommitLogFacts {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec("PRAGMA busy_timeout=5000");
+    const schemaVersion =
+      (db.prepare("PRAGMA user_version").get() as { user_version: number })
+        .user_version;
+    const hasTable = (name: string) =>
+      db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get(name) !== undefined;
+    const partitionHeads = hasTable("partition_heads")
+      ? Number(
+        (db.prepare("SELECT COUNT(*) AS n FROM partition_heads").get() as {
+          n: number;
+        }).n,
+      )
+      : undefined;
+    const compactionPoint = hasTable("compaction")
+      ? Number(
+        (db.prepare("SELECT point FROM compaction WHERE id = 1").get() as
+          | { point: number }
+          | undefined)?.point ?? 0,
+      )
+      : 0;
+    const get = (pragma: string) =>
+      Object.values(db.prepare(pragma).get() as Record<string, unknown>)[0];
+    const unschemaed = schemaVersion === 0 &&
+      Number(get("SELECT COUNT(*) FROM sqlite_master")) === 0 &&
+      (Number(get("PRAGMA page_count")) === 0 ||
+        get("PRAGMA journal_mode") === "wal");
+    return { schemaVersion, partitionHeads, compactionPoint, unschemaed };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The directories from `dir` up that do not exist yet, deepest first: the
+ * ones `mkdir` with `recursive` creates.
+ */
+async function absentDirectories(dir: string): Promise<string[]> {
+  const missing: string[] = [];
+  for (let current = resolve(dir);; current = dirname(current)) {
+    try {
+      await Deno.lstat(current);
+      return missing;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    missing.push(current);
+    if (dirname(current) === current) return missing;
+  }
 }

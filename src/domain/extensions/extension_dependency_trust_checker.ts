@@ -1091,16 +1091,28 @@ export async function checkDependencyTrust(
 }
 
 /**
- * The findings that cost the rubric's dependency-trust factor besides an
- * unaudited dependency: every error, and a deprecated shipped version, which
- * push only warns about (it waits for swamp-club#3354 to block) but the
- * registry's scorecard already scores against.
+ * The findings that cost both points of the rubric's dependency-trust factor
+ * besides an unaudited dependency: every error, a deprecated shipped version
+ * and a yanked JSR version. Push only warns about the last two (`--yes`
+ * accepts them) but the rubric scores against them, as the registry's
+ * scorecard does.
  */
 export function dependencyTrustBlockerCount(
   result: DependencyTrustResult,
 ): number {
   return result.errors.length +
-    result.warnings.filter((w) => w.cause === "deprecated-version").length;
+    result.warnings.filter((w) =>
+      w.cause === "deprecated-version" || w.cause === "jsr-yanked"
+    ).length;
+}
+
+/** How many dependencies have a loose specifier; each costs one point. */
+export function looseSpecifierCount(result: DependencyTrustResult): number {
+  return new Set(
+    result.warnings
+      .filter((w) => w.cause === "loose-specifier")
+      .map((w) => w.dependency),
+  ).size;
 }
 
 /** How many dependencies a lookup failure left unaudited. */

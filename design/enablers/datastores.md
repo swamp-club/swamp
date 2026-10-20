@@ -119,8 +119,11 @@ If re-bundling fails and a cached bundle exists, the cached bundle is used
 (`extension_loader.ts`). Expected failures log at debug level, others at warn.
 The expected case is a bare specifier such as `from "zod"` instead of
 `from "npm:zod@4"`, which cannot resolve without the project's `deno.json`
-import map. Only the module's own static imports count; imports inside template
-literals are generated code and are ignored.
+import map. Push rewrites the bare imports that map resolves in a published
+extension's source (swamp-club#3637), so this is the case for a name the map
+does not resolve or a `package.json` project. Only the module's own static
+imports count; imports inside template literals are generated code and are
+ignored.
 
 ### Custom Type Configuration
 
@@ -594,6 +597,61 @@ datastore-wide store, and more than 2 s on the fallback, where a 2 s cap let
 a newer-format datastore through in 5 of 5 runs. With the 3 s and 4 s caps a
 planted newer-format marker was refused in every run, up to a 1.5 s
 credentials fetch.
+
+**A lost marker** (swamp-club#3617). `writeDatastoreFormatMarker` writes the
+marker durably: the temp file is synced and closed before it is linked into
+place, and the datastore directory is synced after, so a power cut leaves no
+marker or a whole one. `initializeV3Datastore` syncs the parent of every
+directory it creates before the marker, and creates `commits.db` only after
+the marker is durable. A marker an older swamp wrote can still be lost: a
+**lost format marker** is a filesystem datastore whose root holds a
+regular-file `commits.db` beside no marker, or beside a blank one (empty, or
+only whitespace and NUL bytes: a file whose length reached the disk before its
+content). `lostDatastoreFormatMarker` (`datastore_format_guard.ts`) only stats
+`commits.db`; it never opens it. The guard never opens such a datastore as
+format 2, which would write v2 files into it, and refuses it with advice for
+where it was met (`lostFormatMarkerAdvice`), keeping the existing codes:
+
+| Lost marker met | Refusal |
+|---|---|
+| Blank marker, any context | `InvalidDatastoreFormatMarkerError` (`datastore_format_marker_invalid`), its middle advice replaced |
+| Missing, config says format 3 | `DatastoreFormatMismatchError` (`datastore_format_mismatch`): run `swamp doctor datastores --repair` |
+| Missing, config says format 2 or none, or a datastore override (`SWAMP_DATASTORE`, `--datastore`) | `LostDatastoreFormatMarkerError` (`datastore_format_mismatch`), one advice text: unset the override, then repair in the repository whose `.swamp.yaml` uses it with format 3 |
+| Missing, the `datastore setup` target | `LostDatastoreFormatMarkerError`: re-run an interrupted `setup --format 3`, or repair from the repository that uses it |
+
+Every other marker refusal keeps its text byte for byte. Two ways out:
+
+- **Repair.** `swamp doctor datastores --repair` branches to the marker repair
+  only after the format guard refused the repository's datastore with one of
+  those two codes, under a filesystem config that says format 3, for a
+  datastore `lostDatastoreFormatMarker` recognises; any other refusal is
+  rethrown unchanged. Without `-y` it previews from stats alone and exits 0.
+  With `-y`, `restoreV3FormatMarker` (`v3_datastore.ts`) requires a
+  regular-file `commits.db` holding a v3 commit log at a schema version from 1
+  to `COMMIT_STORE_SCHEMA_VERSION`, opens it read-write without any DDL (so
+  SQLite recovers a write-ahead log a crash left), removes a blank marker and
+  writes a new one. A valid v3 marker already there, or written meanwhile by
+  another restore, counts as restored. With `--json` it prints one object:
+  `{"status": "format_marker_preview", datastorePath, markerPath, marker}`
+  without `-y` (`marker` is `absent` or `blank`),
+  `{"status": "format_marker_restored", ...}` with the same fields after a
+  restore, and `{"status": "format_marker_not_needed", datastorePath}` when the
+  marker turns out not to be lost. A failed restore exits 1 with the
+  `UserError`'s own code, or `format_marker_repair_failed` for any other
+  error.
+- **Setup resume.** `datastore setup filesystem --format 3` on a target
+  refused for a lost marker resumes when the target is a fresh skeleton
+  (`isFreshV3Skeleton`) under a stricter check: `commits.db` a regular file
+  with no partition heads and a compaction point of 0, an empty outbox and
+  `_blobs/`, and no replication or Litestream directory, so no datastore with
+  history passes for one. Two resumes can race past a blank marker: a remove
+  that finds the marker already gone is ignored, and a resume whose marker
+  write finds a v3 marker another wrote meanwhile syncs the directory and
+  goes on, as a racing restore does. A fresh setup still refuses a marker
+  that appeared.
+
+A lost marker on a replicated datastore, whose root holds no `commits.db`, is
+not recognised (see `datastore-litestream.md`).
 
 **Where it runs.** Before anything locks, pulls, pushes or writes:
 
@@ -2260,6 +2318,16 @@ so the rule that keeps that model dormant covers it too.
   in `commits.db`), whether a solo repository or a team datastore served with
   no namespace. No slug can start with `_` (`NAMESPACE_PATTERN` in
   `src/domain/data/namespace.ts`), so the two cannot collide.
+- **Torn chunk** (swamp-club#3617): a chunk stored with fewer (or other)
+  bytes than its size, as a crash leaves a file whose rename reached the disk
+  before its content. On a storage that reads sizes it counts as missing.
+- **Chunk barrier** (swamp-club#3617): what makes a commit group's chunks
+  durable before the commit is prepared or appended: the file syncs of its
+  new chunks, their renames, then the directory syncs that make the names of
+  every chunk it names durable (the **chunk directory barrier**).
+- **Chunk batch** (swamp-club#3617): the chunks one commit group stores or
+  names (`ChunkBatch`, from `ChunkStore.beginBatch`), given one chunk
+  barrier together.
 
 **The contract.** v3 keeps commits in `commits.db`, which Litestream
 replicates with its own clients, so object storage holds chunks and nothing
@@ -2332,21 +2400,94 @@ against the size the reference records, not against this backend's
 parts. For content in several chunks, it also checks the
 SHA-256 of the whole content when the read ends. A mismatch errors the stream
 with `ChunkIntegrityError`, and a missing chunk errors it with
-`ChunkMissingError`. A consumer keeps what a read yields only once the read
-ends cleanly.
+`ChunkMissingError`. A `ChunkIntegrityError` names the failing chunk
+(`namespace`, `sha256`) when a chunk's length or SHA-256 is wrong; it names
+none when every chunk matched and only the whole content's digest did not.
+A consumer keeps what a read yields only once the read ends cleanly.
 
-**Damaged chunks are not repaired by writes.** A write trusts `has`: a chunk
-that is present is refreshed, not uploaded again, so one damaged in place after
-its put (a crash that leaves a file of the right length but wrong bytes) stays
-damaged, and every read of it fails. A `put` always replaces the chunk, so
-deleting it, or putting it again, repairs it. Chunk garbage collection finds
-and deletes damaged chunks, since it already walks every chunk.
+**Optional capabilities beyond `storage/1`** (swamp-club#3617), each an
+interface with a type guard in `datastore_storage.ts` beside `TempFileSweeper`.
+A storage whose puts are atomic at the object level (a bucket) cannot tear a
+chunk and offers none of them; `FileSystemStorage` offers all four.
+
+| Capability | Method | Used for |
+|---|---|---|
+| `ChunkStatReader` | `statChunks(ns, hashes)` | Sizes and mtimes without reading bytes, so a torn chunk counts as missing |
+| `ChunkStaging` | `stageChunks(ns)` | A `ChunkStage` for one commit group: `put(sha256, bytes)` writes a temp file beside the chunk, unsynced and unseen by readers (a hash staged already is skipped); `commit()` syncs every staged file, then renames each into place; `discard()` removes what was not committed |
+| `ChunkDirectorySync` | `syncChunkDirectories(ns, hashes)` | The chunk directory barrier; may skip chunks the storage knows durable |
+| `ChunkQuarantine` | `quarantineChunk(ns, sha256)` | Moving a chunk aside before deciding to delete it (`read`, `remove`, `putBack` on the handle) |
+
+With `statChunks`, `ChunkStore.missing`, `refresh` and the store-before-write
+check are size-aware: a chunk at the wrong size is missing, so a write puts it
+again. `ChunkStore` also has `stat`, `syncStored` (the directory barrier
+alone, a no-op without the capability), `beginBatch` (a `ChunkBatch`, below),
+and, for the read model's checkout-copy guard,
+`refOf` (cuts content exactly as `write` does, storing nothing), `putParts`
+(puts listed parts straight from a byte-range source with no dedupe, skipping
+a part whose bytes no longer match its name; a refused put throws
+`ChunkPutError`) and `verifyParts` (reads and hashes stored parts).
+
+**One barrier per commit group** (swamp-club#3617). `ChunkStore.write` takes
+an optional `ChunkBatch`. With one, a new chunk goes into the batch: on a
+storage with `ChunkStaging` it is staged and stored only when the batch
+commits, so no reference to it may be committed before then; elsewhere it is
+put at once. A chunk found present (at its size, and touched) is not put; the
+batch covers it, and `include` adds the chunks of content stored earlier (a
+retry's reused op). `ChunkBatch.commit` is the chunk barrier: the stage's
+commit (every new chunk's file synced, then renamed), then one
+`syncChunkDirectories` over every chunk the batch covers, new or found
+present. A failed commit stores nothing more, and nothing the batch covers
+may be committed. `discard` removes whatever was staged and not committed,
+and is called whatever happened.
+
+**Damage of the right size is not repaired by writes.** A write trusts its
+presence check: a chunk present at its size is refreshed, not uploaded again,
+so one damaged in place with the right length stays damaged, and every read of
+it fails. A `put` always replaces the chunk, so deleting it, or putting it
+again, repairs it. The read model's guard puts such chunks again from a
+checkout file in replays, and serve's chunk GC verify pass finds them
+("v3 chunk garbage collection").
 
 **For extension authors.** `FileSystemStorage`
 (`src/infrastructure/persistence/fs_datastore_storage.ts`) is the reference
-implementation. It writes a temp file and renames it into place, validates the
-namespace and hash before building any path, and uses mtime as
-`lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
+implementation. `stageChunks` gives a stage whose `put` creates a temp file
+(`createNew`) beside the chunk, writes it whole and closes it unsynced; its
+`commit` reopens and syncs every staged file, 64 at a time, then renames each
+into place, so a chunk's name never points at bytes a power loss could tear.
+Syncing closed files before any rename lets the syncs coalesce: on macOS each
+is an `F_FULLFSYNC`, a drive-cache flush. A failed commit removes every
+staged file it did not rename; chunks renamed before the failure stay,
+harmless because no commit names them yet. `put` is a stage of one, so a
+lone put still syncs its file before its rename. When a put fails and the
+chunk in place already holds exactly its bytes (a concurrent put of the same
+hash won the rename, which Windows refuses to share), the chunk is only
+refreshed; otherwise the put throws, never leaving a damaged chunk in place.
+
+`syncChunkDirectories` syncs the shard directory of each chunk not known
+durable, 64 at a time, and `sha256/`, the namespace directory, `_blobs/` and
+the datastore root once per process, whoever created them, with concurrent
+callers sharing one sync. A put that creates a shard or namespace tree drops
+the ancestors it created from that memo, so the next barrier syncs them
+again. A process-wide memo (`DURABLE_CHUNKS`, by chunk path, at most 100,000
+entries before it starts over) records the chunks whose names this process
+made durable, so a dedupe hit on one costs no directory sync. A sync marks
+its chunks with a token of its own and, when it ends, marks durable only
+those still holding that token: a put (each rename), a quarantine, a
+`putBack` or a delete by this process drops a chunk from the memo, so a sync
+that such a change overtakes marks nothing for it, and a sync that fails
+marks nothing. A chunk another process stored, found by a dedupe hit, is
+synced the first time this process names it, once per process. Two narrow
+gaps are accepted: a dedupe hit on a chunk an older swamp wrote, unsynced,
+earlier in this boot is trusted at its size though its bytes may not be on
+disk yet; and when another process creates a shard after this process
+synced `sha256/`, then crashes before its own barrier, a put here that
+dedupes into that shard does not resync `sha256/`. A directory fsync that
+fails (`syncDirectory`), EIO included, is swallowed as SQLite does, so a
+barrier cannot report a lost directory entry. `quarantineChunk` renames
+a chunk to a `.<uuid>.tmp` name in its shard and sets its mtime to now, so
+`list` skips it and `removeStaleTempFiles` removes it after the grace period.
+It validates the namespace and hash before building any path, and uses mtime
+as `lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
 checks an implementation. `createInMemoryRemote({ storage: true })` provides a
 conforming in-memory one. The S3 and GCS implementations are a later
 swamp-extensions change.
@@ -2594,6 +2735,56 @@ group forms; plus the writer, the fence when one is given, and `at`. The head
 read and the append run under a per-partition lock keyed by sink, namespace
 and partition, so two units in one process never take the same seq; the lock
 is released on every outcome and its entry dropped when its queue drains.
+
+**The chunk barrier** (swamp-club#3617). `appendGroup` stores the group's
+content into one `ChunkBatch` (`ChunkStore.beginBatch`) and commits the batch
+before the partition lock: a commit is never prepared or appended while a
+power loss could lose the bytes or the rename of a chunk it names. On a
+storage that stages chunks, the group's new chunks have their files synced
+together, then are renamed, then one directory sync phase covers every chunk
+the group names, stored now, found present, or reused by a retry
+(`include`). A failed barrier fails the group as a failed store does, and a
+retry stores again whatever it did not store. The batch is discarded
+whatever happened. Chunks stored again later (the overlap branch's restore
+before the append, and the post-landing restore) go through
+`restoreMissingChunks`, which runs a batch of its own, committed only when it
+stored something. Nothing is synced for a group whose content is all inline,
+and only the stage's file syncs (no directory syncs) on a storage without
+`ChunkDirectorySync`; a storage with neither capability puts each chunk at
+once.
+
+What it costs, vs main (swamp-club#3617). Main synced no chunk, so every
+millisecond here is new. In-process bench (`scripts/bench_v3_chunk_barrier.ts`:
+the real `FileSystemStorage`, `ChunkStore` and commit-log unit on a temp
+directory, 16 KiB blobs of one chunk each, medians of 2 runs of 9 with an A/A
+control), main at 270eb2fe6 against the barrier:
+
+| Case | macOS main | macOS barrier | Linux main | Linux barrier |
+|---|---|---|---|---|
+| 1 new chunk | 0.5 ms | 8.4 ms | 1.1 ms | 2.3 ms |
+| 10 new chunks | 2.8 ms | 21.0 ms | 5.3 ms | 7.5 ms |
+| 200 new chunks | 52 ms | 181 ms | 79 ms | 104 ms |
+| 200 dedupes, chunks another process stored | 18 ms | 28 ms | 30 ms | 34 ms |
+| 200 dedupes, chunks this process stored | 18 ms | 22 ms | 30 ms | 32 ms |
+
+swamp-uat#496 vs main, real CLI, 3 samples a run:
+
+| Line | macOS main | macOS barrier | Linux main | Linux barrier |
+|---|---|---|---|---|
+| v3 write (`model method run`) | 566 ms | 762 ms | 551 ms | 550 ms |
+| v3 first clone (1000 items) | 4430 ms | 4463 ms | 5736 ms | 5949 ms |
+| v3 delete visibility | 1071 ms | 1197 ms | 1101 ms | 1066 ms |
+
+A command that stores a new non-inline chunk pays one file sync and one
+directory sync. On macOS `FsFile.sync()` is `F_FULLFSYNC`, which waits for the
+whole drive cache, so its cost depends on what every process wrote just
+before: about 10 to 25 ms on an idle Mac, and 200 ms or more when other
+processes keep the disk busy (the macOS uat#496 figures above were taken with
+other processes writing 1 to 2 GB/s; a direct A/B gave +217 ms). Linux figures
+are from a Docker Desktop VM (ext4 volume), whose cheap fsync understates bare
+metal; no bare-metal figure was taken. Replacing `F_FULLFSYNC` with an
+ordering barrier (`F_BARRIERFSYNC`) on macOS is a follow-up, gated before v3
+is dogfooded.
 
 - **No atomicity across partitions.** When a partition fails, the partitions
   before it stay committed and the ones after it are not tried. A refusal is
@@ -3070,6 +3261,16 @@ dormant: nothing in production opens it, and
   one checkout's present records. Chunk garbage collection does not use it:
   a checkout catching up from the start needs every chunk any commit names
   (see "v3 chunk garbage collection").
+- **Checkout-copy guard** (swamp-club#3617): the check before an overwrite or
+  removal that stores again, from the checkout file, committed chunks only
+  that file may still hold whole ("Failures" below).
+- **At-risk copy**: a checkout file the guard moved aside into
+  `_read_model_v3/at-risk/` because the storage refused its chunks.
+- **Unreadable record**: a key whose put could not be materialised because a
+  chunk is missing, torn or damaged; its file is absent and reads of it fail
+  loudly.
+- **Removal candidate**: a key a reset keeps in `load_touched_keys`, for a
+  compacted-base load to remove when the base does not show it.
 
 **Port and adapter.** `ReadModel` (`src/domain/datastore_v3/read_model.ts`)
 has `catchUp`, `catchUpPartition`, `liveRecords`, `chunksInUse` and `close`.
@@ -3093,8 +3294,9 @@ the read model.
 | File | Holds |
 |---|---|
 | `_catalog_v3.db` | The v3 catalog |
-| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata |
+| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata; since schema 5 (swamp-club#3617, one-way) `unreadable_records`, `at_risk_copies` and `written_files` |
 | `read_model.lock` | The lock that serializes catch-ups across processes |
+| `at-risk/<storage namespace>/<sha256>` | Checkout files moved aside by the checkout-copy guard (swamp-club#3617) |
 
 The issue that planned this suggested `_catalog_v3.db` beside `commits.db`.
 It lives in the checkout instead, for two reasons:
@@ -3171,9 +3373,13 @@ commit's state transaction is a savepoint in one transaction for the page,
 which commits after the page's files are written. An apply error at commit k
 keeps the commits before it, and the error is rethrown.
 
-Each effect is idempotent, so a crash anywhere is repaired by catching up
-again from the unchanged cursor. The index and the cursor are never ahead of
-the files. Calls queue in the process, and an exclusive OS lock on
+Each effect is idempotent, so catching up again from the unchanged cursor
+redoes the effects of a crash anywhere. That is not always a repair on its
+own: a replay can overwrite the only good copy of a chunk the datastore lost
+or tore, and a commit whose chunk is gone cannot be materialised. The
+checkout-copy guard and unreadable records (under "Failures" below) cover
+those; what neither can repair is reported by `doctor datastores`. The index
+and the cursor are never ahead of the files. Calls queue in the process, and an exclusive OS lock on
 `read_model.lock` serializes processes, so a slow catch-up cannot rewrite a
 file a faster one has removed.
 
@@ -3195,10 +3401,26 @@ boot it ran in (`unsynced_boot`, from `boot_identity.ts`). On the first
 exclusive section in a
 later boot, every listed file is checked against the state: a present file
 must be a regular file with the live record's SHA-256, an absent one must be
-gone (a directory left at a removed name is fine). If all match, they
-survived the reboot and are on disk, and the list is cleared. If one does
-not, the state is reset and the catch-up applies every commit again, which
-rewrites and removes every file.
+gone (a directory left at a removed name is fine; the key of an unreadable
+record is expected absent). If all match, they survived the reboot and are on
+disk, and the list is cleared.
+
+A file that does not match is rewritten in place (swamp-club#3617), not by a
+reset. Each listed key resolves through the same path checks a catch-up uses
+(`#target`); one expected absent is removed, one expected present is written
+from the live record's `BlobRef`, or for inline content from the commit at
+the file's ownership mark (read once per mark, its SHA-256 verified). Every
+removal and write goes through the checkout-copy guard and one
+`DurableWriteBatch` with sync, then one barrier, then the list is cleared, and
+the catch-up goes on from the cursor. The state is reset and every commit
+applied again only when that cannot be done: a listed key with no live record
+(`expect: unknown`), a key `#target` refuses, inline content the commit no
+longer holds, or any other error. `CheckoutCopyAtRiskError` and an abort
+propagate instead. The check runs first in the exclusive section, before the
+catalog generation check, so a reset that check makes cannot drop the list
+unchecked. On a storage that reads sizes, a listed file that matches has its
+committed chunks guarded too, so a chunk torn in the same crash is put again
+from the checkout (on a bucket, which cannot tear a chunk, it is not).
 
 The boot must be named by the kernel, never by the clock: the boot time
 (now less the uptime) shifts when the clock steps within one boot, which
@@ -3226,8 +3448,9 @@ The cost moves to the first open after a reboot: it hashes every file
 written since the list was last cleared, holding the read model's lock. The
 list is bounded by the checkout's keys, but a long-running `serve` can
 leave most of its cache on it. A listed file the state shows present with no
-live record for its owner cannot be checked, so it also resets the state; it
-is logged as such, apart from a file that does not match.
+live record for its owner cannot be checked, so it resets the state; it is
+logged as such. A key the writer had already overwritten is written twice,
+still cheaper than a reset.
 
 What this does not cover: anything that loses page-cache writes without
 ending the boot. A disk detached mid-write, a write-back I/O error (which,
@@ -3236,10 +3459,17 @@ an NFS server that loses its cache, or a VM restored from a snapshot can all
 lose unsynced files while the boot id stays the same, and the read model
 will not notice. The check runs at the start of an
 exclusive section, so an index read (`liveRecords`, `chunksInUse`) before
-the first catch-up of a new boot is not covered by it. A commit whose apply
+the first catch-up of a new boot is not covered by it. Serve's
+`syncUnsyncedFiles` opens such a section too, so its reboot check runs
+without the `anotherProcessWritesCheckout` gate a catch-up has; the window is
+narrow, since serve holds the writer lock then and the check runs once per
+boot. A commit whose apply
 fails is not recorded, so the files it wrote before failing are not listed:
 until its retry rewrites them, a reboot can leave one torn. `commits.db` keeps
-`synchronous=FULL` and stays the source of truth. The compacted-base load
+`synchronous=FULL` and stays the source of truth. On macOS that is a plain
+`fsync`, not `F_FULLFSYNC`: `node:sqlite` runs with `PRAGMA fullfsync=0` and
+`checkpoint_fullfsync=0`, and swamp sets neither (swamp-club#3617 checked
+this; changing it is out of scope). The compacted-base load
 and recovery's sweep still sync their files at a barrier
 (`DurableWriteBatch`): they are rare. `F_BARRIERFSYNC`, which Deno does not
 expose, stays out of scope.
@@ -3305,12 +3535,298 @@ tombstone under a file has nothing to remove.
 
 **Failures.** Any other failure throws `ReadModelApplyError`, naming the
 namespace, partition and seq, and leaves the cursor before the commit, so the
-next catch-up tries it again. Causes include a missing or damaged chunk (it
-may not be uploaded yet), a `BlobRef` with a `legacyKey` (no migration writes
-those yet), and a write error. An
+next catch-up tries it again. Causes are a `BlobRef` with a `legacyKey` (no
+migration writes those yet), a write error, and a missing or damaged chunk in
+a commit at or below the compaction point (below). An
 abort stops between commits or during a chunk read, and leaves no partial
 file. Waiting for another process to release `read_model.lock` is not
 abortable: the OS lock has no abort hook.
+
+**The checkout-copy guard** (swamp-club#3617). A checkout file can hold the
+only good copy of a committed chunk the datastore lost or tore in a crash, and
+a replay over it (a reset, a recovery, the reboot check) would destroy it.
+So before the read model overwrites or removes a file, `#guardExisting` runs,
+from `#writeContent` and `#removeRecord`, every overwrite and removal path:
+
+- It looks only at a regular file over `MAX_INLINE_BYTES` (8 KiB; smaller
+  content is inline in its commit) that this exclusive section has not
+  written or guarded already. The file is streamed once and cut as the chunk
+  store cuts content (`refOf`). A file that already holds the content about
+  to be written is left in place and the write skipped.
+- **Files it wrote are not read again.** After each write of a blob over
+  `MAX_INLINE_BYTES` the read model records, in `written_files`, the blob and
+  the file's inode, device, size, and modification and change times, from the
+  temp file's own stat before the rename, checked against a stat of the path
+  after it, so a file another process renamed in between is never taken for
+  its own. A later guard outside a replay whose stat of the file still shows
+  all of them uses the blob's parts instead of reading the file, unless the
+  write about to happen is of that same blob: whether a file already holds
+  the content is only decided by reading it. Any write, truncation,
+  replacement or `utime` changes the stat, so a file another process changed
+  is read as before. A reset clears the table, a removal forgets its row, and
+  a platform without inode numbers (Windows) records nothing.
+- **At-risk parts** are the file's parts the storage does not hold: absent,
+  or at the wrong size on a storage that reads sizes. In a replay (a section
+  that began with a reset, or a recovery) on such a storage, parts held at the
+  right size are read and hashed too (`verifyParts`), so same-size damage is
+  found there; in an ordinary catch-up it is not, and only serve's GC verify
+  finds it.
+- Only parts a stored commit, the compacted base or a pending outbox entry
+  names count: `V3Datastore` supplies the outbox's references united with
+  `commitStore.referencedChunks(ns, hashes, NOT_RELEASED)`, the outbox asked
+  first: a writer prepares in the outbox, appends to commits.db, then settles
+  the entry, so asking commits.db first could miss a commit that lands
+  between the two lookups. `NOT_RELEASED`
+  is the maximum date, so released chunks never count, and a lagging checkout
+  uploads nothing compaction released.
+- They are put again from the file (`putParts`, no dedupe), then given the
+  chunk directory barrier.
+- On a storage that cannot read sizes (a bucket, whose puts cannot tear a
+  chunk) the guard runs only for removals (the reboot check's included, through
+  `#removeRecord`) and in replays, using one batched `has` per file; the reboot
+  check's rewrites and the files it finds matching are not guarded there, so an
+  ordinary catch-up makes no extra requests per file. The trade-off: a chunk lost from a bucket by
+  external damage is not protected when a normal catch-up overwrites the file.
+  A file the guard skipped so is not marked guarded, so a later removal of it
+  in the same section still reads it. And when a write's chunks then cannot
+  be read (`ChunkMissingError`, `ChunkIntegrityError`), the failed write left
+  the file as it was, and the guard reads it then: a file that holds the
+  content about to be written is the only copy of a chunk the storage lost,
+  so it stays, and the record is not unreadable.
+- A file left in place because it already holds the content is synced, and
+  its directory with it, when the section's batch syncs: when the boot cannot
+  be named ("Durability across reboots"), no reboot check will cover it.
+
+**At-risk copies.** When the storage refuses a put (not an abort), the file
+is moved aside rather than failing the section: renamed into
+`_read_model_v3/at-risk/<storage namespace>/<sha256>` (the whole file's
+SHA-256; a copy already recorded at that name only removes the file, once
+its size and SHA-256 show the same bytes: a copy made by hard link, below,
+shares its inode with a checkout file, so an edit there in place changes
+it while it still bears the old name), the
+at-risk and source directories synced, and an `at_risk_copies` row recorded,
+keyed by (namespace, sha256). The overwrite or removal then goes on. Across
+devices (`EXDEV`) the file is copied through a synced temp file and removed,
+while all copies so far stay within 1 GiB (`DEFAULT_AT_RISK_COPY_BYTES`).
+Copies made by rename on the same device are not capped: they take no new
+space, and their count is bounded by the distinct content refused, one copy
+per (namespace, sha256).
+Only when the file can be neither moved nor copied, or the cap would be
+passed, does the section throw `CheckoutCopyAtRiskError`, naming the file,
+the cause and the way out; nothing was overwritten. A warning is logged once
+per process.
+
+A file that already holds the content about to be written is not moved: no
+write will overwrite it, and the record stays readable. When the storage
+refuses its chunks, the file stays in place and a copy goes aside instead,
+at the same `at-risk/<storage namespace>/<sha256>` name (one already there
+is kept only when its SHA-256 matches): a hard link, which
+takes no space (a put refused for want of space is the likely case), synced
+since the checkout's bytes may never have been; where the link fails
+(across devices), a durable copy, within the same cap. The copy's directory,
+`at-risk/` and the state directory are synced and an `at_risk_copies` row
+recorded, so the retry below stores the chunks once the storage takes them.
+A copy that cannot be made is only logged: the file stays, and the next
+guard of it tries again.
+
+At the start of every applying section, up to 8 rows, least
+recently tried first and each at most hourly, are retried: a copy whose
+referenced parts are stored, or no longer referenced, is deleted unread. On a
+storage that reads sizes, the referenced parts held at the right size are read
+and hashed too (`verifyParts`), so a copy moved aside for same-size damage is
+kept until the damaged parts are stored again from it;
+otherwise the copy's SHA-256 is checked against its name, its parts are put
+from it, then it and its row are deleted. A copy whose hash no longer matches
+its name (a hard link whose checkout file was edited in place) cannot store
+the content it is named for: it and its row are deleted with a warning. A
+copy gone (deleted by hand) deletes its row. Copies a crash left without a
+row are adopted first, and the `.<uuid>.tmp` files a crash mid-copy left
+there are removed once an hour old (`AT_RISK_TEMP_GRACE_MS`), unless this
+process is still writing them. Once a put is refused as unauthorised, no copy is
+tried again in that process. Unauthorised is read from the error's
+structure, through up to four `cause`s: Deno's `PermissionDenied`, an HTTP
+status of 401 or 403 (`status`, `statusCode`, `httpStatusCode`,
+`$metadata.httpStatusCode`, `response.status`, a numeric `code`), or an
+access-denied code or name such as S3's `AccessDenied`. A message alone
+counts only when it names both the status and the refusal, so a 403 that is
+merely part of a key or a size does not. A reset keeps the rows: they are
+files, not a cache of the commits. A read-only member's copies stay until a
+command with put rights runs, or the user deletes the directory, as doctor
+advises.
+
+**Unreadable records** (swamp-club#3617). A put whose chunks cannot be read
+(`ChunkMissingError`, `ChunkIntegrityError`) no longer wedges the catch-up:
+the key's old file is removed (through the guard), its ownership still
+advances, later commits apply, and an `unreadable_records` row is written in
+the commit's savepoint with the first bad chunk, the reason (`missing`, which
+includes torn, or `damaged`) and the chunk's size and mtime at the time. A
+`ChunkIntegrityError` that names its chunk gives the chunk at once, with no
+part read again: `missing` when the storage counts it missing (absent, or at
+the wrong size), else `damaged`. A row
+is forgotten only when a later commit decides to write or remove that key; a
+reset clears them all. A warning, with advice by record kind
+(`unreadableRecordAdvice`), is logged once per process per key. At the end of
+each catch-up up to 32 rows, least recently tried first, are tried again:
+on a storage that reads sizes only once the chunk's size or mtime changed,
+elsewhere hourly; and only while the key's ownership still shows the row's
+put. A write that succeeds deletes the row and lists the key unsynced, in
+one transaction. A retry that fails records the chunk that failed this time,
+with its reason, size and mtime now, so the next retry waits on the chunk
+that is failing, not on one that came back; a failure that names no chunk
+keeps the row as it was. A `ChunkIntegrityError` whose parts all verify (no part
+missing or damaged, so the row names no chunk) has nothing to watch: it is
+retried hourly for as long as the row lives, until a later commit decides the
+key or a reset clears it, each retry reading the whole content. Two
+exceptions:
+
+- A commit at or below the compaction point (`CommitStore.compactionPoint()`)
+  rethrows as before, so the catch-up loads the newer compacted base rather
+  than skipping a commit that is gone.
+- The compacted-base load never rethrows: no commit is left to retry from.
+  Its unreadable records take the `load_files` mark as their position and are
+  written in the `finishLoad` transaction.
+
+**Loud reads.** A record whose file is absent must not read as absent. The
+`UnreadableContentLookup` port (`datastore_sync_service.ts`, beside
+`HydrateFileHook`) takes the content path a repository read and returns the
+`UserError` to throw, or undefined. On v3 it is
+`unreadableContentLookup` (`unreadable_content_lookup.ts`) over the read
+model, which builds `UnreadableRecordError` (code
+`datastore_v3_record_unreadable`) naming the chunk and the advice. The
+unified data repository consults it only in the not-found branches of
+`getContent` and `getContentStream`. It travels on `RepositoryFactoryConfig`
+and `RepositoryContext` (`unreadableContent`) wherever `hydrateFile` goes:
+`v3RepositoryFactoryConfig`, the execution service, workflow run, resume,
+evaluate and history, serve's deps and workflow handlers, and the behavior output data, logs,
+evaluate and validate factories. `hydrateFile` stays undefined on v3.
+
+A lookup that fails throws a `UserError` naming the path; it no longer warns
+and reads as absent, since it runs only after a read found no file, and a
+record it could not check reading as absent is the silent "no data" it exists
+to end. A closed read model (a command shutting down) still reads as absent.
+
+The port also has an optional `under(absDir)`: the unreadable records under a
+directory (`UnreadableContentEntry`: the path spelled under the directory the
+caller gave, the error a read of it throws, and the advice), for a read that
+cannot name the file it wants and for listings. On v3 it is backed by
+`SqliteReadModel.unreadableRecordsUnder(namespace, keyPrefix)`, one range
+scan of the `unreadable_records` primary key (empty once the read model is
+closed), with each directory mapped as a path is (solo and namespaced, with
+the symlink fallback). `unreadable_records.ts` holds the repositories' side:
+`unreadableRecordsUnder`, `warnUnreadableLeftOut` and `mayBeUnreadableError`.
+
+**Single-record reads that fail loudly** (`datastore_v3_record_unreadable`)
+instead of finding nothing:
+
+- Workflow runs: `YamlWorkflowRunRepository.findById`, and `findGlobalById`
+  when no workflow directory has the run's file, through one prefix query
+  over `workflow-runs/` (so a workflow whose every run is unreadable, and
+  which has no directory, is found too).
+- Auto-definitions (`YamlDefinitionRepository`): `findByName`'s secondary
+  path after every other search misses; `findByNameGlobal` through one prefix
+  query over the auto-definitions directory, which also finds a type that is
+  neither registered nor has a directory; `findById` and `findByIdGlobal` of
+  an auto-definition stored under `<id>.yaml`.
+- Evaluated definitions: `findByNameWithProvenance` and `findByName` (the
+  name path), `findById` (the legacy UUID path), and `findByNameGlobal`.
+- Evaluated workflows: `YamlEvaluatedWorkflowRepository`'s
+  `findByNameWithProvenance`, the `--last-evaluated` cache, wired in
+  `WorkflowExecutionService`.
+- Outputs: `findLatestByDefinition` fails with the record's error when an
+  unreadable output of the definition started after the latest readable one
+  (an output's file name carries its definition and start), and answers with
+  the readable one when the unreadable ones are older. `findById(type, method,
+  id)`: an output id is not in its file name, and the read model keeps an
+  unreadable record's key and chunk, not its id, so the lookup cannot tell an
+  unreadable output's id from a mistyped one. A miss where the method has
+  unreadable outputs fails with `mayBeUnreadableError`: the id was not found,
+  and these unreadable records may be it, with code `not_found`, not
+  `datastore_v3_record_unreadable`, since a mistyped id is no read of them. A
+  miss with none is still null.
+- Definitions by id and by name throw a record's error only when the record
+  is the one asked for: its file name is `<id>.yaml` or `<name>.yaml`. Any
+  other miss is null; a by-id miss of an auto-definition only warns naming
+  the unreadable ones it cannot tell from its id, so a mistyped id or name
+  never fails naming other records.
+
+They are wired through `createRepositoryContext` (its output repository
+included), so the CLI, serve and libswamp code using `repoContext.*` get
+them; `createWorkflowHistoryGetDeps`, `createDataGetDeps` and
+`createDataListDeps` pass the lookup to the run and auto-definition
+repositories they build, and `createModelOutputGetDeps`,
+`createModelMethodHistoryLogsDeps`, `createModelOutputDataDeps`,
+`createModelOutputLogsDeps` and `createWorkflowHistoryLogsDeps` to theirs,
+when their caller passes it. Three callers build `createModelOutputGetDeps`
+from the repository directory alone, and so stay quiet about an unreadable
+record: `model output search`'s preview and its selected output, and
+`model method history search`'s selected output (pinned in
+`PINNED_WITHOUT_DEFINITION_REPO`,
+`integration/model_output_deps_wiring_rules_test.ts`).
+
+**Listings keep their results**, so their output and `--json` shape are
+unchanged, and `warnUnreadableLeftOut` logs one warning per listing naming
+the unreadable records under the listed directory and the way out; a record
+is named once per process, so serve's repeated sweeps do not repeat it. A
+query that fails is a warning too, since the readable records listed are
+still right. Runs: `findAllByWorkflowId`, `findAllSummariesByWorkflowId`,
+`findLatestByWorkflowId` (a run id is random, so it answers with the latest
+readable run), `findAllGlobal`, `findAllGlobalSince`, `findGlobalByStatus`,
+`findAllSummariesFromIndex`, `findSummariesByStatus`, `runIndexSnapshot`.
+Outputs: `findAll`, `findByDefinition` (only that definition's records),
+`findAllGlobal` (so `model output get <id>` by id prints not-found plus the
+warning), `findAllGlobalSince` (only records whose file-name start is in the
+window, or that name none). Definitions: `findAllIncludingAutoGlobal`, and a
+`findByIdGlobal` miss. Evaluated definitions: `findAll`, `findAllGlobal`.
+Serve's loops over `findAllForType` that read each record with
+`getContent` leave a record whose content is unreadable out with a warning
+naming it, as `readStoredGrants` does, so one torn bookkeeping record never
+stops the rest: `loadAttrsForType` (the boot sweep of leases, pending
+dispatches and workers), `WorkerGateway`'s token scan (every enrollment), and
+the `access.grant.list` and `access.group.list` handlers. A read of one named
+record stays loud.
+
+**Deliberately not loud:**
+
+- `WorkflowExecutionService` builds its own evaluated-definition, output and
+  auto-definition repositories without the lookup. The evaluated definition
+  there is a cache: when it is absent the run evaluates afresh and saves it,
+  which writes the record again and heals it; a loud read would turn that
+  into a failed run. `--last-evaluated` in `model method run` reads through
+  `repoContext.evaluatedDefinitionRepo`, which is loud.
+- GC, prune and delete (`libswamp/data/gc.ts`, `prune.ts`, `run_gc.ts`,
+  `workflows/delete.ts`, `models/delete.ts`), and `listRunIds`,
+  `listRunIdsForWorkflow` and `listWorkflowIds`, which only they use: they
+  are how an unreadable record is removed, so failing on it would block the
+  removal.
+- `DataQueryService.querySync` and `getContentSync`: the sync API cannot
+  await the lookup. The only production `querySync` caller, `model_resolver`
+  `listVersions`, reads versions and records, never content; every
+  production `getContentSync` read of datastore content runs after the async
+  `ensureContentLocal` or `ensureRowContent`, which is loud. A loud
+  `querySync` over attributes would need a synchronous lookup.
+- libswamp's fallback data repositories (`data/get.ts`, `list.ts`,
+  `versions.ts`, `rename.ts` with none injected): every CLI and serve caller
+  injects `repoContext.unifiedDataRepo`, which carries the lookup. The
+  repo-local `YamlDefinitionRepository` of `versions.ts` and `rename.ts` is
+  pinned in `datastore_sync_rules_test.ts`
+  (`PINNED_REPO_LOCAL_AUTO_DEFINITION_READERS`); the CLI and serve callers of
+  both inject `repoContext.definitionRepo` instead, pinned in
+  `model_output_deps_wiring_rules_test.ts`. `reports/search.ts` reads
+  only data metadata and `models/`, never datastore content.
+- Run snapshots (`YamlEvaluatedWorkflowRepository.findByRunId`, read by
+  approve, reject, cancel, resume, approvals and the nested cascades): every
+  reader settles against the workflow definition when the snapshot cannot
+  be read, so a loud read would change only the log line.
+- `YamlOutputRepository.findByIds`: the orphaned-run reaper and `model
+  cancel` read it as evidence, where a missing record means none; failing
+  them would stop the reaping and cancelling that clear the runs.
+- Primary definitions (`models/`) are repo-local, never datastore records,
+  so `YamlDefinitionRepository.findAll` and `findAllGlobal` need no warning.
+- An auto-definition stored under its name, looked up by id (`findById(type,
+  id)`), reads as not found: the id is not in its file name, and callers such
+  as `getModelName` probe every type by id, so failing on any unreadable
+  auto-definition of a type would break lookups of other types' definitions.
+  `findByIdGlobal` warns instead.
 
 **Reading the index.** `liveRecords` and `chunksInUse` reject with
 `ReadModelIncompleteError` until a `catchUp` has reached the end of the
@@ -3329,6 +3845,16 @@ differs (a schema change rebuilds the file empty, and `invalidate()` advances
 it) or the catalog is not marked populated. The second check catches a
 `_catalog_v3.db` that was deleted and created afresh: a new file always
 starts at generation 1, the same as the one the state may have recorded.
+
+A reset keeps **removal candidates** (swamp-club#3617): every key the state
+shows present is copied into `load_touched_keys`, and so are the unsynced
+keys when their list was written in another boot or the current one cannot
+be named (within one boot the list names this boot's removals, which stay
+done). A compacted-base load that follows removes the candidates the base does
+not show, so a removal a crash undid is redone even when the commit that made
+it was compacted away. A catch-up that reaches the end of the feed forgets
+them (`markComplete`); with no compacted history the replay applies the
+tombstone itself. The section that began with the reset is a replay for the guard.
 
 **Known limits.**
 
@@ -3496,20 +4022,41 @@ whose chunk is missing.
 **Damaged chunks.** `collect` can read and hash chunks within a byte budget
 (`verifyBytes`, 0 by default), in a listing pass before the sweep. Whether a
 commit names each damaged chunk is looked up once, after the pass. The sweep's
-own reads of its candidates find damage too. A damaged chunk is deleted
-whatever its age. That relies on `storage/1` requiring an atomic `put`, so a
+own reads of its candidates find damage too. On a storage with
+`ChunkQuarantine` a damaged chunk is discarded whatever its age (see below);
+without it, what verifying finds damaged is only reported. That relies on `storage/1` requiring an atomic `put`, so a
 reader never sees a chunk still being written. Once a damaged chunk is gone,
 the next write of that content finds it absent and stores it again. The report
 says whether a commit names it. If one does, its reads were already failing.
 
-The verify pass has a narrower form of the race. A writer that finds a chunk
-present with `touch` never replaces it, so a damaged chunk stays until the
-sweep removes it. On a backend without `touch`, though, a writer puts the
-chunk again, so a good put can replace the damaged chunk between the pass's
-read and its delete. When that writer's commit lands after the delete, its
-check stores the chunk again. When the commit lands and its check runs inside
-that window, the next writer check or the next write of that content restores
-it.
+**Only serve verifies, and only on the filesystem** (swamp-club#3617).
+On a storage with `ChunkQuarantine` (`FileSystemStorage`),
+`V3MaintenanceTimer` passes
+`SERVE_CHUNK_VERIFY_BYTES` (64 MiB) each hourly tick, starting at a random
+two-hex-digit shard prefix (`verifyFrom`): chunks at or after it first, then
+the rest, each from a streamed listing of its own, so ticks cover the whole
+namespace over time. `swamp datastore gc` and the CLI's retention pass
+verify nothing; without serve, same-size damage is found only by a read that
+fails, or by the read model's replays. Serve logs a warning when a tick finds
+damage. On bucket storage (S3, GCS) serve verifies nothing: with no
+`ChunkQuarantine` a pass could only report, at up to 64 MiB of reads and up
+to two extra listing passes per namespace an hour. Verifying buckets, perhaps
+with a smaller budget or a quarantine capability of their own, is a later
+option.
+
+**Move aside, re-hash, then delete.** A writer, or a checkout's guard, can
+store a good copy of a chunk between the pass's read and its delete. So on a
+storage with `ChunkQuarantine`, inside the sweep's batch (where an
+overlapping writer waits), the damaged chunk is moved aside and hashed again
+there: still damaged, it is removed; good now, it is put back and not
+reported; gone (another process's temp-file sweep removed it), it is done. A
+chunk moved aside but not judged (a failed read, an abort) is put back, and
+whatever is put back gets the chunk directory barrier. A moved-aside chunk a
+crash leaves is a temp file the next sweep removes. A storage without
+`ChunkQuarantine` only reports what verifying finds damaged and deletes
+nothing; the sweep's damaged candidates are still deleted at once there, as
+before, since an unreferenced candidate a commit lands on meanwhile is stored
+again by its writer's check. The report's shape is unchanged.
 
 **Temp files.** `FileSystemStorage.removeStaleTempFiles` removes the
 `.<uuid>.tmp` files a put left under `_blobs/` when it died before renaming one
@@ -3558,10 +4105,12 @@ production compacted until the opt-in wired it into the writer
    at or below the point left, every later put is newer in the feed than
    every mark in the base, so ownership after a load matches a replay.
    Reconciling means:
-   - the files the state shows present, that the base does not, are
-     removed;
+   - the files the state shows present, and the removal candidates a reset
+     kept, that the base does not show, are removed;
    - files the base shows present, whose put the state does not show, are
-     written;
+     written; one whose chunks cannot be read becomes an unreadable record
+     instead of failing the load (swamp-club#3617);
+   - every removal and overwrite goes through the checkout-copy guard;
    - each data name's catalog rows and forward are replaced;
    - partitions that a partition catch-up had taken past their compacted seq
      go back to it and replay.
@@ -3620,7 +4169,10 @@ production compacted until the opt-in wired it into the writer
      No checkout that finishes within the grace period can need a chunk GC
      deleted. One that takes longer fails on the missing chunk
      (`ReadModelApplyError`), keeps its cursor, and loads the newer base on
-     its next catch-up.
+     its next catch-up. That commit is at or below the compaction point, so
+     the read model rethrows rather than recording an unreadable record
+     (swamp-club#3617), which it does only above the point. The
+     checkout-copy guard never stores a released chunk again.
 5. **When it runs.**
    - `CompactionPolicy` (`compaction_policy.ts`) is pure. By default it
      folds at least 10,000 commits at a time, and keeps the newest 10,000
@@ -4070,7 +4622,23 @@ holds the lock. Serve, which holds the lock for its lifetime so the CLI's
 hour (`V3MaintenanceTimer`). `datastore status` reports the format
 and the commit log (commits stored, compacted through). `doctor datastores`
 checks a v3 checkout; its `--repair` is refused on v3 for now, since its
-repairs are v2's and take no writer lock.
+repairs are v2's and take no writer lock. The one v3 repair is restoring a
+lost format marker, reached only after the format guard refused the
+datastore ("Format Marker"). Its `v3_content` check (swamp-club#3617, CLI
+and serve's admin handler; `v3_content_inspection.ts`) reads only
+checkout-local state: `_read_model_v3.db` opened read-only (a missing file
+or table reads as nothing), never `commits.db`. It reports unreadable records,
+at-risk copies, and torn chunks: on a filesystem datastore, chunks the live
+records name that are present at the wrong size. An absent chunk is not
+reported, since a lagging checkout may still name one compaction released
+and GC deleted. Each entry carries advice: for an at-risk copy, run a writing
+command where the datastore accepts puts, or delete the at-risk directory to
+discard the copies. The JSON key is `v3ContentFinding`. The checkout's view
+may lag the datastore's. An inspection that throws (a read-only state
+directory, where SQLite cannot create the WAL's shared-memory file) is a
+failed `v3_content` check, "Could not inspect this v3 checkout's content",
+while the other checks still report, so `doctor datastores` exits 1 in that
+v3 checkout.
 
 **Run artifacts.** On v3 a data save reports its content's checksum, and the
 `DataArtifactRef`s built from it record `sha256`. A streamed version reports
@@ -4118,7 +4686,14 @@ leave every checkout with the same records.
   marker that outlives its process means the process ended without teardown.
   A signal that arrives after a command disposed its shutdown handler, and
   the hook-mode and worker exec-dispatch paths, which skip teardown, take this
-  path too.
+  path too. The marker is written durably (swamp-club#3617: file and
+  directory synced, about one of each per writing command). A marker a crash
+  left unreadable (truncated, empty, not a marker) is recovered as a writer
+  that cannot be judged, from the file's mtime less the same two seconds (0
+  when it has none), and is never written over before that recovery. With no
+  mtime the recovery sweeps from the epoch: every unowned file in the
+  materialised directories is removed, not only recent ones. It runs only
+  under the lease, as for any writer that cannot be judged.
 - *Recovery removes, it does not commit.* The run never completed, so its
   leftovers are removed rather than committed as recovered outputs, and the
   checkouts agree without the user doing anything: detection alone would
@@ -4153,7 +4728,9 @@ leave every checkout with the same records.
   rebuild, and keeping the catalog marked populated, so no reader backfills
   it from disk; it then resets
   the state, replays every commit, which puts back the committed version of
-  any file the writer overwrote, then removes each file in the materialised
+  any file the writer overwrote (through the checkout-copy guard, which first
+  stores again from the file any committed chunk it alone still holds whole,
+  verifying right-size parts on filesystem storage), then removes each file in the materialised
   directories that no commit owns and that changed since the marker's start.
   Run logs, any path with a dot segment (run indexes, locks, temporary
   files, install staging), pulled extension sources under managed config
@@ -4718,13 +5295,32 @@ order, run entries of a unit last:
   its changes may or may not be in the datastore;
 - the partition head is still its base: its commit is rebuilt at that head
   under the recovering writer's fence and identity, its chunks are checked
-  present, and it is appended;
+  present (on a storage that reads sizes, at their size: a torn chunk counts
+  as missing, swamp-club#3617), the chunk directory barrier runs over them
+  (`ChunkStore.syncStored` over every chunk its blobs name, swamp-club#3617),
+  and it is appended; an entry naming a missing or damaged chunk is dropped
+  (`missing-chunk`), and the interrupted-writer recovery may then sweep the
+  file it wrote, correctly, since it was never acknowledged;
 - otherwise it is dropped (`head-moved`): landing it would overwrite what was
   committed since.
 
 A drop is logged once, naming the dead process and why; the changes are not
 in the datastore, and the interrupted-writer recovery removes their files.
+A landed entry whose chunk check finds one missing or damaged keeps its
+warning; when the interrupted-writer recovery runs in the writer's checkout,
+its replay puts such chunks again from the checkout files through the
+checkout-copy guard (swamp-club#3617).
 An entry dropped or refused takes its unit's run entries with it.
+
+The barrier before landing exists for entries an older swamp prepared: it
+stored chunks with their renames perhaps still in the page cache. A barrier
+that fails throws out of the recovery before the entry is appended, so it
+lands nothing and the entry stays for the next recovery; entries landed or
+dropped before it stay so. The barrier syncs directory entries, not file
+contents: a chunk whose bytes an older swamp never synced can still be torn
+by a power loss after landing. That is the documented legacy gap (see
+"For extension authors" under "v3 chunk storage"); the size check before the
+barrier catches a chunk already torn.
 
 **Fences.** Every CLI write takes a new fence, so an entry's fence is always
 below its recoverer's. The copy records each fence it takes as a **chain**
@@ -5963,7 +6559,9 @@ datastore extensions, close it.
 - `swamp doctor datastores [--repair [-y]]`: health check with optional repair
   of catalog completeness, unmigrated root-level data, and foreign namespace
   contamination (the last via the optional `repairNamespaceContamination?()` on
-  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`). The
+  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`). On v3 it
+  adds the `v3_content` check, and `--repair` restores a lost format marker
+  (swamp-club#3617; "v3 opt-in" and "Format Marker"). The
   completeness check walks the data dir every command reads
   (`resolvePath("data")`: the external path or the cache), not the repo's own
   `.swamp/data`, which holds only the catalog when the datastore lives
@@ -6230,7 +6828,11 @@ exclude patterns.
 | `src/domain/datastore/datastore_migration_service.ts` | File copy + verification for migration |
 | `src/domain/datastore/distributed_lock.ts` | `DistributedLock` interface, `LockInfo`, `LockTimeoutError` |
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
-| `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check |
+| `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check; lost-marker advice and `LostDatastoreFormatMarkerError` (swamp-club#3617) |
+| `src/domain/datastore/datastore_storage.ts` | `storage/1` and its optional capabilities: `TempFileSweeper`, `ChunkStatReader`, `ChunkStaging`, `ChunkDirectorySync`, `ChunkQuarantine` |
+| `src/domain/datastore_v3/chunk_store.ts` | `ChunkStore`: size-aware presence, `syncStored`, `ChunkBatch` (one chunk barrier per commit group), and `refOf`/`putParts`/`verifyParts` for the checkout-copy guard |
+| `src/domain/datastore_v3/chunk_collector.ts` | Chunk GC: sweep, restore, and the verify pass that moves damaged chunks aside |
+| `src/domain/datastore_v3/read_model.ts` | `ReadModel` port, `UnreadableRecord`, `UnreadableRecordError`, `CheckoutCopyAtRiskError` |
 | `src/domain/datastore_v3/partition_key.ts` | v3 `PartitionKey` and `partitionOf()`, the only way to build a key |
 | `src/domain/datastore_v3/writer_lease.ts` | The fenced writer lease over create-only control-plane records (swamp-club#3359) |
 | `src/domain/datastore_v3/record_key.ts` | v3 `RecordKey`: the cache-layout path an op projects to |
@@ -6257,7 +6859,17 @@ exclude patterns.
 | `src/infrastructure/persistence/datastore_sync_coordinator.ts` | Global sync lifecycle (lock + pull/push) |
 | `src/infrastructure/persistence/file_lock.ts` | File-based distributed lock (advisory lockfile) |
 | `src/infrastructure/persistence/datastore_format_marker_reader.ts` | Reads the format marker without writing |
-| `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log |
+| `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log; `lostDatastoreFormatMarker` |
+| `src/infrastructure/persistence/datastore_format_marker_writer.ts` | Durable format marker writes |
+| `src/infrastructure/persistence/fs_datastore_storage.ts` | `FileSystemStorage`: staged chunks synced before their renames, chunk stats, the directory barrier and its durable-chunk memo, quarantine |
+| `src/infrastructure/persistence/sync_directory.ts` | `syncDirectory`: directory fsync shared by the read model and chunk storage |
+| `src/infrastructure/datastore_v3/v3_datastore.ts` | `openV3Datastore`, `initializeV3Datastore`, `isFreshV3Skeleton`, `restoreV3FormatMarker` |
+| `src/infrastructure/datastore_v3/sqlite_read_model.ts` | `SqliteReadModel`: catch-ups, the reboot check, the checkout-copy guard, at-risk copies, unreadable records |
+| `src/infrastructure/datastore_v3/read_model_state.ts` | `_read_model_v3.db`: the read model's state, `unreadable_records`, `at_risk_copies`, `written_files` |
+| `src/infrastructure/datastore_v3/unreadable_content_lookup.ts` | The v3 `UnreadableContentLookup` behind loud reads |
+| `src/infrastructure/persistence/unreadable_records.ts` | Loud reads in the repositories: `unreadableRecordsUnder`, `warnUnreadableLeftOut` (one warning per listing), `mayBeUnreadableError` |
+| `src/infrastructure/datastore_v3/v3_content_inspection.ts` | `inspectV3Content`: the read-only `v3_content` doctor check |
+| `src/infrastructure/datastore_v3/interrupted_writer_recovery.ts` | The writer marker (written durably) and the interrupted-writer recovery |
 | `src/infrastructure/datastore_v3/sqlite_commit_store.ts` | v3 `SqliteCommitStore`: `commits.db` over `node:sqlite` (dormant) |
 | `src/infrastructure/persistence/unit_of_work_binding.ts` | The unit-of-work binding registry `signalChange` routes by |
 | `src/infrastructure/datastore_v3/commit_log_unit_of_work.ts` | v3 commit-log unit of work and its `CommitSink` outbox seam |

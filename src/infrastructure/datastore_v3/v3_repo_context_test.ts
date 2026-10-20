@@ -40,6 +40,7 @@ import {
   compactQuietly,
   compactRetentionQuietly,
   holdV3Writer,
+  SERVE_CHUNK_VERIFY_BYTES,
   v3DatastoreFor,
   V3MaintenanceTimer,
   v3RepositoryFactoryConfig,
@@ -84,14 +85,19 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A handle whose compaction is counted and can be held open. */
-function fakeHandle() {
+/**
+ * A handle whose compaction is counted and can be held open. Its storage
+ * moves chunks aside, as the filesystem's does, unless `storage` is given.
+ */
+function fakeHandle(storage: object = { quarantineChunk: () => {} }) {
   let calls = 0;
   let sweeps = 0;
   let syncs = 0;
+  const verifies: unknown[][] = [];
   let release: () => void = () => {};
   const handle = {
     datastorePath: "/fake",
+    storage,
     readModel: {
       syncUnsyncedFiles: () => {
         syncs++;
@@ -104,15 +110,17 @@ function fakeHandle() {
         release = () => resolve(undefined);
       });
     },
-    collectChunks: () => {
+    collectChunks: (_signal: AbortSignal, ...verify: unknown[]) => {
       sweeps++;
-      return Promise.resolve({ deleted: 0 });
+      verifies.push(verify);
+      return Promise.resolve({ deleted: 0, damaged: [] });
     },
   } as unknown as V3Datastore;
   return {
     handle,
     calls: () => calls,
     sweeps: () => sweeps,
+    verifies,
     syncs: () => syncs,
     finish: () => release(),
   };
@@ -138,6 +146,56 @@ Deno.test("V3MaintenanceTimer: runs never overlap, and stop waits for the one in
   assertEquals(fake.calls(), 2, "the next tick runs again");
   fake.finish();
   await timer.stop();
+});
+
+Deno.test("V3MaintenanceTimer: only serve's tick verifies chunks, 64 MiB of them; the retention pass and a quiet sweep verify none (swamp-club#3617)", async () => {
+  const fake = fakeHandle();
+  const timer = new V3MaintenanceTimer(fake.handle, 60_000);
+  timer.tick();
+  fake.finish();
+  await timer.stop();
+  assertEquals(SERVE_CHUNK_VERIFY_BYTES, 64 * 1024 * 1024);
+  assertEquals(fake.verifies, [[{ bytes: SERVE_CHUNK_VERIFY_BYTES }]]);
+
+  await collectChunksQuietly(fake.handle);
+  const retention = {
+    ...fake.handle,
+    datastorePath: "/fake",
+    compactBefore: () =>
+      Promise.resolve({ bound: new Date(), compactedThrough: 0 }),
+  } as unknown as V3Datastore;
+  await compactRetentionQuietly(retention, new Date());
+  assertEquals(fake.verifies.slice(1), [[], []]);
+});
+
+Deno.test("V3MaintenanceTimer: serve verifies no chunks on bucket storage, which cannot move a damaged one aside (swamp-club#3617)", async () => {
+  // Bucket storage (S3, GCS) has no quarantineChunk.
+  const bucket = fakeHandle({ putChunk: () => {} });
+  const bucketTimer = new V3MaintenanceTimer(bucket.handle, 60_000);
+  bucketTimer.tick();
+  bucket.finish();
+  await bucketTimer.stop();
+  assertEquals(bucket.sweeps(), 1, "the tick still sweeps");
+  assertEquals(bucket.verifies, [[]], "but verifies nothing");
+
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const real = v3DatastoreFor(join(dir, "repo"), {
+      type: "filesystem",
+      path: datastorePath,
+    });
+    const filesystem = fakeHandle(real.storage);
+    const timer = new V3MaintenanceTimer(filesystem.handle, 60_000);
+    timer.tick();
+    filesystem.finish();
+    await timer.stop();
+    assertEquals(
+      filesystem.verifies,
+      [[{ bytes: SERVE_CHUNK_VERIFY_BYTES }]],
+      "a filesystem datastore's storage is verified",
+    );
+  });
 });
 
 Deno.test("V3MaintenanceTimer.runExclusive: waits for a tick in flight, and ticks during it start nothing", async () => {
@@ -210,7 +268,7 @@ Deno.test("compactRetentionQuietly: compacts before the cutoff, then sweeps, and
     },
     collectChunks: () => {
       calls.push("collect");
-      return Promise.resolve({ deleted: 2 });
+      return Promise.resolve({ deleted: 2, damaged: [] });
     },
   } as unknown as V3Datastore;
   assertEquals(await compactRetentionQuietly(handle, cutoff), {
@@ -229,7 +287,7 @@ Deno.test("compactRetentionQuietly: a failing compaction is logged, not thrown, 
     compactBefore: () => Promise.reject(new Error("disk full")),
     collectChunks: () => {
       collected = true;
-      return Promise.resolve({ deleted: 0 });
+      return Promise.resolve({ deleted: 0, damaged: [] });
     },
   } as unknown as V3Datastore;
   assertEquals(await compactRetentionQuietly(handle, new Date()), undefined);

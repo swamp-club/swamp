@@ -216,6 +216,14 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
   // swamp-club#3491: and makes a replicated checkout's copy current first.
   "src/libswamp/datastores/namespace_list.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#3617: `doctor datastores --repair -y` restores the format
+  // marker a crash lost from a filesystem v3 datastore.
+  "src/cli/commands/doctor_datastores.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#3617: `doctor datastores` reports a v3 checkout's
+  // unreadable records, at-risk copies and torn chunks, CLI and serve:
+  // checkout-local state read-only and chunk stats, never commits.db.
+  "src/cli/commands/doctor_datastores.ts -> src/infrastructure/datastore_v3/v3_content_inspection.ts",
+  "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_content_inspection.ts",
   // swamp-club#3473: `doctor datastores --retention` reads how far back a
   // v3 datastore's history reaches (v3RetentionHistory), read-only.
   "src/libswamp/datastores/retention_check.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -351,6 +359,9 @@ const PINNED_FS_STORAGE_IMPORTERS: readonly string[] = [
   // swamp-club#3279: a filesystem v3 datastore stores its chunks in the
   // filesystem storage.
   "src/infrastructure/datastore_v3/v3_datastore.ts -> src/infrastructure/persistence/fs_datastore_storage.ts",
+  // swamp-club#3617: `doctor datastores` stats a filesystem v3 datastore's
+  // chunks for torn ones; it never reads, writes or deletes one.
+  "src/infrastructure/datastore_v3/v3_content_inspection.ts -> src/infrastructure/persistence/fs_datastore_storage.ts",
 ];
 
 Deno.test("datastore v3: no production code imports the filesystem storage", async () => {
@@ -829,6 +840,10 @@ Deno.test("datastore v3: only the v3 binding uses the replica target resolver", 
  */
 const PINNED_COMMITS_DB_NAMERS: readonly string[] = [
   "src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#3617: the format guard stats (never opens) a filesystem
+  // datastore's root commits.db to tell a v3 datastore whose marker a
+  // crash lost from a v2 one; persistence may not import v3_datastore.ts.
+  "src/infrastructure/persistence/datastore_format_guard.ts",
 ];
 
 Deno.test("datastore v3: only v3_datastore.ts names commits.db", async () => {

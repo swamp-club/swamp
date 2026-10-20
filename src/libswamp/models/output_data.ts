@@ -40,6 +40,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import {
   notFound,
@@ -144,12 +145,21 @@ export function createModelOutputDataDeps(
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  /**
+   * The repository context's lookup, so a read of a record the v3 read model
+   * could not materialise fails loudly (swamp-club#3617). Used by the output
+   * repository built here, and by the data repository when none is
+   * injected; an injected one carries its own.
+   */
+  unreadableContent?: UnreadableContentLookup,
 ): ModelOutputDataDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
+    undefined,
+    unreadableContent,
   );
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(repoDir);
@@ -163,6 +173,10 @@ export function createModelOutputDataDeps(
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    undefined,
+    unreadableContent,
   );
   return {
     isPartialId,
