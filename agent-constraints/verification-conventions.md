@@ -207,6 +207,12 @@ eval errors. The Codex provider is hash-pinned in the attestation like the
 Claude provider. Choose the reviewer separately for `verify-reviews` and
 `verify-skills`.
 
+Provider unit tests live beside their source in `evals/promptfoo/`. List each
+test file explicitly in the root `deno.json` test includes, alongside the root
+entry and the exclusion override. Deno skips nested npm packages during
+automatic traversal, even when an exclusion override matches their tests.
+Confirm discovery in the full build workflow log after adding a provider test.
+
 ## Running All Three in Parallel
 
 The agent launches the build, review, and skill workflows simultaneously. All
