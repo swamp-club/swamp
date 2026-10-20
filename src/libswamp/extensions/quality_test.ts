@@ -515,7 +515,7 @@ Deno.test("extensionQuality: bare import specifiers are scored locally but repor
       );
       assert(bare !== undefined, "bare-specifiers finding must be reported");
       assertStringIncludes(bare.message, '"zod"');
-      assertStringIncludes(bare.message, "unscored");
+      assertStringIncludes(bare.message, "documentation factors 0");
     },
   );
 });

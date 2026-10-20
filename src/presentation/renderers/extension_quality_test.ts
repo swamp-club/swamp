@@ -64,6 +64,7 @@ function makeScore(overrides: Partial<RubricScore> = {}): RubricScore {
     provisionalPoints: 2,
     percentage: 100,
     allPassed: false,
+    docAnalysisError: null,
     ...overrides,
   };
 }
@@ -439,7 +440,10 @@ Deno.test("createExtensionQualityRenderer: json carries the rubric, gateFailures
     }
   });
   assert(thrown instanceof UserError);
-  assertStringIncludes(thrown.message, "cannot score this extension");
+  assertStringIncludes(
+    thrown.message,
+    "the registry cannot resolve its bare imports",
+  );
   assertEquals(logs.length, 1);
   const doc = JSON.parse(logs[0]);
   assertEquals(doc.rubricVersion, 3);
@@ -465,7 +469,78 @@ Deno.test("createExtensionQualityRenderer: an unscorable extension fails in log 
     }
   });
   assert(thrown instanceof UserError);
-  assertStringIncludes(logs.join("\n"), "would publish unscored");
+  assertStringIncludes(
+    logs.join("\n"),
+    "would score the documentation factors 0",
+  );
+});
+
+const BARE_ZOD_DOC_ERROR =
+  'The registry cannot resolve the bare import "zod"; use an explicit npm: or jsr: specifier (npm:zod@4 for zod).';
+
+Deno.test("createExtensionQualityRenderer: a deno doc failure prints after the rubric and fails, with one reason when bare imports explain it", () => {
+  const renderer = createExtensionQualityRenderer("log");
+  let thrown: unknown;
+  const logs = capture(() => {
+    try {
+      renderer.handlers().completed(
+        completedEvent(makeScore({ docAnalysisError: BARE_ZOD_DOC_ERROR }), {
+          registryScorable: false,
+        }),
+      );
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  const output = logs.join("\n");
+  const rubricAt = output.indexOf("Rubric v3");
+  const docAt = output.indexOf(
+    "deno doc could not analyse this extension's source, so the documentation factors score 0:",
+  );
+  assert(rubricAt >= 0 && docAt > rubricAt, output);
+  assertStringIncludes(output, BARE_ZOD_DOC_ERROR);
+  assert(thrown instanceof UserError);
+  assertStringIncludes(thrown.message, "bare imports");
+  assertEquals(thrown.message.includes("deno doc"), false, thrown.message);
+});
+
+Deno.test("createExtensionQualityRenderer: a deno doc failure with no bare imports to explain it fails on its own", () => {
+  const renderer = createExtensionQualityRenderer("json");
+  let thrown: unknown;
+  const logs = capture(() => {
+    try {
+      renderer.handlers().completed(
+        completedEvent(
+          makeScore({
+            allPassed: true,
+            docAnalysisError:
+              "Not in the published archive: models/_lib/gone.ts.",
+          }),
+        ),
+      );
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  assert(thrown instanceof UserError);
+  assertEquals(
+    thrown.message,
+    "Extension quality failed: deno doc could not analyse the source the registry would score.",
+  );
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.status, "failed");
+  assertEquals(
+    doc.docAnalysisError,
+    "Not in the published archive: models/_lib/gone.ts.",
+  );
+});
+
+Deno.test("createExtensionQualityRenderer: json docAnalysisError is null when deno doc succeeded", () => {
+  const renderer = createExtensionQualityRenderer("json");
+  const logs = capture(() =>
+    renderer.handlers().completed(completedEvent(makeScore()))
+  );
+  assertEquals(JSON.parse(logs[0]).docAnalysisError, null);
 });
 
 Deno.test("createExtensionQualityRenderer: json status is failed when the rubric passes but the registry cannot score the extension", () => {

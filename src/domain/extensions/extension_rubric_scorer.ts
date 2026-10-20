@@ -17,11 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve, SEPARATOR } from "@std/path";
+import {
+  join,
+  resolve,
+  SEPARATOR,
+  toFileUrl as pathToFileUrl,
+} from "@std/path";
 import type {
   ExtensionManifest,
   PublishVisibility,
 } from "./extension_manifest.ts";
+import { describeDocFailure } from "./extension_doc_failure.ts";
 import { markErrorPaths } from "../errors.ts";
 import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
 import { isValidManifestLicense } from "../licensing/manifest_license_policy.ts";
@@ -54,7 +60,10 @@ import { isValidManifestLicense } from "../licensing/manifest_license_policy.ts"
  *      field name the way the server does.
  *   4. Run `deno doc --json` and `deno doc --lint` with CWD at the
  *      extraction root. `--lint` exits 0 regardless of diagnostics;
- *      we parse stdout/stderr for `error[<code>]` patterns.
+ *      we parse stdout/stderr for `error[<code>]` patterns. When
+ *      `deno doc --json` fails (the source does not resolve), lint is
+ *      skipped and the failure is scored, not thrown, as the server
+ *      does (swamp-club#3370).
  *   5. Compute the 5 per-version factors and the 3 per-package
  *      factors + `repository-verified`, then compose a rubric v2
  *      score.
@@ -224,8 +233,11 @@ export function computeAnalysisFactors(input: {
   dependencyTrustBlockerCount?: number;
   dependencyNotAuditedCount?: number;
   dependencyLooseCount?: number;
+  /** `deno doc` could not analyse the source, so `doc` is empty. */
+  docFailed?: boolean;
 }): AnalysisFactors {
   const { entrypointUrls, readme, hasLicenseFile, doc, rawLintOutput } = input;
+  const docFailed = input.docFailed === true;
 
   const moduleDocs = entrypointUrls.map((ep) => ({
     ep,
@@ -245,7 +257,12 @@ export function computeAnalysisFactors(input: {
   const hasReadmeExamples = readme ? hasFencedCodeBlock(readme) : false;
   const allEntrypointsDocs = moduleDocs.length > 0 &&
     moduleDocs.every((m) => m.hasDoc);
-  const ratio = totalSymbols === 0 ? 1 : documentedSymbols / totalSymbols;
+  // an unanalysed source documents nothing; the empty doc would otherwise read as 100%
+  const ratio = docFailed
+    ? 0
+    : totalSymbols === 0
+    ? 1
+    : documentedSymbols / totalSymbols;
   const percentageDocumentedSymbols = Number(ratio.toFixed(4));
   const allFastCheck = countSlowTypeDiagnostics(rawLintOutput) === 0;
 
@@ -295,6 +312,11 @@ export interface RubricScore {
   allPassed: boolean;
   provisionalPoints: number;
   maxClientEarnablePoints: number;
+  /**
+   * Why `deno doc` could not analyse the source, or null when it could.
+   * When set, the documentation factors score 0, as on the registry.
+   */
+  docAnalysisError: string | null;
 }
 
 /**
@@ -471,6 +493,7 @@ export function composeScore(
     ),
     provisionalPoints: provisional,
     maxClientEarnablePoints: clientMax,
+    docAnalysisError: null,
   };
 }
 
@@ -777,9 +800,20 @@ export async function scoreExtensionTarball(
 
     let doc: DocOutput = { version: 1, nodes: {} };
     let lintOutput = "";
+    let docAnalysisError: string | null = null;
     if (entrypointPaths.length > 0) {
-      doc = await runDenoDocJson(entrypointPaths, logicalRoot, deps);
-      lintOutput = await runDenoDocLint(entrypointPaths, logicalRoot, deps);
+      try {
+        doc = await runDenoDocJson(entrypointPaths, logicalRoot, deps);
+      } catch (err) {
+        if (!(err instanceof DenoDocFailedError)) throw err;
+        docAnalysisError = describeDocFailure(
+          err.output,
+          await fileUrlRoots(rootAbs),
+        );
+      }
+      if (docAnalysisError === null) {
+        lintOutput = await runDenoDocLint(entrypointPaths, logicalRoot, deps);
+      }
     }
 
     const entrypointUrls = entrypointPaths.map(toFileUrl);
@@ -793,9 +827,13 @@ export async function scoreExtensionTarball(
       dependencyTrustBlockerCount: options?.dependencyTrustBlockerCount,
       dependencyNotAuditedCount: options?.dependencyNotAuditedCount,
       dependencyLooseCount: options?.dependencyLooseCount,
+      docFailed: docAnalysisError !== null,
     });
 
-    return composeScore(analysisFactors, manifest, options?.privateSource);
+    return {
+      ...composeScore(analysisFactors, manifest, options?.privateSource),
+      docAnalysisError,
+    };
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
@@ -890,6 +928,29 @@ function toFileUrl(abs: string): string {
   return new URL("file://" + abs).href;
 }
 
+/**
+ * The extraction root as deno's `file://` URLs spell it — the resolved
+ * path and, where it differs (a symlinked temp dir), the real path.
+ */
+async function fileUrlRoots(rootAbs: string): Promise<string[]> {
+  const spellings = [rootAbs];
+  try {
+    const real = await Deno.realPath(rootAbs);
+    if (real !== rootAbs) spellings.push(real);
+  } catch {
+    // the resolved spelling alone
+  }
+  return spellings.map((p) => decodeURIComponent(pathToFileUrl(p).pathname));
+}
+
+/** `deno doc --json` exited non-zero: the source did not resolve. */
+class DenoDocFailedError extends Error {
+  constructor(readonly output: string) {
+    super("deno doc --json failed");
+    this.name = "DenoDocFailedError";
+  }
+}
+
 async function runDenoDocJson(
   entrypoints: string[],
   cwd: string,
@@ -900,9 +961,7 @@ async function runDenoDocJson(
     cwd,
   );
   if (!result.success) {
-    throw new Error(
-      `deno doc --json failed: ${(result.stderr || result.stdout).trim()}`,
-    );
+    throw new DenoDocFailedError(result.stderr + "\n" + result.stdout);
   }
   try {
     return JSON.parse(result.stdout) as DocOutput;

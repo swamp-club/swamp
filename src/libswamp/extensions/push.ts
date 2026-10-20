@@ -1829,12 +1829,13 @@ export async function readImportMap(
 
 /**
  * The bare-specifiers finding's message: which bare imports ship as
- * written, why the registry cannot score the extension because of them,
+ * written, why the registry cannot score its documentation because of them,
  * and what lets push rewrite them (swamp-club#3637).
  */
 export function bareSpecifiersMessage(names: string[]): string {
   return "Extension has bare imports that ship as written, which the " +
-    "registry's scorer cannot resolve, so it would publish unscored: " +
+    "registry's scorer cannot resolve, so it would score the documentation " +
+    "factors 0: " +
     `${names.map((n) => JSON.stringify(n)).join(", ")}. Push rewrites a ` +
     "bare import only when the deno.json import map resolves it to an " +
     "npm:, jsr:, node: or URL specifier; add such an entry for each, or " +

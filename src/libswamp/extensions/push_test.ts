@@ -2384,8 +2384,8 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names only the bare
     assertEquals(
       bare[0].message,
       "Extension has bare imports that ship as written, which the " +
-        "registry's scorer cannot resolve, so it would publish unscored: " +
-        '"lodash". Push rewrites a bare import only when the deno.json ' +
+        "registry's scorer cannot resolve, so it would score the " +
+        'documentation factors 0: "lodash". Push rewrites a bare import only when the deno.json ' +
         "import map resolves it to an npm:, jsr:, node: or URL specifier; " +
         "add such an entry for each, or write the specifier in its place.",
     );

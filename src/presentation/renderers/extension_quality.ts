@@ -114,8 +114,9 @@ function gateFailureDetailLines(failure: LocalGateFailure): string[] {
 }
 
 /**
- * Why a completed run still fails: a gate that would stop a push, or an
- * extension the registry cannot score. Undefined when neither holds.
+ * Why a completed run still fails: a gate that would stop a push, an
+ * extension whose bare imports the registry cannot resolve, or source
+ * deno doc could not analyse. Undefined when none holds.
  */
 function qualityFailureMessage(data: ExtensionQualityData): string | undefined {
   const reasons: string[] = [];
@@ -129,7 +130,12 @@ function qualityFailureMessage(data: ExtensionQualityData): string | undefined {
   }
   if (!data.registryScorable) {
     reasons.push(
-      "the registry cannot score this extension (it has bare imports that ship as written)",
+      "the registry cannot resolve its bare imports, which ship as written, so it would score the documentation factors 0",
+    );
+  } else if (data.score.docAnalysisError !== null) {
+    // Bare imports that ship as written already explain a failed deno doc.
+    reasons.push(
+      "deno doc could not analyse the source the registry would score",
     );
   }
   if (reasons.length === 0) return undefined;
@@ -285,6 +291,12 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             logger.warn`  ${w.dependency}: ${w.message}`;
           }
         }
+        if (score.docAnalysisError !== null) {
+          logger.error(
+            "deno doc could not analyse this extension's source, so the documentation factors score 0:",
+          );
+          logger.error`  ${score.docAnalysisError}`;
+        }
         renderFindingsReport(
           logger,
           buildFindingsReport(
@@ -327,7 +339,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         }
         if (!registryScorable) {
           logger
-            .error`The registry cannot score this extension: it has bare imports that ship as written, so it would publish unscored. Push rewrites only the bare imports the deno.json import map resolves; the rubric above resolves the import map locally, the registry does not.`;
+            .error`The registry cannot resolve this extension's bare imports: they ship as written, so it would score the documentation factors 0. Push rewrites only the bare imports the deno.json import map resolves.`;
         }
         const failure = qualityFailureMessage(e.data);
         if (failure) {
@@ -417,6 +429,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             archiveSize,
             cacheHit,
             registryScorable,
+            docAnalysisError: score.docAnalysisError,
             license: e.data.license,
             licenseWarnings: e.data.licenseWarning
               ? [e.data.licenseWarning]

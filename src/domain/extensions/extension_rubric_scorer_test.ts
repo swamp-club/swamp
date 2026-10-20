@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { join, toFileUrl } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import {
   composeScore,
@@ -1181,6 +1181,21 @@ Deno.test("composeScore: dependency-trust stays at 0 when loose specifiers join 
   }
 });
 
+Deno.test("computeAnalysisFactors: a failed deno doc documents nothing, not 100% of nothing", () => {
+  const input = {
+    entrypointUrls: ["file:///a.ts"],
+    readme: null,
+    hasLicenseFile: false,
+    doc: { version: 1, nodes: {} },
+    rawLintOutput: "",
+  };
+  assertEquals(computeAnalysisFactors(input).percentageDocumentedSymbols, 1);
+  const failed = computeAnalysisFactors({ ...input, docFailed: true });
+  assertEquals(failed.percentageDocumentedSymbols, 0);
+  assertEquals(failed.allEntrypointsDocs, false);
+  assertEquals(failed.allFastCheck, true);
+});
+
 // ── scoreExtensionTarball: import map merging ────────────────────────
 
 function fakeExtractTarball(
@@ -1293,4 +1308,132 @@ Deno.test("scoreExtensionTarball: an empty LICENSE file does not earn license-fi
       status,
     );
   }
+});
+
+// ── scoreExtensionTarball: deno doc failure (swamp-club#3669) ────────
+
+/**
+ * deno 2.9.7's stderr for `deno doc --json` on an entrypoint with a bare
+ * `zod` import nothing maps, with the importing file's URL left to fill in.
+ */
+function bareZodDocStderr(moduleUrl: string): string {
+  return [
+    'Warning Import "zod" not a dependency',
+    "  hint: If you want to use the npm package, try running `deno add npm:zod`",
+    `    at ${moduleUrl}:2:19`,
+    `error: Failed resolving 'zod' from '${moduleUrl}'.`,
+  ].join("\n");
+}
+
+function failingDocDeps(
+  stderr: (cwd: string) => string,
+  calls: string[][],
+): RubricScoreDeps {
+  return {
+    extractTarball: fakeExtractTarball({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/bare'\n",
+      "models/mod.ts":
+        '// deno-lint-ignore-file\nimport { z } from "zod";\nexport const s = z.string();\n',
+      "README.md": "# Test",
+    }),
+    runDeno: (args, cwd) => {
+      calls.push(args);
+      if (args[0] === "doc" && args[1] === "--json") {
+        return Promise.resolve({
+          success: false,
+          stdout: "",
+          stderr: stderr(cwd),
+        });
+      }
+      return Promise.resolve({ success: true, stdout: "", stderr: "" });
+    },
+  };
+}
+
+Deno.test("scoreExtensionTarball: a deno doc failure is scored, not thrown, as the registry scores it", async () => {
+  const calls: string[][] = [];
+  const deps = failingDocDeps(
+    (cwd) => bareZodDocStderr(toFileUrl(join(cwd, "models", "mod.ts")).href),
+    calls,
+  );
+
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    deps,
+  );
+
+  assertEquals(
+    score.docAnalysisError,
+    'The registry cannot resolve the bare import "zod"; use an explicit npm: or jsr: specifier (npm:zod@4 for zod).',
+  );
+  const symbols = score.factors.find((f) => f.id === "symbols-docs")!;
+  assertEquals(symbols.earnedPoints, 0);
+  assertEquals(symbols.status, "missing");
+  // The registry skips the lint run once deno doc has failed.
+  assertEquals(calls.filter((a) => a[1] === "--lint"), []);
+  // The README still counts.
+  assertEquals(
+    score.factors.find((f) => f.id === "has-readme")!.status,
+    "earned",
+  );
+});
+
+Deno.test("scoreExtensionTarball: a doc failure names archive files relative to the extraction root", async () => {
+  const deps = failingDocDeps(
+    (cwd) =>
+      [
+        `Warning Module not found "${
+          toFileUrl(join(cwd, "models", "_lib", "gone.ts")).href
+        }".`,
+        `    at ${toFileUrl(join(cwd, "models", "mod.ts")).href}:3:8`,
+      ].join("\n"),
+    [],
+  );
+
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    deps,
+  );
+
+  assertEquals(
+    score.docAnalysisError,
+    "Not in the published archive: models/_lib/gone.ts (imported from models/mod.ts).",
+  );
+});
+
+Deno.test("scoreExtensionTarball: docAnalysisError is null when deno doc succeeds", async () => {
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    fakeScoreDeps({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/ok'\n",
+      "models/mod.ts": "export const x = 1;",
+    }),
+  );
+  assertEquals(score.docAnalysisError, null);
+});
+
+Deno.test("scoreExtensionTarball: invalid JSON from a successful deno doc still throws", async () => {
+  const deps: RubricScoreDeps = {
+    ...fakeScoreDeps({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/bad-json'\n",
+      "models/mod.ts": "export const x = 1;",
+    }),
+    runDeno: () =>
+      Promise.resolve({ success: true, stdout: "not json", stderr: "" }),
+  };
+  let thrown: unknown;
+  try {
+    await scoreExtensionTarball(
+      new Uint8Array(0),
+      makeManifest({ models: ["mod.ts"] }),
+      deps,
+    );
+  } catch (err) {
+    thrown = err;
+  }
+  assert(thrown instanceof Error);
+  assertStringIncludes(thrown.message, "invalid JSON");
 });
