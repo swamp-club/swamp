@@ -302,11 +302,13 @@ Deno.test("confirmV3BucketMarker: passes a format-3 marker and refuses a missing
     DatastoreFormatMismatchError,
     "says format 2",
   );
-  await assertRejects(
+  const unreachable = await assertRejects(
     () => confirmV3BucketMarker(store(new Error("reset")), "@test/bucket"),
     UnreachableDatastoreFormatMarkerError,
     "reset",
   );
+  // Only ever confirmed under a format-3 config (swamp-club#3644).
+  assertEquals(unreachable.message.includes("as format 2"), false);
 });
 
 Deno.test("V3BucketBinding.confirmMarker: reads once while it passes, and again after a failure", async () => {

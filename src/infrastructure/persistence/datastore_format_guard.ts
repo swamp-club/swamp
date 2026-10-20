@@ -40,6 +40,7 @@ import {
   supportedDatastoreFormatsFor,
   UnreachableDatastoreFormatMarkerError,
   UnreadableDatastoreFormatMarkerError,
+  V3_DATASTORE_FORMAT,
 } from "../../domain/datastore/datastore_format.ts";
 import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
@@ -334,6 +335,7 @@ export async function ensureSupportedDatastoreFormat(
       throw new UnreachableDatastoreFormatMarkerError(
         `the ${config.type} datastore`,
         "its extension could not be loaded",
+        V3_DATASTORE_FORMAT,
       );
     }
     assertV3Hosting(provider, config.type);

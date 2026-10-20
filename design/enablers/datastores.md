@@ -4539,7 +4539,9 @@ runtime or config pull in serve, no lazy hydration. `datastore sync`,
 datastore already, and every v3 datastore on a bucket too. On v3, `datastore namespace set|unset|migrate` refuse
 too: moving existing records, or a checkout, between namespaces is Phase 6.
 A namespace is chosen by running `namespace set` before `setup filesystem
---format 3`, which needs no `--skip-migration` (swamp-club#3301).
+--format 3`, which needs no `--skip-migration` (swamp-club#3301), or before
+`setup extension <type> --format 3` on a bucket; the refusal names the
+repository's own setup command (swamp-club#3644).
 `datastore config migrate` has a v3 form of its own (below).
 
 **Managed config on v3** (swamp-club#3300). With managedConfig on, behavior
@@ -4868,7 +4870,15 @@ refuses, writing nothing, in this order:
   `_index/_meta.json`, read through `fetchContent` on a sync service built on
   a scratch cache, which the provider must also have. A check that cannot be
   made refuses. Known limit: v2 data that has lost both root index keys is not
-  seen;
+  seen. The v2 root data is not read once a format-3 marker is there
+  (swamp-club#3643): setup read it before it wrote the marker, a compliant
+  swamp never writes v2 data beside one, and the extensions' sync services,
+  which that read goes through, refuse every read of a format-3 prefix
+  (`datastore_format_unsupported`, whose upgrade advice setup never shows).
+  `listNamespaces` lists the bucket through the provider, so it still runs.
+  Such a refusal that still reaches the check says "run the command again"
+  when a marker is there by the time it is caught (another setup wrote one),
+  and otherwise that the extension refused the read;
 - a repository that holds records, as a v3 filesystem setup checks: the
   checkout's `.swamp/`, its namespace's, an external filesystem datastore's
   root and the current extension datastore's cache.
@@ -4877,7 +4887,9 @@ It then writes the marker `{format: 3, minReaderFormat: 3, writtenBy}` with
 `putIfAbsent` at `_control/datastore-format`, so of two concurrent setups one
 writes it and the other accepts it when it says format 3. A prefix holding
 only a format-3 marker is a setup that stopped after it, and a re-run
-completes it. Setup records `format: 3` in `.swamp.yaml` and migrates, pushes,
+completes it. The datastore it names is empty (no commits, chunks or
+records), so another repository may complete it too, as it may a new
+prefix. Setup records `format: 3` in `.swamp.yaml` and migrates, pushes,
 pulls and registers nothing. `--format 3` through `--server` is refused for
 now. A v2 setup of a bucket whose marker says 3 is refused.
 

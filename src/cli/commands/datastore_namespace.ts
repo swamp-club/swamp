@@ -84,13 +84,20 @@ type AnyOptions = any;
  * commits are recorded per namespace, so moving a checkout to another one
  * would leave every commit it made behind. Migrating v3 data is Phase 6.
  */
-function refuseNamespaceChangeOnV3(engine: DatastoreEngine): void {
+export function refuseNamespaceChangeOnV3(
+  engine: DatastoreEngine,
+  config: DatastoreConfig,
+): void {
   if (engine === "v3") {
+    // The way out names this datastore's own setup (swamp-club#3644).
+    const setup = isCustomDatastoreConfig(config)
+      ? `swamp datastore setup extension ${config.type} --config '...' ` +
+        "--format 3"
+      : "swamp datastore setup filesystem --path <dir> --format 3";
     throw new UserError(
       "Changing the namespace of a v3 datastore is not supported yet: its " +
         "commits are recorded per namespace. To use a namespace, run " +
-        "`swamp datastore namespace set <name>` before " +
-        "`swamp datastore setup filesystem --format 3`.",
+        `\`swamp datastore namespace set <name>\` before \`${setup}\`.`,
     );
   }
 }
@@ -115,7 +122,7 @@ export const datastoreNamespaceSetCommand = new Command()
     const { datastoreConfig, marker, engine } = await resolveDatastoreForRepo(
       repoDir,
     );
-    refuseNamespaceChangeOnV3(engine);
+    refuseNamespaceChangeOnV3(engine, datastoreConfig);
     const dsBasePath = datastoreBasePath(datastoreConfig);
     const markerRepo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(repoDir);
@@ -236,7 +243,7 @@ export const datastoreNamespaceUnsetCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
     const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
-    refuseNamespaceChangeOnV3(engine);
+    refuseNamespaceChangeOnV3(engine, datastoreConfig);
     const dsBasePath = isCustomDatastoreConfig(datastoreConfig) &&
         datastoreConfig.cachePath
       ? datastoreConfig.cachePath
@@ -474,7 +481,7 @@ export const datastoreNamespaceMigrateCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
     const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
-    refuseNamespaceChangeOnV3(engine);
+    refuseNamespaceChangeOnV3(engine, datastoreConfig);
     const dsBasePath = isCustomDatastoreConfig(datastoreConfig) &&
         datastoreConfig.cachePath
       ? datastoreConfig.cachePath

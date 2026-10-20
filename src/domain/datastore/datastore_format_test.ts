@@ -22,6 +22,7 @@ import {
   assertSupportedDatastoreFormat,
   DATASTORE_FORMAT_MARKER_INVALID_CODE,
   DATASTORE_FORMAT_MARKER_MAX_BYTES,
+  DATASTORE_FORMAT_MARKER_UNREADABLE_CODE,
   DATASTORE_FORMAT_UNSUPPORTED_CODE,
   type DatastoreFormatMarkerRead,
   DatastoreFormatMismatchError,
@@ -33,6 +34,7 @@ import {
   type LostFormatMarkerContext,
   parseDatastoreFormatMarker,
   supportedDatastoreFormatsFor,
+  UnreachableDatastoreFormatMarkerError,
   UnsupportedDatastoreFormatError,
 } from "./datastore_format.ts";
 import { UserError } from "../errors.ts";
@@ -411,4 +413,28 @@ Deno.test("LostDatastoreFormatMarkerError: a mismatch refusal whose advice fits 
     lostFormatMarkerAdvice("setup-target"),
     "swamp datastore setup filesystem --format 3",
   );
+});
+
+Deno.test("UnreachableDatastoreFormatMarkerError: says it will not open the datastore as format 2 only when the config may mean format 2 (swamp-club#3644)", () => {
+  const source = "_control/datastore-format on @swamp/s3-datastore";
+  const read = `The datastore format marker ${source} could not be read ` +
+    "(Request aborted). ";
+  const advice = "Check the datastore's connectivity and credentials, and " +
+    "run the command again. Nothing was changed.";
+  const clause = "It may say format 3, so swamp will not open this " +
+    "datastore as format 2. ";
+  const cases: [number | undefined, string][] = [
+    [undefined, read + clause + advice],
+    [2, read + clause + advice],
+    [3, read + advice],
+  ];
+  for (const [configured, message] of cases) {
+    const error = new UnreachableDatastoreFormatMarkerError(
+      source,
+      "Request aborted",
+      configured,
+    );
+    assertEquals(error.message, message, String(configured));
+    assertEquals(error.code, DATASTORE_FORMAT_MARKER_UNREADABLE_CODE);
+  }
 });
