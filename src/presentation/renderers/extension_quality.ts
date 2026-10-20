@@ -249,7 +249,13 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             }
             if (dep.reason) parts.push(`not audited: ${dep.reason}`);
             const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
-            logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
+            if (dep.importedAs !== undefined) {
+              // The bare import the source wrote, as JSON's importedAs.
+              logger
+                .info`      ${mark} ${dep.name}@${dep.version} (as ${dep.importedAs})${detail}`;
+            } else {
+              logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
+            }
           }
         } else {
           logger.info`      No npm/jsr dependencies to audit`;

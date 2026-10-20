@@ -17,12 +17,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  importMapTarget,
+  isBareSpecifier,
+  stripSourceComments,
+} from "../models/bundle.ts";
+
 export interface DependencySpecifier {
   name: string;
   version: string | null;
   registry: "npm" | "jsr";
   sourceFile: string;
+  /**
+   * The bare specifier the source wrote, when the import map resolved it
+   * to this one; absent for an import written as `npm:` or `jsr:`.
+   */
+  importedAs?: string;
 }
+
+/** A `deno.json` `imports` object. */
+export type ImportMap = Record<string, string>;
 
 function stripComments(source: string): string {
   const lines = source.split("\n");
@@ -75,6 +89,40 @@ const STATIC_IMPORT_RE =
 const DYNAMIC_IMPORT_RE =
   /import\s*\(\s*["'](?<specifier>(?:npm|jsr):[^"']+)["']\s*\)/g;
 
+// The code before a string literal that puts it in import position:
+// `import ... from`/`export ... from`, side-effect `import`, `import(`
+const IMPORT_POSITION_RE =
+  /(?:^|[^.\w$])(?:(?:import|export)\b[^;]*\bfrom|import)\s*$|(?:^|[^.\w$])import\s*\(\s*$/;
+
+/**
+ * The quoted specifiers in import position. Each string literal is read as
+ * a token, so text inside a string (`"run: import x from 'y'"`) is never
+ * taken for an import, and only the code between it and the previous
+ * literal is matched.
+ */
+function importedSpecifiers(code: string): string[] {
+  const specifiers: string[] = [];
+  let codeStart = 0;
+  let i = 0;
+  while (i < code.length) {
+    const quote = code[i];
+    if (quote !== '"' && quote !== "'") {
+      i++;
+      continue;
+    }
+    let end = i + 1;
+    while (end < code.length && code[end] !== quote && code[end] !== "\n") {
+      end += code[end] === "\\" ? 2 : 1;
+    }
+    if (IMPORT_POSITION_RE.test(code.slice(codeStart, i))) {
+      specifiers.push(code.slice(i + 1, end));
+    }
+    i = end + 1;
+    codeStart = i;
+  }
+  return specifiers;
+}
+
 // Parses `npm:@scope/name@version`, `npm:name@version`, `npm:name`
 const NPM_SPECIFIER_RE =
   /^npm:(?<name>(?:@[^/@]+\/)?[^/@]+)(?:@(?<version>[^/]+))?/;
@@ -107,9 +155,44 @@ function parseSpecifier(
   return null;
 }
 
+/**
+ * What the import map resolves a bare specifier to, as the bundler
+ * resolves it: {@link importMapTarget}, where a key mapped to an `npm:` or
+ * `jsr:` package also covers its subpaths (`"@std/path"` resolves
+ * `@std/path/posix`) unless the map has its own `key/` entry, as Deno
+ * expands it.
+ */
+export function resolveBareImport(
+  specifier: string,
+  imports: ImportMap,
+): string | undefined {
+  const expanded: ImportMap = { ...imports };
+  for (const [key, target] of Object.entries(imports)) {
+    if (
+      !key.endsWith("/") && typeof target === "string" &&
+      /^(?:npm|jsr):/.test(target) && !Object.hasOwn(imports, `${key}/`)
+    ) {
+      expanded[`${key}/`] = `${target}/`;
+    }
+  }
+  return importMapTarget(specifier, expanded);
+}
+
+function specifierKey(
+  spec: { registry: string; name: string; version: string | null },
+): string {
+  return `${spec.registry}:${spec.name}@${spec.version ?? ""}`;
+}
+
+/**
+ * The `npm:` and `jsr:` dependencies a module imports: those it writes
+ * out, and, given the import map, the bare imports it resolves to one.
+ * A dependency written both ways keeps the written form.
+ */
 export function extractSpecifiersFromSource(
   source: string,
   sourceFile: string,
+  imports?: ImportMap,
 ): DependencySpecifier[] {
   const seen = new Set<string>();
   const results: DependencySpecifier[] = [];
@@ -123,7 +206,7 @@ export function extractSpecifiersFromSource(
       const parsed = parseSpecifier(raw);
       if (!parsed) continue;
 
-      const key = `${parsed.registry}:${parsed.name}@${parsed.version ?? ""}`;
+      const key = specifierKey(parsed);
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -131,11 +214,32 @@ export function extractSpecifiersFromSource(
     }
   }
 
+  if (!imports) return results;
+
+  // Bare names are read as the bare-specifiers rule reads them, with
+  // template literals blanked, so generated code is never audited.
+  for (const bare of importedSpecifiers(stripSourceComments(source))) {
+    if (!bare || !isBareSpecifier(bare)) continue;
+    const target = resolveBareImport(bare, imports);
+    if (!target) continue;
+    // A `key/` entry must write its target `npm:/name@v/` for Deno to
+    // resolve it; the package is the same.
+    const parsed = parseSpecifier(target.replace(/^(npm|jsr):\//, "$1:"));
+    if (!parsed) continue;
+
+    const key = specifierKey(parsed);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    results.push({ ...parsed, sourceFile, importedAs: bare });
+  }
+
   return results;
 }
 
 export async function extractDependencySpecifiers(
   sourceFiles: string[],
+  imports?: ImportMap,
 ): Promise<DependencySpecifier[]> {
   const seen = new Map<string, DependencySpecifier>();
 
@@ -147,11 +251,12 @@ export async function extractDependencySpecifiers(
     } catch {
       continue;
     }
-    for (const spec of extractSpecifiersFromSource(source, file)) {
+    for (const spec of extractSpecifiersFromSource(source, file, imports)) {
       // Each version of a package is audited: two specifiers can ship two
-      // different versions.
-      const key = `${spec.registry}:${spec.name}@${spec.version ?? ""}`;
-      if (!seen.has(key)) {
+      // different versions. A written specifier replaces a mapped one.
+      const key = specifierKey(spec);
+      const existing = seen.get(key);
+      if (!existing || (existing.importedAs && !spec.importedAs)) {
         seen.set(key, spec);
       }
     }

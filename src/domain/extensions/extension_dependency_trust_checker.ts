@@ -58,8 +58,13 @@ export interface DependencyTrustIssue {
 
 export interface DependencyAuditSummary {
   name: string;
-  /** The import specifier as the source writes it, e.g. `npm:ms@^2.1.0`. */
+  /**
+   * The import specifier as the source writes it, e.g. `npm:ms@^2.1.0`, or
+   * the one the import map resolves a bare import to.
+   */
   specifier: string;
+  /** The bare specifier the source wrote, when the import map resolved it. */
+  importedAs?: string;
   version: string;
   /** Where `version` came from; absent when nothing resolved. */
   resolvedFrom?: ShippedVersionSource;
@@ -679,6 +684,34 @@ function looseSpecifierFinding(
   };
 }
 
+/**
+ * Names the bare imports a finding came from, so the pusher can find the
+ * line the import map resolved.
+ */
+function importedAsSuffix(names: readonly string[]): string {
+  return ` (imported as ${
+    names.map((n) => `"${n}"`).join(", ")
+  } via deno.json)`;
+}
+
+/** A specifier's audit, its findings naming the bare import it came from. */
+function attributeToImport(
+  spec: DependencySpecifier,
+  audit: SpecifierAudit,
+): SpecifierAudit {
+  if (spec.importedAs === undefined) return audit;
+  const suffix = importedAsSuffix([spec.importedAs]);
+  const attribute = (issue: DependencyTrustIssue): DependencyTrustIssue => ({
+    ...issue,
+    message: issue.message + suffix,
+  });
+  return {
+    errors: audit.errors.map(attribute),
+    warnings: audit.warnings.map(attribute),
+    summary: { ...audit.summary, importedAs: spec.importedAs },
+  };
+}
+
 /** One specifier's findings and summary. */
 interface SpecifierAudit {
   errors: DependencyTrustIssue[];
@@ -931,17 +964,23 @@ export async function checkDependencyTrust(
     );
 
     for (const [index, result] of results.entries()) {
+      const specs = batch[index];
       if (result.status === "rejected") {
+        // Named by its bare imports only when no specifier writes it out.
+        const bare = specs.every((spec) => spec.importedAs !== undefined)
+          ? [...new Set(specs.flatMap((spec) => spec.importedAs ?? []))]
+          : [];
         allWarnings.push({
-          dependency: batch[index][0].name,
+          dependency: specs[0].name,
           message: `not audited: audit check failed (${
             describeFailure(result.reason)
-          })`,
+          })${bare.length > 0 ? importedAsSuffix(bare) : ""}`,
           cause: "not-audited",
         });
         continue;
       }
-      for (const audit of result.value) {
+      for (const [i, raw] of result.value.entries()) {
+        const audit = attributeToImport(specs[i], raw);
         for (const error of audit.errors) allErrors.push(error);
         for (const warning of audit.warnings) allWarnings.push(warning);
         audited.push(audit.summary);

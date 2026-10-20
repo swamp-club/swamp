@@ -575,7 +575,9 @@ too. A real drift finding has no `cause`. None of these block the push.
 ### The version that ships, and unaudited dependencies
 
 The dependency trust audit checks each `npm:` and `jsr:` import at the version
-the push ships: an exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version;
+the push ships, including a bare import the extension's `deno.json` import map
+resolves to one (its findings end `(imported as "<name>" via deno.json)` and
+block the same way): an exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version;
 otherwise the version the `deno.lock` records for that import (or, when the lock
 does not record the import itself, its highest locked version that satisfies the
 specifier), when the bundler honours that lock (a plain-JSON `deno.json` was

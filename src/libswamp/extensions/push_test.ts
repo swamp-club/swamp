@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  type DependencySpecifier,
+  extractDependencySpecifiers,
+} from "../../domain/extensions/extension_dependency_extractor.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
@@ -2478,6 +2482,56 @@ Deno.test("extensionPushPrepare: a missing JSR version fails the dependency-trus
       f.gate === "dependency-trust"
     );
     assertEquals(failure !== undefined, true);
+  });
+});
+
+Deno.test("extensionPushPrepare: a bare import the deno.json maps is audited and its error fails the dependency-trust gate", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import { assert } from "missing-assert";\nexport const a = assert;\n',
+    "deno.json": JSON.stringify({
+      imports: { "missing-assert": "jsr:@std/assert@0.0.999" },
+    }),
+  }, async (dir, paths) => {
+    const audited: DependencySpecifier[][] = [];
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps({
+          extractDependencySpecifiers,
+          checkDependencyTrust: (specifiers) => {
+            audited.push(specifiers);
+            return Promise.resolve({
+              errors: [{
+                dependency: "@std/assert",
+                message:
+                  'version 0.0.999 not found on JSR (imported as "missing-assert" via deno.json)',
+                cause: "jsr-missing",
+              }],
+              warnings: [],
+              audited: [],
+              passed: false,
+            });
+          },
+        }),
+        {
+          ...acceptanceInput(dir, [paths["models/a.ts"]]),
+          denoConfigPath: paths["deno.json"],
+        },
+      )
+    ) as SwampError;
+    assertEquals(error.code, "validation_failed");
+    assertStringIncludes(
+      error.message,
+      "Extension has dependency trust errors that must be resolved before pushing.",
+    );
+    assertEquals(audited, [[{
+      name: "@std/assert",
+      version: "0.0.999",
+      registry: "jsr",
+      sourceFile: paths["models/a.ts"],
+      importedAs: "missing-assert",
+    }]]);
   });
 });
 

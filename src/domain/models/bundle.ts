@@ -428,7 +428,7 @@ export interface BundleOptions {
 const IMPORT_SPECIFIER_RE =
   /(?:import|export)\s+[^;()]*?from\s+["']([^"']+)["']/g;
 
-function isBareSpecifier(specifier: string): boolean {
+export function isBareSpecifier(specifier: string): boolean {
   // A specifier carrying a `${...}` placeholder is interpolated at runtime, not
   // a package name. stripSourceComments already removes the common source of
   // these (generated code inside template literals), but `import x from
@@ -458,7 +458,7 @@ function isBareSpecifier(specifier: string): boolean {
 // cannot recognise — the span is re-emitted verbatim rather than blanked, so an
 // unbalanced backtick degrades to a no-op instead of erasing the rest of the
 // file from the caller's view.
-function stripSourceComments(source: string): string {
+export function stripSourceComments(source: string): string {
   const result: string[] = [];
   let i = 0;
 
