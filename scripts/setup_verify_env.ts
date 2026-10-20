@@ -49,10 +49,11 @@ import { dirname, join } from "@std/path";
 /**
  * The variables the verification workflows read, and what their absence costs.
  *
- * The distinction is the point. A missing `TESSL_TOKEN` fails loudly and stops
- * the run. A missing `ANTHROPIC_API_KEY` is quieter and worse: trigger evals
- * skip at exit 0 and the reviews fall back to a claude.ai login, so the gate
- * goes green having checked less than it looks like it checked.
+ * Only `TESSL_TOKEN` is listed: a missing one fails loudly and stops the run.
+ * `ANTHROPIC_API_KEY` is deliberately absent. The trigger evals and the agent
+ * reviews both run through `claude -p` on a claude.ai login, so no local run
+ * needs the key; it exists only as a CI secret for the API route. The evals
+ * never skip for want of it either, so there is no quiet gap left to list.
  */
 export const VERIFY_KEYS: ReadonlyArray<{
   name: string;
@@ -65,13 +66,6 @@ export const VERIFY_KEYS: ReadonlyArray<{
     consequence:
       "skill-review exits 1, so verification cannot complete on a branch " +
       "that touches skill files",
-  },
-  {
-    name: "ANTHROPIC_API_KEY",
-    required: false,
-    consequence:
-      "trigger evals skip at exit 0 and reviews fall back to the claude.ai " +
-      "login — the gate still goes green, having checked less",
   },
 ];
 
