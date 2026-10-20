@@ -50,7 +50,12 @@ export interface ActiveDispatch {
   dataOutputOverrides?: DataOutputOverride[];
   dataRepo?: UnifiedDataRepository;
   allowedSecrets?: VaultExtractionResult;
-  /** Per-dispatch redactor populated with vault-derived secret values. */
+  /**
+   * Per-dispatch redactor. Seeded with the secret values the step was
+   * dispatched with, and grown with every value `resolveSecret` delivers to
+   * the dispatch afterwards (swamp-club#3527). The data plane scrubs the
+   * dispatch's resource writes with it.
+   */
   redactor?: SecretRedactor;
   /**
    * W3C trace headers of the span that dispatched this work. The data plane

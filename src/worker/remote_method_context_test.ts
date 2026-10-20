@@ -342,6 +342,39 @@ Deno.test("remote context: vault get and put proxy as capability verbs", async (
   });
 });
 
+Deno.test("remote context: vault get registers the value it receives with the redactor (swamp-club#3527)", async () => {
+  await withScratch(async (dir) => {
+    const events: Record<string, unknown>[] = [];
+    const h = harness(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      (e) => events.push(e),
+    );
+    assertEquals(h.context.redactor!.hasSecrets, false);
+
+    assertEquals(await h.context.vaultService!.get("local", "k"), "s3cret");
+
+    assertEquals(
+      h.context.redactor!.redact("value s3cret here"),
+      "value *** here",
+    );
+    // Output lines and console output leave the worker scrubbed.
+    h.context.logger.info("logged s3cret");
+    assertEquals(events.map((e) => e.line), ["logged ***"]);
+    assertEquals(h.redact("console s3cret"), "console ***");
+  });
+});
+
+Deno.test("remote context: vault getAnnotation registers nothing with the redactor", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    await h.context.vaultService!.getAnnotation("local", "k");
+    assertEquals(h.context.redactor!.hasSecrets, false);
+  });
+});
+
 Deno.test("remote context: writeResource tracks handles for write-then-throw", async () => {
   await withScratch(async (dir) => {
     const h = harness(dir);
