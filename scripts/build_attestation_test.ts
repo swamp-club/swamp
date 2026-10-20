@@ -28,6 +28,7 @@ import {
   buildAttestation,
   checkCheckout,
   checkCommitBinding,
+  checkVerificationProvenance,
   checkWorkflowProvenance,
   describeSkip,
   diffNamesArgs,
@@ -177,7 +178,11 @@ function sources(): RunSource[] {
       run: run("verify-skills", "run-skills", [
         {
           name: "skills",
-          steps: [{ name: "skill-review", status: "succeeded", duration: 5200 }],
+          steps: [{
+            name: "skill-review",
+            status: "succeeded",
+            duration: 5200,
+          }],
         },
       ]),
     },
@@ -290,6 +295,27 @@ Deno.test("buildAttestation: gate counts and passes when nothing failed", () => 
   });
 });
 
+Deno.test("buildAttestation: records Codex from the evaluated review shell", () => {
+  const runs = sources();
+  runs[1].definition = {
+    jobs: [{
+      name: "reviews",
+      steps: [{
+        name: "code-review",
+        task: {
+          modelName: "review-code-run-reviews",
+          inputs: { run: "codex exec --model gpt-6-astra --sandbox read-only" },
+        },
+      }],
+    }],
+  };
+  const doc = buildAttestation(runs, env());
+  assertEquals(
+    (doc.reviewConfig as Record<string, unknown>)["code-review"],
+    { model: "gpt-6-astra", ran: true, reason: undefined },
+  );
+});
+
 Deno.test("buildAttestation: a failed step fails the gate and keeps its error", () => {
   const failing = sources();
   failing[0].run.jobs[1].steps[0] = {
@@ -345,7 +371,10 @@ Deno.test("buildAttestation: model names carry the run that produced them", () =
   const doc = buildAttestation(sources(), env());
   const steps = doc.steps as Array<{ step: string; model?: string }>;
 
-  assertEquals(steps.find((s) => s.step === "lint")?.model, "build-lint-run-build");
+  assertEquals(
+    steps.find((s) => s.step === "lint")?.model,
+    "build-lint-run-build",
+  );
   assertEquals(
     steps.find((s) => s.step === "code-review")?.model,
     "review-code-run-reviews",
@@ -536,6 +565,65 @@ Deno.test("checkWorkflowProvenance: an evaluation of the committed file matches"
   );
 });
 
+Deno.test("checkVerificationProvenance: binds reviewer selection and model to validated run inputs", () => {
+  const shell = 'if [ "${{ inputs.reviewer }}" = "codex" ]; then\n' +
+    "codex exec --model ${{ inputs.reviewer == 'codex' ? 'gpt-6-astra' : 'claude-opus-5-5' }}\n" +
+    "else\nclaude --model ${{ inputs.reviewer == 'codex' ? 'gpt-6-astra' : 'claude-opus-5-5' }}\nfi";
+  const definition: WorkflowDef = {
+    inputs: {
+      properties: {
+        reviewer: {
+          type: "string",
+          enum: ["claude", "codex"],
+          default: "claude",
+        },
+      },
+    },
+    jobs: [{
+      name: "reviews",
+      steps: [{ name: "code-review", task: { inputs: { run: shell } } }],
+    }],
+  };
+  const evaluated = structuredClone(definition);
+  const evaluatedShell = 'if [ "codex" = "codex" ]; then\n' +
+    "codex exec --model gpt-6-astra\nelse\nclaude --model gpt-6-astra\nfi";
+  evaluated.jobs![0].steps![0].task!.inputs!.run = evaluatedShell;
+  const record = run("verify-reviews", "run-1", [], {
+    inputs: { reviewer: "codex" },
+  });
+  assertEquals(checkVerificationProvenance(definition, evaluated, record), []);
+  for (
+    const altered of [
+      evaluatedShell.replace("gpt-6-astra", "other-model"),
+      evaluatedShell.replace(
+        '"codex"',
+        '"codex" ]; then exit 0; fi; if [ "codex"',
+      ),
+    ]
+  ) {
+    evaluated.jobs![0].steps![0].task!.inputs!.run = altered;
+    assertEquals(checkVerificationProvenance(definition, evaluated, record), [
+      "jobs[0].steps[0].task.inputs.run differs from the committed definition",
+    ]);
+  }
+  evaluated.jobs![0].steps![0].task!.inputs!.run = evaluatedShell;
+  const invalid = { ...record, inputs: { reviewer: "other" } };
+  assertEquals(
+    checkVerificationProvenance(definition, evaluated, invalid).length,
+    1,
+  );
+  evaluated.jobs![0].steps![0].task!.inputs!.run = evaluatedShell
+    .replace('if [ "codex"', 'if [ "claude"')
+    .replaceAll("gpt-6-astra", "claude-opus-5-5");
+  assertEquals(
+    checkVerificationProvenance(definition, evaluated, {
+      ...record,
+      inputs: {},
+    }),
+    [],
+  );
+});
+
 Deno.test("checkWorkflowProvenance: a run of a different script is refused", () => {
   // The case that motivated the check: the runs loaded another checkout's
   // verification/ directory, whose setup step predates the committed one.
@@ -641,7 +729,13 @@ Deno.test("evaluatedWorkflowPath: found beside the run record", () => {
 
   assertPathEquals(
     evaluatedWorkflowPath(record)!,
-    join(swampDir, "workflows-evaluated", "runs", "run-1", "evaluated-workflow.yaml"),
+    join(
+      swampDir,
+      "workflows-evaluated",
+      "runs",
+      "run-1",
+      "evaluated-workflow.yaml",
+    ),
   );
 });
 

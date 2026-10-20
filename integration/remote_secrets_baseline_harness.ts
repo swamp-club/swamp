@@ -45,7 +45,12 @@ import {
 import { createWorkerModelRunDeps } from "../src/libswamp/worker/run_deps.ts";
 import { modelMethodRun } from "../src/libswamp/models/run.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
-import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import {
+  createStderrSink,
+  initializeLogging,
+} from "../src/infrastructure/logging/logger.ts";
+import { textFormatter } from "../src/infrastructure/logging/log_format.ts";
+import { setConsoleGuardStderrWriter } from "../src/domain/models/console_guard.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { CapabilityService } from "../src/serve/capability_service.ts";
 import { WorkerGateway } from "../src/serve/worker_gateway.ts";
@@ -128,6 +133,40 @@ export async function captureLogs(
     await initializeLogging({ _reset: true });
   }
   return captured.map(renderRecord);
+}
+
+/**
+ * Runs `fn` with what a runner writes to stderr collected instead: the real
+ * stderr sink (`createStderrSink`) for every LogTape category at debug and
+ * above, and the console guard's stderr writer, both into the returned
+ * lines. That is exactly the stream a worker supervisor reads from a runner.
+ * Restores the normal logging setup and the default console-guard writer
+ * afterwards; both are process-global, so callers must not run two captures
+ * at once.
+ */
+export async function captureRunnerStderr(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const lines: string[] = [];
+  const write = (text: string) => {
+    lines.push(...text.replace(/\n$/, "").split("\n"));
+  };
+  await configure({
+    sinks: { stderr: createStderrSink(textFormatter(), write) },
+    loggers: [
+      { category: [], lowestLevel: "debug", sinks: ["stderr"] },
+      { category: ["logtape", "meta"], lowestLevel: "fatal", sinks: [] },
+    ],
+    reset: true,
+  });
+  setConsoleGuardStderrWriter((line) => lines.push(line));
+  try {
+    await fn();
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
+    await initializeLogging({ _reset: true });
+  }
+  return lines;
 }
 
 /** The records whose rendered text contains `value`. */

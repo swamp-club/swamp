@@ -31,6 +31,7 @@ import {
  */
 export class SecretRedactor {
   private secrets: Set<string> = new Set();
+  private readonly indentedSecrets = new Map<string, RegExp>();
   private readonly sentinels = new Set<SecretBagRegistry>();
   private readonly sentinelPattern = new RegExp(SENTINEL_SOURCE, "g");
 
@@ -84,10 +85,38 @@ export class SecretRedactor {
 
   private addForm(value: string): void {
     this.secrets.add(value);
+    if (value.includes("\n")) {
+      // Nested Error inspection indents the raw message/stack at every line.
+      // Permit that added horizontal whitespace without matching fragments of
+      // a secret on their own or changing the original value.
+      this.indentedSecrets.set(
+        value,
+        new RegExp(
+          value.split("\n").map((line) =>
+            line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+          ).join("\n[\\t ]*"),
+          "g",
+        ),
+      );
+    }
     // Also add JSON-escaped version for JSON data files
     const jsonEscaped = JSON.stringify(value).slice(1, -1);
     if (jsonEscaped !== value) {
       this.secrets.add(jsonEscaped);
+    }
+    // LogTape and console.dir inspect strings instead of JSON-encoding them.
+    // Inspection can choose any quote style and uses escapes such as \x00.
+    // Enclosing text can change the chosen quotes, so register all styles.
+    const inspected = Deno.inspect(value, {
+      colors: false,
+      strAbbreviateSize: Infinity,
+      breakLength: Infinity,
+    });
+    const quote = inspected[0];
+    const body = inspected.slice(1, -1).replaceAll(`\\${quote}`, quote);
+    this.secrets.add(body);
+    for (const delimiter of ['"', "'", "`", "${"]) {
+      this.secrets.add(body.replaceAll(delimiter, `\\${delimiter}`));
     }
   }
 
@@ -112,6 +141,8 @@ export class SecretRedactor {
         b.length - a.length
       );
       for (const secret of sorted) {
+        const indented = this.indentedSecrets.get(secret);
+        if (indented) result = result.replace(indented, "***");
         result = result.split(secret).join("***");
       }
     }

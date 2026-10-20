@@ -69,6 +69,8 @@ interface FileWriter {
  */
 export class RunFileSink {
   private writers = new Map<string, FileWriter>();
+  /** Redactors registered without a log file (see {@link registerRedactor}). */
+  private redactors = new Map<string, SecretRedactor>();
 
   /**
    * Number of currently registered writers (each holds one open file
@@ -145,22 +147,60 @@ export class RunFileSink {
   }
 
   /**
-   * Redacts `text` using every currently-active run redactor.
+   * Register a redactor that has no log file of its own, so every sink that
+   * consults {@link redactActive} masks its secrets. The dispatch runner
+   * registers its dispatch redactor this way: it keeps no run log, but its
+   * stderr is read and re-logged by the worker supervisor, so the stderr sink
+   * and the console guard must mask the dispatch's secrets before a line
+   * leaves the process (swamp-club#3526). Returns an opaque handle for
+   * {@link unregisterRedactor}.
+   */
+  registerRedactor(redactor: SecretRedactor): string {
+    const handle = crypto.randomUUID();
+    this.redactors.set(handle, redactor);
+    return handle;
+  }
+
+  /**
+   * Remove a redactor registered with {@link registerRedactor}. No-ops for an
+   * unknown or undefined handle, so cleanup can be unconditional.
+   */
+  unregisterRedactor(handle: string | undefined): void {
+    if (handle === undefined) return;
+    this.redactors.delete(handle);
+  }
+
+  /** Whether formatting must preserve complete values until they are masked. */
+  get hasActiveSecrets(): boolean {
+    return [...this.writers.values()].some((writer) =>
+      writer.redactor?.hasSecrets
+    ) || [...this.redactors.values()].some((redactor) => redactor.hasSecrets);
+  }
+
+  /**
+   * Redacts `text` using every currently-active redactor.
    *
    * Each active run registers its own {@link SecretRedactor} under a catch-all
    * `[]` prefix, so every active run's secrets already apply to every record in
-   * the per-run files; applying their union here gives any other sink (e.g. the
-   * OTLP log sink, which exports records to an external collector) the same
-   * secret scrubbing without duplicating the redaction logic. Returns the input
-   * unchanged when no active redactor holds secrets. Over-redaction across
-   * concurrent runs is negligible in practice — secret values are long, unique
-   * strings.
+   * the per-run files; applying their union here, together with the file-less
+   * redactors from {@link registerRedactor}, gives every other sink (the OTLP
+   * log sink, which exports records to an external collector; the stderr sink
+   * and the console guard, whose output a worker supervisor reads from a
+   * runner) the same secret scrubbing without duplicating the redaction logic.
+   * Returns the input unchanged when no active redactor holds secrets.
+   * Over-redaction across concurrent runs is negligible in practice — secret
+   * values are long, unique strings.
    */
   redactActive(text: string): string {
     let result = text;
     for (const writer of this.writers.values()) {
       if (writer.redactor?.hasSecrets) {
         result = writer.redactor.redact(result);
+      }
+    }
+    for (const redactor of this.redactors.values()) {
+      if (redactor.hasSecrets) {
+        result = redactor.redact(result);
       }
     }
     return result;
@@ -208,6 +248,7 @@ export class RunFileSink {
       }
     }
     this.writers.clear();
+    this.redactors.clear();
   }
 }
 

@@ -68,6 +68,7 @@ jobs:
               # entries below.
               - 'scripts/eval_skill_triggers_promptfoo.ts'
               - 'evals/promptfoo/claude_cli_provider.mjs'
+              - 'evals/promptfoo/codex_cli_provider.mjs'
               - 'evals/promptfoo/provider_route.ts'
               - 'evals/promptfoo/generate_config.ts'
               - 'evals/promptfoo/generate_routing_config.ts'
@@ -379,7 +380,7 @@ jobs:
           fi
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^scripts/eval_skill_triggers_promptfoo\\.ts$|^evals/promptfoo/claude_cli_provider\\.mjs$|^evals/promptfoo/provider_route\\.ts$|^evals/promptfoo/generate_config\\.ts$|^evals/promptfoo/generate_routing_config\\.ts$|^evals/promptfoo/generate_sufficiency_config\\.ts$|^scripts/promptfoo_install\\.ts$|^evals/promptfoo/package\\.json$|^evals/promptfoo/package-lock\\.json$"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^scripts/eval_skill_triggers_promptfoo\\.ts$|^evals/promptfoo/(claude|codex)_cli_provider\\.mjs$|^evals/promptfoo/provider_route\\.ts$|^evals/promptfoo/generate_config\\.ts$|^evals/promptfoo/generate_routing_config\\.ts$|^evals/promptfoo/generate_sufficiency_config\\.ts$|^scripts/promptfoo_install\\.ts$|^evals/promptfoo/package\\.json$|^evals/promptfoo/package-lock\\.json$"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -429,6 +430,7 @@ jobs:
             - `scripts/eval_skill_triggers_promptfoo.ts`
             - `scripts/promptfoo_install.ts`
             - `evals/promptfoo/claude_cli_provider.mjs`
+            - `evals/promptfoo/codex_cli_provider.mjs`
             - `evals/promptfoo/provider_route.ts`
             - `evals/promptfoo/generate_config.ts`
             - `evals/promptfoo/generate_routing_config.ts`
@@ -764,6 +766,7 @@ jobs:
           check_hash "command-index script" '.configIntegrity.scripts."command-index"' "scripts/command_index.ts"
           check_hash "eval-skill-triggers runner" '.configIntegrity.scripts."eval-skill-triggers-runner"' "scripts/eval_skill_triggers_promptfoo.ts"
           check_hash "claude-cli eval provider" '.configIntegrity.scripts."eval-claude-cli-provider"' "evals/promptfoo/claude_cli_provider.mjs"
+          check_hash "codex-cli eval provider" '.configIntegrity.scripts."eval-codex-cli-provider"' "evals/promptfoo/codex_cli_provider.mjs"
           check_hash "eval provider-route module" '.configIntegrity.scripts."eval-provider-route"' "evals/promptfoo/provider_route.ts"
           check_hash "eval trigger config generator" '.configIntegrity.scripts."eval-generate-config"' "evals/promptfoo/generate_config.ts"
           check_hash "eval routing config generator" '.configIntegrity.scripts."eval-generate-routing-config"' "evals/promptfoo/generate_routing_config.ts"

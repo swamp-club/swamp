@@ -22,6 +22,7 @@ import { z } from "zod";
 import "../domain/models/models.ts";
 import { defineModel, modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import { runFileSink } from "../infrastructure/logging/run_file_sink.ts";
 import {
   type DispatchExecution,
   type DispatchResult,
@@ -158,6 +159,89 @@ Deno.test("runDispatchRunner: the result error is scrubbed with the dispatch red
     assertEquals(result?.logs.filter((line) => line.includes(secret)), []);
   } finally {
     modelRegistry.invalidateType(type);
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
+/** A bootstrap for `modelType`'s `run` method, shipping `secret`. */
+function bootstrapFor(cacheDirPath: string, modelType: string, secret: string) {
+  const definitionId = crypto.randomUUID();
+  return {
+    sessionCredential: "cred",
+    dataPlaneUrl: "http://127.0.0.1:9",
+    cacheDirPath,
+    dispatch: {
+      dispatchId: crypto.randomUUID(),
+      leaseId: crypto.randomUUID(),
+      execution: {
+        protocolVersion: REMOTE_PROTOCOL_VERSION,
+        modelType,
+        modelId: definitionId,
+        methodName: "run",
+        globalArgs: {},
+        methodArgs: {},
+        definitionMeta: {
+          id: definitionId,
+          name: "test",
+          version: 1,
+          tags: {},
+        },
+      },
+      bundleFingerprint: `builtin:${modelType}`,
+      reportBundleFingerprints: [],
+      environmentSnapshot: {},
+      secretValues: [secret],
+    },
+  };
+}
+
+Deno.test("runDispatchRunner: the dispatch redactor is active while the method runs and released once the dispatch is over (swamp-club#3526)", async () => {
+  // A per-run type name: the registry is process-global and --repeats must
+  // register again.
+  const type = ModelType.create(`swamp/runner-redactor-${crypto.randomUUID()}`);
+  const secret = "secret-3526-active";
+  let observed: string | undefined;
+  defineModel({
+    type,
+    version: "2026.10.20.1",
+    methods: {
+      run: {
+        description: "records what the process redactors mask while it runs",
+        kind: "action",
+        arguments: z.object({}),
+        execute: () => {
+          observed = runFileSink.redactActive(`saw ${secret}`);
+          return Promise.resolve({});
+        },
+      },
+    },
+  });
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const result = await runRunner(
+      bootstrapFor(cacheDirPath, type.normalized, secret),
+    );
+
+    assertEquals(result?.status, "success", result?.error);
+    assertEquals(observed, "saw ***");
+    assertEquals(runFileSink.redactActive(secret), secret);
+  } finally {
+    modelRegistry.invalidateType(type);
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("runDispatchRunner: releases the dispatch redactor when the dispatch fails", async () => {
+  const secret = "secret-3526-failed";
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const result = await runRunner(
+      bootstrapFor(cacheDirPath, "test/no-such-model", secret),
+    );
+
+    assertEquals(result?.status, "error");
+    assertEquals(runFileSink.redactActive(secret), secret);
+  } finally {
     await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
   }
 });

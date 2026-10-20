@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runFileSink } from "../infrastructure/logging/run_file_sink.ts";
+
 /**
  * Stdout discipline for the dispatch runner (`swamp worker exec-dispatch`).
  *
@@ -50,12 +52,18 @@ function writeStderrLine(line: string): void {
 export function redirectConsoleToStderr(
   write: (line: string) => void = writeStderrLine,
 ): void {
+  const scrubbedWrite = (line: string) => write(runFileSink.redactActive(line));
   const join = (args: unknown[]) => args.map(String).join(" ");
-  console.log = (...args: unknown[]) => write(join(args));
-  console.info = (...args: unknown[]) => write(join(args));
-  console.debug = (...args: unknown[]) => write(join(args));
+  console.log = (...args: unknown[]) => scrubbedWrite(join(args));
+  console.info = (...args: unknown[]) => scrubbedWrite(join(args));
+  console.debug = (...args: unknown[]) => scrubbedWrite(join(args));
   console.dir = (item?: unknown, options?: Deno.InspectOptions) =>
-    write(Deno.inspect(item, options));
-  console.warn = (...args: unknown[]) => write("[WARN] " + join(args));
-  console.error = (...args: unknown[]) => write("[ERROR] " + join(args));
+    scrubbedWrite(Deno.inspect(item, {
+      ...options,
+      strAbbreviateSize: Infinity,
+      breakLength: Infinity,
+    }));
+  console.warn = (...args: unknown[]) => scrubbedWrite("[WARN] " + join(args));
+  console.error = (...args: unknown[]) =>
+    scrubbedWrite("[ERROR] " + join(args));
 }

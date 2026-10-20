@@ -70,6 +70,9 @@
     "jsx": "react",
     "strict": true
   },
+  "test": {
+    "include": ["./", "evals/promptfoo/codex_cli_provider_test.ts"]
+  },
   "fmt": {
     "exclude": ["scripts/"]
   },
@@ -86,6 +89,7 @@
     ".vault-test-vault/",
     "resources/",
     "evals/",
+    "!evals/promptfoo/*_test.ts",
     ".swamp/",
     ".claude/worktrees/"
   ]

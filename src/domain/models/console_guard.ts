@@ -17,9 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
+
 type ConsoleMethod = (...args: unknown[]) => void;
 
-const CAPTURED_METHODS = ["log", "info", "debug", "warn", "error"] as const;
+const CAPTURED_METHODS = [
+  "log",
+  "info",
+  "debug",
+  "warn",
+  "error",
+  "dir",
+] as const;
 
 const STDERR_ENCODER = new TextEncoder();
 
@@ -49,9 +58,13 @@ function formatArg(a: unknown): string {
   if (typeof a === "string") return a;
   if (typeof a === "number") return String(a);
   try {
-    return JSON.stringify(a) ?? Deno.inspect(a);
+    return JSON.stringify(a) ??
+      Deno.inspect(a, { strAbbreviateSize: Infinity, breakLength: Infinity });
   } catch {
-    return Deno.inspect(a);
+    return Deno.inspect(a, {
+      strAbbreviateSize: Infinity,
+      breakLength: Infinity,
+    });
   }
 }
 
@@ -88,8 +101,9 @@ export interface ConsoleGuardOptions {
 
 // Redirects console methods to a capture array during fn execution.
 // In JSON mode, captures console output from extension code into `logs`
-// and writes each line to stderr to prevent stdout pollution. In non-JSON mode,
-// console output flows to stdout normally (the renderer is not involved).
+// and writes each line to stderr to prevent stdout pollution, scrubbed with
+// the active redactors first. In non-JSON mode, console output flows to
+// stdout normally (the renderer is not involved).
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
@@ -109,11 +123,22 @@ export async function withConsoleGuard<T>(
       // every active guard records it, but it reaches stderr only once.
       // deno-lint-ignore no-explicit-any
       (console as any)[method] = (...args: unknown[]) => {
-        const line = args.map(formatArg).join(" ");
+        const line = method === "dir"
+          ? Deno.inspect(args[0], {
+            ...args[1] as Deno.InspectOptions | undefined,
+            // Truncating a secret before redaction would expose its prefix.
+            strAbbreviateSize: Infinity,
+            breakLength: Infinity,
+          })
+          : args.map(formatArg).join(" ");
         for (const logArray of allActiveLogs) {
           logArray.push(line);
         }
-        writeStderr(line);
+        // Every active redactor applies before the line reaches stderr,
+        // whichever writer is installed: in the dispatch runner that stream
+        // is read and re-logged by the worker supervisor (swamp-club#3526).
+        // The captured copy stays raw; its consumers redact it themselves.
+        writeStderr(runFileSink.redactActive(line));
       };
     }
   }

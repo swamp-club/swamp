@@ -19,7 +19,9 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { getPrettyFormatter } from "@logtape/pretty";
 import {
+  createStderrSink,
   escapeLogTemplate,
   getRunLogger,
   getSwampLogger,
@@ -27,6 +29,7 @@ import {
   initializeLogging,
 } from "./logger.ts";
 import { runFileSink } from "./run_file_sink.ts";
+import { SecretRedactor } from "../../domain/secrets/mod.ts";
 
 // Note: LogTape can only be configured once per process.
 // These tests are structured to work within that limitation.
@@ -496,6 +499,129 @@ Deno.test("initializeLogging: stderrOnly writes one newline per record, not two"
       assertEquals(written.endsWith("\n"), true);
       assertEquals(written.endsWith("\n\n"), false);
     } finally {
+      capture.restore();
+    }
+  }
+});
+
+/** A record whose message interpolates `value`, as `info("value {v}", { v })` does. */
+function recordHolding(value: string) {
+  return {
+    category: ["runner"],
+    level: "info" as const,
+    message: ["value ", value, ""],
+    rawMessage: "value {v}",
+    timestamp: Date.now(),
+    properties: { v: value },
+  };
+}
+
+Deno.test("createStderrSink: hands its writer the line with every active redactor's secrets masked (swamp-club#3526)", () => {
+  const secrets = [
+    "plain-secret-3526",
+    'quo"ted-secret-3526',
+    "back\\slash-secret-3526",
+    'quo"ted\\secret-3526',
+    'quo"ted\nsecret-3526',
+  ];
+  const redactor = new SecretRedactor();
+  for (const secret of secrets) redactor.addSecret(secret);
+  const handle = runFileSink.registerRedactor(redactor);
+  const written: string[] = [];
+  const sink = createStderrSink(undefined, (text) => written.push(text));
+  try {
+    for (const secret of secrets) sink(recordHolding(secret));
+    sink(recordHolding("no secret here"));
+
+    assertEquals(written.filter((line) => line.includes("secret-3526")), []);
+    assertEquals(
+      written.filter((line) => line.includes("***")).length,
+      secrets.length,
+    );
+    assertStringIncludes(written[secrets.length], "no secret here");
+    assertEquals(written[secrets.length].endsWith("\n"), true);
+  } finally {
+    runFileSink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("createStderrSink: writes the line as it is when no redactor is active", () => {
+  const written: string[] = [];
+  const sink = createStderrSink(undefined, (text) => written.push(text));
+  sink(recordHolding("plain-secret-3526"));
+  assertEquals(written.length, 1);
+  assertStringIncludes(written[0], "plain-secret-3526");
+});
+
+Deno.test("createStderrSink: masks structured secrets before pretty wrapping and leaves the record intact", () => {
+  const secret = `START-${"word ".repeat(60)}\n${"line\n".repeat(20)}-END`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const handle = runFileSink.registerRedactor(redactor);
+  const value = { token: secret, nested: { error: new Error(secret) } };
+  const record = {
+    ...recordHolding(secret),
+    message: ["value ", value, ""],
+    properties: { v: value },
+  };
+  const written: string[] = [];
+  const sink = createStderrSink(
+    getPrettyFormatter({
+      colors: false,
+      wordWrap: true,
+      properties: true,
+      inspectOptions: { colors: false },
+    }),
+    (text) => written.push(text),
+  );
+  try {
+    sink(record);
+    const output = written.join("");
+    assertEquals(output.includes("START-"), false, output);
+    assertEquals(output.includes("-END"), false, output);
+    assertStringIncludes(output, "***");
+    assertEquals(record.message[1], value);
+    assertEquals(record.properties.v.token, secret);
+    assertEquals(record.properties.v.nested.error.message, secret);
+  } finally {
+    runFileSink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("initializeLogging: stderrOnly masks an active redactor's secrets under both formatters", async () => {
+  // Mixed quotes, backslashes and newlines are scrubbed before inspection;
+  // inspection also has its own escaping, distinct from JSON's.
+  const secrets = [
+    "dispatch-secret-3526",
+    'quo"ted-secret-3526',
+    "back\\slash-secret-3526",
+    'quo"ted\\secret-3526',
+    'quo"ted\nsecret-3526',
+  ];
+  for (const prettyOutput of [false, true]) {
+    const capture = captureStreams();
+    const redactor = new SecretRedactor();
+    for (const secret of secrets) redactor.addSecret(secret);
+    const handle = runFileSink.registerRedactor(redactor);
+    try {
+      await initializeLogging({
+        prettyOutput,
+        stderrOnly: true,
+        noColor: true,
+        logLevel: "debug",
+        _reset: true,
+        _logsConfig: { exporterKind: "none" },
+      });
+
+      for (const secret of secrets) {
+        getSwampLogger(["runner"]).info("holds {v}", { v: secret });
+      }
+
+      const output = capture.stderr.join("");
+      assertEquals(output.includes("secret-3526"), false, output);
+      assertEquals(output.split("***").length - 1, secrets.length, output);
+    } finally {
+      runFileSink.unregisterRedactor(handle);
       capture.restore();
     }
   }

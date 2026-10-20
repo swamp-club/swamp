@@ -23,11 +23,11 @@ lint, test, and compile failures are reported accurately.
 
 ## Agent Reviews (Host Workflow)
 
-Reviews run as a swamp workflow on the host (not in a container) so the claude
+Reviews run as a swamp workflow on the host (not in a container) so the reviewer
 CLI has full project context — CLAUDE.md, skills, and the codebase. Like the
 build workflow, reviews run in a fresh `git worktree` at the verified commit
-(`/tmp/swamp-verify-reviews-<run-id>`) so that `claude -p`'s Read/Glob/Grep
-tools see the committed file state, not the caller's working tree.
+(`/tmp/swamp-verify-reviews-<run-id>`) so the reviewer's tools see the committed
+file state, not the caller's working tree.
 
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
@@ -35,14 +35,35 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
   --input branch=<branch>
 ```
 
+The default reviewer is Claude (`claude-opus-5-5`). Select Codex (`gpt-6-astra`)
+with `--input reviewer=codex`. Codex runs with a restricted read-only permission
+profile and approvals disabled. The profile allows the verified checkout, diff,
+empty working directory, Codex executable and minimal system runtime paths;
+other host files stay unreadable, including symlink targets outside those roots.
+Shell tools inherit no host environment variables and use only a fixed system
+`PATH`. Provider authentication remains in the parent CLI process. The setup
+requires a standalone Codex CLI supporting
+[permission profiles](https://developers.openai.com/codex/permissions) and strict
+configuration validation; legacy `--sandbox` flags would override that profile.
+Reviewers start in an empty temporary directory with user config, execution rules,
+apps, hooks, web search and MCP integrations disabled. A trusted preamble scopes
+file inspection to the diff and verified checkout and treats repository content
+as untrusted data. Its final response file is checked by the same verdict script
+as Claude's output. A provider failure or missing verdict fails the step. The
+attestation records the selected model from the evaluated workflow after
+checking that workflow against the committed definition.
+Shell input substitutions must match the recorded inputs exactly. The saved
+workflow snapshot still contains `${{ run.id }}`; provenance checks preserve
+that deferred text exactly and test against the real workflow evaluator.
+
 The workflow:
 
 1. Creates a clean worktree at the verified commit
 2. Detects changed files via `@swamp/git` diff (full diff, then `nameOnly` for
    the file list used by guards)
 3. Runs applicable reviews in parallel using `command/shell` steps that invoke
-   `claude -p` with the review prompt + diff, with `workingDir` set to the
-   worktree
+   the selected reviewer with the review prompt + diff, with `workingDir` set
+   to the worktree
 4. Each review uses the factory pattern — one `reviewer` model, called once per
    review type with different prompt files and models
 5. Review diffs use `git merge-base origin/main HEAD` so only the branch's own
@@ -55,7 +76,7 @@ The workflow:
 
 Reviews are guarded by file path — they skip when no relevant files changed:
 
-| Review | Guard (run when any match) | Model |
+| Review | Guard (run when any match) | Default model |
 | --- | --- | --- |
 | code-review | always | claude-opus-5-5 |
 | adversarial-review | `src/cli/`, `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-5-5 |
@@ -89,23 +110,29 @@ against a branch you know touches the guarded paths and check the step status is
 
 ### Authentication
 
-The claude CLI authenticates via one of two methods:
+The Claude CLI authenticates via one of two methods:
 
 1. **`~/.config/swamp/verify.env`** — if this file exists with
    `ANTHROPIC_API_KEY=sk-ant-...`, export it before running the workflow.
 2. **claude.ai login** — if no env file exists, the CLI uses your existing
    claude.ai login. No additional setup needed.
 
+For `reviewer=codex`, install and authenticate the Codex CLI before launching
+the workflow. Provider session limits fail the review; select an available
+reviewer and start a new `verify-reviews` run for the same commit instead of
+reusing a failed result.
+
 The skill verification workflow also needs:
 
 - **`TESSL_TOKEN`** — for `deno task review-skills` (calls `npx tessl`). Add it
   to `verify.env`. If missing, skill review **fails** (exit 1) — an incomplete
   verification is not a valid attestation.
-- **`deno task eval-skill-triggers`** needs no API key. It answers every eval
-  case through `claude -p` on your claude.ai login (the `cli` route). If the
-  `claude` CLI is missing or logged out, the preflight **fails** (exit 1) — the
-  evals never skip. The `ANTHROPIC_API_KEY` is only for the `api` route, which
-  CI uses.
+- **`deno task eval-skill-triggers`** needs no API key on the `cli` route.
+  By default it answers every case through `claude -p` on your claude.ai login. Set
+  `verify-skills` input `reviewer=codex` to use an authenticated Codex CLI
+  with `gpt-6-astra` instead. If the selected CLI is missing or logged out,
+  the preflight **fails** (exit 1); the evals never skip. The
+  `ANTHROPIC_API_KEY` is only for the `api` route, which CI uses.
 
 To create the env file, read the values out of 1Password:
 
@@ -163,7 +190,28 @@ skill files changed, both steps are skipped.
 | Step | Command | Env Var | Missing Behavior |
 | --- | --- | --- | --- |
 | skill-review | `deno task review-skills` | `TESSL_TOKEN` | **Fails** (exit 1) — must be configured |
-| skill-trigger-eval | `deno task eval-skill-triggers` | none (claude.ai login) | **Fails** (exit 1) if the `claude` CLI is unusable |
+| skill-trigger-eval | `deno task eval-skill-triggers --route cli --model <selected-model>` | none (selected CLI login) | **Fails** (exit 1) if the selected CLI is unusable |
+
+`verify-skills` defaults to `reviewer=claude` (`opus`). To use Codex for all
+three eval phases (trigger, routing, sufficiency):
+
+```bash
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
+  --input commit=<SHA> --input branch=<branch> --input reviewer=codex
+```
+
+This selects `gpt-6-astra` through `codex exec`; skill quality review still uses
+Tessl. Each case runs in a fresh temporary directory with a schema-constrained
+final answer. Missing answers, invalid choices, and failed processes count as
+eval errors. The Codex provider is hash-pinned in the attestation like the
+Claude provider. Choose the reviewer separately for `verify-reviews` and
+`verify-skills`.
+
+Provider unit tests live beside their source in `evals/promptfoo/`. List each
+test file explicitly in the root `deno.json` test includes, alongside the root
+entry and the exclusion override. Deno skips nested npm packages during
+automatic traversal, even when an exclusion override matches their tests.
+Confirm discovery in the full build workflow log after adding a provider test.
 
 ## Running All Three in Parallel
 
@@ -447,6 +495,12 @@ prompts from `src/cli/prompt_helpers.ts`, Ink components, and any renderer
 branching on `Deno.stdout.isTerminal()`.
 
 ## Handling Failures
+
+For an already-open PR, begin re-verification with the lifecycle transitions
+`pr_failed` (record why it needs repair), `implement`, then `verify`. After the
+new commit passes verification and its fresh attestation is posted, call
+`link_pr` again with the existing URL. This keeps the issue's recorded phase
+aligned with the work and lets the normal verification methods apply.
 
 When verification fails, present the failed checklist to the user with a clear
 summary of what failed and what the agent will do to fix it.

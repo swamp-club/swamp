@@ -67,6 +67,13 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { dirname, join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
+import type { InputsSchema } from "../src/domain/definitions/definition.ts";
+import { InputValidationService } from "../src/domain/inputs/input_validation_service.ts";
+import {
+  extractExpressions,
+  replaceExpressions,
+} from "../src/domain/expressions/expression_parser.ts";
+import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
 import { computeChecksum } from "../src/domain/models/checksum.ts";
 import {
   AttestationSchema,
@@ -207,6 +214,10 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     jsonPath: ["scripts", "eval-claude-cli-provider"],
   },
   {
+    path: "evals/promptfoo/codex_cli_provider.mjs",
+    jsonPath: ["scripts", "eval-codex-cli-provider"],
+  },
+  {
     path: "evals/promptfoo/provider_route.ts",
     jsonPath: ["scripts", "eval-provider-route"],
   },
@@ -277,6 +288,7 @@ interface WorkflowJobDef {
 }
 
 export interface WorkflowDef {
+  inputs?: InputsSchema;
   jobs?: WorkflowJobDef[];
 }
 
@@ -413,8 +425,8 @@ export function describeSkip(reason: SkipReason | undefined): string {
 }
 
 /**
- * The model name each step ran under, from the workflow definition at the
- * verified commit with `${{ run.id }}` substituted.
+ * The model name each step ran under, from the provenance-checked evaluated
+ * workflow with any remaining `${{ run.id }}` substituted.
  *
  * The run record does not carry it. Reconstructing it from the definition ties
  * the name in the attestation to the file whose hash the attestation also
@@ -440,9 +452,9 @@ export function modelNames(
 }
 
 /**
- * The claude model each review was invoked with, read out of the review step's
- * own shell at the verified commit. Recorded so the attestation says which
- * reviewer produced the verdict, not merely that a review ran.
+ * The reviewer model each review was invoked with, read out of the evaluated
+ * review step's shell after checking it against the committed definition.
+ * This records the selected model when the workflow chooses it from inputs.
  */
 export function reviewModels(workflow: WorkflowDef): Map<string, string> {
   const models = new Map<string, string>();
@@ -456,7 +468,7 @@ export function reviewModels(workflow: WorkflowDef): Map<string, string> {
 
 // -- Attestation ------------------------------------------------------------
 
-/** A verification workflow's run paired with its definition at the commit. */
+/** A verification run paired with its provenance-checked evaluated definition. */
 export interface RunSource {
   key: string;
   name: string;
@@ -849,14 +861,17 @@ export function checkWorkflowProvenance(
     const errors: string[] = [];
     for (const key of Object.keys(c)) {
       const path = at ? `${at}.${key}` : key;
-      if (!(key in e)) errors.push(`${path} is missing from the evaluated workflow`);
-      else errors.push(...checkWorkflowProvenance(c[key], e[key], path));
+      if (!(key in e)) {
+        errors.push(`${path} is missing from the evaluated workflow`);
+      } else errors.push(...checkWorkflowProvenance(c[key], e[key], path));
     }
     for (const key of Object.keys(e)) {
       if (key in c || isEmptyDefault(e[key])) continue;
       if (at === "" && RUN_METADATA_KEYS.has(key)) continue;
       errors.push(
-        `${at ? `${at}.${key}` : key} is in the evaluated workflow but not the committed definition`,
+        `${
+          at ? `${at}.${key}` : key
+        } is in the evaluated workflow but not the committed definition`,
       );
     }
     return errors;
@@ -865,6 +880,66 @@ export function checkWorkflowProvenance(
   return committed === evaluated
     ? []
     : [`${at || "(root)"} differs from the committed definition`];
+}
+
+/** Bind shell inputs exactly, preserving run.id as the saved snapshot does. */
+export function checkVerificationProvenance(
+  committed: WorkflowDef,
+  evaluated: unknown,
+  run: RunRecord,
+): string[] {
+  const validation = new InputValidationService();
+  const inputs = committed.inputs
+    ? validation.applyDefaults(run.inputs ?? {}, committed.inputs)
+    : run.inputs ?? {};
+  if (committed.inputs) {
+    const result = validation.validate(inputs, committed.inputs);
+    if (!result.valid) {
+      return result.errors.map((error) =>
+        `recorded input ${error.path}: ${error.message}`
+      );
+    }
+  }
+  const expected = structuredClone(committed);
+  const evaluator = new CelEvaluator();
+  for (const job of expected.jobs ?? []) {
+    for (const step of job.steps ?? []) {
+      const shell = step.task?.inputs?.run;
+      if (shell === undefined) continue;
+      try {
+        const values = new Map(
+          extractExpressions(shell).map((expression) => [
+            expression.raw,
+            expression.celExpression === "run.id"
+              ? expression.raw
+              : evaluator.evaluate(expression.celExpression, { inputs }),
+          ]),
+        );
+        step.task!.inputs!.run = replaceExpressions(shell, values) as string;
+      } catch (error) {
+        return [`cannot evaluate ${job.name}/${step.name} shell: ${error}`];
+      }
+    }
+  }
+  const errors = checkWorkflowProvenance(expected, evaluated);
+  if (errors.length > 0) return errors;
+  // Structure was checked above. Shells must match exactly, including the
+  // deferred run.id text: it must not become a provenance wildcard.
+  const snapshot = evaluated as WorkflowDef;
+  for (const [jobIndex, job] of (expected.jobs ?? []).entries()) {
+    for (const [stepIndex, step] of (job.steps ?? []).entries()) {
+      const shell = step.task?.inputs?.run;
+      if (shell === undefined) continue;
+      const actual = snapshot.jobs?.[jobIndex].steps?.[stepIndex].task?.inputs
+        ?.run;
+      if (shell !== actual) {
+        errors.push(
+          `jobs[${jobIndex}].steps[${stepIndex}].task.inputs.run differs from the committed definition`,
+        );
+      }
+    }
+  }
+  return errors;
 }
 
 function isEmptyDefault(value: unknown): boolean {
@@ -918,7 +993,9 @@ export function checkCheckout(
 export function parseCommandIndex(stdout: string): CommandIndex | null {
   try {
     const parsed: unknown = JSON.parse(stdout);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (
+      parsed === null || typeof parsed !== "object" || Array.isArray(parsed)
+    ) {
       return null;
     }
     const entries = Object.entries(parsed);
@@ -1196,7 +1273,7 @@ async function main(): Promise<number> {
   // Definitions are read at the verified commit for the same reason their
   // hashes are: the file in the working tree may have moved since the run.
   const sources: RunSource[] = [];
-  for (const source of resolvedSources) {
+  for (const source of matched.sources) {
     const workflow = WORKFLOWS.find((w) => w.name === source.name)!;
     const raw = await showAtCommit(commit, workflow.path);
     if (!raw) {
@@ -1223,7 +1300,11 @@ async function main(): Promise<number> {
       );
       return 1;
     }
-    const provenanceErrors = checkWorkflowProvenance(definition, evaluated);
+    const provenanceErrors = checkVerificationProvenance(
+      definition as WorkflowDef,
+      evaluated,
+      source.run,
+    );
     if (provenanceErrors.length > 0) {
       console.error(
         `${source.name} run ${source.run.id} did not execute ${workflow.path} ` +
@@ -1238,7 +1319,7 @@ async function main(): Promise<number> {
       return 1;
     }
 
-    sources.push({ ...source, definition: definition as WorkflowDef });
+    sources.push({ ...source, definition: evaluated as WorkflowDef });
   }
 
   const configIntegrity: Record<string, unknown> = {};

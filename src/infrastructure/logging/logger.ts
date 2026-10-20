@@ -64,8 +64,19 @@ export interface LoggingOptions {
 const stderrEncoder = new TextEncoder();
 const stderrFormatter = textFormatter();
 
+function writeStderr(text: string): void {
+  Deno.stderr.writeSync(stderrEncoder.encode(text));
+}
+
 /**
  * A sink that writes formatted records to stderr.
+ *
+ * Every line passes through `runFileSink.redactActive` first. The dispatch
+ * runner is the caller that matters: its stderr is read and re-logged by the
+ * worker supervisor, and it registers its dispatch redactor as an active
+ * redactor, so a method's log line or the runner's own failure warning leaves
+ * the process with the dispatch's secrets masked (swamp-club#3526). With no
+ * active redactor the line is written as it is.
  *
  * The formatter owns the trailing newline — both `textFormatter()` and the
  * pretty formatter already end their output with exactly one, so this writes
@@ -75,11 +86,47 @@ const stderrFormatter = textFormatter();
  *
  * Takes the formatter so `stderrOnly` can cover the pretty sink too: the
  * console sink is not the only console-bound sink, and the pretty one is what a
- * TTY session actually uses.
+ * TTY session actually uses. `write` is a seam for tests that want the real
+ * sink without stubbing `Deno.stderr`.
  */
-function createStderrSink(formatter: TextFormatter = stderrFormatter): Sink {
+export function createStderrSink(
+  formatter: TextFormatter = stderrFormatter,
+  write: (text: string) => void = writeStderr,
+): Sink {
   return (record) => {
-    Deno.stderr.writeSync(stderrEncoder.encode(formatter(record)));
+    if (!runFileSink.hasActiveSecrets) {
+      write(formatter(record));
+      return;
+    }
+    // Render complete values and mask them before layout can wrap or
+    // abbreviate a secret inside a structured value. Collapse the message
+    // to a literal so the formatter only lays out already-scrubbed text.
+    // Other sinks still receive the original record.
+    const redactString = (value: unknown) =>
+      typeof value === "string" ? runFileSink.redactActive(value) : value;
+    const render = (value: unknown) =>
+      runFileSink.redactActive(Deno.inspect(redactString(value), {
+        colors: false,
+        strAbbreviateSize: Infinity,
+        breakLength: Infinity,
+        iterableLimit: Infinity,
+      }));
+    const message = record.message.map((value, index) =>
+      index % 2 === 0 ? String(value) : render(value)
+    ).join("");
+    const redacted = {
+      ...record,
+      message: [runFileSink.redactActive(message)],
+      properties: Object.fromEntries(
+        Object.entries(record.properties).map(([key, value]) => [
+          key,
+          value !== null && typeof value === "object"
+            ? render(value)
+            : redactString(value),
+        ]),
+      ),
+    };
+    write(runFileSink.redactActive(formatter(redacted)));
   };
 }
 

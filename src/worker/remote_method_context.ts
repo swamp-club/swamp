@@ -132,6 +132,14 @@ export interface RemoteContextOptions {
   resourceSpecs?: Record<string, ResourceOutputSpec>;
   signal: AbortSignal;
   onEvent?: MethodContext["onEvent"];
+  /**
+   * The dispatch's redactor, when the caller owns it: the runner registers it
+   * as an active process redactor before anything runs, so its stderr is
+   * masked for the whole dispatch (swamp-club#3526). Secrets the context
+   * learns are added to it. Without one the context makes its own with
+   * {@link dispatchRedactor}.
+   */
+  redactor?: SecretRedactor;
 }
 
 /**
@@ -591,7 +599,8 @@ export function createRemoteMethodContext(
   // Every secret value the worker receives for this dispatch: the values it
   // was dispatched with, and each one the vault proxy resolves while the
   // method runs.
-  const redactor = dispatchRedactor(dispatch.secretValues);
+  const redactor = options.redactor ??
+    dispatchRedactor(dispatch.secretValues);
   const dataRepository = createRemoteDataRepository(options);
   const vaultService = createRemoteVaultService(options, redactor);
   const definitionRepository = createRemoteDefinitionRepository(options);

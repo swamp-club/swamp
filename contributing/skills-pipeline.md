@@ -246,11 +246,13 @@ Code CLI: a custom promptfoo provider (`evals/promptfoo/claude_cli_provider.mjs`
 calls `claude -p` with no tools and a JSON-schema enum of the choices, so a
 claude.ai login is enough and no `ANTHROPIC_API_KEY` is read. `--route cli|api`
 overrides the default, which is `api` in GitHub Actions and for models with no
-CLI route (`fable`, GPT, Gemini), and `cli` otherwise. The preflight pings
-`claude -p`; an unusable CLI fails the run, it never skips.
+CLI route (`fable`, `gpt-5.4`, Gemini), and `cli` otherwise. The optional
+`gpt-6-astra` model always uses the Codex CLI route, including in Actions.
+The preflight checks the selected CLI; an unusable CLI fails the run, it never
+skips. Claude remains the default.
 
-The CLI route passes a model alias, so it follows the latest model, and records
-the exact model each run resolved to in the console and step summary. It has no
+The Claude CLI route passes a model alias, so it follows the latest model, and
+records the exact model each run resolved to in the console and step summary. It has no
 temperature or forced tool choice; the schema enum forces the pick and
 `--effort` (low for sonnet, medium for opus) stands in for thinking.
 
@@ -267,6 +269,9 @@ The CLI default is `opus` (`default: { model: "opus" }` in
 
 ```bash
 deno run eval-skill-triggers --model sonnet
+
+# Optional Codex CLI, using an existing Codex login
+deno run eval-skill-triggers --model gpt-6-astra --route cli
 
 # API route, as CI runs it
 export ANTHROPIC_API_KEY=<your-key>
@@ -285,7 +290,11 @@ deno run eval-skill-triggers --model gemini-2.5-pro
 deno run eval-skill-triggers --model sonnet --concurrency 10 --threshold 0.85
 ```
 
-Defaults are concurrency 6 on the CLI route (every case is a `claude -p`
+`verify-skills` accepts `--input reviewer=codex` to select this Codex model
+for all three phases. Omit the input to keep Claude (`opus`). Tessl skill
+quality review is independent of this selection.
+
+Defaults are concurrency 6 on the CLI route (every case is a separate CLI
 process on your subscription) and 20 on the API route, and threshold 90%. An
 API-route sonnet run costs ~$2; the CLI route is billed to the subscription and
 prints tokens instead of a dollar figure.
