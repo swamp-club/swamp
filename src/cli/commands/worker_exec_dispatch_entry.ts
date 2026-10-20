@@ -44,7 +44,9 @@ await initializeLogging({
   stderrOnly: true,
 });
 
-await runDispatchRunner(Deno.stdin.readable, Deno.stdout.writable);
+await runDispatchRunner(Deno.stdin.readable, Deno.stdout.writable, {
+  retainRedactorUntilExit: true,
+});
 // The runner returns once its result frame is flushed; the open stdin reader
 // would otherwise keep this process alive.
 Deno.exit(0);

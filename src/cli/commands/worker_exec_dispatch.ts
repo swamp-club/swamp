@@ -57,5 +57,5 @@ export const workerExecDispatchCommand = new Command()
     const stdin = Deno.stdin.readable;
     const stdout = Deno.stdout.writable;
 
-    await runDispatchRunner(stdin, stdout);
+    await runDispatchRunner(stdin, stdout, { retainRedactorUntilExit: true });
   });

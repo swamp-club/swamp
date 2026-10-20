@@ -1527,10 +1527,11 @@ credentials and extensions onto workers:
      per dispatch with them from the first frame, shares it with the method
      context, whose vault proxy adds every value `resolveSecret` returns while
      the method runs, and registers it as an active process redactor for the
-     dispatch's lifetime, so `writeResource` data, the streamed output events,
+     runner process's lifetime (including buffered tracing shutdown), so
+     `writeResource` data, the streamed output events,
      the result frame (the console capture, swamp-club#3080, and the error
      message, swamp-club#3525) and the runner's own stderr (its LogTape sink
-     and the console guard's writer) are all masked before they leave the
+     and both console writers) are all masked before they leave the
      runner. The worker supervisor scrubs the shipped values from runner
      stderr once more before re-logging it at debug (swamp-club#3526).
   2. **Serve (defense in depth):** the orchestrator stores a per-dispatch

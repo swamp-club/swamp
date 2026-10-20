@@ -248,6 +248,7 @@ export class RunFileSink {
       }
     }
     this.writers.clear();
+    this.redactors.clear();
   }
 }
 

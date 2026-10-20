@@ -109,6 +109,7 @@ export function definitionFromExecution(
 export async function runDispatchRunner(
   stdin: ReadableStream<Uint8Array>,
   stdout: WritableStream<Uint8Array>,
+  options: { retainRedactorUntilExit?: boolean } = {},
 ): Promise<void> {
   const transport = new StdioTransport(stdout);
   const channel = new RpcChannel(transport);
@@ -172,11 +173,10 @@ export async function runDispatchRunner(
   // also an active process redactor until the dispatch is over: this
   // process's stderr is read and re-logged by the worker supervisor, so the
   // stderr sink and the console guard mask the dispatch's secrets before a
-  // line leaves (swamp-club#3526). Nothing before this point handles a secret
-  // (the bootstrap frame is parsed, not logged, and the scratch directory is
-  // named after the dispatch id), and nothing after the finally below writes
-  // to stderr, so releasing it there covers every path, the failure warning
-  // included. Keep secret-bearing work below this line.
+  // line leaves (swamp-club#3526). CLI entry points retain it until process
+  // exit because buffered console traces flush after this function returns.
+  // In-process callers release it when the dispatch ends. Nothing before
+  // this point handles a secret (bootstrap is parsed, not logged).
   const redactor = dispatchRedactor(dispatch.secretValues);
   const redactorHandle = runFileSink.registerRedactor(redactor);
 
@@ -261,7 +261,9 @@ export async function runDispatchRunner(
       durationMs,
     };
   } finally {
-    runFileSink.unregisterRedactor(redactorHandle);
+    if (!options.retainRedactorUntilExit) {
+      runFileSink.unregisterRedactor(redactorHandle);
+    }
     await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
   }
 

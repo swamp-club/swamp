@@ -37,9 +37,18 @@
 
 import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
+import { trace } from "@opentelemetry/api";
+import { z } from "zod";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { modelRegistry } from "../src/domain/models/model.ts";
+import { runFileSink } from "../src/infrastructure/logging/run_file_sink.ts";
+import {
+  initTracing,
+  shutdownTracing,
+} from "../src/infrastructure/tracing/otel_init.ts";
+import { redirectConsoleToStderr } from "../src/cli/dispatch_runner_stdio.ts";
+import { defineModel, modelRegistry } from "../src/domain/models/model.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
 import {
   type DispatchParams,
   type DispatchResult,
@@ -130,7 +139,10 @@ interface RunnerRun {
 }
 
 /** Runs one dispatch through the runner in this process. */
-async function runInProcess(bootstrap: RunnerBootstrapParams): Promise<
+async function runInProcess(
+  bootstrap: RunnerBootstrapParams,
+  options?: Parameters<typeof runDispatchRunner>[2],
+): Promise<
   RunnerRun
 > {
   const stdin = new TransformStream<Uint8Array, Uint8Array>();
@@ -142,7 +154,7 @@ async function runInProcess(bootstrap: RunnerBootstrapParams): Promise<
       written.push(chunk);
     },
   });
-  await runDispatchRunner(stdin.readable, stdout);
+  await runDispatchRunner(stdin.readable, stdout, options);
   stdinWriter.close();
   await stdin.writable.close();
   const frames: string[] = [];
@@ -515,4 +527,70 @@ Deno.test({
       }
     });
   },
+});
+
+Deno.test("remote secrets baseline: buffered console spans stay masked after the dispatch returns", async () => {
+  const type = ModelType.create(`swamp/buffered-trace-${crypto.randomUUID()}`);
+  const secret = `trace-learned-${crypto.randomUUID()}\n${
+    "private-key-line\n".repeat(20)
+  }`;
+  const methods = ["log", "info", "debug", "dir", "warn", "error"] as const;
+  const original = Object.fromEntries(
+    methods.map((method) => [method, console[method]]),
+  );
+  const flushed: string[] = [];
+  defineModel({
+    type,
+    version: "2026.10.20.1",
+    methods: {
+      run: {
+        description:
+          "buffers a span containing a secret learned during execution",
+        kind: "action",
+        arguments: z.object({}),
+        execute: (_args, context) => {
+          context.redactor!.addSecret(secret);
+          const span = trace.getTracer("buffered-test").startSpan(
+            "buffered-dispatch",
+          );
+          span.recordException(new Error(secret));
+          span.end();
+          throw new Error(secret);
+        },
+      },
+    },
+  });
+  try {
+    redirectConsoleToStderr((line) => flushed.push(line));
+    await initTracing({ exporterKind: "console", bspUse: true });
+    await withTempDir(async (cacheDirPath) => {
+      const dispatch = failDispatch("");
+      dispatch.secretValues = [];
+      dispatch.execution.modelType = type.normalized;
+      dispatch.execution.methodName = "run";
+      dispatch.execution.methodArgs = {};
+      dispatch.bundleFingerprint = `builtin:${type.normalized}`;
+      await captureRunnerStderr(async () => {
+        const { result } = await runInProcess({
+          sessionCredential: "unused",
+          dataPlaneUrl: "http://127.0.0.1:9",
+          cacheDirPath,
+          dispatch,
+        }, { retainRedactorUntilExit: true });
+        assertEquals(result.error, "***");
+      });
+      assertEquals(runFileSink.redactActive(secret), "***");
+      await shutdownTracing();
+      const output = flushed.join("\n");
+      assert(output.includes("buffered-dispatch"), output);
+      assert(output.includes("***"), output);
+      assertEquals(output.includes("trace-learned-"), false, output);
+      assertEquals(output.includes("private-key-line"), false, output);
+    });
+  } finally {
+    await shutdownTracing();
+    Object.assign(console, original);
+    runFileSink.dispose();
+    modelRegistry.invalidateType(type);
+  }
 });
