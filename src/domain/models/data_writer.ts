@@ -566,6 +566,13 @@ export async function processSensitiveResourceData(
       vaultKey,
     });
 
+    // Wildcard output stores each original top-level value as a whole.
+    // Nested fields still populate their configured vault keys, but must
+    // not replace an already-vaulted parent's reference with an object.
+    if (
+      spec.sensitiveOutput && !ownKeys.has(field) && field.path.includes(".")
+    ) continue;
+
     const vaultRef = `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
 
     // Apply vault reference to data

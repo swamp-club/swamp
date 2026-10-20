@@ -1175,6 +1175,7 @@ interface StoredRecord {
   version: number;
   tags: Record<string, string>;
   content: unknown;
+  metadata?: { name?: string; version?: number; ownerRef?: string };
 }
 
 /**
@@ -1208,7 +1209,17 @@ function createServiceWithRecord(
         const found = record !== null && record.name === name &&
           (version === undefined || version === record.version);
         return Promise.resolve(
-          found ? { name, version: record.version, tags: record.tags } : null,
+          found
+            ? {
+              name: record.metadata?.name ?? name,
+              version: record.metadata?.version ?? record.version,
+              tags: record.tags,
+              ownerDefinition: {
+                ownerType: "model-method",
+                ownerRef: record.metadata?.ownerRef ?? modelId,
+              },
+            }
+            : null,
         );
       },
       getContent: (_type: ModelType, _modelId: string, name: string) =>
@@ -1324,6 +1335,16 @@ Deno.test("resolveSecret: a claim is refused for a missing resource, a wrong ver
       reason: string;
     }
   > = [
+    ...[
+      { name: "other-resource" },
+      { version: 3 },
+      { ownerRef: "other-model" },
+    ].map((metadata) => ({
+      record: { ...TAGGED, metadata },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record identity does not match the dispatched behavior",
+    })),
     {
       record: null,
       claim: { name: "state-main", version: 2 },

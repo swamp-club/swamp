@@ -32,6 +32,7 @@
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { dirname, join } from "@std/path";
 import { z } from "zod";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -48,6 +49,7 @@ import {
 } from "../src/domain/models/data_writer.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../src/domain/vaults/secret_reference_errors.ts";
+import { PathTraversalError } from "../src/infrastructure/persistence/safe_path.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import { extractVaultReferences } from "../src/domain/expressions/vault_reference_extractor.ts";
 import type { VaultExtractionResult } from "../src/domain/expressions/vault_reference_extractor.ts";
@@ -119,7 +121,7 @@ async function seedResource(
     tags: { type: "resource", specName: SPEC, ...extraTags },
     ownerDefinition: {
       ownerType: "model-method",
-      ownerRef: `${type.normalized}:${modelId}`,
+      ownerRef: modelId,
     },
   });
   await o.repoContext.unifiedDataRepo.save(
@@ -439,6 +441,130 @@ Deno.test({
         );
       }
     });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: overlapping sensitive fields retain writer references through redaction and claim authorization",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const secret = canary("overlapping");
+      const host = "192.0.2.10";
+      const redactor = new SecretRedactor();
+      redactor.addSecret(host);
+      const { writeResource } = createResourceWriter(
+        f.o.repoContext.unifiedDataRepo,
+        f.typeA,
+        f.modelIdA,
+        {
+          [SPEC]: {
+            schema: z.object({
+              credentials: z.object({
+                token: z.string().meta({ sensitive: true }),
+                note: z.string(),
+              }).meta({ sensitive: true }),
+            }),
+            sensitiveOutput: true,
+            lifetime: "infinite",
+            garbageCollection: 5,
+          },
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        await VaultService.fromRepository(f.o.repoDir),
+        "run",
+        undefined,
+        redactor,
+      );
+      const name = `overlapping-${host}`;
+      await writeResource(SPEC, name, {
+        credentials: { token: secret, note: "preserved" },
+      });
+      const expected = {
+        credentials: JSON.stringify({ token: secret, note: "preserved" }),
+      };
+      assertEquals(await f.context.readResource!(name), expected);
+      assertEquals(await readLocally(f, name), expected);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: resource claims refuse symlinks into another behavior's records",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (const level of ["resource", "model", "content"] as const) {
+      await withFixture(async (f) => {
+        const repo = f.o.repoContext.unifiedDataRepo;
+        const vault = await VaultService.fromRepository(f.o.repoDir);
+        const write = async (type: ModelType, modelId: string) => {
+          const { writeResource } = createResourceWriter(
+            repo,
+            type,
+            modelId,
+            RESOURCE_SPECS,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            vault,
+            "run",
+          );
+          return await writeResource(SPEC, "state", {
+            password: canary("symlink-target"),
+            note: "n",
+          });
+        };
+        const own = await write(f.typeA, f.modelIdA);
+        const other = await write(f.typeB, f.modelIdB);
+        const [{ vaultName, key }] = sensitiveVaultReferences(
+          other.attributes!,
+          ["password"],
+        );
+        const ownVersion = repo.getPath(
+          f.typeA,
+          f.modelIdA,
+          "state",
+          own.version,
+        );
+        const otherVersion = repo.getPath(
+          f.typeB,
+          f.modelIdB,
+          "state",
+          other.version,
+        );
+        const atLevel = (version: string) =>
+          level === "content"
+            ? join(version, "raw")
+            : level === "resource"
+            ? dirname(version)
+            : dirname(dirname(version));
+        const linked = atLevel(ownVersion);
+        await Deno.remove(linked, { recursive: level !== "content" });
+        await Deno.symlink(atLevel(otherVersion), linked, {
+          type: level === "content" ? "file" : "dir",
+        });
+        await assertRejects(
+          () =>
+            f.o.capabilityService.resolveSecret(WORKER, {
+              vaultName,
+              secretKey: key,
+              dispatchId: f.dispatchId,
+              resource: { name: "state", version: own.version },
+            }),
+          PathTraversalError,
+        );
+      });
+    }
   },
 });
 

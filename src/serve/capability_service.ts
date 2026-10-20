@@ -526,6 +526,15 @@ export class CapabilityService {
       if (record === null) {
         throw refused("no such resource of the dispatched behavior");
       }
+      if (
+        record.name !== claim.name || record.version !== claim.version ||
+        record.ownerDefinition.ownerType !== "model-method" ||
+        record.ownerDefinition.ownerRef !== dispatch.modelId
+      ) {
+        throw refused(
+          "the record identity does not match the dispatched behavior",
+        );
+      }
       const sensitiveFields = parseSensitiveFieldsTag(record.tags);
       if (sensitiveFields === null) {
         throw refused("the record has no sensitive fields");

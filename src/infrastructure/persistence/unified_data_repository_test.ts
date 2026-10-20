@@ -43,6 +43,7 @@ import type {
 } from "../../domain/data/repositories.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { PathTraversalError } from "./safe_path.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -65,6 +66,32 @@ async function withTempRepo(
     }
   }
 }
+
+Deno.test("record reads: metadata and content symlinks cannot escape the requested model", async () => {
+  await withTempRepo(async (repo) => {
+    for (const model of ["own", "other"]) {
+      await repo.save(
+        testType,
+        model,
+        makeJsonData("state"),
+        new TextEncoder().encode("{}"),
+      );
+    }
+    for (const file of ["metadata.yaml", "raw"]) {
+      const own = join(repo.getPath(testType, "own", "state", 1), file);
+      const other = join(repo.getPath(testType, "other", "state", 1), file);
+      await Deno.remove(own);
+      await Deno.symlink(other, own, { type: "file" });
+      await assertRejects(
+        () =>
+          file === "metadata.yaml"
+            ? repo.findByName(testType, "own", "state", 1)
+            : repo.getContent(testType, "own", "state", 1),
+        PathTraversalError,
+      );
+    }
+  });
+});
 
 Deno.test("getPath rejects dataName with path traversal", async () => {
   await withTempRepo((repo) => {

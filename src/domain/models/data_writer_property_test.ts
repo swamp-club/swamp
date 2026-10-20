@@ -171,6 +171,69 @@ Deno.test("createResourceWriter: persisted content keeps vault references exact 
   );
 });
 
+Deno.test("createResourceWriter: wildcard output keeps whole top-level references with overlapping sensitivity", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.boolean(),
+      arbNameSecret,
+      fc.jsonValue(),
+      fc.jsonValue(),
+      async (sensitiveParent, nameSecret, token, note) => {
+        const repo = createCapturingRepo();
+        const vault = new VaultService();
+        vault.registerVault({ name: "test-vault", type: "mock", config: {} });
+        const redactor = new SecretRedactor();
+        redactor.addSecret(nameSecret);
+        const resource: ResourceOutputSpec = {
+          schema: z.object({
+            credentials: z.object({
+              token: z.unknown().meta({ sensitive: true, vaultKey: "token" }),
+              note: z.unknown(),
+            }).meta({ sensitive: sensitiveParent }),
+            "credentials.token": z.unknown(),
+          }),
+          sensitiveOutput: true,
+          lifetime: "infinite",
+          garbageCollection: 5,
+        };
+        const { writeResource } = createResourceWriter(
+          repo,
+          modelType,
+          modelId,
+          { r: resource },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          vault,
+          "put",
+          undefined,
+          redactor,
+        );
+        const handle = await writeResource("r", `n~${nameSecret}`, {
+          credentials: { token, note },
+          "credentials.token": "${{ vault.get('other', 'not-authorized') }}",
+        });
+        assertEquals(
+          handle.tags[SENSITIVE_FIELDS_VERSION_TAG],
+          SENSITIVE_FIELDS_VERSION,
+        );
+        const stored = JSON.parse(repo.persisted()) as Record<string, unknown>;
+        const references = sensitiveVaultReferences(stored, "*");
+        assertEquals(references.length, 2);
+        // This resolves the bytes produced by the real writer, including
+        // any redaction, rather than assuming a writer-shaped fixture.
+        await resolveSensitiveVaultRefs(stored, "*", vault);
+        assertEquals(stored, {
+          credentials: JSON.stringify({ token, note }),
+          "credentials.token": "${{ vault.get('other', 'not-authorized') }}",
+        });
+      },
+    ),
+  );
+});
+
 /** Tag keys a user might write: ordinary ones, and keys under `_swamp.`. */
 const arbTagKey = fc.oneof(
   fc.string({ minLength: 1, maxLength: 12 }),

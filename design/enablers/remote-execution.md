@@ -797,14 +797,21 @@ are evaluated before dispatch, so its allowlist is always exact
 (swamp-club#3529). A read for a tagged sensitive field of the dispatch's own
 resource carries a resource claim (the record's name and version) as another
 way to authorize the value read:
-serve looks the record up under the dispatch's behavior type and model id and
-admits the read only if a tagged location of the record holds that exact
+serve looks the record up under the dispatch's behavior type and model id,
+checks its canonical name, version, and owner, and admits the read only if a
+tagged location of the record holds that exact
 reference as its whole value: the value at a listed path, or each top-level
 key's own value under the `*` tag, never anything nested below one. The claim
 rests on the data writer vaulting every present sensitive value, reference
 text included and each `sensitiveOutput` key by its own name, and on the
 `_swamp.` tag prefix being written by swamp alone, so a tagged location only
-ever holds a reference the writer made. The writer stamps
+ever holds a reference the writer made. Under `sensitiveOutput`, a nested
+schema-sensitive field still populates its configured vault key, but only
+the whole top-level value's reference is persisted; a child cannot overwrite
+its parent's reference. Metadata and content reads follow symlinks only within
+the requested behavior's directory, with that boundary derived from the
+canonical datastore root rather than from a potentially linked model directory.
+The writer stamps
 `_swamp.sensitiveFieldsVersion: "1"` only after vaulting; serve requires this
 version before a claim can grant access. Older records can carry forged tags
 or unvaulted dotted keys, so their tags alone cannot authorize a read. Such
