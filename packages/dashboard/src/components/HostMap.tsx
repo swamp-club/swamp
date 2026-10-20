@@ -34,6 +34,7 @@ import {
 import {
   fadeFraction,
   type FleetWorker,
+  groupCaption,
   type GroupStats,
   groupValue,
   groupWorkers,
@@ -89,6 +90,13 @@ const GLIDE_MS = 700;
 const SETTLE_TICKS = 260;
 /** Golden angle, for sunflower seeding of a card's workers. */
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/**
+ * A disconnected worker starts half faded, so it reads as gone rather than
+ * failed, and fades by this much more over the visibility TTL — ending above
+ * the placement selector's `.hm-dim` (host-map.css).
+ */
+const DISCONNECTED_OPACITY = 0.5;
+const DISCONNECTED_FADE = 0.3;
 
 const STATUS_ORDER: readonly WorkerStatus[] = [
   "unverified",
@@ -494,9 +502,7 @@ export function HostMap(props: HostMapProps) {
     all.select("text.hm-cell-name").text((c) => c.key);
     all.select("text.hm-cell-count").text((c) => {
       const g = statsByKey.get(c.key);
-      if (!g) return "";
-      const slots = `${g.usedSlots}/${g.totalSlots} slots`;
-      return c.w < 190 ? slots : `${g.up}/${g.workers.length} up · ${slots}`;
+      return g ? groupCaption(g, c.w) : "";
     });
     all.each(function (c) {
       const g = statsByKey.get(c.key);
@@ -626,7 +632,9 @@ export function HostMap(props: HostMapProps) {
         "opacity",
         (d) =>
           d.worker.status === "disconnected"
-            ? 1 - 0.85 * fadeFraction(d.worker, Date.now(), p.ttlMs)
+            ? DISCONNECTED_OPACITY -
+              DISCONNECTED_FADE *
+                fadeFraction(d.worker, Date.now(), p.ttlMs)
             : 1,
       );
 
