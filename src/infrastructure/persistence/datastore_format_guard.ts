@@ -26,10 +26,16 @@ import {
 import {
   assertSupportedDatastoreFormat,
   DATASTORE_FORMAT_MARKER_FILE,
+  DATASTORE_FORMAT_MARKER_MAX_BYTES,
   type DatastoreEngine,
   type DatastoreFormatMarkerRead,
   DatastoreFormatMismatchError,
   engineForFormat,
+  InvalidDatastoreFormatMarkerError,
+  isBlankDatastoreFormatMarker,
+  LostDatastoreFormatMarkerError,
+  lostFormatMarkerAdvice,
+  type LostFormatMarkerContext,
   parseDatastoreFormatMarker,
   supportedDatastoreFormatsFor,
   UnreachableDatastoreFormatMarkerError,
@@ -62,6 +68,87 @@ import { resolveCustomProvider } from "./datastore_global_lock.ts";
 export const DATASTORE_FORMAT_UNCAPPED_READ_TIMEOUT_MS = 60_000;
 
 const logger = getLogger(["swamp", "datastore", "format-marker"]);
+
+/** Options for {@link ensureSupportedDatastoreFormat}. */
+export interface DatastoreFormatGuardOptions
+  extends ReadDatastoreFormatMarkerOptions {
+  /**
+   * The datastore is the directory `swamp datastore setup` was pointed at,
+   * not the repository's own: a lost marker's advice says so
+   * (swamp-club#3617).
+   */
+  readonly setupTarget?: boolean;
+}
+
+/**
+ * The v3 commit log's file at a filesystem datastore's root. Named here
+ * only to stat it: whether it is there tells a v3 datastore whose marker a
+ * crash lost from a v2 one (swamp-club#3617). It is never opened here.
+ */
+const V3_COMMIT_LOG_FILE = "commits.db";
+
+/**
+ * How a filesystem datastore's format marker is lost (swamp-club#3617):
+ * missing (`absent`), or a blank file a crash left ({@link isBlankDatastoreFormatMarker}).
+ */
+export type LostDatastoreFormatMarker = "absent" | "blank";
+
+/**
+ * Whether the filesystem datastore at `datastorePath` is a v3 datastore
+ * whose format marker a crash lost (swamp-club#3617): a `commits.db` that is
+ * a regular file beside no marker, or beside a blank one. It stats the
+ * commit log and never opens it. Undefined otherwise, including when either
+ * cannot be looked at.
+ */
+export async function lostDatastoreFormatMarker(
+  datastorePath: string,
+): Promise<LostDatastoreFormatMarker | undefined> {
+  const markerPath = join(datastorePath, DATASTORE_FORMAT_MARKER_FILE);
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(markerPath);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) return undefined;
+    return await holdsV3CommitLog(datastorePath) ? "absent" : undefined;
+  }
+  if (!info.isFile || info.size > DATASTORE_FORMAT_MARKER_MAX_BYTES) {
+    return undefined;
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = await Deno.readFile(markerPath);
+  } catch {
+    return undefined;
+  }
+  return await lostMarkerOf(datastorePath, {
+    kind: "present",
+    source: markerPath,
+    bytes,
+  });
+}
+
+/** What {@link lostDatastoreFormatMarker} says, given the marker's read. */
+async function lostMarkerOf(
+  datastorePath: string,
+  read: DatastoreFormatMarkerRead,
+): Promise<LostDatastoreFormatMarker | undefined> {
+  const lost = read.kind === "absent"
+    ? "absent"
+    : read.kind === "present" && isBlankDatastoreFormatMarker(read.bytes)
+    ? "blank"
+    : undefined;
+  if (lost === undefined) return undefined;
+  return await holdsV3CommitLog(datastorePath) ? lost : undefined;
+}
+
+/** Whether a regular-file `commits.db` is at the datastore's root. */
+async function holdsV3CommitLog(datastorePath: string): Promise<boolean> {
+  try {
+    return (await Deno.lstat(join(datastorePath, V3_COMMIT_LOG_FILE))).isFile;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Config objects already checked in this process, whether the check passed
@@ -103,9 +190,17 @@ const guarded = new WeakMap<DatastoreConfig, DatastoreEngine>();
  *   fails too, never opened as v2 on what may be a v3 datastore;
  * - otherwise a marker that cannot be read is skipped as v2, as before.
  *
+ * A filesystem datastore whose marker a crash lost beside its v3 commit log
+ * (swamp-club#3617, {@link lostDatastoreFormatMarker}) is refused with
+ * advice for where it was met: a blank marker as an invalid one, a missing
+ * marker as a mismatch under a config that says format 3 and as
+ * {@link LostDatastoreFormatMarkerError} otherwise, never opened as v2.
+ *
  * @throws UnsupportedDatastoreFormatError when the format is newer
  * @throws InvalidDatastoreFormatMarkerError when the marker is garbled
  * @throws DatastoreFormatMismatchError when config and marker disagree
+ * @throws LostDatastoreFormatMarkerError when a v3 datastore's marker is
+ *   missing under a config that does not say format 3
  * @throws UnreachableDatastoreFormatMarkerError when an extension datastore
  *   that may be v3 cannot have its marker read
  * @throws V3HostingUnsupportedError when a v3 extension datastore's provider
@@ -116,7 +211,7 @@ const guarded = new WeakMap<DatastoreConfig, DatastoreEngine>();
 export async function ensureSupportedDatastoreFormat(
   repoDir: string,
   config: DatastoreConfig,
-  options?: ReadDatastoreFormatMarkerOptions,
+  options?: DatastoreFormatGuardOptions,
 ): Promise<DatastoreEngine> {
   const known = guarded.get(config);
   if (known !== undefined) return known;
@@ -159,6 +254,31 @@ export async function ensureSupportedDatastoreFormat(
       throw new UnreadableDatastoreFormatMarkerError(
         read.source,
         read.error instanceof Error ? read.error.message : String(read.error),
+      );
+    }
+    const lost = custom ? undefined : await lostMarkerOf(config.path, read);
+    if (!custom && lost !== undefined) {
+      const context: LostFormatMarkerContext = options?.setupTarget
+        ? "setup-target"
+        : config.format === 3
+        ? "v3-config"
+        : "config";
+      const advice = lostFormatMarkerAdvice(context);
+      if (read.kind === "present") {
+        // A blank marker is not JSON: the refusal it always had, with the
+        // way out for a lost marker.
+        throw new InvalidDatastoreFormatMarkerError(
+          read.source,
+          "not valid JSON",
+          advice,
+        );
+      }
+      if (context === "v3-config") {
+        throw new DatastoreFormatMismatchError(3, undefined, advice);
+      }
+      throw markErrorPaths(
+        new LostDatastoreFormatMarkerError(config.path, context),
+        [config.path],
       );
     }
     const decision = assertSupportedDatastoreFormat(

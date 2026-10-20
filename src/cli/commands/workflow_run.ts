@@ -538,6 +538,7 @@ export const workflowRunCommand = new Command()
                   unlocked.datastoreResolver,
                   repoContext.autoGc,
                   repoContext.unifiedDataRepo.fetchForeignContent,
+                  repoContext.unreadableContent,
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
                 service.runCheckpointer = runCheckpointer;

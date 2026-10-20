@@ -38,6 +38,9 @@
  */
 
 import { dirname, join } from "@std/path";
+import { syncDirectory } from "../persistence/sync_directory.ts";
+
+export { syncDirectory };
 
 /** Files a batch holds open before it syncs them early: under macOS's 256. */
 const DEFAULT_MAX_OPEN_FILES = 64;
@@ -88,15 +91,19 @@ export class DurableWriteBatch {
    * Writes `content` to `path` through a temp file and a rename, creating
    * its directory. `options.absentDirectories`, the directories above `path`
    * the caller just found absent, deepest first, saves looking them up; an
-   * empty list says the directory exists. On failure, including an abort of
-   * `signal` while streaming, the temp file is removed and `path` is left as
-   * it was.
+   * empty list says the directory exists. `options.written` is handed the
+   * temp file's own stat once every byte is written, before the rename. On
+   * failure, including an abort of `signal` while streaming, the temp file
+   * is removed and `path` is left as it was.
    */
   async write(
     path: string,
     content: Uint8Array | ReadableStream<Uint8Array>,
     signal: AbortSignal,
-    options: { readonly absentDirectories?: readonly string[] } = {},
+    options: {
+      readonly absentDirectories?: readonly string[];
+      readonly written?: (info: Deno.FileInfo) => void;
+    } = {},
   ): Promise<void> {
     await this.release(path);
     const dir = dirname(path);
@@ -127,6 +134,7 @@ export class DurableWriteBatch {
         }
       }
       signal.throwIfAborted();
+      options.written?.(await file.stat());
       if (!this.#sync) {
         // Nothing to sync, so nothing to hold: close before the rename, as
         // Windows prefers.
@@ -216,14 +224,16 @@ export class DurableWriteBatch {
 /**
  * Writes `content` to `path` durably: one {@link DurableWriteBatch} write and
  * its barrier. The read model writes through batches; this is the one-file
- * form.
+ * form. `options` replaces how the file and its directories are synced, for
+ * tests.
  */
 export async function writeFileDurably(
   path: string,
   content: Uint8Array | ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  options: Pick<DurableWriteBatchOptions, "syncFile" | "syncDirectory"> = {},
 ): Promise<void> {
-  const batch = new DurableWriteBatch();
+  const batch = new DurableWriteBatch(options);
   try {
     await batch.write(path, content, signal);
     await batch.barrier();
@@ -273,24 +283,6 @@ async function missingDirectories(dir: string): Promise<string[]> {
     }
     missing.push(current);
     if (dirname(current) === current) return missing;
-  }
-}
-
-/**
- * Fsyncs a directory so a rename or removal in it is durable. Windows cannot
- * open a directory to sync it, and some filesystems refuse; both are
- * skipped, as SQLite skips them.
- */
-export async function syncDirectory(dir: string): Promise<void> {
-  if (Deno.build.os === "windows") return;
-  let handle: Deno.FsFile | undefined;
-  try {
-    handle = await Deno.open(dir, { read: true });
-    await handle.sync();
-  } catch {
-    // Best effort: the file itself is already synced.
-  } finally {
-    handle?.close();
   }
 }
 

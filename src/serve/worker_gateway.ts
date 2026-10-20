@@ -69,6 +69,7 @@ import {
   type MaxEnrollments,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 
 const logger = getSwampLogger(["serve", "worker-gateway"]);
 
@@ -1340,8 +1341,8 @@ export class WorkerGateway {
 
   /**
    * Reads every token record in the datastore, keyed by name. Records that
-   * are deleted, renamed, or do not parse are skipped. Read failures
-   * propagate.
+   * are deleted, renamed, do not parse, or that the datastore could not
+   * materialise are skipped. Other read failures propagate.
    */
   async #scanTokenRecords(): Promise<Map<string, EnrollmentToken>> {
     const records = new Map<string, EnrollmentToken>();
@@ -1350,8 +1351,20 @@ export class WorkerGateway {
     for (const { data, modelType, modelId } of dataItems) {
       if (data.isRenamed || data.isDeleted) continue;
       if (data.name !== TOKEN_DATA_NAME) continue;
-      const content = await this.#options.repoContext.unifiedDataRepo
-        .getContent(modelType, modelId, data.name);
+      let content: Uint8Array | null;
+      try {
+        content = await this.#options.repoContext.unifiedDataRepo
+          .getContent(modelType, modelId, data.name);
+      } catch (error) {
+        // One record the datastore could not materialise is left out
+        // rather than failing every enrollment (swamp-club#3617).
+        if (!isUnreadableContentError(error)) throw error;
+        logger.warn(
+          "Skipping unreadable enrollment token record {modelId}: {error}",
+          { modelId, error: (error as Error).message },
+        );
+        continue;
+      }
       if (!content) continue;
       let attrs: Record<string, unknown>;
       try {

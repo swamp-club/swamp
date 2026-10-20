@@ -51,7 +51,10 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
-import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  MarkDirtyHook,
+  UnreadableContentLookup,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import {
   SENSITIVE_FORMAT_VERSION,
   type WrittenReference,
@@ -149,10 +152,18 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   private readonly baseDir: string;
   private readonly idToActualPath = new Map<WorkflowId, string>();
 
+  /**
+   * `unreadableContent` tells an evaluated workflow a v3 read model could not
+   * materialise from an absent one (swamp-club#3617), so `--last-evaluated`
+   * fails loudly on it instead of finding no evaluation. A run's snapshot
+   * ({@link findByRunId}) is not loud: every reader settles against the
+   * workflow definition when it cannot read one.
+   */
   constructor(
     private readonly repoDir: string,
     baseDir?: string,
     private readonly markDirtyHook?: MarkDirtyHook,
+    private readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ??
       swampPath(repoDir, SWAMP_SUBDIRS.workflowsEvaluated);
@@ -283,6 +294,10 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
       }
+    }
+    if (isFilenameSafeName(name)) {
+      const error = await this.unreadableContent?.(this.getNamePath(name));
+      if (error !== undefined) throw error;
     }
     return null;
   }

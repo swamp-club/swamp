@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
-import { dirname } from "@std/path";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import { dirname, join } from "@std/path";
 import type {
   LocalProcess,
   ProcessIdentity,
@@ -26,11 +26,15 @@ import type {
 import { localProcess } from "./process_identity.ts";
 import {
   readWriterMarker,
+  readWriterMarkerFile,
+  recoverInterruptedWriter,
+  recoverySince,
   removeOwnWriterMarker,
   writerMarkerPath,
   writerMarkerState,
   writeWriterMarker,
 } from "./interrupted_writer_recovery.ts";
+import type { V3Datastore } from "./v3_datastore.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-writer-marker-" });
@@ -168,4 +172,173 @@ Deno.test("writerMarkerState: knows this process by its token, judges a process 
     "unknown",
   );
   assertEquals(writerMarkerState(marker(), gone), "unknown");
+});
+
+// --- swamp-club#3617: a marker a crash left unreadable ---
+
+/** Every marker file readWriterMarker reads as none. */
+const UNREADABLE_MARKERS = [
+  "",
+  "\0".repeat(80),
+  '{"hostname":"h","pid":4',
+  "not json",
+  "null",
+  JSON.stringify({ hostname: "h", pid: "1", since: 0 }),
+  JSON.stringify({ hostname: "h", pid: 0, since: 0 }),
+  JSON.stringify({ hostname: "h", pid: 1.5, since: 0 }),
+  JSON.stringify({ pid: 1, since: 0 }),
+  JSON.stringify({ hostname: "h", pid: 1 }),
+  JSON.stringify({ hostname: "h", pid: 1, since: 0, instance: 7 }),
+];
+
+Deno.test("readWriterMarkerFile: absent, a marker, or unreadable dated by its file's modification time (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(await readWriterMarkerFile(dir), { kind: "absent" });
+    const marker = { hostname: "h", pid: 4242, since: 1_000 };
+    await writeRaw(dir, JSON.stringify(marker));
+    assertEquals(await readWriterMarkerFile(dir), { kind: "marker", marker });
+    const mtime = new Date("2026-10-19T10:00:05.700Z");
+    for (const text of UNREADABLE_MARKERS) {
+      await writeRaw(dir, text);
+      await Deno.utime(writerMarkerPath(dir), mtime, mtime);
+      assertEquals(
+        await readWriterMarkerFile(dir),
+        { kind: "unreadable", since: recoverySince(mtime.getTime()) },
+        JSON.stringify(text),
+      );
+      assertEquals(await readWriterMarker(dir), undefined, text);
+    }
+  });
+});
+
+Deno.test("readWriterMarkerFile: a read error other than a missing file is thrown (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(writerMarkerPath(dir), { recursive: true });
+    await assertRejects(() => readWriterMarkerFile(dir));
+  });
+});
+
+Deno.test("writeWriterMarker: syncs the marker, its directory and the directories it created (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const files: string[] = [];
+    const dirs: string[] = [];
+    await writeWriterMarker(dir, {
+      syncFile: () => {
+        files.push("synced");
+        return Promise.resolve();
+      },
+      syncDirectory: (synced) => {
+        dirs.push(synced);
+        return Promise.resolve();
+      },
+    });
+    assertEquals(files, ["synced"]);
+    const stateDir = dirname(writerMarkerPath(dir));
+    // The state directory and every directory created on the way to it
+    // are synced in their parents, up to the temp directory that existed.
+    assert(dirs.includes(stateDir), dirs.join(", "));
+    assert(dirs.includes(dir), dirs.join(", "));
+    assertEquals((await readWriterMarker(dir))?.pid, Deno.pid);
+  });
+});
+
+/** A handle that records the recovery it is asked for, and nothing else. */
+function recordingHandle(dir: string, calls: number[]): V3Datastore {
+  return {
+    datastorePath: dir,
+    recoverInterruptedWriter: (since: number) => {
+      calls.push(since);
+      return Promise.resolve([]);
+    },
+  } as unknown as V3Datastore;
+}
+
+Deno.test("recoverInterruptedWriter: a writer recovers an unreadable marker from its modification time, then removes it (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    for (const text of ["", "\0".repeat(80), "null"]) {
+      await writeRaw(dir, text);
+      const mtime = new Date("2026-10-19T10:00:05.700Z");
+      await Deno.utime(writerMarkerPath(dir), mtime, mtime);
+      const calls: number[] = [];
+      assertEquals(
+        await recoverInterruptedWriter(recordingHandle(dir, calls), dir, {
+          holdsWriterLock: true,
+        }),
+        [],
+      );
+      assertEquals(calls, [recoverySince(mtime.getTime())], text);
+      assertEquals(await readWriterMarkerFile(dir), { kind: "absent" });
+    }
+  });
+});
+
+Deno.test("recoverInterruptedWriter: a marker file that changed by the time the lease is taken is left to its new writer (swamp-club#3617)", async () => {
+  const since = recoverySince(Date.parse("2026-10-19T10:00:00Z"));
+  const marker = (fields: Record<string, unknown>) =>
+    JSON.stringify({ hostname: "other-host", pid: 4242, since, ...fields });
+  const cases: {
+    name: string;
+    before: string;
+    after: string;
+    touch?: boolean;
+  }[] = [
+    {
+      name: "another pid, same since",
+      before: marker({ instance: "a" }),
+      after: marker({ instance: "a", pid: 4343 }),
+    },
+    {
+      name: "same pid and since, a new instance",
+      before: marker({ instance: "a" }),
+      after: marker({ instance: "b" }),
+    },
+    {
+      name: "same pid, since and instance, another host",
+      before: marker({ instance: "a" }),
+      after: marker({ instance: "a", hostname: "third-host" }),
+    },
+    { name: "unreadable, then a marker", before: "", after: marker({}) },
+    { name: "a marker, then unreadable", before: marker({}), after: "{" },
+    {
+      name: "unreadable, then unreadable with a new mtime",
+      before: "",
+      after: "",
+      touch: true,
+    },
+  ];
+  for (const { name, before, after, touch } of cases) {
+    await withTempDir(async (dir) => {
+      const path = writerMarkerPath(dir);
+      await writeRaw(dir, before);
+      const old = new Date("2026-10-19T10:00:05.700Z");
+      await Deno.utime(path, old, old);
+      const calls: number[] = [];
+      let raised = 0;
+      const handle = {
+        datastorePath: join(dir, "datastore"),
+        writerFence: () => undefined,
+        // The lease is taken: another command recovers and a new writer
+        // writes its marker before this one reads the file again.
+        raiseWriterFence: async () => {
+          raised++;
+          await Deno.writeTextFile(path, after);
+          const now = touch ? new Date("2026-10-19T10:00:15.700Z") : old;
+          await Deno.utime(path, now, now);
+        },
+        recoverInterruptedWriter: (from: number) => {
+          calls.push(from);
+          return Promise.resolve([]);
+        },
+      } as unknown as V3Datastore;
+      await Deno.mkdir(handle.datastorePath, { recursive: true });
+      assertEquals(
+        await recoverInterruptedWriter(handle, dir, { holdsWriterLock: false }),
+        undefined,
+        name,
+      );
+      assertEquals(raised, 1, name);
+      assertEquals(calls, [], name);
+      assertEquals(await Deno.readTextFile(path), after, name);
+    });
+  }
 });

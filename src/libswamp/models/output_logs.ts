@@ -31,6 +31,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 import {
@@ -85,12 +86,21 @@ export function createModelOutputLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  /**
+   * The repository context's lookup, so a read of a record the v3 read model
+   * could not materialise fails loudly (swamp-club#3617). Used by the output
+   * repository built here, and by the data repository when none is
+   * injected; an injected one carries its own.
+   */
+  unreadableContent?: UnreadableContentLookup,
 ): ModelOutputLogsDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
+    undefined,
+    unreadableContent,
   );
   // Reuse an injected shared data repo (e.g. serve's process-scoped
   // RepositoryContext) so we don't open a new file-based catalog store — and
@@ -102,6 +112,10 @@ export function createModelOutputLogsDeps(
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    undefined,
+    unreadableContent,
   );
   return {
     isPartialId,

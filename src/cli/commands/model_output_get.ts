@@ -94,7 +94,12 @@ export async function modelOutputGetAction(
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = {
-    ...await createModelOutputGetDeps(repoDir, datastoreResolver),
+    ...await createModelOutputGetDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.definitionRepo,
+      repoContext.unreadableContent,
+    ),
     retentionWatermarks: repoContext.retentionWatermarks,
   };
 

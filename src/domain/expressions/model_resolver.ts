@@ -46,6 +46,7 @@ import { isUuid } from "../models/model_lookup.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
+import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import { markModelWording, wordedText } from "../behavior_wording.ts";
 import { freeRoots } from "./cel_grammar.ts";
 import {
@@ -1038,6 +1039,7 @@ export class ModelResolver {
         record.size,
       );
     } catch (error) {
+      if (isUnreadableContentError(error)) throw error;
       getLogger(["swamp", "expressions"])
         .debug`Could not hydrate ${record.modelName}/${record.name}@v${record.version}: ${
         String(error)
@@ -1140,6 +1142,7 @@ export class ModelResolver {
               data.size,
             );
           } catch (error) {
+            if (isUnreadableContentError(error)) throw error;
             const worded = wordedText((w) =>
               `Could not download ${data.name} of ${w.noun} ${ref}, which ` +
               `the expression reads: ${
@@ -1370,6 +1373,7 @@ export class ModelResolver {
                     data.size,
                   ) !== "missing";
                 } catch (error) {
+                  if (isUnreadableContentError(error)) throw error;
                   getLogger(["swamp", "expressions"])
                     .debug`Could not hydrate ${ns.modelName}/${data.name}@v${data.version}: ${
                     String(error)

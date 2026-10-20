@@ -188,6 +188,7 @@ export const dataRenameCommand = withRemoteOptions(
           repoDir,
           datastoreResolver,
           repoContext.unifiedDataRepo,
+          repoContext.definitionRepo,
         );
         const renderer = createDataRenameRenderer(cliCtx.outputMode);
         await consumeStream(

@@ -19,6 +19,8 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { UserError } from "../domain/errors.ts";
+import { UNREADABLE_CONTENT_CODE } from "../domain/datastore/unreadable_content.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   fleetMemberSuffix,
@@ -2146,6 +2148,31 @@ Deno.test("WorkerGateway: readTokenRecords resolves a duplicated name to the new
   assertEquals(records.size, 1);
   assertEquals(records.get("dup")?.createdAt, fresh.createdAt);
   assertEquals(records.get("dup")?.state, "enrolled");
+});
+
+Deno.test("WorkerGateway: readTokenRecords leaves out a record the datastore cannot materialise (swamp-club#3617)", async () => {
+  const fresh = mintRecord("ci", BASE_MINT);
+  const repoContext = {
+    unifiedDataRepo: {
+      findAllForType: () =>
+        Promise.resolve(["m-torn", "m-fresh"].map((modelId) => ({
+          data: { name: "token-main", isRenamed: false, isDeleted: false },
+          modelType: "swamp/enrollment-token",
+          modelId,
+        }))),
+      getContent: (_type: unknown, modelId: string) =>
+        modelId === "m-torn"
+          ? Promise.reject(
+            new UserError("unreadable", UNREADABLE_CONTENT_CODE),
+          )
+          : Promise.resolve(new TextEncoder().encode(JSON.stringify(fresh))),
+    },
+  } as unknown as RepositoryContext;
+  const h = createHarness({ repoContext });
+
+  const records = await h.gateway.readTokenRecords();
+
+  assertEquals([...records.keys()], ["ci"]);
 });
 
 Deno.test("WorkerGateway: redeem rejections reach the worker coded, whatever the token is named", async () => {

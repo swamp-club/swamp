@@ -41,6 +41,7 @@ import {
   assertExists,
   assertNotEquals,
   assertRejects,
+  assertStrictEquals,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -80,6 +81,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { Definition, type InputsSchema } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
+import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import "../models/models.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
@@ -7350,6 +7352,228 @@ Deno.test({
           42,
         );
       } finally {
+        catalogStore.close();
+      }
+    });
+  },
+});
+
+/**
+ * A model whose `run` method reads its `cursor` resource, saved with the
+ * cursor's content file removed, and a lookup that reports that file as an
+ * unreadable v3 record (swamp-club#3617).
+ */
+async function unreadableCursorFixture(
+  tempDir: string,
+  catalogStore: CatalogStore,
+) {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { Data } = await import("../data/data.ts");
+  const modelType = ModelType.create(
+    `@test-issue3617/loud-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {
+      cursor: {
+        description: "cursor state",
+        schema: z.object({ lastSeen: z.number() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
+    methods: {
+      run: {
+        description: "reads its cursor",
+        arguments: z.object({}),
+        execute: async (_args, context) => {
+          await context.readResource!("cursor");
+          return {};
+        },
+      },
+    },
+  });
+  const instance = Definition.create({
+    name: "loud-instance",
+    type: modelType.normalized,
+  });
+  await new YamlDefinitionRepository(tempDir).save(modelType, instance);
+  const setupRepo = new FileSystemUnifiedDataRepository(
+    tempDir,
+    undefined,
+    catalogStore,
+  );
+  await setupRepo.save(
+    modelType,
+    instance.id,
+    Data.create({
+      name: "cursor",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "resource" },
+      ownerDefinition: {
+        ownerType: "model-method" as const,
+        ownerRef: instance.id,
+      },
+    }),
+    new TextEncoder().encode(JSON.stringify({ lastSeen: 42 })),
+  );
+  const contentPath = setupRepo.getContentPath(
+    modelType,
+    instance.id,
+    "cursor",
+    1,
+  );
+  await Deno.remove(contentPath);
+  const asked: string[] = [];
+  const unreadable = new UserError(
+    "The record cursor cannot be read",
+    "datastore_v3_record_unreadable",
+  );
+  return {
+    modelType,
+    contentPath,
+    asked,
+    unreadable,
+    unreadableContent: (absPath: string) => {
+      asked.push(absPath);
+      return Promise.resolve(absPath === contentPath ? unreadable : undefined);
+    },
+    dispose: () => modelRegistry.invalidateType(modelType),
+  };
+}
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a step reading an unreadable v3 record fails loudly (swamp-club#3617)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+    await withTempDir(async (tempDir) => {
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const fixture = await unreadableCursorFixture(tempDir, catalogStore);
+      try {
+        const executor = new DefaultStepExecutor(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          fixture.unreadableContent,
+        );
+        const step = Step.create({
+          name: "loud-step",
+          task: StepTask.model("loud-instance", "run"),
+        });
+        const error = await assertRejects(() =>
+          executor.execute(step, {
+            sensitiveValues: new RunSensitiveValues(),
+            workflowId: createWorkflowId(
+              "00000000-0000-0000-0000-000000000000",
+            ),
+            workflowRunId: "00000000-0000-0000-0000-000000000000",
+            workflowName: "loud-test",
+            jobName: "job1",
+            stepName: "loud-step",
+            repoDir: tempDir,
+            signal: new AbortController().signal,
+            step,
+            catalogStore,
+            authoredExpressions: new Set(),
+          })
+        );
+        assertStringIncludes(
+          (error as Error).message,
+          "The record cursor cannot be read",
+        );
+        assert(fixture.asked.includes(fixture.contentPath));
+      } finally {
+        fixture.dispose();
+        catalogStore.close();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "WorkflowExecutionService: a nested workflow's step reading an unreadable v3 record fails loudly (swamp-club#3617)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+    await withTempDir(async (tempDir) => {
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const fixture = await unreadableCursorFixture(tempDir, catalogStore);
+      try {
+        const workflowRepo = new InMemoryWorkflowRepository();
+        await workflowRepo.save(Workflow.create({
+          name: "loud-child",
+          jobs: [Job.create({
+            name: "job1",
+            steps: [Step.create({
+              name: "read-step",
+              task: StepTask.model("loud-instance", "run"),
+            })],
+          })],
+        }));
+        await workflowRepo.save(Workflow.create({
+          name: "loud-parent",
+          jobs: [Job.create({
+            name: "job1",
+            steps: [Step.create({
+              name: "nested-step",
+              task: StepTask.workflow("loud-child"),
+            })],
+          })],
+        }));
+        const service = new WorkflowExecutionService(
+          workflowRepo,
+          new InMemoryWorkflowRunRepository(),
+          tempDir,
+          undefined,
+          undefined,
+          catalogStore,
+          undefined,
+          undefined,
+          SOLO_NAMESPACE,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          undefined,
+          fixture.unreadableContent,
+        );
+        const failures: string[] = [];
+        for await (const event of service.run("loud-parent")) {
+          if (event.kind === "step_failed") failures.push(event.error ?? "");
+        }
+        assert(
+          failures.some((error) =>
+            error.includes("The record cursor cannot be read")
+          ),
+          JSON.stringify(failures),
+        );
+        assert(fixture.asked.includes(fixture.contentPath));
+      } finally {
+        fixture.dispose();
         catalogStore.close();
       }
     });
@@ -21024,5 +21248,69 @@ Deno.test("resume: a reserved --tag is refused before any step runs", async () =
       "Tag '_swamp.sensitiveFields' from --tag is reserved",
     );
     assertEquals(executor.count("a/a"), 1);
+  });
+});
+
+Deno.test("WorkflowExecutionService: --last-evaluated of an evaluated workflow the datastore could not materialise fails with its error, not as never evaluated (swamp-club#3617)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const workflow = Workflow.create({
+      name: "lost-evaluation",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "s",
+              task: StepTask.model("my-model", "create", {}),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    const lost = join(
+      tempDir,
+      ".swamp",
+      "workflows-evaluated",
+      `workflow-${workflow.name}.yaml`,
+    );
+    const unreadable = new UserError(
+      "The record cannot be read",
+      "datastore_v3_record_unreadable",
+    );
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        { execute: () => Promise.resolve({}) },
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (path) => Promise.resolve(path === lost ? unreadable : undefined),
+      );
+      assertStrictEquals(
+        await assertRejects(() =>
+          service.execute(workflow.name, { lastEvaluated: true })
+        ),
+        unreadable,
+      );
+    } finally {
+      catalogStore.close();
+    }
   });
 });

@@ -46,7 +46,16 @@ import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
-import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  MarkDirtyHook,
+  UnreadableContentEntry,
+  UnreadableContentLookup,
+} from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  mayBeUnreadableError,
+  unreadableRecordsUnder,
+  warnUnreadableLeftOut,
+} from "./unreadable_records.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   createModelOutputId,
@@ -83,6 +92,25 @@ function describeRecordError(error: unknown): string {
  */
 const ORPHAN_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** `startedAt` as an output file name spells it. */
+function fileStamp(startedAt: Date): string {
+  return startedAt.toISOString().replace(/[:.]/g, "-");
+}
+
+/** An output file name `<definitionId>-<stamp>.yaml`, as getPath writes it. */
+const OUTPUT_FILE_NAME =
+  /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.yaml$/;
+
+/** The definition id and `startedAt` stamp an output file's name carries. */
+function parseOutputFileName(
+  path: string,
+): { definitionId: string; stamp: string } | undefined {
+  const match = OUTPUT_FILE_NAME.exec(basename(path));
+  return match === null
+    ? undefined
+    : { definitionId: match[1], stamp: match[2] };
+}
+
 /**
  * YAML-based implementation of OutputRepository.
  *
@@ -97,10 +125,17 @@ export class YamlOutputRepository implements OutputRepository {
    */
   private readonly localOutputsDir: string;
 
+  /**
+   * `unreadableContent` tells an output record a v3 read model could not
+   * materialise from an absent one (swamp-club#3617): a lookup that could
+   * be answered by one fails loudly, and a listing warns that it leaves
+   * them out.
+   */
   constructor(
     private readonly repoDir: string,
     baseDir?: string,
     private readonly markDirty?: MarkDirtyHook,
+    readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.localOutputsDir = swampPath(repoDir, SWAMP_SUBDIRS.outputs);
     this.baseDir = baseDir ?? this.localOutputsDir;
@@ -131,7 +166,35 @@ export class YamlOutputRepository implements OutputRepository {
     }`;
   }
 
+  /**
+   * The output `id` of `type`'s `method`. An output id is not in its file's
+   * name, so on a miss every record of the method the datastore could not
+   * materialise may be it: the lookup fails as not found, naming them
+   * (swamp-club#3617), rather than report the output simply absent. It
+   * cannot tell a mistyped id from one of theirs, so the error does not
+   * carry the unreadable-content code.
+   */
   async findById(
+    type: ModelType,
+    method: string,
+    id: ModelOutputId,
+  ): Promise<ModelOutput | null> {
+    const found = await this.readById(type, method, id);
+    if (found !== null) return found;
+    const unreadable = await unreadableRecordsUnder(
+      this.unreadableContent,
+      this.getMethodDir(type, method),
+    );
+    if (unreadable.length > 0) {
+      throw mayBeUnreadableError(
+        `The ${type.normalized} ${method} output ${id}`,
+        unreadable,
+      );
+    }
+    return null;
+  }
+
+  private async readById(
     type: ModelType,
     method: string,
     id: ModelOutputId,
@@ -172,6 +235,13 @@ export class YamlOutputRepository implements OutputRepository {
     return null;
   }
 
+  /**
+   * The outputs of `ids` found. Not loud about a record the datastore could
+   * not materialise (swamp-club#3617): its callers (the orphaned-run reaper,
+   * `model cancel`) read the records as evidence and treat a missing one as
+   * none, and failing them would stop the reaping and cancelling that
+   * clear the runs.
+   */
   async findByIds(
     type: ModelType,
     method: string,
@@ -209,25 +279,61 @@ export class YamlOutputRepository implements OutputRepository {
     type: ModelType,
     definitionId: DefinitionId,
   ): Promise<ModelOutput[]> {
-    const all = await this.findAll(type);
+    const all = await this.readAll(type);
+    await warnUnreadableLeftOut(
+      this.unreadableContent,
+      this.getTypeDir(type),
+      (entry) => parseOutputFileName(entry.path)?.definitionId === definitionId,
+    );
     return all.filter((output) => output.definitionId === definitionId);
   }
 
+  /**
+   * The definition's latest output. An output file's name carries its
+   * definition and start, so when the datastore could not materialise one
+   * that started later than the latest readable one, the lookup fails with
+   * its error (swamp-club#3617) rather than answer with an older output.
+   */
   async findLatestByDefinition(
     type: ModelType,
     definitionId: DefinitionId,
   ): Promise<ModelOutput | null> {
-    const outputs = await this.findByDefinition(type, definitionId);
-    if (outputs.length === 0) {
-      return null;
-    }
-
-    // Sort by startedAt descending and return the first one
+    const outputs = (await this.readAll(type)).filter((output) =>
+      output.definitionId === definitionId
+    );
+    // Sort by startedAt descending and take the first one
     outputs.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
-    return outputs[0];
+    const latest = outputs.length === 0 ? null : outputs[0];
+    let newest: { entry: UnreadableContentEntry; stamp: string } | undefined;
+    for (
+      const entry of await unreadableRecordsUnder(
+        this.unreadableContent,
+        this.getTypeDir(type),
+      )
+    ) {
+      const name = parseOutputFileName(entry.path);
+      if (name?.definitionId !== definitionId) continue;
+      if (newest === undefined || name.stamp > newest.stamp) {
+        newest = { entry, stamp: name.stamp };
+      }
+    }
+    if (
+      newest !== undefined &&
+      (latest === null || newest.stamp > fileStamp(latest.startedAt))
+    ) {
+      throw newest.entry.error;
+    }
+    return latest;
   }
 
   async findAll(type: ModelType): Promise<ModelOutput[]> {
+    const outputs = await this.readAll(type);
+    await warnUnreadableLeftOut(this.unreadableContent, this.getTypeDir(type));
+    return outputs;
+  }
+
+  /** {@link findAll} without the unreadable-record warning. */
+  private async readAll(type: ModelType): Promise<ModelOutput[]> {
     const typeDir = this.getTypeDir(type);
     const outputs: ModelOutput[] = [];
 
@@ -299,7 +405,7 @@ export class YamlOutputRepository implements OutputRepository {
 
     // Iterate over all registered model types
     for (const modelType of modelRegistry.types()) {
-      const typeOutputs = await this.findAll(modelType);
+      const typeOutputs = await this.readAll(modelType);
       for (const output of typeOutputs) {
         results.push({
           output,
@@ -308,6 +414,7 @@ export class YamlOutputRepository implements OutputRepository {
         });
       }
     }
+    await warnUnreadableLeftOut(this.unreadableContent, this.baseDir);
 
     return results;
   }
@@ -392,6 +499,17 @@ export class YamlOutputRepository implements OutputRepository {
         throw error;
       }
     }
+    // Only the ones whose file name says they started at or after the
+    // cutoff, as this listing's own pre-filter would; one whose name does
+    // not say is named too.
+    const cutoffStamp = fileStamp(cutoff);
+    await warnUnreadableLeftOut(
+      this.unreadableContent,
+      this.baseDir,
+      (entry) =>
+        (parseOutputFileName(entry.path)?.stamp ?? cutoffStamp) >=
+          cutoffStamp,
+    );
 
     return results;
   }
@@ -488,8 +606,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   getPath(type: ModelType, method: string, output: ModelOutput): string {
-    const timestamp = output.startedAt.toISOString().replace(/[:.]/g, "-");
-    const filename = `${output.definitionId}-${timestamp}.yaml`;
+    const filename = `${output.definitionId}-${
+      fileStamp(output.startedAt)
+    }.yaml`;
     return join(this.getMethodDir(type, method), filename);
   }
 

@@ -148,6 +148,7 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
             undefined,
             undefined,
             repoContext.unifiedDataRepo.fetchForeignContent,
+            repoContext.unreadableContent,
           );
           const renderer = createModelEvaluateRenderer(
             cliCtx.outputMode,
@@ -211,6 +212,7 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
         undefined,
         undefined,
         repoContext.unifiedDataRepo.fetchForeignContent,
+        repoContext.unreadableContent,
       );
       const renderer = createModelEvaluateRenderer(
         cliCtx.outputMode,

@@ -329,6 +329,14 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/v3_datastore.ts: listV3Namespaces":
       READ_ONLY_DB,
+    // swamp-club#3617: reads a commits.db's schema version and history to
+    // restore a lost format marker or resume a setup; changes no schema.
+    "src/infrastructure/datastore_v3/v3_datastore.ts: readCommitLogFacts":
+      READ_ONLY_DB,
+    // swamp-club#3617: `doctor datastores` reads a checkout's read model
+    // state for unreadable records, at-risk copies and live blobs.
+    "src/infrastructure/datastore_v3/v3_content_inspection.ts: inspectV3Content":
+      READ_ONLY_DB,
     "src/infrastructure/persistence/extension_catalog_store.ts: ExtensionCatalogStore":
       "Indexes installed extension metadata; no expression is evaluated into it.",
   },
@@ -451,8 +459,6 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/sync_gate.ts: runGated": VALUE_FREE_STATUS,
   },
   "file-write": {
-    "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts: writeWriterMarker":
-      CONFIG_WRITE,
     "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts: defaultLitestreamExtractor":
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/litestream/litestream_replicator.ts: LitestreamReplicator":
@@ -471,6 +477,9 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/v3_repo_context.ts: recordWriterCheckout":
       CONFIG_WRITE,
+    // swamp-club#3617: puts back a format marker another process wrote.
+    "src/infrastructure/datastore_v3/v3_datastore.ts: removeBlankMarker":
+      CONFIG_WRITE,
     "src/infrastructure/persistence/auth_repository.ts: AuthRepository":
       CONFIG_WRITE,
     "src/infrastructure/persistence/auth_verification_repository.ts: AuthVerificationRepository":
@@ -480,8 +489,6 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/infrastructure/persistence/custom_tool_skill_dirs_repository.ts: CustomToolSkillDirsRepository":
       CONFIG_WRITE,
     "src/infrastructure/persistence/custom_tools_repository.ts: writeCustomTools":
-      CONFIG_WRITE,
-    "src/infrastructure/persistence/datastore_format_marker_writer.ts: writeDatastoreFormatMarker":
       CONFIG_WRITE,
     "src/infrastructure/persistence/drain_wait_store.ts: DrainWaitStore":
       CONFIG_WRITE,

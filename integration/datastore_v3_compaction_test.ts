@@ -719,6 +719,9 @@ class CompactingAfterFirstPage implements CommitStore {
   readCompactedBase(...args: Parameters<CommitStore["readCompactedBase"]>) {
     return this.inner.readCompactedBase(...args);
   }
+  compactionPoint() {
+    return this.inner.compactionPoint();
+  }
   close() {
     return this.inner.close();
   }

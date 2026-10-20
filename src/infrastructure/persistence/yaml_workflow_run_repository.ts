@@ -26,6 +26,10 @@ import {
   typedStagingActive,
 } from "./unit_of_work_scope.ts";
 import { keyUnder, unlessUnpartitionable } from "./config_staging.ts";
+import {
+  unreadableRecordsUnder,
+  warnUnreadableLeftOut,
+} from "./unreadable_records.ts";
 import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
@@ -49,7 +53,10 @@ import {
   writeRunIndex,
 } from "./workflow_run_index.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
-import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  MarkDirtyHook,
+  UnreadableContentLookup,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -149,6 +156,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * `Date.now`. `Deno.utime` can set a file's mtime back but moves its
    * ctime to now, so a test that settles files with it runs this clock
    * ahead instead.
+   *
+   * `unreadableContent` tells a run record a v3 read model could not
+   * materialise from an absent one (swamp-club#3617), so a read of that run
+   * fails loudly instead of finding no run.
    */
   constructor(
     private readonly repoDir: string,
@@ -156,6 +167,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     baseDir?: string,
     private readonly markDirty?: MarkDirtyHook,
     runIndexClock?: () => number,
+    readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
     this.runIndexCache = new RunIndexCache({
@@ -175,11 +187,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     // save() always writes getPath(workflowId, runId), so the run is read
     // from that one file: no directory listing, and no other run is parsed.
+    const path = this.getPath(workflowId, runId);
     let content: string;
     try {
-      content = await Deno.readTextFile(this.getPath(workflowId, runId));
+      content = await Deno.readTextFile(path);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
+        await this.throwIfUnreadable(path);
         return null;
       }
       throw error;
@@ -194,6 +208,15 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   async findAllByWorkflowId(workflowId: WorkflowId): Promise<WorkflowRun[]> {
+    const runs = await this.readAllByWorkflowId(workflowId);
+    await this.warnLeftOut(this.getRunsDir(workflowId));
+    return runs;
+  }
+
+  /** {@link findAllByWorkflowId} without the unreadable-record warning. */
+  private async readAllByWorkflowId(
+    workflowId: WorkflowId,
+  ): Promise<WorkflowRun[]> {
     const dir = this.getRunsDir(workflowId);
     const runs: WorkflowRun[] = [];
 
@@ -261,6 +284,18 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async findAllSummariesByWorkflowId(
     workflowId: WorkflowId,
   ): Promise<WorkflowRunSummary[]> {
+    const summaries = await this.readSummariesByWorkflowId(workflowId);
+    await this.warnLeftOut(this.getRunsDir(workflowId));
+    return summaries;
+  }
+
+  /**
+   * {@link findAllSummariesByWorkflowId} without the unreadable-record
+   * warning.
+   */
+  private async readSummariesByWorkflowId(
+    workflowId: WorkflowId,
+  ): Promise<WorkflowRunSummary[]> {
     const dir = this.getRunsDir(workflowId);
     const summaries: WorkflowRunSummary[] = [];
 
@@ -314,6 +349,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
     const index = await this.getValidatedIndex(runsDir, indexDir);
+    // A run id is random, so whether an unreadable run is later than the
+    // latest readable one cannot be told: the latest readable run is the
+    // answer, with a warning naming the unreadable ones (swamp-club#3617).
+    await this.warnLeftOut(runsDir);
 
     if (index) {
       const latestId = this.findLatestRunIdFromIndex(index);
@@ -325,7 +364,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
     // Fallback: scan as lightweight summaries to find the latest, then
     // load only that one as a full aggregate.
-    const summaries = await this.findAllSummariesByWorkflowId(workflowId);
+    const summaries = await this.readSummariesByWorkflowId(workflowId);
     if (summaries.length === 0) return null;
     return this.findById(
       workflowId,
@@ -394,13 +433,66 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
       }
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return null;
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    await this.throwIfUnreadableRun(runId);
+    return null;
+  }
+
+  /**
+   * Throws when the datastore holds the run `runId`, which no workflow
+   * directory has a file of, as unreadable (swamp-club#3617), so a lookup
+   * by id alone fails loudly instead of finding no run. One query over the
+   * runs directory: a workflow whose every run is unreadable has no
+   * directory to probe. Without a listing lookup, one lookup per workflow
+   * directory.
+   */
+  private async throwIfUnreadableRun(runId: WorkflowRunId): Promise<void> {
+    if (this.unreadableContent === undefined) return;
+    if (this.unreadableContent.under !== undefined) {
+      // The file name getPath gives the run in every workflow directory.
+      const fileName = `workflow-run-${runId}.yaml`;
+      for (
+        const entry of await unreadableRecordsUnder(
+          this.unreadableContent,
+          this.baseDir,
+        )
+      ) {
+        if (basename(entry.path) === fileName) throw entry.error;
       }
+      return;
+    }
+    let entries;
+    try {
+      entries = await readDirSorted(this.baseDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
       throw error;
     }
+    for (const entry of entries) {
+      if (!entry.isDirectory) continue;
+      await this.throwIfUnreadable(
+        this.getPath(entry.name as WorkflowId, runId),
+      );
+    }
+  }
 
-    return null;
+  /**
+   * Warns that a listing of `dir` leaves out the run records under it the
+   * datastore could not materialise (swamp-club#3617).
+   */
+  private async warnLeftOut(dir: string): Promise<void> {
+    await warnUnreadableLeftOut(this.unreadableContent, dir);
+  }
+
+  /**
+   * Throws when the datastore recorded the run record missing at `path` as
+   * unreadable (swamp-club#3617), so the read fails loudly instead of
+   * finding no run. A record that is simply absent returns.
+   */
+  private async throwIfUnreadable(path: string): Promise<void> {
+    const error = await this.unreadableContent?.(path);
+    if (error !== undefined) throw error;
   }
 
   /**
@@ -418,18 +510,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           // Directory name is the workflow ID
           const workflowIdStr = entry.name;
           const workflowId = workflowIdStr as WorkflowId;
-          const runs = await this.findAllByWorkflowId(workflowId);
+          const runs = await this.readAllByWorkflowId(workflowId);
           for (const run of runs) {
             results.push({ run, workflowId });
           }
         }
       }
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return [];
-      }
-      throw error;
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
+    await this.warnLeftOut(workflowRunsDir);
 
     // Sort by startedAt descending (most recent first)
     return results.sort((a, b) => {
@@ -476,11 +566,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
       }
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return [];
-      }
-      throw error;
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
+    // An unreadable run's start is unknown: every one is named.
+    await this.warnLeftOut(this.baseDir);
 
     return results.sort((a, b) => {
       const aTime = a.run.startedAt?.getTime() ?? 0;
@@ -582,11 +671,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
       }
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return [];
-      }
-      throw error;
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
+    // An unreadable run's status is unknown: every one is named.
+    await this.warnLeftOut(this.baseDir);
 
     return results.sort((a, b) => {
       const aTime = a.run.startedAt?.getTime() ?? 0;
@@ -620,7 +708,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
 
     // Fallback: lightweight summary scan
-    const summaries = await this.findAllSummariesByWorkflowId(workflowId);
+    const summaries = await this.readSummariesByWorkflowId(workflowId);
     return summaries
       .filter((s) => {
         if (!statusSet.has(s.status)) return false;
@@ -767,7 +855,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     this.runIndexCache.delete(workflowId);
 
     // Count the runs before deleting
-    const runs = await this.findAllByWorkflowId(workflowId);
+    const runs = await this.readAllByWorkflowId(workflowId);
     const count = runs.length;
 
     if (count === 0) {
@@ -1238,8 +1326,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
     const index = await this.getValidatedIndex(runsDir, indexDir);
+    await this.warnLeftOut(runsDir);
     if (!index) {
-      return this.findAllSummariesByWorkflowId(workflowId);
+      return this.readSummariesByWorkflowId(workflowId);
     }
     return indexToSummaries(index);
   }
@@ -1250,7 +1339,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * a stat of the index file and of the records directory shows neither has
    * changed, so a repeated read costs two stats, not a directory listing and
    * a parse of the whole index. A workflow with no usable index gets a
-   * snapshot of its records, which is not kept.
+   * snapshot of its records, which is not kept. Run records a v3 read model
+   * could not materialise are warned about when a snapshot is built
+   * (swamp-club#3617), not on a reuse.
    *
    * With `signal`, a read that has to rebuild or repair the index stops
    * between records once it aborts, writes no index, and rejects with the
@@ -1260,14 +1351,15 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * On the concrete repository only, for the same reason as
    * {@link findGlobalById}: only the run search and run summary paths use it.
    */
-  runIndexSnapshot(
+  async runIndexSnapshot(
     workflowId: WorkflowId,
     signal?: AbortSignal,
   ): Promise<RunIndexSnapshot> {
-    return this.runIndexCache.get(workflowId, async () => {
+    return await this.runIndexCache.get(workflowId, async () => {
       const runsDir = this.getRunsDir(workflowId);
       const indexDir = this.getLocalIndexDir(workflowId);
       const index = await this.validateIndex(runsDir, indexDir, signal);
+      await this.warnLeftOut(runsDir);
       if (index) {
         return {
           snapshot: RunIndexSnapshot.of(indexToSummaries(index.entries)),
@@ -1276,7 +1368,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
       return {
         snapshot: RunIndexSnapshot.of(
-          await this.findAllSummariesByWorkflowId(workflowId),
+          await this.readSummariesByWorkflowId(workflowId),
         ),
         fromIndex: false,
       };
@@ -1343,8 +1435,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
     const index = await this.getValidatedIndex(runsDir, indexDir, signal);
+    await this.warnLeftOut(runsDir);
     if (!index) {
-      const all = await this.findAllSummariesByWorkflowId(workflowId);
+      const all = await this.readSummariesByWorkflowId(workflowId);
       return all.filter((s) => s.status === status);
     }
     return indexToSummaries(index).filter((s) => s.status === status);

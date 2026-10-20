@@ -25,6 +25,7 @@ import type {
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { UserError } from "../errors.ts";
+import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import type {
   ContentAvailability,
   ForeignContentFetcher,
@@ -616,6 +617,9 @@ export class DataQueryService {
     try {
       await this.ensureRowContent(row);
     } catch (error) {
+      // A record the v3 datastore could not materialise fails the lookup
+      // with its code instead of reading as empty (swamp-club#3617).
+      if (isUnreadableContentError(error)) throw error;
       logger
         .debug`Could not hydrate ${row.model_name}/${row.data_name}@v${row.version}: ${
         String(error)
@@ -1490,6 +1494,10 @@ export class DataQueryService {
           try {
             Deno.statSync(contentPath);
           } catch {
+            // The async path ensures it, which fails loudly when the v3
+            // datastore could not materialise it (swamp-club#3617); absent
+            // content stays dropped.
+            reportMissing(row)?.();
             logger
               .debug`Skipping stale catalog row ${row.model_name}/${row.data_name}@v${row.version}: backing file absent`;
             continue;

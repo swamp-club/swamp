@@ -22,7 +22,10 @@
  * the store-wide cursor, each partition's last applied seq, the live-record
  * index, each data name's live versions and which put each materialised file
  * shows. All of it is rebuilt from the
- * commits, so {@link ReadModelState.reset} can always start over.
+ * commits, so {@link ReadModelState.reset} can always start over. It also
+ * keeps the records whose content could not be read, and the checkout files
+ * moved aside into `at-risk/` (swamp-club#3617); a reset keeps the latter,
+ * which are files rather than a cache of the commits.
  *
  * A commit's index and version changes land with its applied seq and the
  * cursor in one transaction, so the index is never ahead of, or behind, the
@@ -48,7 +51,11 @@ import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projecti
 import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
 import type { CompactedBaseEntry } from "../../domain/datastore_v3/commit_store.ts";
 import type { FileOwnership } from "../../domain/datastore_v3/materialisation.ts";
-import type { LiveRecord } from "../../domain/datastore_v3/read_model.ts";
+import type {
+  AtRiskCopy,
+  LiveRecord,
+  UnreadableRecord,
+} from "../../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
 
@@ -181,6 +188,49 @@ const MIGRATIONS: readonly string[] = [
     boot TEXT NOT NULL
   ) STRICT;
   `,
+  // 4 → 5 (swamp-club#3617): records whose content a missing or damaged
+  // chunk kept from being materialised, checkout files moved aside because
+  // they held the only copy of chunks the storage refused, and the files the
+  // read model wrote with their blob and how they looked just after, so the
+  // checkout-copy guard need not hash a file still as written. IF NOT
+  // EXISTS, as in 2 → 3.
+  `
+  CREATE TABLE IF NOT EXISTS unreadable_records (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    blob TEXT,
+    chunk TEXT,
+    chunk_size INTEGER,
+    chunk_mtime INTEGER,
+    reason TEXT NOT NULL,
+    last_attempt INTEGER NOT NULL,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS at_risk_copies (
+    namespace TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    blob TEXT,
+    size INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_attempt INTEGER NOT NULL,
+    PRIMARY KEY (namespace, sha256)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS written_files (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    blob TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    ino INTEGER NOT NULL,
+    dev INTEGER NOT NULL,
+    mtime INTEGER NOT NULL,
+    ctime INTEGER,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  `,
 ];
 
 export type { FileOwnership };
@@ -193,9 +243,47 @@ export type { FileOwnership };
 export type UnsyncedFile =
   & { readonly namespace: string; readonly record_key: string }
   & (
-    | { readonly expect: "present"; readonly sha256: string }
+    | {
+      readonly expect: "present";
+      readonly sha256: string;
+      /** Which put the file shows: its partition and feed position. */
+      readonly owner: string;
+      readonly mark: number;
+      /** The put's blob; undefined for inline content. */
+      readonly blob?: BlobRef;
+    }
     | { readonly expect: "absent" | "unknown" }
   );
+
+/**
+ * An unreadable record as the state keeps it (swamp-club#3617): with the
+ * size and modification time (epoch ms) its chunk had when it was last
+ * tried, both undefined when the chunk was absent or cannot be stat'ed, so
+ * a retry runs only once the chunk changed.
+ */
+export interface StoredUnreadableRecord extends UnreadableRecord {
+  readonly chunkSize?: number;
+  readonly chunkMtime?: number;
+}
+
+/**
+ * A checkout file the read model wrote (swamp-club#3617): the blob it
+ * wrote there, and the file's inode, device, size, and modification and
+ * change times (epoch ms) as a stat showed them just after, when the inode
+ * at the path was still the one it wrote. A file whose stat still shows all
+ * of them is taken to hold the blob's content.
+ */
+export interface WrittenFile {
+  readonly namespace: string;
+  readonly recordKey: string;
+  readonly blob: BlobRef;
+  readonly size: number;
+  readonly ino: number;
+  readonly dev: number;
+  readonly mtime: number;
+  /** Undefined where the platform reports no change time. */
+  readonly ctime?: number;
+}
 
 /** A materialised key a load writes or removes. */
 export interface LoadKey {
@@ -245,6 +333,14 @@ export interface AppliedCommit {
     readonly keys: ReadonlySet<string>;
     readonly boot: string;
   };
+  /**
+   * Every key the commit decided to write or remove (swamp-club#3617): an
+   * unreadable record of such a key is forgotten, unless `unreadable`
+   * records it again. A key the commit left alone keeps its row.
+   */
+  readonly decided?: ReadonlySet<string>;
+  /** The keys whose content could not be read, by key. */
+  readonly unreadable?: ReadonlyMap<string, StoredUnreadableRecord>;
 }
 
 /** The read model's state database. One connection per instance. */
@@ -265,6 +361,8 @@ export class ReadModelState {
   readonly #upsertOwnership: StatementSync;
   readonly #insertUnsynced: StatementSync;
   readonly #upsertUnsyncedBoot: StatementSync;
+  readonly #deleteUnreadable: StatementSync;
+  readonly #upsertUnreadable: StatementSync;
   #closed = false;
   #batchOpen = false;
 
@@ -316,6 +414,13 @@ export class ReadModelState {
     this.#upsertUnsyncedBoot = db.prepare(
       "INSERT INTO unsynced_boot (only, boot) VALUES (0, ?) ON CONFLICT (only) DO UPDATE SET boot = excluded.boot",
     );
+    this.#deleteUnreadable = db.prepare(
+      "DELETE FROM unreadable_records WHERE namespace = ? AND record_key = ?",
+    );
+    this.#upsertUnreadable = db.prepare(
+      "INSERT OR REPLACE INTO unreadable_records (namespace, record_key, partition, seq, position, blob, chunk, chunk_size, chunk_mtime, reason, last_attempt) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
   }
 
   /**
@@ -353,9 +458,18 @@ export class ReadModelState {
     return this.#meta("complete") === 1;
   }
 
-  /** Records that a catch-up reached the end of the change feed. */
+  /**
+   * Records that a catch-up reached the end of the change feed. The removal
+   * candidates a reset kept, and any names an unfinished load touched, are
+   * forgotten: the feed is applied, so no load is left to use them.
+   */
   markComplete(): void {
-    this.#transaction(() => this.#upsertMeta.run("complete", 1));
+    this.#transaction(() => {
+      this.#upsertMeta.run("complete", 1);
+      this.#db.exec(
+        "DELETE FROM load_touched_keys; DELETE FROM load_touched_names;",
+      );
+    });
   }
 
   /** The catalog generation the state was built against, if any. */
@@ -500,6 +614,12 @@ export class ReadModelState {
             file.present ? 1 : 0,
           );
         }
+        for (const key of commit.decided ?? []) {
+          this.#deleteUnreadable.run(commit.namespace, key);
+        }
+        for (const record of commit.unreadable?.values() ?? []) {
+          this.#insertUnreadable(record);
+        }
         this.#upsertApplied.run(commit.namespace, commit.partition, commit.seq);
         if (commit.unsynced !== undefined && commit.unsynced.keys.size > 0) {
           this.#markUnsynced(
@@ -520,12 +640,31 @@ export class ReadModelState {
 
   /**
    * Clears every table back to cursor 0, and the complete mark, and records
-   * the catalog generation the replay that follows builds against.
+   * the catalog generation the replay that follows builds against. The
+   * at-risk copies stay: they are files, not a cache of the commits.
+   *
+   * The files the state shows present are kept as removal candidates
+   * (swamp-club#3617): a compacted-base load that follows removes the ones
+   * the base does not show, so a removal a crash undid is redone even when
+   * the commit that removed it was compacted away. With `keepUnsynced`
+   * (the list was written in another boot, or the current one cannot be
+   * named) the unsynced keys are candidates too; within one boot the list
+   * names this boot's removals, which stay done.
    */
-  reset(catalogGeneration: number): void {
+  reset(catalogGeneration: number, keepUnsynced = false): void {
     this.#transaction(() => {
       this.#db.exec(
-        "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM materialised_keys; DELETE FROM meta; DELETE FROM unsynced_keys; DELETE FROM unsynced_boot;",
+        "INSERT OR IGNORE INTO load_touched_keys (namespace, record_key) " +
+          "SELECT namespace, record_key FROM materialised_keys WHERE present = 1;",
+      );
+      if (keepUnsynced) {
+        this.#db.exec(
+          "INSERT OR IGNORE INTO load_touched_keys (namespace, record_key) " +
+            "SELECT namespace, record_key FROM unsynced_keys;",
+        );
+      }
+      this.#db.exec(
+        "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM materialised_keys; DELETE FROM meta; DELETE FROM unsynced_keys; DELETE FROM unsynced_boot; DELETE FROM unreadable_records; DELETE FROM written_files;",
       );
       this.#upsertMeta.run("catalog_generation", catalogGeneration);
     });
@@ -661,6 +800,19 @@ export class ReadModelState {
     return row.inline === null ? undefined : { inline: row.inline };
   }
 
+  /** The staged ownership of a file a load writes. */
+  loadFile(namespace: string, recordKey: string): FileOwnership | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare(
+      "SELECT owner, mark, present FROM load_files WHERE namespace = ? AND record_key = ?",
+    ).get(namespace, recordKey) as
+      | { owner: string; mark: number; present: number }
+      | undefined;
+    return row === undefined
+      ? undefined
+      : { owner: row.owner, mark: row.mark, present: row.present === 1 };
+  }
+
   /**
    * Forgets the staged ownership of a file the load left alone because its
    * path is refused, as a replay records none for it.
@@ -730,9 +882,14 @@ export class ReadModelState {
    * file ownership and partition progress become the base's, the cursor
    * moves to the compaction point, the index is marked incomplete until a
    * catch-up reaches the end of the feed, and the staging and touched
-   * tables are cleared.
+   * tables are cleared. Unreadable records whose key the base no longer
+   * shows at their put are forgotten, and `unreadable`, the base records
+   * the load could not read, recorded (swamp-club#3617).
    */
-  finishLoad(point: number): void {
+  finishLoad(
+    point: number,
+    unreadable: readonly StoredUnreadableRecord[] = [],
+  ): void {
     this.#transaction(() => {
       this.#db.exec(`
         DELETE FROM live_records;
@@ -751,7 +908,14 @@ export class ReadModelState {
         DELETE FROM load_records; DELETE FROM load_versions; DELETE FROM load_catalog;
         DELETE FROM load_forwards; DELETE FROM load_files; DELETE FROM load_progress;
         DELETE FROM load_touched_keys; DELETE FROM load_touched_names;
+        DELETE FROM unreadable_records WHERE NOT EXISTS (
+          SELECT 1 FROM materialised_keys AS m
+          WHERE m.namespace = unreadable_records.namespace
+          AND m.record_key = unreadable_records.record_key
+          AND m.owner = unreadable_records.partition
+          AND m.mark = unreadable_records.position AND m.present = 1);
       `);
+      for (const record of unreadable) this.#insertUnreadable(record);
       this.#upsertMeta.run("cursor", point);
     });
   }
@@ -790,31 +954,193 @@ export class ReadModelState {
     return row?.boot;
   }
 
-  /** Every unsynced file, with what the state says it holds. */
+  /**
+   * Every unsynced file, with what the state says it holds. The file of an
+   * unreadable record is absent (swamp-club#3617).
+   */
   unsyncedFiles(): UnsyncedFile[] {
     return this.#snapshot(() => {
       const rows = this.#db.prepare(`
-        SELECT u.namespace, u.record_key, m.present, r.sha256
+        SELECT u.namespace, u.record_key, m.present, m.owner, m.mark,
+          r.sha256, r.blob, x.record_key AS unreadable
         FROM unsynced_keys u
         LEFT JOIN materialised_keys m
           ON m.namespace = u.namespace AND m.record_key = u.record_key
         LEFT JOIN live_records r
           ON r.namespace = u.namespace AND r.partition = m.owner
           AND r.record_key = u.record_key
+        LEFT JOIN unreadable_records x
+          ON x.namespace = u.namespace AND x.record_key = u.record_key
         ORDER BY u.namespace, u.record_key
       `).all() as unknown as {
         namespace: string;
         record_key: string;
         present: number | null;
+        owner: string | null;
+        mark: number | null;
         sha256: string | null;
+        blob: string | null;
+        unreadable: string | null;
       }[];
-      return rows.map(({ namespace, record_key, present, sha256 }) =>
-        present !== 1
-          ? { namespace, record_key, expect: "absent" as const }
-          : sha256 === null
-          ? { namespace, record_key, expect: "unknown" as const }
-          : { namespace, record_key, expect: "present" as const, sha256 }
+      return rows.map((row): UnsyncedFile => {
+        const { namespace, record_key } = row;
+        if (row.present !== 1 || row.unreadable !== null) {
+          return { namespace, record_key, expect: "absent" };
+        }
+        if (row.sha256 === null) {
+          return { namespace, record_key, expect: "unknown" };
+        }
+        return {
+          namespace,
+          record_key,
+          expect: "present",
+          sha256: row.sha256,
+          owner: row.owner!,
+          mark: row.mark!,
+          ...(row.blob === null
+            ? {}
+            : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
+        };
+      });
+    });
+  }
+
+  /** The unreadable record at a key, if any (swamp-club#3617). */
+  unreadableRecord(
+    namespace: string,
+    recordKey: string,
+  ): StoredUnreadableRecord | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare(
+      "SELECT * FROM unreadable_records WHERE namespace = ? AND record_key = ?",
+    ).get(namespace, recordKey) as UnreadableRow | undefined;
+    return row === undefined ? undefined : unreadableOf(row);
+  }
+
+  /**
+   * The unreadable records of `namespace` whose key is under the directory
+   * `keyPrefix` (`<keyPrefix>/...`), in key order (swamp-club#3617): one
+   * range scan of the primary key. `/` sorts just before `0`, so the keys
+   * under it are those from `<keyPrefix>/` up to `<keyPrefix>0`.
+   */
+  unreadableRecordsUnder(
+    namespace: string,
+    keyPrefix: string,
+  ): StoredUnreadableRecord[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT * FROM unreadable_records WHERE namespace = ? AND record_key >= ? AND record_key < ? ORDER BY record_key",
+    ).all(
+      namespace,
+      `${keyPrefix}/`,
+      `${keyPrefix}0`,
+    ) as unknown as UnreadableRow[]).map(unreadableOf);
+  }
+
+  /** Up to `limit` unreadable records, least recently tried first. */
+  unreadableDue(limit: number): StoredUnreadableRecord[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT * FROM unreadable_records ORDER BY last_attempt, namespace, record_key LIMIT ?",
+    ).all(limit) as unknown as UnreadableRow[]).map(unreadableOf);
+  }
+
+  /**
+   * Records another failed try of each of `records`, unreadable records:
+   * when, and what its chunk looked like then; one transaction for all.
+   */
+  noteUnreadableAttempts(records: readonly StoredUnreadableRecord[]): void {
+    if (records.length === 0) return;
+    this.#transaction(() => {
+      for (const record of records) this.#insertUnreadable(record);
+    });
+  }
+
+  /**
+   * Forgets an unreadable record whose key's file no longer shows its put,
+   * without listing the key as written.
+   */
+  forgetUnreadable(namespace: string, recordKey: string): void {
+    this.#transaction(() => this.#deleteUnreadable.run(namespace, recordKey));
+  }
+
+  /**
+   * Forgets an unreadable record whose file a retry wrote, and lists the
+   * key as written unsynced in `boot`, in one transaction.
+   */
+  clearUnreadable(
+    namespace: string,
+    recordKey: string,
+    boot: string | undefined,
+  ): void {
+    this.#transaction(() => {
+      this.#deleteUnreadable.run(namespace, recordKey);
+      if (boot !== undefined) this.#markUnsynced(namespace, [recordKey], boot);
+    });
+  }
+
+  /**
+   * Records a checkout file moved aside (swamp-club#3617); a copy already
+   * recorded under the same namespace and SHA-256 keeps its row.
+   */
+  recordAtRiskCopy(copy: StoredAtRiskCopy): void {
+    this.#transaction(() => {
+      this.#db.prepare(
+        "INSERT OR IGNORE INTO at_risk_copies (namespace, sha256, record_key, blob, size, created_at, last_attempt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        copy.namespace,
+        copy.sha256,
+        copy.recordKey,
+        copy.blob === undefined ? null : JSON.stringify(copy.blob.toJSON()),
+        copy.size,
+        copy.createdAt.getTime(),
+        copy.lastAttempt.getTime(),
       );
+    });
+  }
+
+  /** Whether a copy is recorded under a namespace and SHA-256. */
+  hasAtRiskCopy(namespace: string, sha256: string): boolean {
+    this.#requireOpen();
+    return this.#db.prepare(
+      "SELECT 1 FROM at_risk_copies WHERE namespace = ? AND sha256 = ?",
+    ).get(namespace, sha256) !== undefined;
+  }
+
+  /**
+   * Up to `limit` at-risk copies last tried at or before `triedBy` (epoch
+   * ms), least recently tried first.
+   */
+  atRiskDue(limit: number, triedBy: number): StoredAtRiskCopy[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT * FROM at_risk_copies WHERE last_attempt <= ? ORDER BY last_attempt, namespace, sha256 LIMIT ?",
+    ).all(triedBy, limit) as unknown as AtRiskRow[]).map(atRiskOf);
+  }
+
+  /** The bytes every recorded at-risk copy holds. */
+  atRiskBytes(): number {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT coalesce(sum(size), 0) AS n FROM at_risk_copies",
+    ).get() as { n: number }).n;
+  }
+
+  /** Records another failed try of an at-risk copy, at `at` (epoch ms). */
+  noteAtRiskAttempt(namespace: string, sha256: string, at: number): void {
+    this.#transaction(() => {
+      this.#db.prepare(
+        "UPDATE at_risk_copies SET last_attempt = ? WHERE namespace = ? AND sha256 = ?",
+      ).run(at, namespace, sha256);
+    });
+  }
+
+  /** Forgets an at-risk copy: its file was deleted, or is gone. */
+  deleteAtRiskCopy(namespace: string, sha256: string): void {
+    this.#transaction(() => {
+      this.#db.prepare(
+        "DELETE FROM at_risk_copies WHERE namespace = ? AND sha256 = ?",
+      ).run(namespace, sha256);
     });
   }
 
@@ -852,6 +1178,61 @@ export class ReadModelState {
     );
   }
 
+  /** Records a file the read model wrote ({@link WrittenFile}). */
+  recordWrittenFile(file: WrittenFile): void {
+    this.#transaction(() =>
+      this.#db.prepare(
+        "INSERT OR REPLACE INTO written_files (namespace, record_key, blob, size, ino, dev, mtime, ctime) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        file.namespace,
+        file.recordKey,
+        JSON.stringify(file.blob.toJSON()),
+        file.size,
+        file.ino,
+        file.dev,
+        file.mtime,
+        file.ctime ?? null,
+      )
+    );
+  }
+
+  /** The file the read model last wrote at a key, if it recorded one. */
+  writtenFile(namespace: string, recordKey: string): WrittenFile | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare(
+      "SELECT blob, size, ino, dev, mtime, ctime FROM written_files WHERE namespace = ? AND record_key = ?",
+    ).get(namespace, recordKey) as
+      | {
+        blob: string;
+        size: number;
+        ino: number;
+        dev: number;
+        mtime: number;
+        ctime: number | null;
+      }
+      | undefined;
+    if (row === undefined) return undefined;
+    return {
+      namespace,
+      recordKey,
+      blob: BlobRef.fromJSON(JSON.parse(row.blob)),
+      size: row.size,
+      ino: row.ino,
+      dev: row.dev,
+      mtime: row.mtime,
+      ...(row.ctime === null ? {} : { ctime: row.ctime }),
+    };
+  }
+
+  /** Forgets the file the read model wrote at a key, once it is removed. */
+  forgetWrittenFile(namespace: string, recordKey: string): void {
+    this.#transaction(() =>
+      this.#db.prepare(
+        "DELETE FROM written_files WHERE namespace = ? AND record_key = ?",
+      ).run(namespace, recordKey)
+    );
+  }
+
   /** Closes the connection. Closing again does nothing. */
   close(): void {
     if (this.#closed) return;
@@ -871,6 +1252,22 @@ export class ReadModelState {
   ): void {
     for (const key of keys) this.#insertUnsynced.run(namespace, key);
     this.#upsertUnsyncedBoot.run(boot);
+  }
+
+  #insertUnreadable(record: StoredUnreadableRecord): void {
+    this.#upsertUnreadable.run(
+      record.namespace,
+      record.recordKey,
+      record.partition,
+      record.seq,
+      record.position,
+      record.blob === undefined ? null : JSON.stringify(record.blob.toJSON()),
+      record.chunk ?? null,
+      record.chunkSize ?? null,
+      record.chunkMtime ?? null,
+      record.reason,
+      record.lastAttempt.getTime(),
+    );
   }
 
   #advanceCursor(cursor: number): void {
@@ -969,6 +1366,68 @@ function migrate(db: DatabaseSync): void {
     rollbackQuietly(db);
     throw error;
   }
+}
+
+/** An at-risk copy as the state keeps it, with its content's reference. */
+export interface StoredAtRiskCopy extends AtRiskCopy {
+  /** The file's reference as the chunk store cuts it; undefined when unknown. */
+  readonly blob?: BlobRef;
+}
+
+interface UnreadableRow {
+  namespace: string;
+  record_key: string;
+  partition: string;
+  seq: number;
+  position: number;
+  blob: string | null;
+  chunk: string | null;
+  chunk_size: number | null;
+  chunk_mtime: number | null;
+  reason: string;
+  last_attempt: number;
+}
+
+function unreadableOf(row: UnreadableRow): StoredUnreadableRecord {
+  return {
+    namespace: row.namespace,
+    recordKey: row.record_key,
+    partition: row.partition,
+    seq: row.seq,
+    position: row.position,
+    ...(row.blob === null
+      ? {}
+      : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
+    ...(row.chunk === null ? {} : { chunk: row.chunk }),
+    ...(row.chunk_size === null ? {} : { chunkSize: row.chunk_size }),
+    ...(row.chunk_mtime === null ? {} : { chunkMtime: row.chunk_mtime }),
+    reason: row.reason === "damaged" ? "damaged" : "missing",
+    lastAttempt: new Date(row.last_attempt),
+  };
+}
+
+interface AtRiskRow {
+  namespace: string;
+  sha256: string;
+  record_key: string;
+  blob: string | null;
+  size: number;
+  created_at: number;
+  last_attempt: number;
+}
+
+function atRiskOf(row: AtRiskRow): StoredAtRiskCopy {
+  return {
+    namespace: row.namespace,
+    sha256: row.sha256,
+    recordKey: row.record_key,
+    ...(row.blob === null
+      ? {}
+      : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
+    size: row.size,
+    createdAt: new Date(row.created_at),
+    lastAttempt: new Date(row.last_attempt),
+  };
 }
 
 function rollbackQuietly(db: DatabaseSync): void {

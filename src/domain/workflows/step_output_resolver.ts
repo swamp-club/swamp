@@ -25,6 +25,7 @@ import {
   resolveSensitiveVaultRefs,
 } from "../models/data_writer.ts";
 import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
+import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import type { StepRun, WorkflowRun } from "./workflow_run.ts";
 
 /**
@@ -239,8 +240,11 @@ export class StepOutputResolver {
       let attributes: Record<string, unknown> | undefined;
       try {
         attributes = await this.readAttributes(ref);
-      } catch {
-        // Unreadable data contributes nothing, like missing data.
+      } catch (error) {
+        // A record the v3 datastore could not materialise fails the read
+        // with its code (swamp-club#3617); other unreadable data contributes
+        // nothing, like missing data.
+        if (isUnreadableContentError(error)) throw error;
         continue;
       }
       if (!attributes) continue;
