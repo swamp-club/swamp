@@ -51,6 +51,7 @@ import { hostname } from "node:os";
 import {
   DefaultStepExecutor,
   type DirectTypeResolver,
+  mergeDataOutputOverrides,
   type StepExecutionContext,
   type StepExecutor,
   type StepLockHook,
@@ -21313,4 +21314,56 @@ Deno.test("WorkflowExecutionService: --last-evaluated of an evaluated workflow t
       catalogStore.close();
     }
   });
+});
+
+Deno.test("mergeDataOutputOverrides: a step override merges over the definition's for its spec field by field (swamp-club#3606)", () => {
+  const definition = {
+    creds: {
+      lifetime: "infinite" as const,
+      garbageCollection: 3,
+      vaultName: "def-vault",
+    },
+    other: { vaultName: "other-vault" },
+  };
+
+  assertEquals(
+    mergeDataOutputOverrides(definition, [
+      { specName: "creds", vary: ["env"], lifetime: undefined },
+    ]),
+    [
+      {
+        specName: "creds",
+        lifetime: "infinite",
+        garbageCollection: 3,
+        vaultName: "def-vault",
+        vary: ["env"],
+      },
+      {
+        specName: "other",
+        lifetime: undefined,
+        garbageCollection: undefined,
+        vaultName: "other-vault",
+      },
+    ],
+  );
+
+  const [creds] = mergeDataOutputOverrides(definition, [
+    { specName: "creds", vaultName: "step-vault", garbageCollection: 1 },
+  ]) ?? [];
+  assertEquals(creds.vaultName, "step-vault");
+  assertEquals(creds.garbageCollection, 1);
+  assertEquals(creds.lifetime, "infinite");
+
+  assertEquals(
+    mergeDataOutputOverrides(undefined, [
+      { specName: "creds", vaultName: "step-vault" },
+    ]),
+    [{ specName: "creds", vaultName: "step-vault" }],
+  );
+  assertEquals(
+    mergeDataOutputOverrides({ creds: { vaultName: "def-vault" } }, [
+      { specName: "logs", vaultName: "step-vault" },
+    ])?.map((o) => [o.specName, o.vaultName]),
+    [["creds", "def-vault"], ["logs", "step-vault"]],
+  );
 });

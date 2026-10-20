@@ -2977,6 +2977,16 @@ Steps can set `vary` on `dataOutputOverrides` to keep data separate per
 environment. `vary` lists input key names whose values are appended to the data
 instance name, giving names like `result-prod` or `result-dev-us-east-1`.
 
+A step's override can also set `lifetime`, `garbageCollection`, `tags` and
+`vaultName` (the vault the spec's sensitive fields are stored in). It merges
+with the definition's `resources` override for the same spec field by field:
+each field the step sets wins, and the definition supplies the rest, so a step
+that sets only `vary` keeps the definition's `vaultName`
+(`mergeDataOutputOverrides` in `execution_service.ts`, swamp-club#3606). A
+`vaultName` written as an expression is evaluated with the workflow, so
+`swamp workflow validate` leaves that step's sensitive-output vault to the
+run's pre-run check.
+
 ### Syntax
 
 ```yaml

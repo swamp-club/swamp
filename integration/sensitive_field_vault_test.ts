@@ -49,6 +49,8 @@ import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { initializeTestRepo } from "./test_helpers.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 
 Deno.test("Integration: sensitive output fields stored in vault with references in persisted data", async () => {
   const modelType = ModelType.create("test/sensitive-output");
@@ -441,4 +443,164 @@ Deno.test("Integration: a vary write by a long-named behavior stays within local
       nested: true,
     },
   );
+});
+
+/**
+ * Runs a one-step workflow whose method writes a sensitive token, against a
+ * temp repo with two local_encryption vaults, and returns the fallback vault
+ * (the first user vault) and the vault the stored reference names. `setup`
+ * is handed the vault that is not the fallback, and returns the definition's
+ * resources overrides, the step's data output override and the run inputs.
+ */
+async function storedVaultOfStepRun(
+  setup: (target: string) => {
+    resources?: Record<string, { vaultName?: string }>;
+    override?: { specName: string; vaultName?: string; vary?: string[] };
+    inputs?: Record<string, unknown>;
+  },
+): Promise<{ fallback: string; target: string; stored: string }> {
+  await initializeLogging({});
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-3606-" });
+  try {
+    await initializeTestRepo(repoDir);
+    const vaultRepo = new YamlVaultConfigRepository(repoDir);
+    for (const name of ["vault-a", "vault-b"]) {
+      await vaultRepo.save(
+        VaultConfig.create(crypto.randomUUID(), name, "local_encryption", {
+          auto_generate: true,
+          base_dir: repoDir,
+        }),
+      );
+    }
+    const [fallback, target] = (await VaultService.fromRepository(repoDir))
+      .getUserVaultNames();
+    const { resources, override, inputs } = setup(target);
+
+    // A per-run type, so the registration holds under --repeats.
+    const WriteArgs = z.object({ env: z.string().optional() });
+    const modelType = ModelType.create(
+      `test/step-vault-writer-${crypto.randomUUID()}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.10.20.1",
+      globalArguments: z.object({}),
+      resources: {
+        creds: {
+          description: "Credentials",
+          schema: z.object({ token: z.string().meta({ sensitive: true }) }),
+          lifetime: "infinite",
+          garbageCollection: 5,
+        },
+      },
+      methods: {
+        create: {
+          description: "Writes a token",
+          arguments: WriteArgs,
+          execute: async (_args, context) => {
+            const handle = await context.writeResource!("creds", "creds", {
+              token: "step-vault-token",
+            });
+            return { dataHandles: [handle] };
+          },
+        },
+      },
+    });
+    await new YamlDefinitionRepository(repoDir).save(
+      modelType,
+      Definition.create({
+        name: "secret-maker",
+        type: modelType.normalized,
+        ...(resources ? { resources } : {}),
+      }),
+    );
+
+    const workflow = Workflow.create({
+      name: "step-vault",
+      inputs: { properties: { vault: { type: "string" } } },
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "make-secret",
+              task: StepTask.model("secret-maker", "create", { env: "dev" }),
+              ...(override ? { dataOutputOverrides: [override] } : {}),
+            }),
+          ],
+        }),
+      ],
+    });
+    await new YamlWorkflowRepository(repoDir).save(workflow);
+
+    const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
+      await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+    let status: string | undefined;
+    const events: string[] = [];
+    await executeWorkflowWithLocks(
+      resolved,
+      repoContext,
+      datastoreConfig,
+      { workflowIdOrName: workflow.name, inputs: inputs ?? {} },
+      new AbortController().signal,
+      (event: WorkflowRunEvent) => {
+        if (event.kind === "completed") status = event.run.status;
+        if (event.kind !== "started") {
+          events.push(JSON.stringify(event).slice(0, 600));
+        }
+      },
+      syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+    assertEquals(status, "succeeded", events.join("\n"));
+
+    const records = [
+      ...(await persistedResources(repoDir, modelType)).values(),
+    ];
+    assertEquals(records.length, 1);
+    const reference = String(records[0].token);
+    const match = /vault\.get\('([^']+)', '([^']+)'\)/.exec(reference);
+    if (!match) throw new Error(`Not a vault reference: ${reference}`);
+    const vaultService = await VaultService.fromRepository(repoDir);
+    assertEquals(
+      await vaultService.get(match[1], match[2]),
+      "step-vault-token",
+    );
+    return { fallback, target, stored: match[1] };
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("Integration: with no override a step's sensitive output lands in the fallback vault (swamp-club#3606)", async () => {
+  const { fallback, stored } = await storedVaultOfStepRun(() => ({}));
+  assertEquals(stored, fallback);
+});
+
+Deno.test("Integration: a step's data output override vaultName routes its sensitive output (swamp-club#3606)", async () => {
+  const { target, stored } = await storedVaultOfStepRun((target) => ({
+    override: { specName: "creds", vaultName: target },
+  }));
+  assertEquals(stored, target);
+});
+
+Deno.test("Integration: a step override that sets only vary keeps the definition's resources vaultName (swamp-club#3606)", async () => {
+  const { target, stored } = await storedVaultOfStepRun((target) => ({
+    resources: { creds: { vaultName: target } },
+    override: { specName: "creds", vary: ["env"] },
+  }));
+  assertEquals(stored, target);
+});
+
+Deno.test("Integration: a step override vaultName from a workflow input routes to the evaluated vault (swamp-club#3606)", async () => {
+  const { target, stored } = await storedVaultOfStepRun((target) => ({
+    override: { specName: "creds", vaultName: "${{ inputs.vault }}" },
+    inputs: { vault: target },
+  }));
+  assertEquals(stored, target);
 });

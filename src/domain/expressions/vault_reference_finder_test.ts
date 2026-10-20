@@ -26,7 +26,11 @@ import { StepTask } from "../workflows/step_task.ts";
 import { findVaultReferences } from "./vault_reference_finder.ts";
 
 function workflow(
-  props: { vaults?: string[]; inputs?: Record<string, unknown> } = {},
+  props: {
+    vaults?: string[];
+    inputs?: Record<string, unknown>;
+    stepVaultName?: string;
+  } = {},
 ): Workflow {
   return Workflow.create({
     name: "deploy",
@@ -38,6 +42,9 @@ function workflow(
           Step.create({
             name: "compile",
             task: StepTask.model("app", "run", props.inputs),
+            dataOutputOverrides: props.stepVaultName
+              ? [{ specName: "state", vaultName: props.stepVaultName }]
+              : undefined,
           }),
         ],
       }),
@@ -156,6 +163,19 @@ Deno.test("findVaultReferences: a workflow allowing other vaults is not a refere
   assertEquals(
     findVaultReferences("trip-planner", { ...none, workflows: [wf] }),
     { references: [], possibleReferences: [] },
+  );
+});
+
+Deno.test("findVaultReferences: finds a workflow step's data output override vaultName", () => {
+  const wf = workflow({ stepVaultName: "trip-planner" });
+  assertEquals(
+    findVaultReferences("trip-planner", { ...none, workflows: [wf] })
+      .references,
+    [{ kind: "workflow", name: "deploy", via: "data output override" }],
+  );
+  assertEquals(
+    findVaultReferences("other", { ...none, workflows: [wf] }).references,
+    [],
   );
 });
 

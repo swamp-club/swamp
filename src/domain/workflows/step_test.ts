@@ -598,3 +598,19 @@ Deno.test("Step.fromData: rejects a persisted step whose name holds a control ch
     "Step name must not contain control characters",
   );
 });
+
+Deno.test("Step.fromData: keeps a data output override's vaultName through toData", () => {
+  const data: StepInput = {
+    name: "make-secret",
+    task: { type: "model_method", modelIdOrName: "m", methodName: "create" },
+    dataOutputOverrides: [
+      { specName: "creds", vaultName: "vault-a", vary: ["env"] },
+    ],
+  };
+  const step = Step.fromData(data);
+  assertEquals(step.dataOutputOverrides[0].vaultName, "vault-a");
+
+  const restored = Step.fromData(step.toData());
+  assertEquals(restored.dataOutputOverrides[0].vaultName, "vault-a");
+  assertEquals(restored.dataOutputOverrides[0].vary, ["env"]);
+});
