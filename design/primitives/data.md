@@ -401,8 +401,9 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   Reads use `GET /data/{type}/{modelId}/{dataName}/{version}`. Writes use
   `POST /data/resource`, `DELETE /data/resource` and the `/data/writers/...`
   routes for file writers (open, per-line append, streamed content, finalize).
-  Every write is authorised against the worker's active dispatch and uses the
-  same `createResourceWriter` / `createFileWriterFactory` as a local run, on the
+  Every read and write is authorised against the worker's active dispatch: a
+  read is held to the dispatch's behavior type, and a write uses the same
+  `createResourceWriter` / `createFileWriterFactory` as a local run, on the
   dispatch's own composite repository. So ephemeral data and tags behave the
   same as locally. The worker client caches
   artifact bytes by `(dataId, version)` (`src/worker/data_plane_client.ts`).

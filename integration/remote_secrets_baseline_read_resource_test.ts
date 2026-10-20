@@ -276,7 +276,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: readResource: the data-plane bytes read is not held to the dispatch's behavior type",
+    "remote secrets baseline: readResource: the data-plane bytes read is held to the dispatch's behavior type",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -286,20 +286,23 @@ Deno.test({
         note: otherSecret,
       });
 
-      // Disclosure (swamp-club#3528): the
-      // bytes route checks the credential and the control-plane filter,
-      // but not that the requested type is the dispatch's own, so a
-      // dispatch of model A is served model B's stored bytes. getData
-      // refuses the same read (test above). Typed-secrets §9 has serve
-      // authorize every read.
+      // The bytes route repeats getData's check (swamp-club#3528): a
+      // dispatch of model A asking for model B's stored bytes with its own
+      // credential is refused before the lookup, with the same phrase, and
+      // none of B's content leaves serve.
       const response = await fetch(
         `${f.o.dataPlaneUrl}${
           dataContentPath(f.typeB.normalized, f.modelIdB, "other", 1)
         }`,
         { headers: { authorization: `Bearer ${f.credential}` } },
       );
-      assertEquals(response.status, 200);
-      assertEquals(JSON.parse(await response.text()), { note: otherSecret });
+      assertEquals(response.status, 403);
+      const body = await response.text();
+      assertStringIncludes(
+        body,
+        `Behavior type '${f.typeB.normalized}' is outside the active dispatch scope`,
+      );
+      assertEquals(body.includes(otherSecret), false);
     });
   },
 });

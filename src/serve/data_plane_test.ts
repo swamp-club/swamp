@@ -65,8 +65,11 @@ function createInMemoryRepo(tempDir: string): {
   const pending = new Map<string, { key: string; path: string }>();
   const versionCounters = new Map<string, number>();
 
+  // Keyed by the normalized type, as the real store is (`type_normalized`).
   const keyOf = (type: unknown, modelId: string, name: string) =>
-    `${String(type)}/${modelId}/${name}`;
+    `${
+      type instanceof ModelType ? type.normalized : String(type)
+    }/${modelId}/${name}`;
   const nextVersion = (key: string) => {
     const v = (versionCounters.get(key) ?? 0) + 1;
     versionCounters.set(key, v);
@@ -312,6 +315,7 @@ Deno.test("DataPlane: requests without a valid credential are rejected", async (
 
 Deno.test("DataPlane: artifact read round-trips with a strong ETag", async () => {
   await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
     const content = new TextEncoder().encode("artifact-bytes");
     h.stored.set(`${MODEL_TYPE.normalized}/m-1/out-main`, {
       content,
@@ -337,10 +341,102 @@ Deno.test("DataPlane: artifact read round-trips with a strong ETag", async () =>
 
 Deno.test("DataPlane: reading a missing artifact is a 404", async () => {
   await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
     const response = await h.plane.handle(
       request(`/data/${encodeURIComponent(MODEL_TYPE.normalized)}/m-1/nope/1`),
     );
     assertEquals(response?.status, 404);
+  });
+});
+
+Deno.test("DataPlane: artifact bytes are held to the dispatch's behavior type (swamp-club#3528)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const otherBytes = "other-behavior-bytes";
+    h.stored.set("other/behavior/m-2/out-main", {
+      content: new TextEncoder().encode(otherBytes),
+      data: { id: "data-2", name: "out-main" },
+      version: 1,
+    });
+    h.stored.set(`${MODEL_TYPE.normalized}/m-1/out-main`, {
+      content: new TextEncoder().encode("own-bytes"),
+      data: { id: "data-1", name: "out-main" },
+      version: 1,
+    });
+
+    // Another behavior type's bytes are refused before the lookup: no ETag,
+    // none of the bytes, and the phrase getData uses for the same refusal.
+    const otherPath = `/data/${
+      encodeURIComponent("other/behavior")
+    }/m-2/out-main/1`;
+    const refused = await h.plane.handle(request(otherPath));
+    assertEquals(refused?.status, 403);
+    assertEquals(refused?.headers.get("etag"), null);
+    const body = await refused!.text();
+    assertStringIncludes(
+      body,
+      "Behavior type 'other/behavior' is outside the active dispatch scope",
+    );
+    assertEquals(body.includes(otherBytes), false);
+
+    // The ETag branch sits behind the same check: a conditional probe with
+    // the record's own ETag is refused, never answered 304.
+    const probed = await h.plane.handle(
+      request(otherPath, { headers: { "if-none-match": '"data-2-v1"' } }),
+    );
+    assertEquals(probed?.status, 403);
+    await probed?.body?.cancel();
+
+    // The comparison is on the ModelType normalized form: a spelling it
+    // folds reads as the dispatch's own type...
+    const folded = await h.plane.handle(
+      request(
+        `/data/${encodeURIComponent("SWAMP::Data-Plane-Test")}/m-1/out-main/1`,
+      ),
+    );
+    assertEquals(folded?.status, 200);
+    assertEquals(await folded?.text(), "own-bytes");
+
+    // ...while the @ user-namespace prefix it keeps names another type.
+    const namespaced = await h.plane.handle(
+      request(
+        `/data/${encodeURIComponent("@swamp/data-plane-test")}/m-1/out-main/1`,
+      ),
+    );
+    assertEquals(namespaced?.status, 403);
+    await namespaced?.body?.cancel();
+  });
+});
+
+Deno.test("DataPlane: an artifact read with no resolvable dispatch is refused (swamp-club#3528)", async () => {
+  await withHarness(async (h) => {
+    h.stored.set(`${MODEL_TYPE.normalized}/m-1/out-main`, {
+      content: new TextEncoder().encode("own-bytes"),
+      data: { id: "data-1", name: "out-main" },
+      version: 1,
+    });
+    const path = `/data/${
+      encodeURIComponent(MODEL_TYPE.normalized)
+    }/m-1/out-main/1`;
+
+    const none = await h.plane.handle(request(path));
+    assertEquals(none?.status, 400);
+    assertStringIncludes(await none!.text(), "no active dispatch");
+
+    // Several dispatches under a worker-level credential: the server cannot
+    // tell which one the read belongs to.
+    h.dispatches.register(activeDispatch());
+    h.dispatches.register({
+      ...activeDispatch(),
+      dispatchId: "d-2",
+      leaseId: "l-2",
+    });
+    const ambiguous = await h.plane.handle(request(path));
+    assertEquals(ambiguous?.status, 400);
+    assertStringIncludes(
+      await ambiguous!.text(),
+      "dispatch credential required",
+    );
   });
 });
 
