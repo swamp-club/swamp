@@ -780,3 +780,40 @@ Deno.test(
     });
   },
 );
+
+Deno.test(
+  "typed secret destinations: a run authored under globalArguments is placed through the environment, so the shell's own argv holds the reference and no plaintext",
+  posix,
+  async () => {
+    await withFixture(true, async (f) => {
+      const ref = f.ref(4);
+      const marker = `STEP_${crypto.randomUUID().slice(0, 8)}`;
+      const lines = [
+        `echo ${marker}`,
+        `printf 'value:'; printf %s "${ref}" | od -An -tx1 | tr -d ' \\n'; echo`,
+      ];
+      if (Deno.build.os === "linux") {
+        lines.push(
+          `printf 'argv:'; od -An -tx1 < /proc/$$/cmdline | tr -d ' \\n'; echo`,
+        );
+      }
+      const definition = Definition.create({
+        name: "shell-global-run",
+        globalArguments: { run: lines.join("\n") },
+        methods: { execute: { arguments: {} } },
+      });
+      const out = (await runShell(f, definition)).split("\n");
+      const value = out.find((l) => l.startsWith("value:"))!.slice(6);
+      assertEquals(value, utf8Hex(f.canaries[4].value));
+      if (Deno.build.os === "linux") {
+        const argv = out.find((l) => l.startsWith("argv:"))!.slice(5);
+        assert(
+          argv.includes(utf8Hex("__SWAMP_VAULT_0")),
+          "no reference in argv",
+        );
+        assertEquals(argv.includes(utf8Hex(f.canaries[4].value)), false);
+      }
+      assertEquals(f.vault.readsOf(keyOf(4)), 1);
+    });
+  },
+);

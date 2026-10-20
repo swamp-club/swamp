@@ -143,7 +143,9 @@ export function refuseSecretsInRefusingFields(
         `${where} '${path}'`,
         occurrence.reference,
         occurrence.location,
-        "the field refuses secrets",
+        "the field refuses secrets; pass a value that is not a secret, or " +
+          "deliver the secret through a field that takes one, such as an " +
+          "environment variable",
       );
     }
   }
@@ -172,7 +174,8 @@ export function assertNoSensitiveRefuseConflict(
     throw new Error(
       `${owner}: ${field} is marked both sensitive and secrets: "refuse". ` +
         `A sensitive field is stored in a vault and a refusing field never ` +
-        `receives a secret, so a field cannot be both.`,
+        `receives a secret, so a field cannot be both; remove one of the two ` +
+        `markers.`,
     );
   }
 }

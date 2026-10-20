@@ -133,6 +133,9 @@ export function refuseShellSecretDestinations(
   }
   const run = args.run;
   if (typeof run !== "string") return;
+  // The same plan executeCommand fills after the load: both read the
+  // authored env keys from the arguments as written, and expression
+  // evaluation never changes an object key, so the two agree.
   const plan = shellStrategy.planSecrets(run, envKeys, secrets.originOf);
   const refused = plan.refused[0];
   if (refused === undefined) return;
@@ -144,8 +147,7 @@ export function refuseShellSecretDestinations(
     occurrence?.reference,
     occurrence?.location,
     "no environment variable reference expands there, so the value would " +
-      "be pasted into the command line; use an unquoted here-document " +
-      "delimiter or double quotes",
+      `be pasted into the command line; ${refused.fix}`,
   );
 }
 
@@ -181,8 +183,8 @@ function assertNoNulInEnvironment(
     // The code is in the text too: the in-process executor reports a
     // method's error by its message.
     throw new UserError(
-      `Refused to launch the command (${SHELL_ENVIRONMENT_VALUE_REFUSED}): ` +
-        `${what} holds a NUL character, which no process environment can carry`,
+      `Refused to launch the command: ${what} holds a NUL character, which ` +
+        `no process environment can carry (${SHELL_ENVIRONMENT_VALUE_REFUSED})`,
       SHELL_ENVIRONMENT_VALUE_REFUSED,
     );
   }

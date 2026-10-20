@@ -19,11 +19,9 @@
 
 import {
   type SecretBagRegistry,
+  SENTINEL_MARK,
   SENTINEL_SOURCE,
 } from "../vaults/secret_bag_registry.ts";
-
-/** The prefix every sentinel starts with, checked before a full scan. */
-const SENTINEL_MARK = "__SWAMP_VSEC_";
 
 /**
  * Redacts secret values from text to prevent plaintext leakage into
@@ -33,7 +31,7 @@ const SENTINEL_MARK = "__SWAMP_VSEC_";
  */
 export class SecretRedactor {
   private secrets: Set<string> = new Set();
-  private sentinels: SecretBagRegistry | undefined;
+  private readonly sentinels = new Set<SecretBagRegistry>();
   private readonly sentinelPattern = new RegExp(SENTINEL_SOURCE, "g");
 
   /**
@@ -41,15 +39,27 @@ export class SecretRedactor {
    * (design/enablers/typed-secrets.md Section 7.1). The decision reads the
    * registry, never a value: no load happens, and a mask does not depend on
    * the length or contents of a value. Sentinel-shaped text with another
-   * prefix is left as it is.
+   * prefix is left as it is. Registries add up: a nested run that shares
+   * this redactor keeps the outer run's sentinels masked.
    */
   maskSentinelsOf(registry: SecretBagRegistry): void {
-    this.sentinels = registry;
+    this.sentinels.add(registry);
   }
 
   /** Whether an attached registry holds a sentinel to mask. */
   private get masksSentinels(): boolean {
-    return this.sentinels !== undefined && !this.sentinels.isEmpty;
+    for (const registry of this.sentinels) {
+      if (!registry.isEmpty) return true;
+    }
+    return false;
+  }
+
+  /** The entry a sentinel of any attached registry names. */
+  private isMaskedSentinel(sentinel: string): boolean {
+    for (const registry of this.sentinels) {
+      if (registry.entryOf(sentinel) !== undefined) return true;
+    }
+    return false;
   }
 
   /**
@@ -82,12 +92,20 @@ export class SecretRedactor {
   }
 
   /**
-   * Replaces all registered secret values in the text with `***`, and every
-   * sentinel of an attached registry. Longer secrets are replaced first to
-   * handle substring overlap.
+   * Replaces every sentinel of an attached registry in the text with `***`,
+   * then all registered secret values. Sentinels go first, so a value that
+   * happens to be a fragment of a sentinel cannot break the sentinel apart
+   * before it is recognised. Longer secrets are replaced first to handle
+   * substring overlap.
    */
   redact(text: string): string {
     let result = text;
+    if (this.masksSentinels && result.includes(SENTINEL_MARK)) {
+      result = result.replace(
+        this.sentinelPattern,
+        (sentinel) => this.isMaskedSentinel(sentinel) ? "***" : sentinel,
+      );
+    }
     if (this.secrets.size > 0) {
       // Sort longest-first to handle substring overlap (e.g., "abc" vs "abcdef")
       const sorted = Array.from(this.secrets).sort((a, b) =>
@@ -96,17 +114,6 @@ export class SecretRedactor {
       for (const secret of sorted) {
         result = result.split(secret).join("***");
       }
-    }
-    const registry = this.sentinels;
-    if (
-      registry !== undefined && !registry.isEmpty &&
-      result.includes(SENTINEL_MARK)
-    ) {
-      result = result.replace(
-        this.sentinelPattern,
-        (sentinel) =>
-          registry.entryOf(sentinel) === undefined ? sentinel : "***",
-      );
     }
     return result;
   }

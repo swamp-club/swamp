@@ -821,8 +821,12 @@ At the execution boundary the method execution service does three things:
 2. It loads the step's sentinels for the attempt (Section 3.3).
 3. It resolves sentinels in method and global arguments, then merges and
    validates them as today. Global arguments with unresolved expressions stay
-   excluded. The refusal of a literal sensitive global argument stays where
-   it lives, in the create and save paths.
+   excluded. In a typed run the merge of item 1, built before the resolution
+   wrote values into the global arguments, is what the checks and the method
+   receive as `unresolvedMethodArgs`, so a shell `run` authored under
+   `globalArguments` keeps its sentinels for the placement fill. The refusal
+   of a literal sensitive global argument stays where it lives, in the create
+   and save paths.
 
 Pre-flight checks run on the orchestrator before a local method. They receive
 resolved `globalArgs`, and method arguments with sentinels in

@@ -457,8 +457,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Merge raw (pre-vault-resolution) global args as fallback so vault
       // sentinel tokens from either source are preserved for env-var isolation.
       // Filter out unresolved ${{ }} expressions (same policy as the method
-      // args merge above).
-      unresolvedMethodArgs: {
+      // args merge above). A boundary that built the merge before it
+      // resolved the global arguments (executeWorkflow, in a typed run) hands
+      // it in through the context, since by now `definition` holds the values.
+      unresolvedMethodArgs: context.unresolvedMethodArgs ?? {
         ...filteredRawGlobalArgs,
         ...rawMethodArgs,
       },
@@ -768,12 +770,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // a value, so a refused attempt reads no vault. Behind the internal
       // option, which only a typed run's registry carries.
       const registry = context.vaultSecrets?.registry;
-      if (registry?.typedSecrets && context.vaultSecrets?.resolvesAny) {
+      const typed = registry?.typedSecrets === true &&
+        context.vaultSecrets?.resolvesAny === true;
+      // The merge as `unresolvedMethodArgs` carries it, built here while the
+      // global arguments still hold their sentinels: the resolution below
+      // writes values into them, and a method such as command/shell reads
+      // `run` from this merge wherever it was authored.
+      const typedUnresolvedArguments = typed
+        ? unresolvedArgumentsOf(currentDefinition, methodName)
+        : undefined;
+      if (registry !== undefined && typedUnresolvedArguments !== undefined) {
         refuseSecretDestinations({
           modelDef,
           method,
           globalArguments: currentDefinition.globalArguments,
-          mergedArguments: unresolvedArgumentsOf(currentDefinition, methodName),
+          mergedArguments: typedUnresolvedArguments,
           registry,
           localPlacement: !isRemotePlacement,
         });
@@ -793,6 +804,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             globalArguments: currentDefinition.globalArguments,
             methodArguments: currentDefinition.getMethodArguments(methodName),
           }),
+        };
+      }
+      if (typedUnresolvedArguments !== undefined) {
+        // In a typed run the checks and the method see this merge, with the
+        // sentinels in place, as `unresolvedMethodArgs` (Section 6.3).
+        context = {
+          ...context,
+          unresolvedMethodArgs: typedUnresolvedArguments,
         };
       }
 
@@ -889,10 +908,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // validate method arguments. Mirrors the merge in execute():
       // per-method args override global args, with unresolved ${{ }}
       // expressions filtered from global args.
-      const checkUnresolvedMethodArgs = unresolvedArgumentsOf(
-        currentDefinition,
-        methodName,
-      );
+      const checkUnresolvedMethodArgs = typedUnresolvedArguments ??
+        unresolvedArgumentsOf(currentDefinition, methodName);
 
       // Skip pre-flight checks for remotely-placed steps — checks run on
       // the orchestrator where worker-local filesystem state is unavailable.

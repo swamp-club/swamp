@@ -29,6 +29,9 @@ export interface SecretReference {
  */
 export const SENTINEL_SOURCE = "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__";
 
+/** The prefix every sentinel starts with, for a quick check before a full scan. */
+export const SENTINEL_MARK = "__SWAMP_VSEC_";
+
 /** Matches exactly one sentinel. */
 export const SENTINEL_EXACT = new RegExp(`^${SENTINEL_SOURCE}$`);
 
@@ -119,15 +122,6 @@ export function holdsValue(
   return "value" in entry;
 }
 
-/**
- * The sentinels one run issued, keyed by sentinel, with the prefixes its
- * bags drew. Every pass of a run issues into one registry, and each
- * VaultSecretBag is a view of it: a bag issues under its own prefix and
- * resolves any sentinel the registry holds, so a sentinel issued in an
- * earlier pass is never delivered as literal text. A child run shares its
- * parent's registry, as it shares its parent's RunSensitiveValues. No
- * vault.get() entry holds a value; each delivery loads its own.
- */
 /** How a run's registry is built. Internal: only tests set anything here. */
 export interface SecretBagRegistryOptions {
   /**
@@ -142,6 +136,15 @@ export interface SecretBagRegistryOptions {
   readonly typedSecrets?: boolean;
 }
 
+/**
+ * The sentinels one run issued, keyed by sentinel, with the prefixes its
+ * bags drew. Every pass of a run issues into one registry, and each
+ * VaultSecretBag is a view of it: a bag issues under its own prefix and
+ * resolves any sentinel the registry holds, so a sentinel issued in an
+ * earlier pass is never delivered as literal text. A child run shares its
+ * parent's registry, as it shares its parent's RunSensitiveValues. No
+ * vault.get() entry holds a value; each delivery loads its own.
+ */
 export class SecretBagRegistry {
   /** Whether the run's secrets are typed ({@link SecretBagRegistryOptions}). */
   readonly typedSecrets: boolean;

@@ -75,7 +75,9 @@ export interface ErrorRedactor {
  * a delivered value, or a sentinel in a typed run, lands masked in
  * `outputs/<type>/<method>/*.yaml` (design/enablers/typed-secrets.md Section
  * 7.1). Without a redactor, or with one holding nothing, the text is kept as
- * it is. Every writer of a failure record builds its error here.
+ * it is. The method boundary builds its failure record's error here; the run
+ * and workflow entry points, which write their own records, adopt it when
+ * Phase 3.5 and Phase 4 wire them.
  */
 export function executionErrorFrom(
   error: unknown,

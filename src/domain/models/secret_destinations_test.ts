@@ -137,8 +137,9 @@ Deno.test("refuseSecretsInRefusingFields: names the reference and where it was r
   assertEquals(
     error.message,
     "Refused to deliver secret 'j' in vault 'w' to method argument 'dir' " +
-      "(at db/main.password): the field refuses secrets " +
-      "(secret_destination_refused)",
+      "(at db/main.password): the field refuses secrets; pass a value that " +
+      "is not a secret, or deliver the secret through a field that takes " +
+      "one, such as an environment variable (secret_destination_refused)",
   );
 });
 

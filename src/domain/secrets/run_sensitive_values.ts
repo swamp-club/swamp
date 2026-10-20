@@ -22,12 +22,11 @@ import {
   type RegistryEntry,
   SecretBagRegistry,
   type SecretReference,
+  SENTINEL_MARK,
   SENTINEL_SOURCE,
 } from "../vaults/secret_bag_registry.ts";
 import type { SecretRedactor } from "./secret_redactor.ts";
 
-/** The prefix every sentinel starts with, checked before a full scan. */
-const SENTINEL_MARK = "__SWAMP_VSEC_";
 const SENTINEL_PATTERN = new RegExp(SENTINEL_SOURCE, "g");
 
 /**
@@ -193,17 +192,19 @@ export class RunSensitiveValues implements SecretSink {
    * with no reference (one a worker rebuilt) becomes the mask.
    */
   withPlaceholders(text: string): string {
-    let result = text;
+    // Sentinels first: a recorded value that is a fragment of a sentinel
+    // must not break the sentinel apart before it is recognised.
+    let result = this.withSentinelStandIns(
+      text,
+      (entry) =>
+        isIssuedEntry(entry) ? this.placeholderFor(entry.reference) : "***",
+    );
     for (const { value, source } of this.list()) {
       if (result.includes(value)) {
         result = result.split(value).join(this.placeholderFor(source));
       }
     }
-    return this.withSentinelStandIns(
-      result,
-      (entry) =>
-        isIssuedEntry(entry) ? this.placeholderFor(entry.reference) : "***",
-    );
+    return result;
   }
 
   /**
@@ -261,7 +262,7 @@ export class RunSensitiveValues implements SecretSink {
 
   private maskDeep(value: unknown): unknown {
     if (typeof value === "string") {
-      let result = value;
+      let result = this.withSentinelStandIns(value, () => "***");
       for (const { value: secret } of this.list()) {
         if (result.includes(secret)) result = result.split(secret).join("***");
         const escaped = JSON.stringify(secret).slice(1, -1);
@@ -269,7 +270,7 @@ export class RunSensitiveValues implements SecretSink {
           result = result.split(escaped).join("***");
         }
       }
-      return this.withSentinelStandIns(result, () => "***");
+      return result;
     }
     if (typeof value === "number" || typeof value === "boolean") {
       return this.entries.has(String(value)) ? "***" : value;

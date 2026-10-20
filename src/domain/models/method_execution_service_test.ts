@@ -5524,3 +5524,63 @@ Deno.test("executeWorkflow: a failed method's output record holds its error with
   assertEquals(failed?.error?.message, "leaked *** and ***");
   assertEquals(failed?.error?.message.includes("s3cret-value"), false);
 });
+
+Deno.test("executeWorkflow: in a typed run the checks and the method receive the global arguments in unresolvedMethodArgs with their sentinels, as the shell needs; option off, they hold the values as today", async () => {
+  const service = new DefaultMethodExecutionService();
+  const seen: {
+    method?: Record<string, unknown>;
+    check?: Record<string, unknown>;
+    args?: Record<string, unknown>;
+  } = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/unresolved-merge"),
+    version: "2026.10.20.1",
+    methods: {
+      create: {
+        description: "Records the unresolved merge",
+        arguments: z.object({ command: z.string().optional() }),
+        execute: (args, context) => {
+          seen.method = { ...context.unresolvedMethodArgs };
+          seen.args = { ...(args as Record<string, unknown>) };
+          return Promise.resolve({});
+        },
+      },
+    },
+    checks: {
+      record: {
+        description: "Records the unresolved merge",
+        execute: (context) => {
+          seen.check = { ...context.unresolvedMethodArgs };
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  for (const typedSecrets of [true, false]) {
+    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+    const sentinel = bag.addSecret(
+      { vaultName: "v", key: "token" },
+      "globalArguments.command",
+    );
+    // `command` is authored under globalArguments, not the method.
+    const definition = Definition.create({
+      name: "d",
+      globalArguments: { command: `echo ${sentinel}` },
+      methods: { create: { arguments: {} } },
+    });
+    const { loader } = mockLoader({ token: "s3cret-value" });
+    const { context } = createTestContext({
+      modelType: model.type,
+      methodName: "create",
+      vaultSecrets: bag,
+    });
+    await service.executeWorkflow(definition, model, "create", context, {
+      secretLoader: loader,
+    });
+    const expected = typedSecrets ? `echo ${sentinel}` : "echo s3cret-value";
+    assertEquals(seen.method?.command, expected, `typed ${typedSecrets}`);
+    assertEquals(seen.check?.command, expected, `typed ${typedSecrets}`);
+    // The method's validated arguments hold the value either way.
+    assertEquals(seen.args?.command, "echo s3cret-value");
+  }
+});

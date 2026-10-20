@@ -21,11 +21,9 @@ import {
   isIssuedEntry,
   type SecretBagRegistry,
   type SecretReference,
+  SENTINEL_MARK,
   SENTINEL_SOURCE,
 } from "./secret_bag_registry.ts";
-
-/** The prefix every sentinel starts with, checked before a full scan. */
-const SENTINEL_MARK = "__SWAMP_VSEC_";
 
 /**
  * Where a sentinel of the run sits in a text, and what it stands for. It

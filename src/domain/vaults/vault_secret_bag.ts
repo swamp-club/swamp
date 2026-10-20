@@ -85,6 +85,8 @@ export interface ShellOccurrencePlacement {
   readonly text?: string;
   /** For a refused placement, the position as a user reads it. */
   readonly where?: string;
+  /** For a refused placement, what to write instead. */
+  readonly fix?: string;
 }
 
 /**
@@ -854,6 +856,7 @@ export function planShellPlacement(
     vaultQuote: posixVaultQuoter(command),
     vaultReference: posixVaultReference,
     refusedWhere: "a here-document with a quoted delimiter",
+    refusedFix: "use an unquoted here-document delimiter",
   });
 }
 
@@ -879,6 +882,7 @@ export function planPowerShellPlacement(
     vaultQuote: (_position, context) => context,
     vaultReference: powerShellReference,
     refusedWhere: "PowerShell single quotes",
+    refusedFix: "use double quotes",
   });
 }
 
@@ -891,6 +895,7 @@ interface ShellPlacementRules<C> {
   vaultQuote: (position: number, context: C) => QuoteContext;
   vaultReference: (envName: string, quote: QuoteContext) => string;
   refusedWhere: string;
+  refusedFix: string;
 }
 
 const SENTINEL_PATTERN = new RegExp(SENTINEL_SOURCE, "g");
@@ -948,7 +953,12 @@ function planOccurrences<C>(
     if (base.dataOrigin) {
       const text = rules.dataReference(envName, contexts[i]);
       return text === undefined
-        ? { ...base, placement: "refused", where: rules.refusedWhere }
+        ? {
+          ...base,
+          placement: "refused",
+          where: rules.refusedWhere,
+          fix: rules.refusedFix,
+        }
         : { ...base, placement: "environment", text };
     }
     const quote = rules.vaultQuote(start, contexts[i]);
