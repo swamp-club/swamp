@@ -244,6 +244,7 @@ export class Step {
         garbageCollection: override.garbageCollection,
         tags: override.tags,
         vary: override.vary,
+        vaultName: override.vaultName,
       }));
 
     // Convert forEach data to ForEach interface
@@ -322,6 +323,7 @@ export class Step {
           garbageCollection: override.garbageCollection,
           tags: override.tags,
           vary: override.vary,
+          vaultName: override.vaultName,
         }))
         : undefined,
       allowFailure: this.allowFailure,

@@ -37,6 +37,7 @@ export type VaultReferenceSourceKind = "definition" | "workflow" | "datastore";
 export type VaultReferenceVia =
   | "vault.get"
   | "resource override"
+  | "data output override"
   | "vaults list";
 
 /** One place that names the vault. */
@@ -69,8 +70,9 @@ export interface VaultReferenceSources {
 
 /**
  * Finds every place that names `vaultName`: a `vault.get` call whose vault
- * argument is the name, a definition's resource override `vaultName`, or a
- * workflow's `vaults` allow-list. A `vault.get` whose vault argument is evaluated (`inputs.v`)
+ * argument is the name, a definition's resource override `vaultName`, a
+ * workflow step's data output override `vaultName`, or a workflow's `vaults`
+ * allow-list. A `vault.get` whose vault argument is evaluated (`inputs.v`)
  * cannot be resolved here, so its source is a possible reference instead.
  */
 export function findVaultReferences(
@@ -102,10 +104,18 @@ export function findVaultReferences(
     }
   }
 
-  // A step's data output override cannot name a vault yet: Step drops its
-  // vaultName (swamp-club#3606).
   for (const workflow of sources.workflows) {
     scan("workflow", workflow.name, workflow.toData());
+    const stepOverrides = workflow.jobs.flatMap((job) =>
+      job.steps.flatMap((step) => step.dataOutputOverrides)
+    );
+    if (stepOverrides.some((o) => o.vaultName === vaultName)) {
+      references.push({
+        kind: "workflow",
+        name: workflow.name,
+        via: "data output override",
+      });
+    }
     if (workflow.vaults?.includes(vaultName)) {
       references.push({
         kind: "workflow",

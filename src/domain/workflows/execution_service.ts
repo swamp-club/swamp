@@ -814,7 +814,10 @@ function resumeVaultAccess(
 
 /**
  * A step's data output overrides layered over its definition's `resources`
- * overrides: a step override replaces the definition's for the same spec.
+ * overrides. For the same spec they merge field by field: each field the step
+ * sets wins, and the definition supplies the rest, so a step that sets only
+ * `vary` keeps the definition's `vaultName`, `lifetime` and
+ * `garbageCollection`.
  */
 export function mergeDataOutputOverrides(
   definitionResources: ResourceOverrides | undefined,
@@ -836,7 +839,10 @@ export function mergeDataOutputOverrides(
   for (const stepOvr of stepOverrides) {
     const idx = merged.findIndex((o) => o.specName === stepOvr.specName);
     if (idx >= 0) {
-      merged[idx] = stepOvr;
+      const set = Object.fromEntries(
+        Object.entries(stepOvr).filter(([, value]) => value !== undefined),
+      );
+      merged[idx] = { ...merged[idx], ...set };
     } else {
       merged.push(stepOvr);
     }
@@ -2827,6 +2833,7 @@ export class DefaultStepExecutor implements StepExecutor {
             ? ctx.sensitiveValues.tagsWithPlaceholders(override.tags)
             : override.tags,
           resolvedVarySuffix,
+          vaultName: override.vaultName,
         };
       })
       : undefined;

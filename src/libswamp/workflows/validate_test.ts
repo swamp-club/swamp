@@ -472,3 +472,101 @@ Deno.test("createWorkflowValidateDeps: fails a step whose stored definition hold
     }
   }
 });
+
+Deno.test("createWorkflowValidateDeps: predicts sensitive-output vaults with the step override's vaultName merged over the definition's (swamp-club#3606)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const modelType = ModelType.create(
+      `@test-3606/secret-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {
+        creds: {
+          description: "Credentials",
+          schema: z.object({ secret: z.string().meta({ sensitive: true }) }),
+          lifetime: "infinite",
+          garbageCollection: 10,
+        },
+      },
+      methods: {
+        create: {
+          description: "Create",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(
+      modelType,
+      Definition.create({
+        name: "secret-maker",
+        type: modelType.normalized,
+        resources: { creds: { vaultName: "def-vault" } },
+      }),
+    );
+    const deps = createWorkflowValidateDeps(
+      {} as WorkflowRepository,
+      new YamlDefinitionRepository(dir),
+      undefined,
+      () =>
+        Promise.resolve({
+          getDefaultVaultName: () => undefined,
+          getUserVaultNames: () => ["fallback", "def-vault", "step-vault"],
+        }),
+    );
+    const vaultsResult = async (
+      override: { specName: string; vaultName?: string; vary?: string[] },
+    ) => {
+      const results = await deps.validate(Workflow.create({
+        name: "wf",
+        vaults: ["def-vault"],
+        jobs: [
+          Job.create({
+            name: "job1",
+            steps: [
+              Step.create({
+                name: "step1",
+                task: StepTask.model("secret-maker", "create"),
+                dataOutputOverrides: [override],
+              }),
+            ],
+          }),
+        ],
+      }));
+      return results.find((r) => r.name.startsWith("Sensitive outputs"));
+    };
+
+    const routed = await vaultsResult({
+      specName: "creds",
+      vaultName: "step-vault",
+    });
+    assertEquals(routed?.passed, false);
+    assertStringIncludes(routed?.error ?? "", "'step-vault'");
+    assertEquals(routed?.error?.includes("'fallback'"), false);
+
+    // A step override that sets only vary keeps the definition's vaultName.
+    assertEquals(
+      await vaultsResult({ specName: "creds", vary: ["env"] }),
+      undefined,
+    );
+
+    // An evaluated vaultName is decided at run time, not predicted here.
+    assertEquals(
+      await vaultsResult({
+        specName: "creds",
+        vaultName: "${{ inputs.vault }}",
+      }),
+      undefined,
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

@@ -392,6 +392,11 @@ export class DefaultWorkflowValidationService
           (taskData.modelType ?? modelRef).includes("${{") ||
           taskData.methodName.includes("${{")
         ) continue;
+        // An evaluated vaultName is known only at run time, where the pre-run
+        // vault check decides on the evaluated name.
+        if (
+          step.dataOutputOverrides.some((o) => o.vaultName?.includes("${{"))
+        ) continue;
         const targets = await this.sensitiveOutputVaults.targetVaults({
           modelIdOrName: modelRef,
           methodName: taskData.methodName,
