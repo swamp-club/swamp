@@ -28,10 +28,14 @@
  * eval` stores results through libsql and exits without it. That binding is
  * installed on its own, at the installed libsql's version.
  *
- * We use `npm install` rather than `npm ci` because the lockfile is generated
- * on one platform (e.g. macOS) and CI runs on another (Linux). `npm ci` fails
- * when platform-specific optional deps (like @img/sharp-linux-*) are missing
- * from the lockfile.
+ * Both installs resolve from the committed package-lock.json, which pins the
+ * whole dependency tree and is what scripts/audit_deps.ts audits. They pass
+ * `--no-save` so npm never rewrites it: a plain `npm install` on macOS
+ * rewrites the platform-specific optional entries, which would leave every
+ * local eval run with a modified lockfile. We use `npm install` rather than
+ * `npm ci` because `npm ci` refuses a lockfile that lacks the host's
+ * platform-specific optional entries (like @img/sharp-darwin-x64), and the
+ * lockfile is generated on one platform while the evals run on several.
  */
 
 import { join } from "@std/path";
@@ -75,7 +79,7 @@ export function libsqlBindingPackage(build: HostBuild): string | undefined {
 export interface NpmInstallOptions {
   /** npm cache directory; npm's default cache when omitted. */
   cacheDir?: string;
-  /** Packages to add without saving them to package.json. */
+  /** Packages to add on top of the locked tree. */
   packages?: string[];
 }
 
@@ -83,7 +87,7 @@ export interface NpmInstallOptions {
 export function npmInstallArgs(options: NpmInstallOptions = {}): string[] {
   const args = [
     "install",
-    "--package-lock=false",
+    "--no-save",
     "--omit=optional",
     "--no-audit",
     "--no-fund",
@@ -92,7 +96,7 @@ export function npmInstallArgs(options: NpmInstallOptions = {}): string[] {
     args.push("--cache", options.cacheDir);
   }
   if (options.packages !== undefined && options.packages.length > 0) {
-    args.push("--no-save", ...options.packages);
+    args.push(...options.packages);
   }
   return args;
 }
