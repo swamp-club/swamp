@@ -88,6 +88,11 @@ export function RunActivityProvider(
   return createElement(RunActivityContext.Provider, { value }, children);
 }
 
+/** Whether the tab is in view; true outside a `RunActivityProvider`. */
+export function useTabVisible(): boolean {
+  return useContext(RunActivityContext).visible;
+}
+
 /**
  * Whether going from `previous` to `next` calls for a refetch: a run
  * started or stopped, or the tab came back into view.

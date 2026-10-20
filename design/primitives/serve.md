@@ -1503,7 +1503,11 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   plus leases written in the last few seconds, read by lease name and version
   time without loading other leases' attributes). Both are audited reads, so
   the view refetches only when the health stream shows a worker change on this
-  instance, plus a 60 s fallback while the tab is visible. A placement selector
+  instance, plus a 60 s fallback while the tab is visible. A hidden tab reads
+  nothing and the map draws nothing: browsers pause animation frames there, so
+  transitions scheduled while hidden would pile up unstarted. On coming back
+  into view the view refetches once and the map snaps to the current layout
+  without animating what changed. A placement selector
   dims workers a step's `labels:`/`platform:`/`target:` would not reach, using
   the scheduler's own eligibility rules (`integration/host_map_placement_parity_test.ts`
   pins the two together).

@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
   ageOutDelayMs,
   ageOutTimerStep,
@@ -25,6 +27,8 @@ import {
   nextRefetch,
   RUN_ACTIVITY_REFETCH_MS,
   runActivityChanged,
+  RunActivityProvider,
+  useTabVisible,
 } from "./run_activity.ts";
 
 const T0 = Date.UTC(2026, 9, 14, 16, 0, 0);
@@ -158,4 +162,24 @@ Deno.test("ageOutTimerStep: a 30- or 90-day wait goes in steps a timer can hold"
     assertEquals(now, deadline);
     assertEquals(steps, Math.ceil((days * 86_400_000) / MAX_TIMER_MS));
   }
+});
+
+function VisibilityProbe() {
+  return createElement("span", null, useTabVisible() ? "visible" : "hidden");
+}
+
+Deno.test("useTabVisible: in view outside a provider, and inside one with no document", () => {
+  assertEquals(
+    renderToStaticMarkup(createElement(VisibilityProbe)),
+    "<span>visible</span>",
+  );
+  assertEquals(
+    renderToStaticMarkup(
+      createElement(RunActivityProvider, {
+        activeRuns: undefined,
+        children: createElement(VisibilityProbe),
+      }),
+    ),
+    "<span>visible</span>",
+  );
 });
