@@ -37,6 +37,7 @@ import {
   SECRET_OPERATION_UNSUPPORTED,
   type SecretRefusalCode,
 } from "../../domain/expressions/errors.ts";
+import type { SecretReference } from "../../domain/vaults/secret_bag_registry.ts";
 
 /** One refusal, recorded before the refusing code throws. */
 export interface Fault {
@@ -54,6 +55,14 @@ export interface FaultScope {
   recording: boolean;
   /** The first failure of the binding conversion, rethrown afterwards. */
   boundaryFailure?: Error;
+  /**
+   * Every sensitive-field reference a data record adapted in this
+   * evaluation holds, keyed by vault and key, selected or not. Recorded
+   * whether or not recording is on, because the boundary conversion of a
+   * result adapts records too, and the evaluator authorizes each after
+   * release (typed-secrets 3.3).
+   */
+  readonly sensitiveReferences: Map<string, SecretReference>;
 }
 
 const ambientScope = new AsyncLocalStorage<FaultScope>();
@@ -64,8 +73,31 @@ const ambientScope = new AsyncLocalStorage<FaultScope>();
  * returns or its promise settles.
  */
 export function runInFaultScope<T>(fn: (scope: FaultScope) => T): T {
-  const scope: FaultScope = { faults: [], secretsRead: 0, recording: true };
+  const scope: FaultScope = {
+    faults: [],
+    secretsRead: 0,
+    recording: true,
+    sensitiveReferences: new Map(),
+  };
   return ambientScope.run(scope, () => fn(scope));
+}
+
+/**
+ * Record a sensitive-field reference a data record holds, for authorization
+ * after evaluation. Outside a scope nothing would authorize it, so the read
+ * fails closed instead of being dropped.
+ */
+export function recordSensitiveReference(reference: SecretReference): void {
+  const scope = ambientScope.getStore();
+  if (scope === undefined) {
+    throw new Error(
+      "A sensitive-field reference was read outside an expression evaluation",
+    );
+  }
+  scope.sensitiveReferences.set(
+    `${reference.vaultName}\u0000${reference.key}`,
+    reference,
+  );
 }
 
 /**

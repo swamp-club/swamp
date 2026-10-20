@@ -27,6 +27,7 @@ import {
   recordedFaults,
   recordFault,
   recordSecretRead,
+  recordSensitiveReference,
   refuse,
   runInFaultScope,
   SecretRefusal,
@@ -105,4 +106,28 @@ Deno.test("recordBoundaryFailure: keeps the first failure", () => {
     return scope;
   });
   assertStrictEquals(scope.boundaryFailure, first);
+});
+
+Deno.test("recordSensitiveReference: records each reference once by vault and key, whether or not recording is on", () => {
+  const scope = runInFaultScope((scope) => {
+    recordSensitiveReference({ vaultName: "v", key: "a" });
+    scope.recording = false;
+    recordSensitiveReference({ vaultName: "v", key: "a" });
+    recordSensitiveReference({ vaultName: "v", key: "b" });
+    return scope;
+  });
+  assertEquals([...scope.sensitiveReferences.entries()], [
+    ["v\u0000a", { vaultName: "v", key: "a" }],
+    ["v\u0000b", { vaultName: "v", key: "b" }],
+  ]);
+  assertEquals(scope.secretsRead, 0);
+  assertEquals(scope.faults, []);
+});
+
+Deno.test("recordSensitiveReference: outside a scope the read fails closed", () => {
+  assertThrows(
+    () => recordSensitiveReference({ vaultName: "v", key: "a" }),
+    Error,
+    "outside an expression evaluation",
+  );
 });

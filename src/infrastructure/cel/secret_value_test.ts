@@ -26,6 +26,7 @@ import {
 import { runInFaultScope, SecretRefusal } from "./secret_fault_context.ts";
 import {
   composeSecrets,
+  dataReferenceSecret,
   isSecret,
   Secret,
   secretFromParts,
@@ -136,4 +137,15 @@ Deno.test("Secret: Deno.inspect prints the class name without reading the state"
     assert(!shown.includes("DB_PASS"), shown);
     assertEquals(scope.faults, []);
   });
+});
+
+Deno.test("dataReferenceSecret: holds one data-origin reference and where it was read", () => {
+  const location =
+    "data.latest of model 'db' record r1 version 2 (data.latest), field 'password'";
+  const secret = dataReferenceSecret(reference, location);
+  assertEquals(secretParts(secret), [
+    { reference, dataOrigin: true, location },
+  ]);
+  assert(isSecret(secret));
+  assertStrictEquals(secret.constructor, Secret);
 });

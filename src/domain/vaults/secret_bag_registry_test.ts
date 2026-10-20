@@ -153,3 +153,20 @@ Deno.test("SENTINEL_EXACT: a 32-hex prefix and a counter, nothing else", () => {
   );
   assertEquals(SENTINEL_EXACT.test(` ${sentinel(0)}`), false);
 });
+
+Deno.test("SecretBagRegistry: a data-origin reference entry is issued, holds no value, and reads as data origin", () => {
+  const registry = new SecretBagRegistry();
+  registry.register({
+    sentinel: sentinel(0),
+    reference: REF,
+    encoding: "raw",
+    dataOrigin: true,
+    location:
+      "data.latest of model 'db' record r1 version 1 (data.latest), field 'k'",
+  });
+  const entry = registry.issuedEntryOf(sentinel(0))!;
+  assertEquals(isIssuedEntry(entry), true);
+  assertEquals(holdsValue(entry), false);
+  assertEquals(entry.dataOrigin, true);
+  assertEquals("value" in entry, false);
+});

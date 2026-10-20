@@ -1,18 +1,18 @@
 ---
 audience: maintainer
 enables: [behaviors, workflows, vaults, serve]
-last-verified: 2026-10-19 @ dc3fb7a59
+last-verified: 2026-10-19 @ dbcd9639d
 ---
 
 # Typed Secrets for Expressions
 
 **Status:** implementation plan. Phases 0, 1 and 2 have shipped
 (swamp-club#3510, swamp-club#3511, swamp-club#3512, swamp-club#3551,
-swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1 and 3.2
-(swamp-club#3619, swamp-club#3625) behind the internal option. This revision replaces the
-earlier engine-2 plan, and [Why this design](#why-this-design) says what
-changed. Until Phase 4 ships, [expressions](./expressions.md) describes current
-behavior.
+swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1, 3.2 and
+3.3 (swamp-club#3619, swamp-club#3625, swamp-club#3626) behind the internal
+option. This revision replaces the earlier engine-2 plan, and
+[Why this design](#why-this-design) says what changed. Until Phase 4 ships,
+[expressions](./expressions.md) describes current behavior.
 
 ## Outcome
 
@@ -319,9 +319,28 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   accessor adapter records the references in each record it returns, and after
   evaluation, before the result is used, each is authorized under the run's
   `RunVaultAccess` with no provider call. A missing key fails only if the
-  reference is delivered, at its load (Section 10.1). Until the adapter ships
-  (Phase 3) the accessors still read tagged fields, and that read authorizes
-  each reference under the run's `RunVaultAccess` and re-throws a denial.
+  reference is delivered, at its load (Section 10.1). Phase 3.3 implements
+  this on the typed path: the adapter records every reference of each record
+  it adapts, selected or not, in the evaluation's fault context; after the
+  boundary conversion of the result, which adapts records the expression
+  returned without selecting into them, the evaluator authorizes each distinct
+  reference through `VaultService.authorizeRead`, sequentially and uncached,
+  and a denial fails the evaluation as the read-time denial does with the
+  option off. A typed evaluation with no vault scope fails closed; with a
+  scope but no ambient `RunVaultAccess` the check passes, as the option-off
+  read does outside a run. On the asynchronous path release precedes
+  authorization, so a denial leaves the value-less entries release issued in
+  the run's registry; nothing delivers them, and a load authorizes again. The
+  synchronous `evaluate` fails closed on any recorded reference, naming
+  `evaluateAsync`, because the check is asynchronous: it reads the whole
+  result as release would first, so a record the expression returned without
+  selecting into it is adapted too, even behind a sentinel bound from the
+  context, and the refusal comes before release issues any sentinel. Phase 4
+  gives the synchronous passes (`forEach` expansion, step names) an
+  authorization step of their own, for example in `prepare`, before it
+  enables them. With the option off the accessors still read tagged fields,
+  and that read authorizes each reference under the run's `RunVaultAccess`
+  and re-throws a denial.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key
   under the run's `RunVaultAccess`, as a load would, so a grant revoked mid-run
   fails the next check. It then asks the provider:
@@ -698,7 +717,12 @@ values. The tag is `_swamp.sensitiveFields`, either `"*"` or a list of
 dot-paths. Every expression-facing accessor uses the adapter:
 
 - `data.latest` and `data.version`, in own-namespace, wildcard and
-  cross-namespace forms.
+  cross-namespace forms: a record of the reader's own namespace is adapted
+  whichever form reached it, and a record of another namespace is returned as
+  stored, its tag unread, as [datastores](./datastores.md) and swamp-club#3306
+  require. That namespace's tags must not choose which of this repository's
+  secrets are read, and its references name vaults this repository does not
+  have, so its reference text is ordinary text.
 - `findBySpec`, `findByTag`, and `data.query` records and projections.
 - Live and reconstructed `steps.<name>.outputs`, child outputs a parent can see,
   and `model.<name>.resource`.
@@ -706,14 +730,44 @@ dot-paths. Every expression-facing accessor uses the adapter:
 The adapter replaces the expression-facing calls to `resolveSensitiveVaultRefs`.
 It reads no vault, so the synchronous property views can use it. For JSON
 resources `.content` and `.attributes` are the same object and carry the same
-`Secret` values.
+`Secret` values. It builds new objects: each tagged leaf is a getter that
+answers one `Secret` and counts a read for the container rule, untagged values
+are carried as they are, and the record, the context and the model map are
+never mutated. The model map is viewed lazily, so the `model.<name>.resource`
+loaders fire only when CEL reads them, and a model indexed by name and by id
+reads one view.
 
-An absent tag means no sensitive fields. Some records fail with
+An absent tag means no sensitive fields. Under the star value every field is
+sensitive at any depth: the writer stores each top-level field as a reference
+or leaves it null, and a container appears only where a schema marks a parent
+and a child inside it sensitive, holding the child's reference, so every leaf
+at any depth must be absent, null or a stored reference. A path list is walked
+through own properties only, as the writer walks it. Some records fail with
 `secret_reference_invalid` before they reach CEL. That happens for a malformed
 tag, an unsafe path, or a tagged non-null value that is not a stored reference.
 A stored reference is the anchored text `${{ vault.get('v', 'k') }}`. A tagged
-value that is absent or null stays that way. Reference-looking text outside a
-tagged path stays ordinary text.
+value that is absent or null stays that way. A tagged path that is a strict
+prefix of another tagged path may hold a container instead: the writer stores
+a child's reference inside its parent when both are marked sensitive, in either
+order, and such a container holds nothing but its tagged descendants, so an
+untagged leaf inside it is refused too. The refusal names the accessor, the
+model, the record id, the version and the field path, never the data name,
+which a vary suffix can fill from a resolved secret, and never a value.
+Reference-looking text outside a tagged path stays ordinary text.
+Records a workflow step merges into `model.<name>.resource` with resolved
+plaintext under their tag (`fromResourceHandle`) fail with
+`secret_reference_invalid` on the typed path until Phase 4 keeps live records
+as references.
+
+Phase 3.3 (swamp-club#3626) ships the adapter for `data.latest`,
+`data.version`, `findBySpec`, `findByTag` and `model.<name>.resource` behind
+the internal option (`src/infrastructure/cel/sensitive_record_adapter.ts`,
+applied in the typed environment's accessor handlers and in the typed
+bindings, so a namespace instance built earlier is adapted all the same). A
+`Secret` it creates leaves CEL as a value-less data-origin entry of the run's
+registry (`DataReferenceEntry`, `VaultSecretBag.addDataReference`), which
+`SecretLoader` loads at delivery like a vault reference. `data.query`, step
+outputs and `model.method` results are Phases 4 and 3.5.
 
 Extension `readResource` is a trusted plaintext API. It keeps resolving tagged
 fields, including the legacy resource-schema fallback for untagged records.
@@ -920,6 +974,8 @@ delivery instead of an expression.
 | A guard or assert predicate whose result holds a secret                                                                   | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
 | A data-origin value in a quoted here-document or in PowerShell single quotes                                              | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
 | A malformed sensitive-fields tag or stored reference                                                                      | Treated as absent, or left as text                            | `secret_reference_invalid`                                                        |
+| An own-namespace tagged field read by `data.version`, `findBySpec`, `findByTag`, a wildcard `data.latest` or `model.<name>.resource` | The stored reference text                                     | A `Secret`, as `data.latest` returns it                                           |
+| A tagged field the run's vault access refuses, in any record those readers return, including a set read where the expression uses another record | The reference text is returned                                | The evaluation fails with the access error, before its result is used            |
 | `in`, or `==` or `!=` with no scalar-literal or `null` operand, in an expression that reads a secret                      | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
 | `vault.get` of a missing key, in an expression whose result nothing delivers                                              | The eager read fails the run                                  | `secret_reference_unavailable` (Section 3.4)                                      |
 | A secret in a name, tag, label or data-name suffix                                                                        | The `sensitive-<vault>.<key>` stand-in, found by value search | The same stand-in, taken from the sentinel                                        |
@@ -943,8 +999,15 @@ same codes. No new doctor command is needed.
 
 Phases 3 and 4 are built behind an internal option that only tests set. The
 release that ends Phase 4 turns the new path on for every entry point and
-removes the option. Its release notes carry the table in Section 10.1. The Phase
-2 release notes say that a provider without `has` gets one probe read at
+removes the option. Turning it on waits for swamp-club#3635, which reserves the
+`_swamp.` tag prefix so that only the vaulting step writes
+`_swamp.sensitiveFields`: the accessor adapter trusts own-namespace tags. A
+catalog pull already stores only the pulled namespace's rows
+(swamp-club#3636), so a foreign export cannot pose as the reader's own
+namespace. It also waits for the query view of Section 6.2 (Phase 4): until
+then `data.query` returns tagged fields as reference text on the typed path
+and authorizes nothing. Its release notes carry the table in Section 10.1. The Phase 2
+release notes say that a provider without `has` gets one probe read at
 evaluation as well as its load at delivery. Phases 2 and 5 ship on their own.
 
 ## 11. Delivery phases
@@ -1113,6 +1176,22 @@ delivery load, and exact canary delivery after rotation through `SecretLoader`.
 Accessors, destinations, production entry points, workflows/queries and remote
 transport remain later slices.
 
+Phase 3.3 (swamp-club#3626) adds the accessor adapter of Section 6.1 for
+`data.latest`, `data.version`, `findBySpec`, `findByTag` and
+`model.<name>.resource`; the strict tag reader and stored-reference parser
+beside the writer (`readSensitiveFieldsTag`, `parseStoredVaultReference`); the
+stored read option of `DataNamespace.latest`, which reads no vault; the
+value-less data-origin registry entry the boundary issues and the loader loads
+(`DataReferenceEntry`); and the post-release authorization of Section 3.4,
+still enabled only by tests. Own-namespace records are adapted and foreign
+records stay as stored, and a synchronous typed evaluation that reads a tagged
+record fails closed. Counting-vault integration tests cover every accessor,
+every canary class, denial and mid-run revocation before the result is used, a
+missing key failing only at load, invalid records, and the option-off path,
+`readResource` and raw content unchanged. Destinations (3.4), `model.method`
+results (3.5), production entry points, workflows/queries and remote transport
+remain later slices.
+
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any
 load. Non-secret behavior is unchanged.
@@ -1215,7 +1294,8 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts`, `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`                                                                                                                                      |
 | Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (`resolveVaultExpressions`, option off)                                                                                                                                                                                                                                                                |
 | Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
-| Sentinels and shell placement                 | `src/domain/vaults/secret_bag_registry.ts`, `vault_secret_bag.ts`, `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                                                                                                                                                       |
+| Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts`, `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace`), `integration/typed_data_secrets_test.ts` |
+| Sentinels and shell placement                 | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`), `vault_secret_bag.ts` (`addDataReference`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                                                                                                           |
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
 | Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
 | Loading at delivery (Section 3.3)             | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`)                                                                                       |
