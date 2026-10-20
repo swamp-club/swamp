@@ -552,6 +552,21 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     }
   };
 
+  /** An ended unit may retain an unrecorded discard from a checkpoint. */
+  const abandonUnit = async () => {
+    if (unit === undefined) return;
+    let mayLand = false;
+    try {
+      await unit.abandon();
+    } catch (error) {
+      if (!(error instanceof MayLandLaterError)) throw error;
+      coverage.mayLand++;
+      mayLand = true;
+    }
+    if (!mayLand) await reportFailed(unitNo);
+    unit = undefined;
+  };
+
   const flushUnder = async (
     selected: Fault,
     flush: () => Promise<void>,
@@ -725,10 +740,7 @@ async function runModel(commands: readonly Command[]): Promise<void> {
           break;
         }
         case "abandon":
-          if (unit === undefined) break;
-          await unit.abandon();
-          await reportFailed(unitNo);
-          unit = undefined;
+          await abandonUnit();
           break;
         case "acknowledge":
           if (unit === undefined) break;
@@ -737,11 +749,7 @@ async function runModel(commands: readonly Command[]): Promise<void> {
           break;
         case "restart": {
           // A live process ends its unit first; a killed one left it.
-          if (unit !== undefined) {
-            await unit.abandon();
-            await reportFailed(unitNo);
-            unit = undefined;
-          }
+          await abandonUnit();
           await takeLease(command.takeover);
           if (command.cutAfter !== undefined) {
             cutAfterRemovals = command.cutAfter;
@@ -832,6 +840,23 @@ const DISCARD_THEN_CUT: Command[][] = [
     { kind: "restart", takeover: false, cutAfter: 2, cutKeep: 1 },
   ],
 ];
+
+for (const ending of ["abandon", "restart"] as const) {
+  Deno.test(`v3 outbox (model): ${ending} preserves an expired checkpoint's uncertain outcome through recovery and a power cut (swamp-club#3685)`, async () => {
+    const mayLand = coverage.mayLand;
+    await runModel([
+      { kind: "stage-refused" },
+      { kind: "checkpoint", fault: "fail-append-and-discard" },
+      { kind: "age" },
+      { kind: "checkpoint", fault: "fail-append-discard-and-mark" },
+      ending === "restart"
+        ? { kind: "restart", takeover: false }
+        : { kind: "abandon" },
+      CUT,
+    ]);
+    assertEquals(coverage.mayLand, mayLand + 1);
+  });
+}
 
 Deno.test("v3 outbox (model): over random interleavings no commit lands after its failure, a takeover or off its head, no run names refused data, and no commit names a missing chunk", async () => {
   await fc.assert(fc.asyncProperty(arbInterleaving, runModel), {
