@@ -208,10 +208,16 @@ const arbIpv6 = fc.oneof(
     const end = Math.max(a, b);
     const left = groups.slice(0, start);
     const right = groups.slice(end + 1);
-    return `${left.join(":")}::${right.join(":")}`;
-  }).filter((s) =>
-    s !== "::" && s !== "::1" && !s.toLowerCase().startsWith("fe80:")
-  ),
+    return {
+      kept: [...left, ...right],
+      text: `${left.join(":")}::${right.join(":")}`,
+    };
+  }).filter(({ kept, text }) =>
+    // Collapsing every non-zero group leaves the unspecified address (::0),
+    // which the redactor keeps on purpose, as it keeps ::1 and fe80.
+    kept.some((g) => parseInt(g, 16) !== 0) && text !== "::1" &&
+    !text.toLowerCase().startsWith("fe80:")
+  ).map(({ text }) => text),
 );
 
 // What text puts around an address or a colon run: spaces, a label colon
@@ -300,6 +306,15 @@ Deno.test("redactIssueContent: an IPv6 address glued to a word never survives wh
   fc.assert(
     fc.property(arbGluedBefore, arbIpv6, arbAfter, (before, address, after) => {
       fc.pre(before.endsWith(":") || !/^[0-9a-f]{0,4}::/i.test(address));
+      // With the first group glued into the word, the rest of the address
+      // must still say something: srcaddr7:0::0 is the word srcaddr7 and the
+      // unspecified address.
+      fc.pre(
+        before.endsWith(":") ||
+          address.split(":").slice(1).some((g) =>
+            g !== "" && parseInt(g, 16) !== 0
+          ),
+      );
       const result = redactIssueContent(`t ${before}${address}${after} e`);
       assert(!result.text.includes(address), result.text);
       assert(result.summary.totalRedactions >= 1, result.text);
