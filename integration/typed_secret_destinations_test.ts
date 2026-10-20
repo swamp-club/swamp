@@ -864,22 +864,27 @@ Deno.test(
           globalArguments: { run: lines.join("\n") },
           methods: { execute: { arguments: {} } },
         });
-        const out = (await runShell(f, definition)).split("\n");
-        const value = out.find((l) => l.startsWith("value:"))!.slice(6);
-        assertEquals(value, utf8Hex(f.canaries[4].value), mode);
-        if (Deno.build.os === "linux") {
-          const argv = out.find((l) => l.startsWith("argv:"))!.slice(5);
-          assert(
-            argv.includes(utf8Hex("__SWAMP_VAULT_0")),
-            `no reference in argv, ${mode}`,
-          );
-          assertEquals(
-            argv.includes(utf8Hex(f.canaries[4].value)),
-            false,
-            `plaintext in argv, ${mode}`,
-          );
+        // Delivered twice as the same instance: the values go into a copy,
+        // so the second attempt loads again and fills from the sentinel too.
+        for (const attempt of [1, 2]) {
+          const where = `${mode}, attempt ${attempt}`;
+          const out = (await runShell(f, definition)).split("\n");
+          const value = out.find((l) => l.startsWith("value:"))!.slice(6);
+          assertEquals(value, utf8Hex(f.canaries[4].value), where);
+          if (Deno.build.os === "linux") {
+            const argv = out.find((l) => l.startsWith("argv:"))!.slice(5);
+            assert(
+              argv.includes(utf8Hex("__SWAMP_VAULT_0")),
+              `no reference in argv, ${where}`,
+            );
+            assertEquals(
+              argv.includes(utf8Hex(f.canaries[4].value)),
+              false,
+              `plaintext in argv, ${where}`,
+            );
+          }
+          assertEquals(f.vault.readsOf(keyOf(4)), attempt, where);
         }
-        assertEquals(f.vault.readsOf(keyOf(4)), 1, mode);
       });
     }
   },

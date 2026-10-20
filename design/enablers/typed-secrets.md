@@ -290,7 +290,10 @@ refuses it to a principal that is not an access admin before any provider call,
 and only rehydration refuses it by name. A load reads through the vault service
 the existence check asked, the evaluator's, so a refresh hook refreshes on load
 as it did on the eager read. One attempt is one call of the method execution
-service; a retry is a new attempt and loads again. Each loaded value is
+service; a retry is a new attempt and loads again. The loaded values are
+resolved into a copy of the step's definition: the object the caller passed
+keeps its sentinels, so a second delivery of the same instance loads again and
+starts from them, as a freshly evaluated definition does. Each loaded value is
 registered with the run's `SecretRedactor`.
 
 A load failure fails the step before any check or method runs. The error names
@@ -1251,8 +1254,10 @@ merge the checks and the method receive as `unresolvedMethodArgs` is built
 before the resolution writes values into the global arguments, so a shell `run`
 or `env` authored under `globalArguments` is placed through the environment
 instead of reaching the command line as plaintext, an exposure that predates the
-slice. A redactor is created per run; one shared across runs would keep every
-typed registry it is handed. Carried over: the shell result record's `command`
+slice, with the values resolved into a copy of the definition so that the object
+the caller passed keeps its sentinels for a second delivery (Section 3.3). A
+redactor is created per run; one shared across runs would keep every typed
+registry it is handed. Carried over: the shell result record's `command`
 attribute is still the resolved command through the value redactor (a Phase 4
 data-record gate), and generated `__SWAMP_VAULT_N` variables are not stripped
 from a nested swamp's inherited environment. Entry points keep building untyped

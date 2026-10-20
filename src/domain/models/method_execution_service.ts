@@ -35,7 +35,7 @@ import {
   processLockHolderMarker,
   type RemoteLockHolder,
 } from "../datastore/lock_holder_marker.ts";
-import type { Definition } from "../definitions/definition.ts";
+import { Definition } from "../definitions/definition.ts";
 import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
@@ -758,7 +758,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Upgrade definition if needed
       const upgradeService = new DefinitionUpgradeService();
       const upgradeResult = upgradeService.upgrade(definition, modelDef);
-      const currentDefinition = upgradeResult.definition;
+      let currentDefinition = upgradeResult.definition;
 
       // Surface a definition whose arguments will not be migrated. Two states
       // warrant a warning, one per run, derived from the resolved state rather
@@ -889,20 +889,20 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Resolve vault sentinels in globalArguments before validation.
       // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
       // regex()) validate against actual secret values, not sentinel tokens.
-      // This writes values into `currentDefinition`, which is the caller's
-      // definition when no upgrade ran: every attempt starts from a freshly
-      // evaluated definition (a retry or resume evaluates again), so a value
-      // written here never reaches another attempt.
+      // The values go into a copy of the definition, never into the object the
+      // caller passed (its own when no upgrade ran): that object keeps its
+      // sentinels, so no value outlives the attempt in it, and a second
+      // delivery of the same instance loads again and starts from the
+      // sentinels, as a freshly evaluated definition does (swamp-club#3627).
+      // Global validation below writes its parsed values into the same copy.
       const secretBag = context.vaultSecrets;
       if (secretBag?.resolvesAny) {
-        const rawGlobal = currentDefinition.globalArguments;
-        const resolvedGlobal = secretBag.resolveDeep(rawGlobal) as Record<
-          string,
-          unknown
-        >;
-        for (const [key, value] of Object.entries(resolvedGlobal)) {
-          currentDefinition.setGlobalArgument(key, value);
-        }
+        currentDefinition = Definition.fromData({
+          ...currentDefinition.toData(),
+          globalArguments: secretBag.resolveDeep(
+            currentDefinition.globalArguments,
+          ) as Record<string, unknown>,
+        });
       }
 
       // Validate globalArguments against schema (after upgrade and runtime resolution).

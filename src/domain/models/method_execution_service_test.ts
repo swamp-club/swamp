@@ -5603,6 +5603,79 @@ Deno.test("executeWorkflow: the checks and the method receive the global argumen
   }
 });
 
+Deno.test("executeWorkflow: delivering one Definition instance twice keeps the caller's sentinels, so the second attempt loads again and the merge the shell fills from still holds them, with the option on or off", async () => {
+  const service = new DefaultMethodExecutionService();
+  const seen: {
+    method?: Record<string, unknown>;
+    check?: Record<string, unknown>;
+    args?: Record<string, unknown>;
+  } = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/twice-delivered"),
+    version: "2026.10.20.1",
+    globalArguments: z.object({ command: z.string().optional() }),
+    methods: {
+      create: {
+        description: "Records the unresolved merge",
+        arguments: z.object({ command: z.string().optional() }),
+        execute: (args, context) => {
+          seen.method = { ...context.unresolvedMethodArgs };
+          seen.args = { ...(args as Record<string, unknown>) };
+          return Promise.resolve({});
+        },
+      },
+    },
+    checks: {
+      record: {
+        description: "Records the unresolved merge",
+        execute: (context) => {
+          seen.check = { ...context.unresolvedMethodArgs };
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  for (const typedSecrets of [true, false]) {
+    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+    const sentinel = bag.addSecret(
+      { vaultName: "v", key: "token" },
+      "globalArguments.command",
+    );
+    // `command` is authored under globalArguments, not the method.
+    const definition = Definition.create({
+      name: "d",
+      globalArguments: { command: `echo ${sentinel}` },
+      methods: { create: { arguments: {} } },
+    });
+    const { loader, reads } = mockLoader({ token: "s3cret-value" });
+    for (const attempt of [1, 2]) {
+      const where = `typed ${typedSecrets}, attempt ${attempt}`;
+      const { context } = createTestContext({
+        modelType: model.type,
+        methodName: "create",
+        vaultSecrets: bag,
+      });
+      await service.executeWorkflow(definition, model, "create", context, {
+        secretLoader: loader,
+      });
+      // The values go into a copy, so the object the caller holds keeps its
+      // sentinel after the attempt (swamp-club#3627)...
+      assertEquals(
+        definition.globalArguments.command,
+        `echo ${sentinel}`,
+        where,
+      );
+      // ...and a second delivery loads again and fills from the sentinel,
+      // while the validated arguments hold the value as before.
+      assertEquals(reads, Array(attempt).fill("token"), where);
+      for (const merge of [seen.method, seen.check]) {
+        assertEquals(merge?.command, `echo ${sentinel}`, where);
+      }
+      assertEquals(seen.args?.command, "echo s3cret-value", where);
+    }
+  }
+});
+
 Deno.test("executeWorkflow: in a typed run an env authored as a JSON string with a secret as a key is refused, and the shell refuses it itself when reached without the boundary", async () => {
   const service = new DefaultMethodExecutionService();
   const { bag, sentinel } = typedToken();
