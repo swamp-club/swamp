@@ -93,7 +93,7 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 /**
  * A disconnected worker starts half faded, so it reads as gone rather than
  * failed, and fades by this much more over the visibility TTL — ending above
- * the selector's 0.14 dim.
+ * the placement selector's `.hm-dim` (host-map.css).
  */
 const DISCONNECTED_OPACITY = 0.5;
 const DISCONNECTED_FADE = 0.3;

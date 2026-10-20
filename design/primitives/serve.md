@@ -1498,23 +1498,23 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   with one cell per dispatch slot showing that slot's step-lease state. The
   header and each group card lead with the connected count (every status but
   disconnected), kept apart from slot use, so disconnected records never count
-  as workers that are down. A disconnected record — a replaced or stopped
-  worker — is drawn hollow, with a muted outline, starting half faded, and it
-  fades further until its visibility TTL ends. The view reads two admin-only requests: `worker.list` with
-  `disconnectedWithinMs` (disconnected workers stay visible for the viewer's
-  visibility TTL, at most the worker GC's default 24 h grace period), and
-  `worker.lease.list` (the step leases behind the listed `activeDispatchIds`
-  plus leases written in the last few seconds, read by lease name and version
-  time without loading other leases' attributes). Both are audited reads, so
-  the view refetches only when the health stream shows a worker change on this
-  instance, plus a 60 s fallback while the tab is visible. A hidden tab reads
-  nothing and the map draws nothing: browsers pause animation frames there, so
-  transitions scheduled while hidden would pile up unstarted. On coming back
-  into view the view refetches once and the map snaps to the current layout
-  without animating what changed. A placement selector
-  dims workers a step's `labels:`/`platform:`/`target:` would not reach, using
-  the scheduler's own eligibility rules (`integration/host_map_placement_parity_test.ts`
-  pins the two together).
+  as workers that are down. A disconnected record — a replaced or stopped worker
+  — is drawn hollow, with a muted outline, starting half faded, and it fades
+  further until its visibility TTL ends. The view reads two admin-only requests:
+  `worker.list` with `disconnectedWithinMs` (disconnected workers stay visible
+  for the viewer's visibility TTL, at most the worker GC's default 24 h grace
+  period), and `worker.lease.list` (the step leases behind the listed
+  `activeDispatchIds` plus leases written in the last few seconds, read by lease
+  name and version time without loading other leases' attributes). Both are
+  audited reads, so the view refetches only when the health stream shows a
+  worker change on this instance, plus a 60 s fallback while the tab is visible.
+  A hidden tab reads nothing and the map draws nothing: browsers pause animation
+  frames there, so transitions scheduled while hidden would pile up unstarted.
+  On coming back into view the view refetches once and the map snaps to the
+  current layout without animating what changed. A placement selector dims
+  workers a step's `labels:`/`platform:`/`target:` would not reach, using the
+  scheduler's own eligibility rules
+  (`integration/host_map_placement_parity_test.ts` pins the two together).
 
   Individual data items and reports have shareable deep links:
   - `/dashboard/behaviors/<behavior>/data/<dataName>`: the latest version.
