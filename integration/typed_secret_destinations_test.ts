@@ -378,59 +378,117 @@ async function runShell(
   return result.stdout;
 }
 
-Deno.test("typed secret destinations: a refusing field, an environment name or a prohibited shell placement is refused before any read, check or method, wherever it was authored", async () => {
+/** Runs one delivery of `definition` on `modelDef` under the run's access. */
+function deliveryOn(f: Fixture) {
+  return (
+    modelDef: ModelDefinition,
+    methodName: string,
+    definition: Definition,
+  ) =>
+    f.access(() =>
+      f.service.executeWorkflow(
+        definition,
+        modelDef,
+        methodName,
+        f.context(modelDef.type, definition, methodName),
+        { secretLoader: f.loader },
+      )
+    );
+}
+
+/** Asserts `attempt` is refused at `destination` with no secret in the text. */
+async function assertRefused(
+  attempt: () => Promise<unknown>,
+  destination: string,
+  secrets: readonly string[],
+  name: string,
+): Promise<void> {
+  const error = await assertRejects(
+    attempt,
+    SecretDestinationRefusedError,
+    undefined,
+    name,
+  );
+  assertEquals(error.destination, destination, name);
+  assertEquals(error.code, "secret_destination_refused", name);
+  for (const secret of secrets) {
+    assertEquals(error.message.includes(secret), false, name);
+  }
+}
+
+/** Asserts a refused run read no vault, ran nothing and wrote nothing. */
+async function assertNothingRan(f: Fixture, seen: Seen = {}): Promise<void> {
+  assertEquals(f.vault.reads, []);
+  assertEquals(seen, {});
+  assertEquals(await f.dataRepo.findAllGlobal(), []);
+  assertEquals(f.events, []);
+}
+
+Deno.test("typed secret destinations: a refusing field or an environment variable name is refused before any read, check or method, wherever it was authored", async () => {
   await withFixture(true, async (f) => {
     const seen: Seen = {};
     const model = recorder(f.canaries, seen);
     const secret = f.ref(0);
     const data = f.dataRef();
-    const run = (
-      modelDef: ModelDefinition,
-      methodName: string,
-      definition: Definition,
-    ) =>
-      f.access(() =>
-        f.service.executeWorkflow(
-          definition,
-          modelDef,
-          methodName,
-          f.context(modelDef.type, definition, methodName),
-          { secretLoader: f.loader },
-        )
-      );
-    const cases: [string, () => Promise<unknown>, string][] = [
-      [
-        "a refusing method field",
+    const deliver = deliveryOn(f);
+    await assertRefused(
+      () =>
+        deliver(
+          model,
+          "create",
+          Definition.create({
+            name: "refused-field",
+            globalArguments: {},
+            methods: { create: { arguments: { workingDir: secret } } },
+          }),
+        ),
+      "method argument 'workingDir'",
+      [secret, data],
+      "a refusing method field",
+    );
+    await assertRefused(
+      () =>
+        deliver(
+          shellModel,
+          "execute",
+          Definition.create({
+            name: "refused-global-dir",
+            globalArguments: { workingDir: data, run: "echo hi" },
+            methods: { execute: { arguments: {} } },
+          }),
+        ),
+      "method argument 'workingDir'",
+      [secret, data],
+      "workingDir authored under globalArguments of command/shell",
+    );
+    await assertRefused(
+      () =>
+        deliver(
+          shellModel,
+          "execute",
+          Definition.create({
+            name: "refused-env-name",
+            globalArguments: { env: { [secret]: "x" } },
+            methods: { execute: { arguments: { run: "echo hi" } } },
+          }),
+        ),
+      "an environment variable name",
+      [secret, data],
+      "an environment variable name, env authored under globalArguments",
+    );
+    await assertNothingRan(f, seen);
+  });
+});
+
+Deno.test(
+  "typed secret destinations: a data value in a quoted here-document is refused before any read, with run authored under globalArguments",
+  posix,
+  async () => {
+    await withFixture(true, async (f) => {
+      const data = f.dataRef();
+      await assertRefused(
         () =>
-          run(
-            model,
-            "create",
-            Definition.create({
-              name: "refused-field",
-              globalArguments: {},
-              methods: { create: { arguments: { workingDir: secret } } },
-            }),
-          ),
-        "method argument 'workingDir'",
-      ],
-      [
-        "workingDir authored under globalArguments of command/shell",
-        () =>
-          run(
-            shellModel,
-            "execute",
-            Definition.create({
-              name: "refused-global-dir",
-              globalArguments: { workingDir: data, run: "echo hi" },
-              methods: { execute: { arguments: {} } },
-            }),
-          ),
-        "method argument 'workingDir'",
-      ],
-      [
-        "a data value in a quoted here-document, run authored under globalArguments",
-        () =>
-          run(
+          deliveryOn(f)(
             shellModel,
             "execute",
             Definition.create({
@@ -440,41 +498,39 @@ Deno.test("typed secret destinations: a refusing field, an environment name or a
             }),
           ),
         "the shell command inside a here-document with a quoted delimiter",
-      ],
-      [
-        "an environment variable name, env authored under globalArguments",
+        [data],
+        "a quoted here-document",
+      );
+      await assertNothingRan(f);
+    });
+  },
+);
+
+Deno.test(
+  "typed secret destinations (powershell): a data value in single quotes is refused before any read, with run authored under globalArguments",
+  { ignore: Deno.build.os !== "windows" },
+  async () => {
+    await withFixture(true, async (f) => {
+      const data = f.dataRef();
+      await assertRefused(
         () =>
-          run(
+          deliveryOn(f)(
             shellModel,
             "execute",
             Definition.create({
-              name: "refused-env-name",
-              globalArguments: { env: { [secret]: "x" } },
-              methods: { execute: { arguments: { run: "echo hi" } } },
+              name: "refused-single-quotes",
+              globalArguments: { run: `Write-Output '${data}'` },
+              methods: { execute: { arguments: {} } },
             }),
           ),
-        "an environment variable name",
-      ],
-    ];
-    for (const [name, attempt, destination] of cases) {
-      const error = await assertRejects(
-        attempt,
-        SecretDestinationRefusedError,
-        undefined,
-        name,
+        "the shell command inside PowerShell single quotes",
+        [data],
+        "PowerShell single quotes",
       );
-      assertEquals(error.destination, destination, name);
-      assertEquals(error.code, "secret_destination_refused", name);
-      assertEquals(error.message.includes(secret), false, name);
-      assertEquals(error.message.includes(data), false, name);
-    }
-    // Zero reads, no check, no method, no shell, nothing written.
-    assertEquals(f.vault.reads, []);
-    assertEquals(seen, {});
-    assertEquals(await f.dataRepo.findAllGlobal(), []);
-    assertEquals(f.events, []);
-  });
-});
+      await assertNothingRan(f);
+    });
+  },
+);
 
 Deno.test("typed secret destinations: every canary class reaches method arguments, globalArgs and the check exactly, with one load per reference per attempt", async () => {
   await withFixture(true, async (f) => {

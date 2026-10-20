@@ -890,3 +890,19 @@ Deno.test("findFieldsWhere: metadata on a union and on one of its members are re
   // into a member's own fields, which are fields of their own.
   assertEquals(findFieldsWhere(schema, both), ["choice"]);
 });
+
+Deno.test("findFieldsWhere: a schema two fields share is read under each of them", () => {
+  const shared = z.string().meta({ b: true });
+  const schema = z.object({
+    a: shared,
+    b: z.union([shared, z.number()]).meta({ a: true }),
+  });
+  const both = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.a === true) &&
+    chain.some((meta) => meta.b === true);
+  assertEquals(findFieldsWhere(schema, both), ["b"]);
+  assertEquals(
+    findFieldsWhere(schema, (chain) => chain.some((meta) => meta.b === true)),
+    ["a", "b"],
+  );
+});

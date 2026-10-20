@@ -40,6 +40,7 @@ import { UserError } from "../../../errors.ts";
 import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
 import { SecretDestinationRefusedError } from "../../secret_destinations.ts";
 import { extractFieldsWithMetadata } from "../../zod_field_metadata.ts";
+import { selectShellStrategy } from "./shell_strategy.ts";
 import type { DataHandle, DataWriter, MethodContext } from "../../model.ts";
 import { ModelType } from "../../model_type.ts";
 import type { UnifiedDataRepository } from "../../../data/repositories.ts";
@@ -2030,4 +2031,26 @@ Deno.test("shellModel.methods.execute: a sentinel no load filled fails the step 
     "was not loaded before delivery",
   );
   assertEquals(getResults(), []);
+});
+
+Deno.test("shell placement: the hook's plan over the authored arguments and the fill over the validated ones name the same environment variables", () => {
+  const { registry, bag } = typedRun();
+  const sentinel = bag.addSecret(REF, "globalArguments.run");
+  const run = `echo ${sentinel} "$__SWAMP_VAULT_0"`;
+  // The same keys, as authored under globalArguments and as validation
+  // returns them to executeCommand: evaluation never rewrites an object key.
+  const authored = { __SWAMP_VAULT_0: "mine", OTHER: `x-${sentinel}` };
+  const validated = { __SWAMP_VAULT_0: "mine", OTHER: "x-resolved" };
+  const plan = selectShellStrategy().planSecrets(
+    run,
+    Object.keys(authored),
+    secretOccurrencesOf(registry).originOf,
+  );
+  const filled = selectShellStrategy().resolveSecrets(
+    run,
+    bag.withLoaded(new Map([[sentinel, "s3cret"]])),
+    Object.keys(validated),
+  );
+  assertEquals(filled.envNames, plan.envNames);
+  assertEquals([...plan.envNames.values()], ["__SWAMP_VAULT_1"]);
 });

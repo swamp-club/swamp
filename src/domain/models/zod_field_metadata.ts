@@ -747,9 +747,9 @@ export function findValuesWithMetadata(
  * or tuple rest is written `[]`, a tuple item `[<i>]`, a record value or
  * `.catchall()` key `[*]`, and a union or intersection member keeps the path
  * of the field it describes and continues its chain, so metadata on the
- * union and on a member are read together. A schema reached twice (a recursive schema, or
- * one shared by two fields) is visited once, under the first path. Metadata
- * on the root schema itself is not reported.
+ * union and on a member are read together. A schema two fields share is read
+ * under each of them; a schema that contains itself is entered once per path.
+ * Metadata on the root schema itself is not reported.
  *
  * @param schema - A Zod schema (typically an object schema)
  * @param matches - Decides from a field's metadata, outermost wrapper first
@@ -760,15 +760,28 @@ export function findFieldsWhere(
   matches: (metadata: readonly FieldMetadata[]) => boolean,
 ): string[] {
   const found: string[] = [];
-  const visited = new Set<z.ZodTypeAny>();
+  /** The schemas on the way down to the current one, to stop on a cycle. */
+  const ancestors = new Set<z.ZodTypeAny>();
   const visit = (
     node: z.ZodTypeAny,
     path: string,
     root: boolean,
     inherited: readonly FieldMetadata[] = [],
   ): void => {
-    if (visited.has(node)) return;
-    visited.add(node);
+    if (ancestors.has(node)) return;
+    ancestors.add(node);
+    try {
+      visitWithin(node, path, root, inherited);
+    } finally {
+      ancestors.delete(node);
+    }
+  };
+  const visitWithin = (
+    node: z.ZodTypeAny,
+    path: string,
+    root: boolean,
+    inherited: readonly FieldMetadata[],
+  ): void => {
     // The chain of wrappers down to the core, each contributing its metadata;
     // a union or intersection member continues the chain of its field.
     const chain: FieldMetadata[] = [...inherited];

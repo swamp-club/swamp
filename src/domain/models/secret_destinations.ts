@@ -152,10 +152,12 @@ export function refuseSecretsInRefusingFields(
 
 /**
  * Fails when a field of `schema` is marked both `sensitive` and
- * `secrets: "refuse"`, read across the field's whole wrapper chain and inside
- * elements, record values and union members. A sensitive field is delivered
- * to a vault; a refusing field never receives a secret; one field cannot be
- * both, so the schema is wrong. `owner` says whose schema, for the message.
+ * `secrets: "refuse"`, read across the field's whole wrapper chain, with a
+ * union or intersection member read as part of its field. A list element or
+ * a record value is a field of its own, so a `sensitive` list whose elements
+ * refuse is two fields, not one conflict. A sensitive field is delivered to a
+ * vault; a refusing field never receives a secret; one field cannot be both,
+ * so the schema is wrong. `owner` says whose schema, for the message.
  */
 export function assertNoSensitiveRefuseConflict(
   schema: z.ZodTypeAny | undefined,

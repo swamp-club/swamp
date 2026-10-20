@@ -188,6 +188,15 @@ Deno.test("assertNoSensitiveRefuseConflict: a field marked both sensitive and re
           .meta({ sensitive: true }),
       }),
     ],
+    // A refusing schema one field already uses is still read under the
+    // union that marks it sensitive.
+    [
+      "b",
+      z.object({
+        a: refusing,
+        b: z.union([refusing, z.number()]).meta({ sensitive: true }),
+      }),
+    ],
   ];
   for (const [path, schema] of conflicts) {
     const error = assertThrows(
