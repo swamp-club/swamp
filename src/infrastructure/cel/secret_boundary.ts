@@ -279,11 +279,21 @@ export function refuseUnboundSecrets(value: unknown, expression: string): void {
  * Reads `value` as {@link SecretBoundary.release} would, firing the getters of
  * every view in it, so that a record the expression returned without
  * selecting into it is adapted, and its references recorded, before release.
- * Stops at the first `Secret`, which is enough: one recorded reference
- * already decides a synchronous evaluation.
+ * Reads the whole value: a `Secret` met first, such as a sentinel bound from
+ * the context, decides nothing about the records behind it, and one left
+ * unread here would be adapted by release, which issues its references
+ * after the check.
  */
 export function readResult(value: unknown): void {
-  containsSecret(value);
+  if (value instanceof Optional) {
+    if (value.hasValue()) readResult(value.value());
+  } else if (Array.isArray(value)) {
+    for (const item of value) readResult(item);
+  } else if (value instanceof Map) {
+    for (const item of value.values()) readResult(item);
+  } else if (isPlainMap(value)) {
+    for (const key of Object.keys(value)) readResult(value[key]);
+  }
 }
 
 function containsSecret(value: unknown): boolean {

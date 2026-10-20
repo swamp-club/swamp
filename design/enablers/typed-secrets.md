@@ -332,14 +332,15 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   authorization, so a denial leaves the value-less entries release issued in
   the run's registry; nothing delivers them, and a load authorizes again. The
   synchronous `evaluate` fails closed on any recorded reference, naming
-  `evaluateAsync`, because the check is asynchronous: it reads the result as
-  release would first, so a record the expression returned without selecting
-  into it is adapted too, and the refusal comes before release issues any
-  sentinel. Phase 4 gives the synchronous passes (`forEach` expansion, step
-  names) an authorization step of their own, for example in `prepare`, before
-  it enables them. With the option off the accessors still read tagged
-  fields, and that read authorizes each reference under the run's
-  `RunVaultAccess` and re-throws a denial.
+  `evaluateAsync`, because the check is asynchronous: it reads the whole
+  result as release would first, so a record the expression returned without
+  selecting into it is adapted too, even behind a sentinel bound from the
+  context, and the refusal comes before release issues any sentinel. Phase 4
+  gives the synchronous passes (`forEach` expansion, step names) an
+  authorization step of their own, for example in `prepare`, before it
+  enables them. With the option off the accessors still read tagged fields,
+  and that read authorizes each reference under the run's `RunVaultAccess`
+  and re-throws a denial.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key
   under the run's `RunVaultAccess`, as a load would, so a grant revoked mid-run
   fails the next check. It then asks the provider:

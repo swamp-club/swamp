@@ -398,8 +398,6 @@ Deno.test("CelEvaluator data secrets: a missing vault scope fails closed, and th
     const expression of [
       "model.web.resource.creds.main",
       "model.web.resource.creds",
-      "model.web.resource",
-      "model.web",
       "[model.web.resource.creds]",
     ]
   ) {
@@ -411,13 +409,71 @@ Deno.test("CelEvaluator data secrets: a missing vault scope fails closed, and th
     );
     assertEquals(f.bag.registry.isEmpty, true, expression);
   }
-  // An invalid record first read that way keeps its code.
+  // An invalid record first read that way keeps its code wherever it sits:
+  // the whole result is read, so a valid record before it decides nothing.
+  for (
+    const expression of [
+      "model.web.resource.broken",
+      "model.web.resource",
+      "model.web",
+    ]
+  ) {
+    const invalid = assertThrows(
+      () => f.evaluator.evaluate(expression, f.context, f.scope),
+      SecretRefusedError,
+      undefined,
+      expression,
+    );
+    assertEquals(invalid.code, SECRET_REFERENCE_INVALID, expression);
+    assertEquals(f.bag.registry.isEmpty, true, expression);
+  }
+});
+
+Deno.test("CelEvaluator data secrets: the synchronous path reads the whole result, so a bound sentinel ahead of an unread record still refuses before release issues anything", () => {
+  const f = fixture();
+  // A sentinel the run issued earlier, bound from the context as a Secret
+  // that the result holds before the record.
+  f.context.inputs = {
+    item: "x",
+    s: f.bag.addSecret({ vaultName: "prod", key: "A" }, "inputs.s"),
+  };
+  const issued = () => [...f.bag.registry.all()].length;
+  const before = issued();
+  for (
+    const expression of [
+      "[inputs.s, model.web.resource.creds]",
+      "{'a': inputs.s, 'b': model.web.resource.creds}",
+      "[inputs.s, model.web.resource.?creds]",
+      "[[inputs.s], [model.web.resource.creds]]",
+    ]
+  ) {
+    assertThrows(
+      () => f.evaluator.evaluate(expression, f.context, f.scope),
+      InvalidExpressionError,
+      "requires evaluateAsync",
+      expression,
+    );
+    assertEquals(issued(), before, expression);
+  }
+  // An invalid record behind a valid one keeps its code.
   const invalid = assertThrows(
-    () => f.evaluator.evaluate("model.web.resource.broken", f.context, f.scope),
+    () =>
+      f.evaluator.evaluate(
+        "[model.web.resource.creds.main, model.web.resource.broken]",
+        f.context,
+        f.scope,
+      ),
     SecretRefusedError,
   );
   assertEquals(invalid.code, SECRET_REFERENCE_INVALID);
-  assertEquals(f.bag.registry.isEmpty, true);
+  assertEquals(issued(), before);
+  // A bound sentinel beside an untagged record is not refused.
+  const released = f.evaluator.evaluate(
+    "[inputs.s, model.web.resource.creds.plain.attributes.a]",
+    f.context,
+    f.scope,
+  ) as unknown[];
+  assertEquals(released[1], REF_A);
 });
 
 Deno.test("CelEvaluator data secrets: an invalid record refuses with secret_reference_invalid, absorbed or not, naming the record but never the data name or a value", async () => {
