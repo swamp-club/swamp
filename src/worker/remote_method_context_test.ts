@@ -309,10 +309,14 @@ Deno.test("remote context: readResource resolves vault references in sensitive f
     );
     const value = await h.context.readResource!("state-main");
     assertEquals(value, { username: "alice", refreshToken: "s3cret" });
+    // The read claims the record it is for, at the version getData
+    // resolved, so serve verifies it against that record
+    // (swamp-club#3529).
     const resolveCall = h.calls.find((c) => c.method === "resolveSecret");
     assertEquals(resolveCall?.params, {
       vaultName: "my-vault",
       secretKey: "refresh-tok",
+      resource: { name: "state-main", version: 4 },
     });
   });
 });
@@ -424,6 +428,12 @@ Deno.test("remote context: vault get and put proxy as capability verbs", async (
         c.method === "resolveSecret" || c.method === "putSecret"
       ).length,
       2,
+    );
+    // A method's own read carries no resource claim; it is held to the
+    // step's allowlist (swamp-club#3529).
+    assertEquals(
+      h.calls.find((c) => c.method === "resolveSecret")?.params,
+      { vaultName: "local", secretKey: "k" },
     );
   });
 });

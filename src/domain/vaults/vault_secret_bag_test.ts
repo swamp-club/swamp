@@ -927,6 +927,43 @@ Deno.test("VaultSecretBag.entriesFor: the bag's own entries, then the run's entr
   assertEquals(new VaultSecretBag(registry).entriesFor({}), []);
 });
 
+Deno.test("VaultSecretBag.referencesFor: the bag's own references, loaded or not, then the run's references the arguments carry (swamp-club#3529)", () => {
+  const registry = new SecretBagRegistry();
+  const runStart = new VaultSecretBag(registry);
+  const step = new VaultSecretBag(registry);
+  const early = runStart.addDataSecret("early-secret", {
+    vaultName: "v",
+    key: "early",
+  });
+  issue(runStart, "unused");
+  const own = issue(step, "own");
+  issue(step, "other-method");
+  const args = { run: `echo ${early}`, nested: [{ x: `${own} ${early}` }] };
+  const expected = [
+    { vaultName: "v", key: "own" },
+    { vaultName: "v", key: "other-method" },
+    { vaultName: "v", key: "early" },
+  ];
+  // The same list before and after a load: a reference no attempt loaded
+  // is listed, not thrown on.
+  assertEquals(step.referencesFor(args), expected);
+  assertEquals(loaded(step).referencesFor(args), expected);
+  assertEquals(step.referencesFor({ run: "plain" }), expected.slice(0, 2));
+  assertEquals(new VaultSecretBag(registry).referencesFor({}), []);
+});
+
+Deno.test("VaultSecretBag.referencesFor: one reference per vault and key, and an entry without a reference is skipped", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const first = bag.addSecret({ vaultName: "v", key: "k" }, "a");
+  bag.addSecret({ vaultName: "v", key: "k" }, "b");
+  assertEquals(bag.referencesFor({}), [{ vaultName: "v", key: "k" }]);
+  // A worker's rebuilt bag holds values without references.
+  const rebuilt = VaultSecretBag.fromEntries([
+    { sentinel: first, value: "x", dataOrigin: false },
+  ]);
+  assertEquals(rebuilt.referencesFor({ run: first }), []);
+});
+
 Deno.test("VaultSecretBag.toEntries: ships no reference and no encoding", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const sentinel = bag.addDataSecret('a"b', REF, "json");

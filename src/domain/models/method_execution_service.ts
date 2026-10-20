@@ -652,6 +652,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         secretBag: shippedEntries,
       }
       : {};
+    // The references those arguments hold, for serve's per-dispatch
+    // allowlist: the shipped args carry the values, not the expressions,
+    // so serve cannot read the references from them (swamp-club#3529).
+    const secretReferences = secretBag?.resolvesAny
+      ? secretBag.referencesFor({
+        methodArgs: executionRequest.methodArgs,
+        globalArgs: executionRequest.globalArgs,
+      })
+      : [];
     if (modelDef.globalArguments) {
       secretValues.push(
         ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs),
@@ -693,6 +702,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         dataRepo: context.dataRepository,
         secretValues: secretValues.length > 0 ? secretValues : undefined,
         ...secretDelivery,
+        secretReferences: secretReferences.length > 0
+          ? secretReferences
+          : undefined,
         beginLockHandOff: lockHandOffFor(context),
         declaredWrites: context.declaredWrites,
         onEvent: (event: RpcStreamEvent) => {

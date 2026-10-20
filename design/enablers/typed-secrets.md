@@ -988,12 +988,14 @@ Phase 5 removes plaintext from dispatch:
   once, on the worker.
 - `REMOTE_PROTOCOL_VERSION` goes up by one. Enrollment and dispatch already
   require an exact match, so serve and workers upgrade together.
-- The dispatch's own bag becomes the allowlist. A dynamic reference no longer
-  turns the allowlist off, and a workflow step's references reach serve
-  unresolved. This resolves swamp-club#3529.
-- `readResource` keeps its own authorization and uses the same route for tagged
-  fields, and for the fields the resource-schema fallback names for an untagged
-  record, from the verified bundle's definition (swamp-club#3530).
+- The dispatch's own bag stays the allowlist, as the legacy repair of
+  swamp-club#3529 made it: the references travel on the dispatch frame rather
+  than the in-process request, and a dynamic reference no longer turns the
+  allowlist off because every reference reaches serve as a reference.
+- `readResource` keeps its own authorization, the resource claim serve verifies
+  against the record's tagged fields (swamp-club#3529), and uses the same route
+  for those fields and the resource-schema fallback for an untagged record
+  from the verified bundle's definition (swamp-club#3530).
 
 Redaction stays after the trusted boundary. Worker result errors are already
 scrubbed on both hops, by the runner before the result frame and by serve

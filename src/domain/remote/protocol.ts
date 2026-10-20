@@ -45,7 +45,10 @@ import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
  * worker whose protocol version does not match is rejected before any
  * dispatch, never mid-run. Also pins the capability-verb inventory and the
  * sentinel format a dispatch's secret bag is validated against — any change
- * to the verbs below or to `SENTINEL_EXACT` requires a version bump.
+ * to the verbs below or to `SENTINEL_EXACT` requires a version bump. An
+ * optional parameter added to an existing verb does not: a worker that
+ * predates it leaves it out, and serve answers the omission as it did
+ * before (the `resource` claim on `resolveSecret` is one, swamp-club#3529).
  * Version 5: sentinels carry a 128-bit prefix (swamp-club#3558).
  */
 export const REMOTE_PROTOCOL_VERSION = 5;
@@ -480,6 +483,19 @@ export const ResolveSecretParamsSchema = z.object({
   secretKey: z.string(),
   /** True to fetch the annotation instead of the secret value. */
   annotation: z.boolean().optional(),
+  /**
+   * A claim that the secret is held by a tagged sensitive field of the
+   * dispatch's own resource `name` at `version`. Serve verifies it against
+   * the stored record before it answers, and a verified claim admits the
+   * read in place of the step's argument allowlist (swamp-club#3529). The
+   * worker's resource reader sends it; a method's own vault read does not.
+   * Optional: a worker that predates it sends none and is held to the
+   * allowlist as before.
+   */
+  resource: z.object({
+    name: z.string().min(1),
+    version: z.number().int().positive(),
+  }).optional(),
 });
 
 export type ResolveSecretParams = z.infer<typeof ResolveSecretParamsSchema>;

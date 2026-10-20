@@ -44,6 +44,7 @@ import {
   SENSITIVE_FIELDS_ALL,
   SENSITIVE_FIELDS_TAG,
   SensitiveFieldsTagInvalidError,
+  sensitiveVaultReferences,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
@@ -3797,4 +3798,43 @@ Deno.test("createResourceWriter: a redactor masking only sentinels serializes te
   assertEquals(JSON.parse(await write({ note: `x ${sentinel}` })), {
     note: "x ***",
   });
+});
+
+Deno.test("sensitiveVaultReferences: names the references at the listed paths, nested values included, and nothing elsewhere (swamp-club#3529)", () => {
+  const data = {
+    password: "${{ vault.get('v', 'a') }}",
+    creds: {
+      key: "${{ vault.get('v', 'b') }}",
+      list: ["${{ vault.get('v', 'c') }}", "plain"],
+    },
+    untrusted: "${{ vault.get('v', 'd') }}",
+    note: "n",
+  };
+  assertEquals(
+    sensitiveVaultReferences(data, ["password", "creds", "missing"]),
+    [
+      { vaultName: "v", key: "a" },
+      { vaultName: "v", key: "b" },
+      { vaultName: "v", key: "c" },
+    ],
+  );
+  assertEquals(sensitiveVaultReferences(data, ["creds.key"]), [
+    { vaultName: "v", key: "b" },
+  ]);
+  assertEquals(sensitiveVaultReferences(data, ["note"]), []);
+});
+
+Deno.test("sensitiveVaultReferences: the star tag names every whole-string reference once; no tag names none", () => {
+  const data = {
+    a: "${{ vault.get('v', 'a') }}",
+    b: { c: "${{ vault.get('v', 'a') }}", d: "${{ vault.get('w', 'a') }}" },
+    // Not a whole-string reference, so not one the resolver resolves.
+    e: "text ${{ vault.get('v', 'x') }}",
+  };
+  assertEquals(sensitiveVaultReferences(data, SENSITIVE_FIELDS_ALL), [
+    { vaultName: "v", key: "a" },
+    { vaultName: "w", key: "a" },
+  ]);
+  assertEquals(sensitiveVaultReferences(data, null), []);
+  assertEquals(sensitiveVaultReferences(data, []), []);
 });

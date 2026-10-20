@@ -745,7 +745,7 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | `queryData`      | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading | ws        | CEL predicate over the catalog; always live. Control-plane records excluded (below). `select` projection rejected |
 | `listVersions`   | `repo.listVersions`                                                                   | ws        | Version history for one item. No dispatch-scope assertion; control-plane types list nothing                       |
 | `deleteData`     | `repo.delete`, `repo.removeLatestMarker`                                              | ws        | Used by lifecycle/GC-aware methods                                                                                |
-| `resolveSecret`  | `vaultService.get` / `getAnnotation`                                                  | ws        | Authorized per step: denylist + allowlist (below)                                                                 |
+| `resolveSecret`  | `vaultService.get` / `getAnnotation`                                                  | ws        | Authorized per step: denylist + allowlist, or a verified resource claim (below)                                   |
 | `putSecret`      | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                             | ws        | Denylist only (below)                                                                                             |
 | `readDefinition` | `definitionRepository.findByName`                                                     | ws        | Lazy-load; no cache. A control-plane type reads as not found                                                      |
 | `readOutput`     | `outputRepository` execution-history reads                                            | ws        | Optional context member. A control-plane type reads as empty                                                      |
@@ -787,14 +787,27 @@ exception is a fleet-probe dispatch reading its own `swamp/fleet-probe`
 records. When the server cannot tell which dispatch a read belongs to, every
 control-plane type is hidden (swamp-club#3129).
 
-`resolveSecret` checks the infrastructure denylist and an expression-based
-allowlist taken from the dispatched step's args. The allowlist is disabled when
-the step has dynamic vault references. Before the reply leaves, the value joins
-the dispatch's `SecretRedactor` on its `ActiveDispatch` registration, so the
-data plane scrubs it from the dispatch's resource writes as it does the
-pre-dispatch `secretValues` (swamp-club#3527). `putSecret` checks only the
-denylist, because write targets are not declared in vault expressions. The
-denylist (`src/serve/capability_service.ts`) covers the `server-token-*` and
+`resolveSecret` checks the infrastructure denylist and a per-step allowlist:
+the vault references the step's secret bag holds, which the orchestrator
+passes on the dispatch request because the dispatched args carry the resolved
+values, plus any `vault.get()` expression still written in the dispatched args
+(a direct dispatch such as the fleet probe). The allowlist is disabled when the
+dispatched args hold a dynamic vault reference; a workflow step's references
+are evaluated before dispatch, so its allowlist is always exact
+(swamp-club#3529). A read for a tagged sensitive field of the dispatch's own
+resource carries a resource claim (the record's name and version) instead:
+serve looks the record up under the dispatch's behavior type and model id and
+admits the read only if the record's tagged fields hold that exact reference.
+The claim rests on the data writer vaulting every present sensitive value,
+reference text included, and on the `_swamp.` tag prefix being written by
+swamp alone, so a tagged field only ever holds a reference the writer made.
+Before the reply leaves, the value joins the dispatch's `SecretRedactor` on
+its `ActiveDispatch` registration, so the data plane scrubs it from resource
+writes as it does the pre-dispatch `secretValues` (swamp-club#3527).
+
+`putSecret` checks only the denylist, because write targets are not declared
+in vault expressions. The denylist
+(`src/serve/capability_service.ts`) covers the `server-token-*` and
 `worker-token-*` key prefixes, `oauth-client-secret`, `oauth-access-token-*`,
 `oauth-bootstrap-access-token`, `oauth-resolved-admins`, and the control-plane
 token-secrets vault by name.
@@ -1492,7 +1505,9 @@ credentials and extensions onto workers:
   authorizes every data-plane request against the step lease, so it is the
   single point for authorization and audit. Per-step secret
   scoping is the orchestrator refusing a `resolveSecret` outside the step's
-  allowed set, or outside the dispatching run's vault scope. Secrets are resolved on the orchestrator and sent only for the
+  allowed set (the references its secret bag holds, or a verified claim on
+  one of its own tagged resources), or outside the dispatching run's vault
+  scope. Secrets are resolved on the orchestrator and sent only for the
   step that needs them, as in the out-of-process resolution pattern of the
   removed execution-drivers design.
 

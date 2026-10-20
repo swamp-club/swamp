@@ -29,6 +29,7 @@ import {
   isDynamicVaultArgument,
 } from "./vault_call_syntax.ts";
 export { isDynamicVaultArgument } from "./vault_call_syntax.ts";
+import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 
 /**
  * One `vault.get(vaultName, secretKey)` call, with balanced CEL arguments.
@@ -237,6 +238,32 @@ export function extractVaultReferences(
   }
 
   return { staticRefs, hasDynamicRefs };
+}
+
+/**
+ * `result` with `references` admitted as static references: each one is
+ * spelled as the extractor spells it and added unless already listed, in
+ * order, with `hasDynamicRefs` unchanged. A workflow step's arguments reach
+ * serve with their secrets resolved, so the references its secret bag holds
+ * are admitted this way beside any expression still written in the
+ * arguments (swamp-club#3529). With no references the input is returned.
+ */
+export function withVaultReferences(
+  result: VaultExtractionResult,
+  references: readonly SecretReference[] | undefined,
+): VaultExtractionResult {
+  if (references === undefined || references.length === 0) return result;
+  const staticRefs = [...result.staticRefs];
+  const seen = new Set(
+    staticRefs.map((ref) => `${ref.vaultName}\u0000${ref.secretKey}`),
+  );
+  for (const { vaultName, key } of references) {
+    const id = `${vaultName}\u0000${key}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    staticRefs.push({ vaultName, secretKey: key });
+  }
+  return { staticRefs, hasDynamicRefs: result.hasDynamicRefs };
 }
 
 function collectVaultReferences(

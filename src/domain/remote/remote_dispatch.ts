@@ -37,7 +37,10 @@ import type { ModelDefinition } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { StepPlacement } from "./scheduler.ts";
 import type { DispatchOutput, RpcStreamEvent } from "./protocol.ts";
-import type { SecretBagEntry } from "../vaults/secret_bag_registry.ts";
+import type {
+  SecretBagEntry,
+  SecretReference,
+} from "../vaults/secret_bag_registry.ts";
 
 export interface RemoteStepRequest {
   placement: StepPlacement;
@@ -84,6 +87,13 @@ export interface RemoteStepRequest {
   unresolvedMethodArgs?: Record<string, unknown>;
   /** The step's vault secret bag entries. */
   secretBag?: SecretBagEntry[];
+  /**
+   * The vault references the step's arguments hold, which serve admits to
+   * the dispatch's own secret reads (swamp-club#3529). The arguments
+   * themselves arrive with their secrets resolved, so serve cannot read the
+   * references from them.
+   */
+  secretReferences?: readonly SecretReference[];
   /**
    * Begins the hand-off of the per-model locks held for the step to one
    * dispatch attempt, so a swamp the step starts on the worker skips them.

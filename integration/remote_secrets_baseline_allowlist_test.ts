@@ -21,14 +21,17 @@
  * Remote-secrets baseline, path 1: the per-dispatch secret allowlist
  * (swamp-club#3512).
  *
- * Serve registers each dispatch with `allowedSecrets` =
- * `extractVaultReferences(globalArgs, methodArgs)` and `resolveSecret` from
- * the worker is held to it, after the reserved-vault and key-prefix
- * denylists. These tests pin how the allowlist is derived on the production
- * path and what each check admits or refuses today.
+ * Serve registers each dispatch with `allowedSecrets`: the references the
+ * step's secret bag holds, passed on the dispatch request because the
+ * dispatched args carry resolved values, plus any `vault.get()` expression
+ * still written in those args (swamp-club#3529). `resolveSecret` from the
+ * worker is held to it, after the reserved-vault and key-prefix denylists,
+ * unless it carries a resource claim serve verifies against the record (see
+ * the readResource baseline, path 2). These tests pin how the allowlist is
+ * derived on the production path and what each check admits or refuses.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
 import "../src/domain/models/models.ts";
@@ -51,6 +54,11 @@ import {
   WorkerMethod,
 } from "../src/domain/remote/protocol.ts";
 import type { ActiveDispatch } from "../src/serve/dispatch_registry.ts";
+import { DataPlaneClient } from "../src/worker/data_plane_client.ts";
+import {
+  parseSensitiveFieldsTag,
+  sensitiveVaultReferences,
+} from "../src/domain/models/data_writer.ts";
 import type { VaultExtractionResult } from "../src/domain/expressions/vault_reference_extractor.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../src/domain/vaults/control_plane_vault_provider.ts";
 import { tokenSecretKey } from "../src/domain/models/worker/enrollment_token_model.ts";
@@ -74,8 +82,16 @@ const SUCCESS: DispatchResult = {
   durationMs: 1,
 };
 
-/** Registers a per-run model type whose `read` method takes one string. */
-function registerReaderType(): ModelType {
+/** The resource spec of a vaulting type: `password` is schema-sensitive. */
+const VAULTING_SPEC = "secret";
+
+/**
+ * Registers a per-run model type whose `read` method takes one string. With
+ * `withResource`, the type also declares a `secret` resource whose
+ * `password` field is schema-sensitive, so a dispatch of it can write that
+ * resource over the data plane.
+ */
+function registerReaderType(withResource = false): ModelType {
   const type = ModelType.create(
     `test/secrets-baseline-allowlist-${crypto.randomUUID()}`,
   );
@@ -83,6 +99,21 @@ function registerReaderType(): ModelType {
     type,
     version: "2026.10.15.1",
     globalArguments: z.object({}),
+    ...(withResource
+      ? {
+        resources: {
+          [VAULTING_SPEC]: {
+            description: "a resource with one sensitive field",
+            schema: z.object({
+              password: z.string().meta({ sensitive: true }),
+              note: z.string(),
+            }),
+            lifetime: "infinite" as const,
+            garbageCollection: 5,
+          },
+        },
+      }
+      : {}),
     methods: {
       read: {
         description: "Runs on a worker; the body never runs in-process",
@@ -121,19 +152,24 @@ function answerDispatches(
   });
 }
 
-/** Calls the worker-facing `resolveSecret` verb; returns the value or the refusal. */
+/**
+ * Calls the worker-facing `resolveSecret` verb, with a resource claim when
+ * given; returns the value or the refusal.
+ */
 async function tryResolve(
   o: BaselineOrchestrator,
   workerName: string,
   dispatchId: string | undefined,
   vaultName: string,
   secretKey: string,
+  resource?: { name: string; version: number },
 ): Promise<{ value?: unknown; refused?: string }> {
   try {
     const { value } = await o.capabilityService.resolveSecret(workerName, {
       vaultName,
       secretKey,
       ...(dispatchId ? { dispatchId } : {}),
+      ...(resource ? { resource } : {}),
     });
     return { value };
   } catch (error) {
@@ -193,7 +229,7 @@ async function runWorkflow(
 
 Deno.test({
   name:
-    "remote secrets baseline: allowlist: a workflow step's vault.get argument reaches serve already resolved, so its allowlist is empty and the worker is refused that same secret",
+    "remote secrets baseline: allowlist: a workflow step's vault.get argument reaches serve already resolved, and its allowlist still names the reference, so the worker reads that secret and no other (swamp-club#3529)",
   ...SANITIZE,
   fn: () =>
     withTempDir(async (dir) => {
@@ -203,6 +239,8 @@ Deno.test({
         const key = `allowlist-${crypto.randomUUID()}`;
         const secret = canary("allowlist-e2e");
         await o.putSecret(key, secret);
+        const other = `allowlist-other-${crypto.randomUUID()}`;
+        await o.putSecret(other, canary("allowlist-other"));
 
         const type = registerReaderType();
         const definition = Definition.create({
@@ -223,6 +261,7 @@ Deno.test({
           methodArgs: Record<string, unknown>;
           allowedSecrets: VaultExtractionResult | undefined;
           resolved: { value?: unknown; refused?: string };
+          unreferenced: { value?: unknown; refused?: string };
         }> = [];
         answerDispatches(o, worker, workerName, async ({ params, active }) => {
           seen.push({
@@ -234,6 +273,13 @@ Deno.test({
               params.dispatchId,
               BASELINE_VAULT,
               key,
+            ),
+            unreferenced: await tryResolve(
+              o,
+              workerName,
+              params.dispatchId,
+              BASELINE_VAULT,
+              other,
             ),
           });
         });
@@ -255,19 +301,19 @@ Deno.test({
         assertEquals(status, "succeeded", errors.join("\n"));
         assertEquals(seen.length, 1);
 
-        // The dispatched args hold the plaintext, not the expression.
+        // The dispatched args hold the plaintext, not the expression ...
         assertEquals(seen[0].methodArgs, { value: secret });
-        // Functional bug, not a disclosure (swamp-club#3529):
-        // the allowlist is extracted from those post-resolution args, so a
-        // step that references a secret gets an empty allowlist ...
+        // ... so the allowlist comes from the step's secret bag, exact and
+        // not dynamic (swamp-club#3529) ...
         assertEquals(seen[0].allowedSecrets, {
-          staticRefs: [],
+          staticRefs: [{ vaultName: BASELINE_VAULT, secretKey: key }],
           hasDynamicRefs: false,
         });
-        // ... and the worker's own read of that secret is refused.
-        assertEquals(seen[0].resolved, {
+        // ... and the worker reads that secret and no other.
+        assertEquals(seen[0].resolved, { value: secret });
+        assertEquals(seen[0].unreferenced, {
           refused:
-            `resolveSecret: secret '${key}' is not referenced by the dispatched step`,
+            `resolveSecret: secret '${other}' is not referenced by the dispatched step`,
         });
       } finally {
         setRemoteStepDispatcher(null);
@@ -535,6 +581,104 @@ Deno.test({
           refused:
             "putSecret: access denied — infrastructure secrets are not accessible from dispatched methods",
         });
+      } finally {
+        await o.shutdown();
+      }
+    }),
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: allowlist: a crafted reference written into a sensitive field is vaulted as text, so a resource claim cannot launder a read of the secret it names (swamp-club#3529)",
+  ...SANITIZE,
+  fn: () =>
+    withTempDir(async (dir) => {
+      const o = await startBaselineOrchestrator(dir);
+      try {
+        const target = `launder-target-${crypto.randomUUID()}`;
+        const targetSecret = canary("launder-target");
+        await o.putSecret(target, targetSecret);
+        const crafted = `\${{ vault.get('${BASELINE_VAULT}', '${target}') }}`;
+
+        const type = registerReaderType(true);
+        const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
+        const worker = await connectInMemoryWorker(o, workerName);
+        const observed: {
+          tags?: Record<string, string>;
+          content?: Record<string, unknown>;
+          targetClaim?: { value?: unknown; refused?: string };
+          storedClaim?: { value?: unknown; refused?: string };
+        } = {};
+        answerDispatches(o, worker, workerName, async ({ params, active }) => {
+          const { dispatchCredential } = params as DispatchParams & {
+            dispatchCredential?: string;
+          };
+          const client = new DataPlaneClient({
+            baseUrl: o.dataPlaneUrl,
+            credential: () => dispatchCredential ?? "",
+          });
+          // The worker writes the crafted text as the sensitive value.
+          await client.writeResource({
+            specName: VAULTING_SPEC,
+            name: "crafted",
+            data: { password: crafted, note: "n" },
+          });
+          const repo = o.repoContext.unifiedDataRepo;
+          const record = await repo.findByName(
+            active.modelType,
+            active.modelId,
+            "crafted",
+          );
+          if (!record) throw new Error("the crafted resource was not stored");
+          const bytes = await repo.getContent(
+            active.modelType,
+            active.modelId,
+            "crafted",
+            record.version,
+          );
+          observed.tags = record.tags;
+          observed.content = JSON.parse(new TextDecoder().decode(bytes!));
+          const claim = { name: "crafted", version: record.version };
+          // A claim for the secret the crafted text names ...
+          observed.targetClaim = await tryResolve(
+            o,
+            workerName,
+            params.dispatchId,
+            BASELINE_VAULT,
+            target,
+            claim,
+          );
+          // ... and one for the reference the writer stored instead.
+          const [stored] = sensitiveVaultReferences(
+            observed.content!,
+            parseSensitiveFieldsTag(record.tags),
+          );
+          observed.storedClaim = await tryResolve(
+            o,
+            workerName,
+            params.dispatchId,
+            stored.vaultName,
+            stored.key,
+            claim,
+          );
+        });
+
+        await o.dispatchService.executeRemote(
+          remoteRequest(type, { value: "plain" }),
+        );
+
+        // The writer vaulted the crafted text under a key of its own and
+        // tagged the field, which never holds the crafted reference ...
+        assertEquals(parseSensitiveFieldsTag(observed.tags!), ["password"]);
+        assertNotEquals(observed.content!.password, crafted);
+        // ... so the claim for the named secret is refused, and the claim
+        // for the stored reference yields the crafted text, never the
+        // secret it names.
+        assertEquals(observed.targetClaim, {
+          refused:
+            `resolveSecret: secret '${target}' is not a tagged sensitive field of resource 'crafted' (its sensitive fields do not reference it)`,
+        });
+        assertEquals(observed.storedClaim, { value: crafted });
       } finally {
         await o.shutdown();
       }

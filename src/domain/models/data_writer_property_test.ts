@@ -24,7 +24,9 @@ import {
   createResourceWriter,
   getSensitiveFieldsForResolution,
   parseSensitiveFieldsTag,
+  resolveSensitiveVaultRefs,
   SENSITIVE_FIELDS_TAG,
+  sensitiveVaultReferences,
 } from "./data_writer.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
 import { isReservedTagKey } from "../data/data.ts";
@@ -301,5 +303,64 @@ Deno.test("sensitive-fields tag: a JSON array of paths round-trips through both 
         assertEquals(strict, lenient, raw);
       }
     }),
+  );
+});
+
+/** A record of nested values with vault references among its strings. */
+const arbRefName = fc.stringMatching(/^[a-z0-9_-]{1,6}$/);
+const arbReferenceText = fc.tuple(arbRefName, arbRefName).map(([v, k]) =>
+  `\${{ vault.get('${v}', '${k}') }}`
+);
+const arbLeaf = fc.oneof(
+  arbReferenceText,
+  fc.stringMatching(/^[a-z ]{0,6}$/),
+  fc.integer(),
+  fc.boolean(),
+  fc.constant(null),
+);
+const arbKey = fc.stringMatching(/^[a-z]{1,3}$/);
+const { node: arbNode } = fc.letrec((tie) => ({
+  node: fc.oneof(
+    { depthSize: "small" },
+    arbLeaf,
+    fc.array(tie("node"), { maxLength: 3 }),
+    fc.dictionary(arbKey, tie("node"), { maxKeys: 3 }),
+  ),
+}));
+const arbRecord = fc.dictionary(arbKey, arbNode, { minKeys: 1, maxKeys: 4 });
+const arbSensitiveFields = fc.oneof(
+  fc.constant("*" as const),
+  fc.array(fc.stringMatching(/^[a-z]{1,3}(\.[a-z]{1,3})?$/), {
+    maxLength: 4,
+  }),
+);
+
+Deno.test("sensitiveVaultReferences: names exactly the references resolveSensitiveVaultRefs reads for the same record, in first-read order (swamp-club#3529)", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      arbRecord,
+      arbSensitiveFields,
+      async (record, sensitiveFields) => {
+        const reads: string[] = [];
+        const countingVault = {
+          get: (vaultName: string, key: string) => {
+            reads.push(`${vaultName}\u0000${key}`);
+            return Promise.resolve("value");
+          },
+        } as unknown as VaultService;
+        await resolveSensitiveVaultRefs(
+          structuredClone(record),
+          sensitiveFields,
+          countingVault,
+        );
+        assertEquals(
+          sensitiveVaultReferences(record, sensitiveFields).map((ref) =>
+            `${ref.vaultName}\u0000${ref.key}`
+          ),
+          [...new Set(reads)],
+        );
+      },
+    ),
+    { numRuns: 300 },
   );
 });

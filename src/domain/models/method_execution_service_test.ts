@@ -4618,6 +4618,9 @@ Deno.test("executeWorkflow - placed step ships its secret bag and unresolved arg
     dataOrigin: false,
   }]);
   assertEquals(request.secretValues?.includes("s3cret-value"), true);
+  // The reference behind the shipped entry, for serve's allowlist: the
+  // shipped args hold the value, not the expression (swamp-club#3529).
+  assertEquals(request.secretReferences, [{ vaultName: "v", key: "token" }]);
 });
 
 Deno.test("executeWorkflow - placed step without secrets ships no bag fields", async () => {
@@ -4625,6 +4628,7 @@ Deno.test("executeWorkflow - placed step without secrets ships no bag fields", a
   assertEquals(request.methodArgs.value, "plain");
   assertEquals(request.unresolvedMethodArgs, undefined);
   assertEquals(request.secretBag, undefined);
+  assertEquals(request.secretReferences, undefined);
 });
 
 /**

@@ -276,9 +276,16 @@ function createRemoteDataRepository(
   } as UnifiedDataRepository;
 }
 
+/**
+ * The vault proxy over the capability verbs. With `resource`, every value
+ * read carries that claim: the reference is a tagged sensitive field of the
+ * dispatch's own resource, which serve verifies against the record before
+ * it answers (swamp-club#3529). A method's own vault reads carry none.
+ */
 function createRemoteVaultService(
   options: RemoteContextOptions,
   redactor: SecretRedactor,
+  resource?: { name: string; version: number },
 ): VaultService {
   const { channel, signal } = options;
   const resolveSecret = (params: Record<string, unknown>) =>
@@ -290,7 +297,11 @@ function createRemoteVaultService(
 
   const proxy = {
     get: async (vaultName: string, secretKey: string) => {
-      const result = await resolveSecret({ vaultName, secretKey });
+      const result = await resolveSecret({
+        vaultName,
+        secretKey,
+        ...(resource ? { resource } : {}),
+      });
       const value = result.value as string;
       // The worker has now received this value, so its redactor must know it
       // before the method does: output lines and console output are scrubbed
@@ -640,18 +651,50 @@ export function createRemoteMethodContext(
       )
     : undefined;
 
-  // The reader a local run uses, over the proxies: the sensitive-fields tag
-  // names the fields to resolve, an untagged record falls back to the
-  // bundle's resource schema, and a malformed tag refuses the read
-  // (swamp-club#3530).
-  const readResource = createResourceReader(
-    dataRepository,
-    modelType,
-    execution.modelId,
-    vaultService,
-    redactor,
-    options.resourceSpecs,
-  );
+  const readResource = async (
+    instanceName: string,
+    version?: number,
+  ): Promise<Record<string, unknown> | null> => {
+    const dataRecord = await dataRepository.findByName(
+      modelType,
+      execution.modelId,
+      instanceName,
+      version,
+    );
+    const resolvedVersion = dataRecord?.version;
+
+    const content = await dataRepository.getContent(
+      modelType,
+      execution.modelId,
+      instanceName,
+      resolvedVersion ?? version,
+    );
+    if (content === null) {
+      return null;
+    }
+    const data = JSON.parse(new TextDecoder().decode(content)) as Record<
+      string,
+      unknown
+    >;
+    const sensitiveFields = dataRecord
+      ? parseSensitiveFieldsTag(dataRecord.tags)
+      : null;
+    if (dataRecord && sensitiveFields) {
+      // Each tagged field is read with a claim naming this record, which
+      // serve verifies against it rather than against the step's argument
+      // allowlist (swamp-club#3529).
+      await resolveSensitiveVaultRefs(
+        data,
+        sensitiveFields,
+        createRemoteVaultService(options, redactor, {
+          name: instanceName,
+          version: dataRecord.version,
+        }),
+        redactor,
+      );
+    }
+    return data;
+  };
 
   const deleteResource = async (instanceName: string): Promise<void> => {
     await options.client.deleteResource({ name: instanceName }, signal);

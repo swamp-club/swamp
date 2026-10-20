@@ -24,13 +24,14 @@
  * bridge (runner channel → supervisor bridge → serve CapabilityService, with
  * the dispatch registry wired as `swamp serve` wires it) and a real
  * DataPlaneClient holding a per-dispatch credential against the harness's
- * port-0 data plane. Pins how serve authorizes the read, and that the remote
- * reader, fed the verified bundle's resource specs as exec_dispatch feeds it,
- * reads an untagged record and a malformed sensitive-fields tag exactly as
- * the local reader does (swamp-club#3530).
+ * port-0 data plane. Pins how serve authorizes tagged fields through a
+ * resource claim verified against the record (swamp-club#3529), and that the
+ * remote reader, fed the verified bundle's resource specs, reads an untagged
+ * record and a malformed sensitive-fields tag as the local reader does
+ * (swamp-club#3530).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -312,48 +313,75 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: readResource: a tagged sensitive field resolves only when the allowlist names it",
+    "remote secrets baseline: readResource: a tagged sensitive field resolves through a resource claim serve verifies against the record, with the allowlist empty (swamp-club#3529)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     const key = `rr-tagged-${crypto.randomUUID()}`;
     const secret = canary("rr-tagged");
-    const seed = async (f: Fixture) => {
+    const other = `rr-other-${crypto.randomUUID()}`;
+    await withFixture(async (f) => {
       await f.o.putSecret(key, secret);
+      await f.o.putSecret(other, canary("rr-other"));
       await seedResource(f.o, f.typeA, f.modelIdA, "tagged", {
         password: vaultRef(key),
         note: "n",
       }, { [SENSITIVE_FIELDS_TAG]: JSON.stringify(["password"]) });
-    };
+      await seedResource(f.o, f.typeA, f.modelIdA, "plain", {
+        password: vaultRef(other),
+        note: "n",
+      });
 
-    // The allowlist DispatchService derives from post-resolution args with
-    // no vault expression left in them is empty, so the resolveSecret that
-    // readResource issues for a tagged field is refused. Suspected
-    // functional bug (swamp-club#3529); see the
-    // allowlist baseline (path 1).
-    await withFixture(async (f) => {
-      await seed(f);
-      const error = await assertRejects(
-        () => f.context.readResource!("tagged"),
+      // The allowlist a workflow step's dispatch registers is empty, so the
+      // read resolves only because the reader claims the record it is for
+      // and serve verifies the claim against that record's tagged fields.
+      assertEquals(await f.context.readResource!("tagged"), {
+        password: secret,
+        note: "n",
+      });
+
+      const resolve = (
+        secretKey: string,
+        resource?: { name: string; version: number },
+      ) =>
+        f.o.capabilityService.resolveSecret(WORKER, {
+          vaultName: BASELINE_VAULT,
+          secretKey,
+          dispatchId: f.dispatchId,
+          ...(resource ? { resource } : {}),
+        });
+      // Without a claim, the empty allowlist refuses the same key.
+      await assertRejects(
+        () => resolve(key),
         Error,
-      );
-      assertStringIncludes(
-        error.message,
         `resolveSecret: secret '${key}' is not referenced by the dispatched step`,
       );
+      // A claim is verified against the record: a resource the dispatch
+      // does not have, a reference the tagged fields do not hold, an
+      // untagged record, and a wrong version are each refused.
+      const refused = (k: string, name: string, reason: string) =>
+        `resolveSecret: secret '${k}' is not a tagged sensitive field of resource '${name}' (${reason})`;
+      await assertRejects(
+        () => resolve(key, { name: "missing", version: 1 }),
+        Error,
+        refused(key, "missing", "no such resource of the dispatched behavior"),
+      );
+      await assertRejects(
+        () => resolve(other, { name: "tagged", version: 1 }),
+        Error,
+        refused(other, "tagged", "its sensitive fields do not reference it"),
+      );
+      await assertRejects(
+        () => resolve(other, { name: "plain", version: 1 }),
+        Error,
+        refused(other, "plain", "the record has no sensitive fields"),
+      );
+      await assertRejects(
+        () => resolve(key, { name: "tagged", version: 2 }),
+        Error,
+        refused(key, "tagged", "no such resource of the dispatched behavior"),
+      );
     });
-
-    // With the reference in the allowlist, the same read resolves it.
-    await withFixture(
-      async (f) => {
-        await seed(f);
-        assertEquals(await f.context.readResource!("tagged"), {
-          password: secret,
-          note: "n",
-        });
-      },
-      extractVaultReferences({ ref: vaultRef(key) }),
-    );
   },
 });
 

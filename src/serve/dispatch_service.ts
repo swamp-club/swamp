@@ -80,7 +80,10 @@ import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { type BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RemoteLockHolder } from "../domain/datastore/lock_holder_marker.ts";
-import { extractVaultReferences } from "../domain/expressions/vault_reference_extractor.ts";
+import {
+  extractVaultReferences,
+  withVaultReferences,
+} from "../domain/expressions/vault_reference_extractor.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
 import { writtenVersionsOf } from "../domain/models/method_execution_service.ts";
@@ -697,9 +700,13 @@ export class DispatchService {
       tagOverrides: request.tagOverrides,
       dataOutputOverrides: request.dataOutputOverrides,
       dataRepo: request.dataRepo,
-      allowedSecrets: extractVaultReferences(
-        request.globalArgs,
-        request.methodArgs,
+      // The references the step's arguments hold admit the worker's own
+      // reads of them. A workflow step's arguments arrive resolved, so its
+      // references come from its secret bag; a direct caller's literal
+      // expressions are still read from the arguments (swamp-club#3529).
+      allowedSecrets: withVaultReferences(
+        extractVaultReferences(request.globalArgs, request.methodArgs),
+        request.secretReferences,
       ),
       redactor: this.#buildDispatchRedactor(request.secretValues),
       traceHeaders: request.traceHeaders,

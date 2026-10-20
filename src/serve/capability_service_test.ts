@@ -1160,3 +1160,222 @@ for (const { name, call } of SCOPED_CALLS) {
     await call(service, "roomcontrol");
   });
 }
+
+// ── resource claim tests (swamp-club#3529) ─────────────────────────────
+
+const CLAIM_DISPATCH_TYPE = ModelType.create("acme/invoices");
+
+/** A stored record of the dispatch's model, as the claim check reads it. */
+interface StoredRecord {
+  name: string;
+  version: number;
+  tags: Record<string, string>;
+  content: unknown;
+}
+
+/**
+ * A service whose data repository holds `record` for every model, and
+ * records the identity each lookup asked for, so a test can see the claim
+ * check look under the dispatch's own behavior type and model id.
+ */
+function createServiceWithRecord(
+  dispatches: DispatchRegistry,
+  record: StoredRecord | null,
+  secrets: Record<string, string> = {},
+): { service: CapabilityService; lookups: unknown[][] } {
+  const lookups: unknown[][] = [];
+  const encode = (content: unknown) =>
+    new TextEncoder().encode(
+      typeof content === "string" ? content : JSON.stringify(content),
+    );
+  const repoContext = {
+    dataQueryService: {
+      query: () => Promise.resolve([]),
+      querySync: () => [],
+    },
+    unifiedDataRepo: {
+      findByName: (
+        type: ModelType,
+        modelId: string,
+        name: string,
+        version?: number,
+      ) => {
+        lookups.push([type.normalized, modelId, name, version]);
+        const found = record !== null && record.name === name &&
+          (version === undefined || version === record.version);
+        return Promise.resolve(
+          found ? { name, version: record.version, tags: record.tags } : null,
+        );
+      },
+      getContent: (_type: ModelType, _modelId: string, name: string) =>
+        Promise.resolve(
+          record !== null && record.name === name
+            ? encode(record.content)
+            : null,
+        ),
+    },
+  } as unknown as RepositoryContext;
+  const service = new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext,
+    dispatches,
+    createVaultService: () =>
+      Promise.resolve({
+        get: (_vault: string, key: string) =>
+          key in secrets
+            ? Promise.resolve(secrets[key])
+            : Promise.reject(new Error(`secret not found: ${key}`)),
+        getAnnotation: () => Promise.resolve({ note: "annotated" }),
+        put: () => Promise.resolve(),
+        putAnnotation: () => Promise.resolve(),
+        deleteAnnotation: () => Promise.resolve(),
+      } as never),
+  });
+  return { service, lookups };
+}
+
+const TAGGED: StoredRecord = {
+  name: "state-main",
+  version: 2,
+  tags: { "_swamp.sensitiveFields": JSON.stringify(["password"]) },
+  content: {
+    password: "${{ vault.get('default', 'generated-key') }}",
+    note: "${{ vault.get('default', 'untagged-key') }}",
+  },
+};
+
+/** An empty allowlist, as a workflow step's dispatch registers today. */
+const EMPTY_ALLOWLIST: VaultExtractionResult = {
+  staticRefs: [],
+  hasDynamicRefs: false,
+};
+
+Deno.test("resolveSecret: a verified resource claim admits a tagged field's reference the allowlist does not name, looked up under the dispatch's own model", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+  const { service, lookups } = createServiceWithRecord(dispatches, TAGGED, {
+    "generated-key": "s3cret",
+  });
+  const result = await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "generated-key",
+    resource: { name: "state-main", version: 2 },
+  });
+  assertEquals(result.value, "s3cret");
+  assertEquals(lookups, [[
+    CLAIM_DISPATCH_TYPE.normalized,
+    "m-1",
+    "state-main",
+    2,
+  ]]);
+  // Without the claim the same read is still held to the allowlist.
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "generated-key",
+      }),
+    Error,
+    "not referenced by the dispatched step",
+  );
+});
+
+Deno.test("resolveSecret: a claim is refused for a missing resource, a wrong version, an untagged record, a reference outside the tagged fields, and a non-JSON record", async () => {
+  const cases: Array<
+    {
+      record: StoredRecord | null;
+      claim: { name: string; version: number };
+      key: string;
+      reason: string;
+    }
+  > = [
+    {
+      record: null,
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "no such resource of the dispatched behavior",
+    },
+    {
+      record: TAGGED,
+      claim: { name: "state-main", version: 1 },
+      key: "generated-key",
+      reason: "no such resource of the dispatched behavior",
+    },
+    {
+      record: { ...TAGGED, tags: {} },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record has no sensitive fields",
+    },
+    {
+      record: TAGGED,
+      claim: { name: "state-main", version: 2 },
+      key: "untagged-key",
+      reason: "its sensitive fields do not reference it",
+    },
+    {
+      record: { ...TAGGED, content: "not json" },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record is not JSON",
+    },
+    {
+      record: { ...TAGGED, content: ["list"] },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record is not an object",
+    },
+  ];
+  for (const { record, claim, key, reason } of cases) {
+    const dispatches = new DispatchRegistry();
+    withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+    const { service } = createServiceWithRecord(dispatches, record, {
+      [key]: "value",
+    });
+    await assertRejects(
+      () =>
+        service.resolveSecret("worker-1", {
+          vaultName: "default",
+          secretKey: key,
+          resource: claim,
+        }),
+      Error,
+      `resolveSecret: secret '${key}' is not a tagged sensitive field of resource '${claim.name}' (${reason})`,
+    );
+  }
+});
+
+Deno.test("resolveSecret: a claim never admits an annotation read or a denylisted key", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+  const { service, lookups } = createServiceWithRecord(dispatches, {
+    ...TAGGED,
+    content: {
+      password: "${{ vault.get('default', 'server-token-x') }}",
+      note: "n",
+    },
+  }, { "server-token-x": "token", "generated-key": "s3cret" });
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "server-token-x",
+        resource: { name: "state-main", version: 2 },
+      }),
+    Error,
+    "infrastructure secrets are not accessible",
+  );
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "generated-key",
+        annotation: true,
+        resource: { name: "state-main", version: 2 },
+      }),
+    Error,
+    "a resource claim admits a secret value, not an annotation",
+  );
+  // Neither refusal consulted the record.
+  assertEquals(lookups, []);
+});

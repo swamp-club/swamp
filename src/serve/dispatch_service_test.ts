@@ -2268,3 +2268,36 @@ Deno.test("DispatchService: a step skips a worker whose enrollment finished afte
   await deadEnroll;
   gateway.dispose();
 });
+
+Deno.test("DispatchService: the allowlist admits the references the request names beside those written in its args (swamp-club#3529)", async () => {
+  const h = createHarness();
+  let allowed: unknown;
+  h.setBehavior((name) => {
+    allowed = h.dispatches.forWorker(name)[0]?.allowedSecrets;
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  await h.service.executeRemote(stepRequest({
+    methodArgs: {
+      value: "resolved",
+      literal: "${{ vault.get('v', 'shown') }}",
+    },
+    secretReferences: [
+      { vaultName: "v", key: "bag" },
+      { vaultName: "v", key: "shown" },
+    ],
+  }));
+
+  assertEquals(allowed, {
+    staticRefs: [
+      { vaultName: "v", secretKey: "shown" },
+      { vaultName: "v", secretKey: "bag" },
+    ],
+    hasDynamicRefs: false,
+  });
+});

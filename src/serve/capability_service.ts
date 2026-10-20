@@ -82,6 +82,10 @@ import {
   workerHiddenStoredTypes,
 } from "./worker_control_plane_visibility.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import {
+  parseSensitiveFieldsTag,
+  sensitiveVaultReferences,
+} from "../domain/models/data_writer.ts";
 
 const capLogger = getSwampLogger(["serve", "capability"]);
 
@@ -477,6 +481,67 @@ export class CapabilityService {
     }
   }
 
+  /**
+   * Admits a read the worker claims is for a tagged sensitive field of the
+   * dispatch's own resource, by checking the claim against the stored
+   * record: the record is looked up under the dispatch's behavior type and
+   * model id at the claimed version, so a resource of any other model is
+   * not found, and the read is admitted only when the record's tagged
+   * fields hold that exact reference (swamp-club#3529). A verified claim
+   * stands in for the argument allowlist; the denylists ran before it and
+   * the run's vault scope applies after it. The claim rests on the data
+   * writer vaulting every present sensitive value and on the tag's reserved
+   * prefix, so a tagged field only ever holds a reference the writer made.
+   * Typed-secrets Phase 5 applies the same rule on its protected route.
+   */
+  async #assertResourceClaim(
+    workerName: string,
+    dispatch: ActiveDispatch,
+    claim: { name: string; version: number },
+    vaultName: string,
+    secretKey: string,
+  ): Promise<void> {
+    const refused = (reason: string) =>
+      new Error(
+        `resolveSecret: secret '${secretKey}' is not a tagged sensitive field of resource '${claim.name}' (${reason})`,
+      );
+    const repo = this.#repoForWorker(workerName, dispatch.dispatchId);
+    const record = await repo.findByName(
+      dispatch.modelType,
+      dispatch.modelId,
+      claim.name,
+      claim.version,
+    );
+    if (record === null) {
+      throw refused("no such resource of the dispatched behavior");
+    }
+    const sensitiveFields = parseSensitiveFieldsTag(record.tags);
+    if (sensitiveFields === null) {
+      throw refused("the record has no sensitive fields");
+    }
+    const content = await repo.getContent(
+      dispatch.modelType,
+      dispatch.modelId,
+      claim.name,
+      claim.version,
+    );
+    if (content === null) throw refused("the record has no content");
+    let data: unknown;
+    try {
+      data = JSON.parse(new TextDecoder().decode(content));
+    } catch {
+      throw refused("the record is not JSON");
+    }
+    if (data === null || typeof data !== "object" || Array.isArray(data)) {
+      throw refused("the record is not an object");
+    }
+    const admitted = sensitiveVaultReferences(
+      data as Record<string, unknown>,
+      sensitiveFields,
+    ).some((ref) => ref.vaultName === vaultName && ref.key === secretKey);
+    if (!admitted) throw refused("its sensitive fields do not reference it");
+  }
+
   async resolveSecret(
     workerName: string,
     params: ResolveSecretParams & { dispatchId?: string },
@@ -495,12 +560,29 @@ export class CapabilityService {
           `resolveSecret: worker '${workerName}' has no active dispatch`,
         );
       }
-      this.#assertSecretInAllowlist(
-        dispatch,
-        params.vaultName,
-        params.secretKey,
-        "resolveSecret",
-      );
+      if (params.resource !== undefined) {
+        // A claim admits a secret value only; the reader never asks for an
+        // annotation, so one with a claim is malformed and fails closed.
+        if (params.annotation) {
+          throw new Error(
+            "resolveSecret: a resource claim admits a secret value, not an annotation",
+          );
+        }
+        await this.#assertResourceClaim(
+          workerName,
+          dispatch,
+          params.resource,
+          params.vaultName,
+          params.secretKey,
+        );
+      } else {
+        this.#assertSecretInAllowlist(
+          dispatch,
+          params.vaultName,
+          params.secretKey,
+          "resolveSecret",
+        );
+      }
     }
     const scope = dispatch?.vaultAccess;
     const vault = await this.#vault();

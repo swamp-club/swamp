@@ -26,6 +26,7 @@ import {
   EnrollParamsSchema,
   parseRpcFrame,
   REMOTE_PROTOCOL_VERSION,
+  ResolveSecretParamsSchema,
 } from "./protocol.ts";
 import { SENTINEL_SOURCE } from "../vaults/secret_bag_registry.ts";
 
@@ -355,4 +356,29 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
     ).success,
     false,
   );
+});
+
+Deno.test("ResolveSecretParamsSchema: carries an optional resource claim (swamp-club#3529)", () => {
+  const plain = ResolveSecretParamsSchema.parse({
+    vaultName: "v",
+    secretKey: "k",
+  });
+  assertEquals(plain.resource, undefined);
+  const claimed = ResolveSecretParamsSchema.parse({
+    vaultName: "v",
+    secretKey: "k",
+    resource: { name: "state-main", version: 3 },
+  });
+  assertEquals(claimed.resource, { name: "state-main", version: 3 });
+  for (
+    const resource of [{ name: "", version: 3 }, { name: "x", version: 0 }]
+  ) {
+    assertThrows(() =>
+      ResolveSecretParamsSchema.parse({
+        vaultName: "v",
+        secretKey: "k",
+        resource,
+      })
+    );
+  }
 });

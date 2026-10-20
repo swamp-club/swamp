@@ -1330,6 +1330,55 @@ export async function resolveSensitiveVaultRefs(
   }
 }
 
+/**
+ * The vault references a record's sensitive fields hold: at each path the
+ * sensitive-fields tag lists (nested values included), or anywhere in the
+ * record for the `*` tag, in document order and without repeats. Exactly
+ * the references {@link resolveSensitiveVaultRefs} resolves for the same
+ * record, so serve can authorize a worker's read of a tagged field against
+ * the record itself (swamp-club#3529). A null `sensitiveFields` (no tag, or
+ * a malformed one, as {@link parseSensitiveFieldsTag} reads it) names none.
+ *
+ * That authorization rests on two guards of the write path:
+ * {@link processSensitiveResourceData} vaults every present value of a
+ * sensitive field, reference text included, so a tagged field only ever
+ * holds a reference the writer generated; and the tag sits under
+ * {@link RESERVED_TAG_PREFIX}, which swamp alone writes.
+ */
+export function sensitiveVaultReferences(
+  data: Record<string, unknown>,
+  sensitiveFields: string[] | "*" | null,
+): SecretReference[] {
+  const references: SecretReference[] = [];
+  const seen = new Set<string>();
+  const collect = (value: unknown): void => {
+    if (typeof value === "string") {
+      const match = VAULT_REF_REGEX.exec(value);
+      if (match) {
+        const [, vaultName, key] = match;
+        const id = `${vaultName}\u0000${key}`;
+        if (!seen.has(id)) {
+          seen.add(id);
+          references.push({ vaultName, key });
+        }
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach(collect);
+    } else if (value !== null && typeof value === "object") {
+      Object.values(value as Record<string, unknown>).forEach(collect);
+    }
+  };
+  if (sensitiveFields === null) return references;
+  if (sensitiveFields === SENSITIVE_FIELDS_ALL) {
+    collect(data);
+  } else {
+    for (const fieldPath of sensitiveFields) {
+      collect(getNestedValue(data, fieldPath));
+    }
+  }
+  return references;
+}
+
 async function resolveValueAtPath(
   value: unknown,
   vaultService: VaultService,
