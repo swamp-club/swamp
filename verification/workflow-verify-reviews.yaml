@@ -143,12 +143,7 @@ jobs:
                 CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
                 codex --ask-for-approval never exec --ephemeral --strict-config \
                   -c 'default_permissions="swamp-review"' \
-                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
-                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
-                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"$PWD\"=\"read\",\"$DIFF_FILE\"=\"read\",\"$REVIEW_DIR\"=\"read\",\"$CODEX_EXECUTABLE\"=\"read\"}" \
                   -c 'permissions.swamp-review.network.enabled=false' \
                   -c 'shell_environment_policy.inherit="none"' \
                   -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \
@@ -206,12 +201,7 @@ jobs:
                 CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
                 codex --ask-for-approval never exec --ephemeral --strict-config \
                   -c 'default_permissions="swamp-review"' \
-                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
-                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
-                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"$PWD\"=\"read\",\"$DIFF_FILE\"=\"read\",\"$REVIEW_DIR\"=\"read\",\"$CODEX_EXECUTABLE\"=\"read\"}" \
                   -c 'permissions.swamp-review.network.enabled=false' \
                   -c 'shell_environment_policy.inherit="none"' \
                   -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \
@@ -269,12 +259,7 @@ jobs:
                 CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
                 codex --ask-for-approval never exec --ephemeral --strict-config \
                   -c 'default_permissions="swamp-review"' \
-                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
-                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
-                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"$PWD\"=\"read\",\"$DIFF_FILE\"=\"read\",\"$REVIEW_DIR\"=\"read\",\"$CODEX_EXECUTABLE\"=\"read\"}" \
                   -c 'permissions.swamp-review.network.enabled=false' \
                   -c 'shell_environment_policy.inherit="none"' \
                   -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \
@@ -332,12 +317,7 @@ jobs:
                 CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
                 codex --ask-for-approval never exec --ephemeral --strict-config \
                   -c 'default_permissions="swamp-review"' \
-                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
-                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
-                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
-                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"$PWD\"=\"read\",\"$DIFF_FILE\"=\"read\",\"$REVIEW_DIR\"=\"read\",\"$CODEX_EXECUTABLE\"=\"read\"}" \
                   -c 'permissions.swamp-review.network.enabled=false' \
                   -c 'shell_environment_policy.inherit="none"' \
                   -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \

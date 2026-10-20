@@ -317,8 +317,8 @@ Deno.test("verify-reviews: Codex scopes file reads and only its final response r
     for (
       const control of [
         'default_permissions="swamp-review"',
-        'permissions.swamp-review.filesystem.":root"="deny"',
-        'permissions.swamp-review.filesystem.":minimal"="read"',
+        'permissions.swamp-review.filesystem={\\":root\\"=\\"deny\\"',
+        '\\":minimal\\"=\\"read\\"',
         "permissions.swamp-review.network.enabled=false",
         'shell_environment_policy.inherit="none"',
         'shell_environment_policy.set={PATH="/usr/bin:/bin"}',
