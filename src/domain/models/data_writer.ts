@@ -621,6 +621,31 @@ function redactOutsideVaultReferences(
   redactor: SecretRedactor,
   sensitiveOutput: boolean,
 ): string {
+  const serialized = JSON.stringify(data);
+  // Text redaction also changes property names. Refuse sibling names that
+  // would collide, rather than let JSON.parse choose an unvaulted value for
+  // a tagged field. Inspect the JSON shape so dates and toJSON behave as
+  // they do in the bytes that will be persisted.
+  if (vaultedPaths.length > 0) {
+    const checkKeys = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const child of value) checkKeys(child);
+      } else if (value !== null && typeof value === "object") {
+        const names = new Set<string>();
+        for (const [key, child] of Object.entries(value)) {
+          const name = redactor.redact(JSON.stringify(key));
+          if (names.has(name)) {
+            throw new Error(
+              "Cannot persist sensitive data: redaction would merge object property names. Use distinct names that contain no secrets.",
+            );
+          }
+          names.add(name);
+          checkKeys(child);
+        }
+      }
+    };
+    checkKeys(JSON.parse(serialized));
+  }
   // A sensitive object with a sensitive field inside holds that field's
   // reference rather than its own, so only string values are references.
   const literals = new Set<string>();
@@ -631,7 +656,7 @@ function redactOutsideVaultReferences(
     if (typeof reference === "string") literals.add(JSON.stringify(reference));
   }
 
-  let pieces = [{ text: JSON.stringify(data), reference: false }];
+  let pieces = [{ text: serialized, reference: false }];
   for (const literal of literals) {
     pieces = pieces.flatMap((piece) => {
       if (piece.reference) return [piece];
@@ -914,6 +939,42 @@ export function createResourceWriter(
         resolvedTags[SENSITIVE_FIELDS_TAG] = effectiveSpec.sensitiveOutput
           ? SENSITIVE_FIELDS_ALL
           : JSON.stringify(vaultedPaths);
+      }
+    }
+
+    const sensitiveFields = parseSensitiveFieldsTag(resolvedTags);
+    const referenceIds = (value: Record<string, unknown>) =>
+      sensitiveVaultReferences(value, sensitiveFields)
+        .map((ref) => JSON.stringify([ref.vaultName, ref.key])).sort();
+    const generatedReferences = referenceIds(data);
+    const serialized = redactor?.hasSecrets
+      ? redactOutsideVaultReferences(
+        data,
+        vaultedPaths,
+        redactor,
+        effectiveSpec.sensitiveOutput === true,
+      )
+      : JSON.stringify(data);
+    if (vaultedPaths.length > 0) {
+      let persisted: unknown;
+      try {
+        persisted = JSON.parse(serialized);
+      } catch {
+        // Text redaction can mask JSON syntax (for example an entire JSON
+        // secret). Preserve that existing behavior, but such a record has
+        // no verified-writer tag and cannot authorize a resource claim.
+      }
+      if (persisted !== undefined) {
+        if (
+          persisted === null || typeof persisted !== "object" ||
+          Array.isArray(persisted) ||
+          JSON.stringify(referenceIds(persisted as Record<string, unknown>)) !==
+            JSON.stringify(generatedReferences)
+        ) {
+          throw new Error(
+            "Cannot persist sensitive data: serialization or redaction changed the generated vault references.",
+          );
+        }
         resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
       }
     }
@@ -953,14 +1014,6 @@ export function createResourceWriter(
       deferred,
     );
 
-    const serialized = redactor?.hasSecrets
-      ? redactOutsideVaultReferences(
-        data,
-        vaultedPaths,
-        redactor,
-        effectiveSpec.sensitiveOutput === true,
-      )
-      : JSON.stringify(data);
     const handle = await writer.writeText(serialized);
     handle.attributes = { ...data };
     handles.push(handle);
@@ -987,8 +1040,9 @@ export function createResourceWriter(
 export const SENSITIVE_FIELDS_TAG = "_swamp.sensitiveFields";
 
 /**
- * Marks records vaulted after reserved tags and dotted own-key handling
- * became write-path invariants. Older records can contain forged tags or
+ * Marks records vaulted after reserved tags, dotted own-key handling and
+ * final serialized reference validation became write-path invariants.
+ * Older records can contain forged tags or
  * unvaulted reference text, so their field tag alone cannot authorize a
  * remote resource claim (swamp-club#3529). Only the resource writer sets it.
  */

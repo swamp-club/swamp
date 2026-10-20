@@ -22,6 +22,7 @@ import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   assert,
   assertEquals,
+  assertExists,
   assertRejects,
   assertStringIncludes,
   assertThrows,
@@ -3072,6 +3073,61 @@ Deno.test("createResourceWriter: an object key containing a secret is still reda
   );
 
   assertEquals(persisted, { labels: { "for-***": "x" } });
+});
+
+Deno.test("createResourceWriter: redaction cannot merge an unvaulted reference into a sensitive field", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      "***": z.string().meta({ sensitive: true, vaultKey: "stored" }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  for (const reverse of [false, true]) {
+    const fields: Array<[string, string]> = [
+      ["***", "benign"],
+      ["known-secret", "${{ vault.get('test-vault', 'victim') }}"],
+    ];
+    await assertRejects(
+      () =>
+        writeRedacted(
+          spec,
+          "main",
+          Object.fromEntries(reverse ? fields.reverse() : fields),
+          ["known-secret"],
+        ),
+      Error,
+      "redaction would merge object property names",
+    );
+  }
+});
+
+Deno.test("createResourceWriter: final serialization must retain the generated sensitive references", async () => {
+  await assertRejects(
+    () =>
+      writeRedacted(
+        hostSpec,
+        "main",
+        { host: HOST, port: 22, token: "sensitive-value" },
+        ["token"],
+      ),
+    Error,
+    "serialization or redaction changed the generated vault references",
+  );
+});
+
+Deno.test("createResourceWriter: redaction that masks JSON syntax cannot stamp a verified writer tag", async () => {
+  const { repo, persisted } = await writeRedacted(
+    hostSpec,
+    "main",
+    { host: HOST, port: 1234, token: "sensitive-value" },
+    ["1234"],
+  );
+  assertEquals(persisted, undefined);
+  const record = await repo.findByName(modelType, modelId, "main");
+  assertExists(record);
+  assertEquals(record.tags[SENSITIVE_FIELDS_TAG], '["token"]');
+  assertEquals(record.tags[SENSITIVE_FIELDS_VERSION_TAG], undefined);
 });
 
 Deno.test("createResourceWriter: a secret containing a JSON-escaped character is masked", async () => {

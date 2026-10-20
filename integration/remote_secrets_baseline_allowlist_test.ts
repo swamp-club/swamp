@@ -94,14 +94,19 @@ const VAULTING_ALL_SPEC = "all";
  * `sensitiveOutput`, so a dispatch of it can write those resources over the
  * data plane.
  */
-function registerReaderType(withResource = false): ModelType {
+function registerReaderType(
+  withResource = false,
+  globalOnly = false,
+): ModelType {
   const type = ModelType.create(
     `test/secrets-baseline-allowlist-${crypto.randomUUID()}`,
   );
   modelRegistry.register({
     type,
     version: "2026.10.15.1",
-    globalArguments: z.object({}),
+    globalArguments: globalOnly
+      ? z.object({ value: z.string() })
+      : z.object({}),
     ...(withResource
       ? {
         resources: {
@@ -121,13 +126,20 @@ function registerReaderType(withResource = false): ModelType {
             garbageCollection: 5,
             sensitiveOutput: true,
           },
+          collision: {
+            schema: z.object({
+              "***": z.string().meta({ sensitive: true, vaultKey: "stored" }),
+            }),
+            lifetime: "infinite" as const,
+            garbageCollection: 5,
+          },
         },
       }
       : {}),
     methods: {
       read: {
         description: "Runs on a worker; the body never runs in-process",
-        arguments: z.object({ value: z.string() }),
+        arguments: globalOnly ? z.object({}) : z.object({ value: z.string() }),
         execute: () => Promise.resolve({}),
       },
     },
@@ -237,100 +249,116 @@ async function runWorkflow(
   return { status, errors };
 }
 
-Deno.test({
-  name:
-    "remote secrets baseline: allowlist: a workflow step's vault.get argument reaches serve already resolved, and its allowlist still names the reference, so the worker reads that secret and no other (swamp-club#3529)",
-  ...SANITIZE,
-  fn: () =>
-    withTempDir(async (dir) => {
-      const o = await startBaselineOrchestrator(dir);
-      setRemoteStepDispatcher(o.dispatchService);
-      try {
-        const key = `allowlist-${crypto.randomUUID()}`;
-        const secret = canary("allowlist-e2e");
-        await o.putSecret(key, secret);
-        const other = `allowlist-other-${crypto.randomUUID()}`;
-        await o.putSecret(other, canary("allowlist-other"));
+for (const argumentSource of ["method", "global"] as const) {
+  Deno.test({
+    name:
+      `remote secrets baseline: allowlist: a workflow step's ${argumentSource} vault.get argument retains its reference after resolution (swamp-club#3529)`,
+    ...SANITIZE,
+    fn: () =>
+      withTempDir(async (dir) => {
+        const o = await startBaselineOrchestrator(dir);
+        setRemoteStepDispatcher(o.dispatchService);
+        try {
+          const key = `allowlist-${crypto.randomUUID()}`;
+          const secret = canary("allowlist-e2e");
+          await o.putSecret(key, secret);
+          const other = `allowlist-other-${crypto.randomUUID()}`;
+          await o.putSecret(other, canary("allowlist-other"));
 
-        const type = registerReaderType();
-        const definition = Definition.create({
-          name: "allowlist-reader",
-          methods: {
-            read: {
-              arguments: {
-                value: `\${{ vault.get('${BASELINE_VAULT}', '${key}') }}`,
-              },
+          const type = registerReaderType(false, argumentSource === "global");
+          const args = {
+            value: `\${{ vault.get('${BASELINE_VAULT}', '${key}') }}`,
+          };
+          const definition = Definition.create({
+            name: "allowlist-reader",
+            globalArguments: argumentSource === "global" ? args : {},
+            methods: {
+              read: { arguments: argumentSource === "method" ? args : {} },
             },
-          },
-        });
-        await o.repoContext.definitionRepo.save(type, definition);
-
-        const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
-        const worker = await connectInMemoryWorker(o, workerName);
-        const seen: Array<{
-          methodArgs: Record<string, unknown>;
-          allowedSecrets: VaultExtractionResult | undefined;
-          resolved: { value?: unknown; refused?: string };
-          unreferenced: { value?: unknown; refused?: string };
-        }> = [];
-        answerDispatches(o, worker, workerName, async ({ params, active }) => {
-          seen.push({
-            methodArgs: params.execution.methodArgs,
-            allowedSecrets: active.allowedSecrets,
-            resolved: await tryResolve(
-              o,
-              workerName,
-              params.dispatchId,
-              BASELINE_VAULT,
-              key,
-            ),
-            unreferenced: await tryResolve(
-              o,
-              workerName,
-              params.dispatchId,
-              BASELINE_VAULT,
-              other,
-            ),
           });
-        });
+          await o.repoContext.definitionRepo.save(type, definition);
 
-        const { status, errors } = await runWorkflow(
-          dir,
-          Workflow.create({
-            name: `allowlist-${crypto.randomUUID().slice(0, 8)}`,
-            jobs: [Job.create({
-              name: "main",
-              steps: [Step.create({
-                name: "read",
-                task: StepTask.model("allowlist-reader", "read"),
-                labels: { tier: "baseline" },
+          const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
+          const worker = await connectInMemoryWorker(o, workerName);
+          const seen: Array<{
+            methodArgs: Record<string, unknown>;
+            globalArgs: Record<string, unknown>;
+            allowedSecrets: VaultExtractionResult | undefined;
+            resolved: { value?: unknown; refused?: string };
+            unreferenced: { value?: unknown; refused?: string };
+          }> = [];
+          answerDispatches(
+            o,
+            worker,
+            workerName,
+            async ({ params, active }) => {
+              seen.push({
+                methodArgs: params.execution.methodArgs,
+                globalArgs: params.execution.globalArgs,
+                allowedSecrets: active.allowedSecrets,
+                resolved: await tryResolve(
+                  o,
+                  workerName,
+                  params.dispatchId,
+                  BASELINE_VAULT,
+                  key,
+                ),
+                unreferenced: await tryResolve(
+                  o,
+                  workerName,
+                  params.dispatchId,
+                  BASELINE_VAULT,
+                  other,
+                ),
+              });
+            },
+          );
+
+          const { status, errors } = await runWorkflow(
+            dir,
+            Workflow.create({
+              name: `allowlist-${crypto.randomUUID().slice(0, 8)}`,
+              jobs: [Job.create({
+                name: "main",
+                steps: [Step.create({
+                  name: "read",
+                  task: StepTask.model("allowlist-reader", "read"),
+                  labels: { tier: "baseline" },
+                })],
               })],
-            })],
-          }),
-        );
-        assertEquals(status, "succeeded", errors.join("\n"));
-        assertEquals(seen.length, 1);
+            }),
+          );
+          assertEquals(status, "succeeded", errors.join("\n"));
+          assertEquals(seen.length, 1);
 
-        // The dispatched args hold the plaintext, not the expression ...
-        assertEquals(seen[0].methodArgs, { value: secret });
-        // ... so the allowlist comes from the step's secret bag, exact and
-        // not dynamic (swamp-club#3529) ...
-        assertEquals(seen[0].allowedSecrets, {
-          staticRefs: [{ vaultName: BASELINE_VAULT, secretKey: key }],
-          hasDynamicRefs: false,
-        });
-        // ... and the worker reads that secret and no other.
-        assertEquals(seen[0].resolved, { value: secret });
-        assertEquals(seen[0].unreferenced, {
-          refused:
-            `resolveSecret: secret '${other}' is not referenced by the dispatched step`,
-        });
-      } finally {
-        setRemoteStepDispatcher(null);
-        await o.shutdown();
-      }
-    }),
-});
+          // The dispatched args hold the plaintext, not the expression ...
+          assertEquals(
+            seen[0].methodArgs,
+            argumentSource === "method" ? { value: secret } : {},
+          );
+          assertEquals(
+            seen[0].globalArgs,
+            argumentSource === "global" ? { value: secret } : {},
+          );
+          // ... so the allowlist comes from the step's secret bag, exact and
+          // not dynamic (swamp-club#3529) ...
+          assertEquals(seen[0].allowedSecrets, {
+            staticRefs: [{ vaultName: BASELINE_VAULT, secretKey: key }],
+            hasDynamicRefs: false,
+          });
+          // ... and the worker reads that secret and no other.
+          assertEquals(seen[0].resolved, { value: secret });
+          assertEquals(seen[0].unreferenced, {
+            refused:
+              `resolveSecret: secret '${other}' is not referenced by the dispatched step`,
+          });
+        } finally {
+          setRemoteStepDispatcher(null);
+          await o.shutdown();
+        }
+      }),
+  });
+}
 
 Deno.test({
   name:
@@ -629,6 +657,27 @@ Deno.test({
             credential: () => dispatchCredential ?? "",
           });
           const repo = o.repoContext.unifiedDataRepo;
+          // A property containing a delivered secret would redact to the
+          // sensitive field's name. The data plane must refuse that write
+          // before a record can authorize the unvaulted reference.
+          await assertRejects(
+            () =>
+              client.writeResource({
+                specName: "collision",
+                name: "collision",
+                data: { "***": "benign", "known-secret": crafted },
+              }),
+            Error,
+            "redaction would merge object property names",
+          );
+          assertEquals(
+            await repo.findByName(
+              active.modelType,
+              active.modelId,
+              "collision",
+            ),
+            null,
+          );
           // The worker writes the crafted text as a sensitive value: a
           // schema-sensitive field, and under sensitiveOutput a top-level
           // key holding a dot, which the writer must address by its name.
@@ -696,7 +745,10 @@ Deno.test({
         });
 
         await o.dispatchService.executeRemote(
-          remoteRequest(type, { value: "plain" }),
+          {
+            ...remoteRequest(type, { value: "plain" }),
+            secretValues: ["known-secret"],
+          },
         );
 
         // The writer vaulted the crafted text under keys of its own and

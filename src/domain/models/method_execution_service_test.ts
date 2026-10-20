@@ -4559,11 +4559,13 @@ async function captureRemoteRequest(
   secretBag: VaultSecretBag | undefined,
   methodArgs: Record<string, unknown>,
   secretLoader?: SecretLoader,
+  globalArguments: Record<string, unknown> = {},
 ): Promise<RemoteStepRequest> {
   const service = new DefaultMethodExecutionService();
   const model = createTestModel({});
   const definition = Definition.create({
     name: "remote-secret-def",
+    globalArguments,
     methods: { start: { arguments: methodArgs } },
   });
   const captured: RemoteStepRequest[] = [];
@@ -4629,6 +4631,28 @@ Deno.test("executeWorkflow - placed step without secrets ships no bag fields", a
   assertEquals(request.unresolvedMethodArgs, undefined);
   assertEquals(request.secretBag, undefined);
   assertEquals(request.secretReferences, undefined);
+});
+
+Deno.test("executeWorkflow: a placed step retains references found only in global arguments", async () => {
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "token" },
+    "globalArguments.value",
+  );
+  new VaultSecretBag(registry).addSecret(
+    { vaultName: "v", key: "other-method" },
+    "methods.other.arguments.value",
+  );
+  const { loader } = mockLoader({ token: "global-secret" });
+  const request = await captureRemoteRequest(
+    bag,
+    {},
+    loader,
+    { value: sentinel },
+  );
+  assertEquals(request.globalArgs, { value: "global-secret" });
+  assertEquals(request.secretReferences, [{ vaultName: "v", key: "token" }]);
 });
 
 /**

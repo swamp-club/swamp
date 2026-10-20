@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import fc from "fast-check";
 import { z } from "zod";
 import {
@@ -229,6 +229,63 @@ Deno.test("createResourceWriter: wildcard output keeps whole top-level reference
           credentials: JSON.stringify({ token, note }),
           "credentials.token": "${{ vault.get('other', 'not-authorized') }}",
         });
+      },
+    ),
+  );
+});
+
+Deno.test("createResourceWriter: redacted property collisions cannot replace generated references at any depth", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      arbNameSecret,
+      fc.stringMatching(/^[a-z]{0,4}$/),
+      fc.boolean(),
+      async (secret, prefix, nested) => {
+        const repo = createCapturingRepo();
+        const vault = new VaultService();
+        vault.registerVault({ name: "test-vault", type: "mock", config: {} });
+        const redactor = new SecretRedactor();
+        redactor.addSecret(secret);
+        const name = `${prefix}***`;
+        const schema = z.object({
+          [name]: z.string().meta({ sensitive: true, vaultKey: "stored" }),
+        });
+        const fields = {
+          [name]: "benign",
+          [`${prefix}${secret}`]: "${{ vault.get('test-vault', 'victim') }}",
+        };
+        const { writeResource } = createResourceWriter(
+          repo,
+          modelType,
+          modelId,
+          {
+            r: {
+              schema: nested ? z.object({ credentials: schema }) : schema,
+              lifetime: "infinite",
+              garbageCollection: 5,
+            },
+          },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          vault,
+          "put",
+          undefined,
+          redactor,
+        );
+        await assertRejects(
+          () =>
+            writeResource(
+              "r",
+              "main",
+              nested ? { credentials: fields } : fields,
+            ),
+          Error,
+          "redaction would merge object property names",
+        );
+        assertEquals(repo.persisted(), "");
       },
     ),
   );

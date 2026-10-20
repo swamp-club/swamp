@@ -90,6 +90,7 @@ import {
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
+import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import {
   type SecretOccurrences,
   secretOccurrencesOf,
@@ -611,6 +612,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     modelDef: ModelDefinition,
     currentDefinition: Definition,
     methodName: string,
+    secretReferences: readonly SecretReference[],
   ): Promise<RemoteStepResult> {
     const dispatcher = getRemoteStepDispatcher();
     if (dispatcher === null) {
@@ -652,15 +654,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         secretBag: shippedEntries,
       }
       : {};
-    // The references those arguments hold, for serve's per-dispatch
-    // allowlist: the shipped args carry the values, not the expressions,
-    // so serve cannot read the references from them (swamp-club#3529).
-    const secretReferences = secretBag?.resolvesAny
-      ? secretBag.referencesFor({
-        methodArgs: executionRequest.methodArgs,
-        globalArgs: executionRequest.globalArgs,
-      })
-      : [];
     if (modelDef.globalArguments) {
       secretValues.push(
         ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs),
@@ -908,6 +901,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // sentinels, as a freshly evaluated definition does (swamp-club#3627).
       // Global validation below writes its parsed values into the same copy.
       const secretBag = context.vaultSecrets;
+      // Capture both argument sets before global validation receives their
+      // values. By remote dispatch the globals no longer contain sentinels,
+      // so their references cannot be recovered there (swamp-club#3529).
+      const secretReferences = secretBag?.resolvesAny
+        ? secretBag.referencesFor({
+          methodArgs: currentDefinition.getMethodArguments(methodName),
+          globalArgs: currentDefinition.globalArguments,
+        })
+        : [];
       if (secretBag?.resolvesAny) {
         currentDefinition = Definition.fromData({
           ...currentDefinition.toData(),
@@ -1293,6 +1295,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             modelDef,
             currentDefinition,
             methodName,
+            secretReferences,
           );
           // Rebuild full handles from the durable records the data plane
           // persisted — downstream consumers (data-record mapping, workflow
