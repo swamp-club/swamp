@@ -62,6 +62,7 @@ import { maxOf } from "../../domain/array_extrema.ts";
 import type {
   HydrateFileHook,
   MarkDirtyHook,
+  UnreadableContentLookup,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import type { CatalogStore } from "./catalog_store.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
@@ -243,6 +244,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     /** Clock for {@link ACCEPTED_SHORT_CONTENT_TTL_MS}; tests inject one. */
     private readonly now: () => number = Date.now,
     public readonly fetchForeignContent?: ForeignContentFetcher,
+    /**
+     * Tells content the datastore could not materialise from content that
+     * is absent (swamp-club#3617); consulted only when a content read finds
+     * no file.
+     */
+    public readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
@@ -1441,6 +1448,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
+        await this.throwIfUnreadable(contentPath);
         return;
       }
       throw error;
@@ -1472,9 +1480,22 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       return await Deno.readFile(contentPath);
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return null;
+      if (error instanceof Deno.errors.NotFound) {
+        await this.throwIfUnreadable(contentPath);
+        return null;
+      }
       throw error;
     }
+  }
+
+  /**
+   * Throws when the datastore recorded the missing content at `contentPath`
+   * as unreadable (swamp-club#3617), so the read fails loudly instead of
+   * reading as absent. Content that is simply absent returns.
+   */
+  private async throwIfUnreadable(contentPath: string): Promise<void> {
+    const error = await this.unreadableContent?.(contentPath);
+    if (error !== undefined) throw error;
   }
 
   async ensureContentLocal(
@@ -1484,10 +1505,28 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version?: number,
     knownSize?: number,
   ): Promise<ContentAvailability> {
-    if (!this.hydrateFile) return "current";
+    if (!this.hydrateFile && !this.unreadableContent) return "current";
     const modelType = coerceModelType(type);
     const versionToRead = version ??
       await this.getLatestVersion(modelType, modelId, dataName);
+    if (!this.hydrateFile) {
+      // Nothing could replace the file, but the synchronous readers that
+      // ensure content first must fail loudly on a record the datastore
+      // could not materialise rather than read it as empty
+      // (swamp-club#3617). Only an absent file is looked up.
+      if (versionToRead !== null) {
+        const contentPath = this.getContentPath(
+          modelType,
+          modelId,
+          dataName,
+          versionToRead,
+        );
+        if ((await fileSize(contentPath)) === null) {
+          await this.throwIfUnreadable(contentPath);
+        }
+      }
+      return "current";
+    }
     if (versionToRead === null) return "missing";
     return await this.ensureContentFile(
       modelType,

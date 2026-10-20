@@ -1233,6 +1233,11 @@ export class SqliteCommitStore implements CommitStore {
     };
   }
 
+  compactionPoint(): Promise<number> {
+    if (this.#closed) return Promise.reject(closedError());
+    return Promise.resolve(this.#point());
+  }
+
   readCompactedBase(
     after: string | undefined,
     limit: number,

@@ -61,6 +61,30 @@ Deno.test("writeFileDurably: writes bytes and streams, creating the directory", 
   });
 });
 
+Deno.test("writeFileDurably: syncs the file, then the directories it created, through the injected seams", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "a", "b", "raw");
+    const events: string[] = [];
+    await writeFileDurably(path, new Uint8Array([1]), signal(), {
+      syncFile: async (file) => {
+        await file.sync();
+        events.push("file");
+      },
+      syncDirectory: (d) => {
+        events.push(d);
+        return Promise.resolve();
+      },
+    });
+    assertEquals(events, [
+      "file",
+      join(dir, "a", "b"),
+      join(dir, "a"),
+      dir,
+    ]);
+    assertEquals(await Deno.readFile(path), new Uint8Array([1]));
+  });
+});
+
 Deno.test("writeFileDurably: cancels a stream it never read when the directory cannot be made", async () => {
   await withTempDir(async (dir) => {
     await Deno.writeTextFile(join(dir, "file"), "x");

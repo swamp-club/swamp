@@ -83,6 +83,7 @@ import { v3CatalogPath } from "../datastore_v3/record_path_guard.ts";
 import type {
   HydrateFileHook,
   MarkDirtyHook,
+  UnreadableContentLookup,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { CatalogStore, ITERATE_PAGE_SIZE } from "./catalog_store.ts";
@@ -415,6 +416,14 @@ export interface RepositoryFactoryConfig {
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
   /**
+   * Tells content a v3 read model could not materialise from absent content
+   * (swamp-club#3617), so the unified data repository's content reads, and
+   * the run, definition, evaluated definition and output repositories' reads
+   * of one record, fail loudly on it, and their listings warn that they
+   * leave it out. Set only for a v3 datastore.
+   */
+  unreadableContent?: UnreadableContentLookup;
+  /**
    * Reads another namespace's content from the remote datastore, for the
    * foreign rows a catalog pull adds. Carried by the unified data repository,
    * so every query service built from it can fetch (swamp-club#3306).
@@ -477,6 +486,12 @@ export interface RepositoryContext {
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
   /**
+   * Tells content a v3 read model could not materialise from absent content
+   * (swamp-club#3617). Code that builds its own data repositories for this
+   * repo passes it on, as it does `hydrateFile`.
+   */
+  unreadableContent?: UnreadableContentLookup;
+  /**
    * The v3 commit log this context commits through; set only on a v3
    * datastore (swamp-club#3279). Roots and use-case units open commit-log
    * units through it instead of legacy ones.
@@ -537,6 +552,7 @@ export function createRepositoryContext(
     vaultsDir,
     datastoreResolver,
     hydrateFile,
+    unreadableContent,
   } = config;
 
   // A v3 context gets a hook of its own when none was given: the hook is the
@@ -583,6 +599,7 @@ export function createRepositoryContext(
     definitionsDir,
     autoDefDir,
     markDirty,
+    unreadableContent,
   );
   const yamlWorkflowRepo = new YamlWorkflowRepository(
     repoDir,
@@ -608,6 +625,8 @@ export function createRepositoryContext(
     enableIndexing ? eventBus : undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
     markDirty,
+    undefined,
+    unreadableContent,
   );
 
   // Evaluated definition repository (derived data, no events)
@@ -615,6 +634,7 @@ export function createRepositoryContext(
     repoDir,
     dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
     markDirty,
+    unreadableContent,
   );
 
   // Create catalog store for data query
@@ -632,6 +652,7 @@ export function createRepositoryContext(
     config.autoGc ?? false,
     undefined,
     config.fetchForeignContent,
+    unreadableContent,
   );
 
   // Construct the query service alongside its dependencies so consumers
@@ -645,6 +666,7 @@ export function createRepositoryContext(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
     markDirty,
+    unreadableContent,
   );
 
   // Vault config repository with event bus
@@ -674,6 +696,7 @@ export function createRepositoryContext(
     dataQueryService,
     markDirty,
     hydrateFile,
+    ...(unreadableContent !== undefined ? { unreadableContent } : {}),
     ...(commitLog !== undefined ? { commitLog } : {}),
     autoDefinitionsDir: autoDefDir,
     autoGc: config.autoGc ?? false,

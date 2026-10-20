@@ -116,6 +116,7 @@ import {
   wouldAuthorize,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { isUnreadableContentError } from "../../domain/datastore/unreadable_content.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
@@ -145,6 +146,7 @@ import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 
 const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
 const runVaultLogger = getSwampLogger(["serve", "access", "run-vault"]);
+const listLogger = getSwampLogger(["serve", "access", "list"]);
 
 export async function handleAccessGrantList(
   socket: WebSocket,
@@ -174,11 +176,27 @@ export async function handleAccessGrantList(
     let results: { grant: Grant; instanceName: string }[] = [];
     for (const { data, modelType, modelId } of dataItems) {
       if (data.isRenamed || data.isDeleted) continue;
-      const content = await ctx.repoContext.unifiedDataRepo.getContent(
-        modelType,
-        modelId,
-        data.name,
-      );
+      let content: Uint8Array | null;
+      try {
+        content = await ctx.repoContext.unifiedDataRepo.getContent(
+          modelType,
+          modelId,
+          data.name,
+        );
+      } catch (error) {
+        // One record the datastore could not materialise is left out of
+        // the listing rather than failing it (swamp-club#3617).
+        if (!isUnreadableContentError(error)) throw error;
+        listLogger.warn(
+          "Skipping unreadable {kind} record {dataName}: {error}",
+          {
+            kind: modelType.normalized,
+            dataName: data.name,
+            error: (error as Error).message,
+          },
+        );
+        continue;
+      }
       if (!content) continue;
       let attrs: Record<string, unknown>;
       try {
@@ -303,11 +321,27 @@ export async function handleAccessGroupList(
     let groups: Group[] = [];
     for (const { data, modelType, modelId } of dataItems) {
       if (data.isRenamed || data.isDeleted) continue;
-      const content = await ctx.repoContext.unifiedDataRepo.getContent(
-        modelType,
-        modelId,
-        data.name,
-      );
+      let content: Uint8Array | null;
+      try {
+        content = await ctx.repoContext.unifiedDataRepo.getContent(
+          modelType,
+          modelId,
+          data.name,
+        );
+      } catch (error) {
+        // One record the datastore could not materialise is left out of
+        // the listing rather than failing it (swamp-club#3617).
+        if (!isUnreadableContentError(error)) throw error;
+        listLogger.warn(
+          "Skipping unreadable {kind} record {dataName}: {error}",
+          {
+            kind: modelType.normalized,
+            dataName: data.name,
+            error: (error as Error).message,
+          },
+        );
+        continue;
+      }
       if (!content) continue;
       let attrs: Record<string, unknown>;
       try {

@@ -296,3 +296,168 @@ Deno.test("ReadModelState: forgetUnsynced forgets only the keys given, and the b
     assertEquals(state.unsyncedBoot(), undefined);
   });
 });
+
+function touchedKeys(path: string): string[] {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return (db.prepare(
+      "SELECT record_key FROM load_touched_keys ORDER BY record_key",
+    ).all() as { record_key: string }[]).map((row) => row.record_key);
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("ReadModelState: a reset keeps present files as removal candidates, and the unsynced keys only when asked; markComplete forgets them (swamp-club#3617)", async () => {
+  await withState((state, path) => {
+    const record = () =>
+      state.recordApplied(applied({
+        files: new Map([
+          ["data/present", { owner: "p", mark: 1, present: true }],
+          ["data/removed", { owner: "p", mark: 1, present: false }],
+        ]),
+        unsynced: { keys: new Set(["data/listed"]), boot: "boot-1" },
+      }));
+    record();
+    state.reset(1);
+    assertEquals(touchedKeys(path), ["data/present"]);
+    state.markComplete();
+    assertEquals(touchedKeys(path), []);
+    record();
+    state.reset(1, true);
+    assertEquals(touchedKeys(path), ["data/listed", "data/present"]);
+    state.markComplete();
+    assertEquals(touchedKeys(path), []);
+  });
+});
+
+Deno.test("ReadModelState: an unreadable record is kept by a commit that leaves its key alone, forgotten by one that decides it, reported absent to the reboot check, and cleared by a reset (swamp-club#3617)", async () => {
+  await withState((state) => {
+    const record = {
+      namespace: "",
+      recordKey: "data/k",
+      partition: "p",
+      seq: 1,
+      position: 1,
+      blob: MULTI,
+      chunk: C,
+      reason: "missing" as const,
+      lastAttempt: new Date(1_000),
+      chunkSize: 1,
+      chunkMtime: 5,
+    };
+    state.recordApplied(applied({
+      records: new Map([["data/k", { sha256: B, blob: MULTI }]]),
+      files: new Map([["data/k", { owner: "p", mark: 1, present: true }]]),
+      unsynced: { keys: new Set(["data/k"]), boot: "boot-1" },
+      decided: new Set(["data/k"]),
+      unreadable: new Map([["data/k", record]]),
+    }));
+    assertEquals(state.unreadableRecord("", "data/k"), record);
+    assertEquals(state.unsyncedFiles(), [
+      { namespace: "", record_key: "data/k", expect: "absent" },
+    ]);
+    state.recordApplied(applied({ seq: 2, decided: new Set() }));
+    assertEquals(state.unreadableDue(10).length, 1);
+    state.recordApplied(applied({ seq: 3, decided: new Set(["data/k"]) }));
+    assertEquals(state.unreadableRecord("", "data/k"), undefined);
+    state.recordApplied(applied({
+      seq: 4,
+      unreadable: new Map([["data/k", record]]),
+    }));
+    state.reset(1);
+    assertEquals(state.unreadableDue(10), []);
+  });
+});
+
+Deno.test("ReadModelState: unreadableRecordsUnder lists one namespace's records under a key directory, in key order, and nothing beside it (swamp-club#3617)", async () => {
+  await withState((state) => {
+    const record = (namespace: string, recordKey: string) => ({
+      namespace,
+      recordKey,
+      partition: "p",
+      seq: 1,
+      position: 1,
+      reason: "missing" as const,
+      lastAttempt: new Date(1_000),
+    });
+    const keys = [
+      "outputs/t/m/b.yaml",
+      "outputs/t/a.yaml",
+      // Beside the directory: a key equal to it, sorting just before or
+      // after its children, or sharing its name as a prefix.
+      "outputs",
+      "outputs.x/a.yaml",
+      "outputs0/a.yaml",
+      "outputsx/a.yaml",
+    ];
+    state.recordApplied(applied({
+      unreadable: new Map(keys.map((key) => [key, record("", key)])),
+    }));
+    state.recordApplied(applied({
+      namespace: "team",
+      seq: 2,
+      unreadable: new Map([
+        ["outputs/t/c.yaml", record("team", "outputs/t/c.yaml")],
+      ]),
+    }));
+    assertEquals(
+      state.unreadableRecordsUnder("", "outputs").map((r) => r.recordKey),
+      ["outputs/t/a.yaml", "outputs/t/m/b.yaml"],
+    );
+    assertEquals(
+      state.unreadableRecordsUnder("", "outputs/t/m").map((r) => r.recordKey),
+      ["outputs/t/m/b.yaml"],
+    );
+    assertEquals(
+      state.unreadableRecordsUnder("team", "outputs").map((r) => r.recordKey),
+      ["outputs/t/c.yaml"],
+    );
+    assertEquals(state.unreadableRecordsUnder("", "data"), []);
+  });
+});
+
+Deno.test("ReadModelState: at-risk copies survive a reset and are tried least recently first (swamp-club#3617)", async () => {
+  await withState((state) => {
+    const copy = (sha256: string, lastAttempt: number) => ({
+      namespace: "",
+      sha256,
+      recordKey: "data/k",
+      size: 10,
+      createdAt: new Date(0),
+      lastAttempt: new Date(lastAttempt),
+    });
+    state.recordAtRiskCopy(copy(A, 50));
+    state.recordAtRiskCopy(copy(B, 10));
+    // The same namespace and digest keeps the first row.
+    state.recordAtRiskCopy({ ...copy(A, 0), recordKey: "data/other" });
+    state.reset(1);
+    assertEquals(state.atRiskDue(10, 100).map((c) => c.sha256), [B, A]);
+    assertEquals(state.atRiskDue(10, 20).map((c) => c.sha256), [B]);
+    assertEquals(state.atRiskBytes(), 20);
+    state.noteAtRiskAttempt("", B, 90);
+    assertEquals(state.atRiskDue(10, 100).map((c) => c.sha256), [A, B]);
+    state.deleteAtRiskCopy("", A);
+    assertEquals(state.hasAtRiskCopy("", A), false);
+    assertEquals(state.hasAtRiskCopy("", B), true);
+  });
+});
+
+Deno.test("ReadModelState: a schema-4 database migrates to the unreadable-record and at-risk tables (swamp-club#3617)", async () => {
+  await withState((state, path) => {
+    state.close();
+    const db = new DatabaseSync(path);
+    db.exec(
+      "DROP TABLE unreadable_records; DROP TABLE at_risk_copies; PRAGMA user_version=4",
+    );
+    db.close();
+    const reopened = ReadModelState.open(path);
+    try {
+      assertEquals(reopened.unreadableDue(10), []);
+      assertEquals(reopened.atRiskBytes(), 0);
+    } finally {
+      reopened.close();
+    }
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 5);
+  });
+});

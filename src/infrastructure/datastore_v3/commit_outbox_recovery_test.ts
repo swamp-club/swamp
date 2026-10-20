@@ -43,6 +43,7 @@ import {
 import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { setLocalProcessForTesting } from "./process_identity.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 
 const DEAD: CommitWriter = { host: "host-a", pid: 4242, instance: "dead" };
 const RECOVERER: CommitWriter = { host: "host-a", pid: 7, instance: "next" };
@@ -393,6 +394,51 @@ Deno.test("recoverCommitOutbox: drops an entry whose chunks are missing rather t
   );
 });
 
+Deno.test("recoverCommitOutbox: drops an entry naming a chunk a crash left short, on a storage that reads sizes (swamp-club#3617)", async () => {
+  await withFixture(async ({ store, outbox, dir, prepare }) => {
+    const signal = new AbortController().signal;
+    const datastore = join(dir, "datastore");
+    const chunkStore = new ChunkStore(
+      new FileSystemStorage(datastore, { syncedAncestors: new Map() }),
+    );
+    const blob = await chunkStore.write(
+      SOLO_NAMESPACE,
+      new Uint8Array(200).fill(7),
+      signal,
+    );
+    await prepare(prepared(1, [await blobPut("a", 1, blob)], "t1"));
+    // Torn: the name survived a power loss, the bytes did not.
+    await Deno.truncate(
+      join(
+        datastore,
+        "_blobs",
+        "_default",
+        "sha256",
+        blob.sha256.slice(0, 2),
+        blob.sha256,
+      ),
+      10,
+    );
+    await store.raiseWriterFence(2);
+    await outbox.recordFence(2);
+    const report = await recoverCommitOutbox(
+      { outbox, commitStore: store, chunkStore },
+      {
+        fence: 2,
+        writer: RECOVERER,
+        writerAlive: () => false,
+        clock: () => NOW,
+      },
+    );
+    assertEquals(report.drops.map((drop) => drop.reason), ["missing-chunk"]);
+    assertEquals(
+      report.drops[0].detail,
+      `chunk ${blob.sha256} is missing or damaged`,
+    );
+    assertEquals(await commitsOf(store), []);
+  });
+});
+
 Deno.test("recoverCommitOutbox: a refused entry is dropped with its unit's run entries", async () => {
   await withFixture(async ({ store, prepare, recover }) => {
     await store.append(
@@ -449,5 +495,89 @@ Deno.test("recoverCommitOutbox: an empty recovery raises the floor, so an entry 
     const report = await recover(3);
     assertEquals(report.drops.map((drop) => drop.reason), ["overtaken"]);
     assertEquals(await commitsOf(store), []);
+  });
+});
+
+Deno.test("recoverCommitOutbox: makes the names of an entry's chunks durable before it lands it (swamp-club#3617)", async () => {
+  await withFixture(async ({ store, outbox, prepare }) => {
+    const signal = new AbortController().signal;
+    const events: string[] = [];
+    const storage = new (class extends MemoryStorage {
+      async syncChunkDirectories(
+        namespace: string,
+        hashes: readonly string[],
+        syncSignal: AbortSignal,
+      ): Promise<void> {
+        syncSignal.throwIfAborted();
+        events.push(
+          `sync ${namespace} ${[...hashes].sort().join(",")} landed ${
+            (await commitsOf(store)).length
+          }`,
+        );
+      }
+    })({ maxChunkBytes: 64 });
+    const chunkStore = new ChunkStore(storage);
+    const blob = await chunkStore.write(
+      SOLO_NAMESPACE,
+      new Uint8Array(200).map((_, i) => i),
+      signal,
+    );
+    // Inline content names no chunk: only the blob's are synced.
+    await prepare(
+      prepared(1, [await blobPut("a", 1, blob), await savePut("b", 1)], "t1"),
+    );
+    await store.raiseWriterFence(2);
+    await outbox.recordFence(2);
+    const report = await recoverCommitOutbox(
+      { outbox, commitStore: store, chunkStore },
+      {
+        fence: 2,
+        writer: RECOVERER,
+        writerAlive: () => false,
+        clock: () => NOW,
+      },
+    );
+    assertEquals(report.landed, 1);
+    assertEquals(events, [
+      `sync _default ${
+        [...new Set(blob.chunkHashes())].sort().join(",")
+      } landed 0`,
+    ]);
+  });
+});
+
+Deno.test("recoverCommitOutbox: a failed chunk barrier lands nothing and keeps the entry for the next recovery (swamp-club#3617)", async () => {
+  await withFixture(async ({ store, outbox, prepare }) => {
+    const signal = new AbortController().signal;
+    const storage = new (class extends MemoryStorage {
+      syncChunkDirectories(): Promise<void> {
+        return Promise.reject(new Error("fsync failed"));
+      }
+    })();
+    const chunkStore = new ChunkStore(storage);
+    const blob = await chunkStore.write(
+      SOLO_NAMESPACE,
+      new Uint8Array(200).fill(3),
+      signal,
+    );
+    await prepare(prepared(1, [await blobPut("a", 1, blob)], "t1"));
+    await store.raiseWriterFence(2);
+    await outbox.recordFence(2);
+    await assertRejects(
+      () =>
+        recoverCommitOutbox(
+          { outbox, commitStore: store, chunkStore },
+          {
+            fence: 2,
+            writer: RECOVERER,
+            writerAlive: () => false,
+            clock: () => NOW,
+          },
+        ),
+      Error,
+      "fsync failed",
+    );
+    assertEquals(await commitsOf(store), []);
+    assertEquals(await outbox.hasEntries(), true);
   });
 });

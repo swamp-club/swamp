@@ -46,6 +46,16 @@
  *   empty or invalidated), or the catalog is not marked populated (its file
  *   was deleted and created afresh), the state is reset and every commit is
  *   applied again.
+ * - **The checkout-copy guard** (swamp-club#3617). Before a file over the
+ *   inline limit that this section did not write is overwritten or removed,
+ *   the committed chunks only it may still hold whole are stored again from
+ *   it, or the file is moved aside into `at-risk/` in the state directory
+ *   when the storage refuses them; a file that already holds the content
+ *   stays, and only a copy of it goes aside. A replay over earlier puts
+ *   therefore never destroys the only good copy of a torn or lost chunk.
+ * - **Unreadable records** (swamp-club#3617). A put whose chunks cannot be
+ *   read leaves its file absent and is recorded, instead of failing every
+ *   later commit; a later catch-up writes it once its chunk changes.
  *
  * @module
  */
@@ -57,14 +67,23 @@ import {
   type CatalogProjection,
   projectCatalog,
 } from "../../domain/datastore_v3/catalog_projection.ts";
-import type { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
+import {
+  ChunkIntegrityError,
+  ChunkMissingError,
+  ChunkPutError,
+  type ChunkStore,
+  type ContentPart,
+  type ContentParts,
+  type ContentRangeReader,
+  storageNamespaceOf,
+} from "../../domain/datastore_v3/chunk_store.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
   type CommitChange,
   CommitsCompactedError,
   type CommitStore,
 } from "../../domain/datastore_v3/commit_store.ts";
-import type { PutOp } from "../../domain/datastore_v3/op.ts";
+import { MAX_INLINE_BYTES, type PutOp } from "../../domain/datastore_v3/op.ts";
 import {
   decideFile,
   finalKeyStates,
@@ -74,10 +93,13 @@ import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
   type CatchUpResult,
+  CheckoutCopyAtRiskError,
   type LiveRecord,
   type ReadModel,
   ReadModelApplyError,
   ReadModelIncompleteError,
+  type UnreadableRecord,
+  unreadableRecordAdvice,
 } from "../../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
@@ -98,7 +120,10 @@ import {
   type FileOwnership,
   type LoadKey,
   ReadModelState,
+  type StoredAtRiskCopy,
+  type StoredUnreadableRecord,
   type UnsyncedFile,
+  type WrittenFile,
 } from "./read_model_state.ts";
 import {
   CATALOG_V3_FILE,
@@ -127,6 +152,59 @@ export const READ_MODEL_STATE_FILE = "_read_model_v3.db";
 /** The lock file in the state directory. */
 export const READ_MODEL_LOCK_FILE = "read_model.lock";
 
+/**
+ * The directory in the state directory that checkout files are moved aside
+ * into (swamp-club#3617): `at-risk/<storage namespace>/<sha256>`.
+ */
+export const AT_RISK_DIR = "at-risk";
+
+/** The most bytes of at-risk copies made by copying across devices. */
+export const DEFAULT_AT_RISK_COPY_BYTES = 1024 * 1024 * 1024;
+
+/** At-risk copies one applying section tries to store at most. */
+const AT_RISK_RETRIES = 8;
+
+/** Unreadable records one catch-up looks at at most. */
+const UNREADABLE_RETRIES = 32;
+
+/**
+ * How long an at-risk copy, or an unreadable record on a storage that
+ * cannot read chunk sizes, waits between tries.
+ */
+export const RETRY_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * How long a temp file of an at-risk copy (`.<uuid>.tmp`), left by a crash
+ * mid-copy, stays before adoption removes it; one this process is still
+ * writing is never removed (swamp-club#3617).
+ */
+export const AT_RISK_TEMP_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Releases counted as references by the checkout-copy guard: none. A chunk
+ * history compaction released may already be gone, and storing it again
+ * would only feed the next sweep.
+ */
+export const NOT_RELEASED = new Date(8.64e15);
+
+/**
+ * Where an at-risk copy of content in `namespace` (a commit namespace,
+ * `""` unnamespaced) with SHA-256 `sha256` lies under the read model's state
+ * directory.
+ */
+export function atRiskCopyPath(
+  stateDir: string,
+  namespace: string,
+  sha256: string,
+): string {
+  return join(
+    stateDir,
+    AT_RISK_DIR,
+    storageNamespaceOf(namespaceOf(namespace)),
+    sha256,
+  );
+}
+
 /** Options for {@link SqliteReadModel.open}. */
 export interface SqliteReadModelOptions {
   /** The commit store to read; never written. */
@@ -152,7 +230,39 @@ export interface SqliteReadModelOptions {
   readonly writeBatch?: () => DurableWriteBatch;
   /** The current boot; {@link currentBootIdentity} by default. */
   readonly bootIdentity?: () => Promise<string | undefined>;
+  /**
+   * Which of `hashes` stored commits, the compacted base or pending
+   * commits of `namespace` name (swamp-club#3617): the chunks the
+   * checkout-copy guard stores again. Released chunks never count. By
+   * default the commit store's references without releases.
+   */
+  readonly referencedChunks?: (
+    namespace: string,
+    hashes: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
+  /** The clock retries are timed by; the system clock by default. */
+  readonly clock?: () => Date;
+  /** How a file is moved aside; `Deno.rename` by default. For tests. */
+  readonly rename?: (from: string, to: string) => Promise<void>;
+  /** How a directory is synced after a move aside. For tests. */
+  readonly syncDirectory?: (dir: string) => Promise<void>;
+  /**
+   * How a file the guard keeps in place, or links aside, is synced:
+   * {@link syncExistingFile} by default. For tests.
+   */
+  readonly syncFile?: (path: string) => Promise<void>;
+  /** {@link DEFAULT_AT_RISK_COPY_BYTES} by default. */
+  readonly atRiskCopyBytes?: number;
 }
+
+/** Where a guarded change comes from, for {@link CheckoutCopyAtRiskError}. */
+interface ChangeSource {
+  readonly partition: string;
+  readonly seq: number;
+}
+
+/** No commit: the compacted base, a restart check or a sweep. */
+const NO_COMMIT: ChangeSource = { partition: "", seq: 0 };
 
 /** The {@link ReadModel} over SQLite state and the local filesystem. */
 export class SqliteReadModel implements ReadModel {
@@ -165,6 +275,29 @@ export class SqliteReadModel implements ReadModel {
   readonly #state: ReadModelState;
   readonly #writeBatch: () => DurableWriteBatch;
   readonly #bootIdentity: () => Promise<string | undefined>;
+  readonly #referencedChunks: (
+    namespace: string,
+    hashes: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
+  readonly #clock: () => Date;
+  readonly #rename: (from: string, to: string) => Promise<void>;
+  readonly #syncDirectory: (dir: string) => Promise<void>;
+  readonly #syncFile: (path: string) => Promise<void>;
+  readonly #atRiskCopyBytes: number;
+  /**
+   * The files this exclusive section wrote, removed, or guarded already:
+   * the guard never hashes one twice, nor one this section wrote.
+   */
+  readonly #guarded = new Set<string>();
+  /**
+   * Whether this section replays commits over files it did not write: it
+   * began with a reset, or is a recovery. The guard then reads stored
+   * parts of the right size too, and guards overwrites on a storage that
+   * cannot read sizes.
+   */
+  #replaying = false;
+  /** Set once the storage refused an at-risk copy's put as unauthorised. */
+  #atRiskRefused = false;
   /** Settles when the page being applied, if any, commits or rolls back. */
   #pageInFlight: Promise<void> | undefined;
   /** The boot of the current exclusive section; undefined when unnamed. */
@@ -189,6 +322,16 @@ export class SqliteReadModel implements ReadModel {
     this.#writeBatch = options.writeBatch ??
       (() => new DurableWriteBatch({ sync: this.#boot === undefined }));
     this.#bootIdentity = options.bootIdentity ?? currentBootIdentity;
+    const commitStore = options.commitStore;
+    this.#referencedChunks = options.referencedChunks ??
+      ((namespace, hashes) =>
+        commitStore.referencedChunks(namespace, hashes, NOT_RELEASED));
+    this.#clock = options.clock ?? (() => new Date());
+    this.#rename = options.rename ?? Deno.rename;
+    this.#syncDirectory = options.syncDirectory ?? syncDirectory;
+    this.#syncFile = options.syncFile ?? syncExistingFile;
+    this.#atRiskCopyBytes = options.atRiskCopyBytes ??
+      DEFAULT_AT_RISK_COPY_BYTES;
   }
 
   /** Opens the read model, creating its state directory and files when absent. */
@@ -211,7 +354,10 @@ export class SqliteReadModel implements ReadModel {
   }
 
   catchUp(signal: AbortSignal): Promise<CatchUpResult> {
-    return this.#exclusive(() => this.#catchUpFeed(signal));
+    return this.#exclusive(async () => {
+      await this.#retryAtRiskCopies(signal);
+      return await this.#catchUpFeed(signal);
+    }, signal);
   }
 
   /**
@@ -241,11 +387,12 @@ export class SqliteReadModel implements ReadModel {
       // Every namespace's rows are judged by this checkout's filter: the
       // replay below rebuilds every namespace, and a checkout writes one.
       const generation = this.#catalog.clear(options.admits);
-      this.#state.reset(generation);
+      this.#reset(generation);
       this.#catalog.markPopulated(generation);
+      await this.#retryAtRiskCopies(options.signal);
       await this.#catchUpFeed(options.signal);
       return await this.#sweepUnowned(namespace, options);
-    });
+    }, options.signal);
   }
 
   /** Applies the feed past the cursor; runs inside {@link #exclusive}. */
@@ -267,6 +414,7 @@ export class SqliteReadModel implements ReadModel {
       applied += await this.#applyPage(page, true, signal);
       if (page.length < this.#pageSize) break;
     }
+    await this.#retryUnreadable(signal);
     // The whole feed is applied: the index holds every live record. This is
     // its own transaction; a crash before it leaves the index marked
     // incomplete until the next catch-up, which only delays reads.
@@ -312,7 +460,14 @@ export class SqliteReadModel implements ReadModel {
         }
         const modified = (await Deno.lstat(path)).mtime?.getTime();
         if (modified === undefined || modified < options.since) continue;
-        await this.#removeRecord(path, root, batch);
+        await this.#removeRecord(
+          namespace,
+          key,
+          path,
+          batch,
+          options.signal,
+          NO_COMMIT,
+        );
         removed.push(key);
       }
     };
@@ -333,6 +488,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
   ): Promise<CatchUpResult> {
     return this.#exclusive(async () => {
+      await this.#retryAtRiskCopies(signal);
       let applied = 0;
       for (;;) {
         signal.throwIfAborted();
@@ -355,7 +511,7 @@ export class SqliteReadModel implements ReadModel {
         if (page.length < this.#pageSize) break;
       }
       return { applied, cursor: this.#state.cursor() };
-    });
+    }, signal);
   }
 
   liveRecords(
@@ -403,10 +559,67 @@ export class SqliteReadModel implements ReadModel {
   }
 
   /**
-   * Runs `body` after every earlier call, holding the process lock, after
-   * resetting the state if the catalog was rebuilt.
+   * The unreadable record at `recordKey` in `namespace`, if any
+   * (swamp-club#3617), once any page in progress has committed; undefined
+   * once the read model is closed. A repository content path maps to its
+   * record key by taking it relative to the namespace's cache root
+   * (`v3CacheRoot(repoDir, namespace)`) with `/` separators: compare the
+   * paths as the repository spells them first, and resolve both only when
+   * the path is not under the root as written (a checkout reached through a
+   * symlink, or macOS's `/tmp`), as `unreadableContentLookup` does.
    */
-  #exclusive<T>(body: () => Promise<T>): Promise<T> {
+  async unreadableRecord(
+    namespace: string,
+    recordKey: string,
+  ): Promise<UnreadableRecord | undefined> {
+    if (this.#closed) return undefined;
+    let stored: StoredUnreadableRecord | undefined;
+    try {
+      stored = await this.#afterPage(() =>
+        this.#state.unreadableRecord(namespace, recordKey)
+      );
+    } catch (error) {
+      if (this.#closed) return undefined;
+      throw error;
+    }
+    if (stored === undefined) return undefined;
+    const { chunkSize: _size, chunkMtime: _mtime, ...record } = stored;
+    return record;
+  }
+
+  /**
+   * The unreadable records of `namespace` under the directory `keyPrefix`
+   * (keys `<keyPrefix>/...`), in key order, once any page in progress has
+   * committed; empty once the read model is closed (swamp-club#3617). For a
+   * read that cannot name the record it wants (a lookup by an id its file
+   * name does not carry) or that lists a directory. `keyPrefix` maps from a
+   * repository directory as {@link unreadableRecord}'s key does from a path.
+   */
+  async unreadableRecordsUnder(
+    namespace: string,
+    keyPrefix: string,
+  ): Promise<UnreadableRecord[]> {
+    if (this.#closed) return [];
+    let stored: StoredUnreadableRecord[];
+    try {
+      stored = await this.#afterPage(() =>
+        this.#state.unreadableRecordsUnder(namespace, keyPrefix)
+      );
+    } catch (error) {
+      if (this.#closed) return [];
+      throw error;
+    }
+    return stored.map(({ chunkSize: _size, chunkMtime: _mtime, ...record }) =>
+      record
+    );
+  }
+
+  /**
+   * Runs `body` after every earlier call, holding the process lock, after
+   * checking the files written unsynced in an earlier boot and resetting
+   * the state if the catalog was rebuilt.
+   */
+  #exclusive<T>(body: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (this.#closed) return Promise.reject(closedError());
     const run = this.#queue.then(async () => {
       await Deno.mkdir(this.#stateDir, { recursive: true });
@@ -419,18 +632,25 @@ export class SqliteReadModel implements ReadModel {
         await lock.lock(true);
         // Another process may have changed the tree since the last section.
         this.#paths.clear();
+        this.#guarded.clear();
+        this.#replaying = false;
+        const generation = this.#catalog.generation();
+        // First, so a reset below cannot drop the list unchecked
+        // (swamp-club#3617).
+        this.#boot = await this.#bootIdentity();
+        await this.#checkUnsyncedAfterReboot(
+          generation,
+          signal ?? new AbortController().signal,
+        );
         // A catalog rebuilt, invalidated or created afresh holds none of the
         // commits the state says are applied: start over.
-        const generation = this.#catalog.generation();
         if (
           this.#state.catalogGeneration() !== generation ||
           !this.#catalog.isPopulated()
         ) {
-          this.#state.reset(generation);
+          this.#reset(generation);
           this.#catalog.markPopulated(generation);
         }
-        this.#boot = await this.#bootIdentity();
-        await this.#checkUnsyncedAfterReboot(generation);
         return await body();
       } finally {
         lock.close();
@@ -527,13 +747,36 @@ export class SqliteReadModel implements ReadModel {
   }
 
   /**
+   * Resets the state to replay every commit, keeping removal candidates
+   * (swamp-club#3617): the unsynced keys too when they were written in
+   * another boot or the current one cannot be named. The rest of the
+   * section replays.
+   */
+  #reset(generation: number): void {
+    const listed = this.#state.unsyncedBoot();
+    this.#state.reset(
+      generation,
+      listed !== undefined &&
+        (this.#boot === undefined || listed !== this.#boot),
+    );
+    this.#replaying = true;
+  }
+
+  /**
    * On the first open in a boot after the one that wrote unsynced files
    * (swamp-club#3337), checks each of them against the state: present with
-   * its bytes, or absent. Files that survived a reboot are on disk, so the
-   * list is cleared. A file a crash lost or tore resets the state, and the
-   * catch-up that follows applies every commit again.
+   * its bytes, or absent. A file a crash lost or tore is rewritten to what
+   * the state says, or removed, through a syncing batch (swamp-club#3617),
+   * so the catch-up that follows goes on from the cursor. Then the list is
+   * cleared. A file whose expected content is unknown, or cannot be read,
+   * resets the state instead, and the catch-up applies every commit again.
+   * On a storage that reads chunk sizes, a file that matches has its
+   * committed chunks guarded.
    */
-  async #checkUnsyncedAfterReboot(generation: number): Promise<void> {
+  async #checkUnsyncedAfterReboot(
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<void> {
     const written = this.#state.unsyncedBoot();
     if (written === undefined || written === this.#boot) return;
     if (this.#boot === undefined) {
@@ -541,27 +784,133 @@ export class SqliteReadModel implements ReadModel {
       // and a check proves nothing: apply every commit again, synced.
       logger
         .warn`The current boot cannot be named, so files written unsynced in an earlier one are rewritten`;
-      this.#state.reset(generation);
+      this.#reset(generation);
       return;
     }
-    for (const file of this.#state.unsyncedFiles()) {
-      const path = join(
-        this.#cacheRoot(file.namespace),
-        ...file.record_key.split("/"),
-      );
-      if (!await holdsExpected(path, file)) {
+    const batch = new DurableWriteBatch();
+    const commits = new Map<number, Commit | undefined>();
+    try {
+      for (const file of this.#state.unsyncedFiles()) {
+        signal.throwIfAborted();
         if (file.expect === "unknown") {
           logger
             .warn`The read model's state has no live record for ${file.record_key}, written before a restart; applying every commit again`;
-        } else {
-          logger
-            .warn`${file.record_key} does not hold what the read model applied, after a restart since it was written; applying every commit again`;
+          this.#reset(generation);
+          return;
         }
-        this.#state.reset(generation);
-        return;
+        const source = file.expect === "present"
+          ? { partition: file.owner, seq: 0 }
+          : NO_COMMIT;
+        const path = await this.#target(
+          file.namespace,
+          RecordKey.create(file.record_key),
+          file.expect === "present",
+          "the check after a restart",
+        );
+        if (path === undefined) {
+          logger
+            .warn`${file.record_key} cannot be checked after a restart; applying every commit again`;
+          this.#reset(generation);
+          return;
+        }
+        // A guarded file that matches stays, its chunks stored or a copy
+        // aside; one that changed since it was checked is rewritten below.
+        if (
+          await holdsExpected(path, file) &&
+          (file.expect !== "present" || file.blob === undefined ||
+            !this.#chunkStore.readsSizes ||
+            await this.#guardExisting(
+              file.namespace,
+              file.record_key,
+              path,
+              file.blob,
+              signal,
+              source,
+              false,
+            ))
+        ) {
+          continue;
+        }
+        logger
+          .info`${file.record_key} does not hold what the read model applied, after a restart since it was written; rewriting it`;
+        if (file.expect !== "present") {
+          await this.#removeRecord(
+            file.namespace,
+            file.record_key,
+            path,
+            batch,
+            signal,
+            source,
+          );
+          continue;
+        }
+        const content = file.blob !== undefined
+          ? (file.blob.sha256 === file.sha256 ? { blob: file.blob } : undefined)
+          : await this.#inlineAt(file, commits);
+        if (content === undefined) {
+          logger
+            .warn`The content ${file.record_key} held before a restart cannot be found; applying every commit again`;
+          this.#reset(generation);
+          return;
+        }
+        await this.#writeContent(
+          file.namespace,
+          file.record_key,
+          path,
+          content,
+          signal,
+          batch,
+          source,
+        );
       }
+      await batch.barrier();
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      if (error instanceof CheckoutCopyAtRiskError) throw error;
+      logger
+        .warn`Cannot rewrite the files written before a restart (${error}); applying every commit again`;
+      this.#reset(generation);
+      return;
+    } finally {
+      batch.discard();
     }
     this.#state.clearUnsynced();
+  }
+
+  /**
+   * The inline content of the put a listed file shows, from the commit at
+   * its ownership mark (cached by mark), when its SHA-256 matches;
+   * undefined when that commit holds no such put. Rejects when the commit
+   * was compacted away.
+   */
+  async #inlineAt(
+    file: UnsyncedFile & { readonly expect: "present" },
+    commits: Map<number, Commit | undefined>,
+  ): Promise<{ readonly inline: string } | undefined> {
+    if (!commits.has(file.mark)) {
+      const page = await this.#commitStore.changesSince(file.mark - 1, 1);
+      commits.set(
+        file.mark,
+        page[0]?.cursor === file.mark ? page[0].commit : undefined,
+      );
+    }
+    const commit = commits.get(file.mark);
+    if (
+      commit === undefined || commit.namespace !== file.namespace ||
+      commit.partition.toString() !== file.owner
+    ) {
+      return undefined;
+    }
+    for (const change of finalKeyStates(commit)) {
+      if (change.key.toString() !== file.record_key) continue;
+      const content = change.put?.content;
+      if (content === undefined || !("inline" in content)) return undefined;
+      const digest = createHash("sha256")
+        .update(decodeBase64(content.inline))
+        .digest("hex");
+      return digest === file.sha256 ? { inline: content.inline } : undefined;
+    }
+    return undefined;
   }
 
   /**
@@ -646,6 +995,7 @@ export class SqliteReadModel implements ReadModel {
       const records = new Map<string, AppliedRecord | null>();
       const files = new Map<string, FileOwnership>();
       const touched = new Set<string>();
+      const unreadable = new Map<string, StoredUnreadableRecord>();
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
         const key = keyChange.key.toString();
@@ -657,6 +1007,7 @@ export class SqliteReadModel implements ReadModel {
           signal,
           batch,
           touched,
+          unreadable,
         );
         if (file !== undefined) files.set(key, file);
       }
@@ -676,7 +1027,10 @@ export class SqliteReadModel implements ReadModel {
         unsynced: this.#boot === undefined
           ? undefined
           : { keys: touched, boot: this.#boot },
+        decided: touched,
+        unreadable,
       });
+      for (const record of unreadable.values()) warnUnreadable(record);
       return true;
     } catch (error) {
       if (signal.aborted) throw signal.reason;
@@ -703,6 +1057,13 @@ export class SqliteReadModel implements ReadModel {
    * The decision reads the ownership as it was before this commit, which
    * {@link ReadModelState.recordApplied} replaces only after every file, so a
    * retry after a crash decides the same way.
+   *
+   * A put whose content cannot be read, because a chunk is missing or
+   * damaged, does not fail the commit (swamp-club#3617): the key's old file
+   * is removed, its ownership still advances, and it is recorded in
+   * `unreadable` for a retry once the chunk changes. Only a commit at or
+   * below the compaction point fails instead, so the catch-up loads the
+   * compacted base.
    */
   async #materialise(
     commit: Commit,
@@ -711,6 +1072,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     batch: DurableWriteBatch,
     touched: Set<string>,
+    unreadable: Map<string, StoredUnreadableRecord>,
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
     const path = await this.#target(
@@ -730,8 +1092,16 @@ export class SqliteReadModel implements ReadModel {
     );
     if (decision.kind === "keep") return undefined;
     touched.add(key);
+    const source = { partition: owner, seq: commit.seq };
     if (decision.kind === "remove" || change.put === null) {
-      await this.#removeRecord(path, this.#cacheRoot(commit.namespace), batch);
+      await this.#removeRecord(
+        commit.namespace,
+        key,
+        path,
+        batch,
+        signal,
+        source,
+      );
       return decision.kind === "remove" ? decision.next : undefined;
     }
     const blob = "blob" in change.put.content
@@ -745,14 +1115,98 @@ export class SqliteReadModel implements ReadModel {
         legacyBlobDetail(key, blob.legacyKey.toString()),
       );
     }
-    await this.#writeContent(
-      commit.namespace,
-      path,
-      change.put.content,
-      signal,
-      batch,
-    );
+    try {
+      await this.#writeContent(
+        commit.namespace,
+        key,
+        path,
+        change.put.content,
+        signal,
+        batch,
+        source,
+      );
+    } catch (error) {
+      if (blob === undefined || !isChunkError(error) || signal.aborted) {
+        throw error;
+      }
+      if (position <= await this.#commitStore.compactionPoint()) throw error;
+      unreadable.set(
+        key,
+        await this.#unreadable(
+          commit.namespace,
+          key,
+          { partition: owner, seq: commit.seq, position },
+          blob,
+          error,
+          signal,
+        ),
+      );
+      await this.#removeRecord(
+        commit.namespace,
+        key,
+        path,
+        batch,
+        signal,
+        source,
+      );
+    }
     return decision.next;
+  }
+
+  /**
+   * The unreadable record of a put whose blob could not be read: which
+   * chunk, why, and how the chunk looks now, so a retry waits for it to
+   * change.
+   */
+  async #unreadable(
+    namespace: string,
+    key: string,
+    put: { readonly partition: string; readonly seq: number; position: number },
+    blob: BlobRef,
+    error: ChunkMissingError | ChunkIntegrityError,
+    signal: AbortSignal,
+  ): Promise<StoredUnreadableRecord> {
+    const ns = namespaceOf(namespace);
+    let chunk: string | undefined;
+    let reason: "missing" | "damaged" = "missing";
+    if (error instanceof ChunkMissingError) {
+      chunk = error.sha256;
+    } else if (error.sha256 !== undefined) {
+      // The read named the chunk of the wrong size or hash: no part needs
+      // reading again to find it. As missing() counts it, one held at the
+      // wrong size (or not at all) is missing; one of the right size whose
+      // bytes are wrong is damaged.
+      chunk = error.sha256;
+      if (!(await this.#chunkStore.missing(ns, blob, signal)).includes(chunk)) {
+        reason = "damaged";
+      }
+    } else {
+      // A whole-content digest mismatch names no chunk: find the one that
+      // is missing, or else the first that does not verify.
+      chunk = (await this.#chunkStore.missing(ns, blob, signal))[0];
+      if (chunk === undefined) {
+        reason = "damaged";
+        chunk =
+          (await this.#chunkStore.verifyParts(ns, partsOf(blob), signal))[0]
+            ?.sha256;
+      }
+    }
+    const seen = chunk === undefined
+      ? undefined
+      : (await this.#chunkStore.stat(ns, [chunk], signal))?.get(chunk);
+    return {
+      namespace,
+      recordKey: key,
+      ...put,
+      blob,
+      ...(chunk === undefined ? {} : { chunk }),
+      reason,
+      lastAttempt: this.#clock(),
+      ...(seen === undefined ? {} : {
+        chunkSize: seen.size,
+        chunkMtime: seen.lastModified.getTime(),
+      }),
+    };
   }
 
   /**
@@ -871,8 +1325,9 @@ export class SqliteReadModel implements ReadModel {
     const writes = this.#state.loadWrites();
     this.#state.touchKeys([...removals, ...writes]);
     const batch = new DurableWriteBatch();
+    let unreadable: StoredUnreadableRecord[];
     try {
-      await this.#loadFiles(removals, writes, batch, signal);
+      unreadable = await this.#loadFiles(removals, writes, batch, signal);
       await batch.barrier();
     } finally {
       batch.discard();
@@ -897,16 +1352,23 @@ export class SqliteReadModel implements ReadModel {
           : [{ kind: "forward" as const, name: name.name, to: state.forward }]),
       ]);
     }
-    this.#state.finishLoad(point);
+    this.#state.finishLoad(point, unreadable);
+    for (const record of unreadable) warnUnreadable(record);
   }
 
-  /** The compacted base's file removals and writes, through `batch`. */
+  /**
+   * The compacted base's file removals and writes, through `batch`.
+   * Resolves with the records whose content could not be read: their files
+   * are removed, and never fail the load (swamp-club#3617), since no
+   * commit is left to retry them from.
+   */
   async #loadFiles(
     removals: readonly LoadKey[],
     writes: readonly LoadKey[],
     batch: DurableWriteBatch,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<StoredUnreadableRecord[]> {
+    const unreadable: StoredUnreadableRecord[] = [];
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
       const path = await this.#target(
@@ -916,7 +1378,14 @@ export class SqliteReadModel implements ReadModel {
         "the compacted base",
       );
       if (path === undefined) continue;
-      await this.#removeRecord(path, this.#cacheRoot(namespace), batch);
+      await this.#removeRecord(
+        namespace,
+        record_key,
+        path,
+        batch,
+        signal,
+        NO_COMMIT,
+      );
     }
     for (const { namespace, record_key } of writes) {
       signal.throwIfAborted();
@@ -943,22 +1412,75 @@ export class SqliteReadModel implements ReadModel {
         this.#state.dropLoadFile(namespace, record_key);
         continue;
       }
-      await this.#writeContent(namespace, path, content, signal, batch);
+      const owner = this.#state.loadFile(namespace, record_key);
+      const source = { partition: owner?.owner ?? "", seq: 0 };
+      try {
+        await this.#writeContent(
+          namespace,
+          record_key,
+          path,
+          content,
+          signal,
+          batch,
+          source,
+        );
+      } catch (error) {
+        if (
+          !("blob" in content) || !isChunkError(error) || signal.aborted ||
+          owner === undefined
+        ) {
+          throw error;
+        }
+        unreadable.push(
+          await this.#unreadable(
+            namespace,
+            record_key,
+            { ...source, position: owner.mark },
+            content.blob,
+            error,
+            signal,
+          ),
+        );
+        await this.#removeRecord(
+          namespace,
+          record_key,
+          path,
+          batch,
+          signal,
+          source,
+        );
+      }
     }
+    return unreadable;
   }
 
   /**
    * Removes a record's file and the directories it leaves empty, up to
-   * `root`, and has `batch` sync the deepest directory still standing: the
-   * one whose entry the removal changed. Syncing the file's own directory
-   * would do nothing once the cleanup has removed it.
+   * the namespace's cache root, and has `batch` sync the deepest directory
+   * still standing: the one whose entry the removal changed. Syncing the
+   * file's own directory would do nothing once the cleanup has removed it.
+   * The file is guarded first ({@link #guardExisting}).
    */
   async #removeRecord(
+    namespace: string,
+    key: string,
     path: string,
-    root: string,
     batch: DurableWriteBatch,
+    signal: AbortSignal,
+    source: ChangeSource,
   ): Promise<void> {
+    await this.#guardExisting(
+      namespace,
+      key,
+      path,
+      undefined,
+      signal,
+      source,
+      true,
+    );
+    const root = this.#cacheRoot(namespace);
     await removeRecordFile(path, batch);
+    this.#state.forgetWrittenFile(namespace, key);
     await cleanupEmptyParentDirs(path, root);
     this.#paths.clear();
     if (!batch.syncs) return;
@@ -977,24 +1499,91 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
-  /** Writes a record's content at `path` through `batch`: inline bytes, or its chunks. */
+  /**
+   * Writes a record's content at `path` through `batch`: inline bytes, or
+   * its chunks. The file there is guarded first ({@link #guardExisting});
+   * one that already holds the content is left as it is, and synced when
+   * `batch` syncs, since no later check covers it. When the chunks cannot be
+   * read and the guard did not read the file (a bucket outside a replay),
+   * it reads it then: a file holding the content is the only copy of a
+   * chunk the storage lost, and stays (swamp-club#3617).
+   */
   async #writeContent(
     namespace: string,
+    key: string,
     path: string,
     content: { readonly blob: BlobRef } | { readonly inline: string },
     signal: AbortSignal,
     batch: DurableWriteBatch,
+    source: ChangeSource,
   ): Promise<void> {
+    const intended = "blob" in content ? content.blob : undefined;
+    const keep = async () => {
+      if (!batch.syncs) return;
+      await this.#syncFile(path);
+      batch.touch(dirname(path));
+    };
+    if (
+      await this.#guardExisting(
+        namespace,
+        key,
+        path,
+        intended,
+        signal,
+        source,
+        false,
+      )
+    ) {
+      await keep();
+      return;
+    }
     const root = this.#cacheRoot(namespace);
     const absentDirectories = this.#paths.takeAbsent(path);
-    await batch.write(
-      path,
-      "inline" in content
-        ? decodeBase64(content.inline)
-        : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal),
-      signal,
-      { absentDirectories },
-    );
+    const written: { info?: Deno.FileInfo } = {};
+    try {
+      await batch.write(
+        path,
+        "inline" in content
+          ? decodeBase64(content.inline)
+          : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal),
+        signal,
+        {
+          absentDirectories,
+          written: (info) => {
+            written.info = info;
+          },
+        },
+      );
+    } catch (error) {
+      // A failed write leaves the file as it was.
+      if (
+        intended === undefined || !isChunkError(error) || signal.aborted ||
+        this.#guarded.has(path)
+      ) {
+        throw error;
+      }
+      if (
+        await this.#guardExisting(
+          namespace,
+          key,
+          path,
+          intended,
+          signal,
+          source,
+          false,
+          true,
+        )
+      ) {
+        await keep();
+        return;
+      }
+      throw error;
+    }
+    // It holds the chunks' content now: never hashed again this section.
+    this.#guarded.add(path);
+    if (intended !== undefined && written.info !== undefined) {
+      await this.#noteWritten(namespace, key, path, intended, written.info);
+    }
     // The write made every directory above the file, up to the root, and
     // the ones it created are real directories under their parents.
     for (const dir of [...absentDirectories ?? []].reverse()) {
@@ -1008,7 +1597,1008 @@ export class SqliteReadModel implements ReadModel {
       this.#paths.markDirectory(dir);
     }
   }
+
+  /**
+   * The checkout-copy guard (swamp-club#3617): before a file is overwritten
+   * or removed, committed content whose only copy it may be is stored
+   * again. Resolves true when the file already holds `intended`, so the
+   * write can be skipped.
+   *
+   * Only a regular file over {@link MAX_INLINE_BYTES} this section has not
+   * written or guarded is looked at: smaller content is inline in its
+   * commit. It is read once, cut as the chunk store cuts content, and its
+   * parts the storage does not hold (absent, or at the wrong size on a
+   * storage that reads sizes) are put again from the file, when a stored
+   * commit, the compacted base or a pending commit names them; released
+   * chunks never count. A replay ({@link #replaying}) on a storage that
+   * reads sizes also reads the referenced parts held at the right size,
+   * and puts the damaged ones again. On a storage that cannot read sizes (a
+   * bucket, whose puts cannot tear a chunk) an overwrite is guarded only in
+   * a replay, so an ordinary catch-up makes no extra requests per file.
+   *
+   * `force` reads the file whatever the storage or section.
+   *
+   * A put the storage refuses moves the file aside instead
+   * ({@link #moveAside}), and the overwrite or removal goes on; a file that
+   * already holds `intended` stays where it is, and only a copy of it goes
+   * aside, since nothing will overwrite it.
+   */
+  async #guardExisting(
+    namespace: string,
+    key: string,
+    path: string,
+    intended: BlobRef | undefined,
+    signal: AbortSignal,
+    source: ChangeSource,
+    removal: boolean,
+    force = false,
+  ): Promise<boolean> {
+    if (this.#guarded.has(path)) return false;
+    const file = await this.#readGuarded(
+      namespace,
+      key,
+      path,
+      intended,
+      removal,
+      force,
+      signal,
+    );
+    // Not read: unguarded, so a later removal or a failed write still
+    // reads it (swamp-club#3617).
+    if (file === "skipped") return false;
+    if (file === undefined) {
+      // Whatever this section writes there next comes from the chunks.
+      this.#guarded.add(path);
+      return false;
+    }
+    const ns = namespaceOf(namespace);
+    const same = intended !== undefined && file.sha256 === intended.sha256 &&
+      file.size === intended.size;
+    const missing = new Set(
+      await this.#chunkStore.missing(ns, file.ref, signal),
+    );
+    const absent = uniqueParts(file.parts.filter((p) => missing.has(p.sha256)));
+    // Damage of the right size is looked for only in a replay, and never
+    // when the file is what is about to be written.
+    const held = this.#replaying && !same && this.#chunkStore.readsSizes
+      ? uniqueParts(file.parts.filter((p) => !missing.has(p.sha256)))
+      : [];
+    let toStore: ContentPart[] = [];
+    if (absent.length > 0 || held.length > 0) {
+      const referenced = await this.#referencedChunks(
+        namespace,
+        [...absent, ...held].map((part) => part.sha256),
+      );
+      toStore = absent.filter((part) => referenced.has(part.sha256));
+      const named = held.filter((part) => referenced.has(part.sha256));
+      if (named.length > 0) {
+        for (
+          const part of await this.#chunkStore.verifyParts(ns, named, signal)
+        ) {
+          toStore.push(part);
+        }
+      }
+    }
+    // Still in place and unchanged since it was read.
+    let kept = true;
+    if (toStore.length > 0) {
+      try {
+        const { stored, changed } = await this.#chunkStore.putParts(
+          ns,
+          fileRangeReader(path),
+          toStore,
+          signal,
+        );
+        await this.#chunkStore.syncStored(ns, stored, signal);
+        kept = changed.length === 0;
+      } catch (error) {
+        if (signal.aborted) throw signal.reason;
+        if (!(error instanceof ChunkPutError)) throw error;
+        if (same) {
+          // The right bytes stay in place; a copy waits for the put.
+          await this.#copyAside(namespace, key, path, file, error, signal);
+        } else {
+          await this.#moveAside(
+            namespace,
+            key,
+            path,
+            file,
+            error,
+            source,
+            signal,
+          );
+          kept = false;
+        }
+      }
+    }
+    this.#guarded.add(path);
+    return same && kept;
+  }
+
+  /**
+   * The parts of the file at `path` when the guard must look at it:
+   * a regular file over {@link MAX_INLINE_BYTES}, on a storage that reads
+   * sizes, or for a `removal`, a `force`d read or in a replay; undefined
+   * when there is no such file, and `"skipped"` when it was not looked at.
+   *
+   * A file this read model wrote whose stat still shows it as written
+   * ({@link WrittenFile}) has its blob's parts without being read, unless
+   * the read is forced, in a replay, or `intended` is that blob: whether
+   * the file already holds the content to write is only ever decided by
+   * reading it.
+   */
+  async #readGuarded(
+    namespace: string,
+    key: string,
+    path: string,
+    intended: BlobRef | undefined,
+    removal: boolean,
+    force: boolean,
+    signal: AbortSignal,
+  ): Promise<ContentParts | undefined | "skipped"> {
+    if (
+      !this.#chunkStore.readsSizes && !removal && !force && !this.#replaying
+    ) {
+      return "skipped";
+    }
+    let file: Deno.FsFile;
+    try {
+      const info = await Deno.lstat(path);
+      if (!info.isFile || info.size <= MAX_INLINE_BYTES) return undefined;
+      if (!force && !this.#replaying) {
+        const written = this.#state.writtenFile(namespace, key);
+        if (
+          written !== undefined && stillAsWritten(written, info) &&
+          intended?.sha256 !== written.blob.sha256
+        ) {
+          return contentPartsOf(written.blob);
+        }
+      }
+      file = await Deno.open(path, { read: true });
+    } catch (error) {
+      if (
+        error instanceof Deno.errors.NotFound ||
+        error instanceof Deno.errors.NotADirectory
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+    return await refOfFile(this.#chunkStore, file, signal);
+  }
+
+  /**
+   * Records the file this read model just wrote at `path` with `blob`
+   * ({@link WrittenFile}), from `temp`, the stat of the temp file it wrote:
+   * only when the path still shows that inode, unchanged since, so a file
+   * another process put there in between is never taken for this one.
+   * Without inode numbers (Windows) nothing is recorded, and the guard
+   * reads the file.
+   */
+  async #noteWritten(
+    namespace: string,
+    key: string,
+    path: string,
+    blob: BlobRef,
+    temp: Deno.FileInfo,
+  ): Promise<void> {
+    if (blob.size <= MAX_INLINE_BYTES || temp.ino === null) return;
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.lstat(path);
+    } catch {
+      return;
+    }
+    if (
+      !info.isFile || info.ino !== temp.ino || info.dev !== temp.dev ||
+      info.size !== temp.size || info.size !== blob.size ||
+      info.mtime === null || info.mtime.getTime() !== temp.mtime?.getTime()
+    ) {
+      return;
+    }
+    this.#state.recordWrittenFile({
+      namespace,
+      recordKey: key,
+      blob,
+      size: info.size,
+      ino: temp.ino,
+      dev: info.dev,
+      mtime: info.mtime.getTime(),
+      ...(info.ctime === null ? {} : { ctime: info.ctime.getTime() }),
+    });
+  }
+
+  /**
+   * Moves a checkout file whose committed chunks the storage refused aside
+   * into `at-risk/<storage namespace>/<sha256>` in the state directory,
+   * syncs the copy's directories up to the state directory, then the
+   * checkout's, and records the copy, so the overwrite or
+   * removal that follows destroys nothing (swamp-club#3617). The same bytes
+   * already aside, checked by their hash, only remove the file: a copy
+   * made by hard link shares its inode with a checkout file, so an edit
+   * there in place changes the copy too. Across devices it is copied,
+   * synced, then removed, while every copy so far stays within the cap.
+   * Throws {@link CheckoutCopyAtRiskError} when the file can be neither
+   * moved nor copied.
+   */
+  async #moveAside(
+    namespace: string,
+    key: string,
+    path: string,
+    file: ContentParts,
+    cause: ChunkPutError,
+    source: ChangeSource,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const target = atRiskCopyPath(this.#stateDir, namespace, file.sha256);
+    const dir = dirname(target);
+    const fail = (reason: string, error: unknown) =>
+      new CheckoutCopyAtRiskError(
+        namespace,
+        source.partition,
+        source.seq,
+        path,
+        reason,
+        { cause: error },
+      );
+    try {
+      await Deno.mkdir(dir, { recursive: true });
+    } catch (error) {
+      throw fail(errorMessage(error), error);
+    }
+    // The copy's entries, up to the state directory (the mkdir may have
+    // made `at-risk/` itself), are durable before the checkout's entry
+    // for the file can go.
+    const syncTarget = async () => {
+      for (const synced of [dir, dirname(dir), this.#stateDir]) {
+        await this.#syncDirectory(synced);
+      }
+    };
+    if (
+      this.#state.hasAtRiskCopy(namespace, file.sha256) &&
+      await this.#holdsContent(target, file, signal)
+    ) {
+      await syncTarget();
+      await Deno.remove(path);
+    } else {
+      // Across devices the source stays until its copy is durable.
+      let copied = false;
+      try {
+        await this.#rename(path, target);
+      } catch (error) {
+        if (!isCrossDevice(error)) throw fail(errorMessage(error), error);
+        if (this.#state.atRiskBytes() + file.size > this.#atRiskCopyBytes) {
+          throw fail(
+            `copying it across devices would take the at-risk copies past ${this.#atRiskCopyBytes} bytes`,
+            error,
+          );
+        }
+        try {
+          await copyDurably(path, target);
+        } catch (copyError) {
+          throw fail(errorMessage(copyError), copyError);
+        }
+        copied = true;
+      }
+      await syncTarget();
+      if (copied) await Deno.remove(path);
+    }
+    await this.#syncDirectory(dirname(path));
+    const now = this.#clock();
+    this.#state.recordAtRiskCopy({
+      namespace,
+      sha256: file.sha256,
+      recordKey: key,
+      blob: file.ref,
+      size: file.size,
+      createdAt: now,
+      lastAttempt: now,
+    });
+    this.#paths.clear();
+    if (!warnedAtRisk) {
+      warnedAtRisk = true;
+      logger
+        .warn`The datastore refused to store chunks only ${key} in this checkout still held (${cause.message}), so the file was moved aside into ${dir}; a later command with write access to the datastore stores them. Run \`swamp doctor datastores\` for details`;
+    }
+  }
+
+  /**
+   * Puts a copy of a checkout file that already holds its committed
+   * content, whose chunks the storage refused, into
+   * `at-risk/<storage namespace>/<sha256>` and records it, leaving the file
+   * in place (swamp-club#3617): the record stays readable, and the retry of
+   * at-risk copies stores the chunks once the storage takes them. A hard
+   * link costs no space, where a put refused for want of it is likely;
+   * where it fails (across devices), the file is copied within the cap. A
+   * copy already aside is kept only when its hash shows the same bytes. A
+   * copy that cannot be made is only logged: the file stays, and the next
+   * guard of it tries again.
+   */
+  async #copyAside(
+    namespace: string,
+    key: string,
+    path: string,
+    file: ContentParts,
+    cause: ChunkPutError,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const target = atRiskCopyPath(this.#stateDir, namespace, file.sha256);
+    const dir = dirname(target);
+    try {
+      // A copy of the same bytes may be aside already, recorded or not.
+      if (!await this.#holdsContent(target, file, signal)) {
+        await Deno.mkdir(dir, { recursive: true });
+        await Deno.remove(target).catch((error) => {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        });
+        try {
+          await Deno.link(path, target);
+          // The checkout's bytes may never have been synced.
+          await this.#syncFile(target);
+        } catch (error) {
+          await Deno.remove(target).catch(() => {});
+          if (this.#state.atRiskBytes() + file.size > this.#atRiskCopyBytes) {
+            throw error;
+          }
+          await copyDurably(path, target);
+        }
+        for (const synced of [dir, dirname(dir), this.#stateDir]) {
+          await this.#syncDirectory(synced);
+        }
+      }
+    } catch (error) {
+      logger
+        .warn`The datastore refused to store chunks only ${key} in this checkout still holds (${cause.message}), and no copy of it could be put aside (${error}); the file stays, and a later command stores them`;
+      return;
+    }
+    const now = this.#clock();
+    this.#state.recordAtRiskCopy({
+      namespace,
+      sha256: file.sha256,
+      recordKey: key,
+      blob: file.ref,
+      size: file.size,
+      createdAt: now,
+      lastAttempt: now,
+    });
+    if (!warnedAtRisk) {
+      warnedAtRisk = true;
+      logger
+        .warn`The datastore refused to store chunks only ${key} in this checkout still holds (${cause.message}), so a copy of the file was put aside into ${dir}; a later command with write access to the datastore stores them. Run \`swamp doctor datastores\` for details`;
+    }
+  }
+
+  /**
+   * Whether the file at `path` holds `content`, by size and then hash
+   * (swamp-club#3617). An at-risk copy made by hard link shares its inode
+   * with a checkout file, so an edit there in place changes the copy while
+   * it is still named by the old hash; its size alone proves nothing. A
+   * missing file holds nothing.
+   */
+  async #holdsContent(
+    path: string,
+    content: { readonly sha256: string; readonly size: number },
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (await sizeOf(path) !== content.size) return false;
+    let file: Deno.FsFile;
+    try {
+      file = await Deno.open(path, { read: true });
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+    const held = await refOfFile(this.#chunkStore, file, signal);
+    return held.sha256 === content.sha256 && held.size === content.size;
+  }
+
+  /**
+   * Tries to store up to {@link AT_RISK_RETRIES} at-risk copies, the least
+   * recently tried first, each at most once per {@link RETRY_INTERVAL_MS}
+   * (swamp-club#3617). A copy whose referenced chunks are all stored, or
+   * no longer referenced, is deleted without being read; one gone is
+   * forgotten. One whose hash no longer matches its name (a hard link whose
+   * checkout file was edited in place) holds nothing it can store: it is
+   * deleted with a warning. Once the storage refuses a put as unauthorised, no copy is
+   * tried again in this process. Never fails the section: a failure is
+   * logged and tried again later.
+   */
+  async #retryAtRiskCopies(signal: AbortSignal): Promise<void> {
+    if (this.#atRiskRefused) return;
+    try {
+      await this.#adoptAtRiskCopies();
+    } catch (error) {
+      logger.warn`Cannot list the read model's at-risk copies: ${error}`;
+    }
+    const now = this.#clock().getTime();
+    const due = this.#state.atRiskDue(
+      AT_RISK_RETRIES,
+      now - RETRY_INTERVAL_MS,
+    );
+    for (const copy of due) {
+      signal.throwIfAborted();
+      const path = atRiskCopyPath(this.#stateDir, copy.namespace, copy.sha256);
+      try {
+        if (!await this.#storeAtRiskCopy(copy, path, signal)) {
+          logger
+            .warn`The at-risk copy ${path} no longer holds the content it is named for, so it cannot store that content's chunks and was deleted`;
+        }
+        await Deno.remove(path).catch((error) => {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        });
+        this.#state.deleteAtRiskCopy(copy.namespace, copy.sha256);
+      } catch (error) {
+        if (signal.aborted) throw signal.reason;
+        if (error instanceof Deno.errors.NotFound) {
+          // Deleted by hand: nothing is left to store.
+          this.#state.deleteAtRiskCopy(copy.namespace, copy.sha256);
+          continue;
+        }
+        this.#state.noteAtRiskAttempt(copy.namespace, copy.sha256, now);
+        logger.debug`Cannot store the at-risk copy ${path} yet: ${error}`;
+        if (error instanceof ChunkPutError && isUnauthorised(error.cause)) {
+          this.#atRiskRefused = true;
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * Stores the referenced chunks an at-risk copy holds that the storage
+   * does not, or holds damaged where it reads sizes; checks the storage
+   * before reading the copy. Before storing,
+   * checks the copy's hash against its name, and resolves `false`, storing
+   * nothing, when they differ. Rejects with `NotFound` when the copy is
+   * gone.
+   */
+  async #storeAtRiskCopy(
+    copy: StoredAtRiskCopy,
+    path: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const ns = namespaceOf(copy.namespace);
+    await Deno.lstat(path);
+    // A copy recorded without its reference, after a crash, is cut first.
+    const { ref, parts } = copy.blob !== undefined
+      ? { ref: copy.blob, parts: partsWithOffsets(copy.blob) }
+      : await refOfFile(
+        this.#chunkStore,
+        await Deno.open(path, { read: true }),
+        signal,
+      );
+    if (copy.blob === undefined && ref.sha256 !== copy.sha256) return false;
+    const missing = new Set(await this.#chunkStore.missing(ns, ref, signal));
+    const absent = uniqueParts(
+      parts.filter((part) => missing.has(part.sha256)),
+    );
+    // `missing` reports a chunk of the right size as present, so on a
+    // storage that reads sizes the rest are read: a copy moved aside for a
+    // damaged chunk of the right size is the only good copy of it.
+    const held = this.#chunkStore.readsSizes
+      ? uniqueParts(parts.filter((part) => !missing.has(part.sha256)))
+      : [];
+    if (absent.length === 0 && held.length === 0) return true;
+    const referenced = await this.#referencedChunks(
+      copy.namespace,
+      [...absent, ...held].map((part) => part.sha256),
+    );
+    const need = absent.filter((part) => referenced.has(part.sha256));
+    const named = held.filter((part) => referenced.has(part.sha256));
+    if (named.length > 0) {
+      for (
+        const part of await this.#chunkStore.verifyParts(ns, named, signal)
+      ) {
+        need.push(part);
+      }
+    }
+    if (need.length === 0) return true;
+    if (
+      copy.blob !== undefined &&
+      !await this.#holdsContent(path, copy.blob, signal)
+    ) {
+      // Gone between the lstat and now reads as gone.
+      await Deno.lstat(path);
+      return false;
+    }
+    const { stored, changed } = await this.#chunkStore.putParts(
+      ns,
+      fileRangeReader(path),
+      need,
+      signal,
+    );
+    await this.#chunkStore.syncStored(ns, stored, signal);
+    if (changed.length > 0) {
+      throw new Error(
+        `the copy no longer holds chunk ${changed[0]} at its offset`,
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Records at-risk copies a crash left without their row: the file was
+   * moved aside but its row never committed. Removes the temp files a crash
+   * mid-copy left, once older than {@link AT_RISK_TEMP_GRACE_MS} and not
+   * being written by this process.
+   */
+  async #adoptAtRiskCopies(): Promise<void> {
+    const root = join(this.#stateDir, AT_RISK_DIR);
+    let namespaces: Deno.DirEntry[];
+    try {
+      namespaces = await Array.fromAsync(Deno.readDir(root));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    for (const entry of namespaces) {
+      if (!entry.isDirectory) continue;
+      const namespace = entry.name === storageNamespaceOf(SOLO_NAMESPACE)
+        ? ""
+        : entry.name;
+      for await (const copy of Deno.readDir(join(root, entry.name))) {
+        if (copy.isFile && AT_RISK_TEMP.test(copy.name)) {
+          await this.#removeStaleTemp(join(root, entry.name, copy.name));
+          continue;
+        }
+        if (!copy.isFile || !/^[0-9a-f]{64}$/.test(copy.name)) continue;
+        if (this.#state.hasAtRiskCopy(namespace, copy.name)) continue;
+        const size = await sizeOf(join(root, entry.name, copy.name));
+        if (size === undefined) continue;
+        this.#state.recordAtRiskCopy({
+          namespace,
+          sha256: copy.name,
+          recordKey: "",
+          size,
+          createdAt: this.#clock(),
+          lastAttempt: new Date(0),
+        });
+      }
+    }
+  }
+
+  /** Removes the at-risk temp file at `path` once it is stale. */
+  async #removeStaleTemp(path: string): Promise<void> {
+    if (copiesInFlight.has(path)) return;
+    try {
+      const modified = (await Deno.lstat(path)).mtime?.getTime();
+      if (
+        modified !== undefined &&
+        this.#clock().getTime() - modified < AT_RISK_TEMP_GRACE_MS
+      ) {
+        return;
+      }
+      await Deno.remove(path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+
+  /**
+   * Tries again up to {@link UNREADABLE_RETRIES} unreadable records, the
+   * least recently looked at first (swamp-club#3617). On a storage that
+   * reads chunk sizes a record is tried only once its chunk appeared or
+   * changed; one with no chunk to watch, or on another storage, once per
+   * {@link RETRY_INTERVAL_MS} from its last try. Only a record
+   * whose key still shows its put is written; its row is then forgotten
+   * and its key listed as written unsynced, in one transaction. Never
+   * fails the catch-up.
+   */
+  async #retryUnreadable(signal: AbortSignal): Promise<void> {
+    // The tries this pass looked at, written in one transaction at its end,
+    // or as it fails.
+    const attempts: StoredUnreadableRecord[] = [];
+    try {
+      await this.#retryUnreadableRecords(signal, attempts);
+    } catch (error) {
+      try {
+        this.#state.noteUnreadableAttempts(attempts);
+      } catch (noted) {
+        logger.debug`Could not record the unreadable records tried: ${noted}`;
+      }
+      throw error;
+    }
+    this.#state.noteUnreadableAttempts(attempts);
+  }
+
+  /** One pass of {@link #retryUnreadable}; collects its tries in `attempts`. */
+  async #retryUnreadableRecords(
+    signal: AbortSignal,
+    attempts: StoredUnreadableRecord[],
+  ): Promise<void> {
+    const now = this.#clock();
+    for (const record of this.#state.unreadableDue(UNREADABLE_RETRIES)) {
+      signal.throwIfAborted();
+      const blob = record.blob;
+      const owner = this.#state.fileOwnership(
+        record.namespace,
+        record.recordKey,
+      );
+      if (
+        owner === undefined || !owner.present ||
+        owner.owner !== record.partition || owner.mark !== record.position
+      ) {
+        // The file no longer shows this put. Every commit that moves a
+        // key's ownership decides the key and forgets its row with it, so
+        // no later commit would: the row would head every retry forever.
+        // A compacted-base load drops such rows the same way.
+        this.#state.forgetUnreadable(record.namespace, record.recordKey);
+        continue;
+      }
+      let seen: StoredUnreadableRecord = { ...record, lastAttempt: now };
+      if (blob === undefined) {
+        // Nothing to retry: looked at, so the next catch-up looks at
+        // others first.
+        attempts.push(seen);
+        continue;
+      }
+      const ns = namespaceOf(record.namespace);
+      const chunk = record.chunk;
+      if (this.#chunkStore.readsSizes && chunk !== undefined) {
+        let stat:
+          | { readonly size: number; readonly lastModified: Date }
+          | undefined;
+        try {
+          stat = (await this.#chunkStore.stat(ns, [chunk], signal))?.get(
+            chunk,
+          );
+        } catch (error) {
+          if (signal.aborted) throw signal.reason;
+          // Looked at: the next catch-up looks at others first, and sees
+          // the chunk as it was.
+          attempts.push(seen);
+          logger
+            .debug`Could not look at ${chunk} for ${record.recordKey}: ${error}`;
+          continue;
+        }
+        const { chunkSize: _size, chunkMtime: _mtime, ...rest } = seen;
+        seen = stat === undefined ? rest : {
+          ...rest,
+          chunkSize: stat.size,
+          chunkMtime: stat.lastModified.getTime(),
+        };
+        if (
+          seen.chunkSize === record.chunkSize &&
+          seen.chunkMtime === record.chunkMtime
+        ) {
+          // Looked at: the next catch-up looks at others first.
+          attempts.push(seen);
+          continue;
+        }
+      } else if (
+        // No chunk to watch: once per interval, measured from the last
+        // retry, so a skip leaves the time as it was.
+        now.getTime() - record.lastAttempt.getTime() < RETRY_INTERVAL_MS
+      ) {
+        continue;
+      }
+      let path: string | undefined;
+      try {
+        path = await this.#target(
+          record.namespace,
+          RecordKey.create(record.recordKey),
+          true,
+          "the retry of an unreadable record",
+        );
+      } catch (error) {
+        if (signal.aborted) throw signal.reason;
+        logger.warn`Not retrying ${record.recordKey}: ${error}`;
+        path = undefined;
+      }
+      if (path === undefined) {
+        attempts.push(seen);
+        continue;
+      }
+      const batch = this.#writeBatch();
+      try {
+        await this.#writeContent(
+          record.namespace,
+          record.recordKey,
+          path,
+          { blob },
+          signal,
+          batch,
+          { partition: record.partition, seq: record.seq },
+        );
+        await batch.barrier();
+        this.#state.clearUnreadable(
+          record.namespace,
+          record.recordKey,
+          this.#boot,
+        );
+        logger.info`${record.recordKey} is readable again and was written`;
+      } catch (error) {
+        if (signal.aborted) throw signal.reason;
+        if (error instanceof CheckoutCopyAtRiskError) throw error;
+        attempts.push(await this.#failedRetry(seen, blob, error, signal));
+        logger.debug`${record.recordKey} is still unreadable: ${error}`;
+      } finally {
+        batch.discard();
+      }
+    }
+  }
+
+  /**
+   * The unreadable record a failed retry leaves: the chunk the failure
+   * names, why, and how it looks now (swamp-club#3617), so the next retry
+   * waits for the chunk that is failing now, not one that came back. A
+   * failure that names no chunk, or a chunk that cannot be found, keeps
+   * `seen`.
+   */
+  async #failedRetry(
+    seen: StoredUnreadableRecord,
+    blob: BlobRef,
+    error: unknown,
+    signal: AbortSignal,
+  ): Promise<StoredUnreadableRecord> {
+    if (!isChunkError(error)) return seen;
+    try {
+      const failing = await this.#unreadable(
+        seen.namespace,
+        seen.recordKey,
+        { partition: seen.partition, seq: seen.seq, position: seen.position },
+        blob,
+        error,
+        signal,
+      );
+      return failing.chunk === undefined ? seen : failing;
+    } catch (lookup) {
+      if (signal.aborted) throw signal.reason;
+      logger
+        .debug`Cannot tell which chunk of ${seen.recordKey} fails: ${lookup}`;
+      return seen;
+    }
+  }
 }
+
+/** Keys an unreadable-record warning was logged for in this process. */
+const warnedUnreadable = new Set<string>();
+
+/** Whether this process warned that a file was moved aside. */
+let warnedAtRisk = false;
+
+/** Warns once per process and key that a record cannot be read. */
+function warnUnreadable(record: UnreadableRecord): void {
+  const id = `${record.namespace}\u0000${record.recordKey}`;
+  if (warnedUnreadable.has(id)) return;
+  warnedUnreadable.add(id);
+  logger.warn`${record.recordKey} cannot be read: chunk ${
+    record.chunk ?? "(unknown)"
+  } is ${record.reason} in the datastore, so its file is absent from this checkout. ${
+    unreadableRecordAdvice(record.recordKey)
+  }`;
+}
+
+function isChunkError(
+  error: unknown,
+): error is ChunkMissingError | ChunkIntegrityError {
+  return error instanceof ChunkMissingError ||
+    error instanceof ChunkIntegrityError;
+}
+
+/** A rename refused because the target lies on another device. */
+function isCrossDevice(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (error as { code?: unknown }).code === "EXDEV" ||
+    /cross-device|os error 18\b/i.test(error.message) ||
+    // ERROR_NOT_SAME_DEVICE; on POSIX 17 is EEXIST.
+    (Deno.build.os === "windows" && /os error 17\b/.test(error.message));
+}
+
+/** Error codes and names a storage refuses a put for want of rights with. */
+const UNAUTHORISED_CODES = new Set([
+  "accessdenied",
+  "accessdeniedexception",
+  "allaccessdisabled",
+  "eacces",
+  "eperm",
+  "forbidden",
+  "invalidaccesskeyid",
+  "permissiondenied",
+  "unauthenticated",
+  "unauthorized",
+]);
+
+/**
+ * A put the storage refused for want of rights, not a passing failure:
+ * Deno's `PermissionDenied` (a filesystem's EACCES), or an error, or one of
+ * its causes, carrying HTTP status 401 or 403 (`status`, `statusCode`,
+ * `httpStatusCode`, `$metadata.httpStatusCode`, `response.status`, a
+ * numeric `code`) or an access-denied code or name (S3's `AccessDenied`).
+ * A message alone counts only when it names both the status and the
+ * refusal, so a 403 that is merely part of a key or a size does not.
+ */
+function isUnauthorised(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current != null; depth++) {
+    if (current instanceof Deno.errors.PermissionDenied) return true;
+    if (typeof current !== "object") break;
+    const fields = current as Record<string, unknown>;
+    const nested = (holder: unknown, name: string): unknown =>
+      typeof holder === "object" && holder !== null
+        ? (holder as Record<string, unknown>)[name]
+        : undefined;
+    const statuses = [
+      fields.status,
+      fields.statusCode,
+      fields.httpStatusCode,
+      fields.code,
+      nested(fields.$metadata, "httpStatusCode"),
+      nested(fields.response, "status"),
+    ];
+    if (statuses.some((status) => status === 401 || status === 403)) {
+      return true;
+    }
+    for (const name of [fields.code, fields.Code, fields.name]) {
+      if (
+        typeof name === "string" && UNAUTHORISED_CODES.has(name.toLowerCase())
+      ) {
+        return true;
+      }
+    }
+    current = fields.cause;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b40[13]\b.*\b(?:unauthori[sz]ed|forbidden|access ?denied)\b|\b(?:unauthori[sz]ed|forbidden|access ?denied)\b.*\b40[13]\b/i
+    .test(message);
+}
+
+/** Each part once, first occurrence kept: content can repeat a chunk. */
+function uniqueParts(parts: readonly ContentPart[]): ContentPart[] {
+  const seen = new Set<string>();
+  return parts.filter((part) => {
+    if (seen.has(part.sha256)) return false;
+    seen.add(part.sha256);
+    return true;
+  });
+}
+
+/** Every part of `ref`, one for content in a single chunk. */
+function partsOf(ref: BlobRef): readonly ContentPart[] {
+  return partsWithOffsets(ref);
+}
+
+/** What a read of a file holding `blob`'s content finds. */
+function contentPartsOf(blob: BlobRef): ContentParts {
+  return {
+    ref: blob,
+    sha256: blob.sha256,
+    size: blob.size,
+    parts: partsWithOffsets(blob),
+  };
+}
+
+/**
+ * Whether `info`, a stat of the file at a written file's path, shows it as
+ * the read model wrote it: the same inode, size, and modification and change
+ * times. Any write, truncation, rename over it or `utime` changes one.
+ */
+function stillAsWritten(written: WrittenFile, info: Deno.FileInfo): boolean {
+  return info.ino === written.ino && info.dev === written.dev &&
+    info.size === written.size &&
+    info.mtime?.getTime() === written.mtime &&
+    (info.ctime?.getTime() ?? undefined) === written.ctime;
+}
+
+/** The parts of `ref` with the offsets they start at. */
+function partsWithOffsets(ref: BlobRef): ContentPart[] {
+  const parts = ref.parts ?? [{ sha256: ref.sha256, size: ref.size }];
+  let offset = 0;
+  return parts.map(({ sha256, size }) => {
+    const part = { sha256, size, offset };
+    offset += size;
+    return part;
+  });
+}
+
+/** Reads a file by byte range, reopening it for each range. */
+function fileRangeReader(path: string): ContentRangeReader {
+  return async (offset, length, signal) => {
+    signal.throwIfAborted();
+    const file = await Deno.open(path, { read: true });
+    try {
+      await file.seek(offset, Deno.SeekMode.Start);
+      const bytes = new Uint8Array(length);
+      let read = 0;
+      while (read < length) {
+        signal.throwIfAborted();
+        const n = await file.read(bytes.subarray(read));
+        if (n === null) break;
+        read += n;
+      }
+      return bytes.subarray(0, read);
+    } finally {
+      file.close();
+    }
+  };
+}
+
+/**
+ * Cuts the open `file` as `chunkStore` would, closing it on every path: its
+ * readable closes it when read to the end, and an abort or a failure before
+ * or during the read leaves it to this.
+ */
+async function refOfFile(
+  chunkStore: ChunkStore,
+  file: Deno.FsFile,
+  signal: AbortSignal,
+): Promise<ContentParts> {
+  try {
+    return await chunkStore.refOf(file.readable, signal);
+  } finally {
+    try {
+      file.close();
+    } catch {
+      // Already closed by its readable.
+    }
+  }
+}
+
+/**
+ * Syncs the existing file at `path`: through a writable handle, which
+ * Windows needs, or a read handle where it cannot be opened for writing
+ * (POSIX syncs either).
+ */
+async function syncExistingFile(path: string): Promise<void> {
+  let handle: Deno.FsFile;
+  try {
+    handle = await Deno.open(path, { read: true, write: true });
+  } catch (error) {
+    if (
+      !(error instanceof Deno.errors.PermissionDenied) ||
+      Deno.build.os === "windows"
+    ) {
+      throw error;
+    }
+    handle = await Deno.open(path, { read: true });
+  }
+  try {
+    await handle.sync();
+  } finally {
+    handle.close();
+  }
+}
+
+/** A regular file's size; undefined when absent or not a file. */
+async function sizeOf(path: string): Promise<number | undefined> {
+  try {
+    const info = await Deno.lstat(path);
+    return info.isFile ? info.size : undefined;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Copies `from` to `to` through a synced temp file and a rename in `to`'s
+ * directory, so `to` never holds a partial copy.
+ */
+async function copyDurably(from: string, to: string): Promise<void> {
+  const tmp = join(dirname(to), `.${crypto.randomUUID()}.tmp`);
+  copiesInFlight.add(tmp);
+  try {
+    await Deno.copyFile(from, tmp);
+    const file = await Deno.open(tmp, { read: true, write: true });
+    try {
+      await file.sync();
+    } finally {
+      file.close();
+    }
+    await Deno.rename(tmp, to);
+  } catch (error) {
+    await Deno.remove(tmp).catch(() => {});
+    throw error;
+  } finally {
+    copiesInFlight.delete(tmp);
+  }
+}
+
+/** The name of a temp file {@link copyDurably} writes. */
+const AT_RISK_TEMP = /^\.[0-9a-f-]{36}\.tmp$/;
+
+/** Temp files {@link copyDurably} is writing in this process. */
+const copiesInFlight = new Set<string>();
 
 function appliedRecord(put: PutOp | null): AppliedRecord | null {
   if (put === null) return null;

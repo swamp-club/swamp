@@ -29,6 +29,8 @@
  * @module
  */
 
+import { UserError } from "../errors.ts";
+import { UNREADABLE_CONTENT_CODE } from "../datastore/unreadable_content.ts";
 import type { BlobRef } from "./blob_ref.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";
@@ -58,8 +60,10 @@ export interface LiveRecord {
 }
 
 /**
- * A commit could not be applied: a chunk it names is missing or damaged, a
- * put's blob still lives in a pre-v3 layout, or a write failed. The cursor
+ * A commit could not be applied: a put's blob still lives in a pre-v3
+ * layout, a write failed, or, for a commit already compacted away, a chunk
+ * it names is missing or damaged (elsewhere such a put is an
+ * {@link UnreadableRecord}, swamp-club#3617). The cursor
  * stays before the commit, so the next catch-up tries it again. A key the
  * read model must not write, and a file and a directory claiming one path,
  * are permanent instead: such a put is logged and skipped, and stays
@@ -80,6 +84,126 @@ export class ReadModelApplyError extends Error {
       options,
     );
     this.name = "ReadModelApplyError";
+  }
+}
+
+/**
+ * A checkout file holds the only copy of committed content whose chunks the
+ * storage refused to store again, and the file can be neither moved nor
+ * copied aside into the read model's `at-risk` directory
+ * (swamp-club#3617). Nothing was overwritten or removed; the section stops
+ * so the copy is not lost.
+ */
+export class CheckoutCopyAtRiskError extends ReadModelApplyError {
+  constructor(
+    namespace: string,
+    partition: string,
+    seq: number,
+    /** The checkout file kept in place. */
+    readonly path: string,
+    reason: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      namespace,
+      partition,
+      seq,
+      `${path} holds the only copy of committed content the datastore cannot store again, and it cannot be moved aside (${reason}); free space in the repository's .swamp directory or restore write access to the datastore, then run the command again`,
+      options,
+    );
+    this.name = "CheckoutCopyAtRiskError";
+  }
+}
+
+/**
+ * A record the read model could not materialise because a chunk its content
+ * names is missing or damaged (swamp-club#3617). Its file is absent from the
+ * checkout; later commits still apply, and the read model retries it when
+ * the chunk changes.
+ */
+export interface UnreadableRecord {
+  readonly namespace: string;
+  /** The record key, a `/` path relative to the namespace's cache root. */
+  readonly recordKey: string;
+  /** The partition whose put it is. */
+  readonly partition: string;
+  /** The put's seq in its partition; 0 for a record of the compacted base. */
+  readonly seq: number;
+  /** The put's position in the change feed (its ownership mark). */
+  readonly position: number;
+  /** The content's reference. */
+  readonly blob?: BlobRef;
+  /** The first chunk found missing or damaged, when known. */
+  readonly chunk?: string;
+  /** `missing`: a chunk is absent or short. `damaged`: one fails its hash. */
+  readonly reason: "missing" | "damaged";
+  /** When the read model last tried to read it. */
+  readonly lastAttempt: Date;
+}
+
+/**
+ * A checkout file moved aside into the read model's `at-risk` directory
+ * because it held the only copy of committed chunks the storage refused to
+ * store (swamp-club#3617). A later section with put rights stores its chunks
+ * and deletes it.
+ */
+export interface AtRiskCopy {
+  readonly namespace: string;
+  /** The whole file's SHA-256: its name in the at-risk directory. */
+  readonly sha256: string;
+  /** The record key the file was at; empty when unknown. */
+  readonly recordKey: string;
+  readonly size: number;
+  readonly createdAt: Date;
+  readonly lastAttempt: Date;
+}
+
+/** The error code of {@link UnreadableRecordError}. */
+export const UNREADABLE_RECORD_CODE = UNREADABLE_CONTENT_CODE;
+
+/**
+ * How to repair or remove an unreadable record, by the kind its key names.
+ * A checkout that still holds the file repairs it on its next command.
+ */
+export function unreadableRecordAdvice(recordKey: string): string {
+  const repaired =
+    "A checkout that still holds the file stores its chunks again when it next runs a command; otherwise ";
+  switch (recordKey.split("/")[0]) {
+    case "data":
+      return `${repaired}write that data again, or delete the version with \`swamp data delete\`.`;
+    case "auto-definitions":
+      return `${repaired}save the definition again.`;
+    case "definitions-evaluated":
+    case "workflows-evaluated":
+      return `${repaired}evaluate the definition or workflow again.`;
+    case "outputs":
+    case "workflow-runs":
+      return `${repaired}run the method or workflow again; data garbage collection removes the old record.`;
+    case "config":
+      return `${repaired}save that configuration again.`;
+    default:
+      return `${repaired}write the record again.`;
+  }
+}
+
+/**
+ * A read of a record the read model could not materialise
+ * (swamp-club#3617): its file is absent because a chunk is missing or
+ * damaged, so reading it fails loudly instead of reading as absent.
+ */
+export class UnreadableRecordError extends UserError {
+  constructor(readonly record: UnreadableRecord) {
+    super(
+      `The record ${record.recordKey} cannot be read: ${
+        record.chunk === undefined
+          ? "a chunk of its content"
+          : `chunk ${record.chunk}`
+      } is ${record.reason} in the datastore. ${
+        unreadableRecordAdvice(record.recordKey)
+      }`,
+      UNREADABLE_RECORD_CODE,
+    );
+    this.name = "UnreadableRecordError";
   }
 }
 

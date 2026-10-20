@@ -1603,6 +1603,9 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
   "src/cli/commands/serve.ts: serveCommand",
   "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
+  // swamp-club#3617: serve's `doctor datastores` adds the v3 content check
+  // (unreadable records, at-risk copies, torn chunks) on a v3 datastore.
+  "src/serve/handlers/admin_handlers.ts: handleDoctorDatastores",
   // `datastore namespace list`, CLI and serve: a v3 datastore has no
   // namespace manifests, so its commits.db names the namespaces
   // (swamp-club#3301). It also sends a v2 extension datastore to its

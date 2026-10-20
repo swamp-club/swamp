@@ -126,6 +126,63 @@ Deno.test("writeDatastoreFormatMarker: without hard links it creates the marker 
   });
 });
 
+Deno.test("writeDatastoreFormatMarker: syncs and closes the marker's content before linking it, then syncs the directory (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const events: string[] = [];
+    let synced: Deno.FsFile | undefined;
+    await writeDatastoreFormatMarker(dir, { format: 3, minReaderFormat: 3 }, {
+      syncFile: (file) => {
+        events.push("sync file");
+        synced = file;
+        return Promise.resolve();
+      },
+      link: async (from, to) => {
+        // The synced handle is closed by now: closing it again fails.
+        let closed = false;
+        try {
+          synced?.close();
+        } catch (error) {
+          closed = error instanceof Deno.errors.BadResource;
+        }
+        events.push(closed ? "link closed file" : "link open file");
+        await Deno.link(from, to);
+      },
+      syncDirectory: async (synced) => {
+        assertEquals(synced, dir);
+        // The link is in place and the temp file gone when the directory
+        // is synced.
+        const names = [];
+        for await (const entry of Deno.readDir(dir)) names.push(entry.name);
+        events.push(`sync dir ${names.join(",")}`);
+      },
+    });
+    assertEquals(events, [
+      "sync file",
+      "link closed file",
+      "sync dir datastore-format.json",
+    ]);
+  });
+});
+
+Deno.test("writeDatastoreFormatMarker: without hard links the created marker is synced, then the directory (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const events: string[] = [];
+    await writeDatastoreFormatMarker(dir, { format: 3, minReaderFormat: 3 }, {
+      link: () =>
+        Promise.reject(new Deno.errors.NotSupported("no hard links here")),
+      syncFile: () => {
+        events.push("sync file");
+        return Promise.resolve();
+      },
+      syncDirectory: () => {
+        events.push("sync dir");
+        return Promise.resolve();
+      },
+    });
+    assertEquals(events, ["sync file", "sync file", "sync dir"]);
+  });
+});
+
 Deno.test("writeControlPlaneFormatMarker: writes the marker once, as the filesystem marker reads, and reports a second write (swamp-club#3534)", async () => {
   const records = new Map<string, Uint8Array>();
   const store = {

@@ -21,6 +21,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { YamlEvaluatedWorkflowRepository } from "./yaml_evaluated_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
+import { fakeUnreadableLookup } from "./unreadable_records_test_helpers.ts";
 
 Deno.test("findByName returns workflow with matching name", async () => {
   const tempDir = await Deno.makeTempDir();
@@ -388,5 +389,27 @@ Deno.test("saveForRun: the per-run copy carries its references and still loads (
     assertEquals(loaded?.name, "ref-workflow");
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository.findByNameWithProvenance: an evaluated workflow the lookup names unreadable fails with its error; an absent one is not found (swamp-club#3617)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const baseDir = join(tempDir, ".swamp", "workflows-evaluated");
+    const lost = join(baseDir, "workflow-lost.yaml");
+    const { lookup, errors } = fakeUnreadableLookup([lost]);
+    const repo = new YamlEvaluatedWorkflowRepository(
+      tempDir,
+      baseDir,
+      undefined,
+      lookup,
+    );
+    assertEquals(
+      await assertRejects(() => repo.findByNameWithProvenance("lost")),
+      errors.get(lost),
+    );
+    assertEquals(await repo.findByNameWithProvenance("other"), null);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
   }
 });

@@ -23,8 +23,14 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   createDoctorDatastoresRenderer,
   retentionDetailLines,
+  v3ContentDetailLines,
 } from "./doctor_datastores.ts";
-import type { DoctorDatastoresData } from "../../libswamp/datastores/doctor_datastores.ts";
+import type {
+  DoctorDatastoresData,
+  V3ContentSummary,
+} from "../../libswamp/datastores/doctor_datastores.ts";
+import { createDatastoreFormatMarkerRepairRenderer } from "./doctor_datastores.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
 
 await initializeLogging({});
@@ -144,4 +150,174 @@ Deno.test("retentionDetailLines: says retention is not configured", () => {
   );
   assertStringIncludes(text, "Retention: not configured");
   assertEquals(text.includes("workflowRuns"), false);
+});
+
+// --- swamp-club#3617: restoring a v3 datastore's lost format marker ---
+
+const MARKER_REPAIR = {
+  datastorePath: "/data/v3",
+  markerPath: "/data/v3/datastore-format.json",
+  marker: "absent" as const,
+};
+
+Deno.test("createDatastoreFormatMarkerRepairRenderer: json mode reports the preview, the restore and nothing to do (swamp-club#3617)", () => {
+  const preview = createDatastoreFormatMarkerRepairRenderer("json");
+  const out = captureStdout(() =>
+    preview.handlers().preview({ kind: "preview", data: MARKER_REPAIR })
+  );
+  assertEquals(JSON.parse(out), {
+    status: "format_marker_preview",
+    ...MARKER_REPAIR,
+  });
+  assertEquals(preview.overallStatus, "preview");
+
+  const restored = createDatastoreFormatMarkerRepairRenderer("json");
+  assertEquals(
+    JSON.parse(
+      captureStdout(() =>
+        restored.handlers().completed({
+          kind: "completed",
+          data: MARKER_REPAIR,
+        })
+      ),
+    ),
+    { status: "format_marker_restored", ...MARKER_REPAIR },
+  );
+  assertEquals(restored.overallStatus, "pass");
+
+  const none = createDatastoreFormatMarkerRepairRenderer("json");
+  assertEquals(
+    JSON.parse(captureStdout(() =>
+      none.handlers().not_needed({
+        kind: "not_needed",
+        datastorePath: "/data/v3",
+      })
+    )),
+    { status: "format_marker_not_needed", datastorePath: "/data/v3" },
+  );
+});
+
+Deno.test("createDatastoreFormatMarkerRepairRenderer: both modes fail with the error's message and code (swamp-club#3617)", () => {
+  for (const mode of ["log", "json"] as const) {
+    const renderer = createDatastoreFormatMarkerRepairRenderer(mode);
+    let thrown: unknown;
+    try {
+      renderer.handlers().error({
+        kind: "error",
+        error: { code: "some_code", message: "not restored" },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assertEquals(thrown instanceof UserError, true);
+    assertEquals((thrown as UserError).message, "not restored");
+    assertEquals((thrown as UserError).code, "some_code");
+    assertEquals(renderer.overallStatus, "fail");
+  }
+});
+
+Deno.test("createDatastoreFormatMarkerRepairRenderer: log mode previews, and restores as a pass (swamp-club#3617)", () => {
+  const renderer = createDatastoreFormatMarkerRepairRenderer("log");
+  renderer.handlers().preview({ kind: "preview", data: MARKER_REPAIR });
+  assertEquals(renderer.overallStatus, "preview");
+  renderer.handlers().completed({ kind: "completed", data: MARKER_REPAIR });
+  assertEquals(renderer.overallStatus, "pass");
+});
+
+const V3_CONTENT: V3ContentSummary = {
+  unreadableRecords: 12,
+  unreadable: [{
+    namespace: "",
+    recordKey: "data/m/lost/1/raw",
+    reason: "missing",
+    chunk: "a".repeat(64),
+    advice: "Write that data again.",
+  }],
+  atRiskCopies: 1,
+  atRisk: [{
+    namespace: "acme",
+    sha256: "b".repeat(64),
+    recordKey: "outputs/m/out.yaml",
+    size: 42,
+  }],
+  atRiskDir: "/repo/.swamp/_read_model_v3/at-risk",
+  atRiskAdvice: "Delete /repo/.swamp/_read_model_v3/at-risk to discard them.",
+  tornChunks: 1,
+  torn: [{
+    namespace: "",
+    sha256: "c".repeat(64),
+    recordKey: "data/m/torn/1/raw",
+    expectedSize: 10,
+    size: 3,
+    advice: "Write the record again.",
+  }],
+};
+
+function v3Data(): DoctorDatastoresData {
+  return {
+    datastoreType: "filesystem",
+    isCustom: false,
+    healthFindings: [
+      { check: "health", passed: true, message: "ok" },
+      { check: "v3_content", passed: false, message: "12 record(s)" },
+    ],
+    vaultMismatchFindings: [],
+    v3ContentFinding: V3_CONTENT,
+  };
+}
+
+Deno.test("createDoctorDatastoresRenderer: json mode carries the v3 content finding and fails on it, null without one (swamp-club#3617)", () => {
+  const renderer = createDoctorDatastoresRenderer("json");
+  const parsed = JSON.parse(
+    captureStdout(() =>
+      renderer.handlers().completed({ kind: "completed", data: v3Data() })
+    ),
+  );
+  assertEquals(parsed.overallStatus, "fail");
+  assertEquals(parsed.v3ContentFinding, V3_CONTENT);
+  assertEquals(
+    JSON.parse(
+      captureStdout(() =>
+        createDoctorDatastoresRenderer("json").handlers().completed({
+          kind: "completed",
+          data: data(),
+        })
+      ),
+    ).v3ContentFinding,
+    null,
+  );
+});
+
+Deno.test("v3ContentDetailLines: lists each kind with its advice and how many more there are (swamp-club#3617)", () => {
+  const text = stripAnsiCode(v3ContentDetailLines(V3_CONTENT).join("\n"));
+  assertStringIncludes(
+    text,
+    `data/m/lost/1/raw: chunk ${"a".repeat(64)} is missing`,
+  );
+  assertStringIncludes(text, "Write that data again.");
+  assertStringIncludes(text, "… and 11 more");
+  assertStringIncludes(text, "outputs/m/out.yaml [acme]: 42 bytes");
+  assertStringIncludes(text, "to discard them.");
+  assertStringIncludes(
+    text,
+    `${"c".repeat(64)}: 3 of 10 bytes, named by data/m/torn/1/raw`,
+  );
+  assertStringIncludes(text, "Write the record again.");
+});
+
+Deno.test("v3ContentDetailLines: a record whose missing chunk is not named reads as a chunk of its content (swamp-club#3617)", () => {
+  const { chunk: _, ...unnamed } = V3_CONTENT.unreadable[0];
+  const text = stripAnsiCode(
+    v3ContentDetailLines({ ...V3_CONTENT, unreadable: [unnamed] }).join("\n"),
+  );
+  assertStringIncludes(
+    text,
+    "data/m/lost/1/raw: a chunk of its content is missing",
+  );
+});
+
+Deno.test("createDoctorDatastoresRenderer: log mode fails on the v3 content finding (swamp-club#3617)", () => {
+  const renderer = createDoctorDatastoresRenderer("log");
+  renderer.handlers().completed({ kind: "completed", data: v3Data() });
+  assertEquals(renderer.overallStatus, "fail");
 });

@@ -1039,6 +1039,7 @@ export async function handleWorkflowHistoryGet(
           ctx.repoContext.workflowRepo,
           dataReadPolicy(socket, ctx, principal),
           ctx.repoContext.signalWaits,
+          ctx.repoContext.unreadableContent,
         ),
         retentionWatermarks: ctx.repoContext.retentionWatermarks,
       };
@@ -1138,6 +1139,7 @@ export async function handleWorkflowHistoryLogs(
           ctx.repoDir,
           ctx.datastoreResolver,
           ctx.repoContext.workflowRepo,
+          ctx.repoContext.unreadableContent,
         ),
         retentionWatermarks: ctx.repoContext.retentionWatermarks,
       };
@@ -3056,6 +3058,7 @@ export async function handleWorkflowEvaluate(
       ctx.repoContext.definitionRepo,
       ctx.repoContext.hydrateFile,
       ctx.repoContext.unifiedDataRepo.fetchForeignContent,
+      ctx.repoContext.unreadableContent,
     );
 
     let result: Record<string, unknown> | undefined;

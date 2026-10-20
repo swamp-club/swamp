@@ -42,7 +42,16 @@ import {
   isFreshV3Skeleton,
   listV3Namespaces,
   openV3Datastore,
+  referencedChunksOf,
+  restoreV3FormatMarker,
 } from "./v3_datastore.ts";
+import { DatabaseSync } from "node:sqlite";
+import {
+  COMMIT_STORE_SCHEMA_VERSION,
+  openCommitsDatabase,
+} from "./sqlite_commit_store.ts";
+import { ensureSupportedDatastoreFormat } from "../persistence/datastore_format_guard.ts";
+import { UserError } from "../../domain/errors.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import {
   blobPut,
@@ -112,6 +121,34 @@ Deno.test("openV3Datastore: a root commits typed changes the read model of anoth
     } finally {
       await writer.close();
       await reader.close();
+    }
+  });
+});
+
+Deno.test("openV3Datastore: collectChunks verifies only when asked, from the prefix given, and moves a damaged chunk aside to remove it (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const handle = openV3Datastore({ repoDir: join(dir, "a"), datastorePath });
+    try {
+      // Stored under a hash its bytes do not have.
+      const rotten = "ab" + "0".repeat(62);
+      const shard = join(datastorePath, "_blobs", "_default", "sha256", "ab");
+      await Deno.mkdir(shard, { recursive: true });
+      await Deno.writeFile(join(shard, rotten), new Uint8Array([1, 2, 3]));
+
+      const plain = await handle.collectChunks(new AbortController().signal);
+      assertEquals([plain.verified, plain.damaged.length], [0, 0]);
+
+      const verified = await handle.collectChunks(
+        new AbortController().signal,
+        { bytes: 1024, from: "ab" },
+      );
+      assertEquals(verified.verified, 1);
+      assertEquals(verified.damaged, [{ sha256: rotten, referenced: false }]);
+      assertEquals([...Deno.readDirSync(shard)], []);
+    } finally {
+      await handle.close();
     }
   });
 });
@@ -631,4 +668,417 @@ Deno.test("openV3Datastore: a writer whose prepare meets a sweep batch in flight
       await handle.close();
     }
   });
+});
+
+// --- swamp-club#3617: a v3 datastore whose format marker a crash lost ---
+
+const MARKER = "datastore-format.json";
+const LOST_MARKERS: readonly (string | undefined)[] = [
+  undefined,
+  "",
+  " \n\t",
+  "\0".repeat(64),
+];
+
+/** Writes `marker` at the datastore's marker path, or removes it. */
+async function setMarker(dir: string, marker: string | undefined) {
+  await Deno.remove(join(dir, MARKER)).catch(() => {});
+  if (marker !== undefined) await Deno.writeTextFile(join(dir, MARKER), marker);
+}
+
+async function names(dir: string): Promise<string[]> {
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(dir)) found.push(entry.name);
+  return found.sort();
+}
+
+Deno.test("initializeV3Datastore: syncs each created directory's parent, then the marker's directory, before commits.db exists (swamp-club#3617)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "a", "b");
+    const events: string[] = [];
+    await initializeV3Datastore(dir, "test", {
+      syncDirectory: async (synced) => {
+        const marked = await Deno.lstat(join(dir, MARKER)).then(
+          () => "marker",
+          () => "no marker",
+        );
+        const log = await Deno.lstat(join(dir, COMMITS_DB_FILE)).then(
+          () => "commits.db",
+          () => "no commits.db",
+        );
+        events.push(`${synced}: ${marked}, ${log}`);
+      },
+    });
+    assertEquals(events, [
+      `${join(root, "a")}: no marker, no commits.db`,
+      `${root}: no marker, no commits.db`,
+      `${dir}: marker, no commits.db`,
+    ]);
+    assert(await isFreshV3Skeleton(dir));
+  });
+});
+
+Deno.test("isFreshV3Skeleton: a lost marker beside a commit log with no history is a skeleton setup completes (swamp-club#3617)", async () => {
+  for (const lost of LOST_MARKERS) {
+    await withTempDir(async (root) => {
+      const dir = join(root, "datastore");
+      await initializeV3Datastore(dir, "test");
+      await setMarker(dir, lost);
+      assert(await isFreshV3Skeleton(dir), JSON.stringify(lost));
+      await initializeV3Datastore(dir, "test");
+      assertEquals(
+        JSON.parse(await Deno.readTextFile(join(dir, MARKER))).format,
+        3,
+      );
+      assertEquals(
+        await ensureSupportedDatastoreFormat("/repo", {
+          type: "filesystem",
+          path: dir,
+          format: 3,
+        }),
+        "v3",
+      );
+    });
+  }
+});
+
+Deno.test("initializeV3Datastore: a resume racing another resume past a blank marker completes, not a raw NotFound (swamp-club#3617)", async () => {
+  // The other resume removes the blank marker between this one's check
+  // and its remove; then either is still writing, or has written, the v3
+  // marker, which this one's remove must not delete.
+  for (const otherWrote of [false, true]) {
+    await withTempDir(async (root) => {
+      const dir = join(root, "datastore");
+      await initializeV3Datastore(dir, "test");
+      await setMarker(dir, "");
+      const synced: string[] = [];
+      await initializeV3Datastore(dir, "test", {
+        syncDirectory: (d) => {
+          synced.push(d);
+          return Promise.resolve();
+        },
+        rename: async (from, to) => {
+          // The other resume's remove, then its write, then this one's.
+          await Deno.remove(from);
+          if (otherWrote) {
+            await Deno.writeTextFile(
+              from,
+              JSON.stringify({
+                format: 3,
+                minReaderFormat: 3,
+                writtenBy: "other",
+              }),
+            );
+          }
+          await Deno.rename(from, to);
+        },
+      });
+      assertEquals(
+        JSON.parse(await Deno.readTextFile(join(dir, MARKER))),
+        {
+          format: 3,
+          minReaderFormat: 3,
+          writtenBy: otherWrote ? "other" : "test",
+        },
+        `otherWrote=${otherWrote}`,
+      );
+      assertEquals(synced.at(-1), dir, "the marker's directory is synced");
+      assertEquals(await names(dir), ["_blobs", COMMITS_DB_FILE, MARKER]);
+      assert(await isFreshV3Skeleton(dir));
+    });
+  }
+});
+
+Deno.test("restoreV3FormatMarker: a restore past a blank marker never deletes the v3 marker another restore wrote after its check (swamp-club#3617)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await initializeV3Datastore(dir, "test");
+    await setMarker(dir, "");
+    const winner = '{"format":3,"minReaderFormat":3,"writtenBy":"winner"}';
+    const path = await restoreV3FormatMarker(dir, "test", {
+      // The other restore removes the blank marker and writes its own
+      // between this one's check and its remove.
+      rename: async (from, to) => {
+        await Deno.remove(from);
+        await Deno.writeTextFile(from, winner);
+        await Deno.rename(from, to);
+      },
+    });
+    assertEquals(await Deno.readTextFile(path), winner);
+    assertEquals(await names(dir), ["_blobs", COMMITS_DB_FILE, MARKER]);
+  });
+});
+
+Deno.test("isFreshV3Skeleton: a lost marker is no skeleton beside history, replication state, content or anything but a regular commits.db (swamp-club#3617)", async () => {
+  for (const lost of LOST_MARKERS) {
+    const label = JSON.stringify(lost);
+    await withTempDir(async (root) => {
+      // Commits.
+      const dir = join(root, "datastore");
+      await initializeV3Datastore(dir, "test");
+      await commitIn(root, dir, "");
+      await setMarker(dir, lost);
+      assertEquals(await isFreshV3Skeleton(dir), false, label);
+    });
+    await withTempDir(async (root) => {
+      // A compacted history: no stored commits, a compaction point.
+      const dir = join(root, "datastore");
+      await initializeV3Datastore(dir, "test");
+      const db = new DatabaseSync(join(dir, COMMITS_DB_FILE));
+      db.exec("UPDATE compaction SET point = 7 WHERE id = 1");
+      db.close();
+      await setMarker(dir, lost);
+      assertEquals(await isFreshV3Skeleton(dir), false, label);
+    });
+    await withTempDir(async (root) => {
+      // Replication or Litestream state, content, no commits.db.
+      const dir = join(root, "datastore");
+      await initializeV3Datastore(dir, "test");
+      await setMarker(dir, lost);
+      for (
+        const extra of [".commits.db-replication", ".commits.db-litestream"]
+      ) {
+        await Deno.mkdir(join(dir, extra));
+        assertEquals(await isFreshV3Skeleton(dir), false, `${label} ${extra}`);
+        await Deno.remove(join(dir, extra));
+      }
+      await Deno.writeTextFile(join(dir, "_blobs", "chunk"), "x");
+      assertEquals(await isFreshV3Skeleton(dir), false, label);
+      await Deno.remove(join(dir, "_blobs", "chunk"));
+      assert(await isFreshV3Skeleton(dir), label);
+      await Deno.remove(join(dir, COMMITS_DB_FILE));
+      const before = await names(dir);
+      assertEquals(await isFreshV3Skeleton(dir), false, label);
+      // And looking created nothing.
+      assertEquals(await names(dir), before, label);
+    });
+    await withTempDir(async (root) => {
+      // A directory, a non-SQLite file or a newer schema as commits.db.
+      const dir = join(root, "datastore");
+      await Deno.mkdir(dir);
+      await setMarker(dir, lost);
+      await Deno.mkdir(join(dir, COMMITS_DB_FILE));
+      assertEquals(await isFreshV3Skeleton(dir), false, label);
+      await Deno.remove(join(dir, COMMITS_DB_FILE));
+      await Deno.writeTextFile(
+        join(dir, COMMITS_DB_FILE),
+        "not a database, long enough to have a header".repeat(4),
+      );
+      assertEquals(await isFreshV3Skeleton(dir), false, label);
+      await Deno.remove(join(dir, COMMITS_DB_FILE));
+      const db = new DatabaseSync(join(dir, COMMITS_DB_FILE));
+      db.exec(`PRAGMA user_version=${COMMIT_STORE_SCHEMA_VERSION + 1}`);
+      db.close();
+      assertEquals(await isFreshV3Skeleton(dir), false, label);
+    });
+  }
+});
+
+Deno.test("isFreshV3Skeleton: a lost marker beside what setup's open leaves before the schema is a skeleton; an unrelated SQLite commits.db is not (swamp-club#3617)", async () => {
+  for (const lost of LOST_MARKERS) {
+    const label = JSON.stringify(lost);
+    await withTempDir(async (root) => {
+      const dir = join(root, "datastore");
+      await Deno.mkdir(dir);
+      await setMarker(dir, lost);
+      const commitsDb = join(dir, COMMITS_DB_FILE);
+      // Created, and stopped before anything was written: no pages.
+      await Deno.writeFile(commitsDb, new Uint8Array());
+      assert(await isFreshV3Skeleton(dir), `${label} empty file`);
+      // Switched to WAL, and stopped before the schema transaction.
+      const wal = new DatabaseSync(commitsDb);
+      wal.exec("PRAGMA journal_mode=WAL");
+      wal.close();
+      assert(await isFreshV3Skeleton(dir), `${label} WAL, no schema`);
+      await Deno.remove(commitsDb);
+      // An SQLite file that is no commit log: user_version 0, no tables.
+      const db = new DatabaseSync(commitsDb);
+      db.exec("CREATE TABLE t (x); DROP TABLE t");
+      db.close();
+      assertEquals(await isFreshV3Skeleton(dir), false, `${label} unrelated`);
+    });
+  }
+});
+
+Deno.test("isFreshV3Skeleton: a directory holding only a lost marker, or nothing, creates no file when looked at (swamp-club#3617)", async () => {
+  await withTempDir(async (root) => {
+    assertEquals(await isFreshV3Skeleton(root), false);
+    assertEquals(await names(root), []);
+    await setMarker(root, "");
+    assertEquals(await isFreshV3Skeleton(root), false);
+    assertEquals(await names(root), [MARKER]);
+  });
+});
+
+Deno.test("restoreV3FormatMarker: writes a v3 marker for a lost or blank one beside a v3 commit log with history (swamp-club#3617)", async () => {
+  for (const lost of LOST_MARKERS) {
+    await withTempDir(async (root) => {
+      const dir = join(root, "datastore");
+      await initializeV3Datastore(dir, "test");
+      await commitIn(root, dir, "");
+      await setMarker(dir, lost);
+      const synced: string[] = [];
+      const path = await restoreV3FormatMarker(dir, "2026.10.19.1", {
+        syncDirectory: (d) => {
+          synced.push(d);
+          return Promise.resolve();
+        },
+      });
+      assertEquals(path, join(dir, MARKER));
+      assertEquals(JSON.parse(await Deno.readTextFile(path)), {
+        format: 3,
+        minReaderFormat: 3,
+        writtenBy: "2026.10.19.1",
+      });
+      assertEquals(synced, [dir]);
+      assertEquals(
+        await ensureSupportedDatastoreFormat("/repo", {
+          type: "filesystem",
+          path: dir,
+          format: 3,
+        }),
+        "v3",
+      );
+      // Again: the marker is there, nothing to do.
+      assertEquals(await restoreV3FormatMarker(dir, "other"), path);
+      assertEquals(
+        JSON.parse(await Deno.readTextFile(path)).writtenBy,
+        "2026.10.19.1",
+      );
+    });
+  }
+});
+
+Deno.test("restoreV3FormatMarker: recovers a schema that is only in the write-ahead log (swamp-club#3617)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await Deno.mkdir(dir);
+    // The schema written and never checkpointed: copied while open, as a
+    // power cut leaves it.
+    const source = join(root, "source.db");
+    const open = openCommitsDatabase(source);
+    try {
+      await Deno.copyFile(source, join(dir, COMMITS_DB_FILE));
+      await Deno.copyFile(`${source}-wal`, join(dir, `${COMMITS_DB_FILE}-wal`));
+    } finally {
+      open.close();
+    }
+    await restoreV3FormatMarker(dir, "test");
+    assertEquals(
+      JSON.parse(await Deno.readTextFile(join(dir, MARKER))).format,
+      3,
+    );
+  });
+});
+
+Deno.test("restoreV3FormatMarker: refuses a commits.db that is missing, not a regular file, not SQLite, not v3 or newer, changing nothing (swamp-club#3617)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await Deno.mkdir(dir);
+    const commitsDb = join(dir, COMMITS_DB_FILE);
+    const refused = async (reason: string) => {
+      const error = await assertRejects(
+        () => restoreV3FormatMarker(dir, "test"),
+        UserError,
+        reason,
+      );
+      assertEquals(
+        error.message.startsWith(
+          `The format marker of ${dir} was not restored: `,
+        ),
+        true,
+      );
+      assertEquals(error.message.endsWith("Nothing was changed."), true);
+      assertEquals((await names(dir)).includes(MARKER), false);
+    };
+    await refused("does not exist");
+    await Deno.mkdir(commitsDb);
+    await refused("is not a regular file");
+    await Deno.remove(commitsDb);
+    if (Deno.build.os !== "windows") {
+      const elsewhere = join(root, "elsewhere.db");
+      openCommitsDatabase(elsewhere).close();
+      await Deno.symlink(elsewhere, commitsDb, { type: "file" });
+      await refused("is not a regular file");
+      await Deno.remove(commitsDb);
+    }
+    await Deno.writeTextFile(
+      commitsDb,
+      "not a database, long enough to have a header".repeat(4),
+    );
+    await refused("could not be read as a v3 commit log");
+    await Deno.remove(commitsDb);
+    // An SQLite file with no v3 schema.
+    new DatabaseSync(commitsDb).close();
+    await refused("is not a v3 commit log");
+    await Deno.remove(commitsDb);
+    const newer = openCommitsDatabase(commitsDb);
+    newer.exec(`PRAGMA user_version=${COMMIT_STORE_SCHEMA_VERSION + 1}`);
+    newer.close();
+    await refused(`newer than this swamp's ${COMMIT_STORE_SCHEMA_VERSION}`);
+    await Deno.remove(commitsDb);
+    // A marker someone wrote is not replaced.
+    openCommitsDatabase(commitsDb).close();
+    await setMarker(dir, '{"format": 3, "minReaderFormat":');
+    await assertRejects(
+      () => restoreV3FormatMarker(dir, "test"),
+      UserError,
+      "is not a marker a crash left blank",
+    );
+    assertEquals(
+      await Deno.readTextFile(join(dir, MARKER)),
+      '{"format": 3, "minReaderFormat":',
+    );
+  });
+});
+
+Deno.test("restoreV3FormatMarker: a v3 marker another restore wrote first is success; anything else it met is not (swamp-club#3617)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await initializeV3Datastore(dir, "test");
+    await setMarker(dir, undefined);
+    const raced = (marker: string) => async (_from: string, to: string) => {
+      await Deno.writeTextFile(to, marker);
+      throw new Deno.errors.AlreadyExists("lost the race");
+    };
+    const path = await restoreV3FormatMarker(dir, "test", {
+      link: raced('{"format":3,"minReaderFormat":3,"writtenBy":"winner"}'),
+    });
+    assertEquals(JSON.parse(await Deno.readTextFile(path)).writtenBy, "winner");
+    await setMarker(dir, undefined);
+    await assertRejects(
+      () => restoreV3FormatMarker(dir, "test", { link: raced('{"format":2}') }),
+      UserError,
+      "already exists",
+    );
+  });
+});
+
+Deno.test("referencedChunksOf: asks the outbox before commits.db, so a commit landing between the two lookups is never missed (swamp-club#3617)", async () => {
+  const chunk = "c".repeat(64);
+  // A writer's commit naming `chunk` is prepared; whichever store is asked
+  // first, the writer appends and settles before the second is asked.
+  let stage: "prepared" | "settled" = "prepared";
+  const commitStore = {
+    referencedChunks(_ns: string, hashes: readonly string[]) {
+      const found = new Set(
+        stage === "settled" ? hashes.filter((h) => h === chunk) : [],
+      );
+      stage = "settled";
+      return Promise.resolve(found);
+    },
+  };
+  const outbox = {
+    referencedChunks(_ns: string, hashes: readonly string[]) {
+      const found = new Set(
+        stage === "prepared" ? hashes.filter((h) => h === chunk) : [],
+      );
+      stage = "settled";
+      return Promise.resolve(found);
+    },
+  };
+  assertEquals(
+    await referencedChunksOf(commitStore, outbox, "", [chunk]),
+    new Set([chunk]),
+  );
 });

@@ -43,13 +43,20 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
 import {
+  unreadableRecordsUnder,
+  warnUnreadableLeftOut,
+} from "./unreadable_records.ts";
+import {
   createDefinitionId,
   Definition,
   type DefinitionData,
   type DefinitionId,
   isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
-import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  MarkDirtyHook,
+  UnreadableContentLookup,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import {
   SENSITIVE_FORMAT_VERSION,
@@ -129,9 +136,25 @@ export class YamlEvaluatedDefinitionRepository {
     private readonly repoDir: string,
     baseDir?: string,
     private readonly markDirty?: MarkDirtyHook,
+    /**
+     * Tells an evaluated definition a v3 read model could not materialise
+     * from an absent one (swamp-club#3617), so a lookup that finds no
+     * evaluated definition fails loudly on it instead.
+     */
+    readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ??
       swampPath(repoDir, SWAMP_SUBDIRS.definitionsEvaluated);
+  }
+
+  /**
+   * Throws when the datastore recorded the evaluated definition missing at
+   * `path` as unreadable (swamp-club#3617). A file that is simply absent
+   * returns.
+   */
+  private async throwIfUnreadable(path: string): Promise<void> {
+    const error = await this.unreadableContent?.(path);
+    if (error !== undefined) throw error;
   }
 
   /**
@@ -176,8 +199,13 @@ export class YamlEvaluatedDefinitionRepository {
     }
 
     // Slow path: scan all files
-    const definitions = await this.findAll(type);
-    return definitions.find((d) => d.id === id) ?? null;
+    const definitions = (await this.findAllWithProvenance(type)).map((c) =>
+      c.definition
+    );
+    const found = definitions.find((d) => d.id === id);
+    if (found) return found;
+    await this.throwIfUnreadable(legacyPath);
+    return null;
   }
 
   /**
@@ -187,7 +215,11 @@ export class YamlEvaluatedDefinitionRepository {
    * @returns Array of evaluated definitions
    */
   async findAll(type: ModelType): Promise<Definition[]> {
-    return (await this.findAllWithProvenance(type)).map((c) => c.definition);
+    const definitions = (await this.findAllWithProvenance(type)).map((c) =>
+      c.definition
+    );
+    await warnUnreadableLeftOut(this.unreadableContent, this.getTypeDir(type));
+    return definitions;
   }
 
   private async findAllWithProvenance(
@@ -257,7 +289,12 @@ export class YamlEvaluatedDefinitionRepository {
     }
 
     const definitions = await this.findAllWithProvenance(type);
-    return definitions.find((c) => c.definition.name === name) ?? null;
+    const found = definitions.find((c) => c.definition.name === name);
+    if (found) return found;
+    if (isFilenameSafeDefinitionName(name)) {
+      await this.throwIfUnreadable(this.getNamePath(type, name));
+    }
+    return null;
   }
 
   /**
@@ -270,7 +307,19 @@ export class YamlEvaluatedDefinitionRepository {
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
     const definitionsDir = this.baseDir;
-    return await this.searchDefinitionByName(definitionsDir, [], name);
+    const found = await this.searchDefinitionByName(definitionsDir, [], name);
+    if (found) return found;
+    // The name, under whichever type's directory: one query over the base,
+    // which also finds a type with no directory left (swamp-club#3617).
+    for (
+      const entry of await unreadableRecordsUnder(
+        this.unreadableContent,
+        this.baseDir,
+      )
+    ) {
+      if (basename(entry.path) === `${name}.yaml`) throw entry.error;
+    }
+    return null;
   }
 
   /**
@@ -331,6 +380,7 @@ export class YamlEvaluatedDefinitionRepository {
     const definitionsDir = this.baseDir;
     const results: { definition: Definition; type: ModelType }[] = [];
     await this.collectAllDefinitions(definitionsDir, [], results);
+    await warnUnreadableLeftOut(this.unreadableContent, definitionsDir);
     return results;
   }
 

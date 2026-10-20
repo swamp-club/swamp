@@ -24,6 +24,7 @@ import {
   assertNotStrictEquals,
   assertRejects,
   assertStrictEquals,
+  assertStringIncludes,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, isAbsolute, join } from "@std/path";
@@ -53,6 +54,11 @@ import {
 } from "./test_helpers/staged_change_helpers.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
+import { UserError } from "../../domain/errors.ts";
+import {
+  captureUnreadableWarnings,
+  fakeUnreadableLookup,
+} from "./unreadable_records_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -1032,6 +1038,41 @@ Deno.test("runIndexSnapshot: reuses the snapshot while the index and records are
     const settled = await repo.runIndexSnapshot(workflow.id);
     assertStrictEquals(await repo.runIndexSnapshot(workflow.id), settled);
     assertEquals(settled.runs.map((r) => r.summary.id), [run.id]);
+  });
+});
+
+Deno.test("runIndexSnapshot: looks up unreadable records when it builds a snapshot, not when it reuses one (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    let offset = 0;
+    let lookups = 0;
+    const lookup = Object.assign(
+      (_path: string) => Promise.resolve(undefined),
+      {
+        under: (_dir: string) => {
+          lookups++;
+          return Promise.resolve([]);
+        },
+      },
+    );
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      () => Date.now() + offset,
+      lookup,
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    offset = 60_000;
+    const settled = await repo.runIndexSnapshot(workflow.id);
+    assertEquals(lookups, 1);
+    assertStrictEquals(await repo.runIndexSnapshot(workflow.id), settled);
+    assertStrictEquals(await repo.runIndexSnapshot(workflow.id), settled);
+    assertEquals(lookups, 1);
   });
 });
 
@@ -3468,5 +3509,138 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: an invalid cutoff deletes 
 
     assertEquals(result.deleted, 0);
     assertEquals(await repo.listRunIds(), new Set([finished.id]));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository: a run record the lookup names unreadable fails findById and findGlobalById, an absent one reads as not found (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const workflowId = createWorkflowId(crypto.randomUUID());
+    const unreadableId = createWorkflowRunId(crypto.randomUUID());
+    const asked: string[] = [];
+    const unreadablePath = new YamlWorkflowRunRepository(dir).getPath(
+      workflowId,
+      unreadableId,
+    );
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (path: string) => {
+        asked.push(path);
+        return Promise.resolve(
+          path === unreadablePath
+            ? new UserError("unreadable", "datastore_v3_record_unreadable")
+            : undefined,
+        );
+      },
+    );
+    // Another run of the workflow is there, so its directory is.
+    const workflow = Workflow.create({
+      name: "flow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "s",
+          task: StepTask.modelMethod("m", "noop", {}),
+        })],
+      })],
+    });
+    await repo.save(workflowId, WorkflowRun.create(workflow));
+
+    await assertRejects(
+      () => repo.findById(workflowId, unreadableId),
+      UserError,
+      "unreadable",
+    );
+    await assertRejects(
+      () => repo.findGlobalById(unreadableId),
+      UserError,
+      "unreadable",
+    );
+    const absent = createWorkflowRunId(crypto.randomUUID());
+    assertEquals(await repo.findById(workflowId, absent), null);
+    assertEquals(await repo.findGlobalById(absent), null);
+    assert(asked.includes(repo.getPath(workflowId, absent)));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalById: a run whose workflow has no directory, because every run of it is unreadable, fails with its error (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const workflowId = createWorkflowId(crypto.randomUUID());
+    const runId = createWorkflowRunId(crypto.randomUUID());
+    const { lookup, errors } = fakeUnreadableLookup([
+      new YamlWorkflowRunRepository(dir).getPath(workflowId, runId),
+    ]);
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      lookup,
+    );
+    // Not even the runs directory exists in this checkout.
+    const error = await assertRejects(() => repo.findGlobalById(runId));
+    assert(error === [...errors.values()][0]);
+    assertEquals(
+      await repo.findGlobalById(createWorkflowRunId(crypto.randomUUID())),
+      null,
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository: listings keep their readable runs and warn once naming the unreadable ones (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = Workflow.create({
+      name: "flow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "s",
+          task: StepTask.modelMethod("m", "noop", {}),
+        })],
+      })],
+    });
+    const workflowId = workflow.id as WorkflowId;
+    const lostPath = new YamlWorkflowRunRepository(dir).getPath(
+      workflowId,
+      createWorkflowRunId(crypto.randomUUID()),
+    );
+    const { lookup, stats } = fakeUnreadableLookup([lostPath]);
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      lookup,
+    );
+    const run = WorkflowRun.create(workflow);
+    await repo.save(workflowId, run);
+
+    const warnings = await captureUnreadableWarnings(async () => {
+      assertEquals(
+        (await repo.findAllGlobal()).map((r) => r.run.id),
+        [run.id],
+      );
+      // One listing query for the whole listing, not one per workflow.
+      assertEquals(stats.listings, 1);
+      assertEquals(
+        (await repo.findAllByWorkflowId(workflowId)).map((r) => r.id),
+        [run.id],
+      );
+      assertEquals(
+        (await repo.findAllSummariesByWorkflowId(workflowId)).map((s) => s.id),
+        [run.id],
+      );
+      assertEquals((await repo.findLatestByWorkflowId(workflowId))?.id, run.id);
+      assertEquals((await repo.runIndexSnapshot(workflowId)).size, 1);
+    });
+    // Named once in this process, though five listings left it out.
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], lostPath);
+    assertEquals(stats.listings, 5);
   });
 });

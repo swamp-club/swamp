@@ -20,7 +20,10 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { createHash } from "node:crypto";
 import type {
+  ChunkDirectorySync,
+  ChunkQuarantine,
   DatastoreStorage,
+  QuarantinedChunk,
   StoredChunk,
   TempFileSweeper,
 } from "../datastore/datastore_storage.ts";
@@ -146,6 +149,71 @@ class AgedStorage implements DatastoreStorage {
     this.chunks.delete(`${namespace}/${sha256}`);
     this.deleted.push(sha256);
     this.events.push("delete");
+    return Promise.resolve();
+  }
+}
+
+/**
+ * {@link AgedStorage} that moves chunks aside and syncs their directories,
+ * as the filesystem storage does (swamp-club#3617). `beforeMove` runs
+ * before a chunk is moved aside, `beforeRead` before its moved-aside bytes
+ * are read.
+ */
+class QuarantineStorage extends AgedStorage
+  implements ChunkQuarantine, ChunkDirectorySync {
+  readonly aside = new Map<string, { bytes: Uint8Array; at: Date }>();
+  readonly syncs: string[][] = [];
+  beforeMove: (sha256: string) => Promise<void> | void = () => {};
+  beforeRead: (sha256: string) => Promise<void> | void = () => {};
+
+  async quarantineChunk(
+    namespace: string,
+    sha256: string,
+    signal: AbortSignal,
+  ): Promise<QuarantinedChunk | undefined> {
+    signal.throwIfAborted();
+    await this.beforeMove(sha256);
+    const key = `${namespace}/${sha256}`;
+    const chunk = this.chunks.get(key);
+    if (chunk === undefined) return undefined;
+    this.chunks.delete(key);
+    this.aside.set(key, chunk);
+    this.events.push("quarantine");
+    return {
+      read: async (readSignal) => {
+        readSignal.throwIfAborted();
+        await this.beforeRead(sha256);
+        return this.aside.get(key)?.bytes.slice() ?? null;
+      },
+      remove: (removeSignal) => {
+        removeSignal.throwIfAborted();
+        this.aside.delete(key);
+        this.deleted.push(sha256);
+        this.events.push("remove");
+        return Promise.resolve();
+      },
+      putBack: (putSignal) => {
+        putSignal.throwIfAborted();
+        const moved = this.aside.get(key);
+        this.aside.delete(key);
+        // Never over a chunk stored since it was moved aside.
+        if (moved !== undefined && !this.chunks.has(key)) {
+          this.chunks.set(key, moved);
+        }
+        this.events.push("put back");
+        return Promise.resolve();
+      },
+    };
+  }
+
+  syncChunkDirectories(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    this.syncs.push(hashes.map((sha256) => `${namespace}/${sha256}`));
+    this.events.push("sync");
     return Promise.resolve();
   }
 }
@@ -420,7 +488,7 @@ Deno.test("ChunkCollector.collect: a damaged candidate is deleted and reported, 
 });
 
 Deno.test("ChunkCollector.collect: deletes a damaged chunk whatever its age, and a later write stores it again", async () => {
-  const storage = new AgedStorage();
+  const storage = new QuarantineStorage();
   const refs = new FakeRefs();
   const good = storage.seed("acme", "good", FRESH);
   const content = bytesOf("damaged in place");
@@ -449,6 +517,185 @@ Deno.test("ChunkCollector.collect: deletes a damaged chunk whatever its age, and
   // Writes trust has(): with the damaged chunk gone, the write puts it.
   await new ChunkStore(storage).write(ACME, content, signal);
   assertEquals(storage.chunks.get(`acme/${rotten}`)?.bytes, content);
+});
+
+Deno.test("ChunkCollector.collect: without a way to move chunks aside, verifying reports damage and deletes nothing (swamp-club#3617)", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  const rotten = sha256Hex(bytesOf("damaged in place"));
+  storage.seedDamaged("acme", rotten, FRESH);
+  refs.add("acme", rotten);
+
+  const report = await collector(storage, refs).collect(ACME, {
+    verifyBytes: 1024,
+    signal,
+  });
+
+  assertEquals(storage.stored("acme"), [rotten]);
+  assertEquals(storage.deleted, []);
+  assertEquals(report.damaged, [{ sha256: rotten, referenced: true }]);
+});
+
+Deno.test("ChunkCollector.collect: a chunk stored good again between the damage check and the move is put back, not deleted, and its directory synced (swamp-club#3617)", async () => {
+  const storage = new QuarantineStorage();
+  const refs = new FakeRefs();
+  const content = bytesOf("restored by a checkout");
+  const sha256 = sha256Hex(content);
+  storage.seedDamaged("acme", sha256, FRESH);
+  refs.add("acme", sha256);
+  // The checkout-copy guard puts the content back after the verify read.
+  storage.beforeMove = async (hash) => {
+    await storage.put("acme", hash, content, signal);
+  };
+
+  const report = await collector(storage, refs).collect(ACME, {
+    verifyBytes: 1024,
+    signal,
+  });
+
+  assertEquals(storage.chunks.get(`acme/${sha256}`)?.bytes, content);
+  assertEquals(storage.deleted, []);
+  assertEquals(report.damaged, []);
+  assertEquals(storage.syncs, [[`acme/${sha256}`]]);
+  const moved = storage.events.indexOf("quarantine");
+  assertEquals(storage.events.slice(moved, moved + 3), [
+    "quarantine",
+    "put back",
+    "sync",
+  ]);
+});
+
+Deno.test("ChunkCollector.collect: a damaged chunk is moved aside, hashed again there and removed, inside the sweep's batch (swamp-club#3617)", async () => {
+  const storage = new QuarantineStorage();
+  const refs = new FakeRefs();
+  const rotten = "a".repeat(64);
+  storage.seedDamaged("acme", rotten, FRESH);
+  const events: string[] = [];
+  let inBatch = false;
+  const original = storage.quarantineChunk.bind(storage);
+  storage.quarantineChunk = (namespace, sha256, signal) => {
+    events.push(inBatch ? "move in batch" : "move outside");
+    return original(namespace, sha256, signal);
+  };
+  const report = await collector(storage, refs, {
+    sweep: {
+      begin: () => Promise.resolve(),
+      heartbeat: () => Promise.resolve(),
+      end: () => Promise.resolve(),
+      async batch(run) {
+        inBatch = true;
+        try {
+          await run();
+        } finally {
+          inBatch = false;
+        }
+      },
+    },
+  }).collect(ACME, { verifyBytes: 1024, signal });
+
+  assertEquals(events, ["move in batch"]);
+  assertEquals(storage.stored("acme"), []);
+  assertEquals(storage.aside.size, 0);
+  assertEquals(storage.deleted, [rotten]);
+  assertEquals(storage.syncs, [], "nothing put back, nothing synced");
+  assertEquals(report.damaged, [{ sha256: rotten, referenced: false }]);
+  // The report's shape is unchanged (datastore gc's json keys).
+  assertEquals(Object.keys(report).sort(), [
+    "damaged",
+    "deleted",
+    "keptOverBudget",
+    "keptTooNew",
+    "namespace",
+    "referenced",
+    "restored",
+    "scanned",
+    "tempFilesRemoved",
+    "verified",
+  ]);
+});
+
+Deno.test("ChunkCollector.collect: a moved-aside chunk gone before its re-hash is done, and one whose read fails is put back and synced (swamp-club#3617)", async () => {
+  const storage = new QuarantineStorage();
+  const refs = new FakeRefs();
+  const gone = "b".repeat(64);
+  storage.seedDamaged("acme", gone, FRESH);
+  // Another process's temp-file sweep removes the moved-aside file.
+  storage.beforeRead = (sha256) => {
+    storage.aside.delete(`acme/${sha256}`);
+  };
+  const report = await collector(storage, refs).collect(ACME, {
+    verifyBytes: 1024,
+    signal,
+  });
+  assertEquals(report.damaged, [{ sha256: gone, referenced: false }]);
+  assertEquals(storage.syncs, []);
+
+  const unread = "c".repeat(64);
+  storage.seedDamaged("acme", unread, FRESH);
+  storage.beforeRead = () => {
+    throw new Error("EIO");
+  };
+  await assertRejects(
+    () => collector(storage, refs).collect(ACME, { verifyBytes: 1024, signal }),
+    Error,
+    "EIO",
+  );
+  assertEquals(storage.stored("acme"), [unread], "put back, never lost");
+  assertEquals(storage.syncs, [[`acme/${unread}`]]);
+});
+
+Deno.test("ChunkCollector.collect: verifying starts at verifyFrom, then wraps round to the chunks before it, a listing each (swamp-club#3617)", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  const hashes: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    // Ten bytes each.
+    hashes.push(
+      storage.seed("acme", `chunk-${String(i).padStart(4, "0")}`, FRESH),
+    );
+  }
+  const read: string[] = [];
+  const originalGet = storage.get.bind(storage);
+  storage.get = (namespace, sha256, signal) => {
+    read.push(sha256);
+    return originalGet(namespace, sha256, signal);
+  };
+  const sorted = [...hashes].sort();
+  const from = sorted[6].slice(0, 2);
+  const after = hashes.filter((sha256) => sha256 >= from);
+  const before = hashes.filter((sha256) => sha256 < from);
+
+  // A budget for the chunks from the prefix on only.
+  await collector(storage, refs).collect(ACME, {
+    verifyBytes: after.length * 10,
+    verifyFrom: from,
+    signal,
+  });
+  assertEquals(read, after);
+  assertEquals(storage.events.filter((e) => e === "list").length, 2);
+
+  // A budget for every chunk: the rest follow, from a second listing.
+  read.length = 0;
+  storage.events.length = 0;
+  const report = await collector(storage, refs).collect(ACME, {
+    verifyBytes: 1024,
+    verifyFrom: from,
+    signal,
+  });
+  assertEquals(read, [...after, ...before]);
+  assertEquals(report.verified, 12);
+  assertEquals(storage.events.filter((e) => e === "list").length, 3);
+
+  await assertRejects(
+    () =>
+      collector(storage, refs).collect(ACME, {
+        verifyBytes: 10,
+        verifyFrom: "XY",
+        signal,
+      }),
+    Error,
+    "verifyFrom",
+  );
 });
 
 Deno.test("ChunkCollector.collect: verifies chunks only until the byte budget is spent", async () => {
@@ -611,6 +858,26 @@ Deno.test("ChunkCollector.collect: a sweeper that may not delete deletes nothing
   );
   assertEquals(storage.deleted.length, 2);
   assertEquals(storage.stored("acme"), [...orphans].sort());
+});
+
+Deno.test("ChunkCollector.collect: a sweeper that may not delete leaves a damaged candidate in place (swamp-club#3617)", async () => {
+  for (const storage of [new AgedStorage(), new QuarantineStorage()]) {
+    const refs = new FakeRefs();
+    const rotten = "e".repeat(64);
+    storage.seedDamaged("acme", rotten, OLD);
+    await assertRejects(
+      () =>
+        collector(storage, refs, {
+          assertMayDelete: () => {
+            throw new Error("fenced");
+          },
+        }).collect(ACME, { signal }),
+      Error,
+      "fenced",
+    );
+    assertEquals(storage.stored("acme"), [rotten]);
+    assertEquals(storage.deleted, []);
+  }
 });
 
 Deno.test("ChunkCollector.collect: a sweep monitor that fails to end leaves the sweep's own error to the caller", async () => {

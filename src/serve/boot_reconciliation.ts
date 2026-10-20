@@ -25,6 +25,7 @@ import { PENDING_DISPATCH_MODEL_TYPE } from "../domain/models/worker/pending_dis
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
+import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 import { Data } from "../domain/data/data.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
@@ -1086,7 +1087,20 @@ async function loadAttrsForType(
   > = [];
   for (const { data, modelType: mt, modelId } of items) {
     if (data.isRenamed || data.isDeleted) continue;
-    const content = await repo.getContent(mt, modelId, data.name);
+    let content: Uint8Array | null;
+    try {
+      content = await repo.getContent(mt, modelId, data.name);
+    } catch (error) {
+      // One record the datastore could not materialise is left out, as a
+      // listing does, rather than stopping the sweep (swamp-club#3617).
+      if (!isUnreadableContentError(error)) throw error;
+      logger.warn("Skipping unreadable {kind} record {dataName}: {error}", {
+        kind: mt.normalized,
+        dataName: data.name,
+        error: (error as Error).message,
+      });
+      continue;
+    }
     if (!content) continue;
     try {
       const attrs = JSON.parse(new TextDecoder().decode(content)) as Record<

@@ -29,6 +29,7 @@ import {
   repairCatalogIndex,
   type RepairCatalogIndexDeps,
   repairDatastoreContamination,
+  repairDatastoreFormatMarker,
   type RepairDatastoresDeps,
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
@@ -38,9 +39,11 @@ import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createCatalogDuplicateLatestRepairRenderer,
   createCatalogIndexRepairRenderer,
+  createDatastoreFormatMarkerRepairRenderer,
   createDoctorDatastoresRenderer,
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
+  type DatastoreFormatMarkerRepairStatus,
 } from "../../presentation/renderers/doctor_datastores.ts";
 import {
   createContext,
@@ -67,6 +70,7 @@ import {
 import type { DoctorDatastoresResponse } from "../../serve/protocol.ts";
 import {
   type CustomDatastoreConfig,
+  type DatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
   getDatastoreDirectories,
   isCustomDatastoreConfig,
@@ -75,6 +79,16 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  DATASTORE_FORMAT_MARKER_FILE,
+  DATASTORE_FORMAT_MARKER_INVALID_CODE,
+  DATASTORE_FORMAT_MISMATCH_CODE,
+  type DatastoreEngine,
+} from "../../domain/datastore/datastore_format.ts";
+import { lostDatastoreFormatMarker } from "../../infrastructure/persistence/datastore_format_guard.ts";
+import { restoreV3FormatMarker } from "../../infrastructure/datastore_v3/v3_datastore.ts";
+import { inspectV3Content } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
+import { VERSION } from "./version.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -106,6 +120,52 @@ import {
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * `doctor datastores --repair` after the format guard refused the repo's
+ * datastore with `refusal` (swamp-club#3617): when the repo's config says
+ * format 3 and its filesystem datastore is a v3 datastore whose marker a
+ * crash lost, previews the restore, or with `confirm` restores the marker.
+ * Resolves with the repair's status, or undefined when this is not such a
+ * datastore, for the caller to rethrow the refusal unchanged. Nothing in
+ * the datastore is opened before `confirm`.
+ */
+export async function repairLostV3FormatMarker(
+  repoDir: string,
+  refusal: unknown,
+  outputMode: OutputMode,
+  confirm: boolean,
+): Promise<DatastoreFormatMarkerRepairStatus | undefined> {
+  if (
+    !(refusal instanceof UserError) ||
+    (refusal.code !== DATASTORE_FORMAT_MISMATCH_CODE &&
+      refusal.code !== DATASTORE_FORMAT_MARKER_INVALID_CODE)
+  ) {
+    return undefined;
+  }
+  const repoPath = RepoPath.create(repoDir);
+  const config = await resolveDatastoreConfig(
+    await new RepoMarkerRepository().read(repoPath),
+    undefined,
+    repoPath.value,
+  );
+  if (isCustomDatastoreConfig(config) || config.format !== 3) return undefined;
+  const datastorePath = config.path;
+  if (await lostDatastoreFormatMarker(datastorePath) === undefined) {
+    return undefined;
+  }
+  const renderer = createDatastoreFormatMarkerRepairRenderer(outputMode);
+  await consumeStream(
+    repairDatastoreFormatMarker(createLibSwampContext(), {
+      datastorePath,
+      markerPath: join(datastorePath, DATASTORE_FORMAT_MARKER_FILE),
+      inspect: () => lostDatastoreFormatMarker(datastorePath),
+      restore: () => restoreV3FormatMarker(datastorePath, VERSION),
+    }, { confirm }),
+    renderer.handlers(),
+  );
+  return renderer.overallStatus;
+}
 
 async function resolveProvider(
   config: CustomDatastoreConfig,
@@ -148,6 +208,7 @@ async function checkRetention(
 async function createDoctorDatastoresDeps(
   repoDir: string,
   outputMode: OutputMode,
+  engine: DatastoreEngine,
 ): Promise<DoctorDatastoresDeps> {
   await datastoreTypeRegistry.ensureLoaded();
   return {
@@ -228,6 +289,13 @@ async function createDoctorDatastoresDeps(
     },
     checkCatalogCompleteness: () => checkCatalogCompleteness(repoDir),
     checkRetention: () => checkRetention(repoDir, outputMode),
+    // Checkout-local state and chunk stats only (swamp-club#3617).
+    ...(engine === "v3"
+      ? {
+        checkV3Content: (config: DatastoreConfig) =>
+          inspectV3Content({ repoDir, datastoreConfig: config }),
+      }
+      : {}),
   };
 }
 
@@ -592,7 +660,25 @@ export const doctorDatastoresCommand = withRemoteOptions(
     throw new UserError("The --yes flag requires --repair.");
   }
   const repoDir = resolveRepoDir(options.repoDir);
-  const { engine } = await resolveDatastoreForRepo(repoDir);
+  let engine: DatastoreEngine;
+  try {
+    ({ engine } = await resolveDatastoreForRepo(repoDir));
+  } catch (error) {
+    // A v3 datastore whose marker a crash lost is refused by the format
+    // guard; --repair restores the marker (swamp-club#3617). Any other
+    // refusal is rethrown unchanged.
+    const status = options.repair
+      ? await repairLostV3FormatMarker(
+        repoDir,
+        error,
+        cliCtx.outputMode,
+        Boolean(options.yes),
+      )
+      : undefined;
+    // A restore that fails throws from the renderer, as a UserError.
+    if (status === undefined) throw error;
+    return;
+  }
   const libCtx = createLibSwampContext();
 
   // The repairs are v2's: they rewrite datastore directories and the v2
@@ -717,7 +803,11 @@ export const doctorDatastoresCommand = withRemoteOptions(
     return;
   }
 
-  const deps = await createDoctorDatastoresDeps(repoDir, cliCtx.outputMode);
+  const deps = await createDoctorDatastoresDeps(
+    repoDir,
+    cliCtx.outputMode,
+    engine,
+  );
   const renderer = createDoctorDatastoresRenderer(cliCtx.outputMode);
 
   await consumeStream(

@@ -128,6 +128,7 @@ export const dataVersionsCommand = withRemoteOptions(
       repoDir,
       datastoreResolver,
       repoContext.unifiedDataRepo,
+      repoContext.definitionRepo,
     );
 
     const renderer = createDataVersionsRenderer(cliCtx.outputMode);

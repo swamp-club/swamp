@@ -22,6 +22,10 @@ import type { LibSwampContext } from "../context.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import type { SpecNameFallback } from "../../domain/data/query_predicate.ts";
+import {
+  isUnreadableContentError,
+  UNREADABLE_CONTENT_CODE,
+} from "../../domain/datastore/unreadable_content.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 const logger = getLogger(["swamp", "data", "query"]);
@@ -307,7 +311,11 @@ export async function* dataQuery(
         yield {
           kind: "error" as const,
           error: {
-            code: "QUERY_FAILED",
+            // A record the datastore could not materialise keeps its own
+            // code, as `data get` reports it (swamp-club#3617).
+            code: isUnreadableContentError(error)
+              ? UNREADABLE_CONTENT_CODE
+              : "QUERY_FAILED",
             message: error instanceof Error ? error.message : String(error),
           },
         };

@@ -1672,6 +1672,7 @@ export async function handleModelOutputGet(
           ctx.repoDir,
           undefined,
           ctx.repoContext.definitionRepo,
+          ctx.repoContext.unreadableContent,
         ),
         retentionWatermarks: ctx.repoContext.retentionWatermarks,
       };
@@ -1758,6 +1759,7 @@ export async function handleModelOutputData(
         ctx.datastoreResolver,
         ctx.repoContext.unifiedDataRepo,
         ctx.repoContext.definitionRepo,
+        ctx.repoContext.unreadableContent,
       );
       return {
         deps,
@@ -1844,6 +1846,7 @@ export async function handleModelOutputLogs(
         ctx.repoDir,
         ctx.datastoreResolver,
         ctx.repoContext.unifiedDataRepo,
+        ctx.repoContext.unreadableContent,
       );
       return {
         deps,
@@ -2057,6 +2060,7 @@ export async function handleModelMethodHistoryGet(
         ctx.repoDir,
         undefined,
         ctx.repoContext.definitionRepo,
+        ctx.repoContext.unreadableContent,
       );
       return {
         deps,
@@ -2143,6 +2147,7 @@ export async function handleModelMethodHistoryLogs(
         ctx.repoDir,
         undefined,
         ctx.repoContext.definitionRepo,
+        ctx.repoContext.unreadableContent,
       );
       return {
         deps,

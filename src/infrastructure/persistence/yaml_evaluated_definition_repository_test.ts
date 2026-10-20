@@ -27,8 +27,16 @@ import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
-import { Definition } from "../../domain/definitions/definition.ts";
+import {
+  Definition,
+  type DefinitionId,
+} from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { UserError } from "../../domain/errors.ts";
+import {
+  captureUnreadableWarnings,
+  fakeUnreadableLookup,
+} from "./unreadable_records_test_helpers.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -406,5 +414,81 @@ Deno.test("YamlEvaluatedDefinitionRepository: a cache written before the format 
     const cached = await repo.findByNameWithProvenance(type, "old-definition");
     assertEquals(cached?.sensitiveFormat, undefined);
     assertEquals(cached?.writtenReferences, []);
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: an evaluated definition the lookup names unreadable fails findByName and findById; an absent one is not found (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const type = ModelType.create("test/evaluated");
+    const lost = Definition.create({ name: "lost" });
+    const baseDir = join(dir, ".swamp", "definitions-evaluated");
+    const unreadable = new Set([
+      join(baseDir, type.toDirectoryPath(), "lost.yaml"),
+      join(baseDir, type.toDirectoryPath(), `${lost.id}.yaml`),
+    ]);
+    const repo = new YamlEvaluatedDefinitionRepository(
+      dir,
+      baseDir,
+      undefined,
+      (path) =>
+        Promise.resolve(
+          unreadable.has(path)
+            ? new UserError("unreadable", "datastore_v3_record_unreadable")
+            : undefined,
+        ),
+    );
+    await assertRejects(
+      () => repo.findByNameWithProvenance(type, "lost"),
+      UserError,
+      "unreadable",
+    );
+    await assertRejects(
+      () => repo.findById(type, lost.id as DefinitionId),
+      UserError,
+      "unreadable",
+    );
+    assertEquals(await repo.findByName(type, "other"), null);
+    assertEquals(
+      await repo.findById(
+        type,
+        Definition.create({ name: "other" }).id as DefinitionId,
+      ),
+      null,
+    );
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: findByNameGlobal of a name the lookup names unreadable under any type fails with its error; listings warn naming it (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = join(dir, ".swamp", "definitions-evaluated");
+    const type = ModelType.create("test/evaluated-listed");
+    // A type with no directory left in this checkout.
+    const lost = join(baseDir, "test", "gone", "lost.yaml");
+    const listedLost = join(baseDir, type.toDirectoryPath(), "lost2.yaml");
+    const { lookup, errors } = fakeUnreadableLookup([lost, listedLost]);
+    const repo = new YamlEvaluatedDefinitionRepository(
+      dir,
+      baseDir,
+      undefined,
+      lookup,
+    );
+    const kept = Definition.create({ name: "kept" });
+    await repo.save(type, kept, undefined);
+    assertEquals(
+      await assertRejects(() => repo.findByNameGlobal("lost")),
+      errors.get(lost),
+    );
+    assertEquals((await repo.findByNameGlobal("kept"))?.definition.id, kept.id);
+    assertEquals(await repo.findByNameGlobal("other"), null);
+    const warnings = await captureUnreadableWarnings(async () => {
+      assertEquals((await repo.findAll(type)).map((d) => d.id), [kept.id]);
+      assertEquals(
+        (await repo.findAllGlobal()).map((e) => e.definition.id),
+        [kept.id],
+      );
+    });
+    assertEquals(warnings.length, 2, warnings.join("\n"));
+    assertStringIncludes(warnings[0], listedLost);
+    assertStringIncludes(warnings[1], lost);
   });
 });

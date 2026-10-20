@@ -28,9 +28,12 @@ import { dirname, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
-import { Definition } from "../../domain/definitions/definition.ts";
+import {
+  Definition,
+  type DefinitionId,
+} from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { defineModel } from "../../domain/models/model.ts";
+import { defineModel, modelRegistry } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
@@ -39,6 +42,10 @@ import {
   recordingUnitOfWork,
 } from "./test_helpers/staged_change_helpers.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
+import {
+  captureUnreadableWarnings,
+  fakeUnreadableLookup,
+} from "./unreadable_records_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -3170,5 +3177,148 @@ Deno.test("YamlDefinitionRepository.save: changing an anchored list that unchang
     const saved = await Deno.readTextFile(join(typeDir, "shared-list.yaml"));
     assertEquals(jsonDataFromYaml(saved), data);
     assertStringIncludes(saved, "  # shared by every use\n");
+  });
+});
+
+Deno.test("YamlDefinitionRepository: an auto-definition the lookup names unreadable fails lookups by name, even with no directory for its type; an absent name is not found (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    // A registered type with no directory in this checkout: its only
+    // auto-definition could not be materialised.
+    const type = ModelType.create(
+      `test/unreadable-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      const autoDir = join(dir, ".swamp", "auto-definitions");
+      const unreadablePath = join(autoDir, type.toDirectoryPath(), "lost.yaml");
+      const repo = new YamlDefinitionRepository(
+        dir,
+        undefined,
+        undefined,
+        autoDir,
+        undefined,
+        (path) =>
+          Promise.resolve(
+            path === unreadablePath
+              ? new UserError("unreadable", "datastore_v3_record_unreadable")
+              : undefined,
+          ),
+      );
+      await assertRejects(
+        () => repo.findByNameGlobal("lost"),
+        UserError,
+        "unreadable",
+      );
+      await assertRejects(
+        () => repo.findByName(type, "lost"),
+        UserError,
+        "unreadable",
+      );
+      assertEquals(await repo.findByNameGlobal("other"), null);
+      assertEquals(await repo.findByName(type, "other"), null);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
+Deno.test("YamlDefinitionRepository: an auto-definition stored under its id that the lookup names unreadable fails findById and findByIdGlobal; one of an unregistered type with no directory fails findByNameGlobal (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const type = ModelType.create("test/registered-nowhere");
+    const id = crypto.randomUUID() as DefinitionId;
+    const byId = join(autoDir, type.toDirectoryPath(), `${id}.yaml`);
+    const byName = join(autoDir, "test", "unregistered-type", "lost.yaml");
+    const { lookup, errors } = fakeUnreadableLookup([byId, byName]);
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+      undefined,
+      lookup,
+    );
+    assertEquals(
+      await assertRejects(() => repo.findById(type, id)),
+      errors.get(byId),
+    );
+    assertEquals(
+      await assertRejects(() => repo.findByIdGlobal(id)),
+      errors.get(byId),
+    );
+    assertEquals(
+      await assertRejects(() => repo.findByNameGlobal("lost")),
+      errors.get(byName),
+    );
+    assertEquals(
+      await repo.findById(type, crypto.randomUUID() as DefinitionId),
+      null,
+    );
+    assertEquals(await repo.findByNameGlobal("other"), null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository: listings with auto-definitions keep the readable ones and warn naming the unreadable ones (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const type = ModelType.create("test/listed");
+    const lost = join(autoDir, type.toDirectoryPath(), "lost.yaml");
+    const { lookup } = fakeUnreadableLookup([lost]);
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+      undefined,
+      lookup,
+    );
+    const kept = Definition.create({ name: "kept" });
+    await repo.save(type, kept);
+    const warnings = await captureUnreadableWarnings(async () => {
+      assertEquals(
+        (await repo.findAllIncludingAutoGlobal()).map((e) => e.definition.id),
+        [kept.id],
+      );
+      // A miss by id cannot tell whether the unreadable one is it.
+      assertEquals(
+        await repo.findByIdGlobal(crypto.randomUUID() as DefinitionId),
+        null,
+      );
+    });
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], lost);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById: a miss warns naming the unreadable auto-definitions of its type, not another type's (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const type = ModelType.create("test/miss-by-id");
+    const otherType = ModelType.create("test/miss-by-id-other");
+    const lost = join(autoDir, type.toDirectoryPath(), "lost.yaml");
+    const otherLost = join(autoDir, otherType.toDirectoryPath(), "lost.yaml");
+    const { lookup } = fakeUnreadableLookup([lost, otherLost]);
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+      undefined,
+      lookup,
+    );
+    const warnings = await captureUnreadableWarnings(async () => {
+      // A miss by id cannot tell whether the one stored under a name is it.
+      assertEquals(
+        await repo.findById(type, crypto.randomUUID() as DefinitionId),
+        null,
+      );
+    });
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], lost);
+    assertEquals(warnings[0].includes(otherLost), false, warnings[0]);
   });
 });

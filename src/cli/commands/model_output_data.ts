@@ -133,15 +133,22 @@ export function createModelOutputDataCommand(syntax: CommandSyntax) {
 
     cliCtx.logger.debug`Getting data for output: ${outputIdArg}`;
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-      {
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      },
-    );
+    const { repoDir, repoContext, datastoreResolver } =
+      await requireInitializedRepoReadOnly(
+        {
+          repoDir: resolveRepoDir(options.repoDir),
+          outputMode: cliCtx.outputMode,
+        },
+      );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelOutputDataDeps(repoDir, datastoreResolver);
+    const deps = createModelOutputDataDeps(
+      repoDir,
+      datastoreResolver,
+      undefined,
+      repoContext.definitionRepo,
+      repoContext.unreadableContent,
+    );
 
     const renderer = createModelOutputDataRenderer(cliCtx.outputMode);
     await consumeStream(

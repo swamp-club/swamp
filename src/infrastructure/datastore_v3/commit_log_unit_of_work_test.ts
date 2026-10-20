@@ -1457,6 +1457,140 @@ Deno.test("createCommitLogUnitOfWork: a source that changed cannot restore a del
   assertEquals(sink.landed.length, 1);
 });
 
+/**
+ * A memory storage that stages chunks as the file system storage does:
+ * nothing staged is stored until the stage commits, a discard drops what
+ * was staged, and the names a barrier syncs are recorded.
+ */
+class StagingMemoryStorage extends MemoryStorage {
+  readonly synced: string[] = [];
+
+  stageChunks(namespace: string) {
+    const staged = new Map<string, Uint8Array>();
+    return {
+      put: (sha256: string, bytes: Uint8Array) => {
+        staged.set(sha256, bytes.slice());
+        return Promise.resolve();
+      },
+      commit: () => {
+        for (const [sha256, bytes] of staged) {
+          this.chunks.set(`${namespace}/${sha256}`, bytes);
+        }
+        staged.clear();
+        return Promise.resolve();
+      },
+      discard: () => {
+        staged.clear();
+        return Promise.resolve();
+      },
+    };
+  }
+
+  syncChunkDirectories(_namespace: string, hashes: readonly string[]) {
+    this.synced.push(...hashes);
+    return Promise.resolve();
+  }
+}
+
+Deno.test("createCommitLogUnitOfWork: a source that changed does not cost another blob's restored chunks; they are stored and synced (swamp-club#3617)", async () => {
+  const sink = new MemorySink();
+  const options = unitOptions(
+    sink,
+    new StagingMemoryStorage({ maxChunkBytes: 32 * 1024 }),
+  );
+  let deleted: string[] = [];
+  sink.beforeAppend = async (commit) => {
+    deleted = await deleteChunksOf(commit, options.storage);
+    // Only the restore's barrier counts from here.
+    options.storage.synced.length = 0;
+  };
+  let calls = 0;
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(pendingPut("a", bytesOf(100 * 1024, 3)));
+  await uow.stageOp(
+    pendingPut("b", () => streamOf(bytesOf(100 * 1024, ++calls))),
+  );
+  await uow.commit();
+
+  assertEquals(sink.landed.length, 1);
+  const first = (sink.landed[0].ops[0] as PutOp).content;
+  assert("blob" in first);
+  const hashes = first.blob.chunkHashes();
+  assert(hashes.every((sha256) => deleted.includes(sha256)));
+  const present = await options.storage.has(
+    "_default",
+    hashes,
+    new AbortController().signal,
+  );
+  assertEquals(present.size, hashes.length);
+  assert(hashes.every((sha256) => options.storage.synced.includes(sha256)));
+  assertEquals(
+    await contentOf(sink.landed[0].ops[0] as PutOp, options.storage),
+    bytesOf(100 * 1024, 3),
+  );
+});
+
+Deno.test("createCommitLogUnitOfWork: a stored put superseded before a retry that finds its chunks missing is skipped, so its group lands (swamp-club#3617)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, new StagingMemoryStorage({ maxChunkBytes: 32 * 1024 })),
+  );
+  let aOpens = 0;
+  await uow.stageOp(pendingPut("a", () => {
+    // Read once, then its file is removed.
+    if (aOpens++ > 0) throw new Deno.errors.NotFound("raw was pruned");
+    return streamOf(bytesOf(100 * 1024, 5));
+  }));
+  let bOpens = 0;
+  await uow.stageOp(pendingPut("b", () => {
+    if (bOpens++ === 0) throw new Error("b unreadable");
+    return streamOf(bytesOf(100 * 1024, 6));
+  }));
+  // a is stored, b fails: the failed barrier never stores a's chunks.
+  await assertRejects(() => uow.checkpoint(), Error, "b unreadable");
+  // A prune removes a's file and stages its tombstone before the retry.
+  await uow.stageOp({
+    partition: MODEL,
+    op: tombstoneOp({
+      intent: modelIntent({ kind: "data.gc", name: "a", version: 1 }),
+      key: dataKey("a", 1),
+    }),
+  });
+  await uow.commit();
+  assertEquals(aOpens, 1);
+  const landed = sink.commitsOf(MODEL).flatMap((commit) =>
+    commit.ops.map((op) => `${op.kind} ${"key" in op ? op.key : ""}`)
+  );
+  assertEquals(landed, [
+    `put ${dataKey("b", 1)}`,
+    `tombstone ${dataKey("a", 1)}`,
+  ]);
+});
+
+Deno.test("createCommitLogUnitOfWork: an abort during the landed commit's chunk check ends it at once, instead of failing every remaining blob (swamp-club#3617)", async () => {
+  const sink = new MemorySink();
+  const controller = new AbortController();
+  const options = unitOptions(sink, memory(), { signal: controller.signal });
+  let checks = 0;
+  const chunkStore = options.chunkStore;
+  const missing = chunkStore.missing.bind(chunkStore);
+  chunkStore.missing = (namespace, ref, signal) => {
+    checks++;
+    controller.abort(new Error("shutting down"));
+    signal.throwIfAborted();
+    return missing(namespace, ref, signal);
+  };
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(pendingPut("a", bytesOf(100 * 1024, 1)));
+  await uow.stageOp(pendingPut("b", bytesOf(100 * 1024, 2)));
+  await uow.stageOp(pendingPut("c", bytesOf(100 * 1024, 3)));
+  // The commit landed before the check, so the unit still succeeds.
+  await uow.commit();
+  assertEquals(sink.landed.length, 1);
+  assertEquals(checks, 1);
+});
+
 Deno.test("createCommitLogUnitOfWork: a commit whose chunks are all present checks them once and stores nothing again", async () => {
   const sink = new MemorySink();
   const storage = memory();

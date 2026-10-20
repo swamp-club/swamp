@@ -28,6 +28,7 @@ import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_wo
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -98,6 +99,12 @@ export function createWorkflowHistoryLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedWorkflowRepo?: WorkflowRepository,
+  /**
+   * The repository context's lookup, so a run record the v3 read model could
+   * not materialise fails a lookup loudly and is named by a listing that
+   * leaves it out (swamp-club#3617).
+   */
+  unreadableContent?: UnreadableContentLookup,
 ): WorkflowHistoryLogsDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -105,6 +112,9 @@ export function createWorkflowHistoryLogsDeps(
     repoDir,
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
+    undefined,
+    undefined,
+    unreadableContent,
   );
   const workflowRepo: WorkflowRepository = injectedWorkflowRepo ??
     new YamlWorkflowRepository(repoDir);

@@ -25,6 +25,8 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
+import { UserError } from "../../domain/errors.ts";
+import { UNREADABLE_CONTENT_CODE } from "../../domain/datastore/unreadable_content.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { createServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
@@ -1529,4 +1531,49 @@ Deno.test("handleAccessGrantList: a resolved username wins over a token's email"
     { "699e486007f7": "stack72" },
   );
   assertEquals(displayNames, { "699e486007f7": "stack72" });
+});
+
+Deno.test("handleAccessGrantList: a grant record the datastore cannot materialise is left out, and the rest are listed (swamp-club#3617)", async () => {
+  const readable = makeGrant();
+  const torn = makeGrant();
+  const { service } = createMockDecisionService();
+  const ctx = createCtx(service, "none");
+  ctx.repoContext = {
+    unifiedDataRepo: {
+      findAllForType(type: { normalized: string }) {
+        if (type.normalized !== GRANT_MODEL_TYPE.normalized) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([torn, readable].map((grant) => ({
+          data: {
+            name: grant.id,
+            isRenamed: false,
+            isDeleted: false,
+            tags: {},
+          },
+          modelType: GRANT_MODEL_TYPE,
+          modelId: grant.id,
+        })));
+      },
+      getContent(_type: unknown, modelId: string) {
+        if (modelId === torn.id) {
+          return Promise.reject(
+            new UserError("unreadable", UNREADABLE_CONTENT_CODE),
+          );
+        }
+        return Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(readable)),
+        );
+      },
+    },
+    dataQueryService: { query: () => Promise.resolve([]) },
+  } as unknown as ConnectionContext["repoContext"];
+  const socket = createMockSocket();
+  await handleAccessGrantList(socket, ctx, "req-1", null);
+  const response = JSON.parse(socket.sent[0]);
+  assertEquals(response.type, "access.grant.list");
+  assertEquals(
+    response.payload.grants.map((grant: Grant) => grant.id),
+    [readable.id],
+  );
 });
