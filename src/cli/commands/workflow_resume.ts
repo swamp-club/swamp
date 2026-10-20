@@ -371,21 +371,11 @@ export const workflowResumeCommand = withRemoteOptions(
       reportRegistry.ensureLoaded(),
     ]);
 
-    // Surface what the resume inputs do to the run's inputs. Key names only —
-    // values may be secrets and are never logged. Overrides (a resume key
-    // that collides with an existing input) are warned; purely-additive keys
-    // are info.
+    // Report supplied keys only. The execution service checks their values
+    // under the run's claim; a changed existing value will be refused.
     const resumeKeys = Object.keys(resumeInputs);
     if (resumeKeys.length > 0) {
-      const overridden = resumeKeys.filter((key) => key in run.inputs);
-      const added = resumeKeys.filter((key) => !(key in run.inputs));
-      if (overridden.length > 0) {
-        cliCtx.logger
-          .warn`Resume overriding existing input(s): ${overridden.join(", ")}`;
-      }
-      if (added.length > 0) {
-        cliCtx.logger.info`Resume adding input(s): ${added.join(", ")}`;
-      }
+      cliCtx.logger.info`Resume input(s) supplied: ${resumeKeys.join(", ")}`;
     }
 
     const directResolver: DirectTypeResolver = async (

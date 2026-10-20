@@ -70,12 +70,17 @@ import {
   spliceOrigin,
 } from "./splice_origin.ts";
 import { BINDING_MACROS, freeRoots } from "./cel_grammar.ts";
-import { maskLiteralCalls, stripStringLiterals } from "./cel_string_lexer.ts";
+import {
+  lexSegments,
+  maskLiteralCalls,
+  stripStringLiterals,
+} from "./cel_string_lexer.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { findVaultGetCalls } from "./vault_reference_extractor.ts";
 import {
   CyclicDependencyError as TopoCyclicError,
   type GraphNode,
@@ -858,7 +863,11 @@ export class ExpressionEvaluationService {
       bindingsProvenance ??= bindingTreeProvenance(context);
       deferredExpressions.push({
         id,
-        expression: expr.raw,
+        expression: this.bindOmittedVaultSelectors(
+          expr.raw,
+          context,
+          omitBindings,
+        ),
         bindings,
         ...(bindingsProvenance.isAuthored
           ? {}
@@ -878,6 +887,59 @@ export class ExpressionEvaluationService {
       deferredExpressions,
       provenance: tracked.provenance,
     };
+  }
+
+  /**
+   * A child cannot capture resume inputs, but a vault selector using one
+   * must keep the reference the parent selected. Bind just that selector
+   * before its scope is omitted. No vault value is checked or loaded here;
+   * the child still resolves the reference under its own vault access.
+   */
+  private bindOmittedVaultSelectors(
+    expression: string,
+    context: ExpressionContext,
+    omitBindings: readonly string[],
+  ): string {
+    if (omitBindings.length === 0) return expression;
+    let result = "";
+    let last = 0;
+    for (const call of findVaultGetCalls(expression)) {
+      let changed = false;
+      const bind = (
+        quote: string,
+        quoted: string,
+        bare: string,
+        label: string,
+      ): string => {
+        if (quoted !== undefined) return `${quote}${quoted}${quote}`;
+        if (
+          !referencedBindingPaths(bare).some((path) =>
+            omitBindings.some((omitted) => overlaps(path, omitted))
+          )
+        ) {
+          return bare;
+        }
+        const value = this.celEvaluator.evaluate(bare, context);
+        if (typeof value !== "string") {
+          throw new Error(`vault.get() ${label} must resolve to a string`);
+        }
+        changed = true;
+        // Parentheses keep this a CEL constant, whose escapes are decoded
+        // by CEL; legacy quoted vault arguments are otherwise verbatim.
+        return `(${JSON.stringify(value)})`;
+      };
+      const vault = bind(call[1], call[2], call[3], "vault name");
+      const key = bind(call[4], call[5], call[6], "secret key");
+      // A trailing line comment must end before the separator or closing
+      // parenthesis, including when only the other argument was bound.
+      const args = [vault, key].map((arg) =>
+        lexSegments(arg).at(-1)?.kind === "comment" ? `${arg}\n` : arg
+      );
+      result += expression.slice(last, call.index) +
+        (changed ? `vault.get(${args.join(", ")})` : call[0]);
+      last = call.index + call[0].length;
+    }
+    return result + expression.slice(last);
   }
 
   /**

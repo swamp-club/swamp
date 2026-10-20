@@ -353,11 +353,12 @@ export function failedOnForeignRoot(error: unknown): boolean {
  * - A quoted argument is a literal name. It is kept as written, except that
  *   a backtick-quoted one, which the resolver's matcher accepts and CEL
  *   cannot parse, is parsed as a string constant.
- * - An unquoted argument with no `.` is used verbatim as a literal name, so
+ * - A simple unquoted token is used verbatim as a literal name, so
  *   `t` and `KEY` in `vault.get(t, KEY)` are names, not identifiers CEL would
  *   look up. It is parsed as a string constant.
- * - One holding a `.` is evaluated as CEL. `inputs.vaultName` keeps its
- *   roots, so an undeclared input is still judged by the scope. One that
+ * - A member access, call or other computation is evaluated as CEL.
+ *   `inputs.vaultName` keeps its roots, so an undeclared input is still judged
+ *   by the scope. One that
  *   reads nothing swamp provides (`db.password`, `github.repo`) fails that
  *   evaluation rather than passing through, so it is no sign of another
  *   templating system and is parsed as a string constant too; see
@@ -392,7 +393,7 @@ function readsOnlySwampBindings(bareToken: string): boolean {
 
 /**
  * The unquoted `vault.get` arguments in an expression that the resolver
- * evaluates as CEL (they hold a `.`) but that read nothing swamp provides,
+ * evaluates as CEL but that read nothing swamp provides,
  * such as `db.password` in `vault.get(t, db.password)`. Each fails when the
  * expression is resolved, so a secret key that contains a dot must be quoted.
  */

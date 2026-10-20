@@ -174,6 +174,11 @@ scenario above so the limit is recorded in the tests and not only here.
   same set (`captureInputs` in `resumeWorkflow`).
 - Keys supplied at resume stay out of a child's deferred bindings, under both
   `inputs.<key>` and `run.inputs.<key>`.
+- A vault selector that reads one of those keys is bound before the parent
+  hands it to the child. The child keeps the selected vault reference and
+  resolves it under its own access rules when its step runs. No secret value
+  or unrelated resume input is copied into the deferred record. This also
+  covers selectors from a `forEach` item derived from a resume input.
 - The omission of those bindings is prototype-safe
   (`src/domain/expressions/deferred_expression.ts`).
 - `inputNamesRead` stays for the forEach-over-resume-input omission
@@ -355,14 +360,20 @@ Done in one PR on the swamp-club#3583 branch:
   passes the copy it matched on; a direct in-process caller supersedes nothing,
   so loading there is safe. The loader is a required field of the supersede
   deps, so a caller cannot wire superseding without it.
-- Runs from before this change are pinned from their record. A key an older
-  swamp resumed with is listed in `resumeInputs` without a value, so a value
-  supplied for it is refused; a resume that died between saving the key names
-  and recording the merged inputs is refused the same way, and a new run is
-  the way out. A run whose older resume overrode a stored value keeps the
-  original in its record, so the guard compares against that original rather
-  than the value the later steps ran with; nothing in the record can tell
-  them apart.
+- Runs from before this change are pinned from their record. An older resume
+  that finished or failed could leave a key in `resumeInputs` without its
+  value. Such a run cannot resume, even without `--input`: omitting the lost
+  value would replace it with absence. A resume that died between saving the
+  key names and recording the merged inputs is refused the same way. Start a
+  new run. If an older resume overrode an existing value and then finished or
+  failed, the record can still hold the original value, which the new guard
+  pins. If it suspended again, the old suspension path saved the merged
+  inputs, so the guard pins the override instead.
+- Upgrade hosts that share a datastore together. Older binaries reject the
+  new evaluated-cache input metadata, and their resume paths do not enforce
+  write-once inputs. After an upgrade, evaluate once with the intended inputs
+  or run fresh to replace legacy caches. After a downgrade, evaluate fresh
+  with that version before using `--last-evaluated`.
 - Not done: an authoring-time warning for a step that reads an optional,
   default-less input in a tolerant form and does not run after a gate. It
   would read only the authored workflow at `workflow validate` and be

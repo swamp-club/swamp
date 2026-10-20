@@ -351,7 +351,11 @@ Deno.test("checkResumeInputOverrides: a key an older swamp resumed with, and rec
   assertStringIncludes(both, 'input "target" already has a value');
   assertStringIncludes(both, 'input "authKey" was supplied');
   assertEquals(both.includes("region"), false);
-  accepts(wf, run, { region: "eu" });
+  assertStringIncludes(
+    refusal(wf, run, { region: "eu" }),
+    'input "authKey" was supplied',
+  );
+  assertStringIncludes(refusal(wf, run, {}), 'input "authKey" was supplied');
 });
 
 Deno.test("checkResumeInputOverrides: nothing supplied is nothing to check", () => {

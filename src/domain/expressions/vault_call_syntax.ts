@@ -74,9 +74,15 @@ export function editCelSource(
   };
 }
 
-/** The legacy rule: only a bare token containing a member access is CEL. */
+/**
+ * Whether an unquoted `vault.get` argument is evaluated as CEL before the
+ * lookup. A simple bare name (`my-vault`, `API_KEY`) is used verbatim;
+ * member access, calls, indexing and other computations are evaluated. The
+ * resolver and the swamp-expression classifier both read an argument through
+ * this one rule, so they always agree.
+ */
 export function isDynamicVaultArgument(token: string): boolean {
-  return token.includes(".");
+  return token.includes(".") || /[\s()[\]{}'"]/.test(token);
 }
 
 interface CallSpan {

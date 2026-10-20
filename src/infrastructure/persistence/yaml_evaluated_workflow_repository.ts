@@ -66,6 +66,7 @@ import type {
 } from "../../domain/workflows/repositories.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import type { RecordedEvaluationInputs } from "../../domain/workflows/persisted_workflow.ts";
+import { UserError } from "../../domain/errors.ts";
 
 export interface EvaluatedWorkflowCache {
   workflow: Workflow;
@@ -137,7 +138,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     evaluatedInputsOmitted,
     ...workflowData
   } = data;
-  const metadata = CacheMetadataSchema.parse({
+  const parsed = CacheMetadataSchema.safeParse({
     authoredExpressions,
     deferredExpressions,
     writtenReferences,
@@ -146,6 +147,19 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     evaluatedInputs,
     evaluatedInputsOmitted,
   });
+  if (!parsed.success) {
+    const fields = [
+      ...new Set(parsed.error.issues.map((issue) => issue.path[0])),
+    ];
+    throw new UserError(
+      `The evaluated workflow cache has invalid metadata (${
+        fields.join(", ")
+      }). ` +
+        "Run the workflow without --last-evaluated, or evaluate it again to replace the cache.",
+      "evaluated_workflow_cache_invalid",
+    );
+  }
+  const metadata = parsed.data;
   let provenance: ProvenanceMap | "unreadable" | undefined;
   if (metadata.provenance !== undefined) {
     try {

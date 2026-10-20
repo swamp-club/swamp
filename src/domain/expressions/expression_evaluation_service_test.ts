@@ -53,9 +53,81 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
+import fc from "fast-check";
+import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import { findVaultGetCalls } from "./vault_reference_extractor.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
+
+Deno.test("deferChildInputs: late vault selectors round-trip as constants without capturing other resume inputs", async () => {
+  await withTempDir((dir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(dir),
+      dir,
+    );
+    const evaluator = new CelEvaluator();
+    const expression =
+      "${{ vault.get(inputs.vault, inputs.?key.orValue('missing')) }}";
+    const authored = new Set([expression]);
+    fc.assert(fc.property(fc.string(), fc.string(), (vault, key) => {
+      const context = {
+        model: {},
+        env: {},
+        inputs: { vault, key, unrelated: "must-not-copy" },
+      };
+      const deferred = service.deferChildInputs(
+        { token: expression },
+        context,
+        authored,
+        ["inputs.vault", "inputs.key", "inputs.unrelated"],
+      );
+      const [record] = deferred.deferredExpressions;
+      assertEquals(record.bindings.inputs, {});
+      const [call] = findVaultGetCalls(record.expression);
+      assertEquals(evaluator.evaluate(call[3], {}), vault);
+      assertEquals(evaluator.evaluate(call[6], {}), key);
+      // Data-origin expression text cannot enter the binding pass.
+      const data = service.deferChildInputs(
+        { token: expression },
+        context,
+        authored,
+        ["inputs.key"],
+        ProvenanceMap.data(),
+      );
+      assertEquals(data.deferredExpressions, []);
+      assertEquals(data.data, { token: expression });
+    }));
+    return Promise.resolve();
+  });
+});
+
+Deno.test("deferChildInputs: binding one vault selector preserves comments in the other", async () => {
+  await withTempDir((dir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(dir),
+      dir,
+    );
+    const expression =
+      "${{ vault.get(inputs.vault // selected vault\n, inputs.key) }}";
+    const deferred = service.deferChildInputs(
+      { token: expression },
+      { model: {}, env: {}, inputs: { vault: "default", key: "late-key" } },
+      new Set([expression]),
+      ["inputs.key"],
+    );
+    const [call] = findVaultGetCalls(
+      deferred.deferredExpressions[0].expression,
+    );
+    const evaluator = new CelEvaluator();
+    assertEquals(
+      evaluator.evaluate(call[3], { inputs: { vault: "default" } }),
+      "default",
+    );
+    assertEquals(evaluator.evaluate(call[6], {}), "late-key");
+    return Promise.resolve();
+  });
+});
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-eval-service-" });

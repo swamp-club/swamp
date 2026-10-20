@@ -1810,7 +1810,7 @@ export class ModelResolver {
    * CEL-evaluated against the supplied context before the check. This
    * enables `vault.get(inputs.vaultName, inputs.secretKey)` where the
    * argument values are determined at runtime. Quoted arguments are always
-   * used verbatim. A bare token with no `.` (e.g. `my-vault`) is a literal
+   * used verbatim. A simple bare token (e.g. `my-vault`) is a literal
    * name and is used verbatim too; see `isDynamicVaultArgument`.
    *
    * @param value - The string that may contain vault expressions
@@ -1898,9 +1898,9 @@ export class ModelResolver {
   /**
    * Resolves a single vault.get() argument. Quoted arguments are always
    * returned verbatim. Bare-token arguments are CEL-evaluated when
-   * `celOptions` is provided and the token looks like a CEL member
-   * access (contains `.`, e.g. `inputs.vaultName`). Simple bare tokens
-   * without `.` (e.g. `my-vault`) are used verbatim for backwards
+   * `celOptions` is provided and the argument is a CEL computation, such as
+   * `inputs.?key.orValue('fallback')`. Simple bare tokens
+   * (e.g. `my-vault`) are used verbatim for backwards
    * compatibility.
    */
   private resolveVaultArg(

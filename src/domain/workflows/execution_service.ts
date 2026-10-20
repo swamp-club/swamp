@@ -7130,10 +7130,9 @@ export class WorkflowExecutionService {
     }
 
     // Deferred bindings are persisted by the child, so resume-derived values
-    // are left out: a parent runtime expression that references one fails to
-    // resolve in the child instead of silently using a stale pre-resume
-    // value. The parent run records them as its inputs; inputs are not a
-    // secret channel (swamp-club#2585).
+    // are left out. Vault selectors that read them are bound in the parent
+    // before omission, preserving the selected reference for the child
+    // without copying unrelated inputs or fetching a secret (swamp-club#3583).
     const deferred = expressionContext
       ? inStepReport(() =>
         this.expressionEvaluator.deferChildInputs(

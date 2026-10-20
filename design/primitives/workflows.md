@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-10-06 @ 77141f20
+last-verified: 2026-10-20 @ b0bbe4832
 ---
 
 # Workflows
@@ -774,7 +774,11 @@ its summary and the history index show the values the remaining steps ran with.
 `run.inputs` holds the same merged set, so a step still to run sees one value
 through `inputs.X` and `run.inputs.X`. A child's deferred bindings leave out
 every key supplied at resume under both (`resumeDerived` names `inputs.<key>`
-and `run.inputs.<key>`), on every later resume too.
+and `run.inputs.<key>`), on every later resume too. A vault selector using one
+of those keys is bound in the parent before handoff. The child retains the
+selected reference and checks its own vault access when resolving it, even
+after it suspends and resumes. This also covers selectors from resume-derived
+`forEach` items. Other resume inputs remain absent from the deferred bindings.
 
 Resume inputs are ordinary inputs once merged. Their values are substituted and
 persisted wherever run inputs are: evaluated definitions, step data of behaviors

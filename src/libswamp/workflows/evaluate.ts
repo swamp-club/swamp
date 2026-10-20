@@ -318,6 +318,20 @@ async function evaluateWorkflowInternal(
     )
     : coerceInputTypes(inputs, workflow.inputs);
 
+  if (workflow.inputs) {
+    const validation = new InputValidationService().validate(
+      coercedInputs,
+      workflow.inputs,
+    );
+    if (!validation.valid) {
+      throw new UserError(
+        `Input validation failed for workflow "${workflow.name}":\n` +
+          validation.errors.map((error) => `  ${error.message}`).join("\n"),
+        "input_validation_failed",
+      );
+    }
+  }
+
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
     await deps.saveEvaluatedWorkflow(

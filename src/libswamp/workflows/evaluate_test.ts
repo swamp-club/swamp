@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -1267,3 +1267,49 @@ Deno.test("workflowEvaluate: the cache records schema defaults, with no expressi
   assertEquals(events.at(-1)?.kind, "completed");
   assertEquals(recorded, [{ inputs: { region: "us-east-1" } }]);
 });
+
+for (const all of [false, true]) {
+  Deno.test(`workflowEvaluate: validates coerced inputs before saving (${all ? "all" : "single"})`, async () => {
+    const workflow = Workflow.fromData({
+      ...makeWorkflow().toData(),
+      inputs: {
+        properties: {
+          n: { type: "integer" },
+          cfg: { type: "object" },
+          enabled: { type: "boolean", default: false },
+        },
+        required: ["n", "cfg", "enabled"],
+      },
+    });
+    const saved: unknown[] = [];
+    const deps = makeDeps({
+      findWorkflowByName: () => Promise.resolve(workflow),
+      findAllWorkflows: () => Promise.resolve([workflow]),
+      saveEvaluatedWorkflow: (_w, _p, _a, _r, inputs) => {
+        saved.push(inputs);
+        return Promise.resolve();
+      },
+    });
+    const evaluate = (inputs: Record<string, unknown>) =>
+      collect(workflowEvaluate(createLibSwampContext(), deps, {
+        workflowIdOrName: all ? undefined : workflow.name,
+        inputs,
+      }));
+    const events = await evaluate({ n: "3", cfg: '{"a":1}' });
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(saved, [{ inputs: { n: 3, cfg: { a: 1 }, enabled: false } }]);
+
+    for (const inputs of [{}, { n: "bad", cfg: "{}" }]) {
+      const error = await assertRejects(
+        () => evaluate(inputs),
+        Error,
+        "Input validation failed",
+      );
+      assertEquals(
+        (error as { code?: string }).code,
+        "input_validation_failed",
+      );
+    }
+    assertEquals(saved.length, 1);
+  });
+}

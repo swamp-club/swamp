@@ -337,6 +337,41 @@ Deno.test("retry: a reloaded failed run resumes without --from and re-runs only 
   });
 });
 
+Deno.test("retry: a legacy run with an unrecorded resume input is refused even without --input", async () => {
+  await withRepo(async (repoDir) => {
+    const { workflow, tracker, catalogStore, executor, failed } =
+      await failPipeline(repoDir);
+    try {
+      const { service, runRepo } = freshService(
+        repoDir,
+        executor,
+        tracker,
+        catalogStore,
+      );
+      failed.recordResumeInputs(["lostInput"]);
+      await runRepo.save(workflow.id, failed);
+      const before = (await runRepo.findById(workflow.id, failed.id))!.toData();
+      const calls = new Map(executor.calls);
+      executor.failing.clear();
+      const error = await assertRejects(
+        () => drainResume(service, workflow.name, failed.id),
+        UserError,
+        'input "lostInput" was supplied',
+      );
+      assertEquals(error.code, "resume_input_immutable");
+      assertEquals(
+        (await runRepo.findById(workflow.id, failed.id))?.toData(),
+        before,
+      );
+      assertEquals(executor.calls, calls);
+      assertEquals(tracker.findById(failed.id)?.status, "failed");
+    } finally {
+      tracker.close();
+      catalogStore.close();
+    }
+  });
+});
+
 Deno.test("retry: an evaluation failure after the early save leaves the reloaded run failed", async () => {
   await withRepo(async (repoDir) => {
     const { workflow, tracker, catalogStore, executor, failed } =

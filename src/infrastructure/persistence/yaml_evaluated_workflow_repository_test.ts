@@ -22,6 +22,40 @@ import { join } from "@std/path";
 import { YamlEvaluatedWorkflowRepository } from "./yaml_evaluated_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { fakeUnreadableLookup } from "./unreadable_records_test_helpers.ts";
+import { UserError } from "../../domain/errors.ts";
+
+Deno.test("YamlEvaluatedWorkflowRepository: malformed input metadata gives recovery advice without dumping values", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    const workflow = provenanceWorkflow();
+    await repo.save(workflow, undefined);
+    const path = repo.getPath(workflow.id);
+    const content = await Deno.readTextFile(path);
+    for (
+      const metadata of [
+        "evaluatedInputs: 42",
+        "evaluatedInputsOmitted: private-test-value",
+      ]
+    ) {
+      await Deno.writeTextFile(path, content + `\n${metadata}\n`);
+      const error = await assertRejects(
+        () => repo.findByNameWithProvenance(workflow.name),
+        UserError,
+        "invalid metadata",
+      );
+      assertEquals(error.code, "evaluated_workflow_cache_invalid");
+      assertEquals(error.message.includes("without --last-evaluated"), true);
+      assertEquals(error.message.includes("private-test-value"), false);
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+});
 
 Deno.test("findByName returns workflow with matching name", async () => {
   const tempDir = await Deno.makeTempDir();
