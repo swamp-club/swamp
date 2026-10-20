@@ -160,6 +160,49 @@ export function isUp(worker: FleetWorker): boolean {
   return worker.status === "idle" || worker.status === "busy";
 }
 
+/**
+ * Workers whose process is live: every status but disconnected. Wider than
+ * {@link isUp} — a draining or unverified worker is connected but takes no
+ * new work.
+ */
+export function isConnected(worker: FleetWorker): boolean {
+  return worker.status !== "disconnected";
+}
+
+export interface FleetCounts {
+  connected: number;
+  byStatus: Record<WorkerStatus, number>;
+  /** Leased slots on up workers. */
+  usedSlots: number;
+  /** Slots on up workers. */
+  totalSlots: number;
+}
+
+/** The Workers header's tally: connected workers, each status, and slot use. */
+export function fleetCounts(workers: readonly FleetWorker[]): FleetCounts {
+  const counts: FleetCounts = {
+    connected: 0,
+    byStatus: {
+      unverified: 0,
+      idle: 0,
+      busy: 0,
+      draining: 0,
+      disconnected: 0,
+    },
+    usedSlots: 0,
+    totalSlots: 0,
+  };
+  for (const worker of workers) {
+    counts.byStatus[worker.status]++;
+    if (isConnected(worker)) counts.connected++;
+    if (isUp(worker)) {
+      counts.usedSlots += worker.activeDispatchIds.length;
+      counts.totalSlots += worker.capacity;
+    }
+  }
+  return counts;
+}
+
 /** Fraction of the visibility TTL a disconnected worker has used, 0..1. */
 export function fadeFraction(
   worker: FleetWorker,
@@ -204,13 +247,9 @@ export function groupKeys(workers: readonly FleetWorker[]): string[] {
   return ["fleet", ...[...labels].sort(), PLATFORM_GROUP];
 }
 
-export interface GroupStats {
+export interface GroupStats extends FleetCounts {
   key: string;
   workers: FleetWorker[];
-  up: number;
-  usedSlots: number;
-  totalSlots: number;
-  byStatus: Record<WorkerStatus, number>;
 }
 
 /** Groups workers by `key`; largest total capacity first, then name. */
@@ -227,32 +266,7 @@ export function groupWorkers(
   }
   const stats: GroupStats[] = [];
   for (const [value, members] of groups) {
-    const byStatus: Record<WorkerStatus, number> = {
-      idle: 0,
-      busy: 0,
-      disconnected: 0,
-      unverified: 0,
-      draining: 0,
-    };
-    let up = 0;
-    let usedSlots = 0;
-    let totalSlots = 0;
-    for (const worker of members) {
-      byStatus[worker.status]++;
-      if (isUp(worker)) {
-        up++;
-        usedSlots += worker.activeDispatchIds.length;
-        totalSlots += worker.capacity;
-      }
-    }
-    stats.push({
-      key: value,
-      workers: members,
-      up,
-      usedSlots,
-      totalSlots,
-      byStatus,
-    });
+    stats.push({ key: value, workers: members, ...fleetCounts(members) });
   }
   const weight = (g: GroupStats) =>
     g.workers.reduce((sum, w) => sum + w.capacity, 0);
@@ -261,6 +275,20 @@ export function groupWorkers(
     if (b.key === UNLABELED) return -1;
     return weight(b) - weight(a) || a.key.localeCompare(b.key);
   });
+}
+
+/** Group cards narrower than this show only their slot use. */
+export const CAPTION_FULL_MIN_WIDTH = 190;
+
+/**
+ * A group card's caption. Counts connected workers rather than up out of all
+ * listed, so disconnected records inside the visibility TTL never read as
+ * workers that are down.
+ */
+export function groupCaption(stats: FleetCounts, width: number): string {
+  const slots = `${stats.usedSlots}/${stats.totalSlots} slots`;
+  if (width < CAPTION_FULL_MIN_WIDTH) return slots;
+  return `${stats.connected} connected · ${slots}`;
 }
 
 export interface WorkerSummary {

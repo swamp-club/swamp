@@ -1496,7 +1496,11 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   enrollment token name), any other label key, or platform/arch, in a treemap
   weighted by slot capacity. Each worker is a square sized by its `capacity`,
   with one cell per dispatch slot showing that slot's step-lease state. The
-  view reads two admin-only requests: `worker.list` with
+  header and each group card lead with the connected count (every status but
+  disconnected), kept apart from slot use, so disconnected records never count
+  as workers that are down. A disconnected record — a replaced or stopped
+  worker — is drawn hollow, with a muted outline, starting half faded, and it
+  fades further until its visibility TTL ends. The view reads two admin-only requests: `worker.list` with
   `disconnectedWithinMs` (disconnected workers stay visible for the viewer's
   visibility TTL, at most the worker GC's default 24 h grace period), and
   `worker.lease.list` (the step leases behind the listed `activeDispatchIds`
