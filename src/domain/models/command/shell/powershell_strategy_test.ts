@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { PowerShellStrategy } from "./powershell_strategy.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
+import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
@@ -127,4 +128,48 @@ Deno.test("PowerShellStrategy.resolveSecrets: empty bag returns command unchange
   const resolved = strategy.resolveSecrets("Write-Output hello", bag);
   assertEquals(resolved.command, "Write-Output hello");
   assertEquals(resolved.env, {});
+});
+
+Deno.test("PowerShellStrategy.planSecrets: refuses a data value inside single quotes and skips authored keys whatever their case", () => {
+  const strategy = new PowerShellStrategy();
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const data = bag.addDataReference(REF, "db/main.password");
+  const vault = bag.addSecret(REF, "methods.execute.arguments.run");
+  const plan = strategy.planSecrets(
+    `Write-Output '${data}' "${vault}"`,
+    ["__swamp_vault_0"],
+    secretOccurrencesOf(registry).originOf,
+  );
+  assertEquals(
+    plan.refused.map((o) => [o.sentinel, o.where]),
+    [[data, "PowerShell single quotes"]],
+  );
+  assertEquals([...plan.envNames.values()], [
+    "__SWAMP_VAULT_1",
+    "__SWAMP_VAULT_2",
+  ]);
+  // A vault.get() reference inside single quotes stays literal, as before.
+  const literal = strategy.planSecrets(
+    `Write-Output '${vault}'`,
+    [],
+    secretOccurrencesOf(registry).originOf,
+  );
+  assertEquals(literal.refused, []);
+  assertEquals(literal.singleQuoted, [vault]);
+  assertEquals(literal.occurrences[0].placement, "literal");
+});
+
+Deno.test("PowerShellStrategy.resolveSecrets: generated names skip the authored environment keys, case-insensitively", () => {
+  const strategy = new PowerShellStrategy();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+  const loaded = bag.withLoaded(new Map([[sentinel, "secret-value"]]));
+  const resolved = strategy.resolveSecrets(
+    `Write-Output ${sentinel}`,
+    loaded,
+    ["__swamp_vault_0"],
+  );
+  assertEquals(resolved.command, 'Write-Output "$env:__SWAMP_VAULT_1"');
+  assertEquals(resolved.env, { __SWAMP_VAULT_1: "secret-value" });
 });

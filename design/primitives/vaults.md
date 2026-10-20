@@ -732,6 +732,13 @@ execution time when any occurrence sits there. A secret used more than once in
 different quote contexts is therefore one quoted word at every double-quoted
 use. PowerShell reads the context from quote characters alone.
 
+Under typed secrets (design/enablers/typed-secrets.md Section 7.2, behind an
+internal option until Phase 4), a value read through data inside a here-document
+with a quoted delimiter, or inside PowerShell single quotes, is refused before
+the step loads anything instead of being pasted into the command with a warning,
+and a secret in an environment variable name or in `workingDir` is refused the
+same way.
+
 A here-document body has no quoting of its own, so swamp reads it from the start
 of the body as the generated script or config would be read. Within a line every
 double quote opens or closes a string, as in shell, so attached strings such as

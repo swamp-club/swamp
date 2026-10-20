@@ -18,10 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  isIssuedEntry,
+  type RegistryEntry,
   SecretBagRegistry,
   type SecretReference,
+  SENTINEL_SOURCE,
 } from "../vaults/secret_bag_registry.ts";
 import type { SecretRedactor } from "./secret_redactor.ts";
+
+/** The prefix every sentinel starts with, checked before a full scan. */
+const SENTINEL_MARK = "__SWAMP_VSEC_";
+const SENTINEL_PATTERN = new RegExp(SENTINEL_SOURCE, "g");
 
 /**
  * Sets an own, enumerable property, so a key named `__proto__` in copied data
@@ -100,7 +107,39 @@ export class RunSensitiveValues implements SecretSink {
     private readonly redactor?: SecretRedactor,
     /** The sentinels this run issued; every bag of the run issues into it. */
     readonly sentinels: SecretBagRegistry = new SecretBagRegistry(),
-  ) {}
+  ) {
+    // In a typed run the redactor masks the run's sentinels too, so logs,
+    // streamed output and errors share one implementation with the masks
+    // below (design/enablers/typed-secrets.md Section 7.1).
+    if (sentinels.typedSecrets) redactor?.maskSentinelsOf(sentinels);
+  }
+
+  /**
+   * Whether masks and stand-ins are also derived from the sentinels the run
+   * issued: a typed run that issued at least one. Reading a registry entry
+   * loads nothing.
+   */
+  private get derivesFromSentinels(): boolean {
+    return this.sentinels.typedSecrets && !this.sentinels.isEmpty;
+  }
+
+  /**
+   * Replaces every sentinel the run issued in `text` with what `standIn`
+   * makes of its entry, in a typed run. Sentinel-shaped text with another
+   * prefix, or that the run did not issue, stays as it is.
+   */
+  private withSentinelStandIns(
+    text: string,
+    standIn: (entry: RegistryEntry) => string,
+  ): string {
+    if (!this.derivesFromSentinels || !text.includes(SENTINEL_MARK)) {
+      return text;
+    }
+    return text.replace(SENTINEL_PATTERN, (sentinel) => {
+      const entry = this.sentinels.entryOf(sentinel);
+      return entry === undefined ? sentinel : standIn(entry);
+    });
+  }
 
   addSecret(value: string, source?: SecretSource): void {
     this.redactor?.addSecret(value);
@@ -147,7 +186,12 @@ export class RunSensitiveValues implements SecretSink {
     return `sensitive-${source.vaultName}.${encodeKeyForName(source.key)}`;
   }
 
-  /** Replaces every recorded value in the text with its placeholder. */
+  /**
+   * Replaces every recorded value in the text with its placeholder, and in a
+   * typed run every sentinel the run issued with the placeholder of its
+   * reference, derived from the sentinel without reading a value. An entry
+   * with no reference (one a worker rebuilt) becomes the mask.
+   */
   withPlaceholders(text: string): string {
     let result = text;
     for (const { value, source } of this.list()) {
@@ -155,7 +199,11 @@ export class RunSensitiveValues implements SecretSink {
         result = result.split(value).join(this.placeholderFor(source));
       }
     }
-    return result;
+    return this.withSentinelStandIns(
+      result,
+      (entry) =>
+        isIssuedEntry(entry) ? this.placeholderFor(entry.reference) : "***",
+    );
   }
 
   /**
@@ -165,7 +213,7 @@ export class RunSensitiveValues implements SecretSink {
    * that derivation rewrites the text and would hide the value from matching.
    */
   withPlaceholdersDeep(value: unknown): unknown {
-    if (this.isEmpty) return value;
+    if (this.isEmpty && !this.derivesFromSentinels) return value;
     if (typeof value === "string") return this.withPlaceholders(value);
     if (typeof value === "number" || typeof value === "boolean") {
       const source = this.entries.get(String(value));
@@ -188,7 +236,7 @@ export class RunSensitiveValues implements SecretSink {
   tagsWithPlaceholders(
     tags: Record<string, string>,
   ): Record<string, string> {
-    if (this.isEmpty) return tags;
+    if (this.isEmpty && !this.derivesFromSentinels) return tags;
     const result: Record<string, string> = Object.create(null);
     for (const [key, value] of Object.entries(tags)) {
       definedEntry(
@@ -201,12 +249,13 @@ export class RunSensitiveValues implements SecretSink {
   }
 
   /**
-   * Masks every recorded value in a structure with `***` for display. A
-   * number or boolean equal to a recorded value becomes the string `***`, so
-   * the result is not the input's type.
+   * Masks every recorded value in a structure with `***` for display, and
+   * in a typed run every sentinel the run issued, whatever it stands for and
+   * without reading it. A number or boolean equal to a recorded value
+   * becomes the string `***`, so the result is not the input's type.
    */
   masked(value: unknown): unknown {
-    if (this.isEmpty) return value;
+    if (this.isEmpty && !this.derivesFromSentinels) return value;
     return this.maskDeep(value);
   }
 
@@ -220,7 +269,7 @@ export class RunSensitiveValues implements SecretSink {
           result = result.split(escaped).join("***");
         }
       }
-      return result;
+      return this.withSentinelStandIns(result, () => "***");
     }
     if (typeof value === "number" || typeof value === "boolean") {
       return this.entries.has(String(value)) ? "***" : value;

@@ -684,7 +684,12 @@ The step's `vault.get()` values are loaded once per attempt, before the
 checks run, and the checks and the method share that loaded bag as
 `context.vaultSecrets`: `globalArgs` holds the values, while
 `unresolvedMethodArgs` keeps the sentinels. A load that fails fails the step
-before any check runs (design/enablers/typed-secrets.md Section 3.3).
+before any check runs (design/enablers/typed-secrets.md Section 3.3). In a
+typed run (the internal typed-secrets option, Section 10.3), the boundary
+first refuses a secret at a destination that takes none: a field marked
+`.meta({ secrets: "refuse" })` in the global or merged arguments, then the
+method's own optional `refuseSecretDestinations` hook for a local placement,
+all before any load (Section 6.3), so a refused attempt reads no vault.
 
 ```typescript
 // Example: validate a method argument in a pre-flight check

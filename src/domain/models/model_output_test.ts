@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   computeDefinitionHash,
+  executionErrorFrom,
   type ExecutionProvenance,
   ModelOutput,
   type ModelOutputData,
@@ -711,4 +712,30 @@ Deno.test("ModelOutput fromData: missing bundleFingerprint defaults to undefined
   const output = ModelOutput.fromData(data);
 
   assertEquals(output.provenance.bundleFingerprint, undefined);
+});
+
+Deno.test("executionErrorFrom: passes the message and stack through the redactor, and keeps them without one", () => {
+  const error = new Error("token hunter2-long leaked");
+  assertEquals(executionErrorFrom(error).message, "token hunter2-long leaked");
+  assertEquals(typeof executionErrorFrom(error).stack, "string");
+  const redactor = {
+    hasSecrets: true,
+    redact: (text: string) => text.replaceAll("hunter2-long", "***"),
+  };
+  const clean = executionErrorFrom(error, redactor);
+  assertEquals(clean.message, "token *** leaked");
+  assertEquals(clean.stack?.includes("hunter2-long"), false);
+  assertEquals(clean.stack?.includes("***"), true);
+  // A thrown non-Error has a message and no stack.
+  assertEquals(executionErrorFrom("plain failure", redactor), {
+    message: "plain failure",
+  });
+  // A redactor holding nothing is not asked.
+  const idle = {
+    hasSecrets: false,
+    redact: (): string => {
+      throw new Error("not called");
+    },
+  };
+  assertEquals(executionErrorFrom(new Error("m"), idle).message, "m");
 });

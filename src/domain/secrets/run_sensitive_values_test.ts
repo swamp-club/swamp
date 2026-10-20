@@ -175,3 +175,87 @@ Deno.test("RunSensitiveValues.sentinels: one registry per run, shared by every b
   assertEquals(new RunSensitiveValues(undefined, own).sentinels, own);
   assertEquals(new RunSensitiveValues().sentinels !== values.sentinels, true);
 });
+
+Deno.test("RunSensitiveValues: in a typed run, masks and stand-ins derive from registered sentinels without any value (typed-secrets 3.4)", () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const redactor = new SecretRedactor();
+  const values = new RunSensitiveValues(redactor, registry);
+  const bag = new VaultSecretBag(registry);
+  const vault = bag.addSecret(
+    { vaultName: "prod", key: "db.pass" },
+    "methods.run.arguments.x",
+  );
+  const data = bag.addDataReference(
+    { vaultName: "prod", key: "api" },
+    "db/main.token",
+  );
+  const legacy = bag.addDataSecret("legacy-value", {
+    vaultName: "prod",
+    key: "legacy",
+  });
+  const other = `__SWAMP_VSEC_${"ab".repeat(16)}_0__`;
+  // No value was recorded; everything below comes from the registry.
+  assertEquals(values.isEmpty, true);
+  assertEquals(
+    values.masked(`a ${vault} b ${data} c ${legacy} d ${other}`),
+    `a *** b *** c *** d ${other}`,
+  );
+  assertEquals(
+    values.masked({ run: `x=${vault}`, n: 1, list: [data] }),
+    { run: "x=***", n: 1, list: ["***"] },
+  );
+  assertEquals(
+    values.withPlaceholders(`t-${vault}-${data}-${legacy}-${other}`),
+    `t-sensitive-prod.db%2Epass-sensitive-prod.api-sensitive-prod.legacy-${other}`,
+  );
+  assertEquals(
+    values.tagsWithPlaceholders({ env: vault, plain: "p" }),
+    { env: "sensitive-prod.db%2Epass", plain: "p" },
+  );
+  assertEquals(values.withPlaceholdersDeep({ a: [data], n: 2 }), {
+    a: ["sensitive-prod.api"],
+    n: 2,
+  });
+  // The redactor masks the same sentinels, so logs and output agree.
+  assertEquals(redactor.hasSecrets, true);
+  assertEquals(redactor.redact(`log ${vault}`), "log ***");
+});
+
+Deno.test("RunSensitiveValues: an untyped run keeps a sentinel as text and derives nothing from it", () => {
+  const registry = new SecretBagRegistry();
+  const redactor = new SecretRedactor();
+  const values = new RunSensitiveValues(redactor, registry);
+  const sentinel = new VaultSecretBag(registry).addSecret(
+    { vaultName: "v", key: "k" },
+    "loc",
+  );
+  assertEquals(values.masked(`x ${sentinel}`), `x ${sentinel}`);
+  assertEquals(values.withPlaceholders(`x ${sentinel}`), `x ${sentinel}`);
+  assertEquals(values.tagsWithPlaceholders({ t: sentinel }), { t: sentinel });
+  assertEquals(redactor.hasSecrets, false);
+  assertEquals(redactor.redact(`x ${sentinel}`), `x ${sentinel}`);
+});
+
+Deno.test("RunSensitiveValues.withPlaceholders: a sentinel a worker rebuilt has no reference and becomes the mask", () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const sentinel = `__SWAMP_VSEC_${"0".repeat(32)}_0__`;
+  registry.register({ sentinel, value: "shipped", dataOrigin: true });
+  const values = new RunSensitiveValues(undefined, registry);
+  assertEquals(values.withPlaceholders(`t-${sentinel}`), "t-***");
+  assertEquals(values.masked(`t-${sentinel}`), "t-***");
+});
+
+Deno.test("RunSensitiveValues: recorded values and registered sentinels are replaced together", () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const values = new RunSensitiveValues(undefined, registry);
+  values.addSecret("hunter2-long", { vaultName: "v", key: "old" });
+  const sentinel = new VaultSecretBag(registry).addSecret(
+    { vaultName: "v", key: "new" },
+    "loc",
+  );
+  assertEquals(values.masked(`${sentinel}:hunter2-long`), "***:***");
+  assertEquals(
+    values.withPlaceholders(`${sentinel}:hunter2-long`),
+    "sensitive-v.new:sensitive-v.old",
+  );
+});

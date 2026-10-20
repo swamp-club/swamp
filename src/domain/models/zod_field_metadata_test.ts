@@ -23,6 +23,7 @@ import {
   extractFieldsWithMetadata,
   type FieldMetadata,
   findFieldMetadata,
+  findFieldsWhere,
   findValuesWithMetadata,
   schemaHoldsMetadata,
 } from "./zod_field_metadata.ts";
@@ -807,4 +808,68 @@ Deno.test("schemaHoldsMetadata: searches a schema once per matches function", ()
   assertEquals(calls, afterFirst);
   // Another function gets its own answer.
   assertEquals(schemaHoldsMetadata(schema, () => false), false);
+});
+
+Deno.test("findFieldsWhere: reads a field's metadata across its wrapper chain and enters containers, unions and pipes", () => {
+  const marked = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.marked === true);
+  const both = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.a === true) &&
+    chain.some((meta) => meta.b === true);
+  const schema = z.object({
+    plain: z.string(),
+    direct: z.string().meta({ marked: true }),
+    inner: z.string().meta({ marked: true }).optional(),
+    outer: z.string().optional().meta({ marked: true }),
+    nested: z.object({ deep: z.string().meta({ marked: true }) }),
+    list: z.array(z.string().meta({ marked: true })),
+    tuple: z.tuple(
+      [z.string(), z.string().meta({ marked: true })],
+      z.string().meta({ marked: true }),
+    ),
+    record: z.record(z.string(), z.string().meta({ marked: true })),
+    union: z.union([
+      z.object({ u: z.string().meta({ marked: true }) }),
+      z.string(),
+    ]),
+    piped: z.string().meta({ a: true }).pipe(z.string().meta({ b: true })),
+    split: z.string().meta({ a: true }).optional().meta({ b: true }),
+  });
+  assertEquals(findFieldsWhere(schema, marked), [
+    "direct",
+    "inner",
+    "outer",
+    "nested.deep",
+    "list[]",
+    "tuple[1]",
+    "tuple[]",
+    "record[*]",
+    "union.u",
+  ]);
+  assertEquals(findFieldsWhere(schema, both), ["piped", "split"]);
+  // Metadata on the root schema itself is not a field.
+  assertEquals(
+    findFieldsWhere(z.object({ x: z.string() }).meta({ marked: true }), marked),
+    [],
+  );
+});
+
+Deno.test("findFieldsWhere: a recursive schema is visited once", () => {
+  interface Node {
+    name: string;
+    children: Node[];
+  }
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({
+      name: z.string().meta({ marked: true }),
+      children: z.array(node),
+    })
+  );
+  assertEquals(
+    findFieldsWhere(
+      z.object({ root: node }),
+      (chain) => chain.some((meta) => meta.marked === true),
+    ),
+    ["root.name"],
+  );
 });

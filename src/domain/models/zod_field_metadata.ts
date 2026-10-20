@@ -739,6 +739,87 @@ export function findValuesWithMetadata(
 }
 
 /**
+ * The paths of the fields in `schema` whose metadata, read across the whole
+ * wrapper chain of the field (`.meta().optional()` and `.optional().meta()`
+ * alike, and both sides of a `.pipe()`), satisfies `matches`, reading the
+ * schema alone. Unlike {@link extractFieldsWithMetadata} it enters arrays,
+ * tuples, records, unions, intersections and lazy schemas: an array element
+ * or tuple rest is written `[]`, a tuple item `[<i>]`, a record value or
+ * `.catchall()` key `[*]`, and a union or intersection member keeps the path
+ * of the field it describes. A schema reached twice (a recursive schema, or
+ * one shared by two fields) is visited once, under the first path. Metadata
+ * on the root schema itself is not reported.
+ *
+ * @param schema - A Zod schema (typically an object schema)
+ * @param matches - Decides from a field's metadata, outermost wrapper first
+ * @returns The matching field paths, in visit order
+ */
+export function findFieldsWhere(
+  schema: z.ZodTypeAny,
+  matches: (metadata: readonly FieldMetadata[]) => boolean,
+): string[] {
+  const found: string[] = [];
+  const visited = new Set<z.ZodTypeAny>();
+  const visit = (node: z.ZodTypeAny, path: string, root: boolean): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    // The chain of wrappers down to the core, each contributing its metadata.
+    const chain: FieldMetadata[] = [];
+    const seen = new Set<z.ZodTypeAny>();
+    let current: z.ZodTypeAny | undefined = node;
+    let core: z.ZodTypeAny = node;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      core = current;
+      const meta = readMetadata(current);
+      if (meta) chain.push(meta);
+      if (getSchemaType(current) === "pipe") {
+        const pipe = getSchemaDef(current);
+        if (pipe.in && pipe.out && getSchemaType(pipe.in) !== "transform") {
+          const outMeta = readMetadata(pipe.out);
+          if (outMeta) chain.push(outMeta);
+        }
+      }
+      current = innerSchema(current);
+    }
+    if (!root && chain.length > 0 && matches(chain)) found.push(path);
+
+    const def = getSchemaDef(core);
+    if (!def?.type) return;
+    switch (def.type) {
+      case "object":
+        for (const [key, field] of Object.entries(def.shape ?? {})) {
+          visit(field, appendKey(path, key), false);
+        }
+        if (def.catchall) visit(def.catchall, `${path}[*]`, false);
+        break;
+      case "record":
+        if (def.valueType) visit(def.valueType, `${path}[*]`, false);
+        break;
+      case "array":
+        if (def.element) visit(def.element, `${path}[]`, false);
+        break;
+      case "tuple":
+        (def.items ?? []).forEach((item, index) =>
+          visit(item, `${path}[${index}]`, false)
+        );
+        if (def.rest) visit(def.rest, `${path}[]`, false);
+        break;
+      case "union":
+        for (const option of def.options ?? []) visit(option, path, root);
+        break;
+      case "intersection":
+        for (const side of [def.left, def.right]) {
+          if (side) visit(side, path, root);
+        }
+        break;
+    }
+  };
+  visit(schema, "", true);
+  return found;
+}
+
+/**
  * Answers of {@link schemaHoldsMetadata}, per `matches` function and schema.
  * Weak on both, so an entry lasts no longer than the schema it describes.
  */

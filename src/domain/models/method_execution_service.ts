@@ -39,7 +39,8 @@ import type { Definition } from "../definitions/definition.ts";
 import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
-import { ModelOutput } from "./model_output.ts";
+import { executionErrorFrom, ModelOutput } from "./model_output.ts";
+import { refuseSecretDestinations } from "./secret_destinations.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
@@ -281,6 +282,26 @@ function isDataHandleShaped(value: unknown): value is DataHandle {
     typeof handle.name === "string" &&
     typeof handle.version === "number" &&
     typeof handle.tags === "object" && handle.tags !== null;
+}
+
+/**
+ * The method's arguments as `unresolvedMethodArgs` carries them, from the
+ * definition as evaluated: the raw method arguments over the raw global
+ * arguments, sentinels in place of secrets. A global argument holding an
+ * unresolved `${{ ... }}` expression is left out, as the merge in `execute()`
+ * leaves it out; another templating system's `${{ ... }}` text is kept, see
+ * `containsSwampExpression`.
+ */
+function unresolvedArgumentsOf(
+  definition: Definition,
+  methodName: string,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(definition.globalArguments)) {
+    if (containsSwampExpression(value)) continue;
+    merged[key] = value;
+  }
+  return { ...merged, ...definition.getMethodArguments(methodName) };
 }
 
 /**
@@ -734,6 +755,30 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
+      // A remotely placed step runs its method body on a worker; checks and
+      // the shell policy belong to the host that runs the body.
+      const isRemotePlacement = context.placement &&
+        hasPlacement(context.placement);
+
+      // Refuse a secret at a destination that takes none, before any load
+      // (design/enablers/typed-secrets.md Sections 6.3 and 7.1): a field
+      // marked secrets: "refuse" in the global arguments or in the merged
+      // arguments the method will see, then the method's own destinations
+      // for a local placement. The decision reads the run's sentinels, never
+      // a value, so a refused attempt reads no vault. Behind the internal
+      // option, which only a typed run's registry carries.
+      const registry = context.vaultSecrets?.registry;
+      if (registry?.typedSecrets && context.vaultSecrets?.resolvesAny) {
+        refuseSecretDestinations({
+          modelDef,
+          method,
+          globalArguments: currentDefinition.globalArguments,
+          mergedArguments: unresolvedArgumentsOf(currentDefinition, methodName),
+          registry,
+          localPlacement: !isRemotePlacement,
+        });
+      }
+
       // Load the vault references this attempt delivers, once and before
       // anything receives them (design/enablers/typed-secrets.md Section
       // 3.3). From here on `context` is the attempt's: global argument
@@ -841,31 +886,16 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const methodKind = inferMethodKind(methodName, method);
 
       // Build unresolvedMethodArgs for pre-flight checks so they can
-      // validate method arguments. Mirrors the merge in execute() (line ~326):
+      // validate method arguments. Mirrors the merge in execute():
       // per-method args override global args, with unresolved ${{ }}
       // expressions filtered from global args.
-      const rawMethodArgs = currentDefinition.getMethodArguments(methodName);
-      const filteredRawGlobalArgs: Record<string, unknown> = {};
-      for (
-        const [key, value] of Object.entries(
-          currentDefinition.globalArguments,
-        )
-      ) {
-        if (containsSwampExpression(value)) {
-          continue;
-        }
-        filteredRawGlobalArgs[key] = value;
-      }
-      const checkUnresolvedMethodArgs: Record<string, unknown> = {
-        ...filteredRawGlobalArgs,
-        ...rawMethodArgs,
-      };
+      const checkUnresolvedMethodArgs = unresolvedArgumentsOf(
+        currentDefinition,
+        methodName,
+      );
 
       // Skip pre-flight checks for remotely-placed steps — checks run on
       // the orchestrator where worker-local filesystem state is unavailable.
-      const isRemotePlacement = context.placement &&
-        hasPlacement(context.placement);
-
       if (isRemotePlacement && modelDef.checks && isMutatingKind(methodKind)) {
         context.logger.info(
           "Skipping pre-flight checks for remotely-placed step",
@@ -1218,10 +1248,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       } catch (error) {
         if (output && context.outputRepository) {
-          output.markFailed({
-            message: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined,
-          });
+          // The record holds the error with every delivered value, and in a
+          // typed run every sentinel, masked (Section 7.1).
+          output.markFailed(executionErrorFrom(error, context.redactor));
           await context.outputRepository.save(
             modelDef.type,
             methodName,

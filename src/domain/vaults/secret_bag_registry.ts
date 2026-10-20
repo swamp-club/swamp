@@ -128,13 +128,33 @@ export function holdsValue(
  * parent's registry, as it shares its parent's RunSensitiveValues. No
  * vault.get() entry holds a value; each delivery loads its own.
  */
+/** How a run's registry is built. Internal: only tests set anything here. */
+export interface SecretBagRegistryOptions {
+  /**
+   * Whether the run's secrets are typed: its expressions evaluate with the
+   * internal option (`CelEvaluatorOptions.typedSecrets`), and its
+   * destinations apply the policies of design/enablers/typed-secrets.md
+   * Section 7, read from this flag by the method boundary, the shell
+   * behavior, `RunSensitiveValues` and `SecretRedactor`. Set only by tests
+   * until Phase 4 turns the path on for every entry point (Section 10.3); a
+   * fitness test keeps production code from passing it.
+   */
+  readonly typedSecrets?: boolean;
+}
+
 export class SecretBagRegistry {
+  /** Whether the run's secrets are typed ({@link SecretBagRegistryOptions}). */
+  readonly typedSecrets: boolean;
   private readonly entries = new Map<string, RegistryEntry>();
   /** Each sentinel's position in issue order. */
   private readonly sequence = new Map<string, number>();
   private readonly prefixes = new Set<string>();
   /** Each reference's existence answer: in flight, or confirmed. */
   private readonly existence = new Map<string, Promise<void>>();
+
+  constructor(options: SecretBagRegistryOptions = {}) {
+    this.typedSecrets = options.typedSecrets === true;
+  }
 
   /** Records a prefix a bag of this registry drew. */
   drawPrefix(prefix: string): void {

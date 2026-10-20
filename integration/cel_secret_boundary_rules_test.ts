@@ -25,9 +25,11 @@
 //   register, record or convert a `Secret`: everything else sees sentinels.
 // - Until Phase 4 turns typed secrets on for every entry point, no production
 //   code sets the internal option: no `new CelEvaluator(` passes an argument,
-//   and no file but cel_evaluator.ts builds the internal environment. The
-//   scan reads those two call shapes only; a factory or wrapper that forwards
-//   options to either would pass it, so give such a wrapper its own check.
+//   no `new SecretBagRegistry(` passes an argument (the registry flag that
+//   turns on the destination policies of typed-secrets 3.4), and no file but
+//   cel_evaluator.ts builds the internal environment. The scan reads those
+//   call shapes only; a factory or wrapper that forwards options to any of
+//   them would pass it, so give such a wrapper its own check.
 
 import { assert } from "@std/assert";
 import {
@@ -84,12 +86,16 @@ Deno.test("no production code outside the CEL adapter imports a Secret module", 
 
 Deno.test("no production code sets the typed-secrets option", async () => {
   const constructed: string[] = [];
+  const registries: string[] = [];
   const built: string[] = [];
   for await (const filePath of productionSourceFiles(SRC_DIR)) {
     const rel = repoRelative(filePath);
     const source = await Deno.readTextFile(filePath);
     for (const call of constructorCalls(source, "CelEvaluator")) {
       if (call.args.length > 0) constructed.push(`${rel}:${call.line + 1}`);
+    }
+    for (const call of constructorCalls(source, "SecretBagRegistry")) {
+      if (call.args.length > 0) registries.push(`${rel}:${call.line + 1}`);
     }
     if (rel === `${CEL_ADAPTER}/cel_evaluator.ts`) continue;
     source.split("\n").forEach((line, index) => {
@@ -106,6 +112,12 @@ Deno.test("no production code sets the typed-secrets option", async () => {
     constructed,
     [],
     "new CelEvaluator( with options in production code",
+    policy,
+  );
+  assertPinnedSet(
+    registries,
+    [],
+    "new SecretBagRegistry( with options in production code",
     policy,
   );
   assertPinnedSet(

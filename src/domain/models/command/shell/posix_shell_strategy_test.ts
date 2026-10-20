@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { PosixShellStrategy } from "./posix_shell_strategy.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
+import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
@@ -68,4 +69,42 @@ Deno.test("PosixShellStrategy.resolveSecrets: empty bag returns command unchange
   const resolved = strategy.resolveSecrets("echo hello", bag);
   assertEquals(resolved.command, "echo hello");
   assertEquals(resolved.env, {});
+});
+
+Deno.test("PosixShellStrategy.planSecrets: plans from references alone and refuses a data value in a quoted here-document", () => {
+  const strategy = new PosixShellStrategy();
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const data = bag.addDataReference(REF, "db/main.password");
+  const vault = bag.addSecret(REF, "methods.execute.arguments.run");
+  const plan = strategy.planSecrets(
+    `cat <<'EOF'\n${data}\nEOF\necho "${vault}"`,
+    ["__SWAMP_VAULT_0"],
+    secretOccurrencesOf(registry).originOf,
+  );
+  assertEquals(
+    plan.refused.map((o) => [o.sentinel, o.where]),
+    [[data, "a here-document with a quoted delimiter"]],
+  );
+  assertEquals([...plan.envNames.values()], [
+    "__SWAMP_VAULT_1",
+    "__SWAMP_VAULT_2",
+  ]);
+  assertEquals(plan.singleQuoted, []);
+  // Nothing was loaded: the bag cannot deliver, the plan needed nothing.
+  assertEquals(bag.isEmpty, false);
+});
+
+Deno.test("PosixShellStrategy.resolveSecrets: generated names skip the authored environment keys", () => {
+  const strategy = new PosixShellStrategy();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+  const loaded = bag.withLoaded(new Map([[sentinel, "secret-value"]]));
+  const resolved = strategy.resolveSecrets(`echo ${sentinel}`, loaded, [
+    "__SWAMP_VAULT_0",
+    "PATH",
+  ]);
+  assertEquals(resolved.command, 'echo "${__SWAMP_VAULT_1}"');
+  assertEquals(resolved.env, { __SWAMP_VAULT_1: "secret-value" });
+  assertEquals(resolved.envNames, new Map([[sentinel, "__SWAMP_VAULT_1"]]));
 });
