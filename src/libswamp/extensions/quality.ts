@@ -307,9 +307,10 @@ export async function* extensionQuality(
         ctx.logger.debug`Cache put: ${archiveBytes.length} bytes at ${hash}`;
       }
 
-      // The registry's scorer strips deno.json, so it cannot resolve bare
-      // specifiers and leaves such an extension unscored. The local score
-      // below resolves the import map, so say so rather than hide it.
+      // The registry's scorer strips deno.json, so it cannot resolve a bare
+      // import push ships as written (one the import map does not resolve,
+      // swamp-club#3637) and leaves such an extension unscored. The local
+      // score below resolves the import map, so say so rather than hide it.
       const registryScorable = !prepared.reviewRulesResult.warnings.some((w) =>
         w.ruleId === "bare-specifiers"
       );

@@ -119,7 +119,9 @@ If re-bundling fails and a cached bundle exists, the cached bundle is used
 (`extension_loader.ts`). Expected failures log at debug level, others at warn.
 The expected case is a bare specifier such as `from "zod"` instead of
 `from "npm:zod@4"`, which cannot resolve without the project's `deno.json`
-import map. Only the module's own static imports count; imports inside template
+import map. Push rewrites the bare imports that map resolves in a published
+extension's source (swamp-club#3637), so this is the case for a name the map
+does not resolve or a `package.json` project. Only the module's own static imports count; imports inside template
 literals are generated code and are ignored.
 
 ### Custom Type Configuration

@@ -25,8 +25,11 @@ import {
   normalize as posixNormalize,
 } from "@std/path/posix";
 import fc from "fast-check";
+import { findImportSpecifiers } from "./extension_dependency_extractor.ts";
 import type { LocalEdge } from "./extension_source_graph.ts";
 import {
+  applySpecifierRewrites,
+  bareImportRewrites,
   planSourceArchive,
   SHARED_ARCHIVE_DIR,
 } from "./source_archive_plan.ts";
@@ -170,5 +173,82 @@ Deno.test("planSourceArchive (property): the plan does not depend on module or e
       );
     }),
     config,
+  );
+});
+
+// ── Bare-import rewrites (swamp-club#3637) ──────────────────────────────
+
+const BARE_IMPORTS = {
+  ms: "npm:ms@2.1.3",
+  "@std/path": "jsr:@std/path@^1",
+  "lodash/": "npm:/lodash@4.17.21/",
+};
+
+/** Lines a module might hold: imports of mapped, unmapped and local names, and import text as data. */
+const arbModuleLine = fc.constantFrom(
+  'import ms from "ms";',
+  "import { join } from '@std/path';",
+  'import { posix } from "@std/path/posix";',
+  'import fp from "lodash/fp";',
+  'import u from "unmapped";',
+  'import { x } from "./x.ts";',
+  'const m = await import("ms");',
+  'export * from "ms";',
+  '// import ms from "ms";',
+  "const s = \"import ms from 'ms'\";",
+  'const t = `import ms from "ms"`;',
+  "const e = '🎉'; import a from \"ms\";",
+  "const n = 1;",
+);
+
+const arbModule = fc.array(arbModuleLine, { maxLength: 12 }).map((lines) =>
+  lines.join("\n")
+);
+
+Deno.test("bareImportRewrites: a rewritten module has no bare import the map resolves", () => {
+  fc.assert(
+    fc.property(arbModule, (source) => {
+      const out = applySpecifierRewrites(
+        source,
+        bareImportRewrites(source, BARE_IMPORTS, "/m.ts"),
+      );
+      for (const { specifier } of findImportSpecifiers(out)) {
+        assert(
+          !Object.keys(BARE_IMPORTS).some((k) =>
+            specifier === k || specifier.startsWith(`${k}/`) ||
+            (k.endsWith("/") && specifier.startsWith(k))
+          ),
+          `still bare after the rewrite: ${specifier}`,
+        );
+      }
+    }),
+  );
+});
+
+Deno.test("bareImportRewrites: changes only the specifiers it names", () => {
+  fc.assert(
+    fc.property(arbModule, (source) => {
+      const rewrites = bareImportRewrites(source, BARE_IMPORTS, "/m.ts");
+      const out = applySpecifierRewrites(source, rewrites);
+      // Undoing each rewrite at its own position restores the source.
+      const outLines = out.split("\n");
+      const sorted = [...rewrites].sort((a, b) =>
+        b.span.start.line - a.span.start.line ||
+        b.span.start.character - a.span.start.character
+      );
+      for (const r of sorted) {
+        const chars = Array.from(outLines[r.span.start.line]);
+        const start = r.span.start.character;
+        const end = start + Array.from(r.to).length + 2;
+        assertEquals(chars.slice(start + 1, end - 1).join(""), r.to);
+        outLines[r.span.start.line] = [
+          ...chars.slice(0, start + 1),
+          r.from,
+          ...chars.slice(end - 1),
+        ].join("");
+      }
+      assertEquals(outLines.join("\n"), source);
+      assertEquals(out.split("\n").length, source.split("\n").length);
+    }),
   );
 });

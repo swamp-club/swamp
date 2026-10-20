@@ -129,7 +129,7 @@ function qualityFailureMessage(data: ExtensionQualityData): string | undefined {
   }
   if (!data.registryScorable) {
     reasons.push(
-      "the registry cannot score this extension (it uses bare import specifiers)",
+      "the registry cannot score this extension (it has bare imports that ship as written)",
     );
   }
   if (reasons.length === 0) return undefined;
@@ -326,7 +326,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         }
         if (!registryScorable) {
           logger
-            .error`The registry cannot score this extension: it uses bare import specifiers, so it would publish unscored. The rubric above resolves the import map locally; the registry does not.`;
+            .error`The registry cannot score this extension: it has bare imports that ship as written, so it would publish unscored. Push rewrites only the bare imports the deno.json import map resolves; the rubric above resolves the import map locally, the registry does not.`;
         }
         const failure = qualityFailureMessage(e.data);
         if (failure) {

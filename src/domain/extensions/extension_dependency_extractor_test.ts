@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import {
   extractDependencySpecifiers,
   extractSpecifiersFromSource,
+  findImportSpecifiers,
   type ImportMap,
   resolveBareImport,
 } from "./extension_dependency_extractor.ts";
@@ -398,4 +399,88 @@ Deno.test("extractDependencySpecifiers: a written import in one file replaces th
     assertEquals(specs[0].importedAs, undefined);
     assertEquals(specs[0].sourceFile, b);
   });
+});
+
+Deno.test("extractDependencySpecifiers: audits JavaScript code modules too", async () => {
+  await withTempDir(async (dir) => {
+    const js = join(dir, "helper.js");
+    const mjs = join(dir, "helper.mjs");
+    await Deno.writeTextFile(js, `import ms from "ms";`);
+    await Deno.writeTextFile(mjs, `import a from "npm:axios@1.7.2";`);
+    const specs = await extractDependencySpecifiers([js, mjs], {
+      ms: "npm:ms@2.1.3",
+    });
+    assertEquals(
+      specs.map((s) => [s.name, s.sourceFile]).sort(),
+      [["axios", mjs], ["ms", js]],
+    );
+  });
+});
+
+// ── findImportSpecifiers (swamp-club#3637) ──────────────────────────────
+
+Deno.test("findImportSpecifiers: reports each import with its quoted span", () => {
+  const source = "import ms from \"ms\";\nexport { x } from './x.ts';\n";
+  assertEquals(findImportSpecifiers(source), [
+    {
+      specifier: "ms",
+      span: {
+        start: { line: 0, character: 15 },
+        end: { line: 0, character: 19 },
+      },
+    },
+    {
+      specifier: "./x.ts",
+      span: {
+        start: { line: 1, character: 18 },
+        end: { line: 1, character: 26 },
+      },
+    },
+  ]);
+});
+
+Deno.test("findImportSpecifiers: counts columns in code points after astral characters and comments", () => {
+  const source = '// 🎉 note\n/* 😀 */ import a from "a"; const s = "🎉";\n';
+  const [site] = findImportSpecifiers(source);
+  assertEquals(site.specifier, "a");
+  assertEquals(site.span, {
+    start: { line: 1, character: 22 },
+    end: { line: 1, character: 25 },
+  });
+  const line = Array.from(source.split("\n")[1]);
+  assertEquals(line.slice(22, 25).join(""), '"a"');
+});
+
+Deno.test("findImportSpecifiers: reads side-effect, dynamic, type and multi-line imports", () => {
+  const source = [
+    'import "side";',
+    'const m = await import("lazy");',
+    'type T = typeof import("types");',
+    "import {",
+    "  a,",
+    "  b,",
+    '} from "multi";',
+    'export * from "star";',
+  ].join("\n");
+  assertEquals(
+    findImportSpecifiers(source).map((s) => [s.specifier, s.span.start.line]),
+    [["side", 0], ["lazy", 1], ["types", 2], ["multi", 6], ["star", 7]],
+  );
+});
+
+Deno.test("findImportSpecifiers: ignores import text in comments, strings and template literals", () => {
+  const source = [
+    '// import a from "a";',
+    '/* import b from "b"; */',
+    "const s = \"import c from 'c'\";",
+    'const t = `import d from "d"`;',
+    'import real from "real";',
+  ].join("\n");
+  assertEquals(findImportSpecifiers(source).map((s) => s.specifier), [
+    "real",
+  ]);
+});
+
+Deno.test("findImportSpecifiers: leaves out an unterminated specifier", () => {
+  assertEquals(findImportSpecifiers('import a from "a\nconst x = 1;'), []);
 });

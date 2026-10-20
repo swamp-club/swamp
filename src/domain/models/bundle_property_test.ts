@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { rewriteZodImports } from "./bundle.ts";
+import {
+  isZod3Specifier,
+  isZod4Specifier,
+  rewriteZodImports,
+} from "./bundle.ts";
 
 const REAL_ZOD_IMPORT = `import { z } from "npm:zod@4";`;
 const REWRITTEN_ZOD_IMPORT = `const { z } = globalThis.__swamp_zod;`;
@@ -64,6 +68,37 @@ Deno.test("rewriteZodImports: is idempotent for any template literal body", () =
     fc.property(arbTemplateLine, (line) => {
       const first = rewriteZodImports(`${REAL_ZOD_IMPORT}\n${line}\n`);
       assertEquals(rewriteZodImports(first), first);
+    }),
+  );
+});
+
+const arbVersion = fc.tuple(
+  fc.integer({ min: 0, max: 9 }),
+  fc.integer({ min: 0, max: 30 }),
+  fc.integer({ min: 0, max: 30 }),
+);
+
+Deno.test("isZod4Specifier: an exact, caret or tilde version is zod 4 exactly when its major is 4", () => {
+  fc.assert(
+    fc.property(
+      arbVersion,
+      fc.constantFrom("", "^", "~"),
+      ([major, minor, patch], op) => {
+        // ^0.x admits only 0.x, so it never crosses a major either.
+        const spec = `npm:zod@${op}${major}.${minor}.${patch}`;
+        assertEquals(isZod4Specifier(spec), major === 4, spec);
+        assertEquals(isZod3Specifier(spec), major === 3, spec);
+      },
+    ),
+  );
+});
+
+Deno.test("isZod4Specifier: a range spanning two majors is neither zod 3 nor zod 4", () => {
+  fc.assert(
+    fc.property(fc.integer({ min: 2, max: 4 }), (low) => {
+      const spec = `npm:zod@>=${low}.0.0 <${low + 2}.0.0`;
+      assertEquals(isZod4Specifier(spec), false, spec);
+      assertEquals(isZod3Specifier(spec), false, spec);
     }),
   );
 });

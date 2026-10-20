@@ -431,7 +431,7 @@ Deno.test("parseAcceptanceDirectives: bare-specifiers cannot be accepted, and th
     parsed.invalid[0].problem,
     '"bare-specifiers" is not a rule that can be accepted',
   );
-  assertStringIncludes(parsed.invalid[0].problem, "import-map target");
+  assertStringIncludes(parsed.invalid[0].problem, "deno.json imports");
 });
 
 Deno.test("parseAcceptanceDirectives: a malformed directive is invalid", () => {

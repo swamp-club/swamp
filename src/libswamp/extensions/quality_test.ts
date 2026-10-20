@@ -520,6 +520,36 @@ Deno.test("extensionQuality: bare import specifiers are scored locally but repor
   );
 });
 
+Deno.test("extensionQuality: bare imports the deno.json import map resolves leave the extension registry-scorable", async () => {
+  await withQualityFixture(
+    BARE_IMPORT_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const denoConfigPath = join(repoDir, "deno.json");
+      await Deno.writeTextFile(
+        denoConfigPath,
+        JSON.stringify({ imports: { zod: "npm:zod@^4" } }),
+      );
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest, {
+        prepareInput: { denoConfigPath },
+        hashInput: { denoConfigPath },
+      });
+      const data = completedData(
+        await collect(
+          extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
+        ),
+      );
+      assertEquals(data.registryScorable, true);
+      assertEquals(
+        data.findings.reviewRulesResult.warnings.some((w) =>
+          w.ruleId === "bare-specifiers"
+        ),
+        false,
+      );
+    },
+  );
+});
+
 Deno.test("extensionQuality: a cache hit still reports bare import specifiers as unscorable", async () => {
   await withQualityFixture(
     BARE_IMPORT_MODEL_SOURCE,

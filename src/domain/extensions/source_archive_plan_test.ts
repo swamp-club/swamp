@@ -23,7 +23,10 @@ import { UserError } from "../errors.ts";
 import type { LocalEdge, SourceModuleGraph } from "./extension_source_graph.ts";
 import {
   applySpecifierRewrites,
+  bareImportRewrites,
+  bareImportShipsAsWritten,
   isReservedArchiveRootName,
+  mergeSpecifierRewrites,
   planSourceArchive,
   type SourceArchiveKindInput,
 } from "./source_archive_plan.ts";
@@ -374,4 +377,125 @@ Deno.test("applySpecifierRewrites: refuses a span that does not cover the specif
     Error,
     "does not cover",
   );
+});
+
+// ── Bare-import rewrites (swamp-club#3637) ──────────────────────────────
+
+const IMPORTS = {
+  "ms": "npm:ms@^2",
+  "@std/path": "jsr:@std/path@^1",
+  "lodash/": "npm:/lodash@4/",
+  "fs": "node:fs",
+  "remote": "https://example.com/mod.ts",
+  "@/": "./src/",
+  "data": "data:text/javascript,export default 1",
+};
+
+function rewritten(
+  source: string,
+  imports: Record<string, string> = IMPORTS,
+): string {
+  return applySpecifierRewrites(
+    source,
+    bareImportRewrites(source, imports, "/repo/m.ts"),
+  );
+}
+
+Deno.test("bareImportRewrites: writes the import-map target in place of each bare import", () => {
+  assertEquals(
+    rewritten(
+      'import ms from "ms";\nimport { posix } from "@std/path/posix";\n',
+    ),
+    'import ms from "npm:ms@^2";\nimport { posix } from "jsr:@std/path@^1/posix";\n',
+  );
+});
+
+Deno.test("bareImportRewrites: writes a trailing-slash npm: target without its leading slash", () => {
+  assertEquals(
+    rewritten("import fp from 'lodash/fp';"),
+    "import fp from 'npm:lodash@4/fp';",
+  );
+});
+
+Deno.test("bareImportRewrites: rewrites node: and URL targets", () => {
+  assertEquals(
+    rewritten('import fs from "fs";\nimport r from "remote";'),
+    'import fs from "node:fs";\nimport r from "https://example.com/mod.ts";',
+  );
+});
+
+Deno.test("bareImportRewrites: leaves local, unmapped and other targets as written", () => {
+  const source = 'import a from "@/a.ts";\nimport u from "unmapped";\n' +
+    'import d from "data";\nimport r from "./rel.ts";\n';
+  assertEquals(bareImportRewrites(source, IMPORTS, "/repo/m.ts"), []);
+});
+
+Deno.test("bareImportRewrites: rewrites dynamic and side-effect imports, not import text in strings", () => {
+  assertEquals(
+    rewritten(
+      'import "ms";\nconst m = await import("ms");\nconst t = `import x from "ms"`;',
+    ),
+    'import "npm:ms@^2";\nconst m = await import("npm:ms@^2");\nconst t = `import x from "ms"`;',
+  );
+});
+
+Deno.test("bareImportRewrites: keeps a version range with spaces", () => {
+  assertEquals(
+    rewritten('import a from "a";', { a: "npm:a@>=1 <2" }),
+    'import a from "npm:a@>=1 <2";',
+  );
+});
+
+Deno.test("bareImportRewrites: refuses a target that would end or escape its string literal", () => {
+  for (
+    const target of [
+      'npm:a@1"; globalThis.x = 1; "',
+      "npm:a@1'",
+      "npm:a@1`",
+      "npm:a@1\\",
+      "npm:a@1\nx",
+      "npm:a@1\u2028",
+      "https://x.test/${y}",
+    ]
+  ) {
+    assertThrows(
+      () => bareImportRewrites('import a from "a";', { a: target }, "/m.ts"),
+      UserError,
+      'Fix the import map entry for "a"',
+    );
+  }
+});
+
+Deno.test("bareImportRewrites: ignores an unsafe target the source never imports", () => {
+  assertEquals(
+    bareImportRewrites('import ms from "ms";', {
+      ms: "npm:ms@2",
+      unused: 'npm:x"',
+    }, "/m.ts").map((r) => r.to),
+    ["npm:ms@2"],
+  );
+});
+
+Deno.test("mergeSpecifierRewrites: keeps the plan's rewrite at a shared span and sorts by position", () => {
+  const span = (line: number, character: number) => ({
+    start: { line, character },
+    end: { line, character: character + 4 },
+  });
+  const merged = mergeSpecifierRewrites(
+    [{ span: span(2, 5), from: "@/a", to: "./a.ts" }],
+    [
+      { span: span(2, 5), from: "@/a", to: "npm:a" },
+      { span: span(0, 1), from: "ms", to: "npm:ms@2" },
+    ],
+  );
+  assertEquals(merged.map((r) => r.to), ["npm:ms@2", "./a.ts"]);
+});
+
+Deno.test("bareImportShipsAsWritten: only imports the map neither rewrites nor resolves locally", () => {
+  assertEquals(bareImportShipsAsWritten("ms", IMPORTS), false);
+  assertEquals(bareImportShipsAsWritten("lodash/fp", IMPORTS), false);
+  assertEquals(bareImportShipsAsWritten("@/a.ts", IMPORTS), false);
+  assertEquals(bareImportShipsAsWritten("unmapped", IMPORTS), true);
+  assertEquals(bareImportShipsAsWritten("data", IMPORTS), true);
+  assertEquals(bareImportShipsAsWritten("ms", undefined), true);
 });

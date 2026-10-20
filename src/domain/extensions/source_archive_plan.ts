@@ -25,6 +25,12 @@ import {
   relative as posixRelative,
 } from "@std/path/posix";
 import { markErrorPaths, UserError } from "../errors.ts";
+import { isBareSpecifier } from "../models/bundle.ts";
+import {
+  findImportSpecifiers,
+  type ImportMap,
+  resolveBareImport,
+} from "./extension_dependency_extractor.ts";
 import { QUALITY_SIDECAR_FILENAME } from "./extension_quality_sidecar.ts";
 import type {
   LocalEdge,
@@ -414,4 +420,102 @@ export function applySpecifierRewrites(
     ].join("");
   }
   return lines.join("\n");
+}
+
+/** Import-map targets a bare import is rewritten to: they resolve without a config. */
+const REWRITABLE_TARGET_RE = /^(?:npm|jsr|node|https?):/;
+
+/**
+ * Text that could end or escape the string literal a target is written
+ * into, so the archive would carry code no gate read: the gates read the
+ * source on disk, not the rewritten copy.
+ */
+const UNSAFE_TARGET_RE = /["'`\\\r\n\u2028\u2029]|\$\{/;
+
+/**
+ * The rewrites that replace each bare import `source` writes with the
+ * `npm:`, `jsr:`, `node:` or `http(s):` specifier the import map resolves
+ * it to, as the map writes it (swamp-club#3637), so the archive's source
+ * resolves without the project's `deno.json`. A `key/` target written
+ * `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
+ * the registry's specifier parser reads at all.
+ *
+ * Bare imports the map does not resolve, or resolves to a local path (a
+ * local module edge {@link planSourceArchive} already rewrites), get no
+ * rewrite and ship as written.
+ *
+ * Throws a UserError when a target the source uses holds text that could
+ * end or escape its string literal.
+ */
+export function bareImportRewrites(
+  source: string,
+  imports: ImportMap,
+  sourcePath: string,
+): SpecifierRewrite[] {
+  const rewrites: SpecifierRewrite[] = [];
+  for (const { specifier, span } of findImportSpecifiers(source)) {
+    if (!isBareSpecifier(specifier)) continue;
+    const target = resolveBareImport(specifier, imports);
+    if (target === undefined || !REWRITABLE_TARGET_RE.test(target)) continue;
+    if (UNSAFE_TARGET_RE.test(target)) {
+      throw markErrorPaths(
+        new UserError(
+          `The deno.json import map resolves ${JSON.stringify(specifier)} ` +
+            `(imported from ${sourcePath}) to ${JSON.stringify(target)}, ` +
+            `which holds a quote, backslash, backtick, line break or \${ ` +
+            `that push cannot write into the archive's source. Fix the ` +
+            `import map entry for ${JSON.stringify(specifier)}.`,
+        ),
+        [sourcePath],
+      );
+    }
+    rewrites.push({
+      span,
+      from: specifier,
+      to: target.replace(/^(npm|jsr):\//, "$1:"),
+    });
+  }
+  return rewrites;
+}
+
+/** A target the module graph resolves to a local file, which the plan places. */
+function isLocalTarget(target: string): boolean {
+  return target.startsWith("./") || target.startsWith("../") ||
+    target.startsWith("/") || target.startsWith("file:");
+}
+
+/**
+ * Whether push ships a bare import as written: no import map, or the map
+ * resolves it neither to a target {@link bareImportRewrites} writes in its
+ * place nor to a local module the plan places.
+ */
+export function bareImportShipsAsWritten(
+  specifier: string,
+  imports: ImportMap | undefined,
+): boolean {
+  if (!imports) return true;
+  const target = resolveBareImport(specifier, imports);
+  return target === undefined ||
+    (!REWRITABLE_TARGET_RE.test(target) && !isLocalTarget(target));
+}
+
+/**
+ * The plan's rewrites for a module plus its bare-import rewrites, sorted by
+ * span. A bare rewrite at a span the plan already rewrites is dropped: the
+ * import map resolved it to a local module, and the plan placed it.
+ */
+export function mergeSpecifierRewrites(
+  planRewrites: readonly SpecifierRewrite[],
+  bareRewrites: readonly SpecifierRewrite[],
+): SpecifierRewrite[] {
+  const at = (r: SpecifierRewrite) =>
+    `${r.span.start.line}:${r.span.start.character}`;
+  const planned = new Set(planRewrites.map(at));
+  return [
+    ...planRewrites,
+    ...bareRewrites.filter((r) => !planned.has(at(r))),
+  ].sort((a, b) =>
+    a.span.start.line - b.span.start.line ||
+    a.span.start.character - b.span.start.character
+  );
 }
