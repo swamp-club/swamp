@@ -43,6 +43,8 @@ import {
   sanitizeVaultKey,
   SENSITIVE_FIELDS_ALL,
   SENSITIVE_FIELDS_TAG,
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
   SensitiveFieldsTagInvalidError,
   sensitiveVaultReferences,
 } from "./data_writer.ts";
@@ -3034,6 +3036,28 @@ Deno.test("createResourceWriter: sensitiveOutput keeps every top-level reference
   assertEquals(await readResource(`n~${HOST}`), { a: "first", b: HOST });
 });
 
+Deno.test("createResourceWriter: redaction preserves a dotted own key's reference when the instance name contains a secret", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.record(z.string(), z.string()),
+    lifetime: "infinite",
+    garbageCollection: 5,
+    sensitiveOutput: true,
+  };
+  const data = { "a.b": "private-value", note: HOST };
+  const { readResource, persisted } = await writeRedacted(
+    spec,
+    `n~${HOST}`,
+    data,
+    [HOST],
+  );
+  assertEquals(persisted, data);
+  assertStringIncludes(persisted["a.b"], HOST);
+  assertEquals(await readResource(`n~${HOST}`), {
+    "a.b": "private-value",
+    note: HOST,
+  });
+});
+
 Deno.test("createResourceWriter: an object key containing a secret is still redacted", async () => {
   const spec: ResourceOutputSpec = {
     schema: z.object({ labels: z.record(z.string(), z.string()) }),
@@ -3598,6 +3622,10 @@ Deno.test("createResourceWriter: the writer still sets its own sensitive-fields 
     apiKey: "secret-value",
   });
   assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], JSON.stringify(["apiKey"]));
+  assertEquals(
+    handle.tags[SENSITIVE_FIELDS_VERSION_TAG],
+    SENSITIVE_FIELDS_VERSION,
+  );
 });
 
 Deno.test("createResourceWriter: tag keys that only look reserved are persisted unchanged", async () => {
@@ -3872,4 +3900,50 @@ Deno.test("processSensitiveResourceData: under sensitiveOutput a top-level key h
   const [, dotted] = sensitiveVaultReferences(data, SENSITIVE_FIELDS_ALL);
   assertEquals(sensitiveVaultReferences({ x: stored }, ["x"]), [dotted]);
   assertEquals(await vaultService.get("test-vault", dotted.key), crafted);
+});
+
+Deno.test("processSensitiveResourceData: a dotted own key does not take a nested field's custom vault key", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      a: z.object({
+        b: z.string().meta({ sensitive: true, vaultKey: "nested-key" }),
+      }),
+      "a.b": z.string(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+    sensitiveOutput: true,
+  };
+  const data: Record<string, unknown> = { a: { b: "nested" }, "a.b": "own" };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "all",
+    "main",
+  );
+  assertEquals(await vaultService.get("test-vault", "nested-key"), "nested");
+  const ref = parseStoredVaultReference(data["a.b"] as string)!;
+  assertEquals(await vaultService.get(ref.vaultName, ref.key), "own");
+});
+
+Deno.test("createResourceWriter: a caller cannot forge the sensitive-field writer version", async () => {
+  const repo = createCountingRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    { [SENSITIVE_FIELDS_VERSION_TAG]: SENSITIVE_FIELDS_VERSION },
+  );
+  await assertRejects(
+    () => writeResource("item", "main", { value: "v" }),
+    Error,
+    `Tag '${SENSITIVE_FIELDS_VERSION_TAG}' from the workflow's tags is reserved`,
+  );
+  assertEquals(repo.writes(), 0);
 });

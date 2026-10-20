@@ -31,7 +31,7 @@
  * (swamp-club#3530).
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -40,7 +40,11 @@ import { ModelType } from "../src/domain/models/model_type.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
 import {
   createResourceReader,
+  createResourceWriter,
   SENSITIVE_FIELDS_TAG,
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
+  sensitiveVaultReferences,
 } from "../src/domain/models/data_writer.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../src/domain/vaults/secret_reference_errors.ts";
@@ -317,16 +321,34 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const key = `rr-tagged-${crypto.randomUUID()}`;
     const secret = canary("rr-tagged");
     const other = `rr-other-${crypto.randomUUID()}`;
     await withFixture(async (f) => {
-      await f.o.putSecret(key, secret);
       await f.o.putSecret(other, canary("rr-other"));
-      await seedResource(f.o, f.typeA, f.modelIdA, "tagged", {
-        password: vaultRef(key),
+      const { writeResource } = createResourceWriter(
+        f.o.repoContext.unifiedDataRepo,
+        f.typeA,
+        f.modelIdA,
+        RESOURCE_SPECS,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        await VaultService.fromRepository(f.o.repoDir),
+        "run",
+      );
+      const handle = await writeResource(SPEC, "tagged", {
+        password: secret,
         note: "n",
-      }, { [SENSITIVE_FIELDS_TAG]: JSON.stringify(["password"]) });
+      });
+      assertEquals(
+        handle.tags[SENSITIVE_FIELDS_VERSION_TAG],
+        SENSITIVE_FIELDS_VERSION,
+      );
+      const [{ key }] = sensitiveVaultReferences(handle.attributes!, [
+        "password",
+      ]);
       await seedResource(f.o, f.typeA, f.modelIdA, "plain", {
         password: vaultRef(other),
         note: "n",
@@ -381,6 +403,66 @@ Deno.test({
         Error,
         refused(key, "tagged", "no such resource of the dispatched behavior"),
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: legacy forged tags and unvaulted dotted keys cannot authorize a secret (swamp-club#3529)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const key = `rr-preplanted-${crypto.randomUUID()}`;
+    await withFixture(async (f) => {
+      await f.o.putSecret(key, canary("rr-preplanted"));
+      // These are the shapes older writers could persist: a caller-supplied
+      // tag on an ordinary field, or a dotted own key skipped by vaulting.
+      // Neither has the version stamp issued by the corrected writer.
+      for (
+        const { name, content, tag } of [
+          {
+            name: "forged-tag",
+            content: { note: vaultRef(key) },
+            tag: '["note"]',
+          },
+          { name: "dotted-key", content: { "a.b": vaultRef(key) }, tag: "*" },
+        ]
+      ) {
+        await seedResource(f.o, f.typeA, f.modelIdA, name, content, {
+          [SENSITIVE_FIELDS_TAG]: tag,
+        });
+        await assertRejects(
+          () => f.context.readResource!(name),
+          Error,
+          "the record predates verified sensitive-field writes",
+        );
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: a legacy tagged reference still resolves when the arguments independently allow it",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const key = `rr-authorized-${crypto.randomUUID()}`;
+    const secret = canary("rr-authorized");
+    await withFixture(async (f) => {
+      await f.o.putSecret(key, secret);
+      await seedResource(f.o, f.typeA, f.modelIdA, "legacy-tagged", {
+        password: vaultRef(key),
+        note: "n",
+      }, { [SENSITIVE_FIELDS_TAG]: '["password"]' });
+      assertEquals(await f.context.readResource!("legacy-tagged"), {
+        password: secret,
+        note: "n",
+      });
+    }, {
+      staticRefs: [{ vaultName: BASELINE_VAULT, secretKey: key }],
+      hasDynamicRefs: false,
     });
   },
 });

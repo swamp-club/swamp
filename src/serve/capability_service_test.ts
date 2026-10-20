@@ -25,6 +25,10 @@ import type { ActiveDispatch } from "./dispatch_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { VaultExtractionResult } from "../domain/expressions/vault_reference_extractor.ts";
+import {
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
+} from "../domain/models/data_writer.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import {
   currentVaultAccess,
@@ -1237,7 +1241,10 @@ function createServiceWithRecord(
 const TAGGED: StoredRecord = {
   name: "state-main",
   version: 2,
-  tags: { "_swamp.sensitiveFields": JSON.stringify(["password"]) },
+  tags: {
+    "_swamp.sensitiveFields": JSON.stringify(["password"]),
+    [SENSITIVE_FIELDS_VERSION_TAG]: SENSITIVE_FIELDS_VERSION,
+  },
   content: {
     password: "${{ vault.get('default', 'generated-key') }}",
     note: "${{ vault.get('default', 'untagged-key') }}",
@@ -1249,6 +1256,34 @@ const EMPTY_ALLOWLIST: VaultExtractionResult = {
   staticRefs: [],
   hasDynamicRefs: false,
 };
+
+Deno.test("resolveSecret: a resource claim preserves independently allowlisted reads of legacy or missing records", async () => {
+  for (
+    const allowedSecrets of [
+      undefined,
+      { staticRefs: [], hasDynamicRefs: true },
+      {
+        staticRefs: [{ vaultName: "default", secretKey: "legacy-key" }],
+        hasDynamicRefs: false,
+      },
+    ]
+  ) {
+    const dispatches = new DispatchRegistry();
+    withDispatchAndSecrets(dispatches, allowedSecrets);
+    const { service, lookups } = createServiceWithRecord(dispatches, null, {
+      "legacy-key": "already-authorized",
+    });
+    assertEquals(
+      await service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "legacy-key",
+        resource: { name: "legacy", version: 1 },
+      }),
+      { value: "already-authorized" },
+    );
+    assertEquals(lookups, []);
+  }
+});
 
 Deno.test("resolveSecret: a verified resource claim admits a tagged field's reference the allowlist does not name, looked up under the dispatch's own model", async () => {
   const dispatches = new DispatchRegistry();
@@ -1307,6 +1342,20 @@ Deno.test("resolveSecret: a claim is refused for a missing resource, a wrong ver
       key: "generated-key",
       reason: "the record has no sensitive fields",
     },
+    ...[undefined, "0", "2"].map((version) => ({
+      record: {
+        ...TAGGED,
+        tags: {
+          "_swamp.sensitiveFields": JSON.stringify(["password"]),
+          ...(version === undefined
+            ? {}
+            : { [SENSITIVE_FIELDS_VERSION_TAG]: version }),
+        },
+      },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record predates verified sensitive-field writes",
+    })),
     {
       record: TAGGED,
       claim: { name: "state-main", version: 2 },
@@ -1385,7 +1434,7 @@ Deno.test("resolveSecret: a record's verified references are read once per dispa
   withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
   const { service, lookups } = createServiceWithRecord(dispatches, {
     ...TAGGED,
-    tags: { "_swamp.sensitiveFields": "*" },
+    tags: { ...TAGGED.tags, "_swamp.sensitiveFields": "*" },
     content: {
       password: "${{ vault.get('default', 'generated-key') }}",
       "dotted.key": "${{ vault.get('default', 'dotted-key') }}",

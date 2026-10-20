@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator
 enables: [serve]
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-10-20 @ 0a0690b03
 ---
 
 # Remote Execution
@@ -795,7 +795,8 @@ values, plus any `vault.get()` expression still written in the dispatched args
 dispatched args hold a dynamic vault reference; a workflow step's references
 are evaluated before dispatch, so its allowlist is always exact
 (swamp-club#3529). A read for a tagged sensitive field of the dispatch's own
-resource carries a resource claim (the record's name and version) instead:
+resource carries a resource claim (the record's name and version) as another
+way to authorize the value read:
 serve looks the record up under the dispatch's behavior type and model id and
 admits the read only if a tagged location of the record holds that exact
 reference as its whole value: the value at a listed path, or each top-level
@@ -803,17 +804,21 @@ key's own value under the `*` tag, never anything nested below one. The claim
 rests on the data writer vaulting every present sensitive value, reference
 text included and each `sensitiveOutput` key by its own name, and on the
 `_swamp.` tag prefix being written by swamp alone, so a tagged location only
-ever holds a reference the writer made. Serve remembers each verified
-record's references for the dispatch, so a read of several tagged fields
-parses the record once.
+ever holds a reference the writer made. The writer stamps
+`_swamp.sensitiveFieldsVersion: "1"` only after vaulting; serve requires this
+version before a claim can grant access. Older records can carry forged tags
+or unvaulted dotted keys, so their tags alone cannot authorize a read. Such
+records remain readable when the argument allowlist independently permits the
+reference. Serve remembers each verified record's references for the dispatch,
+so a read of several tagged fields parses the record once.
 
 Before the reply leaves, the value joins the dispatch's `SecretRedactor` on
 its `ActiveDispatch` registration, so the data plane scrubs it from resource
 writes as it does the pre-dispatch `secretValues` (swamp-club#3527).
 
 `putSecret` checks only the denylist, because write targets are not declared
-in vault expressions. The denylist
-(`src/serve/capability_service.ts`) covers the `server-token-*` and
+in vault expressions. The denylist (`src/serve/capability_service.ts`) covers
+the `server-token-*` and
 `worker-token-*` key prefixes, `oauth-client-secret`, `oauth-access-token-*`,
 `oauth-bootstrap-access-token`, `oauth-resolved-admins`, and the control-plane
 token-secrets vault by name.

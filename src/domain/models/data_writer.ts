@@ -474,13 +474,14 @@ export async function processSensitiveResourceData(
   // written under the `*` tag that promises every field was vaulted
   // (swamp-club#3529). A key with a dot is added even when the schema names
   // that path, since the schema path means the nested field.
-  const ownKeys = new Set<string>();
+  const ownKeys = new Set<SensitiveFieldInfo>();
   if (spec.sensitiveOutput) {
     const existingPaths = new Set(sensitiveFields.map((f) => f.path));
     for (const key of Object.keys(data)) {
       if (!existingPaths.has(key) || key.includes(".")) {
-        sensitiveFields.push({ path: key });
-        ownKeys.add(key);
+        const field = { path: key };
+        sensitiveFields.push(field);
+        ownKeys.add(field);
       }
     }
   }
@@ -492,7 +493,7 @@ export async function processSensitiveResourceData(
     originalValue: unknown;
   }[] = [];
   for (const field of sensitiveFields) {
-    const value = ownKeys.has(field.path)
+    const value = ownKeys.has(field)
       ? snapshot[field.path]
       : getNestedValue(snapshot, field.path);
     if (value !== undefined && value !== null) {
@@ -568,7 +569,7 @@ export async function processSensitiveResourceData(
     const vaultRef = `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
 
     // Apply vault reference to data
-    if (!ownKeys.has(field.path) && field.path.includes(".")) {
+    if (!ownKeys.has(field) && field.path.includes(".")) {
       setNestedValue(data, field.path, vaultRef);
     } else {
       data[field.path] = vaultRef;
@@ -591,12 +592,15 @@ function redactOutsideVaultReferences(
   data: Record<string, unknown>,
   vaultedPaths: string[],
   redactor: SecretRedactor,
+  sensitiveOutput: boolean,
 ): string {
   // A sensitive object with a sensitive field inside holds that field's
   // reference rather than its own, so only string values are references.
   const literals = new Set<string>();
-  for (const path of vaultedPaths) {
-    const reference = getNestedValue(data, path);
+  const references = sensitiveOutput && vaultedPaths.length > 0
+    ? Object.values(data)
+    : vaultedPaths.map((path) => getNestedValue(data, path));
+  for (const reference of references) {
     if (typeof reference === "string") literals.add(JSON.stringify(reference));
   }
 
@@ -883,6 +887,7 @@ export function createResourceWriter(
         resolvedTags[SENSITIVE_FIELDS_TAG] = effectiveSpec.sensitiveOutput
           ? SENSITIVE_FIELDS_ALL
           : JSON.stringify(vaultedPaths);
+        resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
       }
     }
 
@@ -922,7 +927,12 @@ export function createResourceWriter(
     );
 
     const serialized = redactor?.hasSecrets
-      ? redactOutsideVaultReferences(data, vaultedPaths, redactor)
+      ? redactOutsideVaultReferences(
+        data,
+        vaultedPaths,
+        redactor,
+        effectiveSpec.sensitiveOutput === true,
+      )
       : JSON.stringify(data);
     const handle = await writer.writeText(serialized);
     handle.attributes = { ...data };
@@ -948,6 +958,15 @@ export function createResourceWriter(
  * being resolved as vault references.
  */
 export const SENSITIVE_FIELDS_TAG = "_swamp.sensitiveFields";
+
+/**
+ * Marks records vaulted after reserved tags and dotted own-key handling
+ * became write-path invariants. Older records can contain forged tags or
+ * unvaulted reference text, so their field tag alone cannot authorize a
+ * remote resource claim (swamp-club#3529). Only the resource writer sets it.
+ */
+export const SENSITIVE_FIELDS_VERSION_TAG = "_swamp.sensitiveFieldsVersion";
+export const SENSITIVE_FIELDS_VERSION = "1";
 
 /**
  * Sentinel value for the {@link SENSITIVE_FIELDS_TAG} tag when all fields
@@ -1354,13 +1373,14 @@ export async function resolveSensitiveVaultRefs(
  * whole value there, so a reference below it is not one the writer made.
  * {@link resolveSensitiveVaultRefs} still walks below a tagged location for
  * records written before that shape was relied on; a remote read of such a
- * record fails closed on serve while a local read resolves it.
+ * record needs independent allowlist authorization on serve.
  *
  * That authorization rests on two guards of the write path: the writer
  * vaults every present value of a sensitive field, reference text included,
  * so a tagged location only ever holds a reference the writer generated;
  * and the tag sits under {@link RESERVED_TAG_PREFIX}, which swamp alone
- * writes.
+ * writes. Serve also requires {@link SENSITIVE_FIELDS_VERSION_TAG}, so a
+ * record written before those guards existed cannot authorize a claim.
  */
 export function sensitiveVaultReferences(
   data: Record<string, unknown>,
@@ -1370,9 +1390,9 @@ export function sensitiveVaultReferences(
   const seen = new Set<string>();
   const collect = (value: unknown): void => {
     if (typeof value !== "string") return;
-    const match = VAULT_REF_REGEX.exec(value);
-    if (!match) return;
-    const [, vaultName, key] = match;
+    const reference = parseStoredVaultReference(value);
+    if (!reference) return;
+    const { vaultName, key } = reference;
     const id = `${vaultName}\u0000${key}`;
     if (seen.has(id)) return;
     seen.add(id);
@@ -1447,7 +1467,7 @@ async function resolveValueAtPath(
  * @param repo - The unified data repository
  * @param modelType - The model type
  * @param modelId - The model ID (definition ID)
- * @param vaultService - Optional vault service for resolving vault references
+ * @param vaultService - Optional vault service, or a factory scoped to the record being read
  * @param redactor - Optional secret redactor to register resolved secrets
  * @param resourceSpecs - Optional resource specs for the untagged-record schema fallback
  * @returns A readResource function
@@ -1456,7 +1476,7 @@ export function createResourceReader(
   repo: UnifiedDataRepository,
   modelType: ModelType,
   modelId: string,
-  vaultService?: VaultService,
+  vaultService?: VaultService | ((record: Data) => VaultService),
   redactor?: SecretRedactor,
   resourceSpecs?: Record<string, ResourceOutputSpec>,
 ): (
@@ -1475,10 +1495,12 @@ export function createResourceReader(
     );
     const resolvedVersion = dataRecord?.version;
 
+    // Follow a rename consistently: read and authorize the returned record
+    // by its current name and pinned version.
     const content = await repo.getContent(
       modelType,
       modelId,
-      instanceName,
+      dataRecord?.name ?? instanceName,
       resolvedVersion ?? version,
     );
     if (!content || content.length === 0) return null;
@@ -1507,11 +1529,13 @@ export function createResourceReader(
         instanceName,
       )
       : null;
-    if (vaultService && sensitiveFields) {
+    if (vaultService && sensitiveFields && dataRecord) {
       await resolveSensitiveVaultRefs(
         data,
         sensitiveFields,
-        vaultService,
+        typeof vaultService === "function"
+          ? vaultService(dataRecord)
+          : vaultService,
         redactor,
       );
     }

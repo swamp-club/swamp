@@ -651,52 +651,21 @@ export function createRemoteMethodContext(
       )
     : undefined;
 
-  const readResource = async (
-    instanceName: string,
-    version?: number,
-  ): Promise<Record<string, unknown> | null> => {
-    const dataRecord = await dataRepository.findByName(
-      modelType,
-      execution.modelId,
-      instanceName,
-      version,
-    );
-    const resolvedVersion = dataRecord?.version;
-
-    // The record findByName returned, which follows a rename, is the one
-    // read and claimed: its own name at its version.
-    const content = await dataRepository.getContent(
-      modelType,
-      execution.modelId,
-      dataRecord?.name ?? instanceName,
-      resolvedVersion ?? version,
-    );
-    if (content === null) {
-      return null;
-    }
-    const data = JSON.parse(new TextDecoder().decode(content)) as Record<
-      string,
-      unknown
-    >;
-    const sensitiveFields = dataRecord
-      ? parseSensitiveFieldsTag(dataRecord.tags)
-      : null;
-    if (dataRecord && sensitiveFields) {
-      // Each tagged field is read with a claim naming this record, which
-      // serve verifies against it rather than against the step's argument
-      // allowlist (swamp-club#3529).
-      await resolveSensitiveVaultRefs(
-        data,
-        sensitiveFields,
-        createRemoteVaultService(options, redactor, {
-          name: dataRecord.name,
-          version: dataRecord.version,
-        }),
-        redactor,
-      );
-    }
-    return data;
-  };
+  // Share local parsing, schema fallback and malformed-tag handling
+  // (swamp-club#3530), with each vault read claiming the record that supplied
+  // its reference so serve can authorize it independently (swamp-club#3529).
+  const readResource = createResourceReader(
+    dataRepository,
+    modelType,
+    execution.modelId,
+    (record) =>
+      createRemoteVaultService(options, redactor, {
+        name: record.name,
+        version: record.version,
+      }),
+    redactor,
+    options.resourceSpecs,
+  );
 
   const deleteResource = async (instanceName: string): Promise<void> => {
     await options.client.deleteResource({ name: instanceName }, signal);

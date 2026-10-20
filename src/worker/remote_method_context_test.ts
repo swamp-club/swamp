@@ -355,7 +355,11 @@ Deno.test("remote context: readResource resolves an untagged record from the bun
     assertEquals(value, { username: "alice", refreshToken: "s3cret" });
     assertEquals(
       h.calls.filter((c) => c.method === "resolveSecret").map((c) => c.params),
-      [{ vaultName: "my-vault", secretKey: "refresh-tok" }],
+      [{
+        vaultName: "my-vault",
+        secretKey: "refresh-tok",
+        resource: { name: "state-main", version: 4 },
+      }],
     );
   });
 });

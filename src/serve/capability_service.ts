@@ -84,6 +84,8 @@ import {
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import {
   parseSensitiveFieldsTag,
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
   sensitiveVaultReferences,
 } from "../domain/models/data_writer.ts";
 
@@ -473,23 +475,16 @@ export class CapabilityService {
     }
   }
 
-  #assertSecretInAllowlist(
+  #secretInAllowlist(
     dispatch: ActiveDispatch,
     vaultName: string,
     secretKey: string,
-    verb: string,
-  ): void {
+  ): boolean {
     const allowed = dispatch.allowedSecrets;
-    if (!allowed) return;
-    if (allowed.hasDynamicRefs) return;
-    const isAllowed = allowed.staticRefs.some(
+    if (!allowed || allowed.hasDynamicRefs) return true;
+    return allowed.staticRefs.some(
       (ref) => ref.vaultName === vaultName && ref.secretKey === secretKey,
     );
-    if (!isAllowed) {
-      throw new Error(
-        `${verb}: secret '${secretKey}' is not referenced by the dispatched step`,
-      );
-    }
   }
 
   /**
@@ -499,10 +494,11 @@ export class CapabilityService {
    * model id at the claimed version, so a resource of any other model is
    * not found, and the read is admitted only when the record's tagged
    * fields hold that exact reference (swamp-club#3529). A verified claim
-   * stands in for the argument allowlist; the denylists ran before it and
+   * supplements the argument allowlist; the denylists ran before it and
    * the run's vault scope applies after it. The claim rests on the data
    * writer vaulting every present sensitive value and on the tag's reserved
-   * prefix, so a tagged field only ever holds a reference the writer made.
+   * prefix. The writer-version tag establishes that those guards applied
+   * when this record was written; older tags alone cannot authorize a read.
    * Typed-secrets Phase 5 applies the same rule on its protected route.
    */
   async #assertResourceClaim(
@@ -533,6 +529,11 @@ export class CapabilityService {
       const sensitiveFields = parseSensitiveFieldsTag(record.tags);
       if (sensitiveFields === null) {
         throw refused("the record has no sensitive fields");
+      }
+      if (
+        record.tags[SENSITIVE_FIELDS_VERSION_TAG] !== SENSITIVE_FIELDS_VERSION
+      ) {
+        throw refused("the record predates verified sensitive-field writes");
       }
       const content = await repo.getContent(
         dispatch.modelType,
@@ -593,19 +594,33 @@ export class CapabilityService {
             "resolveSecret: a resource claim admits a secret value, not an annotation",
           );
         }
-        await this.#assertResourceClaim(
-          workerName,
+        // A claim adds authority; it never removes access the arguments
+        // already grant. This also preserves reads of legacy records whose
+        // tags predate the write-path guards required for a verified claim.
+        if (
+          !this.#secretInAllowlist(
+            dispatch,
+            params.vaultName,
+            params.secretKey,
+          )
+        ) {
+          await this.#assertResourceClaim(
+            workerName,
+            dispatch,
+            params.resource,
+            params.vaultName,
+            params.secretKey,
+          );
+        }
+      } else if (
+        !this.#secretInAllowlist(
           dispatch,
-          params.resource,
           params.vaultName,
           params.secretKey,
-        );
-      } else {
-        this.#assertSecretInAllowlist(
-          dispatch,
-          params.vaultName,
-          params.secretKey,
-          "resolveSecret",
+        )
+      ) {
+        throw new Error(
+          `resolveSecret: secret '${params.secretKey}' is not referenced by the dispatched step`,
         );
       }
     }

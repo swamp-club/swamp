@@ -26,6 +26,8 @@ import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
   SENSITIVE_FIELDS_TAG,
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
   sensitiveVaultReferences,
 } from "./data_writer.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
@@ -251,7 +253,16 @@ Deno.test("createResourceWriter: a user-supplied reserved tag is always refused,
         }
         assert(!forged, "a reserved tag was accepted");
         const reserved = Object.keys(tags).filter(isReservedTagKey);
-        assertEquals(reserved, drawn.sensitive ? [SENSITIVE_FIELDS_TAG] : []);
+        assertEquals(
+          reserved,
+          drawn.sensitive
+            ? [SENSITIVE_FIELDS_TAG, SENSITIVE_FIELDS_VERSION_TAG]
+            : [],
+        );
+        assertEquals(
+          tags[SENSITIVE_FIELDS_VERSION_TAG],
+          drawn.sensitive ? SENSITIVE_FIELDS_VERSION : undefined,
+        );
       },
     ),
   );
