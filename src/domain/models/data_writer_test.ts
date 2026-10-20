@@ -3116,6 +3116,70 @@ Deno.test("createResourceWriter: final serialization must retain the generated s
   );
 });
 
+Deno.test("createResourceWriter: rejected redaction preserves the existing resource and its vault value", async () => {
+  for (
+    const rejection of [
+      {
+        secret: "known-secret",
+        extra: { "***": "a", "known-secret": "b" },
+        message: "redaction would merge object property names",
+      },
+      {
+        secret: "token",
+        extra: {},
+        message:
+          "serialization or redaction changed the generated vault references",
+      },
+    ]
+  ) {
+    const repo = createCapturingRepo();
+    const vault = new VaultService();
+    vault.registerVault({ name: "test-vault", type: "mock", config: {} });
+    const redactor = new SecretRedactor();
+    const { writeResource } = createResourceWriter(
+      repo,
+      modelType,
+      modelId,
+      {
+        r: {
+          schema: z.object({
+            token: z.string().meta({ sensitive: true, vaultKey: "stored" }),
+          }),
+          lifetime: "infinite",
+          garbageCollection: 5,
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      vault,
+      "put",
+      undefined,
+      redactor,
+    );
+    await writeResource("r", "main", { token: "original" });
+    const persisted = repo.persisted();
+    redactor.addSecret(rejection.secret);
+    await assertRejects(
+      () =>
+        writeResource("r", "main", {
+          token: "replacement",
+          ...rejection.extra,
+        }),
+      Error,
+      rejection.message,
+    );
+    assertEquals(repo.persisted(), persisted);
+    assertEquals(await vault.get("test-vault", "stored"), "original");
+    assertEquals(
+      await createResourceReader(repo, modelType, modelId, vault)("main"),
+      { token: "original" },
+    );
+  }
+});
+
 Deno.test("createResourceWriter: redaction that masks JSON syntax cannot stamp a verified writer tag", async () => {
   const { repo, persisted } = await writeRedacted(
     hostSpec,

@@ -446,8 +446,8 @@ export function modelRequiresVault(
  * For each field marked with `{ sensitive: true }` metadata in the schema
  * (or all fields when `sensitiveOutput` is true on the spec):
  * 1. Snapshots original values before any mutation
- * 2. Stores the actual value in the vault
- * 3. Replaces the value with a vault reference expression
+ * 2. Prepares vault references and validates all write targets
+ * 3. Stores the snapshotted values in the vault
  *
  * @param data - The resource data to process (mutated in place)
  * @param spec - The resource output specification
@@ -467,6 +467,43 @@ export async function processSensitiveResourceData(
   instanceName: string,
   callbacks?: DataWriterCallbacks,
 ): Promise<string[]> {
+  const prepared = await prepareSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    methodName,
+    specName,
+    instanceName,
+    callbacks,
+  );
+  await prepared.store();
+  return prepared.paths;
+}
+
+interface PreparedSensitiveResourceData {
+  paths: string[];
+  store(): Promise<void>;
+}
+
+/**
+ * Replaces fields in the working data with their references without writing
+ * the vault. The resource writer validates the final serialized bytes before
+ * committing these snapshotted values, so a rejected update cannot change
+ * the secrets an existing resource still references.
+ */
+async function prepareSensitiveResourceData(
+  data: Record<string, unknown>,
+  spec: ResourceOutputSpec,
+  vaultService: VaultService,
+  modelType: ModelType,
+  modelId: string,
+  methodName: string,
+  specName: string,
+  instanceName: string,
+  callbacks?: DataWriterCallbacks,
+): Promise<PreparedSensitiveResourceData> {
   const sensitiveFields = extractSensitiveFields(spec.schema);
 
   // Under sensitiveOutput every top-level key is sensitive. Each is read and
@@ -503,7 +540,7 @@ export async function processSensitiveResourceData(
   }
 
   if (fieldsWithValues.length === 0) {
-    return [];
+    return { paths: [], store: () => Promise.resolve() };
   }
 
   // Validate vault availability. Reserved vaults (such as the _token-secrets
@@ -570,22 +607,17 @@ export async function processSensitiveResourceData(
     }
   }
 
-  for (const { field, originalValue, targetVault, vaultKey } of targets) {
-    const stringValue = typeof originalValue === "string"
+  const writes = targets.map((
+    { field, originalValue, targetVault, vaultKey },
+  ) => ({
+    field,
+    targetVault,
+    vaultKey,
+    value: typeof originalValue === "string"
       ? originalValue
-      : JSON.stringify(originalValue);
-    await vaultService.put(targetVault, vaultKey, stringValue);
-    logger.debug(
-      "Stored sensitive field '{fieldPath}' in vault '{vaultName}' with key '{vaultKey}'",
-      { fieldPath: field.path, vaultName: targetVault, vaultKey },
-    );
-    callbacks?.onEvent?.({
-      type: "vault_secret_stored",
-      fieldPath: field.path,
-      vaultName: targetVault,
-      vaultKey,
-    });
-
+      : JSON.stringify(originalValue),
+  }));
+  for (const { field, targetVault, vaultKey } of writes) {
     // Wildcard output stores each original top-level value as a whole.
     // Nested fields still populate their configured vault keys, but must
     // not replace an already-vaulted parent's reference with an object.
@@ -603,7 +635,24 @@ export async function processSensitiveResourceData(
     }
   }
 
-  return fieldsWithValues.map((f) => f.field.path);
+  return {
+    paths: fieldsWithValues.map((f) => f.field.path),
+    store: async () => {
+      for (const { field, targetVault, vaultKey, value } of writes) {
+        await vaultService.put(targetVault, vaultKey, value);
+        logger.debug(
+          "Stored sensitive field '{fieldPath}' in vault '{vaultName}' with key '{vaultKey}'",
+          { fieldPath: field.path, vaultName: targetVault, vaultKey },
+        );
+        callbacks?.onEvent?.({
+          type: "vault_secret_stored",
+          fieldPath: field.path,
+          vaultName: targetVault,
+          vaultKey,
+        });
+      }
+    },
+  };
 }
 
 /**
@@ -919,8 +968,9 @@ export function createResourceWriter(
       );
     }
     let vaultedPaths: string[] = [];
+    let sensitiveWrite: PreparedSensitiveResourceData | undefined;
     if (vaultService && methodName && hasSensitiveFields) {
-      vaultedPaths = await processSensitiveResourceData(
+      sensitiveWrite = await prepareSensitiveResourceData(
         data,
         effectiveSpec,
         vaultService,
@@ -935,6 +985,7 @@ export function createResourceWriter(
           : `${name}-${await vaultKeySegment(varySuffix)}`,
         { onEvent },
       );
+      vaultedPaths = sensitiveWrite.paths;
       if (vaultedPaths.length > 0) {
         resolvedTags[SENSITIVE_FIELDS_TAG] = effectiveSpec.sensitiveOutput
           ? SENSITIVE_FIELDS_ALL
@@ -978,6 +1029,9 @@ export function createResourceWriter(
         resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
       }
     }
+
+    // Commit only after the final reference and redaction checks have passed.
+    await sensitiveWrite?.store();
 
     const resolvedOptions: ResolvedDataWriterOptions = {
       name: instanceName,
