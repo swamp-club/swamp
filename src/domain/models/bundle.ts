@@ -201,9 +201,13 @@ function versionWithinMajor(version: string, major: number): boolean {
     !rangeIntersects(range, parseRange(`>=${major + 1}.0.0`));
 }
 
-/** The version a zod specifier writes; null when unversioned, undefined when it is not zod. */
+/**
+ * The version a zod specifier writes, without a subpath a versioned
+ * specifier may carry (`npm:zod@4.3.6/v4` is `4.3.6`); null when
+ * unversioned, undefined when it is not zod.
+ */
 function zodSpecifierVersion(specifier: string): string | null | undefined {
-  const match = /^(?:npm:)?zod(?:@(.+))?$/.exec(specifier);
+  const match = /^(?:npm:)?zod(?:@([^/]+)(?:\/.*)?)?$/.exec(specifier);
   if (!match) return undefined;
   return match[1] ?? null;
 }
@@ -826,7 +830,8 @@ const MAX_ZOD_SCAN_MODULES = 2000;
  * modules it reaches through relative imports write, read as text with
  * comments and template literals blanked. Exact spellings, so `deno bundle
  * --external` matches each of them; no deno call. A module that cannot be
- * read is skipped: the bundler reports it.
+ * read is skipped: the bundler reports it. Reading stops after
+ * {@link MAX_ZOD_SCAN_MODULES} modules; a zod import past that is inlined.
  */
 export async function zod4SpecifiersReachedFrom(
   entry: string,

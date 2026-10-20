@@ -478,7 +478,8 @@ Deno.test("isZod4Specifier: accepts every spelling that admits only zod 4", () =
       "npm:zod@~4.2",
       "npm:zod@4.x",
       "npm:zod@>=4.1 <5",
-      "zod@4",
+      "npm:zod@4.3.6/v4",
+      "npm:zod@^4.1/v4",
     ]
   ) {
     assertEquals(isZod4Specifier(spec), true, spec);
@@ -497,6 +498,8 @@ Deno.test("isZod4Specifier: rejects zod 3, ranges that leave 4.x, and other pack
       "npm:zodiac@4",
       "npm:zod-to-json-schema@4",
       "jsr:@zod/zod@4",
+      "npm:zod@3.25.0/v4",
+      "zod/v4",
     ]
   ) {
     assertEquals(isZod4Specifier(spec), false, spec);
@@ -520,6 +523,13 @@ Deno.test("rewriteZodImports: rewrites ranged zod 4 imports", () => {
   assertEquals(
     rewriteZodImports(`import * as zod from "npm:zod@~4.2";`),
     `const zod = globalThis.__swamp_zod;`,
+  );
+});
+
+Deno.test("rewriteZodImports: rewrites a zod 4 import with a subpath, as before", () => {
+  assertEquals(
+    rewriteZodImports(`import { z } from "npm:zod@4.3.6/v4";`),
+    `const { z } = globalThis.__swamp_zod;`,
   );
 });
 
@@ -611,10 +621,11 @@ Deno.test("zod4SpecifiersReachedFrom: collects zod 4 spellings across relative i
     );
     await Deno.writeTextFile(
       join(dir, "lib", "deep", "c.ts"),
-      'export { z } from "npm:zod@>=4.1 <5";\nimport d from "./d.json" with { type: "json" };\n',
+      'export { z } from "npm:zod@>=4.1 <5";\nimport { v } from "npm:zod@4.3.6/v4";\nimport d from "./d.json" with { type: "json" };\n',
     );
     assertEquals(await zod4SpecifiersReachedFrom(entry), [
       "npm:zod@4.3.6",
+      "npm:zod@4.3.6/v4",
       "npm:zod@>=4.1 <5",
       "npm:zod@^4.1",
     ]);

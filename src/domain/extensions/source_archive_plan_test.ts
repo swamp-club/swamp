@@ -476,6 +476,17 @@ Deno.test("bareImportRewrites: ignores an unsafe target the source never imports
   );
 });
 
+Deno.test("bareImportRewrites: never rewrites specifier text holding whitespace, a semicolon or parentheses", () => {
+  const source = 'const re = /import "a/;const s = "x";\nimport ms from "ms";';
+  assertEquals(
+    bareImportRewrites(source, {
+      ms: "npm:ms@2",
+      "a/;const s = ": "npm:x/;globalThis.pwned = 1;const s = ",
+    }, "/m.ts").map((r) => r.to),
+    ["npm:ms@2"],
+  );
+});
+
 Deno.test("mergeSpecifierRewrites: keeps the plan's rewrite at a shared span and sorts by position", () => {
   const span = (line: number, character: number) => ({
     start: { line, character },

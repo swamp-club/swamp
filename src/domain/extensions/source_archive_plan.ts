@@ -454,7 +454,10 @@ export function bareImportRewrites(
 ): SpecifierRewrite[] {
   const rewrites: SpecifierRewrite[] = [];
   for (const { specifier, span } of findImportSpecifiers(source)) {
-    if (!isBareSpecifier(specifier)) continue;
+    // A package specifier never holds whitespace, `;` or parentheses; text
+    // that does is not an import the scanner read right (a regex literal
+    // can open what looks like a string), so it is never rewritten.
+    if (!isBareSpecifier(specifier) || /[\s;()]/.test(specifier)) continue;
     const target = resolveBareImport(specifier, imports);
     if (target === undefined || !REWRITABLE_TARGET_RE.test(target)) continue;
     if (UNSAFE_TARGET_RE.test(target)) {
