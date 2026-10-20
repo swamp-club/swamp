@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { PosixShellStrategy } from "./posix_shell_strategy.ts";
 import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
@@ -92,7 +92,7 @@ Deno.test("PosixShellStrategy.planSecrets: plans from references alone and refus
   ]);
   assertEquals(plan.singleQuoted, []);
   // Nothing was loaded: the bag cannot deliver, the plan needed nothing.
-  assertEquals(bag.isEmpty, false);
+  assertThrows(() => bag.resolveForShell(`echo ${vault}`));
 });
 
 Deno.test("PosixShellStrategy.resolveSecrets: generated names skip the authored environment keys", () => {

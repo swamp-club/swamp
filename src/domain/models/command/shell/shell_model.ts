@@ -30,6 +30,7 @@ import {
 import { UserError } from "../../../errors.ts";
 import type { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
 import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
+import { coerceMethodArgs } from "../../zod_type_coercion.ts";
 import { SecretDestinationRefusedError } from "../../secret_destinations.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 import {
@@ -110,7 +111,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * the arguments as `unresolvedMethodArgs` carries them, so `run` and `env`
  * authored under `globalArguments` are covered too. A secret in an
  * environment variable name is refused: expression evaluation never reaches
- * an object key today, so this is defense in depth. A data-origin secret at a
+ * an object key, but an `env` authored as a JSON string is parsed by argument
+ * coercion, which is why the boundary coerces the arguments before this runs.
+ * A data-origin secret at a
  * position no environment reference can expand (a here-document with a
  * quoted delimiter; PowerShell single quotes) is refused instead of pasted
  * into the command. A `run` that is not a string or an `env` that is not an
@@ -226,8 +229,17 @@ async function executeCommand(
       // caller that reaches the method another way meets it here, so the
       // command line is safe however the shell is reached.
       if (secretBag.registry.typedSecrets) {
+        // The authored env, with its sentinels, read as validation reads it;
+        // `args.env` already holds the values.
+        const authored = coerceMethodArgs(
+          { env: context.unresolvedMethodArgs.env },
+          ShellInputAttributesSchema,
+        );
         refuseShellSecretDestinations({
-          arguments: { run: unresolvedRun, env: args.env ?? {} },
+          arguments: {
+            run: unresolvedRun,
+            env: authored.env ?? args.env ?? {},
+          },
           secrets: secretOccurrencesOf(secretBag.registry),
         });
       }

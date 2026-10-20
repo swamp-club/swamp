@@ -310,11 +310,13 @@ function unresolvedArgumentsOf(
 
 /**
  * The typed run's merge with the parsed global arguments laid under it: a
- * global argument that holds no sentinel takes the value global validation
- * parsed (its Zod defaults and coercions, as the option-off merge has them),
- * and one that holds a sentinel anywhere keeps its authored form, so the
- * secret stays a sentinel for the shell's fill. Method arguments stay as
- * authored, as they always have in `unresolvedMethodArgs`.
+ * global argument takes the value global validation parsed (its Zod defaults
+ * and coercions, as the option-off merge has them), except that every leaf
+ * holding a sentinel keeps its authored form, so a secret stays a sentinel
+ * for the shell's fill while its siblings are parsed. A global whose parsed
+ * value reads as an expression is left out, as every other merge leaves it
+ * out. Method arguments stay as authored, as they always have in
+ * `unresolvedMethodArgs`.
  */
 function withParsedGlobals(
   merged: Record<string, unknown>,
@@ -332,19 +334,41 @@ function withParsedGlobals(
     }
     return false;
   };
+  const isPlain = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null);
+  /** `parsed` with each leaf of `authored` that holds a sentinel put back. */
+  const overlay = (parsed: unknown, authored: unknown): unknown => {
+    if (!holdsSentinel(authored)) return parsed;
+    if (typeof authored === "string") return authored;
+    if (Array.isArray(authored) && Array.isArray(parsed)) {
+      return authored.length === parsed.length
+        ? parsed.map((item, index) => overlay(item, authored[index]))
+        : authored;
+    }
+    if (isPlain(authored) && isPlain(parsed)) {
+      const out: Record<string, unknown> = { ...parsed };
+      for (const [key, item] of Object.entries(authored)) {
+        if (holdsSentinel(item)) out[key] = overlay(parsed[key], item);
+      }
+      return out;
+    }
+    return authored;
+  };
   const methodArguments = definition.getMethodArguments(methodName);
   const result: Record<string, unknown> = {};
+  const excluded = new Set<string>();
   for (const [key, parsed] of Object.entries(definition.globalArguments)) {
-    if (
-      containsSwampExpression(parsed) || Object.hasOwn(methodArguments, key)
-    ) {
+    if (Object.hasOwn(methodArguments, key)) continue;
+    if (containsSwampExpression(parsed)) {
+      excluded.add(key);
       continue;
     }
-    const authored = merged[key];
-    result[key] = holdsSentinel(authored) ? authored : parsed;
+    result[key] = overlay(parsed, merged[key]);
   }
   for (const [key, value] of Object.entries(merged)) {
-    if (!Object.hasOwn(result, key)) result[key] = value;
+    if (!Object.hasOwn(result, key) && !excluded.has(key)) result[key] = value;
   }
   return result;
 }
@@ -507,7 +531,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // through the context, since by now `definition` holds the values; any
       // other caller's value is not trusted over the merge built here.
       unresolvedMethodArgs:
-        (secretBag?.registry.typedSecrets && context.unresolvedMethodArgs) ||
+        (secretBag?.registry.typedSecrets && secretBag.resolvesAny &&
+          context.unresolvedMethodArgs) ||
         { ...filteredRawGlobalArgs, ...rawMethodArgs },
     };
 

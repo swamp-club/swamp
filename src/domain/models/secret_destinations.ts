@@ -36,6 +36,7 @@ import {
   findValuesWithMetadata,
   schemaHoldsMetadata,
 } from "./zod_field_metadata.ts";
+import { coerceMethodArgs } from "./zod_type_coercion.ts";
 
 /**
  * The destination policy of a method's arguments
@@ -210,7 +211,8 @@ export interface SecretDestinationStage {
   /**
    * The method's arguments as `unresolvedMethodArgs` carries them: the raw
    * method arguments over the raw global arguments that hold no unresolved
-   * expression, built by the boundary.
+   * expression, built by the boundary. The stage coerces them as validation
+   * will before any policy reads them.
    */
   mergedArguments: Record<string, unknown>;
   registry: SecretBagRegistry;
@@ -230,23 +232,34 @@ export interface SecretDestinationStage {
 export function refuseSecretDestinations(stage: SecretDestinationStage): void {
   if (stage.registry.isEmpty) return;
   const secrets = secretOccurrencesOf(stage.registry);
+  // Read as validation will: an argument authored as a JSON string for an
+  // object, record or list field is parsed by `coerceMethodArgs` before Zod
+  // sees it, so a sentinel it holds, in a key or a value, is read here too.
+  // Sentinels hold only JSON-safe characters, so parsing keeps them intact.
+  const globalArguments = stage.modelDef.globalArguments
+    ? coerceMethodArgs(stage.globalArguments, stage.modelDef.globalArguments)
+    : stage.globalArguments;
+  const mergedArguments = coerceMethodArgs(
+    stage.mergedArguments,
+    stage.method.arguments,
+  );
   if (stage.modelDef.globalArguments) {
     refuseSecretsInRefusingFields(
       stage.modelDef.globalArguments,
-      stage.globalArguments,
+      globalArguments,
       secrets,
       "global argument",
     );
   }
   refuseSecretsInRefusingFields(
     stage.method.arguments,
-    stage.mergedArguments,
+    mergedArguments,
     secrets,
     "method argument",
   );
   if (stage.localPlacement) {
     stage.method.refuseSecretDestinations?.({
-      arguments: stage.mergedArguments,
+      arguments: mergedArguments,
       secrets,
     });
   }
