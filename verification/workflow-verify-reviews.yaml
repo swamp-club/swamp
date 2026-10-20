@@ -140,7 +140,18 @@ jobs:
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               if [ "${{ inputs.reviewer }}" = "codex" ]; then
                 REVIEW_DIR=$(mktemp -d)
-                codex --ask-for-approval never exec --ephemeral --sandbox read-only \
+                CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
+                codex --ask-for-approval never exec --ephemeral --strict-config \
+                  -c 'default_permissions="swamp-review"' \
+                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
+                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
+                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c 'permissions.swamp-review.network.enabled=false' \
+                  -c 'shell_environment_policy.inherit="none"' \
+                  -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \
                   --ignore-user-config --ignore-rules --skip-git-repo-check \
                   --cd "$REVIEW_DIR" \
                   -c 'features.apps=false' -c 'features.hooks=false' \
@@ -192,7 +203,18 @@ jobs:
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               if [ "${{ inputs.reviewer }}" = "codex" ]; then
                 REVIEW_DIR=$(mktemp -d)
-                codex --ask-for-approval never exec --ephemeral --sandbox read-only \
+                CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
+                codex --ask-for-approval never exec --ephemeral --strict-config \
+                  -c 'default_permissions="swamp-review"' \
+                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
+                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
+                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c 'permissions.swamp-review.network.enabled=false' \
+                  -c 'shell_environment_policy.inherit="none"' \
+                  -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \
                   --ignore-user-config --ignore-rules --skip-git-repo-check \
                   --cd "$REVIEW_DIR" \
                   -c 'features.apps=false' -c 'features.hooks=false' \
@@ -244,7 +266,18 @@ jobs:
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               if [ "${{ inputs.reviewer }}" = "codex" ]; then
                 REVIEW_DIR=$(mktemp -d)
-                codex --ask-for-approval never exec --ephemeral --sandbox read-only \
+                CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
+                codex --ask-for-approval never exec --ephemeral --strict-config \
+                  -c 'default_permissions="swamp-review"' \
+                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
+                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
+                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c 'permissions.swamp-review.network.enabled=false' \
+                  -c 'shell_environment_policy.inherit="none"' \
+                  -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \
                   --ignore-user-config --ignore-rules --skip-git-repo-check \
                   --cd "$REVIEW_DIR" \
                   -c 'features.apps=false' -c 'features.hooks=false' \
@@ -296,7 +329,18 @@ jobs:
               printf '\n\nThe diff to review is at: %s\nRead that file to see the changes.\n\nIMPORTANT: You MUST begin your response with exactly one of these two lines:\nVERDICT: pass\nVERDICT: fail\n\nThen provide your full review below the verdict line.\n' "$DIFF_FILE" >> "$PROMPT_FILE"
               if [ "${{ inputs.reviewer }}" = "codex" ]; then
                 REVIEW_DIR=$(mktemp -d)
-                codex --ask-for-approval never exec --ephemeral --sandbox read-only \
+                CODEX_EXECUTABLE=$(deno eval --no-config --no-lock 'console.log(Deno.realPathSync(Deno.args[0]))' "$(command -v codex)")
+                codex --ask-for-approval never exec --ephemeral --strict-config \
+                  -c 'default_permissions="swamp-review"' \
+                  -c 'permissions.swamp-review.filesystem.":root"="deny"' \
+                  -c 'permissions.swamp-review.filesystem.":minimal"="read"' \
+                  -c "permissions.swamp-review.filesystem.\"$PWD\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$DIFF_FILE\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$REVIEW_DIR\"=\"read\"" \
+                  -c "permissions.swamp-review.filesystem.\"$CODEX_EXECUTABLE\"=\"read\"" \
+                  -c 'permissions.swamp-review.network.enabled=false' \
+                  -c 'shell_environment_policy.inherit="none"' \
+                  -c 'shell_environment_policy.set={PATH="/usr/bin:/bin"}' \
                   --ignore-user-config --ignore-rules --skip-git-repo-check \
                   --cd "$REVIEW_DIR" \
                   -c 'features.apps=false' -c 'features.hooks=false' \

@@ -36,8 +36,16 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
 ```
 
 The default reviewer is Claude (`claude-opus-5-5`). Select Codex (`gpt-6-astra`)
-with `--input reviewer=codex`. Codex runs with a read-only sandbox and approvals
-disabled, from an empty temporary directory with user config, execution rules,
+with `--input reviewer=codex`. Codex runs with a restricted read-only permission
+profile and approvals disabled. The profile allows the verified checkout, diff,
+empty working directory, Codex executable and minimal system runtime paths;
+other host files stay unreadable, including symlink targets outside those roots.
+Shell tools inherit no host environment variables and use only a fixed system
+`PATH`. Provider authentication remains in the parent CLI process. The setup
+requires a standalone Codex CLI supporting
+[permission profiles](https://developers.openai.com/codex/permissions) and strict
+configuration validation; legacy `--sandbox` flags would override that profile.
+Reviewers start in an empty temporary directory with user config, execution rules,
 apps, hooks, web search and MCP integrations disabled. A trusted preamble scopes
 file inspection to the diff and verified checkout and treats repository content
 as untrusted data. Its final response file is checked by the same verdict script

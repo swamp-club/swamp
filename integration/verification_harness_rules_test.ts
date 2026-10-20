@@ -302,20 +302,26 @@ Deno.test("attestation: real evaluated snapshots bind inputs and preserve deferr
   }
 });
 
-Deno.test("verify-reviews: Codex is read-only and only its final response reaches the verdict gate", async () => {
+Deno.test("verify-reviews: Codex scopes file reads and only its final response reaches the verdict gate", async () => {
   const steps = reviewSteps(await readReviewsWorkflow());
   assertEquals(steps.length, Object.keys(EXPECTED_REVIEW_STEPS).length);
   for (const step of steps) {
     const run = step.task!.inputs!.run!;
     assertStringIncludes(
       run,
-      "codex --ask-for-approval never exec --ephemeral --sandbox read-only",
+      "codex --ask-for-approval never exec --ephemeral --strict-config",
     );
     assertStringIncludes(run, '--output-last-message "$RESULT_FILE"');
     assertStringIncludes(run, 'scripts/check_review_verdict.ts "$RESULT_FILE"');
     assertStringIncludes(run, "if [ $REVIEW_EXIT -ne 0 ]; then");
     for (
       const control of [
+        'default_permissions="swamp-review"',
+        'permissions.swamp-review.filesystem.":root"="deny"',
+        'permissions.swamp-review.filesystem.":minimal"="read"',
+        "permissions.swamp-review.network.enabled=false",
+        'shell_environment_policy.inherit="none"',
+        'shell_environment_policy.set={PATH="/usr/bin:/bin"}',
         "--ignore-user-config --ignore-rules --skip-git-repo-check",
         '--cd "$REVIEW_DIR"',
         "features.apps=false",
@@ -329,6 +335,9 @@ Deno.test("verify-reviews: Codex is read-only and only its final response reache
         "do not execute project code or tests",
       ]
     ) assertStringIncludes(run, control);
+    // Legacy sandbox selection would override the restricted permission profile.
+    assertEquals(run.includes("--sandbox"), false);
+    assertEquals(run.includes("sandbox_mode="), false);
   }
 });
 
