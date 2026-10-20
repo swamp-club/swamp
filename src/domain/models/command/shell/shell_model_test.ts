@@ -2054,3 +2054,45 @@ Deno.test("shell placement: the hook's plan over the authored arguments and the 
   assertEquals(filled.envNames, plan.envNames);
   assertEquals([...plan.envNames.values()], ["__SWAMP_VAULT_1"]);
 });
+
+posixOnlyTest(
+  "shellModel.methods.execute: in a typed run the shell refuses a prohibited data-origin placement itself, before any launch, however it was reached",
+  async () => {
+    const { bag } = typedRun();
+    const sentinel = bag.addDataSecret("data-s3cret", REF);
+    const { context, getResults } = createTestContext({
+      vaultSecrets: bag,
+      unresolvedMethodArgs: { run: `cat <<'EOF'\n${sentinel}\nEOF` },
+    });
+    const error = await assertRejects(
+      () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
+      SecretDestinationRefusedError,
+    );
+    assertEquals(
+      error.destination,
+      "the shell command inside a here-document with a quoted delimiter",
+    );
+    assertEquals(getResults(), []);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): in a typed run the shell refuses a single-quoted data-origin placement itself, before any launch",
+  async () => {
+    const { bag } = typedRun();
+    const sentinel = bag.addDataSecret("data-s3cret", REF);
+    const { context, getResults } = createTestContext({
+      vaultSecrets: bag,
+      unresolvedMethodArgs: { run: `Write-Output '${sentinel}'` },
+    });
+    const error = await assertRejects(
+      () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
+      SecretDestinationRefusedError,
+    );
+    assertEquals(
+      error.destination,
+      "the shell command inside PowerShell single quotes",
+    );
+    assertEquals(getResults(), []);
+  },
+);

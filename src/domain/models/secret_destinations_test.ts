@@ -425,3 +425,24 @@ Deno.test("SecretDestinationRefusedError: an entry with no reference or location
       "name: a secret can be a value, never a name (secret_destination_refused)",
   );
 });
+
+Deno.test("refuseSecretsInRefusingFields: a refusing field behind a z.preprocess is refused on the stored text, since the walker reports the whole value", () => {
+  const { registry, sentinel } = issued();
+  const schema = z.object({
+    cfg: z.preprocess(
+      (text) => JSON.parse(String(text)),
+      z.object({ dir: z.string().meta({ secrets: "refuse" }) }),
+    ),
+  });
+  const error = assertThrows(
+    () =>
+      refuseSecretsInRefusingFields(
+        schema,
+        { cfg: JSON.stringify({ dir: sentinel }) },
+        secretOccurrencesOf(registry),
+        "method argument",
+      ),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(error.destination, "method argument 'cfg'");
+});

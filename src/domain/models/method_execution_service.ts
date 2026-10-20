@@ -90,8 +90,10 @@ import {
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
-import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
-import { secretOccurrencesOf } from "../vaults/secret_occurrences.ts";
+import {
+  type SecretOccurrences,
+  secretOccurrencesOf,
+} from "../vaults/secret_occurrences.ts";
 
 /**
  * Filters data entries to only those belonging to declared resource specs.
@@ -318,15 +320,11 @@ function withParsedGlobals(
   merged: Record<string, unknown>,
   definition: Definition,
   methodName: string,
-  registry: SecretBagRegistry | undefined,
+  secrets: SecretOccurrences,
 ): Record<string, unknown> {
-  const occurrences = registry === undefined
-    ? undefined
-    : secretOccurrencesOf(registry);
   const holdsSentinel = (value: unknown): boolean => {
     if (typeof value === "string") {
-      return occurrences !== undefined &&
-        occurrences.occurrencesIn(value).length > 0;
+      return secrets.occurrencesIn(value).length > 0;
     }
     if (Array.isArray(value)) return value.some(holdsSentinel);
     if (value !== null && typeof value === "object") {
@@ -504,13 +502,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Merge raw (pre-vault-resolution) global args as fallback so vault
       // sentinel tokens from either source are preserved for env-var isolation.
       // Filter out unresolved ${{ }} expressions (same policy as the method
-      // args merge above). A boundary that built the merge before it
-      // resolved the global arguments (executeWorkflow, in a typed run) hands
-      // it in through the context, since by now `definition` holds the values.
-      unresolvedMethodArgs: context.unresolvedMethodArgs ?? {
-        ...filteredRawGlobalArgs,
-        ...rawMethodArgs,
-      },
+      // args merge above). In a typed run the boundary built the merge before
+      // it resolved the global arguments (executeWorkflow) and hands it in
+      // through the context, since by now `definition` holds the values; any
+      // other caller's value is not trusted over the merge built here.
+      unresolvedMethodArgs:
+        (secretBag?.registry.typedSecrets && context.unresolvedMethodArgs) ||
+        { ...filteredRawGlobalArgs, ...rawMethodArgs },
     };
 
     // Execute the method with pre-validated args
@@ -826,6 +824,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const typedUnresolvedArguments = typed
         ? unresolvedArgumentsOf(currentDefinition, methodName)
         : undefined;
+      const typedSecrets = typed && registry !== undefined
+        ? secretOccurrencesOf(registry)
+        : undefined;
       if (registry !== undefined && typedUnresolvedArguments !== undefined) {
         refuseSecretDestinations({
           modelDef,
@@ -947,14 +948,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // validate method arguments. Mirrors the merge in execute():
       // per-method args override global args, with unresolved ${{ }}
       // expressions filtered from global args.
-      const checkUnresolvedMethodArgs = typedUnresolvedArguments === undefined
-        ? unresolvedArgumentsOf(currentDefinition, methodName)
-        : withParsedGlobals(
-          typedUnresolvedArguments,
-          currentDefinition,
-          methodName,
-          context.vaultSecrets?.registry,
-        );
+      const checkUnresolvedMethodArgs =
+        typedUnresolvedArguments === undefined || typedSecrets === undefined
+          ? unresolvedArgumentsOf(currentDefinition, methodName)
+          : withParsedGlobals(
+            typedUnresolvedArguments,
+            currentDefinition,
+            methodName,
+            typedSecrets,
+          );
       if (typedUnresolvedArguments !== undefined) {
         // In a typed run the checks and the method see this merge, with the
         // sentinels in place, as `unresolvedMethodArgs` (Section 6.3).

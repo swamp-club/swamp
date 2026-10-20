@@ -29,6 +29,7 @@ import {
 } from "../../model.ts";
 import { UserError } from "../../../errors.ts";
 import type { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
+import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
 import { SecretDestinationRefusedError } from "../../secret_destinations.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 import {
@@ -221,6 +222,15 @@ async function executeCommand(
   if (secretBag?.resolvesAny && context.unresolvedMethodArgs) {
     const unresolvedRun = context.unresolvedMethodArgs.run;
     if (typeof unresolvedRun === "string") {
+      // The method boundary applies this policy before the load; a typed
+      // caller that reaches the method another way meets it here, so the
+      // command line is safe however the shell is reached.
+      if (secretBag.registry.typedSecrets) {
+        refuseShellSecretDestinations({
+          arguments: { run: unresolvedRun, env: args.env ?? {} },
+          secrets: secretOccurrencesOf(secretBag.registry),
+        });
+      }
       const resolved = shellStrategy.resolveSecrets(
         unresolvedRun,
         secretBag,

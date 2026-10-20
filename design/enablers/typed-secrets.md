@@ -1225,31 +1225,31 @@ missing key failing only at load, invalid records, and the option-off path,
 results (3.5), production entry points, workflows/queries and remote transport
 remain later slices.
 
-Phase 3.4 (swamp-club#3627) adds the destination policy of Sections 6.3 and
-7.2 at the local method boundary, still enabled only by tests. The internal
-option has two switches, set together by one test fixture and flipped in one
-place by Phase 3.5: `CelEvaluatorOptions.typedSecrets` for the engine and
+Phase 3.4 (swamp-club#3627) adds the destination policy of Sections 6.3 and 7.2
+at the local method boundary, still enabled only by tests. The internal option
+has two switches, set together by one test fixture and flipped in one place by
+Phase 3.5: `CelEvaluatorOptions.typedSecrets` for the engine and
 `SecretBagRegistry.typedSecrets` for the run's destinations, read by
 `executeWorkflow`, the shell behavior, `RunSensitiveValues`, `SecretRedactor`
-and the fitness test; Phase 4 removes both. The slice ships the
-`.meta({ secrets: "refuse" })` metadata and the registration-time conflict
-check (`secret_destinations.ts`), the value-free `SecretOccurrences` view,
+and the fitness test; Phase 4 removes both. The slice ships the `.meta({
+secrets: "refuse" })` metadata and the registration-time conflict check
+(`secret_destinations.ts`), the value-free `SecretOccurrences` view,
 `SecretDestinationRefusedError`, the `refuseSecretDestinations` hook with the
-shell's implementation, the value-free shell placement plan with generated
-names that skip authored keys, the NUL rejection before the launch,
-sentinel-derived stand-ins and masks in `RunSensitiveValues` and
-`SecretRedactor` (`hasSecrets` counts an attached typed registry), and
-`executionErrorFrom` for value-free output records. Integration tests wire the
-boundary from real components, with the shell cases on the host shell and the
-argv read from `/proc` on Linux. Two changes reach the option-off path, both stricter: a method
-boundary's failure record is redacted of the values the run loaded, and a
-shell resolution that fails (a sentinel no load filled) fails the step before
-any result is written. A redactor is created per run; one shared across runs
-would keep every typed registry it is handed. Carried over: the shell result
-record's `command` attribute is still the resolved command through the value
-redactor (a Phase 4 data-record gate), and generated `__SWAMP_VAULT_N`
-variables are not stripped from a nested swamp's inherited environment. Entry
-points keep building untyped registries until 3.5 wires them.
+shell's implementation, the value-free shell placement plan with generated names
+that skip authored keys, the NUL rejection before the launch, sentinel-derived
+stand-ins and masks in `RunSensitiveValues` and `SecretRedactor` (`hasSecrets`
+counts an attached typed registry), and `executionErrorFrom` for value-free
+output records. Integration tests wire the boundary from real components, with
+the shell cases on the host shell and the argv read from `/proc` on Linux. Two
+changes reach the option-off path, both stricter: a method boundary's failure
+record is redacted of the values the run loaded, and a shell resolution that
+fails (a sentinel no load filled) fails the step before any result is written. A
+redactor is created per run; one shared across runs would keep every typed
+registry it is handed. Carried over: the shell result record's `command`
+attribute is still the resolved command through the value redactor (a Phase 4
+data-record gate), and generated `__SWAMP_VAULT_N` variables are not stripped
+from a nested swamp's inherited environment. Entry points keep building untyped
+registries until 3.5 wires them.
 
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any

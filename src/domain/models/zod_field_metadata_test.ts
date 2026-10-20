@@ -901,8 +901,30 @@ Deno.test("findFieldsWhere: a schema two fields share is read under each of them
     chain.some((meta) => meta.a === true) &&
     chain.some((meta) => meta.b === true);
   assertEquals(findFieldsWhere(schema, both), ["b"]);
+  // Under the union's chain the shared schema is read again, so both fields
+  // report it.
   assertEquals(
     findFieldsWhere(schema, (chain) => chain.some((meta) => meta.b === true)),
     ["a", "b"],
   );
+});
+
+Deno.test("findFieldsWhere: a DAG-shaped schema costs one visit per node and chain, not one per path", () => {
+  // Thirty levels, each with two fields referencing the same sub-schema:
+  // a billion paths, a few dozen distinct nodes.
+  let level: z.ZodTypeAny = z.string().meta({ marked: true });
+  for (let i = 0; i < 30; i++) {
+    level = z.object({ left: level, right: level });
+  }
+  let asked = 0;
+  const marked = (chain: readonly FieldMetadata[]) => {
+    asked++;
+    return chain.some((meta) => meta.marked === true);
+  };
+  assertEquals(findFieldsWhere(level, marked), [
+    Array(30).fill("left").join("."),
+  ]);
+  // Only a node with metadata is asked, and the shared leaf is read once
+  // under its first path: one question, not a billion.
+  assertEquals(asked, 1);
 });

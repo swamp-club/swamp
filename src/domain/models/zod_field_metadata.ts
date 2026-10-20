@@ -748,8 +748,9 @@ export function findValuesWithMetadata(
  * `.catchall()` key `[*]`, and a union or intersection member keeps the path
  * of the field it describes and continues its chain, so metadata on the
  * union and on a member are read together. A schema two fields share is read
- * under each of them; a schema that contains itself is entered once per path.
- * Metadata on the root schema itself is not reported.
+ * once per distinct chain it is reached with, under the first path; a schema
+ * that contains itself is entered once per path. Metadata on the root schema
+ * itself is not reported.
  *
  * @param schema - A Zod schema (typically an object schema)
  * @param matches - Decides from a field's metadata, outermost wrapper first
@@ -762,6 +763,20 @@ export function findFieldsWhere(
   const found: string[] = [];
   /** The schemas on the way down to the current one, to stop on a cycle. */
   const ancestors = new Set<z.ZodTypeAny>();
+  /**
+   * The chains each schema was already read under. A schema two fields
+   * share is read once per distinct inherited chain, so a DAG-shaped schema
+   * costs one visit per node and chain, not one per path.
+   */
+  const seen = new Map<z.ZodTypeAny, Set<string>>();
+  const chainIds = new WeakMap<FieldMetadata, number>();
+  let nextChainId = 0;
+  const chainKey = (chain: readonly FieldMetadata[]) =>
+    chain.map((meta) => {
+      let id = chainIds.get(meta);
+      if (id === undefined) chainIds.set(meta, id = nextChainId++);
+      return id;
+    }).join(",");
   const visit = (
     node: z.ZodTypeAny,
     path: string,
@@ -769,6 +784,11 @@ export function findFieldsWhere(
     inherited: readonly FieldMetadata[] = [],
   ): void => {
     if (ancestors.has(node)) return;
+    const key = chainKey(inherited);
+    const keys = seen.get(node) ?? new Set<string>();
+    if (keys.has(key)) return;
+    keys.add(key);
+    seen.set(node, keys);
     ancestors.add(node);
     try {
       visitWithin(node, path, root, inherited);
