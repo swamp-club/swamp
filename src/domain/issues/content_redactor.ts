@@ -263,7 +263,9 @@ const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 // redacted whatever text touches it (remote_addr:<addr>, <addr>: no route,
 // <addr>:8080) while a run that cannot hold one (a fast-check replay path such
 // as 992:3:11:17:17:12, a timestamp) is kept.
-const IPV6_RE = /(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4}/g;
+// No lookbehind: a run glued to a preceding word (x2001:db8:…) must still
+// start at its first group, or the shortened run would pass as a non-address.
+const IPV6_RE = /(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4}/g;
 
 // Home directory paths with usernames — captures the prefix and username
 // separately so we can reconstruct positionally.
@@ -883,16 +885,35 @@ function applyRedactions(
   result = result.replace(
     IPV6_RE,
     (match: string, offset: number, source: string) => {
-      // One colon at either end is a label or message colon, not part of
-      // the run: remote_addr:<addr>, <addr>: no route.
-      const lead = /^(?::(?!:)|:::)/.test(match) ? ":" : "";
-      const trail = /(?:[^:]:|:::)$/.test(match) ? ":" : "";
-      const run = match.slice(lead.length, match.length - trail.length);
-      const glued = /[A-Za-z0-9_]/.test(source[offset + match.length] ?? "");
-      if (!isAddressLikeColonRun(run, glued)) return match;
-      if (isSafeIpv6(run)) return match;
-      count("IP address");
-      return `${lead}${placeholders.get("IP", run)}${trail}`;
+      const followedByWord = /[A-Za-z0-9_]/.test(
+        source[offset + match.length] ?? "",
+      );
+      // Returns the replacement for a candidate run, or null when it holds
+      // no address. One colon at either end is a label or message colon, not
+      // part of the run: remote_addr:<addr>, <addr>: no route.
+      const judge = (candidate: string): string | null => {
+        const lead = /^(?::(?!:)|:::)/.test(candidate) ? ":" : "";
+        const trail = /(?:[^:]:|:::)$/.test(candidate) ? ":" : "";
+        const run = candidate.slice(
+          lead.length,
+          candidate.length - trail.length,
+        );
+        if (!isAddressLikeColonRun(run, followedByWord)) return null;
+        if (isSafeIpv6(run)) return candidate;
+        count("IP address");
+        return `${lead}${placeholders.get("IP", run)}${trail}`;
+      };
+      // A run glued to a preceding word starts partway into it. When that
+      // partial group is one character, it is the last letter of a label
+      // (ipv6:<addr>, id:<addr>): judge the run without it first, so the
+      // label stays whole. A longer one (x2001:db8:…) is the address's own
+      // first group, so the full run is judged.
+      const cut = match.indexOf(":");
+      if (cut === 1 && /[0-9A-Za-z]/.test(source[offset - 1] ?? "")) {
+        const tail = judge(match.slice(cut));
+        if (tail !== null) return match.slice(0, cut) + tail;
+      }
+      return judge(match) ?? match;
     },
   );
 

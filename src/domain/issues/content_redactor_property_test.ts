@@ -215,11 +215,12 @@ const arbIpv6 = fc.oneof(
 );
 
 // What text puts around an address or a colon run: spaces, a label colon
-// before it, a message colon after it, brackets and punctuation.
+// before it, a message colon after it, brackets and punctuation. A label
+// ending in a hex character (ipv6:) is left to the glued-word property: it
+// may read as one more group, so a seven-group run after it is redacted.
 const arbBefore = fc.constantFrom(
   "addr ",
   "remote_addr:",
-  "ipv6:",
   "ip=",
   "[",
   "(",
@@ -263,6 +264,21 @@ Deno.test("redactIssueContent: a colon run that is not an address survives", () 
         assertEquals(result.text, input);
       },
     ),
+  );
+});
+
+// Words glued to an address with no separator: the redactor cannot always
+// tell where the word ends, so these only require that the address does not
+// survive whole.
+const arbGluedBefore = fc.constantFrom("srcaddr", "x", "0x", "ipv6:", "id:");
+
+Deno.test("redactIssueContent: an IPv6 address glued to a word never survives whole", () => {
+  fc.assert(
+    fc.property(arbGluedBefore, arbIpv6, arbAfter, (before, address, after) => {
+      const result = redactIssueContent(`t ${before}${address}${after} e`);
+      assert(!result.text.includes(address), result.text);
+      assert(result.summary.totalRedactions >= 1, result.text);
+    }),
   );
 });
 

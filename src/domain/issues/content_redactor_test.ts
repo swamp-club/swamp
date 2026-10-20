@@ -1122,6 +1122,8 @@ Deno.test("redactIssueContent: an address next to a label colon or a message col
       ["dial 2001:db8:85a3:0:0:8a2e:370:7334:8080", "dial [IP-1]"],
       ["mac aa:bb:cc:dd:ee:ff:8080 up", "mac [IP-1] up"],
       ["addr 2001:db8::1x up", "addr [IP-1]x up"],
+      ["x2001:db8:85a3:0:0:8a2e:370:7334 y", "x[IP-1] y"],
+      ["srcaddr2001:db8::7 y", "srcaddr[IP-1] y"],
     ]
   ) {
     assertEquals(redactIssueContent(input).text, expected, input);
