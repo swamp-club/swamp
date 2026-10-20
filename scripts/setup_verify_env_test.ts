@@ -172,14 +172,12 @@ Deno.test("verifyEnvPath: prefers XDG_CONFIG_HOME, falls back to HOME", () => {
 
 // -- VERIFY_KEYS ------------------------------------------------------------
 
-Deno.test("VERIFY_KEYS: records which absence is loud and which is quiet", () => {
+Deno.test("VERIFY_KEYS: lists only what a local run cannot do without", () => {
   const tessl = VERIFY_KEYS.find((k) => k.name === "TESSL_TOKEN");
-  const anthropic = VERIFY_KEYS.find((k) => k.name === "ANTHROPIC_API_KEY");
 
-  // The distinction is the reason the table carries a consequence at all: a
-  // missing TESSL_TOKEN stops the run, while a missing ANTHROPIC_API_KEY lets
-  // the gate go green having checked less than it appears to have checked.
+  // The trigger evals and reviews run on the claude.ai login, so the API key
+  // is no longer a local requirement and must not be fetched into verify.env.
   assertEquals(tessl?.required, true);
-  assertEquals(anthropic?.required, false);
+  assertEquals(VERIFY_KEYS.some((k) => k.name === "ANTHROPIC_API_KEY"), false);
   assertEquals(VERIFY_KEYS.every((k) => k.consequence.length > 0), true);
 });

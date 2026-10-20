@@ -61,6 +61,15 @@ jobs:
               # affectedCommands.
               - 'scripts/affected_commands.ts'
               - 'scripts/command_index.ts'
+              # The skill trigger evals: runner, `claude -p` provider and the
+              # generators that build the cases. Keep in step with the
+              # eval-* configIntegrity.scripts entries below.
+              - 'scripts/eval_skill_triggers_promptfoo.ts'
+              - 'evals/promptfoo/claude_cli_provider.mjs'
+              - 'evals/promptfoo/provider_route.ts'
+              - 'evals/promptfoo/generate_config.ts'
+              - 'evals/promptfoo/generate_routing_config.ts'
+              - 'evals/promptfoo/generate_sufficiency_config.ts'
 
   claude-ci-security-review:
     name: CI Security Review
@@ -365,7 +374,7 @@ jobs:
           fi
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^scripts/eval_skill_triggers_promptfoo\\.ts$|^evals/promptfoo/claude_cli_provider\\.mjs$|^evals/promptfoo/provider_route\\.ts$|^evals/promptfoo/generate_config\\.ts$|^evals/promptfoo/generate_routing_config\\.ts$|^evals/promptfoo/generate_sufficiency_config\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -728,6 +737,12 @@ jobs:
           check_hash "build-attestation script" '.configIntegrity.scripts."build-attestation"' "scripts/build_attestation.ts"
           check_hash "affected-commands script" '.configIntegrity.scripts."affected-commands"' "scripts/affected_commands.ts"
           check_hash "command-index script" '.configIntegrity.scripts."command-index"' "scripts/command_index.ts"
+          check_hash "eval-skill-triggers runner" '.configIntegrity.scripts."eval-skill-triggers-runner"' "scripts/eval_skill_triggers_promptfoo.ts"
+          check_hash "claude-cli eval provider" '.configIntegrity.scripts."eval-claude-cli-provider"' "evals/promptfoo/claude_cli_provider.mjs"
+          check_hash "eval provider-route module" '.configIntegrity.scripts."eval-provider-route"' "evals/promptfoo/provider_route.ts"
+          check_hash "eval trigger config generator" '.configIntegrity.scripts."eval-generate-config"' "evals/promptfoo/generate_config.ts"
+          check_hash "eval routing config generator" '.configIntegrity.scripts."eval-generate-routing-config"' "evals/promptfoo/generate_routing_config.ts"
+          check_hash "eval sufficiency config generator" '.configIntegrity.scripts."eval-generate-sufficiency-config"' "evals/promptfoo/generate_sufficiency_config.ts"
 
           # -- 6. Steps summary table --
           {

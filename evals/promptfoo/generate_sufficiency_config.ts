@@ -31,6 +31,13 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
+import {
+  assertRouteSupports,
+  cliProviderEntry,
+  defaultRoute,
+  ROUTES,
+  type Route,
+} from "./provider_route.ts";
 
 interface ProviderDefinition {
   id: string;
@@ -90,6 +97,15 @@ const GUIDE_DIRS: Record<string, string> = {
   "serve": "references/serve",
 };
 
+/**
+ * Guides quote swamp's own `{{ ... }}` expressions (vault.get, for one), which
+ * promptfoo renders as template code and rejects, erroring those cases. A raw
+ * block makes it pass the text through untouched.
+ */
+function rawBlock(text: string): string {
+  return `{% raw %}${text}{% endraw %}`;
+}
+
 interface SufficiencyEval {
   query: string;
   guide: string;
@@ -118,7 +134,7 @@ interface PromptfooTest {
 
 async function main(): Promise<void> {
   const args = parseArgs(Deno.args, {
-    string: ["model"],
+    string: ["model", "route"],
     default: { model: "sonnet" },
   });
 
@@ -133,6 +149,19 @@ async function main(): Promise<void> {
   }
 
   const provider = PROVIDER_REGISTRY[modelAlias];
+  const route = (args.route ?? defaultRoute(modelAlias, {
+    GITHUB_ACTIONS: Deno.env.get("GITHUB_ACTIONS"),
+  })) as Route;
+  if (!ROUTES.includes(route)) {
+    console.error(`Error: unknown route "${route}". Valid routes: ${ROUTES.join(", ")}`);
+    Deno.exit(1);
+  }
+  try {
+    assertRouteSupports(modelAlias, route);
+  } catch (error) {
+    console.error(`Error: ${(error as Error).message}`);
+    Deno.exit(1);
+  }
 
   const skillsDir = join(Deno.cwd(), ".claude", "skills", "swamp");
 
@@ -213,7 +242,9 @@ async function main(): Promise<void> {
       description: `[${item.guide}:${label}] ${item.query.slice(0, 50)}`,
       vars: {
         query: item.query,
-        guide_content: guideContents[item.guide],
+        guide_content: route === "cli"
+          ? rawBlock(guideContents[item.guide])
+          : guideContents[item.guide],
       },
       assert: [
         {
@@ -239,7 +270,9 @@ async function main(): Promise<void> {
   const config = {
     description: `Swamp guide sufficiency evaluation (${modelAlias})`,
     prompts: ["{{query}}\n\n---\n\nGuide content:\n\n{{guide_content}}"],
-    providers: [
+    providers: route === "cli"
+      ? [cliProviderEntry(modelAlias, systemMessage, tools.map((t) => t.function.name))]
+      : [
       {
         id: provider.id,
         config: {
@@ -253,7 +286,7 @@ async function main(): Promise<void> {
         },
         ...(provider.delay ? { delay: provider.delay } : {}),
       },
-    ],
+      ],
     tests,
   };
 

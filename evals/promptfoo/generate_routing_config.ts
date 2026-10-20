@@ -31,6 +31,13 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import {
+  assertRouteSupports,
+  cliProviderEntry,
+  defaultRoute,
+  ROUTES,
+  type Route,
+} from "./provider_route.ts";
 
 interface ProviderDefinition {
   id: string;
@@ -116,7 +123,7 @@ interface PromptfooTest {
 
 async function main(): Promise<void> {
   const args = parseArgs(Deno.args, {
-    string: ["model"],
+    string: ["model", "route"],
     default: { model: "sonnet" },
   });
 
@@ -131,6 +138,19 @@ async function main(): Promise<void> {
   }
 
   const provider = PROVIDER_REGISTRY[modelAlias];
+  const route = (args.route ?? defaultRoute(modelAlias, {
+    GITHUB_ACTIONS: Deno.env.get("GITHUB_ACTIONS"),
+  })) as Route;
+  if (!ROUTES.includes(route)) {
+    console.error(`Error: unknown route "${route}". Valid routes: ${ROUTES.join(", ")}`);
+    Deno.exit(1);
+  }
+  try {
+    assertRouteSupports(modelAlias, route);
+  } catch (error) {
+    console.error(`Error: ${(error as Error).message}`);
+    Deno.exit(1);
+  }
 
   // Read the SKILL.md body (stripping frontmatter) for the system message
   const skillsDir = join(Deno.cwd(), ".claude", "skills", "swamp");
@@ -220,7 +240,9 @@ async function main(): Promise<void> {
   const config = {
     description: `Swamp gateway internal routing evaluation (${modelAlias})`,
     prompts: ["{{query}}"],
-    providers: [
+    providers: route === "cli"
+      ? [cliProviderEntry(modelAlias, systemMessage, tools.map((t) => t.function.name))]
+      : [
       {
         id: provider.id,
         config: {
@@ -234,7 +256,7 @@ async function main(): Promise<void> {
         },
         ...(provider.delay ? { delay: provider.delay } : {}),
       },
-    ],
+      ],
     tests,
   };
 

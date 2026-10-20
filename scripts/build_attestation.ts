@@ -193,6 +193,33 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     path: "scripts/command_index.ts",
     jsonPath: ["scripts", "command-index"],
   },
+  // The trigger evals decide whether the skills still route correctly, so the
+  // runner, the CLI provider that answers each case, and the generators that
+  // build the cases are pinned alongside the promptfoo package.json.
+  {
+    path: "scripts/eval_skill_triggers_promptfoo.ts",
+    jsonPath: ["scripts", "eval-skill-triggers-runner"],
+  },
+  {
+    path: "evals/promptfoo/claude_cli_provider.mjs",
+    jsonPath: ["scripts", "eval-claude-cli-provider"],
+  },
+  {
+    path: "evals/promptfoo/provider_route.ts",
+    jsonPath: ["scripts", "eval-provider-route"],
+  },
+  {
+    path: "evals/promptfoo/generate_config.ts",
+    jsonPath: ["scripts", "eval-generate-config"],
+  },
+  {
+    path: "evals/promptfoo/generate_routing_config.ts",
+    jsonPath: ["scripts", "eval-generate-routing-config"],
+  },
+  {
+    path: "evals/promptfoo/generate_sufficiency_config.ts",
+    jsonPath: ["scripts", "eval-generate-sufficiency-config"],
+  },
 ];
 
 // -- Run record shapes (the subset this script reads) ------------------------

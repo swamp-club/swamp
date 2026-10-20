@@ -35,7 +35,7 @@ After creating or modifying a skill, verify it before submitting:
   for the bundled skills (`swamp`, `swamp-getting-started`) via
   `deno run review-skills`; for other skills it is good hygiene, not a gate.
 - `deno run eval-skill-triggers` — promptfoo trigger-routing evals for the
-  bundled skills (needs `ANTHROPIC_API_KEY`); run when a bundled skill's
-  description or `trigger_evals.json` changed.
+  bundled skills (runs through `claude -p` on your claude.ai login; no API key);
+  run when a bundled skill's description or `trigger_evals.json` changed.
 
 See `contributing/skills-pipeline.md` for the full skill testing pipeline.
