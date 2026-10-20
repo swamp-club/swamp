@@ -116,7 +116,7 @@ function dependencyWarning(w: DependencyTrustIssue): UnresolvedWarning {
   return {
     ruleId: w.cause ?? "dependency",
     file: DEPENDENCY_FILE_LABEL,
-    message: `${w.dependency}: ${w.message}`,
+    message: `${w.dependency}: ${w.message.split("\n")[0]}`,
     ...(w.remediation !== undefined ? { remediation: w.remediation } : {}),
   };
 }

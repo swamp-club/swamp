@@ -398,3 +398,21 @@ Deno.test("renderFindingsReport: a dependency warning prints its fix and no acce
     "    fix: Pin the exact version this push resolved (4.21.1).",
   ]);
 });
+
+Deno.test("buildFindingsReport: a dependency message keeps to its first line", () => {
+  const report = buildFindingsReport({
+    safetyWarnings: [],
+    reviewWarnings: [],
+    dependencyWarnings: [{
+      dependency: "pkg",
+      message: "version 1.0.0 is deprecated: first\nsecond",
+      cause: "deprecated-version",
+    }],
+    acceptances: { accepted: [] },
+    commentSites: {},
+  }, DIR);
+  assertEquals(
+    report.unresolvedWarnings?.[0].message,
+    "pkg: version 1.0.0 is deprecated: first",
+  );
+});
