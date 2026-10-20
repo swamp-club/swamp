@@ -89,10 +89,39 @@ const STATIC_IMPORT_RE =
 const DYNAMIC_IMPORT_RE =
   /import\s*\(\s*["'](?<specifier>(?:npm|jsr):[^"']+)["']\s*\)/g;
 
-// The same two forms for any quoted specifier, to find bare imports
-const ANY_STATIC_IMPORT_RE = /(?:from|import)\s+["'](?<specifier>[^"']+)["']/g;
-const ANY_DYNAMIC_IMPORT_RE =
-  /import\s*\(\s*["'](?<specifier>[^"']+)["']\s*\)/g;
+// The code before a string literal that puts it in import position:
+// `import ... from`/`export ... from`, side-effect `import`, `import(`
+const IMPORT_POSITION_RE =
+  /(?:^|[^.\w$])(?:(?:import|export)\b[^;]*\bfrom|import)\s*$|(?:^|[^.\w$])import\s*\(\s*$/;
+
+/**
+ * The quoted specifiers in import position. Each string literal is read as
+ * a token, so text inside a string (`"run: import x from 'y'"`) is never
+ * taken for an import, and only the code between it and the previous
+ * literal is matched.
+ */
+function importedSpecifiers(code: string): string[] {
+  const specifiers: string[] = [];
+  let codeStart = 0;
+  let i = 0;
+  while (i < code.length) {
+    const quote = code[i];
+    if (quote !== '"' && quote !== "'") {
+      i++;
+      continue;
+    }
+    let end = i + 1;
+    while (end < code.length && code[end] !== quote && code[end] !== "\n") {
+      end += code[end] === "\\" ? 2 : 1;
+    }
+    if (IMPORT_POSITION_RE.test(code.slice(codeStart, i))) {
+      specifiers.push(code.slice(i + 1, end));
+    }
+    i = end + 1;
+    codeStart = i;
+  }
+  return specifiers;
+}
 
 // Parses `npm:@scope/name@version`, `npm:name@version`, `npm:name`
 const NPM_SPECIFIER_RE =
@@ -189,25 +218,20 @@ export function extractSpecifiersFromSource(
 
   // Bare names are read as the bare-specifiers rule reads them, with
   // template literals blanked, so generated code is never audited.
-  const blanked = stripSourceComments(source);
-  for (const re of [ANY_STATIC_IMPORT_RE, ANY_DYNAMIC_IMPORT_RE]) {
-    re.lastIndex = 0;
-    for (const match of blanked.matchAll(re)) {
-      const bare = match.groups?.specifier;
-      if (!bare || !isBareSpecifier(bare)) continue;
-      const target = resolveBareImport(bare, imports);
-      if (!target) continue;
-      // A `key/` entry must write its target `npm:/name@v/` for Deno to
-      // resolve it; the package is the same.
-      const parsed = parseSpecifier(target.replace(/^(npm|jsr):\//, "$1:"));
-      if (!parsed) continue;
+  for (const bare of importedSpecifiers(stripSourceComments(source))) {
+    if (!bare || !isBareSpecifier(bare)) continue;
+    const target = resolveBareImport(bare, imports);
+    if (!target) continue;
+    // A `key/` entry must write its target `npm:/name@v/` for Deno to
+    // resolve it; the package is the same.
+    const parsed = parseSpecifier(target.replace(/^(npm|jsr):\//, "$1:"));
+    if (!parsed) continue;
 
-      const key = specifierKey(parsed);
-      if (seen.has(key)) continue;
-      seen.add(key);
+    const key = specifierKey(parsed);
+    if (seen.has(key)) continue;
+    seen.add(key);
 
-      results.push({ ...parsed, sourceFile, importedAs: bare });
-    }
+    results.push({ ...parsed, sourceFile, importedAs: bare });
   }
 
   return results;

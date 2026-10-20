@@ -288,6 +288,55 @@ Deno.test("extractSpecifiersFromSource: a string that names no map key is ignore
   );
 });
 
+Deno.test("extractSpecifiersFromSource: import syntax inside a string literal is not an import", () => {
+  assertEquals(
+    mappedOf(
+      `const a = 'value from "config"';
+const b = "run: import x from 'ms'";
+const c = "import 'uuid'";
+const d = "x" + "import(\\"zod2\\")";
+log("from", "ms");`,
+      {
+        config: "npm:config@1.0.0",
+        ms: "npm:ms@2.1.3",
+        uuid: "npm:uuid@9.0.0",
+        zod2: "npm:zod2@1.0.0",
+      },
+    ),
+    [],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a string after an import statement is not an import", () => {
+  assertEquals(
+    mappedOf(
+      `import ms from "ms";
+export const label = "uuid";
+export default { from: "config" };`,
+      {
+        config: "npm:config@1.0.0",
+        ms: "npm:ms@2.1.3",
+        uuid: "npm:uuid@9.0.0",
+      },
+    ),
+    ["npm:ms@2.1.3 <- ms"],
+  );
+});
+
+Deno.test("extractSpecifiersFromSource: a multi-line import clause and an import attribute resolve", () => {
+  assertEquals(
+    mappedOf(
+      `import {
+  a,
+  b,
+} from "ms";
+import data from "uuid" with { type: "json" };`,
+      { json: "npm:json@1.0.0", ms: "npm:ms@2.1.3", uuid: "npm:uuid@9.0.0" },
+    ),
+    ["npm:ms@2.1.3 <- ms", "npm:uuid@9.0.0 <- uuid"],
+  );
+});
+
 Deno.test("extractSpecifiersFromSource: without a map, bare imports are not audited", () => {
   assertEquals(
     extractSpecifiersFromSource(`import ms from "ms";`, "model.ts"),

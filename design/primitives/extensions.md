@@ -1895,8 +1895,10 @@ extractor resolves bare imports as the bundler does: an exact key, else the
 longest `key/` prefix, where a key mapped to an `npm:` or `jsr:` package also
 covers its subpaths (`"@std/path"` resolves `@std/path/posix`) unless the
 map has its own `key/` entry. It reads the map as JSON, resolves only the
-bare imports the source uses, and finds them as the bare-specifiers rule
-does, so an import inside a template literal is never audited. A package
+bare imports the source uses, and takes only a string literal in import
+position (after `from`, a side-effect `import` or `import(`), with comments
+and template literals blanked, so import text inside a string, comment or
+template literal is never audited. A package
 both written out and mapped at the same specifier is audited once, as the
 written form. The rules live in
 `src/domain/extensions/dependency_version_resolution.ts` and run no Deno
