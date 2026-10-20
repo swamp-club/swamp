@@ -201,10 +201,16 @@ jsr.io.
 - Deprecated packages (the shipped version and latest both deprecated)
 - A JSR package or version that does not exist (`cause: "jsr-missing"`)
 
-**Pinned deprecated version (fails the factor, does not block yet):** a shipped
-npm version that is deprecated while the package's latest is not
-(`cause: "deprecated-version"`) is a push warning, waived by `--yes`, but it
-loses the factor, as on the registry scorecard. Pin a supported version.
+**Pinned deprecated or yanked version (fails the factor, does not block):** a
+shipped npm version that is deprecated while the package's latest is not
+(`cause: "deprecated-version"`), or a shipped JSR version that is yanked
+(`cause: "jsr-yanked"`), is a push warning, waived by `--yes`, but it loses the
+factor, as on the registry scorecard. Pin a supported, non-yanked version.
+
+**Loose specifier (costs one of the two points, does not block):** an unpinned,
+range or dist-tag specifier (`cause: "loose-specifier"`) alone gives 1/2,
+however many dependencies have one. Pin an exact, published version to earn the
+second point. Any blocker or unaudited dependency still gives 0/2.
 
 **Not audited (fails the factor, does not block):** a dependency whose OSV.dev,
 npm or JSR lookup failed, or whose specifier no published version matches, is
@@ -213,8 +219,6 @@ passed. Re-run when all three services are reachable to earn the factor.
 
 **Warnings (displayed but do not block or cost the factor):**
 
-- An unpinned, range or dist-tag specifier (`loose-specifier`)
-- A yanked JSR version (`jsr-yanked`)
 - MEDIUM severity vulnerabilities
 - Low weekly downloads (< 1000)
 - Stale last-publish (> 2 years)
@@ -289,7 +293,7 @@ Factor results:
 | has-license         | 1/1    | `license: MIT` declared                      |
 | license-file        | 1/1    | LICENSE file in additionalFiles              |
 | repository-verified | 2/2    | Public github.com URL                        |
-| dependency-trust    | 2/2    | No blocking or unaudited dependencies        |
+| dependency-trust    | 2/2    | No blocking, unaudited or loose dependencies |
 | verified-by-swamp   | 0/1    | Third-party, not admin-curated               |
 
 **Total: 15/16 = 93% Grade A.**

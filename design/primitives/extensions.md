@@ -2091,12 +2091,16 @@ downloads, age) do not apply.
 ### Quality Rubric Factor
 
 Dependency trust is a rubric factor (`dependency-trust`, worth 2 points) in both
-`swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores
-when every dependency passes the trust gates with no hard errors. In the CLI an
-unaudited dependency loses the factor the same way a hard error does, and so
-does a `deprecated-version` warning (a pinned deprecated version), matching the
-registry's scorecard; `dependencyTrustBlockerCount` counts the errors and those
-warnings. The `loose-specifier` and `jsr-yanked` warnings do not cost it.
+`swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores 2
+when every dependency passes the trust gates with no findings, 1 when the only
+findings are `loose-specifier` warnings (one point however many), and 0 when
+any dependency has a blocker. A blocker is a hard error, a `deprecated-version`
+warning (a pinned deprecated version), a `jsr-yanked` warning, or an unaudited
+dependency (`not-audited`). Push still only warns on the last four (`--yes`
+accepts them); nothing here becomes a push error. `dependencyTrustBlockerCount`
+counts the errors, deprecated and yanked warnings; `looseSpecifierCount` counts
+the distinct dependencies with a loose specifier. The shared vectors in
+`testdata/dependency_audit_vectors.json` pin the rule for both scorers.
 
 ## Registry
 
