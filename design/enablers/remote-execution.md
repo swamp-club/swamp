@@ -1518,14 +1518,19 @@ credentials and extensions onto workers:
      `SecretRedactor` before running the method, and its vault proxy adds
      every value `resolveSecret` returns while the method runs, so
      `stdout`/`stderr` and any `writeResource` data are redacted at the
-     source.
-  2. **Data plane (defense in depth):** the orchestrator stores a per-dispatch
+     source. The runner scrubs its result frame with the same redactor: the
+     console capture (swamp-club#3080) and the error message
+     (swamp-club#3525).
+  2. **Serve (defense in depth):** the orchestrator stores a per-dispatch
      `SecretRedactor` on the `ActiveDispatch` registration, seeded with
      `secretValues` and grown with every value `resolveSecret` delivers to
      that dispatch; a step dispatched without secrets gets its redactor on the
      first delivery (swamp-club#3527). When the data plane persists a worker's
      `writeResource` call, it passes this redactor to `createResourceWriter`,
-     catching any value the worker side missed.
+     catching any value the worker side missed. A failed dispatch's
+     `result.error` goes through the same redactor before the step-lease fail
+     record and the step's error (swamp-club#3525), so a worker that predates
+     the runner-side scrub cannot put a value in a durable lease record.
      **Known limit:** the file-writer path (`POST /data/writers` and its
      `line`/`content` requests) does not get the redactor (`#openWriter` in
      `src/serve/data_plane.ts`), so file outputs rely on the worker-side layer

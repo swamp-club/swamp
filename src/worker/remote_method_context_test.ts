@@ -27,6 +27,7 @@ import { join } from "@std/path";
 import {
   createRemoteMethodContext,
   dispatchMethodArgs,
+  dispatchRedactor,
   UnsupportedOnRemoteWorkerError,
 } from "./remote_method_context.ts";
 import { definitionFromExecution } from "./exec_dispatch.ts";
@@ -773,4 +774,15 @@ Deno.test("remote context: the worker resolves shipped args as the orchestrator 
     assertEquals(seenArgs?.run, d.execution.methodArgs.run);
     assertEquals(seenUnresolved?.run, d.unresolvedMethodArgs!.run);
   });
+});
+
+Deno.test("dispatchRedactor: masks the shipped values and leaves text alone without any (swamp-club#3525)", () => {
+  const secret = `s3cret-${crypto.randomUUID()}`;
+  const text = `method failed holding ${secret}`;
+  assertEquals(
+    dispatchRedactor([secret]).redact(text),
+    "method failed holding ***",
+  );
+  assertEquals(dispatchRedactor(undefined).redact(text), text);
+  assertEquals(dispatchRedactor([]).redact(text), text);
 });

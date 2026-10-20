@@ -530,6 +530,22 @@ export interface RemoteMethodContextResult {
   redact: (text: string) => string;
 }
 
+/**
+ * The per-dispatch redactor, holding the values the orchestrator resolved
+ * before the dispatch (`secretValues`). The method context extends it with
+ * what the method learns; the runner uses it from the first frame, so a
+ * failure before the context exists is scrubbed too (swamp-club#3525).
+ */
+export function dispatchRedactor(
+  secretValues: readonly string[] | undefined,
+): SecretRedactor {
+  const redactor = new SecretRedactor();
+  for (const value of secretValues ?? []) {
+    redactor.addSecret(value);
+  }
+  return redactor;
+}
+
 /** Whether the orchestrator shipped the step's secret bag (swamp-club#2760). */
 function shipsSecretBag(
   dispatch: DispatchParams,
@@ -570,12 +586,7 @@ export function createRemoteMethodContext(
   // Every secret value the worker receives for this dispatch: the values it
   // was dispatched with, and each one the vault proxy resolves while the
   // method runs.
-  const redactor = new SecretRedactor();
-  if (dispatch.secretValues) {
-    for (const value of dispatch.secretValues) {
-      redactor.addSecret(value);
-    }
-  }
+  const redactor = dispatchRedactor(dispatch.secretValues);
   const dataRepository = createRemoteDataRepository(options);
   const vaultService = createRemoteVaultService(options, redactor);
   const definitionRepository = createRemoteDefinitionRepository(options);

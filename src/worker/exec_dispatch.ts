@@ -47,6 +47,7 @@ import { WorkerBundleCache } from "./bundle_cache.ts";
 import {
   createRemoteMethodContext,
   dispatchMethodArgs,
+  dispatchRedactor,
 } from "./remote_method_context.ts";
 import {
   type RunnerBootstrapParams,
@@ -154,8 +155,13 @@ export async function runDispatchRunner(
   const logs: string[] = [];
   let getHandles: () => DataHandle[] = () => [];
   // Console lines travel to the orchestrator's run log in the result, so
-  // they are scrubbed like streamed output (swamp-club#3080).
-  let redact = (text: string) => text;
+  // they are scrubbed like streamed output (swamp-club#3080), and so is the
+  // error message, which serve stores on the step lease (swamp-club#3525).
+  // The shipped values are known from the first frame; the method context's
+  // redactor takes over once it exists, since it also learns what the method
+  // reads.
+  const shipped = dispatchRedactor(dispatch.secretValues);
+  let redact = (text: string) => shipped.redact(text);
 
   let result: DispatchResult;
 
@@ -236,7 +242,7 @@ export async function runDispatchRunner(
 
     result = {
       status: "error",
-      error: message,
+      error: redact(message),
       errorPaths: dispatchErrorPaths(error),
       outputs: toOutputs(getHandles()),
       logs: logs.map(redact),
