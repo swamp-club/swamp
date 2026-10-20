@@ -93,24 +93,23 @@ function isSensitive(meta: FieldMetadata): boolean {
   return Boolean(meta.sensitive);
 }
 
-/** The first sentinel of the run anywhere in `value`, at any depth. */
+/**
+ * The first sentinel of the run anywhere in `value`, at any depth. A value
+ * that contains itself is entered once.
+ */
 function firstOccurrenceIn(
   value: unknown,
   secrets: SecretOccurrences,
+  seen: WeakSet<object> = new WeakSet(),
 ): SecretOccurrence | undefined {
   if (typeof value === "string") return secrets.occurrencesIn(value)[0];
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = firstOccurrenceIn(item, secrets);
-      if (found) return found;
-    }
-    return undefined;
-  }
-  if (value !== null && typeof value === "object") {
-    for (const item of Object.values(value)) {
-      const found = firstOccurrenceIn(item, secrets);
-      if (found) return found;
-    }
+  if (value === null || typeof value !== "object") return undefined;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  const items = Array.isArray(value) ? value : Object.values(value);
+  for (const item of items) {
+    const found = firstOccurrenceIn(item, secrets, seen);
+    if (found) return found;
   }
   return undefined;
 }

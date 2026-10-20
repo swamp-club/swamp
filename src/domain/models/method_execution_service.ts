@@ -90,6 +90,8 @@ import {
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
+import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { secretOccurrencesOf } from "../vaults/secret_occurrences.ts";
 
 /**
  * Filters data entries to only those belonging to declared resource specs.
@@ -302,6 +304,51 @@ function unresolvedArgumentsOf(
     merged[key] = value;
   }
   return { ...merged, ...definition.getMethodArguments(methodName) };
+}
+
+/**
+ * The typed run's merge with the parsed global arguments laid under it: a
+ * global argument that holds no sentinel takes the value global validation
+ * parsed (its Zod defaults and coercions, as the option-off merge has them),
+ * and one that holds a sentinel anywhere keeps its authored form, so the
+ * secret stays a sentinel for the shell's fill. Method arguments stay as
+ * authored, as they always have in `unresolvedMethodArgs`.
+ */
+function withParsedGlobals(
+  merged: Record<string, unknown>,
+  definition: Definition,
+  methodName: string,
+  registry: SecretBagRegistry | undefined,
+): Record<string, unknown> {
+  const occurrences = registry === undefined
+    ? undefined
+    : secretOccurrencesOf(registry);
+  const holdsSentinel = (value: unknown): boolean => {
+    if (typeof value === "string") {
+      return occurrences !== undefined &&
+        occurrences.occurrencesIn(value).length > 0;
+    }
+    if (Array.isArray(value)) return value.some(holdsSentinel);
+    if (value !== null && typeof value === "object") {
+      return Object.values(value).some(holdsSentinel);
+    }
+    return false;
+  };
+  const methodArguments = definition.getMethodArguments(methodName);
+  const result: Record<string, unknown> = {};
+  for (const [key, parsed] of Object.entries(definition.globalArguments)) {
+    if (
+      containsSwampExpression(parsed) || Object.hasOwn(methodArguments, key)
+    ) {
+      continue;
+    }
+    const authored = merged[key];
+    result[key] = holdsSentinel(authored) ? authored : parsed;
+  }
+  for (const [key, value] of Object.entries(merged)) {
+    if (!Object.hasOwn(result, key)) result[key] = value;
+  }
+  return result;
 }
 
 /**
@@ -806,14 +853,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           }),
         };
       }
-      if (typedUnresolvedArguments !== undefined) {
-        // In a typed run the checks and the method see this merge, with the
-        // sentinels in place, as `unresolvedMethodArgs` (Section 6.3).
-        context = {
-          ...context,
-          unresolvedMethodArgs: typedUnresolvedArguments,
-        };
-      }
 
       // Resolve vault sentinels in globalArguments before validation.
       // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
@@ -908,8 +947,22 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // validate method arguments. Mirrors the merge in execute():
       // per-method args override global args, with unresolved ${{ }}
       // expressions filtered from global args.
-      const checkUnresolvedMethodArgs = typedUnresolvedArguments ??
-        unresolvedArgumentsOf(currentDefinition, methodName);
+      const checkUnresolvedMethodArgs = typedUnresolvedArguments === undefined
+        ? unresolvedArgumentsOf(currentDefinition, methodName)
+        : withParsedGlobals(
+          typedUnresolvedArguments,
+          currentDefinition,
+          methodName,
+          context.vaultSecrets?.registry,
+        );
+      if (typedUnresolvedArguments !== undefined) {
+        // In a typed run the checks and the method see this merge, with the
+        // sentinels in place, as `unresolvedMethodArgs` (Section 6.3).
+        context = {
+          ...context,
+          unresolvedMethodArgs: checkUnresolvedMethodArgs,
+        };
+      }
 
       // Skip pre-flight checks for remotely-placed steps — checks run on
       // the orchestrator where worker-local filesystem state is unavailable.

@@ -5535,10 +5535,19 @@ Deno.test("executeWorkflow: in a typed run the checks and the method receive the
   const model: ModelDefinition = {
     type: ModelType.create("test/unresolved-merge"),
     version: "2026.10.20.1",
+    globalArguments: z.object({
+      command: z.string().optional(),
+      retries: z.number().default(3),
+      port: z.coerce.number().optional(),
+    }),
     methods: {
       create: {
         description: "Records the unresolved merge",
-        arguments: z.object({ command: z.string().optional() }),
+        arguments: z.object({
+          command: z.string().optional(),
+          retries: z.number().optional(),
+          port: z.number().optional(),
+        }),
         execute: (args, context) => {
           seen.method = { ...context.unresolvedMethodArgs };
           seen.args = { ...(args as Record<string, unknown>) };
@@ -5565,7 +5574,7 @@ Deno.test("executeWorkflow: in a typed run the checks and the method receive the
     // `command` is authored under globalArguments, not the method.
     const definition = Definition.create({
       name: "d",
-      globalArguments: { command: `echo ${sentinel}` },
+      globalArguments: { command: `echo ${sentinel}`, port: "8080" },
       methods: { create: { arguments: {} } },
     });
     const { loader } = mockLoader({ token: "s3cret-value" });
@@ -5578,8 +5587,13 @@ Deno.test("executeWorkflow: in a typed run the checks and the method receive the
       secretLoader: loader,
     });
     const expected = typedSecrets ? `echo ${sentinel}` : "echo s3cret-value";
-    assertEquals(seen.method?.command, expected, `typed ${typedSecrets}`);
-    assertEquals(seen.check?.command, expected, `typed ${typedSecrets}`);
+    for (const merge of [seen.method, seen.check]) {
+      assertEquals(merge?.command, expected, `typed ${typedSecrets}`);
+      // A global that holds no secret carries what validation parsed, in
+      // either mode: the default the author left out, the coerced number.
+      assertEquals(merge?.retries, 3, `typed ${typedSecrets}`);
+      assertEquals(merge?.port, 8080, `typed ${typedSecrets}`);
+    }
     // The method's validated arguments hold the value either way.
     assertEquals(seen.args?.command, "echo s3cret-value");
   }

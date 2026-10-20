@@ -1241,11 +1241,15 @@ sentinel-derived stand-ins and masks in `RunSensitiveValues` and
 `SecretRedactor` (`hasSecrets` counts an attached typed registry), and
 `executionErrorFrom` for value-free output records. Integration tests wire the
 boundary from real components, with the shell cases on the host shell and the
-argv read from `/proc` on Linux. Carried over: the shell result record's
-`command` attribute is still the resolved command through the value redactor
-(a Phase 4 data-record gate), and generated `__SWAMP_VAULT_N` variables are
-not stripped from a nested swamp's inherited environment. Entry points keep
-building untyped registries until 3.5 wires them.
+argv read from `/proc` on Linux. Two changes reach the option-off path, both stricter: a method
+boundary's failure record is redacted of the values the run loaded, and a
+shell resolution that fails (a sentinel no load filled) fails the step before
+any result is written. A redactor is created per run; one shared across runs
+would keep every typed registry it is handed. Carried over: the shell result
+record's `command` attribute is still the resolved command through the value
+redactor (a Phase 4 data-record gate), and generated `__SWAMP_VAULT_N`
+variables are not stripped from a nested swamp's inherited environment. Entry
+points keep building untyped registries until 3.5 wires them.
 
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any

@@ -31,7 +31,11 @@ import {
   SENTINEL_SOURCE,
   type VaultReferenceEntry,
 } from "./secret_bag_registry.ts";
-import type { SecretOrigin, SecretOriginLookup } from "./secret_occurrences.ts";
+import {
+  secretOccurrencesOf,
+  type SecretOrigin,
+  type SecretOriginLookup,
+} from "./secret_occurrences.ts";
 import {
   classifyShellPositions,
   type ShellContext,
@@ -745,14 +749,9 @@ export class VaultSecretBag {
   }
 
   /** The origin of a sentinel the run issued, read from the registry. */
-  private readonly originOf: SecretOriginLookup = (sentinel) => {
-    const entry = this.registry.entryOf(sentinel);
-    if (entry === undefined) return undefined;
-    return {
-      dataOrigin: entry.dataOrigin,
-      sequence: this.registry.sequenceOf(sentinel)!,
-    };
-  };
+  private get originOf(): SecretOriginLookup {
+    return secretOccurrencesOf(this.registry).originOf;
+  }
 
   /**
    * Places each occurrence as `plan` says and fills the environment with
@@ -898,8 +897,6 @@ interface ShellPlacementRules<C> {
   refusedFix: string;
 }
 
-const SENTINEL_PATTERN = new RegExp(SENTINEL_SOURCE, "g");
-
 function planOccurrences<C>(
   command: string,
   authoredEnvKeys: Iterable<string>,
@@ -910,7 +907,7 @@ function planOccurrences<C>(
   // environment names then follow issue order across the run, so a step's
   // own sentinels are numbered as they were added.
   const origins = new Map<string, SecretOrigin>();
-  for (const match of command.matchAll(SENTINEL_PATTERN)) {
+  for (const match of command.matchAll(VaultSecretBag.SENTINEL_PATTERN)) {
     if (origins.has(match[0])) continue;
     const origin = originOf(match[0]);
     if (origin) origins.set(match[0], origin);
@@ -932,7 +929,7 @@ function planOccurrences<C>(
     return { occurrences: [], envNames, refused: [], singleQuoted: [] };
   }
 
-  const matches = [...command.matchAll(SENTINEL_PATTERN)]
+  const matches = [...command.matchAll(VaultSecretBag.SENTINEL_PATTERN)]
     .filter((match) => envNames.has(match[0]));
   const contexts = rules.classify(
     command,

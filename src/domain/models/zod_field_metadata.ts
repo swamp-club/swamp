@@ -746,7 +746,8 @@ export function findValuesWithMetadata(
  * tuples, records, unions, intersections and lazy schemas: an array element
  * or tuple rest is written `[]`, a tuple item `[<i>]`, a record value or
  * `.catchall()` key `[*]`, and a union or intersection member keeps the path
- * of the field it describes. A schema reached twice (a recursive schema, or
+ * of the field it describes and continues its chain, so metadata on the
+ * union and on a member are read together. A schema reached twice (a recursive schema, or
  * one shared by two fields) is visited once, under the first path. Metadata
  * on the root schema itself is not reported.
  *
@@ -760,11 +761,17 @@ export function findFieldsWhere(
 ): string[] {
   const found: string[] = [];
   const visited = new Set<z.ZodTypeAny>();
-  const visit = (node: z.ZodTypeAny, path: string, root: boolean): void => {
+  const visit = (
+    node: z.ZodTypeAny,
+    path: string,
+    root: boolean,
+    inherited: readonly FieldMetadata[] = [],
+  ): void => {
     if (visited.has(node)) return;
     visited.add(node);
-    // The chain of wrappers down to the core, each contributing its metadata.
-    const chain: FieldMetadata[] = [];
+    // The chain of wrappers down to the core, each contributing its metadata;
+    // a union or intersection member continues the chain of its field.
+    const chain: FieldMetadata[] = [...inherited];
     const seen = new Set<z.ZodTypeAny>();
     let current: z.ZodTypeAny | undefined = node;
     let core: z.ZodTypeAny = node;
@@ -806,11 +813,13 @@ export function findFieldsWhere(
         if (def.rest) visit(def.rest, `${path}[]`, false);
         break;
       case "union":
-        for (const option of def.options ?? []) visit(option, path, root);
+        for (const option of def.options ?? []) {
+          visit(option, path, root, chain);
+        }
         break;
       case "intersection":
         for (const side of [def.left, def.right]) {
-          if (side) visit(side, path, root);
+          if (side) visit(side, path, root, chain);
         }
         break;
     }

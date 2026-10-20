@@ -54,7 +54,7 @@ export class SecretRedactor {
     return false;
   }
 
-  /** The entry a sentinel of any attached registry names. */
+  /** Whether an attached registry issued `sentinel`. */
   private isMaskedSentinel(sentinel: string): boolean {
     for (const registry of this.sentinels) {
       if (registry.entryOf(sentinel) !== undefined) return true;

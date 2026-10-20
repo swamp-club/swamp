@@ -873,3 +873,20 @@ Deno.test("findFieldsWhere: a recursive schema is visited once", () => {
     ["root.name"],
   );
 });
+
+Deno.test("findFieldsWhere: metadata on a union and on one of its members are read as one chain", () => {
+  const both = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.a === true) &&
+    chain.some((meta) => meta.b === true);
+  const schema = z.object({
+    choice: z.union([z.string().meta({ b: true }), z.number()]).meta({
+      a: true,
+    }),
+    apart: z.union([z.string().meta({ b: true }), z.number()]),
+    nested: z.union([z.object({ x: z.string().meta({ b: true }) }), z.number()])
+      .meta({ a: true }),
+  });
+  // The chain continues into a member, which describes the same field, not
+  // into a member's own fields, which are fields of their own.
+  assertEquals(findFieldsWhere(schema, both), ["choice"]);
+});

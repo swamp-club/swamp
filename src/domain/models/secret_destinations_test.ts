@@ -181,6 +181,13 @@ Deno.test("assertNoSensitiveRefuseConflict: a field marked both sensitive and re
       z.object({ choice: z.union([z.object({ token: both }), z.string()]) }),
     ],
     ["outer.inner", z.object({ outer: z.object({ inner: both }) })],
+    [
+      "either",
+      z.object({
+        either: z.union([z.string().meta({ secrets: "refuse" }), z.number()])
+          .meta({ sensitive: true }),
+      }),
+    ],
   ];
   for (const [path, schema] of conflicts) {
     const error = assertThrows(
