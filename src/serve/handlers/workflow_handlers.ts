@@ -527,6 +527,7 @@ export async function handleWorkflowRun(
           triggerSource: "api",
           initiatedBy,
           vaultAccess,
+          defaultVault: ctx.defaultVault,
         },
       );
       await sending;
@@ -667,6 +668,7 @@ export async function handleWorkflowRun(
           triggerSource: "api",
           initiatedBy,
           vaultAccess,
+          defaultVault: ctx.defaultVault,
         },
       );
       // Reported finished only once its commits are replicated
@@ -2438,7 +2440,7 @@ export async function handleWorkflowResume(
             ctx.datastoreConfig,
             stepLockHook,
             ctx.runTracker,
-            { runCheckpointer },
+            { runCheckpointer, defaultVault: ctx.defaultVault },
           );
 
           const resumeInputs = payload.inputs ?? {};

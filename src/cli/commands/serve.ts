@@ -5333,6 +5333,7 @@ export const serveCommand = new Command()
                 runVaultScopeContext(connectionCtx),
                 SCHEDULER_PRINCIPAL,
               ),
+              defaultVault: repoMarker?.defaultVault,
             },
           ),
         pendingRunHook: {
@@ -5776,6 +5777,7 @@ export const serveCommand = new Command()
         instanceId,
         controlPlaneStore,
         initiatedBy: principalToString(WEBHOOK_PRINCIPAL),
+        defaultVault: repoMarker?.defaultVault,
         authorizeRun: createWebhookRunAuthorizer(
           triggerAuthorizer,
           connectionCtx,

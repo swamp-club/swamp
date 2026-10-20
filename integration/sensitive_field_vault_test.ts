@@ -45,8 +45,20 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlVaultConfigRepository } from "../src/infrastructure/persistence/yaml_vault_config_repository.ts";
 import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
-import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
-import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import {
+  createWorkflowRunClaims,
+  requireInitializedRepoUnlocked,
+} from "../src/cli/repo_context.ts";
+import {
+  createWorkflowRunDeps,
+  executeWorkflowWithLocks,
+} from "../src/serve/deps.ts";
+import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  createWorkflowApproveDeps,
+  workflowApprove,
+} from "../src/libswamp/workflows/approve.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { initializeTestRepo } from "./test_helpers.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -453,10 +465,19 @@ Deno.test("Integration: a vary write by a long-named behavior stays within local
  * resources overrides, the step's data output override and the run inputs.
  */
 async function storedVaultOfStepRun(
-  setup: (target: string) => {
+  setup: (target: string, fallback: string) => {
     resources?: Record<string, { vaultName?: string }>;
     override?: { specName: string; vaultName?: string; vary?: string[] };
     inputs?: Record<string, unknown>;
+    /** The repo's defaultVault, passed to the run as serve passes it. */
+    defaultVault?: string;
+    /**
+     * Puts a manual approval gate before the step, so the step runs when
+     * the approved run is resumed.
+     */
+    gated?: boolean;
+    /** Runs the step in a child workflow the run's one step invokes. */
+    nested?: boolean;
   },
 ): Promise<{ fallback: string; target: string; stored: string }> {
   await initializeLogging({});
@@ -474,7 +495,10 @@ async function storedVaultOfStepRun(
     }
     const [fallback, target] = (await VaultService.fromRepository(repoDir))
       .getUserVaultNames();
-    const { resources, override, inputs } = setup(target);
+    const { resources, override, inputs, defaultVault, gated, nested } = setup(
+      target,
+      fallback,
+    );
 
     // A per-run type, so the registration holds under --repeats.
     const WriteArgs = z.object({ env: z.string().optional() });
@@ -515,27 +539,59 @@ async function storedVaultOfStepRun(
       }),
     );
 
-    const workflow = Workflow.create({
-      name: "step-vault",
+    const inner = Workflow.create({
+      name: nested ? "step-vault-child" : "step-vault",
       inputs: { properties: { vault: { type: "string" } } },
       jobs: [
         Job.create({
           name: "main",
           steps: [
+            ...(gated
+              ? [Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("go?"),
+              })]
+              : []),
             Step.create({
               name: "make-secret",
               task: StepTask.model("secret-maker", "create", { env: "dev" }),
               ...(override ? { dataOutputOverrides: [override] } : {}),
+              ...(gated
+                ? {
+                  dependsOn: [{
+                    step: "gate",
+                    condition: TriggerCondition.succeeded(),
+                  }],
+                }
+                : {}),
             }),
           ],
         }),
       ],
     });
+    const workflow = nested
+      ? Workflow.create({
+        name: "step-vault",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "child",
+                task: StepTask.workflow(inner.name),
+              }),
+            ],
+          }),
+        ],
+      })
+      : inner;
+    if (nested) await new YamlWorkflowRepository(repoDir).save(inner);
     await new YamlWorkflowRepository(repoDir).save(workflow);
 
     const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
       await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
     let status: string | undefined;
+    let runId: string | undefined;
     const events: string[] = [];
     await executeWorkflowWithLocks(
       resolved,
@@ -544,6 +600,8 @@ async function storedVaultOfStepRun(
       { workflowIdOrName: workflow.name, inputs: inputs ?? {} },
       new AbortController().signal,
       (event: WorkflowRunEvent) => {
+        if (event.kind === "started") runId = event.runId;
+        if (event.kind === "suspended") status = "suspended";
         if (event.kind === "completed") status = event.run.status;
         if (event.kind !== "started") {
           events.push(JSON.stringify(event).slice(0, 600));
@@ -551,8 +609,49 @@ async function storedVaultOfStepRun(
       },
       syncService,
       undefined,
-      { syncGate: undefined },
+      { syncGate: undefined, defaultVault },
     );
+    if (gated) {
+      assertEquals(status, "suspended", events.join("\n"));
+      const runClaims = createWorkflowRunClaims(datastoreConfig);
+      for await (
+        const event of workflowApprove(
+          createLibSwampContext(),
+          createWorkflowApproveDeps(
+            repoContext.workflowRepo,
+            repoContext.workflowRunRepo,
+            runClaims,
+          ),
+          {
+            workflowIdOrName: workflow.name,
+            stepName: "gate",
+            runId: runId!,
+            decidedBy: "user:test",
+          },
+        )
+      ) {
+        if (event.kind === "error") throw new Error(event.error.message);
+      }
+      // Resumed through serve's run deps, as its resume launcher does.
+      const deps = await createWorkflowRunDeps(
+        resolved,
+        repoContext,
+        datastoreConfig,
+        undefined,
+        undefined,
+        { defaultVault },
+      );
+      const service = deps.createExecutionService(
+        repoContext.workflowRepo,
+        repoContext.workflowRunRepo,
+        resolved,
+        repoContext.catalogStore,
+      );
+      service.runClaims = runClaims;
+      for await (const event of service.resume(workflow.name, runId!)) {
+        if (event.kind === "completed") status = event.run.status;
+      }
+    }
     assertEquals(status, "succeeded", events.join("\n"));
 
     const records = [
@@ -601,6 +700,40 @@ Deno.test("Integration: a step override vaultName from a workflow input routes t
   const { target, stored } = await storedVaultOfStepRun((target) => ({
     override: { specName: "creds", vaultName: "${{ inputs.vault }}" },
     inputs: { vault: target },
+  }));
+  assertEquals(stored, target);
+});
+
+Deno.test("Integration: a step's sensitive output lands in the repo's defaultVault when it is not the first vault (swamp-club#3680)", async () => {
+  const { fallback, target, stored } = await storedVaultOfStepRun((
+    target,
+  ) => ({ defaultVault: target }));
+  assertEquals(stored, target, `stored in ${stored}, first vault ${fallback}`);
+});
+
+Deno.test("Integration: a step override vaultName wins over the repo's defaultVault (swamp-club#3680)", async () => {
+  const { fallback, stored } = await storedVaultOfStepRun((
+    target,
+    fallback,
+  ) => ({
+    defaultVault: target,
+    override: { specName: "creds", vaultName: fallback },
+  }));
+  assertEquals(stored, fallback);
+});
+
+Deno.test("Integration: a step resumed after an approval gate stores in the repo's defaultVault (swamp-club#3680)", async () => {
+  const { target, stored } = await storedVaultOfStepRun((target) => ({
+    defaultVault: target,
+    gated: true,
+  }));
+  assertEquals(stored, target);
+});
+
+Deno.test("Integration: a step in a nested workflow stores in the repo's defaultVault (swamp-club#3680)", async () => {
+  const { target, stored } = await storedVaultOfStepRun((target) => ({
+    defaultVault: target,
+    nested: true,
   }));
   assertEquals(stored, target);
 });

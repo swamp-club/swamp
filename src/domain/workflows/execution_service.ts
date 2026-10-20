@@ -951,6 +951,12 @@ export interface StepExecutionContext {
   /** Resolved vault config directory (managed config tier or local vaults/) */
   vaultsDir?: string;
   /**
+   * The repo's `defaultVault` from `.swamp.yaml`: where the step's sensitive
+   * outputs land when neither the field, an override nor the spec names a
+   * vault (swamp-club#3680).
+   */
+  defaultVaultName?: string;
+  /**
    * The repo's `autoGc` setting: the step's data repository enforces
    * integer `garbageCollection` caps at write time when true.
    */
@@ -1527,6 +1533,7 @@ export class DefaultStepExecutor implements StepExecutor {
       unreadableContent?: UnreadableContentLookup;
       namespace?: Namespace;
       vaultsDir?: string;
+      defaultVaultName?: string;
       autoGc?: boolean;
     },
   ): Promise<DefaultStepExecutor> {
@@ -1554,6 +1561,7 @@ export class DefaultStepExecutor implements StepExecutor {
       unreadableContent: this.unreadableContent,
       namespace: ctx.namespace,
       vaultsDir: ctx.vaultsDir,
+      defaultVaultName: ctx.defaultVaultName,
       autoGc: ctx.autoGc,
       ephemeralRepo: ctx.ephemeralRepo,
       ephemeralCatalog: ctx.ephemeralCatalog,
@@ -1579,6 +1587,7 @@ export class DefaultStepExecutor implements StepExecutor {
       unreadableContent?: UnreadableContentLookup;
       namespace?: Namespace;
       vaultsDir?: string;
+      defaultVaultName?: string;
       autoGc?: boolean;
       ephemeralRepo?: UnifiedDataRepository;
       ephemeralCatalog?: CatalogStore;
@@ -1624,6 +1633,7 @@ export class DefaultStepExecutor implements StepExecutor {
         : persistentQueryService;
     const vaultService = await VaultService.fromRepository(repoDir, {
       vaultsDir: opts.vaultsDir,
+      defaultVaultName: opts.defaultVaultName,
     });
     return {
       definitionRepo,
@@ -3471,6 +3481,7 @@ export class WorkflowExecutionService {
     private readonly autoGc: boolean = false,
     private readonly fetchForeignContent?: ForeignContentFetcher,
     private readonly unreadableContent?: UnreadableContentLookup,
+    private readonly defaultVaultName?: string,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -6560,6 +6571,7 @@ export class WorkflowExecutionService {
           catalogStore: this.catalogStore,
           namespace: this.namespace,
           vaultsDir: this.vaultsDir,
+          defaultVaultName: this.defaultVaultName,
           autoGc: this.autoGc,
           runTracker: this.runTracker,
           ephemeralRepo: this.ephemeralRepo,
@@ -7251,6 +7263,7 @@ export class WorkflowExecutionService {
       this.autoGc,
       this.fetchForeignContent,
       this.unreadableContent,
+      this.defaultVaultName,
     );
     childService.signalWaits = this.signalWaits;
     childService.runCheckpointer = this.runCheckpointer;

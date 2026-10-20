@@ -539,6 +539,7 @@ export const workflowRunCommand = new Command()
                   repoContext.autoGc,
                   repoContext.unifiedDataRepo.fetchForeignContent,
                   repoContext.unreadableContent,
+                  unlocked.marker?.defaultVault,
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
                 service.runCheckpointer = runCheckpointer;
