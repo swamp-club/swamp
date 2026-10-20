@@ -234,8 +234,8 @@ When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
 - Otherwise `swamp serve --auto-resume` (`SWAMP_AUTO_RESUME`, serve.yaml
   `auto-resume`; default off) applies, but **only to a workflow that declares
   no inputs**. Resume-time inputs are never declared separately, so a workflow
-  with inputs may rely on the placeholder-then-resume pattern below. It must
-  opt in with `autoResume: true` itself.
+  with inputs may rely on a late input supplied at resume (Resume inputs
+  below). It must opt in with `autoResume: true` itself.
 
 The resume uses the workflow name and run id the approval resolved, not the
 request fields. It counts against the approver's principal for the
@@ -2122,12 +2122,12 @@ in `src/domain/workflows/resume_reset.ts`.
 
 **Reset:** a retry takes the same path as `--from`. It calls
 `resetForResumeFrom()` with the reset set, then `resumeFromFailed()`, then the
-existing resume executor. The run keeps its id and `startedAt`. `--input`
-overrides merge over the stored inputs as for any resume. An override does not
-reset steps that used the old value. An override that shrinks a `forEach`
-collection, or renames its iterations through the step name, strands the
-iterations it drops: they fail with `workflow_changed`, so start a new run with
-the new inputs. Reset clears each selected step's outputs,
+existing resume executor. The run keeps its id and `startedAt`. `--input` adds
+inputs the run does not have, as for any resume; a value the run has cannot
+change (Resume inputs). A late input that shrinks a `forEach` collection
+against its fallback, or renames its iterations through the step name, strands
+the iterations it drops: they fail with `workflow_changed`, so start a new run
+with the new inputs. Reset clears each selected step's outputs,
 error, approval decision and assertion result. Only jobs that contain a reset
 step return to `pending`. Steps outside the set keep their state and outputs.
 Guards still decide whether a reset step runs. A guard that skips a reset step

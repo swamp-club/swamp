@@ -168,8 +168,9 @@ A `--from` or retry resume is refused, with the run left unchanged, when the
 workflow changed shape since the run: a step was renamed, moved to another job,
 or added to a job the resume re-runs, or a job was renamed or added. Removing a
 step still works. An iteration dropped from a smaller or renamed `forEach`
-collection — including one changed by an `--input` override on the resume —
-fails as `Not run: ...` (`failureKind: workflow_changed`); start a new run.
+collection — including one a late `--input` on the resume changes against its
+fallback — fails as `Not run: ...` (`failureKind: workflow_changed`); start a
+new run.
 
 ## Step Evaluation Order
 

@@ -105,6 +105,9 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
       provenance = "unreadable";
     }
   }
+  // `evaluatedInputs` and `resolvedExpressions` were written by unreleased
+  // builds (swamp-club#3583) and are dropped on read: nothing reads them, and
+  // the definition schema rejects unknown keys.
   const {
     provenance: _provenance,
     evaluatedInputs: _evaluatedInputs,

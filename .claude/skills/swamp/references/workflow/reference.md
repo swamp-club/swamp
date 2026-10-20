@@ -1126,11 +1126,13 @@ Resume accepts `--input`/`--input-file`/`--stdin` (same parsing as
 input type and checked, merged over the stored inputs, against the input schema;
 a mismatch is refused before the run changes (`--json` code
 `input_validation_failed`, or `workflow_resume_failed` through `--server`).
-Resume inputs merge over the inputs the run had when it suspended, with a resume
-`--input` winning on a key collision. Evaluation stays strict, so a workflow
-must declare the inputs it references at run time: declare the input at run
-(e.g. a placeholder) and supply or override its value at resume. The run record
-records the resume input key names (not values) for audit.
+Resume inputs merge over the inputs the run had when it suspended: a resume
+`--input` adds a key the run does not have, and a key the run has keeps its
+value (`--json` code `resume_input_immutable`). The whole workflow is evaluated
+at run start, so a late input is declared optional with no default and read
+after the gate in a form that tolerates its absence (`inputs.?key.orValue('')`,
+`has(inputs.key)`, or inside `vault.get`). The run record records the resume
+input key names (not values) for audit.
 
 **Retry a failed run:** `swamp workflow resume <workflow-name> --run <run-id>`
 on a failed run retries its failed steps and their dependents in the same run;
