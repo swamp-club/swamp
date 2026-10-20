@@ -65,6 +65,7 @@ import type {
   RunSnapshotRepository,
 } from "../../domain/workflows/repositories.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+import type { RecordedEvaluationInputs } from "../../domain/workflows/persisted_workflow.ts";
 
 export interface EvaluatedWorkflowCache {
   workflow: Workflow;
@@ -87,16 +88,18 @@ export interface EvaluatedWorkflowCache {
   sensitiveFormat?: number;
   /**
    * The workflow inputs the cache was evaluated with, which a run replaying
-   * it records as its own (swamp-club#3583). Absent in caches written before
-   * they were recorded. Kept apart from the workflow's `inputs`, its schema.
+   * it records as its own (swamp-club#3583). `{}` for a workflow evaluated
+   * with none. Absent in caches written before they were recorded, and in a
+   * cache that withheld them (`evaluatedInputsOmitted`). Kept apart from the
+   * workflow's `inputs`, its schema.
    */
   evaluatedInputs?: Record<string, unknown>;
   /**
-   * The authored expressions evaluation substituted into the workflow when
-   * the cache was written; the others resolve when it is replayed. Absent in
-   * caches written before it was recorded.
+   * Why a cache written by a swamp that records inputs holds none: an input
+   * held a sensitive value, which the file must not carry. Such a cache is
+   * not replayed, and running the workflow fresh withholds them again.
    */
-  resolvedExpressions?: ReadonlySet<string>;
+  evaluatedInputsOmitted?: "sensitive";
 }
 
 // Cache metadata is deliberately separate from the source Workflow schema,
@@ -108,7 +111,7 @@ const CacheMetadataSchema = z.object({
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
   evaluatedInputs: z.record(z.string(), z.unknown()).optional(),
-  resolvedExpressions: z.array(z.string()).optional(),
+  evaluatedInputsOmitted: z.literal("sensitive").optional(),
 });
 
 function parseCache(content: string): EvaluatedWorkflowCache | null {
@@ -120,7 +123,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
       sensitiveFormat?: unknown;
       provenance?: unknown;
       evaluatedInputs?: unknown;
-      resolvedExpressions?: unknown;
+      evaluatedInputsOmitted?: unknown;
     })
     | null;
   if (!data) return null;
@@ -131,7 +134,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     sensitiveFormat,
     provenance: provenanceData,
     evaluatedInputs,
-    resolvedExpressions,
+    evaluatedInputsOmitted,
     ...workflowData
   } = data;
   const metadata = CacheMetadataSchema.parse({
@@ -141,7 +144,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     sensitiveFormat,
     provenance: provenanceData,
     evaluatedInputs,
-    resolvedExpressions,
+    evaluatedInputsOmitted,
   });
   let provenance: ProvenanceMap | "unreadable" | undefined;
   if (metadata.provenance !== undefined) {
@@ -159,9 +162,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     writtenReferences: metadata.writtenReferences ?? [],
     sensitiveFormat: metadata.sensitiveFormat,
     evaluatedInputs: metadata.evaluatedInputs,
-    resolvedExpressions: metadata.resolvedExpressions === undefined
-      ? undefined
-      : new Set(metadata.resolvedExpressions),
+    evaluatedInputsOmitted: metadata.evaluatedInputsOmitted,
   };
 }
 
@@ -333,11 +334,9 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
    * @param authoredExpressions - Expressions collected from the source
    *   workflow before evaluation, restored by
    *   {@link findByNameWithProvenance}
-   * @param evaluatedInputs - The workflow inputs `workflow` was evaluated
-   *   with, restored as {@link EvaluatedWorkflowCache.evaluatedInputs}
-   * @param resolvedExpressions - The authored expressions evaluation
-   *   substituted, restored as
-   *   {@link EvaluatedWorkflowCache.resolvedExpressions}
+   * @param recorded - The inputs `workflow` was evaluated with, or why they
+   *   are withheld, restored as {@link EvaluatedWorkflowCache.evaluatedInputs}
+   *   and {@link EvaluatedWorkflowCache.evaluatedInputsOmitted}
    */
   async save(
     workflow: Workflow,
@@ -350,8 +349,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
-    evaluatedInputs?: Record<string, unknown>,
-    resolvedExpressions?: ReadonlySet<string>,
+    recorded?: RecordedEvaluationInputs,
   ): Promise<void> {
     const dir = this.getWorkflowsDir();
     await assertSafePath(dir, this.baseDir);
@@ -384,10 +382,12 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         : undefined,
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
       provenance: provenance?.toData(),
-      evaluatedInputs,
-      resolvedExpressions: resolvedExpressions === undefined
-        ? undefined
-        : [...resolvedExpressions],
+      evaluatedInputs: recorded && "inputs" in recorded
+        ? recorded.inputs
+        : undefined,
+      evaluatedInputsOmitted: recorded && "omitted" in recorded
+        ? recorded.omitted
+        : undefined,
     };
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));

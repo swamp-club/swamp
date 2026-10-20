@@ -20,6 +20,7 @@
 import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
 import { assertEquals } from "@std/assert";
 import { supersedeMatchInputs, supersedeSuspendedRuns } from "./supersede.ts";
+import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { emptyNestedCascade } from "./nested_cascade.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -494,63 +495,58 @@ Deno.test("supersedeSuspendedRuns: a nested run that cannot be read does not sto
   assertEquals(result.skippedRuns, []);
 });
 
-Deno.test("supersedeMatchInputs: a --last-evaluated run is matched on the cache's evaluation inputs under its own (swamp-club#3583)", async () => {
-  const deps = {
-    evaluatedCache: (name: string) =>
-      Promise.resolve(
-        name === "gated"
-          ? {
-            evaluatedInputs: { target: "scratch", region: "eu" },
-            authoredExpressions: new Set([
-              "${{ inputs.target }}",
-              "${{ env.HOME + inputs.region }}",
-            ]),
-            // Only target was resolved into the cached steps.
-            resolvedExpressions: new Set(["${{ inputs.target }}"]),
-          }
-          : undefined,
-      ),
+/** An evaluated cache of `workflow`, with what it recorded of its inputs. */
+function cacheOf(
+  workflow: Workflow,
+  recorded?: Record<string, unknown>,
+  omitted?: "sensitive",
+): EvaluatedWorkflowCache {
+  return {
+    workflow,
+    authoredExpressions: new Set(),
+    deferredExpressions: [],
+    writtenReferences: [],
+    evaluatedInputs: recorded,
+    evaluatedInputsOmitted: omitted,
   };
-  assertEquals(
-    await supersedeMatchInputs("gated", {}, true, deps),
-    { target: "scratch", region: "eu" },
-  );
-  // A run-time-only input is the run's own.
-  assertEquals(
-    await supersedeMatchInputs("gated", { region: "us" }, true, deps),
-    { target: "scratch", region: "us" },
-  );
-  // A fresh run, or no lookup: the supplied inputs alone.
-  assertEquals(
-    await supersedeMatchInputs("gated", { a: 1 }, false, deps),
-    { a: 1 },
-  );
-  assertEquals(await supersedeMatchInputs("gated", { a: 1 }, true, {}), {
-    a: 1,
+}
+
+Deno.test("supersedeMatchInputs: a --last-evaluated run is matched on the inputs its cache recorded, under its own (swamp-club#3583)", () => {
+  const cache = cacheOf(createWorkflow("gated"), {
+    target: "scratch",
+    region: "eu",
   });
+  assertEquals(supersedeMatchInputs({}, true, cache), {
+    target: "scratch",
+    region: "eu",
+  });
+  // A supplied input equal to the recorded one changes nothing.
+  assertEquals(supersedeMatchInputs({ region: "eu" }, true, cache), {
+    target: "scratch",
+    region: "eu",
+  });
+  // A fresh run: the supplied inputs alone, cache or not.
+  assertEquals(supersedeMatchInputs({ a: 1 }, false, cache), { a: 1 });
+  assertEquals(supersedeMatchInputs({ a: 1 }, false, undefined), { a: 1 });
 });
 
-Deno.test("supersedeMatchInputs: a --last-evaluated run that will be refused supersedes nothing (swamp-club#3583)", async () => {
-  const deps = {
-    evaluatedCache: (name: string) =>
-      Promise.resolve(
-        name === "gated"
-          ? {
-            evaluatedInputs: { target: "scratch" },
-            authoredExpressions: new Set(["${{ inputs.target }}"]),
-            resolvedExpressions: new Set(["${{ inputs.target }}"]),
-          }
-          : undefined,
-      ),
-  };
-  // An input the cached steps were resolved with, at another value.
+Deno.test("supersedeMatchInputs: a --last-evaluated run that will be refused supersedes nothing (swamp-club#3583)", () => {
+  const workflow = createWorkflow("gated");
+  const cache = cacheOf(workflow, { target: "scratch" });
+  // An input at another value than the cache was evaluated with.
   assertEquals(
-    await supersedeMatchInputs("gated", { target: "protected" }, true, deps),
+    supersedeMatchInputs({ target: "protected" }, true, cache),
     undefined,
   );
+  // An input the cache was evaluated without.
+  assertEquals(supersedeMatchInputs({ region: "us" }, true, cache), undefined);
   // No cache to replay.
+  assertEquals(supersedeMatchInputs({}, true, null), undefined);
+  assertEquals(supersedeMatchInputs({}, true, undefined), undefined);
+  // Inputs withheld for a sensitive value, or never recorded.
   assertEquals(
-    await supersedeMatchInputs("missing", {}, true, deps),
+    supersedeMatchInputs({}, true, cacheOf(workflow, undefined, "sensitive")),
     undefined,
   );
+  assertEquals(supersedeMatchInputs({}, true, cacheOf(workflow)), undefined);
 });

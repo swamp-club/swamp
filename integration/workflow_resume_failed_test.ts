@@ -25,7 +25,8 @@
  * real run tracker, reloads the run through fresh repository instances, and
  * retries it with a counting step executor. The second half retries through
  * both branches of the serve handler against a real repository, where a
- * shell step's exit code comes from an input the retry overrides. The last
+ * shell step's exit code comes from an input, and the retry adds a late
+ * input that replaces it (swamp-club#3583). The last
  * section runs the `workflow resume` command in-process against a failed run
  * and checks how it reports a resume that fails (swamp-club#2432).
  *
@@ -174,7 +175,7 @@ function pipelineWorkflow(): Workflow {
           Step.create({
             name: "package",
             task: StepTask.model("test-model", "run", {
-              version: "${{ inputs.build + 1 }}",
+              version: "${{ inputs.build + inputs.?bad.orValue(1) }}",
             }),
             dependsOn: [{
               step: "compile",
@@ -357,7 +358,7 @@ Deno.test("retry: an evaluation failure after the early save leaves the reloaded
         catalogStore,
       );
       await assertRejects(
-        () => drainResume(service, workflow.name, failed.id, { build: "x" }),
+        () => drainResume(service, workflow.name, failed.id, { bad: "x" }),
         Error,
         "no such overload",
       );
@@ -669,7 +670,8 @@ function exitCodeWorkflow(name: string): Workflow {
               "command/shell",
               `${name}-check`,
               "execute",
-              { run: "exit ${{ inputs.code }}" },
+              // `fix` is a late input the retry adds (swamp-club#3583).
+              { run: "exit ${{ inputs.?fix.orValue(inputs.code) }}" },
             ),
             dependsOn: [{
               step: "prepare",
@@ -811,7 +813,7 @@ for (const withRegistry of [false, true]) {
               workflowIdOrName: workflow.name,
               runId,
               from,
-              inputs: { code: 0 },
+              inputs: { fix: 0 },
             },
             new AbortController(),
             null,
@@ -920,7 +922,7 @@ for (const from of [undefined, "package"]) {
             failed.id,
             ...(from ? ["--from", from] : []),
             "--input",
-            "build=x",
+            "bad=x",
           ]);
 
           assertInstanceOf(error, UserError);

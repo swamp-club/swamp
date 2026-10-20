@@ -79,6 +79,7 @@ Write in plain English:
 | [expressions](./enablers/expressions.md)                   | behaviors, workflows                | CEL surface                                                          |
 | [typed-secrets](./enablers/typed-secrets.md)               | behaviors, workflows, vaults, serve | Plan: secrets stay references in CEL; expressions.md is current      |
 | [inputs](./enablers/inputs.md)                             | behaviors, workflows                |                                                                      |
+| [input-pinning](./enablers/input-pinning.md)               | workflows                           | Write-once resume inputs, replay runs on the cache's inputs          |
 | [data-query](./enablers/data-query.md)                     | data                                | `data query`, catalog                                                |
 | [datastores](./enablers/datastores.md)                     | data                                | To be split: operator view / sync contract / locking                 |
 | [datastore-litestream](./enablers/datastore-litestream.md) | data                                | v3 `commits.db` replication: sidecar, outbox sync rule, fences       |

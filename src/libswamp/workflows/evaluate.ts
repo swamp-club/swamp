@@ -99,12 +99,16 @@ import {
   forEachNameWithoutSecrets,
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
+  type RecordedEvaluationInputs,
 } from "../../domain/workflows/persisted_workflow.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import { notFound, type SwampError } from "../errors.ts";
-import { coerceInputTypes } from "../../domain/inputs/mod.ts";
+import {
+  coerceInputTypes,
+  InputValidationService,
+} from "../../domain/inputs/mod.ts";
 
 /** Evaluation result for a single workflow. */
 export interface WorkflowEvaluateItemData {
@@ -192,10 +196,11 @@ export interface WorkflowEvaluateDeps {
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
-    /** The inputs the workflow was evaluated with (swamp-club#3583). */
-    evaluatedInputs?: Record<string, unknown>,
-    /** The authored expressions evaluation substituted (swamp-club#3583). */
-    resolvedExpressions?: ReadonlySet<string>,
+    /**
+     * The inputs the workflow was evaluated with, or why they are withheld
+     * (swamp-club#3583).
+     */
+    recorded?: RecordedEvaluationInputs,
   ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
@@ -269,8 +274,7 @@ export function createWorkflowEvaluateDeps(
       provenance,
       authoredExpressions,
       writtenReferences,
-      evaluatedInputs,
-      resolvedExpressions,
+      recorded,
     ) =>
       evaluatedWorkflowRepo.save(
         workflow,
@@ -278,8 +282,7 @@ export function createWorkflowEvaluateDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
-        evaluatedInputs,
-        resolvedExpressions,
+        recorded,
       ),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
@@ -310,8 +313,7 @@ async function evaluateWorkflowInternal(
       ProvenanceMap.authored(),
       authoredExpressions,
       undefined,
-      inputs,
-      new Set(),
+      { inputs: {} },
     );
     return {
       id: workflow.id,
@@ -321,8 +323,15 @@ async function evaluateWorkflowInternal(
     };
   }
 
-  // Coerce string CLI inputs to schema types (matching run.ts behavior)
-  const coercedInputs = coerceInputTypes(inputs, workflow.inputs);
+  // Coerce string CLI inputs to schema types and apply schema defaults
+  // (matching run.ts behavior), so the cache records the same set a fresh
+  // run records and a --last-evaluated run compares against (swamp-club#3583).
+  const coercedInputs = workflow.inputs
+    ? new InputValidationService().applyDefaults(
+      coerceInputTypes(inputs, workflow.inputs),
+      workflow.inputs,
+    )
+    : coerceInputTypes(inputs, workflow.inputs);
 
   // Build expression context with inputs
   const sensitiveValues = new RunSensitiveValues();
@@ -422,10 +431,7 @@ async function evaluateWorkflowInternal(
   // Create new Workflow from evaluated data
   const evaluatedWorkflow = Workflow.fromData(evaluatedData as WorkflowData);
 
-  // Expand forEach steps. An expanded step's collection and its own
-  // expressions resolve into the cache's iterations, outside evaluatedValues,
-  // so they are recorded as resolved too (swamp-club#3583).
-  const resolvedByExpansion = new Set<string>();
+  // Expand forEach steps
   const expandedWorkflowData = evaluatedWorkflow.toData();
   for (const [jobIndex, jobData] of expandedWorkflowData.jobs.entries()) {
     const expandedSteps: typeof jobData.steps = [];
@@ -463,16 +469,6 @@ async function evaluateWorkflowInternal(
         throw new UserError("forEach.in must be an authored expression");
       }
       const items = await deps.evaluateCelAsync(inSpan.inner, context);
-      for (
-        const { raw } of extractExpressions({
-          forEach: stepData.forEach,
-          name: stepData.name,
-          task: stepData.task,
-          target: stepData.target,
-          labels: stepData.labels,
-          platform: stepData.platform,
-        })
-      ) resolvedByExpansion.add(raw);
       const itemsProvenance = spliceOrigin(inSpan.inner, context, items).map;
       const itemName = stepData.forEach.item;
       const nameHasExpression = containsExpression(stepData.name);
@@ -651,7 +647,6 @@ async function evaluateWorkflowInternal(
     authoredExpressions,
     persisted.writtenReferences,
     recordableEvaluatedInputs(coercedInputs, sensitiveValues),
-    new Set([...evaluatedValues.keys(), ...resolvedByExpansion]),
   );
 
   return {

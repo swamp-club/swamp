@@ -305,12 +305,12 @@ stdin item.
 
 **Options:**
 
-| Flag               | Description                                                                                                             |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `--input <value>`  | Input values (key=value repeatable, or JSON)                                                                            |
-| `--input-file <f>` | Input values from YAML file (cannot combine with `--stdin`)                                                             |
-| `--stdin`          | Read inputs from stdin (piped data)                                                                                     |
-| `--last-evaluated` | Use previously evaluated workflow (skip eval); an `--input` its steps were resolved with must match the evaluated value |
+| Flag               | Description                                                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--input <value>`  | Input values (key=value repeatable, or JSON)                                                                                                           |
+| `--input-file <f>` | Input values from YAML file (cannot combine with `--stdin`)                                                                                            |
+| `--stdin`          | Read inputs from stdin (piped data)                                                                                                                    |
+| `--last-evaluated` | Replay the previously evaluated workflow with the inputs it was evaluated with; an `--input` must match them. Behavior definitions are evaluated fresh |
 
 **Output shape:**
 
@@ -524,8 +524,8 @@ schema defaults) in the run record, the history index that
 forwarded to, evaluated behavior definitions, and the data of any behavior that
 records its arguments. This holds for `workflow resume --input`, `--input-file`,
 and `--stdin` too: the run record holds the merged values, and its
-`resumeInputs` lists the key names supplied at resume. A resume cannot change an
-input a step already ran with; see
+`resumeInputs` lists the key names supplied at resume. A resume may add an input
+the run does not have and cannot change one it has; see
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 Pass the vault name and key instead, and resolve the secret in the step (see
@@ -552,8 +552,10 @@ apiKey: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
 - A secret minted at a `manual_approval` gate: while the run is suspended,
   `swamp vault put <vault> <key>`, then resume with the key name
   (`--input secretKey=<key>`) or a fixed key; delete it afterwards with
-  `swamp vault delete <vault> <key>`. An input used only inside `vault.get`
-  needs no placeholder default.
+  `swamp vault delete <vault> <key>`. Declare `secretKey` optional with no
+  default and read it only in a step after the gate, inside `vault.get`, which
+  is resolved when the step runs. A value the run already has cannot change at
+  resume, so a placeholder default would pin the placeholder.
 - If a secret was already passed as an input: rotate it, then remove the runs
   (`swamp run gc --older-than` for finished runs, or `swamp workflow delete`),
   which also removes each run's `.swamp/workflows-evaluated/runs/<run-id>/`
@@ -894,9 +896,21 @@ The workflow suspends to disk. Approve, reject, or resume from CLI (use
 swamp workflow approve <workflow-name> <step-name> --run <run-id>
 swamp workflow reject  <workflow-name> <step-name> --run <run-id> --reason "Not ready"
 swamp workflow resume  <workflow-name> --run <run-id>
-swamp workflow resume  <workflow-name> --run <run-id> --input authKey=tskey-abc123
+swamp workflow resume  <workflow-name> --run <run-id> --input authKeyName=deploy-auth-key-42  # a vault key name, never a secret
 swamp workflow approvals  # list pending approvals and expired gates with run IDs
 ```
+
+A resume `--input` adds inputs the run does not have, such as the vault key name
+of a credential minted during the gate. A value the run already has cannot
+change (`--json` code `resume_input_immutable`): the refusal names the key and
+the way out, a cancel and a new run with all its inputs. Declare a late input
+optional with no default and read it only after the gate, in a form that
+tolerates its absence (`${{ inputs.?authKeyName.orValue('') }}`,
+`has(inputs.authKeyName)`, or inside `vault.get`): the whole workflow is
+evaluated at run start, so a plain read of an unset input fails the run. A step
+before the gate can see such an input absent and the resume still adds it, so a
+late input that must be checked or approved gets its own check and gate after it
+arrives.
 
 A gate in a nested workflow suspends the parent too. Decide and resume the child
 run under the child's name, then resume the parent. Cancelling or rejecting the

@@ -283,13 +283,12 @@ export async function createWorkflowRunDeps(
         return runs.filter((r): r is WorkflowRun => r !== null);
       },
       findEvaluatedWorkflow: (runId) => evaluatedWorkflows().findByRunId(runId),
-      evaluatedCache: async (name) =>
-        (await evaluatedWorkflows().findByNameWithProvenance(name)) ??
-          undefined,
       // Superseded runs are locally owned, so a local approve, reject or
       // cancel can be deciding one at the same moment.
       runClaims: createWorkflowRunClaims(datastoreConfig),
     },
+    findEvaluatedWorkflowCache: (name) =>
+      evaluatedWorkflows().findByNameWithProvenance(name),
   };
 }
 

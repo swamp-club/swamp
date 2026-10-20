@@ -313,20 +313,7 @@ Deno.test("evaluated cache: workflow steps retain saved provenance without autho
     assertExists(cached);
     assertEquals(cached.authoredExpressions.has("${{ env.HOME }}"), true);
     assertEquals(cached.authoredExpressions.has("${{ env.INJECTED }}"), false);
-    await new DefaultStepExecutor().execute(
-      Step.create({
-        name: "capture",
-        task: StepTask.modelMethod(definition.name, "run"),
-      }),
-      {
-        ...context,
-        expressionContext: { model: {}, env: {} },
-        mode: "lastEvaluated",
-        authoredExpressions: new Set(),
-      },
-    );
     assertEquals(executions, [
-      { value: "runtime-home", authored: "${{ env.INJECTED }}" },
       { value: "runtime-home", authored: "${{ env.INJECTED }}" },
     ]);
   });
@@ -602,7 +589,8 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
       });
       assertEquals(fresh.status, "succeeded", JSON.stringify(fresh.toData()));
 
-      // The cache still requires model/file even after the source stops doing so.
+      // The cached workflow still needs its namespaces after the source stops
+      // doing so; a definition is evaluated from its current source on replay.
       consumer.setMethodArgument("run", "value", "edited-source");
       await repo.definitionRepo.save(type, consumer);
       await repo.workflowRepo.save(
@@ -623,8 +611,11 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
         }),
         undefined,
       );
+      // A replay runs with the inputs the cache was evaluated with
+      // (swamp-club#3583); the deferred env expression still resolves at
+      // step time.
       const replay = await runWorkflow(repo, dir, workflow.name, true, {
-        suffix: ":replay",
+        suffix: ":fresh",
       });
       assertEquals(replay.status, "succeeded", JSON.stringify(replay.toData()));
       const value = location === "file"
@@ -632,7 +623,14 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
         : "runtime-home:source";
       assertEquals(executions, [
         { value, authored: "runtime-source:fresh" },
-        { value, authored: "runtime-source:replay" },
+        // A step input the cached workflow substituted replays as cached. A
+        // behavior definition is evaluated fresh from its current source
+        // (swamp-club#3583), so the edited value shows, and the wrong
+        // definition cache written above is never read.
+        {
+          value: location === "workflow" ? value : "edited-source",
+          authored: "runtime-source:fresh",
+        },
       ]);
     });
   });
@@ -726,21 +724,28 @@ for (const depth of [1, 2]) {
         );
         assertEquals(resumed.at(-1)?.kind, "completed");
         assertEquals(executions, [expected, expected]);
-        // A different value for an input the cache resolved into its steps is
-        // refused rather than recorded over what they ran with
+        // A different value for an input the cache was evaluated with is
+        // refused rather than recorded over what its steps ran with
         // (swamp-club#3583).
-        await assertRejects(
+        const refused = await assertRejects(
           () =>
             runWorkflow(repo, dir, child.name, true, {
-              suffix: ":child",
+              ...(childSuffix ? { suffix: childSuffix } : {}),
               value: "changed",
             }),
           Error,
-          'was evaluated with other values for --input "value"',
+          "was evaluated with other values for --input",
         );
-        // Cached workflow and model reload their own records; an input only
-        // run-time expressions read is the caller's.
-        await runWorkflow(repo, dir, child.name, true, { suffix: ":child" });
+        assertStringIncludes(refused.message, '"value"');
+        // The cached workflow replays with the inputs it recorded; the model
+        // reloads its own records.
+        await runWorkflow(
+          repo,
+          dir,
+          child.name,
+          true,
+          childSuffix ? { suffix: childSuffix } : {},
+        );
         assertEquals(executions, [expected, expected, expected]);
         if (!childSuffix) {
           await runModel(dir, {}, true);
@@ -914,11 +919,9 @@ Deno.test("nested runtime scope: dynamic vault arguments survive persistence wit
     await collect(
       service.resume(child.name, childRun.id, { fromStep: "capture" }),
     );
-    await runWorkflow(repo, dir, "child", true, {
-      vault: "missing",
-      key: "wrong",
-      suffix: ":child",
-    });
+    // The child's cache replays with the inputs it recorded: the parent's
+    // vault arguments were never the child's (swamp-club#3583).
+    await runWorkflow(repo, dir, "child", true);
     await runModel(dir, {}, true);
     assertEquals(
       executions,
@@ -1333,6 +1336,9 @@ Deno.test("assert provenance: substituted messages stay literal and predicates c
       }),
       undefined,
       cached.authoredExpressions,
+      undefined,
+      [],
+      { inputs: {} },
     );
     const substituted = await runWorkflow(repo, dir, "assert-predicate", true);
     assertEquals(substituted.status, "failed");
@@ -1406,77 +1412,5 @@ Deno.test("nested runtime scope: rebuilds model services and retains parent self
     assertEquals(executions, [expected]);
     await runWorkflow(repo, dir, "child", true);
     assertEquals(executions, [expected, expected]);
-  });
-});
-
-Deno.test("workflow --last-evaluated: a cached definition runs only with the inputs it was evaluated with (swamp-club#3583)", async () => {
-  await withRepo(async (repo, dir, type, executions) => {
-    // The check lives in the definition: the step names no input, so the
-    // workflow cache alone cannot tell that target was resolved.
-    await repo.definitionRepo.save(
-      type,
-      Definition.create({
-        name: "gate-check",
-        methods: { run: { arguments: { value: "${{ inputs.target }}" } } },
-      }),
-    );
-    const workflow = Workflow.create({
-      name: "definition-gate",
-      inputs: { properties: { target: { type: "string" } } },
-      jobs: [Job.create({
-        name: "main",
-        steps: [Step.create({
-          name: "capture",
-          task: StepTask.model("gate-check", "run"),
-        })],
-      })],
-    });
-    await repo.workflowRepo.save(workflow);
-    const stepError = (run: { getJob(name: string): unknown }) =>
-      ((run.getJob("main") as {
-        getStep(name: string): { error?: string } | undefined;
-      }).getStep("capture"))?.error ?? "";
-
-    const fresh = await runWorkflow(repo, dir, workflow.name, false, {
-      target: "scratch",
-    });
-    assertEquals(fresh.status, "succeeded");
-    assertEquals(executions, [{ value: "scratch" }]);
-
-    // Another value: the definition would check scratch while the run
-    // records protected, so the step is refused before it runs.
-    const conflicting = await runWorkflow(repo, dir, workflow.name, true, {
-      target: "protected",
-    });
-    assertEquals(conflicting.status, "failed");
-    assertStringIncludes(
-      stepError(conflicting),
-      'The evaluated definition cached for "gate-check" was evaluated with other values for input "target" than this run has.',
-    );
-    assertEquals(executions.length, 1);
-
-    // The recorded value, given or not, replays.
-    for (const inputs of [{}, { target: "scratch" }]) {
-      const replay = await runWorkflow(repo, dir, workflow.name, true, inputs);
-      assertEquals(replay.status, "succeeded");
-      assertEquals(executions.at(-1), { value: "scratch" });
-    }
-
-    // A definition cached without its evaluation inputs cannot be checked.
-    const cached = await repo.evaluatedDefinitionRepo
-      .findByNameWithProvenance(type, "gate-check");
-    assertExists(cached);
-    await repo.evaluatedDefinitionRepo.save(
-      type,
-      cached.definition,
-      undefined,
-      cached.authoredExpressions,
-    );
-    const legacy = await runWorkflow(repo, dir, workflow.name, true);
-    assertEquals(legacy.status, "failed");
-    assertStringIncludes(
-      stepError(legacy),
-      'did not record the inputs it was evaluated with, so input "target" cannot be checked against this run.',
-    );
   });
 });

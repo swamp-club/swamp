@@ -109,7 +109,7 @@ export const workflowResumeCommand = withRemoteOptions(
       "swamp workflow resume deploy-with-gate",
     )
     .example(
-      "Resume with an override input minted during the gate",
+      "Resume with an input minted during the gate",
       "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
     )
     .example(
@@ -135,7 +135,7 @@ export const workflowResumeCommand = withRemoteOptions(
     )
     .option(
       "--input <value:string>",
-      "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs. An input a step has already read cannot be changed; start a new run, or retry a failed run with --from that step",
+      "Additional input for the resumed run (key=value or JSON); merged over the original run inputs. An input the run already has cannot change; start a new run instead",
       { collect: true },
     )
     .option("--arg <value:string>", "Alias for --input", {
@@ -144,11 +144,11 @@ export const workflowResumeCommand = withRemoteOptions(
     })
     .option(
       "--input-file <file:string>",
-      "Override inputs from a YAML file, held to the rules of --input (cannot combine with --stdin)",
+      "Additional inputs from a YAML file, held to the rules of --input (cannot combine with --stdin)",
     )
     .option(
       "--stdin",
-      "Read override inputs from stdin (piped data), held to the rules of --input",
+      "Read additional inputs from stdin (piped data), held to the rules of --input",
       {
         default: false,
       },

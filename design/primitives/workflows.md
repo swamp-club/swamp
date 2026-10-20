@@ -671,8 +671,8 @@ because behavior code bypasses authorization. On a remote worker both return
 
 **Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
 `--input-file`, and `--stdin`, parsed as in `swamp workflow run`. They supply
-values not available at the original run, such as environment overrides or the
-vault key name of a credential minted during the gate. As on a run, each
+values not available at the original run, such as the vault key name of a
+credential minted during the gate. As on a run, each
 supplied value is coerced to its declared input type, and its value merged over
 the stored inputs is checked against the workflow's input schema; a mismatch
 is refused before the run changes (`coerceResumeInputs` in
@@ -684,99 +684,88 @@ nested records merge key by key, and the resume `--input` wins on a collision.
 The merged set is on the expression context before evaluation, so post-gate
 `inputs.*` expressions see the new values.
 
-Evaluation stays strict: a workflow must declare at run time every input it
-references. The pattern is to declare the input at run time and supply or
-override its value at resume. For audit, the run record's `resumeInputs` lists
-the key names supplied at resume.
+Evaluation stays strict: the whole workflow is evaluated at run start, so a
+plain read of an input the run does not have, such as `${{ inputs.authKey }}`
+in a step after the gate, fails the run at start with `No such key`. A late
+input, one the run starts without and a resume supplies, is declared in the
+input schema, not `required` and with no `default`, and read in a form that
+tolerates its absence: `${{ has(inputs.authKey) ? inputs.authKey : '' }}`,
+`${{ inputs.?authKey.orValue('') }}`, or inside `vault.get(...)`, which is
+resolved when the step runs. The resume re-evaluates the workflow with the
+merged inputs, so the step sees the supplied value. For audit, the run record's
+`resumeInputs` lists the key names supplied at resume.
 
-A resume cannot change an input a step already ran with (swamp-club#3583). A
-gate that checked a value, an approval that showed it, or a nested workflow step
-that forwarded it would otherwise let the steps after it act on a value nothing
-before them saw. `checkResumeInputOverrides`
-(`src/domain/workflows/resume_input_guard.ts`) refuses the resume before
-anything changes, coded `resume_input_consumed` locally, when a supplied
-top-level key's merged value differs from the stored one (a key the run did not
-have counts as changed) and a step record that keeps its result reads that key.
-A record keeps its result unless it is pending, reset by this resume (`--from`
-or a retry), reopened after an abort, or skipped for its dependency or its job;
-a guarded skip read its guard. A record reads every input named in its authored
-step (task, prompt, `forEach.in`, `guard`, placement, name, an assert's `expr`),
-in its job's and the workflow's own fields (placement and tags every step
-inherits), and in the behavior definition the step runs, which is evaluated with
-the run's inputs in scope: the one `modelIdOrName` names, or the existing
-definition a `modelType` + `modelName` step adopts (with none, the step's own
-arguments created it). Reads are `inputs.X`, `inputs["X"]`, `run.inputs.X` or
-`run.inputs["X"]`; reading `inputs`, `run.inputs` or `run` whole or by a
-computed key reads them all. A record whose job or step name is an expression is
-read against every authored job or step whose name is one. What cannot be told
-reads every input: a `modelIdOrName` definition that is missing, a definition
-that fails to load or is named by an expression, a record that matches no
-authored step, and every record once the workflow's fingerprint differs from the
-`runPlan.definitionFingerprint` recorded at run start (the workflow was edited
-since), or once the run replayed the evaluated cache (`replayedEvaluatedCache`).
-A run recorded before either existed is read against the workflow on disk. A
-behavior definition edited since the run is read as it is now: nothing records
-what it held, and whoever may edit it may edit the guarded step's own definition
-too. The refusal keeps the two apart: a step an expression of which reads the
-input "already used" it; a step only assumed to read every input is named with
-why (its behavior definition was not found or could not be read, its behavior is
-named by an expression, or it is not in the workflow any more); and a run-wide
-reason (the run replayed the evaluated cache, or the workflow changed since the
-run started) is said once, as every step that ran counting as reading every
-input.
+A run's inputs are write-once (swamp-club#3583). A resume may add a key the run
+does not have. A key the run has keeps its value: a gate that checked it, an
+approval that showed it, or a nested workflow step that forwarded it would
+otherwise let the steps after it act on a value nothing before them saw.
+`checkResumeInputOverrides` (`src/domain/workflows/resume_input_guard.ts`)
+compares each supplied top-level key with `run.inputs`, after type coercion and
+deep merge, and reads nothing else: not the workflow file, not the behavior
+definitions, not the evaluated caches, not what any step read. A key
+re-supplied with its stored value is no change; `cfg={"a":1}` merged over a
+stored `{"a":1,"b":2}` is no change; a schema default counts as a value the run
+has. A different value is refused before anything changes, coded
+`resume_input_immutable` locally, with the run id, the refused keys and the way
+out, never a value: for a suspended run the cancel command (`suspendedWayOut`:
+`swamp workflow cancel <wf> --run <id>`, or `--run <id> --server <url>` for a
+run serve started) and then a new run, for a failed run a new run. A `--from`
+retry makes no difference: a changed value always needs a new run. The message
+stays under serve's 512-character error limit.
 
-The way out is a new run, or, for a failed run, `--from` the first step that
-read a refused key, which the refusal names only when retrying from it resets
-every step that read one (readers in parallel branches leave only a new run). A
-refused suspended run stays suspended, so its refusal names the cancel command
-first (`suspendedWayOut`: `swamp workflow cancel <wf> --run <id>`, or `--run
-<id> --server <url>` for a run serve started). An approval binds only what its
-prompt or earlier steps read: a `Proceed?` prompt over a step that reads
-`target` does not pin `target`, so a gate that must pin a value names it in its
-prompt or checks it in an earlier step.
+The guarantee covers values, not absence. A step before the gate can read a
+late input in the same tolerant forms and see its absence, or a fallback such
+as `orValue('dev')`, and the resume may still add the input. Telling whether a
+finished step did that needs to know what it read, which is the inference this
+rule does not do ([input-pinning](../enablers/input-pinning.md)). The pattern
+that makes a late input safe: a late input that must be checked or approved
+gets its own check and gate after it arrives. One gate suspends the run, the
+resume supplies the input, a step checks it, a second gate shows it, and the
+second resume runs the rest. The input is a value the run has before the second
+gate, so the write-once rule pins it from there. A step before the input
+arrives does not read it; a fallback belongs only in a step after the gate that
+supplies the value.
 
-A run started with `--last-evaluated` replays the evaluated cache, whose steps
-were resolved when it was written, so the run's own inputs are not what they
-saw. The cache records the inputs it was evaluated with (`evaluatedInputs`,
-written by `workflow evaluate` and by every fresh run), and the replaying run
-records them as its inputs. `workflow run --last-evaluated` refuses an `--input`
-that an expression the cache resolved into its steps read, when its value
-differs from the recorded one or cannot be checked (the cache recorded none, or
-not that key); an input only expressions the cache left to resolve at run time
-read is the run's own (`inputsConflictingWithCache`). What was resolved is the
-cache's `resolvedExpressions`, the texts evaluation substituted somewhere, plus
-every expression of a step `workflow evaluate` expanded from a forEach (its
-collection and its iterations resolve into the cache): a text can be substituted
-in one step and kept raw in another, such as a guarded step's target, so what
-the cached workflow still holds does not tell. A cache written before it was
-recorded counts every authored expression as resolved. The refusal names keys
-only and points to `workflow evaluate` again or a run without
-`--last-evaluated`. A cache written before inputs were recorded leaves the run
-none, as does one whose evaluation inputs held a sensitive value, which the
-cache file would otherwise carry in plaintext (`recordableEvaluatedInputs`). The
-run also records that it replayed the cache (`replayedEvaluatedCache`): the
-cache's source may predate the workflow on disk, so a resume treats every
-finished step as reading every input. A plain resume then resolves `inputs.*`,
-re-supplying a recorded value is no change, and any other value, or a key the
-run recorded none for, is refused; the refusal says when the run recorded no
-value to compare with, and the way out is to cancel the run and start a new one.
-Superseding matches a `--last-evaluated` run on the same set it records, the
-cache's evaluation inputs under the supplied ones (`supersedeMatchInputs`).
+A run started with `--last-evaluated` replays the evaluated workflow cache,
+whose steps were resolved when it was written, so it runs and records the
+inputs the cache was evaluated with. The cache records them (`evaluatedInputs`,
+written by `workflow evaluate` and by every fresh run, after type coercion and
+schema defaults; `{}` for a workflow evaluated with none). The cache is read
+once per start, in the libswamp run path (`findEvaluatedWorkflowCache` in
+`src/libswamp/workflows/run.ts`), and that one copy serves the input check,
+superseding and execution: a `workflow evaluate` or fresh run in between cannot
+replace the cache after predecessors matching the first copy were cancelled.
+The execution service takes the loaded cache as a run option (`evaluatedCache`)
+and loads it by name only for a caller that superseded nothing. Before the run
+starts, each supplied `--input` must equal its recorded value after coercion
+and merge; a differing key, or one the cache was evaluated without, refuses the
+run, naming keys only, with a pointer to `workflow evaluate` again or a run
+without the flag (`replayInputs` in `src/domain/workflows/persisted_workflow.ts`).
+A cache that recorded no inputs is refused too, and the cache says why:
+`evaluatedInputsOmitted: sensitive` when an input held a sensitive value, which
+the cache file must not carry (`recordableEvaluatedInputs`), so the cache is
+never replayable and running fresh withholds them again; neither field when the
+cache was written before inputs were recorded, so running the workflow fresh
+once rewrites it. A parent starts nested child runs fresh, never with
+`--last-evaluated`, so the non-replayable refusal only meets a secret-input
+workflow run directly with the flag. Superseding matches a `--last-evaluated`
+run on the inputs it will record, the loaded cache's under the supplied ones,
+and a run the check refuses supersedes nothing (`supersedeMatchInputs` in
+`src/libswamp/workflows/supersede.ts`). The run records that it replayed the
+cache (`replayedEvaluatedCache`), and a resume of it is an ordinary resume: it
+re-evaluates the workflow on disk with the run's inputs and takes new keys
+under the write-once rule.
 
-Each model step of such a run also replays its behavior's evaluated definition
-cache, which resolved `inputs.*` against the run's inputs when it was written.
-That cache records the run inputs it was evaluated with and the expressions it
-resolved (`evaluatedInputs` and `resolvedExpressions` on the evaluated
-definition, written by a workflow step's fresh evaluation). Before the step
-runs, every run input a resolved expression read must have the same value now,
-or be absent both times; an input the step supplies itself is the step's and is
-not compared (`inputsConflictingWithCachedDefinition`). Otherwise the step is
-refused, so a gate checked inside a definition cannot pass on one value while
-the run records another. A definition cache that recorded no inputs (written
-before they were recorded, or by `swamp model method run` or `model evaluate`,
-which do not record them) cannot be checked, so a step whose definition read an
-input is refused; running the workflow once without `--last-evaluated` rewrites
-it.
+A behavior step of a `--last-evaluated` run evaluates its definition fresh, as
+a fresh run does: against the run's inputs, the step's own arguments and the
+outputs of the steps before it. Those inputs equal the ones the cached workflow
+was resolved with, so the step and the workflow agree, and no definition cache
+is read, so another workflow's run or `model evaluate` rewriting the by-name
+definition cache cannot change what the step runs. The definition caches are
+still written by fresh runs and by `model evaluate`, and
+`swamp behavior run --last-evaluated` keeps reading its own behavior's cache. A
+replayed run still skips the workflow's evaluation, forEach expansion included;
+it no longer skips each definition's.
 
 The run records the merged inputs it resumes with (`captureInputs` in
 `resumeWorkflow`, after the resume's provenance is derived), so the run record,

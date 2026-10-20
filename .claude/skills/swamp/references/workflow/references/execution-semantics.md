@@ -76,25 +76,25 @@ was, so fix the input and resume again. A refusal, such as an unknown `--from`
 step or an `--input` value that does not match its declared type (`--json` code
 `input_validation_failed` locally), keeps its own message and changes nothing.
 
-`--input` cannot change an input a step already ran with and keeps its result
-(`--json` code `resume_input_consumed` locally): a gate that checked the value
-(in the step, or in the behavior definition it runs), an approval that showed
-it, or a step skipped by a guard that read it. Steps still to run, and steps the
-resume resets with `--from` or a retry, may read a new value, so the
-placeholder-then-resume pattern keeps working. To change a value a finished step
-used, start a new run (cancel the suspended one first with
-`swamp workflow cancel <wf> --run <id>`, adding `--server <url>` for a run serve
-started), or retry a failed run `--from` a step at or before the first that used
-it. A `--last-evaluated` run records the inputs its cache was evaluated with,
-refuses an `--input` its steps were resolved with that differs from them, and on
-resume counts every finished step as reading every input; one replaying a cache
-written before that records none, so a resume `--input` is refused. An approval
-binds only what its prompt or earlier steps read: name the value in the prompt,
-or check it in an earlier step, to pin it. The run records the merged inputs it
-resumes with. Other errors, such as an `--input` value that makes an expression
-fail to evaluate, exit 1 with `Workflow resume failed: ...` (`--json` code
-`workflow_resume_failed`). A failure after steps start is not rolled back: check
-the run with `swamp workflow history get <run-id>` before resuming again.
+`--input` may add an input the run does not have; a value the run has cannot
+change (`--json` code `resume_input_immutable` locally), whatever any step read:
+a gate that checked it, an approval that showed it, or a step that never named
+it. The refusal names the key and the way out, never the value: cancel the
+suspended run (`swamp workflow cancel <wf> --run <id>`, adding `--server <url>`
+for a run serve started) and start a new run with all its inputs; a `--from`
+retry makes no difference. A late input, one the run starts without, is declared
+optional with no default and read after the gate in a form that tolerates its
+absence (`inputs.?key.orValue('')`, `has(inputs.key)`, or inside `vault.get`),
+since the whole workflow is evaluated at run start. A step before the gate can
+see such an input absent, and the resume still adds it, so a late input that
+must be checked or approved gets its own check and gate after it arrives. A
+`--last-evaluated` run records the inputs its cache was evaluated with, refuses
+an `--input` that differs from them, and resumes like any other run. The run
+records the merged inputs it resumes with. Other errors, such as an `--input`
+value that makes an expression fail to evaluate, exit 1 with
+`Workflow resume failed: ...` (`--json` code `workflow_resume_failed`). A
+failure after steps start is not rolled back: check the run with
+`swamp workflow history get <run-id>` before resuming again.
 
 Resume uses the current workflow file. If it was edited during the approval
 window in a way the resume would walk into (a step added or moved into a job the

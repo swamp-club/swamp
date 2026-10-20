@@ -2382,7 +2382,9 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
     const evalWorkflowRepo = new YamlEvaluatedWorkflowRepository(tempDir);
-    await evalWorkflowRepo.save(workflow, undefined);
+    await evalWorkflowRepo.save(workflow, undefined, undefined, undefined, [], {
+      inputs: {},
+    });
 
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
@@ -4933,11 +4935,11 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
             Step.create({
               name: "harden",
               task: StepTask.model("harden-model", "run", {
-                // Both inputs are declared at the original run (strict
-                // evaluation requires referenced inputs to exist). Resume
-                // supplies updated values that the merge applies.
+                // The whole workflow is evaluated at run start, so a late
+                // input is read in a form that tolerates its absence; the
+                // resume supplies it and the merge applies (swamp-club#3583).
                 region: "${{ inputs.region }}",
-                authKey: "${{ inputs.authKey }}",
+                authKey: "${{ inputs.?authKey.orValue('') }}",
               }),
               dependsOn: [
                 { step: "verify", condition: TriggerCondition.succeeded() },
@@ -4959,19 +4961,15 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
       catalogStore,
     );
 
-    // Original run declares all referenced inputs; authKey starts as a
-    // placeholder whose real value is only minted during the gate.
+    // The original run starts without authKey, whose value is only minted
+    // during the gate.
     const suspended = await service.execute(workflow.name, {
-      inputs: { region: "us-east", env: "prod", authKey: "PENDING" },
+      inputs: { region: "us-east", env: "prod" },
     });
 
     assertEquals(suspended.status, "suspended");
     // Effective inputs are captured at suspend so they survive to resume.
-    assertEquals(suspended.inputs, {
-      region: "us-east",
-      env: "prod",
-      authKey: "PENDING",
-    });
+    assertEquals(suspended.inputs, { region: "us-east", env: "prod" });
     assertEquals(suspended.resumeInputs, []);
     // The gate has not reached the executor.
     assertEquals(executor.captured.length, 0);
@@ -4982,11 +4980,11 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
     toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
     await runRepo.save(workflow.id, toApprove!);
 
-    // Resume with the freshly minted auth key and a region override.
+    // Resume with the freshly minted auth key; region is passed unchanged.
     let resumedRun: WorkflowRun | undefined;
     for await (
       const event of service.resume(workflow.name, suspended.id, {
-        inputs: { region: "us-west", authKey: "tskey-abc123" },
+        inputs: { region: "us-east", authKey: "tskey-abc123" },
       })
     ) {
       if (event.kind === "completed") resumedRun = event.run;
@@ -4994,22 +4992,22 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
 
     assertEquals(resumedRun?.status, "succeeded");
 
-    // The harden step ran and saw the merged inputs: resume overrides win on
-    // `region` and `authKey`, while the original `env` is preserved.
+    // The harden step ran and saw the merged inputs: the added `authKey`
+    // beside the original `region` and `env`.
     assertEquals(executor.captured.length, 1);
     assertEquals(executor.captured[0].step.name, "harden");
     assertEquals(executor.captured[0].ctx.expressionContext?.inputs, {
-      region: "us-west",
+      region: "us-east",
       env: "prod",
       authKey: "tskey-abc123",
     });
 
-    // The overrides propagate into the resolved task inputs forwarded to the
-    // step: both `region` and `authKey` resolved to the resume values.
+    // The added input propagates into the resolved task inputs forwarded to
+    // the step.
     const hardenTask = executor.captured[0].step.task.data;
     if (hardenTask.type === "model_method") {
       const inputs = hardenTask.inputs as Record<string, unknown> | undefined;
-      assertEquals(inputs?.region, "us-west");
+      assertEquals(inputs?.region, "us-east");
       assertEquals(inputs?.authKey, "tskey-abc123");
     }
 
@@ -5166,11 +5164,12 @@ Deno.test("resume: --input cannot change an input the gate and approval already 
         }),
       UserError,
     );
-    assertEquals(error.code, "resume_input_consumed");
+    assertEquals(error.code, "resume_input_immutable");
     assertStringIncludes(
       error.message,
-      'Input "target" was already used by steps "gate", "approve"',
+      'input "target" already has a value, and a value a run has cannot change',
     );
+    assertEquals(error.message.includes("protected"), false);
     // Nothing ran and nothing was saved.
     assertEquals(executor.ran.map((r) => r.step), ["gate"]);
     assertEquals(
@@ -5221,21 +5220,32 @@ Deno.test("resume: --from the rejected approval cannot change an input the gate 
         }),
       UserError,
     );
-    assertEquals(error.code, "resume_input_consumed");
-    assertStringIncludes(
-      error.message,
-      `--run ${suspended.id} --from gate`,
-    );
+    assertEquals(error.code, "resume_input_immutable");
+    assertStringIncludes(error.message, "a new run with all its inputs");
+    assertEquals(error.message.includes("--from"), false);
     assertEquals(executor.ran.map((r) => r.step), ["gate"]);
 
-    // Retrying from the gate runs it again with the new value.
+    // A retry from the gate makes no difference: the value the run has
+    // cannot change from any step. Another value needs a new run.
+    const fromGate = await assertRejects(
+      () =>
+        resumeToEnd(service, workflow, suspended.id, {
+          inputs: { target: "other" },
+          fromStep: "gate",
+        }),
+      UserError,
+    );
+    assertEquals(fromGate.code, "resume_input_immutable");
+    assertEquals(executor.ran.map((r) => r.step), ["gate"]);
+
+    // Retrying from the gate with the value the run has runs it again.
     const regated = await resumeToEnd(service, workflow, suspended.id, {
-      inputs: { target: "other" },
+      inputs: { target: "scratch" },
       fromStep: "gate",
     });
     assertEquals(regated?.status, "suspended");
     assertEquals(executor.ran.map((r) => r.step), ["gate", "gate"]);
-    assertEquals(executor.ran[1].inputs?.run, 'test "other" != "protected"');
+    assertEquals(executor.ran[1].inputs?.run, 'test "scratch" != "protected"');
   });
 });
 
@@ -5244,66 +5254,23 @@ Deno.test("resume: an accepted --input is recorded as the run's inputs (swamp-cl
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new TaskInputsRecorder();
-    const workflow = gatedDestroyWorkflow();
-    await workflowRepo.save(workflow);
-    await saveShellDefinition(tempDir, "sh");
-    const service = new WorkflowExecutionService(
-      workflowRepo,
-      runRepo,
-      tempDir,
-      executor,
-      undefined,
-      new CatalogStore(join(tempDir, "_catalog.db")),
-    );
-
-    const suspended = await service.execute(workflow.name, {
-      inputs: { target: "scratch", authKey: "PENDING" },
-    });
-    await approveWaitingGate(runRepo, workflow, suspended.id, true);
-
-    // authKey is read only after the approval; target is passed unchanged.
-    const finished = await resumeToEnd(service, workflow, suspended.id, {
-      inputs: { authKey: "minted-key-name", target: "scratch" },
-    });
-    assertEquals(finished?.status, "succeeded");
-    assertEquals(executor.ran.at(-1)?.inputs?.token, "minted-key-name");
-    const effective = { target: "scratch", authKey: "minted-key-name" };
-    assertEquals(finished?.inputs, effective);
-    const persisted = await runRepo.findById(workflow.id, suspended.id);
-    assertEquals(persisted!.inputs, effective);
-    assertEquals([...persisted!.resumeInputs].sort(), ["authKey", "target"]);
-  });
-});
-
-Deno.test("resume: --input cannot change an input the gate's definition read (swamp-club#3583)", async () => {
-  await withTempDir(async (tempDir) => {
-    const workflowRepo = new InMemoryWorkflowRepository();
-    const runRepo = new InMemoryWorkflowRunRepository();
-    const executor = new TaskInputsRecorder();
-    // The check lives in the definition: the step passes nothing and the
-    // approval shows nothing, but the definition is evaluated with the
-    // run's inputs in scope.
+    // authKey is a late input: absent at start, read after the gate in a
+    // form that tolerates its absence, supplied at resume.
     const workflow = Workflow.create({
-      name: "definition-gate",
+      name: "late-key",
       jobs: [
         Job.create({
           name: "main",
           steps: [
             Step.create({
-              name: "gate",
-              task: StepTask.model("gate-check", "execute"),
-            }),
-            Step.create({
               name: "approve",
-              task: StepTask.manualApproval("Proceed?"),
-              dependsOn: [
-                { step: "gate", condition: TriggerCondition.succeeded() },
-              ],
+              task: StepTask.manualApproval("Destroy ${{ inputs.target }}?"),
             }),
             Step.create({
               name: "destroy",
               task: StepTask.model("sh", "execute", {
                 run: "echo DESTROYED ${{ inputs.target }}",
+                token: "${{ inputs.?authKey.orValue('') }}",
               }),
               dependsOn: [
                 { step: "approve", condition: TriggerCondition.succeeded() },
@@ -5315,11 +5282,6 @@ Deno.test("resume: --input cannot change an input the gate's definition read (sw
     });
     await workflowRepo.save(workflow);
     await saveShellDefinition(tempDir, "sh");
-    await saveShellDefinition(tempDir, "gate-check", {
-      execute: {
-        arguments: { run: 'test "${{ inputs.target }}" != "protected"' },
-      },
-    });
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -5334,19 +5296,188 @@ Deno.test("resume: --input cannot change an input the gate's definition read (sw
     });
     await approveWaitingGate(runRepo, workflow, suspended.id, true);
 
+    // authKey is new to the run; target is passed unchanged.
+    const finished = await resumeToEnd(service, workflow, suspended.id, {
+      inputs: { authKey: "minted-key-name", target: "scratch" },
+    });
+    assertEquals(finished?.status, "succeeded");
+    assertEquals(executor.ran.at(-1)?.inputs?.token, "minted-key-name");
+    const effective = { target: "scratch", authKey: "minted-key-name" };
+    assertEquals(finished?.inputs, effective);
+    const persisted = await runRepo.findById(workflow.id, suspended.id);
+    assertEquals(persisted!.inputs, effective);
+    assertEquals([...persisted!.resumeInputs].sort(), ["authKey", "target"]);
+  });
+});
+
+Deno.test("resume: a late input checked and approved after it arrives is pinned by the second gate (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    // The pattern the design documents (design/enablers/input-pinning.md,
+    // Late inputs): the run starts without target; the first resume
+    // supplies it; a step checks it; a second gate shows it; the second
+    // resume cannot change it. Every read tolerates the absence at start,
+    // since the whole workflow is evaluated then.
+    const workflow = Workflow.create({
+      name: "late-target",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "supply",
+              task: StepTask.manualApproval("Supply the target at resume"),
+            }),
+            Step.create({
+              name: "check",
+              task: StepTask.model("sh", "execute", {
+                run:
+                  'test "${{ inputs.?target.orValue(\'\') }}" != "protected"',
+              }),
+              dependsOn: [
+                { step: "supply", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "approve",
+              task: StepTask.manualApproval(
+                "Destroy ${{ inputs.?target.orValue('?') }}?",
+              ),
+              dependsOn: [
+                { step: "check", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "destroy",
+              task: StepTask.model("sh", "execute", {
+                run: "echo DESTROYED ${{ inputs.?target.orValue('') }}",
+              }),
+              dependsOn: [
+                { step: "approve", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const started = await service.execute(workflow.name, { inputs: {} });
+    assertEquals(started.status, "suspended");
+    assertEquals(executor.ran, []);
+    await approveWaitingGate(runRepo, workflow, started.id, true);
+
+    // The first resume adds the input; the check runs on it.
+    const checked = await resumeToEnd(service, workflow, started.id, {
+      inputs: { target: "scratch" },
+    });
+    assertEquals(checked?.status, "suspended");
+    assertEquals(checked?.inputs, { target: "scratch" });
+    assertEquals(executor.ran, [
+      { step: "check", inputs: { run: 'test "scratch" != "protected"' } },
+    ]);
+    await approveWaitingGate(runRepo, workflow, started.id, true);
+
+    // The second resume cannot change what the check and the approver saw.
     const error = await assertRejects(
       () =>
-        resumeToEnd(service, workflow, suspended.id, {
+        resumeToEnd(service, workflow, started.id, {
           inputs: { target: "protected" },
         }),
       UserError,
     );
-    assertEquals(error.code, "resume_input_consumed");
-    assertStringIncludes(
-      error.message,
-      'Input "target" was already used by step "gate"',
+    assertEquals(error.code, "resume_input_immutable");
+    assertEquals(executor.ran.map((r) => r.step), ["check"]);
+
+    const finished = await resumeToEnd(service, workflow, started.id);
+    assertEquals(finished?.status, "succeeded");
+    assertEquals(executor.ran.at(-1), {
+      step: "destroy",
+      inputs: { run: "echo DESTROYED scratch" },
+    });
+  });
+});
+
+Deno.test("resume: a key the run did not have is added even when a finished step tested for it (swamp-club#3583)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    // The limit the design accepts (design/enablers/input-pinning.md, Late
+    // inputs): the check saw force absent, and the resume still adds it.
+    // What the check read is not inferred. A check that must bind a late
+    // input runs after the input arrives.
+    const workflow = Workflow.create({
+      name: "absent-key",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "check",
+              task: StepTask.model("sh", "execute", {
+                run: "echo ${{ has(inputs.force) }}",
+              }),
+            }),
+            Step.create({
+              name: "approve",
+              task: StepTask.manualApproval("Proceed?"),
+              dependsOn: [
+                { step: "check", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "act",
+              task: StepTask.model("sh", "execute", {
+                run: "echo ${{ inputs.?force.orValue(false) }}",
+              }),
+              dependsOn: [
+                { step: "approve", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    await saveShellDefinition(tempDir, "sh");
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
     );
-    assertEquals(executor.ran.map((r) => r.step), ["gate"]);
+
+    const suspended = await service.execute(workflow.name, { inputs: {} });
+    assertEquals(suspended.status, "suspended");
+    assertEquals(executor.ran, [{
+      step: "check",
+      inputs: { run: "echo false" },
+    }]);
+    await approveWaitingGate(runRepo, workflow, suspended.id, true);
+
+    const finished = await resumeToEnd(service, workflow, suspended.id, {
+      inputs: { force: true },
+    });
+    assertEquals(finished?.status, "succeeded");
+    assertEquals(finished?.inputs, { force: true });
+    assertEquals(executor.ran.at(-1), {
+      step: "act",
+      inputs: { run: "echo true" },
+    });
   });
 });
 
@@ -5376,8 +5507,9 @@ async function saveEvaluatedGatedDestroy(
     new Set(extractExpressions(workflow.toData()).map((e) => e.raw)),
     undefined,
     [],
-    recorded ? { target: "scratch", authKey: "PENDING" } : undefined,
-    recorded ? new Set(["${{ inputs.target }}"]) : undefined,
+    recorded
+      ? { inputs: { target: "scratch", authKey: "PENDING" } }
+      : undefined,
   );
 }
 
@@ -5432,11 +5564,11 @@ Deno.test("resume: a --last-evaluated run resumes with the inputs its cache was 
         }),
       UserError,
     );
-    assertEquals(error.code, "resume_input_consumed");
+    assertEquals(error.code, "resume_input_immutable");
   });
 });
 
-Deno.test("resume: a --last-evaluated run from a cache with no recorded inputs is refused with the way out (swamp-club#3583)", async () => {
+Deno.test("run: --last-evaluated from a cache written before its inputs were recorded is refused before any run exists (swamp-club#3583)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -5454,29 +5586,24 @@ Deno.test("resume: a --last-evaluated run from a cache with no recorded inputs i
       new CatalogStore(join(tempDir, "_catalog.db")),
     );
 
-    const run = await service.execute(workflow.name, { lastEvaluated: true });
-    assertEquals(run.status, "suspended");
-    assertEquals(run.inputs, {});
-    await approveWaitingGate(runRepo, workflow, run.id, true);
-
-    // What the gate saw is not known, so even the same value is refused, and
-    // the message says why and how to leave the run.
-    const error = await assertRejects(
-      () =>
-        resumeToEnd(service, workflow, run.id, {
-          inputs: { target: "scratch" },
-        }),
-      UserError,
-    );
-    assertEquals(error.code, "resume_input_consumed");
-    assertStringIncludes(
-      error.message,
-      "The run recorded no value for it to compare with.",
-    );
-    assertStringIncludes(
-      error.message,
-      `To cancel it: 'swamp workflow cancel gated-destroy --run ${run.id}'.`,
-    );
+    // What the cached steps were resolved with is not known, so the run
+    // would record inputs its steps never saw. With or without --input.
+    for (const inputs of [undefined, { target: "scratch" }]) {
+      const error = await assertRejects(
+        () => service.execute(workflow.name, { lastEvaluated: true, inputs }),
+        UserError,
+      );
+      assertStringIncludes(
+        error.message,
+        "before the inputs it was evaluated with were recorded",
+      );
+      assertStringIncludes(
+        error.message,
+        "Run the workflow once without --last-evaluated",
+      );
+    }
+    assertEquals(executor.ran, []);
+    assertEquals(await runRepo.findAllByWorkflowId(workflow.id), []);
   });
 });
 
@@ -5500,9 +5627,10 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
         return Promise.resolve({ executed: true });
       },
     };
-    // The check reads run.inputs, the destroy reads inputs. Were run.inputs
-    // the stored set during the resume, the check would pass on the old
-    // target while the destroy acted on the new one.
+    // The check reads run.inputs, the destroy reads inputs; target is a late
+    // input, so both read it in a form that tolerates its absence at start.
+    // Were run.inputs the stored set during the resume, the check would see
+    // no target while the destroy acted on the supplied one.
     const workflow = Workflow.create({
       name: "run-inputs-check",
       jobs: [
@@ -5516,7 +5644,7 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
             Step.create({
               name: "check",
               task: StepTask.model("sh", "execute", {
-                run: "check ${{ run.inputs.target }}",
+                run: "check ${{ run.inputs.?target.orValue('none') }}",
               }),
               dependsOn: [
                 { step: "start", condition: TriggerCondition.succeeded() },
@@ -5525,7 +5653,7 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
             Step.create({
               name: "destroy",
               task: StepTask.model("sh", "execute", {
-                run: "echo DESTROYED ${{ inputs.target }}",
+                run: "echo DESTROYED ${{ inputs.?target.orValue('none') }}",
               }),
               dependsOn: [
                 { step: "check", condition: TriggerCondition.succeeded() },
@@ -5546,12 +5674,10 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
       new CatalogStore(join(tempDir, "_catalog.db")),
     );
 
-    const suspended = await service.execute(workflow.name, {
-      inputs: { target: "scratch" },
-    });
+    const suspended = await service.execute(workflow.name, { inputs: {} });
     await approveWaitingGate(runRepo, workflow, suspended.id, true);
 
-    // Only steps still to run read target, so the change is accepted.
+    // The run had no target, so the resume adds it for every step to run.
     const finished = await resumeToEnd(service, workflow, suspended.id, {
       inputs: { target: "protected" },
     });
@@ -5583,7 +5709,8 @@ Deno.test("run: --last-evaluated refuses an --input its cache was not evaluated 
 
       // The cached gate checks scratch; recording protected would hand a
       // resume a value no step saw. Refused before any run exists, naming
-      // the key and never the value.
+      // the key and never the value. A cache that recorded no inputs cannot
+      // be compared at all.
       const error = await assertRejects(
         () =>
           service.execute(workflow.name, {
@@ -5592,33 +5719,29 @@ Deno.test("run: --last-evaluated refuses an --input its cache was not evaluated 
           }),
         UserError,
       );
-      assertStringIncludes(error.message, '--input "target"');
       assertStringIncludes(
         error.message,
         recorded
-          ? "was evaluated with other values for --input"
-          : "recorded no value for --input",
+          ? 'was evaluated with other values for --input "target"'
+          : "before the inputs it was evaluated with were recorded",
       );
       assertEquals(error.message.includes("protected"), false);
       assertEquals(await runRepo.findAllByWorkflowId(workflow.id), []);
 
       if (recorded) {
-        // The value the cache was evaluated with is accepted.
-        const run = await service.execute(workflow.name, {
-          lastEvaluated: true,
-          inputs: { target: "scratch" },
-        });
-        assertEquals(run.status, "suspended");
-        assertEquals(run.replayedEvaluatedCache, true);
-        const stored = await runRepo.findById(workflow.id, run.id);
-        assertEquals(stored?.replayedEvaluatedCache, true);
-      } else {
-        // An old cache replays as before when no --input is given.
-        const run = await service.execute(workflow.name, {
-          lastEvaluated: true,
-        });
-        assertEquals(run.status, "suspended");
-        assertEquals(run.inputs, {});
+        // The value the cache was evaluated with is accepted, and so is
+        // leaving it to the cache.
+        for (const inputs of [{ target: "scratch" }, undefined]) {
+          const run = await service.execute(workflow.name, {
+            lastEvaluated: true,
+            inputs,
+          });
+          assertEquals(run.status, "suspended");
+          assertEquals(run.inputs, { target: "scratch", authKey: "PENDING" });
+          assertEquals(run.replayedEvaluatedCache, true);
+          const stored = await runRepo.findById(workflow.id, run.id);
+          assertEquals(stored?.replayedEvaluatedCache, true);
+        }
       }
     });
   }
@@ -9200,8 +9323,14 @@ Deno.test("resume builds a full context when a step definition reads the model n
 // child with a runtime expression must not snapshot their values into the
 // child's persisted deferred bindings.
 // The forEach reads the resume-time input as inputs.items, or as run.inputs.items,
-// which holds the merged inputs during a resume (swamp-club#3583).
-for (const itemsRef of ["inputs.items", "run.inputs.items"]) {
+// which holds the merged inputs during a resume (swamp-club#3583). The input
+// is absent until the resume, so the read tolerates that.
+for (
+  const itemsRef of [
+    "inputs.?items.orValue([])",
+    "run.inputs.?items.orValue([])",
+  ]
+) {
   Deno.test(`resume: resume-only inputs are excluded from the child's deferred bindings (forEach over ${itemsRef})`, async () => {
     await withTempDir(async (tempDir) => {
       const workflowRepo = new InMemoryWorkflowRepository();
@@ -9265,7 +9394,7 @@ for (const itemsRef of ["inputs.items", "run.inputs.items"]) {
       );
 
       const suspended = await service.execute(parentWorkflow.name, {
-        inputs: { region: "us-east", items: [] },
+        inputs: { region: "us-east" },
       });
       assertEquals(suspended.status, "suspended");
 
@@ -9304,119 +9433,6 @@ for (const itemsRef of ["inputs.items", "run.inputs.items"]) {
       assertEquals(JSON.stringify(childRun.toData()).includes(secret), false);
     });
   });
-}
-
-for (const target of ["name", "id", "direct"]) {
-  for (
-    const dependency of [
-      "env",
-      "model",
-      "file",
-      "missing-cache",
-      "dynamic",
-      "missing-source",
-      ...(target === "direct" ? ["dynamic-type", "invalid-type"] : []),
-    ]
-  ) {
-    Deno.test(`buildRunContext: cached ${target} target with ${dependency} selects the required namespaces`, async () => {
-      await withTempDir(async (tempDir) => {
-        const { YamlEvaluatedDefinitionRepository } = await import(
-          "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
-        );
-        const { YamlEvaluatedWorkflowRepository } = await import(
-          "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
-        );
-        const type = ModelType.create("command/shell");
-        const definitionRepo = new YamlDefinitionRepository(tempDir);
-        const source = Definition.create({ name: "consumer" });
-        if (dependency !== "missing-source") {
-          await definitionRepo.save(type, source);
-        }
-        await definitionRepo.save(
-          type,
-          Definition.create({
-            name: "producer",
-            globalArguments: { prefix: "from-source" },
-          }),
-        );
-        if (dependency !== "missing-cache") {
-          const cached = Definition.fromData(source.toData());
-          cached.setMethodArgument(
-            "execute",
-            "run",
-            dependency === "model"
-              ? '${{ env["HOME"] + model.producer.input.globalArguments.prefix }}'
-              : dependency === "file"
-              ? '${{ env["HOME"] + file.contents("producer", "notes") }}'
-              : '${{ env["HOME"] }}',
-          );
-          await new YamlEvaluatedDefinitionRepository(tempDir).save(
-            type,
-            cached,
-            undefined,
-          );
-        }
-        const reference = dependency === "dynamic"
-          ? '${{ env["MODEL"] }}'
-          : target === "id"
-          ? source.id
-          : source.name;
-        const task = target === "direct"
-          ? StepTask.directExecution(
-            dependency === "invalid-type"
-              ? "/"
-              : dependency === "dynamic-type"
-              ? '${{ env["TYPE"] }}'
-              : type.normalized,
-            reference,
-            "execute",
-          )
-          : StepTask.model(reference, "execute");
-        const workflow = Workflow.create({
-          name: "cached-context",
-          jobs: [
-            Job.create({
-              name: "main",
-              steps: [Step.create({ name: "capture", task })],
-            }),
-          ],
-        });
-        const workflowRepo = new InMemoryWorkflowRepository();
-        await workflowRepo.save(workflow);
-        await new YamlEvaluatedWorkflowRepository(tempDir).save(
-          workflow,
-          undefined,
-        );
-        const executor = new RunContextCapturingExecutor();
-        const catalog = new CatalogStore(join(tempDir, "_catalog.db"));
-        try {
-          const service = new WorkflowExecutionService(
-            workflowRepo,
-            new InMemoryWorkflowRunRepository(),
-            tempDir,
-            executor,
-            undefined,
-            catalog,
-          );
-          const run = await service.execute(workflow.name, {
-            lastEvaluated: true,
-            inputs: { suffix: "replayed" },
-          });
-          assertEquals(run.status, "succeeded");
-          const needsFullContext = dependency !== "env" &&
-            !(dependency === "missing-source" && target === "direct");
-          assertEquals(
-            modelNamespaceKeys(executor.contexts[0]).includes("producer"),
-            needsFullContext,
-          );
-          assertEquals(executor.contexts[0]?.inputs, { suffix: "replayed" });
-          if (dependency === "file") assertExists(executor.contexts[0]?.file);
-        } finally {
-          catalog.close();
-        }
-      });
-    });
-  }
 }
 
 /**
@@ -10406,7 +10422,8 @@ Deno.test("resume: a guard still decides whether a reset step runs on retry", as
                 step: "compile",
                 condition: TriggerCondition.completed(),
               }],
-              guard: "${{ inputs.quiet == true }}",
+              // quiet is a late input the retry adds (swamp-club#3583).
+              guard: "${{ inputs.?quiet.orValue(false) == true }}",
             }),
           ],
         }),
@@ -10415,9 +10432,7 @@ Deno.test("resume: a guard still decides whether a reset step runs on retry", as
     const { executor, service } = await setupRetry(tempDir, workflow);
     executor.failing.add("compile");
 
-    const failed = await service.execute(workflow.name, {
-      inputs: { quiet: false },
-    });
+    const failed = await service.execute(workflow.name, { inputs: {} });
     assertEquals(failed.status, "failed");
     assertEquals(
       failed.getJob("main")!.getStep("announce")!.status,
@@ -10922,7 +10937,7 @@ Deno.test("resume: a failed resume restores the original owner", async () => {
     await assertRejects(
       () =>
         drainResume(service, workflow.name, failed.id, {
-          inputs: { n: "x" },
+          inputs: { bad: "x" },
           instanceId: "serve-b",
         }),
       Error,
@@ -11086,7 +11101,7 @@ for (const purged of [false, true]) {
       await assertRejects(
         () =>
           drainResume(service, workflow.name, failed.id, {
-            inputs: { n: "x" },
+            inputs: { bad: "x" },
           }),
         Error,
         "no such overload",
@@ -11123,7 +11138,7 @@ Deno.test("resume: a failed resume hands a settled row back with its reason (swa
     await assertRejects(
       () =>
         drainResume(service, workflow.name, failed.id, {
-          inputs: { n: "x" },
+          inputs: { bad: "x" },
         }),
       Error,
       "no such overload",
@@ -11154,7 +11169,7 @@ Deno.test("resume: a failed resume of a suspended run hands a registered row bac
     await assertRejects(
       () =>
         drainResume(service, workflow.name, suspended.id, {
-          inputs: { n: "x" },
+          inputs: { bad: "x" },
         }),
       Error,
       "no such overload",
@@ -11236,7 +11251,7 @@ Deno.test("resume: a resume that fails before execution stops the heartbeat", as
       await assertRejects(
         () =>
           drainResume(service, workflow.name, failed.id, {
-            inputs: { n: "x" },
+            inputs: { bad: "x" },
           }),
         Error,
         "no such overload",
@@ -11254,7 +11269,9 @@ Deno.test("resume: a resume that fails before execution stops the heartbeat", as
 function createArithmeticWorkflow(withGate: boolean): Workflow {
   const steps = [
     modelStep("compute", {
-      inputs: { value: "${{ inputs.n + 1 }}" },
+      // `bad` is a late input a resume may add; a non-number fails the
+      // evaluation while the resume prepares (swamp-club#3583).
+      inputs: { value: "${{ inputs.n + inputs.?bad.orValue(0) }}" },
       dependsOn: withGate
         ? [{ step: "gate", condition: TriggerCondition.succeeded() }]
         : [],
@@ -11283,7 +11300,9 @@ Deno.test("resume: restores a failed run when evaluation fails before execution"
     executor.failing.clear();
     await assertRejects(
       () =>
-        drainResume(service, workflow.name, failed.id, { inputs: { n: "x" } }),
+        drainResume(service, workflow.name, failed.id, {
+          inputs: { bad: "x" },
+        }),
       Error,
       "no such overload",
     );
@@ -11310,7 +11329,7 @@ Deno.test("resume: restores a suspended run when evaluation fails before executi
     await assertRejects(
       () =>
         drainResume(service, workflow.name, suspended.id, {
-          inputs: { n: "x" },
+          inputs: { bad: "x" },
         }),
       Error,
       "no such overload",
@@ -11354,7 +11373,7 @@ Deno.test("resume: a failed preparation does not restore over a run cancelled me
     await assertRejects(
       () =>
         drainResume(service, workflow.name, suspended.id, {
-          inputs: { n: "x" },
+          inputs: { bad: "x" },
         }),
       Error,
       "no such overload",
@@ -11378,7 +11397,9 @@ Deno.test("resume: a failing restore still rethrows the original error", async (
     // The evaluation error, not the restore's datastore error.
     await assertRejects(
       () =>
-        drainResume(service, workflow.name, failed.id, { inputs: { n: "x" } }),
+        drainResume(service, workflow.name, failed.id, {
+          inputs: { bad: "x" },
+        }),
       Error,
       "no such overload",
     );
@@ -12341,7 +12362,7 @@ Deno.test("resume: --from still works on a run started from an evaluated forEach
       new Set(),
       undefined,
       [],
-      { envs: ["prod"] },
+      { inputs: { envs: ["prod"] } },
     );
     executor.failing.add("prep");
     const failed = await service.execute(source.name, {
@@ -12439,13 +12460,15 @@ Deno.test("resume: a stranded iteration fails even when its forEach step allows 
 
 Deno.test("resume: a retry with an --input that narrows a forEach collection fails the dropped iteration", async () => {
   await withTempDir(async (tempDir) => {
+    // envs is a late input the retry adds; the first run iterates its
+    // fallback (swamp-club#3583).
     const { resumed, executor } = await resumeChanged(
       tempDir,
-      shapedWorkflow(deployOver("${{ inputs.envs }}")),
+      shapedWorkflow(deployOver("${{ inputs.?envs.orValue(['a', 'b']) }}")),
       ["deploy-b"],
       undefined,
       { inputs: { envs: ["a"] } },
-      { envs: ["a", "b"] },
+      {},
     );
     assertEquals(resumed.status, "failed");
     assertEquals(executor.count("main/deploy-a"), 2);
@@ -12457,11 +12480,11 @@ Deno.test("resume: a retry with an --input that renames iterations fails the old
   await withTempDir(async (tempDir) => {
     const { resumed, executor } = await resumeChanged(
       tempDir,
-      shapedWorkflow(deployOver("${{ inputs.envs }}")),
+      shapedWorkflow(deployOver("${{ inputs.?envs.orValue(['a', 'b']) }}")),
       ["deploy-b"],
       undefined,
       { inputs: { envs: ["x", "y"] } },
-      { envs: ["a", "b"] },
+      {},
     );
     assertEquals(resumed.status, "failed");
     assertEquals(executor.count("main/deploy-x"), 1);
@@ -12782,9 +12805,12 @@ Deno.test("resume: a forEach narrowed through --input on a suspended resume stil
       name: "main",
       steps: [
         Step.create({ name: "gate", task: StepTask.manualApproval("Go?") }),
-        eachStep("deploy-${{ self.env }}", "${{ inputs.envs }}", {
-          dependsOn: ["gate"],
-        }),
+        // envs is a late input the resume adds (swamp-club#3583).
+        eachStep(
+          "deploy-${{ self.env }}",
+          "${{ inputs.?envs.orValue(['a', 'b']) }}",
+          { dependsOn: ["gate"] },
+        ),
       ],
     }];
     const workflow = shapedWorkflow(shape);
@@ -12792,7 +12818,7 @@ Deno.test("resume: a forEach narrowed through --input on a suspended resume stil
       tempDir,
       workflow,
       shape,
-      { envs: ["a", "b"] },
+      {},
     );
     const resumed = await drainResume(service, workflow.name, run.id, {
       inputs: { envs: ["a"] },
@@ -13296,11 +13322,13 @@ Deno.test("resume: number, integer and boolean key=value overrides reach steps t
           flag: { type: "boolean" },
         },
       },
+      // Late inputs the retry adds, read in forms that tolerate their
+      // absence at the original run (swamp-club#3583).
       [modelStep("report", {
         inputs: {
-          double: "${{ inputs.n * 2 }}",
-          next: "${{ inputs.count + 1 }}",
-          off: "${{ !inputs.flag }}",
+          double: "${{ inputs.?n.orValue(0) * 2 }}",
+          next: "${{ inputs.?count.orValue(0) + 1 }}",
+          off: "${{ !inputs.?flag.orValue(true) }}",
         },
       })],
     );
@@ -13308,7 +13336,7 @@ Deno.test("resume: number, integer and boolean key=value overrides reach steps t
       tempDir,
       workflow,
       ["report"],
-      { n: 5, count: 3, flag: true },
+      {},
     );
 
     const resumed = await drainResume(service, workflow.name, failed.id, {
@@ -13376,7 +13404,8 @@ Deno.test("resume: a suspended run's key=value override is coerced too", async (
       [
         Step.create({ name: "gate", task: StepTask.manualApproval("Scale?") }),
         modelStep("scale", {
-          inputs: { replicas: "${{ inputs.replicas + 1 }}" },
+          // A late input the resume adds (swamp-club#3583).
+          inputs: { replicas: "${{ inputs.?replicas.orValue(0) + 1 }}" },
           dependsOn: [{
             step: "gate",
             condition: TriggerCondition.succeeded(),
@@ -13391,9 +13420,7 @@ Deno.test("resume: a suspended run's key=value override is coerced too", async (
       undefined,
       executor,
     );
-    const suspended = await service.execute(workflow.name, {
-      inputs: { replicas: 2 },
-    });
+    const suspended = await service.execute(workflow.name, { inputs: {} });
     assertEquals(suspended.status, "suspended");
     const gate = suspended.getJob("main")!.getStep("gate")!;
     gate.recordApprovalDecision({
@@ -13493,15 +13520,16 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
     assertStringIncludes(error.message, "creds.region must be a string");
     assertEquals(runRepo.saves, saves);
 
-    // Only key is supplied, as `--input creds.key=new` gives; region comes
-    // from the stored inputs, so the object's required list is met.
+    // Only key is supplied, as `--input creds.key=old` gives; region comes
+    // from the stored inputs, so the object's required list is met. Merged,
+    // the object is the one the run has, so the value stays (swamp-club#3583).
     const resumed = await drainResume(service, workflow.name, failed.id, {
-      inputs: { creds: { key: "new" } },
+      inputs: { creds: { key: "old" } },
     });
 
     assertEquals(resumed?.status, "succeeded");
     assertEquals(executor.taskInputs.get("login"), {
-      key: "new",
+      key: "old",
       region: "us-east",
     });
   });
@@ -14150,7 +14178,11 @@ Deno.test("abort cleanup: a forEach iteration first added on resume is settled w
             }),
             modelStep("build", {
               ...onStep("gate", TriggerCondition.succeeded()),
-              forEach: EACH_TARGET,
+              // targets is a late input the resume adds (swamp-club#3583).
+              forEach: {
+                item: "target",
+                in: "${{ inputs.?targets.orValue(['a', 'b']) }}",
+              },
               concurrency: 1,
             }),
             modelStep("rollback", onStep("build", TriggerCondition.failed())),
@@ -14165,9 +14197,7 @@ Deno.test("abort cleanup: a forEach iteration first added on resume is settled w
       undefined,
       executor,
     );
-    const suspended = await suspendAndApprove(service, runRepo, workflow, {
-      targets: ["a", "b"],
-    });
+    const suspended = await suspendAndApprove(service, runRepo, workflow, {});
 
     const { run } = await finishedRun(
       service.resume(workflow.name, suspended.id, {
@@ -19705,7 +19735,6 @@ Deno.test("forEach: self._index survives a --last-evaluated run (swamp-club#2348
     const run = await service.execute(workflow.name, { lastEvaluated: true });
 
     assertEquals(run.status, "succeeded");
-    assertEquals(contexts.every((ctx) => ctx.mode === "lastEvaluated"), true);
     assertEquals(capturedIndexes(contexts), [
       ["process-0", 0, 0],
       ["process-1", 1, 1],
@@ -21136,7 +21165,7 @@ Deno.test("resume: a resume restored before anything ran gives its continuation 
     await assertRejects(
       () =>
         drainResume(service, workflow.name, suspended.id, {
-          inputs: { n: "x" },
+          inputs: { bad: "x" },
         }),
       Error,
       "no such overload",
@@ -21150,7 +21179,7 @@ Deno.test("resume: a resume restored before anything ran gives its continuation 
 
     // The suspension was not consumed: a resume with a usable input takes it.
     const run = await drainResume(service, workflow.name, suspended.id, {
-      inputs: { n: 2 },
+      inputs: { bad: 1 },
     });
     assertEquals(run?.status, "succeeded");
     assertEquals(claimStore.claims.length, 1);

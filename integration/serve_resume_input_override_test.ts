@@ -115,7 +115,7 @@ Deno.test({
       assertEquals(error?.code, "workflow_resume_failed");
       assertStringIncludes(
         error?.message ?? "",
-        'Input "target" was already used by steps "gate", "approve"',
+        'input "target" already has a value, and a value a run has cannot change',
       );
       // A run serve started is cancelled through serve.
       assertStringIncludes(

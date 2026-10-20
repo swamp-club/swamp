@@ -19,7 +19,6 @@
 
 import type { DeferredExpression } from "../expressions/deferred_expression.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
-import { inputNamesRead } from "../expressions/cel_grammar.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import {
@@ -36,113 +35,76 @@ import { SanitizedTaskOverlay } from "./expression_evaluators.ts";
 import { Workflow, type WorkflowInput } from "./workflow.ts";
 
 /**
- * The evaluation inputs the evaluated cache may record (swamp-club#3583), or
- * undefined when any of them holds a sensitive value: a parent can pass a
+ * The evaluation inputs an evaluated cache records (swamp-club#3583): the
+ * inputs themselves, or why they were withheld. They are withheld when any
+ * value, nested included, is a known sensitive value: a parent can pass a
  * secret to a nested workflow as an input, and the cache file would carry it
- * in plaintext. A run replaying a cache without them records none, so a
- * resume refuses any input its finished steps read.
+ * in plaintext. A fresh run makes the same choice, so such a cache is not
+ * made replayable by running fresh once.
  */
+export type RecordedEvaluationInputs =
+  | { inputs: Record<string, unknown> }
+  | { omitted: "sensitive" };
+
 export function recordableEvaluatedInputs(
   inputs: Record<string, unknown>,
   values: RunSensitiveValues,
-): Record<string, unknown> | undefined {
+): RecordedEvaluationInputs {
   return canonicalJson(values.masked(inputs)) === canonicalJson(inputs)
-    ? inputs
-    : undefined;
+    ? { inputs }
+    : { omitted: "sensitive" };
+}
+
+/** What a `--last-evaluated` run reads of its cache before it starts. */
+export interface ReplayableCache {
+  workflow: { name: string };
+  evaluatedInputs?: Record<string, unknown>;
+  evaluatedInputsOmitted?: "sensitive";
 }
 
 /**
- * The inputs an evaluated cache resolved into its steps when it was written:
- * every name read by an expression evaluation substituted. The rest resolve
- * when the cache is replayed, against the replaying run's inputs. A cache that
- * did not record what was substituted counts every authored expression as
- * resolved. `all` when a resolved expression read `inputs` whole, by a
- * computed key, or does not parse.
+ * The inputs a `--last-evaluated` run runs and records with, or why it is
+ * refused (swamp-club#3583). The cached steps were resolved with the inputs
+ * the cache records, so the run takes those, and a supplied input must equal
+ * its recorded value after coercion and merge. A cache that withheld its
+ * inputs for a sensitive value is never replayed; one written before inputs
+ * were recorded is replayed once the workflow has run fresh. A refusal names
+ * keys only: values may be secrets.
  */
-function inputsResolvedIntoCache(cache: {
-  authoredExpressions: ReadonlySet<string>;
-  resolvedExpressions?: ReadonlySet<string>;
-}): { names: Set<string>; all: boolean } {
-  const names = new Set<string>();
-  let all = false;
-  for (const raw of cache.resolvedExpressions ?? cache.authoredExpressions) {
-    for (const { celExpression } of extractExpressions(raw)) {
-      const reads = inputNamesRead(celExpression);
-      for (const name of reads.names) names.add(name);
-      all ||= reads.opaque;
-    }
-  }
-  return { names, all };
-}
-
-/**
- * The supplied inputs a run replaying the evaluated cache (`--last-evaluated`)
- * cannot take (swamp-club#3583). Its steps run with the values the cache
- * resolved into them when it was written, so a supplied input those resolved
- * expressions read must equal the value the cache recorded; one it did not
- * record, or any when it recorded none, cannot be checked. Inputs read only by
- * expressions the cache left to resolve at run time are the run's own.
- */
-export function inputsConflictingWithCache(
+export function replayInputs(
+  cache: ReplayableCache,
   supplied: Record<string, unknown>,
-  cache: {
-    authoredExpressions: ReadonlySet<string>;
-    resolvedExpressions?: ReadonlySet<string>;
-    evaluatedInputs?: Record<string, unknown>;
-  },
-): string[] {
-  const keys = Object.keys(supplied);
-  if (keys.length === 0) return [];
-  const resolved = inputsResolvedIntoCache(cache);
-  const recorded = cache.evaluatedInputs;
-  const merged = recorded ? deepMerge({ ...recorded }, supplied) : supplied;
-  return keys.filter((key) =>
-    (resolved.all || resolved.names.has(key)) &&
-    (recorded === undefined || !Object.hasOwn(recorded, key) ||
-      canonicalJson(merged[key]) !== canonicalJson(recorded[key]))
-  );
-}
-
-/**
- * The run inputs a cached evaluated definition resolved that the replaying
- * run holds otherwise (swamp-club#3583). A `--last-evaluated` step runs the
- * definition as cached, with `inputs.*` resolved against the run's inputs it
- * was evaluated with, while the run records its own: a gate checked inside a
- * definition would otherwise pass on one value while the run records another
- * that a later resume acts on. Every run input a resolved expression read must
- * have the same value now, or be absent both times. An input the step
- * supplies itself (`stepInputKeys`) is the step's, evaluated whenever it runs,
- * and not compared. A cache that recorded no inputs cannot be checked, so
- * every such input conflicts.
- */
-export function inputsConflictingWithCachedDefinition(
-  runInputs: Record<string, unknown>,
-  stepInputKeys: readonly string[],
-  cache: {
-    authoredExpressions: ReadonlySet<string>;
-    resolvedExpressions?: ReadonlySet<string>;
-    evaluatedInputs?: Record<string, unknown>;
-  },
-): string[] {
-  const resolved = inputsResolvedIntoCache(cache);
-  const recorded = cache.evaluatedInputs;
-  const stepKeys = new Set(stepInputKeys);
-  if (resolved.all && recorded === undefined) {
-    // Read whole, and nothing to compare it with.
-    return ["*"];
+): { inputs: Record<string, unknown> } | { refusal: string } {
+  const name = cache.workflow.name;
+  if (cache.evaluatedInputsOmitted !== undefined) {
+    return {
+      refusal:
+        `The evaluated workflow cached for "${name}" was evaluated with an input that held a secret, so its inputs were not recorded and it cannot be replayed. ` +
+        `Run the workflow without --last-evaluated.`,
+    };
   }
-  const names = resolved.all
-    ? new Set([...Object.keys(runInputs), ...Object.keys(recorded ?? {})])
-    : resolved.names;
-  return [...names].filter((name) => {
-    if (stepKeys.has(name)) return false;
-    if (recorded === undefined) return true;
-    const had = Object.hasOwn(recorded, name);
-    const has = Object.hasOwn(runInputs, name);
-    if (had !== has) return true;
-    return had &&
-      canonicalJson(runInputs[name]) !== canonicalJson(recorded[name]);
-  });
+  const recorded = cache.evaluatedInputs;
+  if (recorded === undefined) {
+    return {
+      refusal:
+        `The evaluated workflow cached for "${name}" was written before the inputs it was evaluated with were recorded, so it cannot be replayed. ` +
+        `Run the workflow once without --last-evaluated; that rewrites the cache.`,
+    };
+  }
+  const merged = deepMerge({ ...recorded }, supplied);
+  const differing = Object.keys(supplied).filter((key) =>
+    !Object.hasOwn(recorded, key) ||
+    canonicalJson(merged[key]) !== canonicalJson(recorded[key])
+  );
+  if (differing.length > 0) {
+    const quoted = differing.map((k) => `"${k}"`).join(", ");
+    return {
+      refusal:
+        `The evaluated workflow cached for "${name}" was evaluated with other values for --input ${quoted}, or without them, and its steps run as evaluated. ` +
+        `Evaluate it again with these inputs (swamp workflow evaluate ${name} --input ...), or run it without --last-evaluated.`,
+    };
+  }
+  return { inputs: merged };
 }
 
 /** An evaluated workflow as it is written to the evaluated cache. */

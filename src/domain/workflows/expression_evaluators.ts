@@ -159,13 +159,6 @@ export interface WorkflowEvaluationResult {
    * the same way if it fails there.
    */
   foreignTaskArguments: ForeignTaskArgument[];
-  /**
-   * The raw `${{ }}` texts evaluation substituted somewhere in the workflow.
-   * A text can be substituted at one location and kept raw at another (a
-   * guard, or a guarded step's target), so this is not what the evaluated
-   * workflow no longer holds (swamp-club#3583).
-   */
-  resolvedExpressions: ReadonlySet<string>;
 }
 
 /**
@@ -463,7 +456,6 @@ export class WorkflowExpressionEvaluator {
         ),
         provenance: sourceProvenance,
         foreignTaskArguments: [],
-        resolvedExpressions: new Set(),
       };
     }
 
@@ -625,7 +617,6 @@ export class WorkflowExpressionEvaluator {
       ),
       provenance: tracked.provenance,
       foreignTaskArguments,
-      resolvedExpressions: new Set(evaluatedValues.keys()),
     };
   }
 }
@@ -723,11 +714,6 @@ export class DefinitionExpressionEvaluator {
     failedExpressions: FailedExpressions;
     /** Where data sits in `definition`'s and `sanitizedDefinition`'s data. */
     provenance: DefinitionPassProvenance;
-    /**
-     * The authored expressions this pass evaluated into the definition
-     * (swamp-club#3583); runtime ones (vault, env) are left for the step.
-     */
-    resolvedExpressions: ReadonlySet<string>;
   }> {
     const definitionData = definition.toData();
     const expressions = partitionAuthoredAt(
@@ -742,7 +728,6 @@ export class DefinitionExpressionEvaluator {
         sanitizedDefinition: sanitizedBase,
         failedExpressions: new Map(),
         provenance,
-        resolvedExpressions: new Set(),
       };
     }
 
@@ -779,7 +764,6 @@ export class DefinitionExpressionEvaluator {
         raw: rawOut,
         sanitized: sanitizedData ? sanitizedProvenance ?? rawOut : rawOut,
       },
-      resolvedExpressions: new Set(expressions.map((e) => e.raw)),
     };
   }
 }

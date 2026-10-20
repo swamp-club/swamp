@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
@@ -27,12 +27,11 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import {
   forEachNameWithoutSecrets,
-  inputsConflictingWithCache,
-  inputsConflictingWithCachedDefinition,
   isIdentifierMapPath,
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
   rehydrateEvaluatedWorkflow,
+  replayInputs,
 } from "./persisted_workflow.ts";
 
 const SECRET = "Pl41n-s3cret";
@@ -192,172 +191,82 @@ Deno.test("forEachNameWithoutSecrets: replaces each recorded value with the item
   );
 });
 
-Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are not recorded (swamp-club#3583)", () => {
+Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are withheld, with why (swamp-club#3583)", () => {
   const plain = { target: "scratch", envs: ["a", "b"] };
-  assertEquals(recordableEvaluatedInputs(plain, recorded()), plain);
-  assertEquals(
-    recordableEvaluatedInputs(plain, new RunSensitiveValues()),
-    plain,
-  );
+  assertEquals(recordableEvaluatedInputs(plain, recorded()), {
+    inputs: plain,
+  });
+  assertEquals(recordableEvaluatedInputs(plain, new RunSensitiveValues()), {
+    inputs: plain,
+  });
+  assertEquals(recordableEvaluatedInputs({}, recorded()), { inputs: {} });
   // Anywhere in the structure, whole or inside a longer string.
-  assertEquals(
-    recordableEvaluatedInputs({ tok: SECRET }, recorded()),
-    undefined,
-  );
+  assertEquals(recordableEvaluatedInputs({ tok: SECRET }, recorded()), {
+    omitted: "sensitive",
+  });
   assertEquals(
     recordableEvaluatedInputs(
       { nested: { header: `Bearer ${SECRET}` } },
       recorded(),
     ),
-    undefined,
+    { omitted: "sensitive" },
   );
 });
 
-Deno.test("inputsConflictingWithCache: names supplied inputs the cache resolved into its steps with other values (swamp-club#3583)", () => {
-  // The source read target in a step input and creds.key (substituted), and
-  // suffix in an env expression left to resolve at run time.
-  const authored = new Set([
-    "${{ inputs.target }}",
-    "${{ inputs.creds.key }}",
-    '${{ env["HOME"] + inputs.suffix }}',
-  ]);
-  const resolved = new Set(["${{ inputs.target }}", "${{ inputs.creds.key }}"]);
-  const cache = (evaluatedInputs?: Record<string, unknown>) => ({
-    authoredExpressions: authored,
-    resolvedExpressions: resolved,
-    evaluatedInputs,
+const gated = { name: "gated" };
+
+Deno.test("replayInputs: a --last-evaluated run takes the inputs its cache recorded, under its own (swamp-club#3583)", () => {
+  const recordedInputs = { target: "scratch", creds: { user: "u", key: "k" } };
+  const cache = { workflow: gated, evaluatedInputs: recordedInputs };
+  assertEquals(replayInputs(cache, {}), { inputs: recordedInputs });
+  // The same value after the merge: no change.
+  assertEquals(
+    replayInputs(cache, { target: "scratch", creds: { key: "k" } }),
+    { inputs: recordedInputs },
+  );
+  // A workflow evaluated with no inputs records an empty set, which replays.
+  assertEquals(replayInputs({ workflow: gated, evaluatedInputs: {} }, {}), {
+    inputs: {},
   });
-  const recorded = cache({
-    target: "scratch",
-    creds: { user: "u", key: "k" },
-    suffix: ":fresh",
-  });
-  assertEquals(inputsConflictingWithCache({}, recorded), []);
-  // The resolved values again, whole or partially nested: no conflict. A
-  // run-time-only input is the run's own.
-  assertEquals(
-    inputsConflictingWithCache(
-      { target: "scratch", creds: { key: "k" }, suffix: ":replay", extra: 1 },
-      recorded,
-    ),
-    [],
-  );
-  assertEquals(
-    inputsConflictingWithCache(
-      { target: "protected", creds: { key: "other" }, suffix: ":replay" },
-      recorded,
-    ),
-    ["target", "creds"],
-  );
-  // A resolved input the cache did not record, or a cache that recorded
-  // none, cannot be checked.
-  assertEquals(
-    inputsConflictingWithCache({ target: "scratch" }, cache({})),
-    ["target"],
-  );
-  assertEquals(
-    inputsConflictingWithCache({ target: "scratch", suffix: "x" }, cache()),
-    ["target"],
-  );
-  // A resolved expression reading inputs whole resolved every input.
-  assertEquals(
-    inputsConflictingWithCache({ suffix: "x" }, {
-      ...cache(),
-      resolvedExpressions: new Set(["${{ inputs }}"]),
-    }),
-    ["suffix"],
-  );
 });
 
-Deno.test("inputsConflictingWithCache: an expression substituted in one place counts though the cache keeps it raw in another", () => {
-  // Evaluation keeps a guard, and a guarded step's target, raw by location:
-  // the same text substituted into the gate still resolved target.
-  const cache = {
-    authoredExpressions: new Set(["${{ inputs.target }}"]),
-    resolvedExpressions: new Set(["${{ inputs.target }}"]),
-    evaluatedInputs: { target: "scratch" },
-  };
-  assertEquals(
-    inputsConflictingWithCache({ target: "protected" }, cache),
-    ["target"],
+Deno.test("replayInputs: refuses an input the cache was evaluated with another value for, or without, naming keys only", () => {
+  const cache = { workflow: gated, evaluatedInputs: { target: "scratch" } };
+  const other = replayInputs(cache, { target: "protected", region: "us" });
+  assert("refusal" in other);
+  assertStringIncludes(other.refusal, 'for --input "target", "region"');
+  assertStringIncludes(
+    other.refusal,
+    "swamp workflow evaluate gated --input ...",
   );
-  // A cache that did not record what was substituted counts every authored
-  // expression as resolved.
-  assertEquals(
-    inputsConflictingWithCache({ target: "protected" }, {
-      authoredExpressions: cache.authoredExpressions,
-      evaluatedInputs: cache.evaluatedInputs,
-    }),
-    ["target"],
+  assertEquals(other.refusal.includes("protected"), false);
+  assertEquals(other.refusal.includes("scratch"), false);
+  // A nested change is a change of its top-level key.
+  const nested = replayInputs(
+    { workflow: gated, evaluatedInputs: { creds: { user: "u", key: "k" } } },
+    { creds: { key: "other" } },
   );
+  assert("refusal" in nested);
+  assertStringIncludes(nested.refusal, '"creds"');
 });
 
-Deno.test("inputsConflictingWithCachedDefinition: compares the run inputs a cached definition resolved (swamp-club#3583)", () => {
-  const cache = {
-    authoredExpressions: new Set([
-      "${{ inputs.target }}",
-      "${{ inputs.id }}",
-      "${{ env.HOME + inputs.suffix }}",
-    ]),
-    // suffix is read only by a runtime (env) expression.
-    resolvedExpressions: new Set(["${{ inputs.target }}", "${{ inputs.id }}"]),
-    evaluatedInputs: { target: "scratch", suffix: "a" },
-  };
-  assertEquals(
-    inputsConflictingWithCachedDefinition(
-      { target: "scratch", suffix: "b" },
-      [],
-      cache,
-    ),
-    [],
+Deno.test("replayInputs: a cache that withheld its inputs for a secret is never replayed; a legacy cache is replayed once the workflow ran fresh", () => {
+  const omitted = replayInputs(
+    { workflow: gated, evaluatedInputsOmitted: "sensitive" },
+    {},
   );
-  assertEquals(
-    inputsConflictingWithCachedDefinition({ target: "protected" }, [], cache),
-    ["target"],
+  assert("refusal" in omitted);
+  assertStringIncludes(omitted.refusal, "held a secret");
+  assertStringIncludes(omitted.refusal, "cannot be replayed");
+  assertEquals(omitted.refusal.includes("once"), false);
+  const legacy = replayInputs({ workflow: gated }, {});
+  assert("refusal" in legacy);
+  assertStringIncludes(
+    legacy.refusal,
+    "before the inputs it was evaluated with were recorded",
   );
-  // Absent then, present now (or the other way round) is a change.
-  assertEquals(
-    inputsConflictingWithCachedDefinition(
-      { target: "scratch", id: "x" },
-      [],
-      cache,
-    ),
-    ["id"],
-  );
-  assertEquals(inputsConflictingWithCachedDefinition({}, [], cache), [
-    "target",
-  ]);
-  // An input the step supplies is the step's, evaluated whenever it runs.
-  assertEquals(
-    inputsConflictingWithCachedDefinition(
-      { target: "protected" },
-      ["target"],
-      cache,
-    ),
-    [],
-  );
-});
-
-Deno.test("inputsConflictingWithCachedDefinition: a cache that recorded no inputs cannot be checked", () => {
-  const legacy = {
-    authoredExpressions: new Set(["${{ inputs.target }}", "${{ self.name }}"]),
-  };
-  assertEquals(
-    inputsConflictingWithCachedDefinition({ target: "scratch" }, [], legacy),
-    ["target"],
-  );
-  // One whose expressions read no input has nothing to check.
-  assertEquals(
-    inputsConflictingWithCachedDefinition({ target: "scratch" }, [], {
-      authoredExpressions: new Set(["${{ self.name }}"]),
-    }),
-    [],
-  );
-  // One that read inputs whole cannot be checked at all.
-  assertEquals(
-    inputsConflictingWithCachedDefinition({}, [], {
-      authoredExpressions: new Set(["${{ inputs }}"]),
-    }),
-    ["*"],
+  assertStringIncludes(
+    legacy.refusal,
+    "Run the workflow once without --last-evaluated",
   );
 });

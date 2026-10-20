@@ -431,7 +431,7 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
       new Set(),
       undefined,
       [],
-      { target: "scratch", envs: ["a", "b"] },
+      { inputs: { target: "scratch", envs: ["a", "b"] } },
     );
     const cached = await new YamlEvaluatedWorkflowRepository(tempDir)
       .findByNameWithProvenance(workflow.name);
@@ -439,18 +439,32 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
       target: "scratch",
       envs: ["a", "b"],
     });
+    assertEquals(cached?.evaluatedInputsOmitted, undefined);
     assertEquals(cached?.workflow.inputs, workflow.inputs);
 
-    // A cache written before evaluation inputs were recorded has none.
+    // Withheld for a sensitive value: the marker, and no inputs.
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+      new Set(),
+      undefined,
+      [],
+      { omitted: "sensitive" },
+    );
+    const omitted = await new YamlEvaluatedWorkflowRepository(tempDir)
+      .findByNameWithProvenance(workflow.name);
+    assertEquals(omitted?.evaluatedInputs, undefined);
+    assertEquals(omitted?.evaluatedInputsOmitted, "sensitive");
+
+    // A cache written before evaluation inputs were recorded has neither.
     await new YamlEvaluatedWorkflowRepository(tempDir).save(
       workflow,
       undefined,
     );
-    assertEquals(
-      (await new YamlEvaluatedWorkflowRepository(tempDir)
-        .findByNameWithProvenance(workflow.name))?.evaluatedInputs,
-      undefined,
-    );
+    const legacy = await new YamlEvaluatedWorkflowRepository(tempDir)
+      .findByNameWithProvenance(workflow.name);
+    assertEquals(legacy?.evaluatedInputs, undefined);
+    assertEquals(legacy?.evaluatedInputsOmitted, undefined);
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }

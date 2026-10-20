@@ -76,6 +76,7 @@ import {
   supersedeMatchInputs,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
+import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
 import {
   type CascadedNestedRunData,
@@ -397,6 +398,16 @@ export interface WorkflowRunDeps {
   telemetrySink?: WorkflowTelemetrySink;
   /** Supersedes matching-input suspended runs when set. */
   supersede?: SupersedeDeps;
+  /**
+   * The workflow's evaluated cache by name, for a `--last-evaluated` run
+   * (swamp-club#3583): loaded once here, matched on by superseding, and
+   * handed to the execution service to replay, so a cache rewritten between
+   * the two cannot split them. Without it the execution service loads the
+   * cache itself, and a replayed run supersedes nothing.
+   */
+  findEvaluatedWorkflowCache?: (
+    workflowName: string,
+  ) => Promise<EvaluatedWorkflowCache | null>;
 }
 
 /**
@@ -891,13 +902,19 @@ export async function* workflowRun(
             };
           }
 
+          // One copy of the evaluated cache for the whole start: superseding
+          // matches on it and the execution service replays it
+          // (swamp-club#3583).
+          const evaluatedCache = resolvedInput.lastEvaluated &&
+              deps.findEvaluatedWorkflowCache
+            ? await deps.findEvaluatedWorkflowCache(workflow.name)
+            : undefined;
           // Undefined when the run will be refused before it starts.
           const supersedeInputs = !resolvedInput.noSupersede && deps.supersede
-            ? await supersedeMatchInputs(
-              workflow.name,
+            ? supersedeMatchInputs(
               resolvedInput.inputs ?? {},
               resolvedInput.lastEvaluated === true,
-              deps.supersede,
+              evaluatedCache,
             )
             : undefined;
           if (supersedeInputs && deps.supersede) {
@@ -959,6 +976,7 @@ export async function* workflowRun(
                 byId: resolvedInput.byId,
                 expectedName: resolvedInput.expectedName,
                 lastEvaluated: resolvedInput.lastEvaluated,
+                evaluatedCache: evaluatedCache ?? undefined,
                 inputs: resolvedInput.inputs,
                 runtimeTags: resolvedInput.runtimeTags,
                 signal: ctx.signal,

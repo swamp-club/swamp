@@ -269,7 +269,7 @@ export function computeStepsToReset(
  * A name written with an expression is stored evaluated, so it cannot be
  * compared with a stored record before the workflow is evaluated.
  */
-export function evaluated(name: string): boolean {
+function evaluated(name: string): boolean {
   return name.includes("${{");
 }
 

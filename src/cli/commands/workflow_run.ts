@@ -154,7 +154,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--last-evaluated",
-    "Skip CEL evaluation, use previously evaluated workflow and definitions; an --input its steps were resolved with must match the evaluated value",
+    "Replay the previously evaluated workflow with the inputs it was evaluated with; an --input must match them. Behavior definitions are evaluated fresh",
     { default: false },
   )
   .option("--input <value:string>", "Input values (key=value or JSON)", {
@@ -562,10 +562,6 @@ export const workflowRunCommand = new Command()
                 },
                 findEvaluatedWorkflow: (runId) =>
                   evaluatedWorkflowRepo.findByRunId(runId),
-                evaluatedCache: async (name) =>
-                  (await evaluatedWorkflowRepo.findByNameWithProvenance(
-                    name,
-                  )) ?? undefined,
                 runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
                 // The suspended nested runs a superseded run waited on are
                 // cancelled with it (swamp-club#2867). The tracker is opened
