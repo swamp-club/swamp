@@ -345,3 +345,34 @@ Deno.test("withConsoleGuard: masks an active redactor's secrets on stderr but ke
     runFileSink.unregisterRedactor(handle);
   }
 });
+
+Deno.test("withConsoleGuard: console.dir masks a secret learned during execution and restores the original method", async () => {
+  const redactor = new SecretRedactor();
+  const handle = runFileSink.registerRedactor(redactor);
+  const originalDir = console.dir;
+  const stderr: string[] = [];
+  const logs: string[] = [];
+  setConsoleGuardStderrWriter((line) => stderr.push(line));
+  const secret = 'learned"secret\\value'.repeat(20);
+  try {
+    await withConsoleGuard(
+      () => {
+        redactor.addSecret(secret);
+        console.dir({ token: secret }, { strAbbreviateSize: 8 });
+      },
+      logs,
+      { jsonMode: true },
+    );
+
+    assertEquals(stderr.map((line) => line.replace(/\s/g, "")), [
+      "{token:'***'}",
+    ]);
+    assertEquals(logs, [
+      Deno.inspect({ token: secret }, { strAbbreviateSize: Infinity }),
+    ]);
+    assertEquals(console.dir, originalDir);
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
+    runFileSink.unregisterRedactor(handle);
+  }
+});

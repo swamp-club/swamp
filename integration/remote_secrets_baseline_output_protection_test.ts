@@ -290,7 +290,9 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withTempDir(async (cacheDirPath) => {
-      const secret = canary("runner-log");
+      // A combined quote/backslash/newline value exercises inspection's
+      // escaping as well as the raw and JSON-encoded representations.
+      const secret = `quo"ted\\\n${canary("runner-log")}`;
       const lines = await captureRunnerStderr(async () => {
         await runInProcess({
           sessionCredential: "unused",
@@ -307,6 +309,7 @@ Deno.test({
       // console guard mask all three lines before a supervisor can read them.
       const dump = `runner stderr:\n${lines.join("\n")}`;
       assertEquals(lines.filter((line) => line.includes(secret)), []);
+      assertEquals(lines.some((line) => line.includes("quo")), false, dump);
       assert(
         lines.some((line) =>
           line.includes('worker·method-context: method log line "***"')

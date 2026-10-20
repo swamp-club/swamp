@@ -94,7 +94,23 @@ export function createStderrSink(
   write: (text: string) => void = writeStderr,
 ): Sink {
   return (record) => {
-    write(runFileSink.redactActive(formatter(record)));
+    // Scrub string values before inspection or word-wrapping can change
+    // their representation. Keep the final pass for structured values and
+    // secrets spanning adjacent message parts, without mutating the record
+    // that other sinks receive.
+    const redactString = (value: unknown) =>
+      typeof value === "string" ? runFileSink.redactActive(value) : value;
+    const redacted = {
+      ...record,
+      message: record.message.map(redactString),
+      properties: Object.fromEntries(
+        Object.entries(record.properties).map(([key, value]) => [
+          key,
+          redactString(value),
+        ]),
+      ),
+    };
+    write(runFileSink.redactActive(formatter(redacted)));
   };
 }
 

@@ -89,6 +89,19 @@ export class SecretRedactor {
     if (jsonEscaped !== value) {
       this.secrets.add(jsonEscaped);
     }
+    // LogTape and console.dir inspect strings instead of JSON-encoding them.
+    // Inspection can choose any quote style and uses escapes such as \x00.
+    // Enclosing text can change the chosen quotes, so register all styles.
+    const inspected = Deno.inspect(value, {
+      colors: false,
+      strAbbreviateSize: Infinity,
+    });
+    const quote = inspected[0];
+    const body = inspected.slice(1, -1).replaceAll(`\\${quote}`, quote);
+    this.secrets.add(body);
+    for (const delimiter of ['"', "'", "`", "${"]) {
+      this.secrets.add(body.replaceAll(delimiter, `\\${delimiter}`));
+    }
   }
 
   /**

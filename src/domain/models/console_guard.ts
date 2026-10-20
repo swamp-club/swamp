@@ -21,7 +21,14 @@ import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
 
 type ConsoleMethod = (...args: unknown[]) => void;
 
-const CAPTURED_METHODS = ["log", "info", "debug", "warn", "error"] as const;
+const CAPTURED_METHODS = [
+  "log",
+  "info",
+  "debug",
+  "warn",
+  "error",
+  "dir",
+] as const;
 
 const STDERR_ENCODER = new TextEncoder();
 
@@ -51,9 +58,10 @@ function formatArg(a: unknown): string {
   if (typeof a === "string") return a;
   if (typeof a === "number") return String(a);
   try {
-    return JSON.stringify(a) ?? Deno.inspect(a);
+    return JSON.stringify(a) ??
+      Deno.inspect(a, { strAbbreviateSize: Infinity });
   } catch {
-    return Deno.inspect(a);
+    return Deno.inspect(a, { strAbbreviateSize: Infinity });
   }
 }
 
@@ -112,7 +120,13 @@ export async function withConsoleGuard<T>(
       // every active guard records it, but it reaches stderr only once.
       // deno-lint-ignore no-explicit-any
       (console as any)[method] = (...args: unknown[]) => {
-        const line = args.map(formatArg).join(" ");
+        const line = method === "dir"
+          ? Deno.inspect(args[0], {
+            ...args[1] as Deno.InspectOptions | undefined,
+            // Truncating a secret before redaction would expose its prefix.
+            strAbbreviateSize: Infinity,
+          })
+          : args.map(formatArg).join(" ");
         for (const logArray of allActiveLogs) {
           logArray.push(line);
         }

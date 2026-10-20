@@ -520,6 +520,8 @@ Deno.test("createStderrSink: hands its writer the line with every active redacto
     "plain-secret-3526",
     'quo"ted-secret-3526',
     "back\\slash-secret-3526",
+    'quo"ted\\secret-3526',
+    'quo"ted\nsecret-3526',
   ];
   const redactor = new SecretRedactor();
   for (const secret of secrets) redactor.addSecret(secret);
@@ -531,9 +533,12 @@ Deno.test("createStderrSink: hands its writer the line with every active redacto
     sink(recordHolding("no secret here"));
 
     assertEquals(written.filter((line) => line.includes("secret-3526")), []);
-    assertEquals(written.filter((line) => line.includes("***")).length, 3);
-    assertStringIncludes(written[3], "no secret here");
-    assertEquals(written[3].endsWith("\n"), true);
+    assertEquals(
+      written.filter((line) => line.includes("***")).length,
+      secrets.length,
+    );
+    assertStringIncludes(written[secrets.length], "no secret here");
+    assertEquals(written[secrets.length].endsWith("\n"), true);
   } finally {
     runFileSink.unregisterRedactor(handle);
   }
@@ -548,13 +553,14 @@ Deno.test("createStderrSink: writes the line as it is when no redactor is active
 });
 
 Deno.test("initializeLogging: stderrOnly masks an active redactor's secrets under both formatters", async () => {
-  // Plain, quote-bearing and backslash-bearing values: the formatters quote
-  // and escape interpolated strings, and the redactor registers the
-  // JSON-escaped form of each secret alongside the raw one.
+  // Mixed quotes, backslashes and newlines are scrubbed before inspection;
+  // inspection also has its own escaping, distinct from JSON's.
   const secrets = [
     "dispatch-secret-3526",
     'quo"ted-secret-3526',
     "back\\slash-secret-3526",
+    'quo"ted\\secret-3526',
+    'quo"ted\nsecret-3526',
   ];
   for (const prettyOutput of [false, true]) {
     const capture = captureStreams();
@@ -577,7 +583,7 @@ Deno.test("initializeLogging: stderrOnly masks an active redactor's secrets unde
 
       const output = capture.stderr.join("");
       assertEquals(output.includes("secret-3526"), false, output);
-      assertEquals(output.split("***").length - 1, 3, output);
+      assertEquals(output.split("***").length - 1, secrets.length, output);
     } finally {
       runFileSink.unregisterRedactor(handle);
       capture.restore();
