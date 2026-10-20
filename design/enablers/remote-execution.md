@@ -762,10 +762,11 @@ result's `logs`; `DispatchService` turns them into `output` events too, for a
 failed dispatch as well as a successful one. They arrive only once the dispatch
 returns, so a step's console lines follow all of its streamed lines in the log
 rather than interleaving with them. The worker scrubs both with its own
-`SecretRedactor` before they leave, because it alone knows the secrets a method
-learns while it runs. The event is worker-supplied, so
-the orchestrator checks its shape and splits a multi-line `line` into one
-record per line.
+`SecretRedactor` before they leave: it is seeded with the dispatched
+`secretValues`, and its vault proxy adds every value `resolveSecret` returns,
+so a secret the method learns while it runs is masked where it is first
+written. The event is worker-supplied, so the orchestrator checks its shape and
+splits a multi-line `line` into one record per line.
 
 Control-plane records (grants, groups, tokens, workers, leases, pending
 dispatches, fleet probes; `src/domain/models/control_plane_types.ts`) never
@@ -781,9 +782,12 @@ control-plane type is hidden (swamp-club#3129).
 
 `resolveSecret` checks the infrastructure denylist and an expression-based
 allowlist taken from the dispatched step's args. The allowlist is disabled when
-the step has dynamic vault references. `putSecret` checks only the denylist,
-because write targets are not declared in vault expressions. The denylist
-(`src/serve/capability_service.ts`) covers the `server-token-*` and
+the step has dynamic vault references. Before the reply leaves, the value joins
+the dispatch's `SecretRedactor` on its `ActiveDispatch` registration, so the
+data plane scrubs it from the dispatch's resource writes as it does the
+pre-dispatch `secretValues` (swamp-club#3527). `putSecret` checks only the
+denylist, because write targets are not declared in vault expressions. The
+denylist (`src/serve/capability_service.ts`) covers the `server-token-*` and
 `worker-token-*` key prefixes, `oauth-client-secret`, `oauth-access-token-*`,
 `oauth-bootstrap-access-token`, `oauth-resolved-admins`, and the control-plane
 token-secrets vault by name.
@@ -1511,12 +1515,17 @@ credentials and extensions onto workers:
   1. **Worker-side (source redaction):** the orchestrator extracts resolved
      secret values from sensitive argument fields and ships them in the
      dispatch params (`secretValues`). The worker registers them with its
-     `SecretRedactor` before running the method, so `stdout`/`stderr` and any
-     `writeResource` data are redacted at the source.
+     `SecretRedactor` before running the method, and its vault proxy adds
+     every value `resolveSecret` returns while the method runs, so
+     `stdout`/`stderr` and any `writeResource` data are redacted at the
+     source.
   2. **Data plane (defense in depth):** the orchestrator stores a per-dispatch
-     `SecretRedactor` on the `ActiveDispatch` registration. When the data plane
-     persists a worker's `writeResource` call, it passes this redactor to
-     `createResourceWriter`, catching any value the worker side missed.
+     `SecretRedactor` on the `ActiveDispatch` registration, seeded with
+     `secretValues` and grown with every value `resolveSecret` delivers to
+     that dispatch; a step dispatched without secrets gets its redactor on the
+     first delivery (swamp-club#3527). When the data plane persists a worker's
+     `writeResource` call, it passes this redactor to `createResourceWriter`,
+     catching any value the worker side missed.
      **Known limit:** the file-writer path (`POST /data/writers` and its
      `line`/`content` requests) does not get the redactor (`#openWriter` in
      `src/serve/data_plane.ts`), so file outputs rely on the worker-side layer

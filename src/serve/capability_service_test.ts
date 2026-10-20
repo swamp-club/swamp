@@ -25,6 +25,7 @@ import type { ActiveDispatch } from "./dispatch_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { VaultExtractionResult } from "../domain/expressions/vault_reference_extractor.ts";
+import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import {
   currentVaultAccess,
   RunVaultAccess,
@@ -550,6 +551,80 @@ Deno.test("resolveSecret: passes without dispatch registry (no scoping)", async 
     secretKey: "any-key",
   });
   assertEquals(result.value, "value");
+});
+
+// ── resolveSecret registers delivered values with the dispatch redactor ──
+
+Deno.test("resolveSecret: registers the delivered value with the dispatch redactor (swamp-club#3527)", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [{ vaultName: "default", secretKey: "api-key" }],
+    hasDynamicRefs: false,
+  });
+  const dispatch = dispatches.forDispatch("worker-1", "d-1")!;
+  const redactor = new SecretRedactor();
+  redactor.addSecret("shipped-value");
+  dispatch.redactor = redactor;
+  const service = createServiceWithVault(dispatches, {
+    "api-key": "learned-value",
+  });
+
+  await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "api-key",
+  });
+
+  assertEquals(
+    redactor.redact("shipped-value then learned-value"),
+    "*** then ***",
+  );
+});
+
+Deno.test("resolveSecret: creates the dispatch redactor when the step shipped no secrets", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [{ vaultName: "default", secretKey: "api-key" }],
+    hasDynamicRefs: false,
+  });
+  const dispatch = dispatches.forDispatch("worker-1", "d-1")!;
+  assertEquals(dispatch.redactor, undefined);
+  const service = createServiceWithVault(dispatches, {
+    "api-key": "learned-value",
+  });
+
+  await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "api-key",
+  });
+
+  // The same registry entry the data plane reads now carries the value.
+  assertEquals(
+    dispatches.forDispatch("worker-1", "d-1")!.redactor?.redact(
+      "got learned-value",
+    ),
+    "got ***",
+  );
+});
+
+Deno.test("resolveSecret: an annotation read registers nothing with the dispatch redactor", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, {
+    staticRefs: [{ vaultName: "default", secretKey: "api-key" }],
+    hasDynamicRefs: false,
+  });
+  const dispatch = dispatches.forDispatch("worker-1", "d-1")!;
+  const service = createServiceWithVault(dispatches, {
+    "api-key": "learned-value",
+  });
+
+  const result = await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "api-key",
+    annotation: true,
+  });
+
+  assertEquals(result.value, null);
+  assertEquals(dispatch.redactor, undefined);
 });
 
 Deno.test("putSecret: passes without dispatch registry (no scoping)", async () => {
