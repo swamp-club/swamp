@@ -45,7 +45,13 @@ Deno.test("SecretRedactor: unwrapped inspected secrets remain masked across quot
         const redactor = new SecretRedactor();
         redactor.addSecret(secret);
         for (const prefix of ["", "quote'", 'quote"', "quote`", "all'\"`"]) {
-          for (const value of [prefix + secret, { token: prefix + secret }]) {
+          for (
+            const value of [
+              prefix + secret,
+              { token: prefix + secret },
+              { nested: { error: new Error(prefix + secret) } },
+            ]
+          ) {
             const rendered = Deno.inspect(value, {
               colors: false,
               strAbbreviateSize: Infinity,

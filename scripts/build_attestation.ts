@@ -882,7 +882,7 @@ export function checkWorkflowProvenance(
     : [`${at || "(root)"} differs from the committed definition`];
 }
 
-/** Bind executable shell expressions to validated, recorded inputs and run ID. */
+/** Bind shell inputs exactly, preserving run.id as the saved snapshot does. */
 export function checkVerificationProvenance(
   committed: WorkflowDef,
   evaluated: unknown,
@@ -910,10 +910,9 @@ export function checkVerificationProvenance(
         const values = new Map(
           extractExpressions(shell).map((expression) => [
             expression.raw,
-            evaluator.evaluate(expression.celExpression, {
-              inputs,
-              run: { id: run.id },
-            }),
+            expression.celExpression === "run.id"
+              ? expression.raw
+              : evaluator.evaluate(expression.celExpression, { inputs }),
           ]),
         );
         step.task!.inputs!.run = replaceExpressions(shell, values) as string;
@@ -922,7 +921,25 @@ export function checkVerificationProvenance(
       }
     }
   }
-  return checkWorkflowProvenance(expected, evaluated);
+  const errors = checkWorkflowProvenance(expected, evaluated);
+  if (errors.length > 0) return errors;
+  // Structure was checked above. Shells must match exactly, including the
+  // deferred run.id text: it must not become a provenance wildcard.
+  const snapshot = evaluated as WorkflowDef;
+  for (const [jobIndex, job] of (expected.jobs ?? []).entries()) {
+    for (const [stepIndex, step] of (job.steps ?? []).entries()) {
+      const shell = step.task?.inputs?.run;
+      if (shell === undefined) continue;
+      const actual = snapshot.jobs?.[jobIndex].steps?.[stepIndex].task?.inputs
+        ?.run;
+      if (shell !== actual) {
+        errors.push(
+          `jobs[${jobIndex}].steps[${stepIndex}].task.inputs.run differs from the committed definition`,
+        );
+      }
+    }
+  }
+  return errors;
 }
 
 function isEmptyDefault(value: unknown): boolean {

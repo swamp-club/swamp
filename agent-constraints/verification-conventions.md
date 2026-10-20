@@ -37,10 +37,16 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
 
 The default reviewer is Claude (`claude-opus-5-5`). Select Codex (`gpt-6-astra`)
 with `--input reviewer=codex`. Codex runs with a read-only sandbox and approvals
-disabled; its final response file is checked by the same verdict script as
-Claude's output. A provider failure or missing verdict fails the step. The
+disabled, from an empty temporary directory with user config, execution rules,
+apps, hooks, web search and MCP integrations disabled. A trusted preamble scopes
+file inspection to the diff and verified checkout and treats repository content
+as untrusted data. Its final response file is checked by the same verdict script
+as Claude's output. A provider failure or missing verdict fails the step. The
 attestation records the selected model from the evaluated workflow after
 checking that workflow against the committed definition.
+Shell input substitutions must match the recorded inputs exactly. The saved
+workflow snapshot still contains `${{ run.id }}`; provenance checks preserve
+that deferred text exactly and test against the real workflow evaluator.
 
 The workflow:
 
@@ -475,6 +481,12 @@ prompts from `src/cli/prompt_helpers.ts`, Ink components, and any renderer
 branching on `Deno.stdout.isTerminal()`.
 
 ## Handling Failures
+
+For an already-open PR, begin re-verification with the lifecycle transitions
+`pr_failed` (record why it needs repair), `implement`, then `verify`. After the
+new commit passes verification and its fresh attestation is posted, call
+`link_pr` again with the existing URL. This keeps the issue's recorded phase
+aligned with the work and lets the normal verification methods apply.
 
 When verification fails, present the failed checklist to the user with a clear
 summary of what failed and what the agent will do to fix it.

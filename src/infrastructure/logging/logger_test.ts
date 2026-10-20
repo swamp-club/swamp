@@ -558,7 +558,7 @@ Deno.test("createStderrSink: masks structured secrets before pretty wrapping and
   const redactor = new SecretRedactor();
   redactor.addSecret(secret);
   const handle = runFileSink.registerRedactor(redactor);
-  const value = { token: secret };
+  const value = { token: secret, nested: { error: new Error(secret) } };
   const record = {
     ...recordHolding(secret),
     message: ["value ", value, ""],
@@ -580,8 +580,9 @@ Deno.test("createStderrSink: masks structured secrets before pretty wrapping and
     assertEquals(output.includes("START-"), false, output);
     assertEquals(output.includes("-END"), false, output);
     assertStringIncludes(output, "***");
-    assertEquals(record.message[1], { token: secret });
+    assertEquals(record.message[1], value);
     assertEquals(record.properties.v.token, secret);
+    assertEquals(record.properties.v.nested.error.message, secret);
   } finally {
     runFileSink.unregisterRedactor(handle);
   }

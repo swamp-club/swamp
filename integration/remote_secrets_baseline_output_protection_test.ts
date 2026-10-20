@@ -550,6 +550,11 @@ Deno.test("remote secrets baseline: buffered console spans stay masked after the
         arguments: z.object({}),
         execute: (_args, context) => {
           context.redactor!.addSecret(secret);
+          const nested = {
+            error: new Error(secret, { cause: new Error(secret) }),
+          };
+          context.logger.info("nested failure {value}", { value: nested });
+          console.dir(nested);
           const span = trace.getTracer("buffered-test").startSpan(
             "buffered-dispatch",
           );
@@ -570,7 +575,7 @@ Deno.test("remote secrets baseline: buffered console spans stay masked after the
       dispatch.execution.methodName = "run";
       dispatch.execution.methodArgs = {};
       dispatch.bundleFingerprint = `builtin:${type.normalized}`;
-      await captureRunnerStderr(async () => {
+      const stderr = await captureRunnerStderr(async () => {
         const { result } = await runInProcess({
           sessionCredential: "unused",
           dataPlaneUrl: "http://127.0.0.1:9",
@@ -578,7 +583,13 @@ Deno.test("remote secrets baseline: buffered console spans stay masked after the
           dispatch,
         }, { retainRedactorUntilExit: true });
         assertEquals(result.error, "***");
+        const logs = result.logs.join("\n");
+        assertEquals(logs.includes("trace-learned-"), false, logs);
+        assertEquals(logs.includes("private-key-line"), false, logs);
       });
+      assert(stderr.some((line) => line.includes("nested failure")));
+      assertEquals(stderr.join("\n").includes("trace-learned-"), false);
+      assertEquals(stderr.join("\n").includes("private-key-line"), false);
       assertEquals(runFileSink.redactActive(secret), "***");
       await shutdownTracing();
       const output = flushed.join("\n");
