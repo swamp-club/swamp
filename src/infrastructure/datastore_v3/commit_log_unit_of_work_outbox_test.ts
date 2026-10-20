@@ -291,6 +291,50 @@ Deno.test("commit-log unit with an outbox: a retry older than the bound is refus
   await uow.commit();
 });
 
+Deno.test("commit-log unit with an outbox: abandon reports an expired checkpoint's unrecorded discard even after storage recovers (swamp-club#3685)", async () => {
+  for (const storageRecovers of [false, true]) {
+    const sink = new OutboxMemorySink();
+    let now = AT.getTime();
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, memory(), { clock: () => new Date(now) }),
+    );
+    sink.beforeAppend = () => {
+      throw new Error("transient append failure");
+    };
+    await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+    await assertRejects(
+      () => uow.checkpoint(),
+      Error,
+      "transient append failure",
+    );
+    assertEquals(sink.entries.size, 1);
+
+    const diskFull = new Error("database or disk is full");
+    sink.outbox.abandon = () => Promise.reject(diskFull);
+    sink.beforeRemove = () => {
+      throw diskFull;
+    };
+    now += OUTBOX_RETRY_BOUND_MS + 1;
+    const refusal = await assertRejects(
+      () => uow.checkpoint(),
+      PartitionsRefusedError,
+    );
+    assertEquals(refusal.refusals[0].reason, "retry-expired");
+    if (storageRecovers) {
+      sink.outbox.abandon = () => Promise.resolve();
+      sink.beforeRemove = () => {};
+    }
+
+    const error = await assertRejects(() => uow.abandon(), MayLandLaterError);
+    assert(error.cause instanceof CommitRejectedError);
+    assertEquals(error.cause.reason, "retry-expired");
+    assertEquals(error.reason, diskFull);
+    assertEquals(sink.entries.size, 1);
+    assertEquals(sink.landed, []);
+  }
+});
+
 Deno.test("commit-log unit with an outbox: a writer that may overlap a sweep batch waits for it before its chunk check and its append (swamp-club#3586)", async () => {
   const sink = new OutboxMemorySink();
   const options = unitOptions(sink, memory());
