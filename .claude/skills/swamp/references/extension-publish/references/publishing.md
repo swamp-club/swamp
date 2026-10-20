@@ -346,8 +346,7 @@ files. Two distinct constraints make this the right form:
 Other Deno-compatible imports (`npm:`, `jsr:`, `https://`) are inlined into the
 bundle by the swamp packager. A `deno.json` that maps zod to any 4.x version or
 range (`npm:zod@^4`) keeps zod shared after the rewrite.
-`swamp extension
-quality` and `swamp extension push` report the same
+`swamp extension quality` and `swamp extension push` report the same
 `bare-specifiers` warning for each bare import that ships as written; fix it by
 adding a `deno.json` imports entry for the name or writing the specifier inline.
 Quality still prints the rubric but fails, because the registry would publish

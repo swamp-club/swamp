@@ -814,6 +814,54 @@ export function isExpectedBundleFailure(
   }
 }
 
+// A static, side-effect or literal dynamic import, or a re-export: the
+// specifier each import or export statement names.
+const IMPORTED_SPECIFIER_RE = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"'\n]+)["']/g;
+
+/** How many modules {@link zod4SpecifiersReachedFrom} reads at most. */
+const MAX_ZOD_SCAN_MODULES = 2000;
+
+/**
+ * The `npm:zod` specifiers admitting only zod 4 that `entry` and the
+ * modules it reaches through relative imports write, read as text with
+ * comments and template literals blanked. Exact spellings, so `deno bundle
+ * --external` matches each of them; no deno call. A module that cannot be
+ * read is skipped: the bundler reports it.
+ */
+export async function zod4SpecifiersReachedFrom(
+  entry: string,
+): Promise<string[]> {
+  const found = new Set<string>();
+  const seen = new Set<string>([entry]);
+  const queue = [entry];
+  while (queue.length > 0 && seen.size <= MAX_ZOD_SCAN_MODULES) {
+    const path = queue.shift()!;
+    let source: string;
+    try {
+      source = await Deno.readTextFile(path);
+    } catch {
+      continue;
+    }
+    for (
+      const match of stripSourceComments(source).matchAll(
+        IMPORTED_SPECIFIER_RE,
+      )
+    ) {
+      const spec = match[1];
+      if (spec.startsWith("npm:zod") && isZod4Specifier(spec)) {
+        found.add(spec);
+      } else if (spec.startsWith("./") || spec.startsWith("../")) {
+        const target = resolve(dirname(path), spec);
+        if (!seen.has(target) && /\.[cm]?[jt]sx?$/.test(target)) {
+          seen.add(target);
+          queue.push(target);
+        }
+      }
+    }
+  }
+  return [...found].sort();
+}
+
 /**
  * Reads a deno.json import map and determines how "zod" is mapped.
  * If it maps to a zod 4.x npm specifier, returns the resolved specifier
@@ -966,23 +1014,16 @@ export async function bundleExtension(
     // host's zod instance (required for `instanceof` schema checks).
     // Self-contained bundles inline everything for out-of-process use.
     if (!options?.selfContained) {
-      // `npm:zod@4` alone matches only that exact text. The trailing
-      // wildcards match every zod 4 spelling a source writes — pinned
-      // (npm:zod@4.3.6) or ranged (npm:zod@^4.1, npm:zod@~4.2), as push ships
-      // an import-map target in place of a bare "zod" (swamp-club#3637) — in
-      // every module the entry point reaches, not just the entry point.
-      args.push(
-        "--external",
-        "npm:zod@4",
-        "--external",
-        "npm:zod",
-        "--external",
-        "npm:zod@4*",
-        "--external",
-        "npm:zod@^4*",
-        "--external",
-        "npm:zod@~4*",
-      );
+      args.push("--external", "npm:zod@4", "--external", "npm:zod");
+
+      // Every other zod 4 spelling — pinned (npm:zod@4.3.6) or ranged
+      // (npm:zod@^4.1, npm:zod@>=4.1 <5), as push ships an import-map target
+      // in place of a bare "zod" (swamp-club#3637) — matches only as
+      // written, so externalize each one the modules the entry point
+      // reaches write.
+      for (const spec of await zod4SpecifiersReachedFrom(absolutePath)) {
+        args.push("--external", spec);
+      }
 
       // When using a deno.json import map, bare specifier "zod" is resolved
       // to the fully-qualified npm specifier (e.g., "npm:zod@4.3.6") before

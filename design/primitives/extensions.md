@@ -928,10 +928,11 @@ The bundler handles:
 
 - `npm:zod@4` and `npm:zod` (base patterns, always applied)
 - Every other zod 4 spelling, pinned (`npm:zod@4.3.6`) or ranged
-  (`npm:zod@^4.1`, `npm:zod@~4.2`), through the trailing-wildcard patterns
-  `npm:zod@4*`, `npm:zod@^4*` and `npm:zod@~4*`, which `deno bundle` matches in
-  every module the entry point reaches. Push ships a ranged spelling whenever
-  the import map maps `"zod"` to one (swamp-club#3637), so a pulled extension
+  (`npm:zod@^4.1`, `npm:zod@>=4.1 <5`), exactly as written: the bundler reads
+  the entry point and every module it reaches through relative imports as text
+  (`zod4SpecifiersReachedFrom`, no `deno` call) and externalizes each `npm:zod`
+  specifier that admits only 4.x. Push ships such a spelling whenever the
+  import map maps `"zod"` to one (swamp-club#3637), so a pulled extension
   rebundles with zod still shared.
 - Bare `"zod"` via `deno.json`: when the import map maps it to a version or
   range that admits only zod 4.x, both the resolved specifier and bare `"zod"`
@@ -958,12 +959,12 @@ the parser does not support. The zod 3.x check is scoped the same way.
 
 At runtime, loaders look for cached bundles in `.swamp/bundles/` (or the
 matching `-bundles/` directory). If the source has bare specifiers that need a
-project config and a cached bundle exists, the loader uses it, since
-re-bundling without the config would fail. This serves pulled extensions built
-in a `package.json` project, or whose bare imports a `deno.json` import map did
-not resolve, whose archive has pre-built bundles but no project config. Bare
-imports the import map resolves were rewritten to their targets on push, so
-that source re-bundles on its own. Imports inside template literals don't count here either,
+project config and a cached bundle exists, the loader uses it, since re-bundling
+without the config would fail. This serves pulled extensions built in a
+`package.json` project, or whose bare imports a `deno.json` import map did not
+resolve, whose archive has pre-built bundles but no project config. Bare imports
+the import map resolves were rewritten to their targets on push, so that source
+re-bundles on its own. Imports inside template literals don't count here either,
 so an extension that only generates code re-bundles normally.
 
 With a non-filesystem datastore (e.g. `@swamp/s3-datastore`), bundle paths go
@@ -2433,11 +2434,11 @@ fallback cannot reuse bundles built for an incompatible runtime.
 
 Pulled extensions ship without a `deno.json`. Push rewrites the bare imports its
 import map resolves to their `npm:`/`jsr:` targets (swamp-club#3637), so such a
-pulled extension re-bundles locally. One whose source still has bare imports
-(an unmapped name, or one built in a `package.json` project) cannot: `deno
-bundle` fails and it depends on the registry package's pre-built bundles. Once a stale bundle is
-deleted, the extension enters `BundleBuildFailed` and is unavailable until
-re-pulled.
+pulled extension re-bundles locally. One whose source still has bare imports (an
+unmapped name, or one built in a `package.json` project) cannot: `deno bundle`
+fails and it depends on the registry package's pre-built bundles. Once a stale
+bundle is deleted, the extension enters `BundleBuildFailed` and is unavailable
+until re-pulled.
 
 Recovery paths:
 

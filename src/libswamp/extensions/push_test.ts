@@ -2447,7 +2447,9 @@ async function archiveTexts(
     }
     return texts;
   } finally {
-    await Deno.remove(root, { recursive: true }).catch(() => {});
+    await Deno.remove(root, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 }
 

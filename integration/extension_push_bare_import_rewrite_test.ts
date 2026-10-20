@@ -24,7 +24,9 @@
  * scan reads the specifiers, and a pulled extension rebundles in a
  * repository with no deno.json. Wires the real push resolver, module graph
  * reader, planner, dependency extractor and archive assembly to the real
- * install and bundler; only the registry download is mocked.
+ * install and bundler; only the registry download is mocked. The rebundle
+ * resolves npm:ms, jsr:@std/path and npm:zod for real, so it needs network
+ * access or a warm DENO_DIR, as the other bundle tests do.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
