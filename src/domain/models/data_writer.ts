@@ -549,14 +549,15 @@ export async function processSensitiveResourceData(
   );
   const targetFields = new Map<string, string>();
   for (const { field, targetVault, vaultKey } of targets) {
+    const fieldName = field.path;
     const target = `${targetVault}\0${vaultKey}`;
     const previous = targetFields.get(target);
     if (previous !== undefined) {
       throw new Error(
-        `Sensitive fields '${previous}' and '${field.path}' target the same vault key in '${targetVault}'. Configure distinct vaultKey values.`,
+        `Sensitive fields '${previous}' and '${fieldName}' target the same vault key in '${targetVault}'. Configure distinct vaultKey values.`,
       );
     }
-    targetFields.set(target, field.path);
+    targetFields.set(target, fieldName);
   }
   const access = currentVaultAccess();
   if (access) {

@@ -23,6 +23,7 @@ import { CapabilityService } from "./capability_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
 import type { ActiveDispatch } from "./dispatch_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import { computeChecksum } from "../domain/models/checksum.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { VaultExtractionResult } from "../domain/expressions/vault_reference_extractor.ts";
 import {
@@ -1175,7 +1176,12 @@ interface StoredRecord {
   version: number;
   tags: Record<string, string>;
   content: unknown;
-  metadata?: { name?: string; version?: number; ownerRef?: string };
+  metadata?: {
+    name?: string;
+    version?: number;
+    ownerRef?: string;
+    checksum?: string | null;
+  };
 }
 
 /**
@@ -1199,7 +1205,7 @@ function createServiceWithRecord(
       querySync: () => [],
     },
     unifiedDataRepo: {
-      findByName: (
+      findByName: async (
         type: ModelType,
         modelId: string,
         name: string,
@@ -1208,19 +1214,21 @@ function createServiceWithRecord(
         lookups.push([type.normalized, modelId, name, version]);
         const found = record !== null && record.name === name &&
           (version === undefined || version === record.version);
-        return Promise.resolve(
-          found
-            ? {
-              name: record.metadata?.name ?? name,
-              version: record.metadata?.version ?? record.version,
-              tags: record.tags,
-              ownerDefinition: {
-                ownerType: "model-method",
-                ownerRef: record.metadata?.ownerRef ?? modelId,
-              },
-            }
-            : null,
-        );
+        return found
+          ? {
+            name: record.metadata?.name ?? name,
+            version: record.metadata?.version ?? record.version,
+            tags: record.tags,
+            checksum: record.metadata?.checksum === null
+              ? undefined
+              : record.metadata?.checksum ??
+                await computeChecksum(encode(record.content)),
+            ownerDefinition: {
+              ownerType: "model-method",
+              ownerRef: record.metadata?.ownerRef ?? modelId,
+            },
+          }
+          : null;
       },
       getContent: (_type: ModelType, _modelId: string, name: string) =>
         Promise.resolve(
@@ -1362,6 +1370,18 @@ Deno.test("resolveSecret: a claim is refused for a missing resource, a wrong ver
       claim: { name: "state-main", version: 2 },
       key: "generated-key",
       reason: "the record has no sensitive fields",
+    },
+    {
+      record: { ...TAGGED, metadata: { checksum: null } },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record has no content checksum",
+    },
+    {
+      record: { ...TAGGED, metadata: { checksum: "0".repeat(64) } },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record content does not match its checksum",
     },
     ...[undefined, "0", "2"].map((version) => ({
       record: {

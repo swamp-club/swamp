@@ -28,6 +28,7 @@
  */
 
 import { ModelType } from "../domain/models/model_type.ts";
+import { computeChecksum } from "../domain/models/checksum.ts";
 import type { Data } from "../domain/data/data.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import { createDataId } from "../domain/data/data_id.ts";
@@ -548,6 +549,9 @@ export class CapabilityService {
       ) {
         throw refused("the record predates verified sensitive-field writes");
       }
+      if (record.checksum === undefined) {
+        throw refused("the record has no content checksum");
+      }
       const content = await repo.getContent(
         dispatch.modelType,
         dispatch.modelId,
@@ -555,6 +559,12 @@ export class CapabilityService {
         claim.version,
       );
       if (content === null) throw refused("the record has no content");
+      // A concurrent ephemeral write can change which backing store supplies
+      // getContent after findByName returned persistent metadata. Only bytes
+      // matching that metadata may authorize references or enter the cache.
+      if (await computeChecksum(content) !== record.checksum) {
+        throw refused("the record content does not match its checksum");
+      }
       let data: unknown;
       try {
         data = JSON.parse(new TextDecoder().decode(content));

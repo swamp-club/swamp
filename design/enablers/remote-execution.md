@@ -1517,6 +1517,10 @@ during a session should not end the worker.
 The orchestrator's own-namespace datastore is trusted server state, as in
 [typed-secrets Section 6.1](typed-secrets.md#61-structured-accessors). Resource
 claims authorize against records that server-side writers produced there.
+The content must match the checksum in the authorizing metadata before any
+references are admitted or cached. This binds the bytes to that record even
+when a concurrent ephemeral write changes which store supplies a content read;
+a mismatch refuses the claim.
 Worker-supplied values, tags, names and claims are untrusted: resource writes
 pass through `createResourceWriter`, which refuses reserved tags and vaults
 reference-looking text as a value. Workers have no raw metadata write API or

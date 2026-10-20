@@ -31,15 +31,22 @@
  * (swamp-club#3530).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { dirname, join } from "@std/path";
 import { z } from "zod";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Data } from "../src/domain/data/data.ts";
+import { CompositeUnifiedDataRepository } from "../src/domain/data/composite_data_repository.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
 import {
+  createFileWriterFactory,
   createResourceReader,
   createResourceWriter,
   SENSITIVE_FIELDS_TAG,
@@ -50,6 +57,7 @@ import {
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../src/domain/vaults/secret_reference_errors.ts";
 import { PathTraversalError } from "../src/infrastructure/persistence/safe_path.ts";
+import { createEphemeralStore } from "../src/infrastructure/persistence/ephemeral_store.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import { extractVaultReferences } from "../src/domain/expressions/vault_reference_extractor.ts";
 import type { VaultExtractionResult } from "../src/domain/expressions/vault_reference_extractor.ts";
@@ -491,6 +499,103 @@ Deno.test({
       };
       assertEquals(await f.context.readResource!(name), expected);
       assertEquals(await readLocally(f, name), expected);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: resource claims refuse content shadowed by an ephemeral file between metadata and content reads",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const persistent = f.o.repoContext.unifiedDataRepo;
+      const ephemeral = createEphemeralStore(persistent.namespace);
+      try {
+        const repo = new CompositeUnifiedDataRepository(
+          persistent,
+          ephemeral.repo,
+        );
+        const dispatch = f.o.dispatches.forDispatch(WORKER, f.dispatchId);
+        assertExists(dispatch);
+        dispatch.dataRepo = repo;
+        const target = `shadow-target-${crypto.randomUUID()}`;
+        await f.o.putSecret(target, canary("shadow-target"));
+        const original = canary("shadow-original");
+        const { writeResource } = createResourceWriter(
+          repo,
+          f.typeA,
+          f.modelIdA,
+          RESOURCE_SPECS,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          await VaultService.fromRepository(f.o.repoDir),
+          "run",
+        );
+        const resource = await writeResource(SPEC, "state", {
+          password: original,
+          note: "persistent",
+        });
+        const [{ vaultName, key }] = sensitiveVaultReferences(
+          resource.attributes!,
+          ["password"],
+        );
+        const { createFileWriter } = createFileWriterFactory(
+          repo,
+          f.typeA,
+          f.modelIdA,
+          {
+            shadow: {
+              contentType: "application/json",
+              lifetime: "ephemeral",
+              garbageCollection: 5,
+            },
+          },
+        );
+        const findByName = repo.findByName.bind(repo);
+        let shadowWritten = false;
+        repo.findByName = async (...args) => {
+          const metadata = await findByName(...args);
+          if (!shadowWritten) {
+            shadowWritten = true;
+            // Complete a normal file write after persistent metadata was
+            // selected and before the claim verifier asks for its content.
+            const shadow = await createFileWriter("shadow", "state").writeText(
+              JSON.stringify({ password: vaultRef(target) }),
+            );
+            assertEquals(shadow.version, resource.version);
+          }
+          return metadata;
+        };
+        const resolve = (secretKey: string) =>
+          f.o.capabilityService.resolveSecret(WORKER, {
+            dispatchId: f.dispatchId,
+            vaultName,
+            secretKey,
+            resource: { name: "state", version: resource.version },
+          });
+        await assertRejects(
+          () => resolve(target),
+          Error,
+          "the record content does not match its checksum",
+        );
+        assertEquals(shadowWritten, true);
+        // A failed check must not cache the shadow file's arbitrary reference.
+        // Once it is gone, only the genuine writer's reference is admitted.
+        await ephemeral.repo.delete(f.typeA, f.modelIdA, "state");
+        await assertRejects(
+          () => resolve(target),
+          Error,
+          "its sensitive fields do not reference it",
+        );
+        assertEquals(await resolve(key), { value: original });
+      } finally {
+        ephemeral.dispose();
+      }
     });
   },
 });
