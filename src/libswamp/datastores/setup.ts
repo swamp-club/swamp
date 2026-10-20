@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ensureDir, walk } from "@std/fs";
+import { ensureDir } from "@std/fs";
 import {
   basename,
   isAbsolute,
@@ -74,6 +74,7 @@ import {
   LostDatastoreFormatMarkerError,
 } from "../../domain/datastore/datastore_format.ts";
 import { REPO_LOCAL_STREAM_SUBDIRS } from "../../infrastructure/datastore_v3/record_path_guard.ts";
+import { hasDatastoreRecords } from "../../infrastructure/persistence/datastore_records.ts";
 import {
   initializeV3Datastore,
   isFreshV3Skeleton,
@@ -2229,35 +2230,6 @@ async function inspectV3Target(path: string): Promise<V3TargetState> {
     };
   }
   return { kind: "empty" };
-}
-
-/**
- * Whether `sourceDir` holds a file under any of `subdirs`, other than the
- * `skip` paths (relative to `sourceDir`) and the files under a skipped
- * directory. Stops at the first one.
- */
-async function hasDatastoreRecords(
-  sourceDir: string,
-  subdirs: readonly string[],
-  skip: readonly string[],
-): Promise<boolean> {
-  const skipped = skip.map((path) => resolve(sourceDir, path));
-  const isSkipped = (path: string) =>
-    skipped.some((skip) => path === skip || path.startsWith(skip + SEPARATOR));
-  for (const subdir of subdirs) {
-    const root = join(sourceDir, subdir);
-    try {
-      for await (
-        const entry of walk(root, { includeDirs: false, followSymlinks: false })
-      ) {
-        if (!isSkipped(resolve(entry.path))) return true;
-      }
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) continue;
-      throw error;
-    }
-  }
-  return false;
 }
 
 /** The datastore `.swamp.yaml` names: its engine and namespace. */

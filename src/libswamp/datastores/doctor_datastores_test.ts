@@ -42,6 +42,9 @@ import {
   repairDatastoreFormatMarker,
   type RepairDatastoreFormatMarkerDeps,
   type RepairDatastoreFormatMarkerEvent,
+  repairPreV3Records,
+  type RepairPreV3RecordsDeps,
+  type RepairPreV3RecordsEvent,
 } from "./doctor_datastores.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -1550,4 +1553,91 @@ Deno.test("doctorDatastores: a v3 content check that throws is a failed finding,
     );
     assertEquals(completed.data.v3ContentFinding, undefined);
   }
+});
+
+// --- swamp-club#3690: moving aside a joining checkout's records ---
+
+function preV3Deps(
+  found: string[],
+  moveAside: RepairPreV3RecordsDeps["moveAside"],
+): RepairPreV3RecordsDeps {
+  return {
+    swampDir: "/repo/.swamp",
+    preV3RecordsDir: "/repo/.swamp/pre-v3-records",
+    inspect: () => Promise.resolve(found),
+    moveAside,
+  };
+}
+
+Deno.test("repairPreV3Records: previews the records found without moving them (swamp-club#3690)", async () => {
+  let moved = false;
+  const events = await collect<RepairPreV3RecordsEvent>(
+    repairPreV3Records(
+      createLibSwampContext(),
+      preV3Deps(["data", "outputs"], () => {
+        moved = true;
+        return Promise.resolve({ destination: "/x", moved: [] });
+      }),
+      { confirm: false },
+    ),
+  );
+  assertEquals(events, [
+    { kind: "inspecting" },
+    {
+      kind: "preview",
+      data: {
+        swampDir: "/repo/.swamp",
+        recordDirs: ["data", "outputs"],
+        preV3RecordsDir: "/repo/.swamp/pre-v3-records",
+      },
+    },
+  ]);
+  assertEquals(moved, false);
+});
+
+Deno.test("repairPreV3Records: moves with confirm, reports where to, and reports a checkout with nothing to move (swamp-club#3690)", async () => {
+  const destination = "/repo/.swamp/pre-v3-records/20261020T211321Z-abcd1234";
+  const events = await collect<RepairPreV3RecordsEvent>(
+    repairPreV3Records(
+      createLibSwampContext(),
+      preV3Deps(
+        ["data"],
+        () => Promise.resolve({ destination, moved: ["data"] }),
+      ),
+      { confirm: true },
+    ),
+  );
+  assertEquals(events.at(-1), {
+    kind: "completed",
+    data: {
+      swampDir: "/repo/.swamp",
+      recordDirs: ["data"],
+      preV3RecordsDir: "/repo/.swamp/pre-v3-records",
+      destination,
+    },
+  });
+  const none = await collect<RepairPreV3RecordsEvent>(
+    repairPreV3Records(
+      createLibSwampContext(),
+      preV3Deps([], () => Promise.reject(new Error("must not move"))),
+      { confirm: true },
+    ),
+  );
+  assertEquals(none.at(-1), { kind: "not_needed", swampDir: "/repo/.swamp" });
+});
+
+Deno.test("repairPreV3Records: a move that fails says the moved directories stay moved and a re-run moves the rest (swamp-club#3690)", async () => {
+  const events = await collect<RepairPreV3RecordsEvent>(
+    repairPreV3Records(
+      createLibSwampContext(),
+      preV3Deps(["data"], () => Promise.reject(new Error("EBUSY"))),
+      { confirm: true },
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind !== "error") return;
+  assertEquals(last.error.code, "pre_v3_records_repair_failed");
+  assertStringIncludes(last.error.message, "EBUSY");
+  assertStringIncludes(last.error.message, "run the repair again");
 });

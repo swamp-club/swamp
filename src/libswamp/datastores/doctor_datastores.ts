@@ -1016,3 +1016,98 @@ export async function* repairDatastoreFormatMarker(
     })(),
   );
 }
+
+/** What {@link repairPreV3Records} found, or moved. */
+export interface PreV3RecordsRepairData {
+  /** The checkout's `.swamp/`. */
+  swampDir: string;
+  /** The record directories found or moved, relative to `swampDir`. */
+  recordDirs: string[];
+  /**
+   * Where they were moved: a new directory under `.swamp/pre-v3-records/`.
+   * Absent in a preview, which only names the parent.
+   */
+  destination?: string;
+  /** The parent of every run's destination. */
+  preV3RecordsDir: string;
+}
+
+export type RepairPreV3RecordsEvent =
+  | { kind: "inspecting" }
+  | { kind: "preview"; data: PreV3RecordsRepairData }
+  | { kind: "completed"; data: PreV3RecordsRepairData }
+  | { kind: "not_needed"; swampDir: string }
+  | { kind: "error"; error: SwampError };
+
+export interface RepairPreV3RecordsDeps {
+  /** The checkout's `.swamp/`. */
+  swampDir: string;
+  /** Where a run's records go: `.swamp/pre-v3-records/`. */
+  preV3RecordsDir: string;
+  /**
+   * The record directories a checkout that has never opened its v3
+   * datastore holds, relative to `swampDir`; empty when it has v3 state or
+   * holds none.
+   */
+  inspect: () => Promise<string[]>;
+  /** Moves them aside; resolves with where to and what was moved. */
+  moveAside: () => Promise<{ destination: string; moved: readonly string[] }>;
+}
+
+/**
+ * Moves aside the records of a checkout that joined a v3 datastore through
+ * `.swamp.yaml` while its `.swamp/` held them (swamp-club#3690), for
+ * `swamp doctor datastores --repair`. A v3 datastore starts empty, so the
+ * first v3 open refuses such a checkout; once its records are under
+ * `.swamp/pre-v3-records/`, the next command catches up from the datastore.
+ * Without `confirm` it previews what it found, having moved nothing.
+ */
+export async function* repairPreV3Records(
+  _ctx: LibSwampContext,
+  deps: RepairPreV3RecordsDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairPreV3RecordsEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair.pre_v3_records",
+    {},
+    (async function* () {
+      yield { kind: "inspecting" };
+
+      const recordDirs = await deps.inspect();
+      if (recordDirs.length === 0) {
+        yield { kind: "not_needed", swampDir: deps.swampDir };
+        return;
+      }
+      const data: PreV3RecordsRepairData = {
+        swampDir: deps.swampDir,
+        recordDirs,
+        preV3RecordsDir: deps.preV3RecordsDir,
+      };
+      if (!options.confirm) {
+        yield { kind: "preview", data };
+        return;
+      }
+
+      try {
+        const { destination, moved } = await deps.moveAside();
+        yield {
+          kind: "completed",
+          data: { ...data, recordDirs: [...moved], destination },
+        };
+      } catch (err) {
+        yield {
+          kind: "error",
+          error: {
+            code: err instanceof UserError && err.code
+              ? err.code
+              : "pre_v3_records_repair_failed",
+            message: `Could not move the records aside: ${
+              err instanceof Error ? err.message : String(err)
+            }. Directories already moved stay moved; run the repair again to move the rest.`,
+            cause: err instanceof Error ? err : undefined,
+          },
+        };
+      }
+    })(),
+  );
+}

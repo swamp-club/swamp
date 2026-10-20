@@ -18,12 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
+import { join } from "@std/path";
 import type {
   DoctorDatastoresEvent,
   RepairCatalogDuplicateLatestEvent,
   RepairCatalogIndexEvent,
   RepairDatastoreFormatMarkerEvent,
   RepairDatastoresEvent,
+  RepairPreV3RecordsEvent,
   RepairUnmigratedDataEvent,
   V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
@@ -964,5 +966,115 @@ export function createDatastoreFormatMarkerRepairRenderer(
       return new JsonDatastoreFormatMarkerRepairRenderer();
     case "log":
       return new LogDatastoreFormatMarkerRepairRenderer();
+  }
+}
+
+export type PreV3RecordsRepairStatus = "pass" | "fail" | "preview";
+
+export interface PreV3RecordsRepairRenderer {
+  handlers(): EventHandlers<RepairPreV3RecordsEvent>;
+  readonly overallStatus: PreV3RecordsRepairStatus;
+}
+
+class LogPreV3RecordsRepairRenderer implements PreV3RecordsRepairRenderer {
+  overallStatus: PreV3RecordsRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairPreV3RecordsEvent> {
+    return {
+      inspecting: () => {
+        writeOutput(dim("Checking this checkout for records from before v3…"));
+      },
+      preview: (e) => {
+        this.overallStatus = "preview";
+        writeOutput(`\n${bold("Records from before v3 in this checkout:")}`);
+        for (const dir of e.data.recordDirs) {
+          writeOutput(`  ${join(e.data.swampDir, dir)}`);
+        }
+        writeOutput(
+          `\n  A v3 datastore starts empty, so this checkout cannot join it while it holds them. They would be moved into a new directory under ${e.data.preV3RecordsDir}. Moved records are not in the v3 datastore.`,
+        );
+        writeOutput(dim("\n  Run with -y to move them aside."));
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        writeOutput(
+          `\n${green("✓")} ${bold("Records from before v3 moved aside:")}`,
+        );
+        for (const dir of e.data.recordDirs) {
+          writeOutput(`  ${dir}`);
+        }
+        writeOutput(`  into ${e.data.destination}`);
+        writeOutput(
+          dim(
+            "\n  They are not in the v3 datastore. The next command catches this checkout up from it.",
+          ),
+        );
+      },
+      not_needed: (e) => {
+        this.overallStatus = "pass";
+        writeOutput(
+          dim(`${e.swampDir} holds no records from before v3.`),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message, e.error.code);
+      },
+    };
+  }
+}
+
+class JsonPreV3RecordsRepairRenderer implements PreV3RecordsRepairRenderer {
+  overallStatus: PreV3RecordsRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairPreV3RecordsEvent> {
+    return {
+      inspecting: () => {},
+      preview: (e) => {
+        this.overallStatus = "preview";
+        console.log(
+          JSON.stringify(
+            { status: "pre_v3_records_preview", ...e.data },
+            null,
+            2,
+          ),
+        );
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            { status: "pre_v3_records_moved", ...e.data },
+            null,
+            2,
+          ),
+        );
+      },
+      not_needed: (e) => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            { status: "pre_v3_records_not_needed", swampDir: e.swampDir },
+            null,
+            2,
+          ),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message, e.error.code);
+      },
+    };
+  }
+}
+
+export function createPreV3RecordsRepairRenderer(
+  mode: OutputMode,
+): PreV3RecordsRepairRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonPreV3RecordsRepairRenderer();
+    case "log":
+      return new LogPreV3RecordsRepairRenderer();
   }
 }

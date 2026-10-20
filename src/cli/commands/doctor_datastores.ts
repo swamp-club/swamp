@@ -31,6 +31,7 @@ import {
   repairDatastoreContamination,
   repairDatastoreFormatMarker,
   type RepairDatastoresDeps,
+  repairPreV3Records,
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
 } from "../../libswamp/datastores/doctor_datastores.ts";
@@ -41,9 +42,11 @@ import {
   createCatalogIndexRepairRenderer,
   createDatastoreFormatMarkerRepairRenderer,
   createDoctorDatastoresRenderer,
+  createPreV3RecordsRepairRenderer,
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
   type DatastoreFormatMarkerRepairStatus,
+  type PreV3RecordsRepairStatus,
 } from "../../presentation/renderers/doctor_datastores.ts";
 import {
   createContext,
@@ -88,6 +91,12 @@ import {
 import { lostDatastoreFormatMarker } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import { restoreV3FormatMarker } from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import { inspectV3Content } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
+import {
+  movePreV3CheckoutRecords,
+  PRE_V3_RECORDS_DIR,
+  preV3CheckoutRecordDirs,
+  V3CheckoutHoldsRecordsError,
+} from "../../infrastructure/datastore_v3/v3_checkout_join.ts";
 import { VERSION } from "./version.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -161,6 +170,43 @@ export async function repairLostV3FormatMarker(
       markerPath: join(datastorePath, DATASTORE_FORMAT_MARKER_FILE),
       inspect: () => lostDatastoreFormatMarker(datastorePath),
       restore: () => restoreV3FormatMarker(datastorePath, VERSION),
+    }, { confirm }),
+    renderer.handlers(),
+  );
+  return renderer.overallStatus;
+}
+
+/**
+ * Moves aside the records of a checkout the first v3 open refused because
+ * its `.swamp/` holds them (swamp-club#3690), when `refusal` is that
+ * refusal; previews without `confirm`. Returns the renderer's status, or
+ * undefined when `refusal` is another error.
+ */
+export async function repairPreV3CheckoutRecords(
+  repoDir: string,
+  refusal: unknown,
+  outputMode: OutputMode,
+  confirm: boolean,
+): Promise<PreV3RecordsRepairStatus | undefined> {
+  if (!(refusal instanceof V3CheckoutHoldsRecordsError)) return undefined;
+  const repoPath = RepoPath.create(repoDir);
+  const { namespace } = await resolveDatastoreConfig(
+    await new RepoMarkerRepository().read(repoPath),
+    undefined,
+    repoPath.value,
+  );
+  const renderer = createPreV3RecordsRepairRenderer(outputMode);
+  await consumeStream(
+    repairPreV3Records(createLibSwampContext(), {
+      swampDir: swampPath(repoPath.value),
+      preV3RecordsDir: swampPath(repoPath.value, PRE_V3_RECORDS_DIR),
+      inspect: () => preV3CheckoutRecordDirs(repoPath.value, namespace),
+      moveAside: async () => {
+        const moved = await movePreV3CheckoutRecords(repoPath.value, namespace);
+        // The v2 catalog indexed them, as v3 setup removes it.
+        if (moved.moved.length > 0) await removeCatalogDb(repoPath.value);
+        return moved;
+      },
     }, { confirm }),
     renderer.handlers(),
   );
@@ -665,15 +711,22 @@ export const doctorDatastoresCommand = withRemoteOptions(
     ({ engine } = await resolveDatastoreForRepo(repoDir));
   } catch (error) {
     // A v3 datastore whose marker a crash lost is refused by the format
-    // guard; --repair restores the marker (swamp-club#3617). Any other
-    // refusal is rethrown unchanged.
+    // guard; --repair restores the marker (swamp-club#3617). A checkout
+    // whose records stop it joining a v3 datastore has them moved aside
+    // (swamp-club#3690). Any other refusal is rethrown unchanged.
     const status = options.repair
       ? await repairLostV3FormatMarker(
         repoDir,
         error,
         cliCtx.outputMode,
         Boolean(options.yes),
-      )
+      ) ??
+        await repairPreV3CheckoutRecords(
+          repoDir,
+          error,
+          cliCtx.outputMode,
+          Boolean(options.yes),
+        )
       : undefined;
     // A restore that fails throws from the renderer, as a UserError.
     if (status === undefined) throw error;

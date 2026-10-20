@@ -247,6 +247,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // confirm, or whose lease was fenced, with the CLI's error codes.
   "src/serve/handlers/shared.ts -> src/domain/datastore_v3/litestream_replication.ts",
   "src/serve/handlers/shared.ts -> src/domain/datastore_v3/writer_lease.ts",
+  // swamp-club#3690: the first v3 open of a checkout refuses one whose
+  // .swamp holds records, and `doctor datastores --repair` moves them aside.
+  "src/cli/commands/doctor_datastores.ts -> src/infrastructure/datastore_v3/v3_checkout_join.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_checkout_join.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {

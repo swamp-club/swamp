@@ -599,6 +599,13 @@ Deno.test("v3 opt-in: a query on a fresh checkout answers from the read model, n
       { flush: undefined },
       () => saveData(repos.serveRepo, model, "committed"),
     );
+    // B joins first: a checkout holding records before its first v3 open
+    // is refused (swamp-club#3690).
+    await requireInitializedRepoReadOnly({
+      repoDir: repos.repoB,
+      outputMode: "json",
+    });
+    await closeV3Datastores();
     // A stray record file in B's checkout that no commit names: a v2 disk
     // walk would index it; the v3 catalog never does.
     const stray = swampPath(

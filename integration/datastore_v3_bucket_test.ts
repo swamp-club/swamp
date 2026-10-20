@@ -103,6 +103,10 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { v3CommitsDbPath } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
+  movePreV3CheckoutRecords,
+  V3CheckoutHoldsRecordsError,
+} from "../src/infrastructure/datastore_v3/v3_checkout_join.ts";
+import {
   collectV3Lineages,
   lineageRegistryFor,
   prepareV3WriterLineage,
@@ -857,6 +861,47 @@ Deno.test({
         const keys = [...bucket.remote.controlPlaneRecords().keys()];
         assert(keys.some((key) => key.startsWith("_control/writer/")));
         assert(keys.some((key) => key.startsWith("_control/lineage/")));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: a checkout holding v2 records is refused at its first open, restoring nothing, and joins once they are moved aside (swamp-club#3690)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const first = join(root, "first");
+      await initRepo(first);
+      assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+      const second = join(root, "second");
+      await cloneRepo(first, second);
+      // The clone wrote records of its own before it pulled the v3 config.
+      const v2Record = swampPath(second, "data", "m", "log", "1", "raw");
+      await Deno.mkdir(dirname(v2Record), { recursive: true });
+      await Deno.writeTextFile(v2Record, "B-pre-join");
+      await withSidecar(root, async () => {
+        await writeIn(first, 2);
+        const before = await recordsIn(second, "data");
+        const leaseRecords = [...bucket.remote.controlPlaneRecords().keys()];
+        await assertRejects(
+          () => restoredCommits(second),
+          V3CheckoutHoldsRecordsError,
+        );
+        // Nothing was restored or leased for the refused checkout.
+        assertEquals(await recordsIn(second, "data"), before);
+        assertEquals(await recordsIn(second, "_read_model_v3"), []);
+        assertEquals(
+          [...bucket.remote.controlPlaneRecords().keys()],
+          leaseRecords,
+        );
+        const { moved } = await movePreV3CheckoutRecords(second);
+        assertEquals([...moved], ["data"]);
+        assertEquals(await restoredCommits(second), 2);
+        // It holds the two committed records, and none of its own.
+        assertEquals((await recordsIn(second, "auto-definitions")).length, 2);
+        assertEquals(await recordsIn(second, "data"), []);
       });
     });
   },

@@ -257,6 +257,16 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
 
 - The path must be new or an empty directory, and the repo must hold no data
   yet: existing data is not migrated to v3.
+- Teammates join by pulling the committed `.swamp.yaml`. A checkout whose
+  `.swamp/` already holds records is refused at its first v3 command with
+  `v3_checkout_holds_records`, and nothing is changed. Run
+  `swamp doctor datastores --repair` to preview, then add `-y`. This moves the
+  records into `.swamp/pre-v3-records/<stamp>/`, and the next command catches up
+  from the datastore. The moved records are not in the v3 datastore. With
+  `--json` the repair prints one object whose `status` is one of:
+  `pre_v3_records_preview` (with `swampDir`, `recordDirs` and
+  `preV3RecordsDir`), `pre_v3_records_moved` (adds `destination`), or
+  `pre_v3_records_not_needed`. The same applies on S3 and GCS.
 - For v3 on S3 or GCS, see "Setting Up a v3 Datastore on S3 or GCS" below.
 - One writing process at a time. A write command fails while another process
   (e.g. `swamp serve`) writes the datastore; run it through serve instead.
