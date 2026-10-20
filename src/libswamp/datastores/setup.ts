@@ -73,7 +73,10 @@ import {
   InvalidDatastoreFormatMarkerError,
   LostDatastoreFormatMarkerError,
 } from "../../domain/datastore/datastore_format.ts";
-import { REPO_LOCAL_STREAM_SUBDIRS } from "../../infrastructure/datastore_v3/record_path_guard.ts";
+import {
+  isCheckoutLocalKey,
+  REPO_LOCAL_STREAM_SUBDIRS,
+} from "../../infrastructure/datastore_v3/record_path_guard.ts";
 import { hasDatastoreRecords } from "../../infrastructure/persistence/datastore_records.ts";
 import {
   initializeV3Datastore,
@@ -333,6 +336,7 @@ export interface DatastoreSetupDeps {
     sourceDir: string,
     subdirs: readonly string[],
     skip: readonly string[],
+    isOwn?: (segments: readonly string[]) => boolean,
   ) => Promise<boolean>;
   /**
    * Creates a v3 datastore at `path`: the format marker first, then
@@ -770,7 +774,16 @@ async function* setupV3Filesystem(
     dirs.push(sourceDir);
   }
   for (const dir of dirs) {
-    if (await deps.hasDatastoreRecords(dir, subdirs, CATALOG_FILES)) {
+    // The files a v3 checkout keeps as its own are no records, as on its
+    // first open (swamp-club#3690).
+    if (
+      await deps.hasDatastoreRecords(
+        dir,
+        subdirs,
+        CATALOG_FILES,
+        isCheckoutLocalKey,
+      )
+    ) {
       yield refuse(
         `${dir} holds records. A v3 datastore starts empty, and migrating ` +
           "existing records to v3 is not supported yet. Set up v3 in a " +
@@ -882,7 +895,16 @@ async function* setupV3Extension(
       : []),
   ];
   for (const dir of dirs) {
-    if (await deps.hasDatastoreRecords(dir, subdirs, CATALOG_FILES)) {
+    // The files a v3 checkout keeps as its own are no records, as on its
+    // first open (swamp-club#3690).
+    if (
+      await deps.hasDatastoreRecords(
+        dir,
+        subdirs,
+        CATALOG_FILES,
+        isCheckoutLocalKey,
+      )
+    ) {
       yield refuse(
         `${dir} holds records. A v3 datastore starts empty, and migrating ` +
           "existing records to v3 is not supported yet. Set up v3 in a " +

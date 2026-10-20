@@ -314,10 +314,21 @@ Deno.test({
             moved.destination.startsWith(swampPath(repoB, PRE_V3_RECORDS_DIR)),
             moved.destination,
           );
-          // B's v2 records are where the repair said, as they were.
+          // B's v2 records are where the repair said, as they were; the v2
+          // catalog, which only indexed them, is removed.
+          const records = Object.fromEntries(
+            Object.entries(before).filter(([path]) =>
+              !/_catalog\.db(-journal|-wal|-shm)?$/.test(path)
+            ),
+          );
+          assert(Object.keys(records).length > 0);
           assertEquals(
             await snapshot(join(moved.destination, "data")),
-            before,
+            records,
+          );
+          assertEquals(
+            Object.keys(await snapshot(swampPath(repoB, "data"))),
+            [],
           );
         });
 

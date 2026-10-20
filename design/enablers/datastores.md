@@ -4433,7 +4433,10 @@ open of a checkout runs setup's records check (swamp-club#3690).
 uses the same rule as setup (`hasDatastoreRecords` in
 `src/infrastructure/persistence/datastore_records.ts`): it checks the datastore
 directories of `.swamp/` and of `.swamp/<namespace>`, and leaves out the stream
-directories, the always-local ones and the v2 catalog.
+directories, the always-local ones and the v2 catalog. It also leaves out the
+files a v3 checkout keeps as its own (`isCheckoutLocalKey`): pulled extension
+sources under managedConfig, dot-prefixed locks and indexes, and run logs.
+v3 setup's check skips those files too.
 
 - **When it runs.** A first open is one with no read-model state
   (`.swamp/_read_model_v3/_read_model_v3.db`). The read model creates that
@@ -4454,9 +4457,10 @@ directories, the always-local ones and the v2 catalog.
   files no commit owns. Version listing and allocation read version
   directories on disk, so the checkouts would diverge for good.
 - **The repair.** `swamp doctor datastores --repair` previews, and `-y` moves
-  each record directory whole into
-  `.swamp/pre-v3-records/<UTC stamp>-<suffix>/`, keeping its path relative to
-  `.swamp/`. The stamp has no character Windows refuses in a path, and the
+  each record file into `.swamp/pre-v3-records/<UTC stamp>-<suffix>/`,
+  keeping its path relative to `.swamp/`. The checkout's own files stay where
+  they are. The repair then removes the directories the move emptied, because
+  version listing reads version directories on disk. The stamp has no character Windows refuses in a path, and the
   suffix keeps runs apart. It also removes the v2 catalog. The next command
   catches up from the datastore. `pre-v3-records` is not a datastore
   directory, so the read model never writes or removes a file there. This is
@@ -4467,7 +4471,8 @@ directories, the always-local ones and the v2 catalog.
 - **Known limit.** A checkout that already has v3 state, is switched back to
   a v2 `.swamp.yaml`, writes records, and then returns to v3 is not checked
   again. The check is for the first open only, so that later opens cost
-  nothing.
+  nothing. Like setup, it checks the default datastore directories, whatever
+  the config's `directories` or `exclude` say.
 
 **The marker decides the engine.** `ensureSupportedDatastoreFormat` returns
 the engine (`DatastoreEngine`, `v2` or `v3`) and caches it per config object

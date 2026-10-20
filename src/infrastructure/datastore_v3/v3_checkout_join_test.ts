@@ -241,3 +241,62 @@ Deno.test("v3RepositoryFactoryConfig: refuses a checkout holding records before 
     assertEquals(await hasV3CheckoutState(repoDir), false);
   });
 });
+
+Deno.test("assertV3CheckoutJoinable: files a v3 checkout keeps as its own are no records: pulled extensions, dot-prefixed locks and run logs", async () => {
+  await withTempDir(async (repoDir) => {
+    await plant(repoDir, "config", "pulled-extensions", "@acme", "mod.ts");
+    await plant(repoDir, "data", ".lock");
+    await plant(repoDir, "outputs", "m1", "run.log");
+    await assertV3CheckoutJoinable(repoDir);
+    // A config record beside them still counts.
+    await plant(repoDir, "config", "upstream_extensions.json");
+    const error = await assertRejects(
+      () => assertV3CheckoutJoinable(repoDir),
+      V3CheckoutHoldsRecordsError,
+    );
+    assertEquals([...error.recordDirs], ["config"]);
+  });
+});
+
+Deno.test("movePreV3CheckoutRecords: moves records only, leaving the checkout's own files, and removes the version directories it empties", async () => {
+  await withTempDir(async (repoDir) => {
+    await plant(repoDir, "config", "pulled-extensions", "@acme", "mod.ts");
+    await plant(repoDir, "config", "upstream_extensions.json");
+    await plant(repoDir, "data", "m1", "log", "3", "raw");
+    await plant(repoDir, "data", "_catalog.db");
+    await plant(repoDir, "outputs", "m1", "run.log");
+    await plant(repoDir, "outputs", "m1", "run.yaml");
+    const { destination, moved } = await movePreV3CheckoutRecords(repoDir);
+    assertEquals([...moved], ["config", "data", "outputs"]);
+    await Deno.stat(
+      swampPath(repoDir, "config", "pulled-extensions", "@acme", "mod.ts"),
+    );
+    await Deno.stat(swampPath(repoDir, "outputs", "m1", "run.log"));
+    await Deno.stat(swampPath(repoDir, "data", "_catalog.db"));
+    await Deno.stat(join(destination, "config", "upstream_extensions.json"));
+    await Deno.stat(join(destination, "outputs", "m1", "run.yaml"));
+    // No empty version directory is left to be listed as a version.
+    await assertRejects(
+      () => Deno.stat(swampPath(repoDir, "data", "m1")),
+      Deno.errors.NotFound,
+    );
+    await assertV3CheckoutJoinable(repoDir);
+  });
+});
+
+Deno.test("movePreV3CheckoutRecords: a namespace named like a record directory moves once, without failing", async () => {
+  await withTempDir(async (repoDir) => {
+    await plant(repoDir, "data", "data", "m1", "log", "1", "raw");
+    assertEquals(await preV3CheckoutRecordDirs(repoDir, "data"), [
+      "data",
+      join("data", "data"),
+    ]);
+    const { destination, moved } = await movePreV3CheckoutRecords(
+      repoDir,
+      "data",
+    );
+    assertEquals([...moved], ["data"]);
+    await Deno.stat(join(destination, "data", "data", "m1", "log", "1", "raw"));
+    await assertV3CheckoutJoinable(repoDir, "data");
+  });
+});

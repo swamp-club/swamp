@@ -26,11 +26,17 @@
  */
 
 import { walk } from "@std/fs";
-import { join, resolve, SEPARATOR } from "@std/path";
+import { join, relative, resolve, SEPARATOR } from "@std/path";
 import {
   getDatastoreDirectories,
   REPO_LOCAL_STREAM_SUBDIRS,
 } from "../../domain/datastore/datastore_config.ts";
+
+/**
+ * Whether a file, by its path segments relative to the directory searched,
+ * is the checkout's own and never a record.
+ */
+export type CheckoutOwnFile = (segments: readonly string[]) => boolean;
 
 /**
  * The subdirectories of a checkout's `.swamp/` whose files are records a v3
@@ -47,55 +53,73 @@ export function checkoutRecordSubdirs(): readonly string[] {
 
 /**
  * Whether `sourceDir` holds a file under any of `subdirs`, other than the
- * `skip` paths (relative to `sourceDir`) and the files under a skipped
- * directory. Stops at the first one.
+ * `skip` paths (relative to `sourceDir`), the files under a skipped
+ * directory, and the files `isOwn` names the checkout's own. Stops at the
+ * first one.
  */
 export async function hasDatastoreRecords(
   sourceDir: string,
   subdirs: readonly string[],
   skip: readonly string[],
+  isOwn?: CheckoutOwnFile,
 ): Promise<boolean> {
-  return (await subdirsWithRecords(sourceDir, subdirs, skip, true)).length > 0;
+  for (const subdir of subdirs) {
+    for await (const _ of recordFiles(sourceDir, subdir, skip, isOwn)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
- * The `subdirs` of `sourceDir` that hold a file, other than the `skip` paths
- * (relative to `sourceDir`) and the files under a skipped directory.
+ * The `subdirs` of `sourceDir` that hold a record, as
+ * {@link hasDatastoreRecords} finds one.
  */
-export function subdirsHoldingRecords(
+export async function subdirsHoldingRecords(
   sourceDir: string,
   subdirs: readonly string[],
   skip: readonly string[],
+  isOwn?: CheckoutOwnFile,
 ): Promise<string[]> {
-  return subdirsWithRecords(sourceDir, subdirs, skip, false);
+  const found: string[] = [];
+  for (const subdir of subdirs) {
+    for await (const _ of recordFiles(sourceDir, subdir, skip, isOwn)) {
+      found.push(subdir);
+      break;
+    }
+  }
+  return found;
 }
 
-async function subdirsWithRecords(
+/**
+ * The record files under `sourceDir/subdir`, as paths relative to
+ * `sourceDir`: every file other than the `skip` paths, the files under a
+ * skipped directory, and the files `isOwn` names the checkout's own.
+ * Symlinks are listed, never followed. Nothing when the subdir is absent.
+ */
+export async function* recordFiles(
   sourceDir: string,
-  subdirs: readonly string[],
+  subdir: string,
   skip: readonly string[],
-  firstOnly: boolean,
-): Promise<string[]> {
+  isOwn?: CheckoutOwnFile,
+): AsyncGenerator<string> {
   const skipped = skip.map((path) => resolve(sourceDir, path));
   const isSkipped = (path: string) =>
     skipped.some((skip) => path === skip || path.startsWith(skip + SEPARATOR));
-  const found: string[] = [];
-  for (const subdir of subdirs) {
-    const root = join(sourceDir, subdir);
-    try {
-      for await (
-        const entry of walk(root, { includeDirs: false, followSymlinks: false })
-      ) {
-        if (!isSkipped(resolve(entry.path))) {
-          found.push(subdir);
-          break;
-        }
-      }
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) continue;
-      throw error;
+  try {
+    for await (
+      const entry of walk(join(sourceDir, subdir), {
+        includeDirs: false,
+        followSymlinks: false,
+      })
+    ) {
+      if (isSkipped(resolve(entry.path))) continue;
+      const path = relative(sourceDir, entry.path);
+      if (isOwn?.(path.split(SEPARATOR))) continue;
+      yield path;
     }
-    if (firstOnly && found.length > 0) break;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
   }
-  return found;
 }

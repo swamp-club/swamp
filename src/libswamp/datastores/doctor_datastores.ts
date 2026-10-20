@@ -1103,7 +1103,7 @@ export async function* repairPreV3Records(
               : "pre_v3_records_repair_failed",
             message: `Could not move the records aside: ${
               err instanceof Error ? err.message : String(err)
-            }. Directories already moved stay moved; run the repair again to move the rest.`,
+            }. Records already moved stay where they were moved; run the repair again to move the rest, into a new directory under pre-v3-records.`,
             cause: err instanceof Error ? err : undefined,
           },
         };

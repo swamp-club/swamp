@@ -37,10 +37,12 @@ import { CATALOG_FILES } from "../../domain/datastore/datastore_config.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   checkoutRecordSubdirs,
+  recordFiles,
   subdirsHoldingRecords,
 } from "../persistence/datastore_records.ts";
+import { removeEmptyDirs } from "../persistence/directory_merge.ts";
 import { swampPath } from "../persistence/paths.ts";
-import { readModelStateDir } from "./record_path_guard.ts";
+import { isCheckoutLocalKey, readModelStateDir } from "./record_path_guard.ts";
 import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 
 /** Error code for a checkout that holds records joining a v3 datastore. */
@@ -103,10 +105,29 @@ export async function hasV3CheckoutState(repoDir: string): Promise<boolean> {
 }
 
 /**
+ * The roots a checkout materialises records under: `.swamp/` and, with a
+ * namespace, `.swamp/<namespace>/`, each with its path under `.swamp/`.
+ */
+function recordRoots(
+  repoDir: string,
+  namespace?: string,
+): { readonly dir: string; readonly prefix: string }[] {
+  return [
+    { dir: swampPath(repoDir), prefix: "" },
+    ...(namespace
+      ? [{ dir: swampPath(repoDir, namespace), prefix: namespace }]
+      : []),
+  ];
+}
+
+/**
  * The record directories a checkout that has never opened a v3 datastore
  * holds, relative to its `.swamp/`: those of `.swamp/` and, with a
- * namespace, of `.swamp/<namespace>/`, found as v3 setup finds them. Empty
- * when the checkout has v3 state, which is not walked.
+ * namespace, of `.swamp/<namespace>/`, found as v3 setup finds them. Files
+ * the checkout keeps as its own under v3 (`isCheckoutLocalKey`: pulled
+ * extension sources, dot-prefixed locks and indexes, run logs) and the v2
+ * catalog are no records. Empty when the checkout has v3 state, which is
+ * not walked.
  */
 export async function preV3CheckoutRecordDirs(
   repoDir: string,
@@ -114,18 +135,17 @@ export async function preV3CheckoutRecordDirs(
 ): Promise<string[]> {
   if (await hasV3CheckoutState(repoDir)) return [];
   const subdirs = checkoutRecordSubdirs();
-  const found = await subdirsHoldingRecords(
-    swampPath(repoDir),
-    subdirs,
-    CATALOG_FILES,
-  );
-  if (namespace) {
-    const inNamespace = await subdirsHoldingRecords(
-      swampPath(repoDir, namespace),
+  const found: string[] = [];
+  for (const { dir, prefix } of recordRoots(repoDir, namespace)) {
+    const holding = await subdirsHoldingRecords(
+      dir,
       subdirs,
       CATALOG_FILES,
+      isCheckoutLocalKey,
     );
-    for (const subdir of inNamespace) found.push(join(namespace, subdir));
+    for (const subdir of holding) {
+      found.push(prefix ? join(prefix, subdir) : subdir);
+    }
   }
   return found;
 }
@@ -166,30 +186,61 @@ export function preV3RecordsRunName(now: Date): string {
 }
 
 /**
- * Moves the record directories of a checkout that has never opened a v3
- * datastore into a new directory under `.swamp/pre-v3-records/`, keeping
- * their paths relative to `.swamp/`, so the next command joins and catches
- * up (swamp-club#3690). Each directory is renamed whole; a move that fails
- * part way leaves the moved ones moved, and running it again moves the
- * rest. Moves nothing once the checkout has v3 state.
+ * Moves the records of a checkout that has never opened a v3 datastore into
+ * a new directory under `.swamp/pre-v3-records/`, keeping their paths
+ * relative to `.swamp/`, so the next command joins and catches up
+ * (swamp-club#3690). Only records move: the files the checkout keeps as its
+ * own under v3 and the v2 catalog stay where they are. A move that fails
+ * part way leaves the moved files moved, and running it again moves the
+ * rest into a directory of its own. Moves nothing once the checkout has v3
+ * state; `destination` is then never created.
  */
 export async function movePreV3CheckoutRecords(
   repoDir: string,
   namespace?: string,
   now: Date = new Date(),
 ): Promise<MovedPreV3Records> {
-  const found = await preV3CheckoutRecordDirs(repoDir, namespace);
   const destination = swampPath(
     repoDir,
     PRE_V3_RECORDS_DIR,
     preV3RecordsRunName(now),
   );
   const moved: string[] = [];
-  for (const dir of found) {
-    const target = join(destination, dir);
-    await ensureDir(dirname(target));
-    await Deno.rename(swampPath(repoDir, dir), target);
-    moved.push(dir);
+  if (await hasV3CheckoutState(repoDir)) return { destination, moved };
+  for (const { dir, prefix } of recordRoots(repoDir, namespace)) {
+    for (const subdir of checkoutRecordSubdirs()) {
+      // Listed before anything moves: renaming while a directory is walked
+      // can skip entries.
+      const files: string[] = [];
+      for await (
+        const file of recordFiles(
+          dir,
+          subdir,
+          CATALOG_FILES,
+          isCheckoutLocalKey,
+        )
+      ) {
+        files.push(file);
+      }
+      let movedAny = false;
+      for (const file of files) {
+        const target = join(destination, prefix, file);
+        await ensureDir(dirname(target));
+        try {
+          await Deno.rename(join(dir, file), target);
+          movedAny = true;
+        } catch (error) {
+          // Already moved with the directory a namespace sits under.
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+      }
+      if (!movedAny) continue;
+      // Version listing reads version directories on disk, so the empty
+      // ones the move leaves behind are removed too.
+      await removeEmptyDirs(join(dir, subdir));
+      moved.push(prefix ? join(prefix, subdir) : subdir);
+    }
   }
   return { destination, moved };
 }

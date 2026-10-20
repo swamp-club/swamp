@@ -1640,4 +1640,5 @@ Deno.test("repairPreV3Records: a move that fails says the moved directories stay
   assertEquals(last.error.code, "pre_v3_records_repair_failed");
   assertStringIncludes(last.error.message, "EBUSY");
   assertStringIncludes(last.error.message, "run the repair again");
+  assertStringIncludes(last.error.message, "a new directory");
 });
