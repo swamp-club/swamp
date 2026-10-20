@@ -811,6 +811,9 @@ the whole top-level value's reference is persisted; a child cannot overwrite
 its parent's reference. Metadata and content reads follow symlinks only within
 the requested behavior's directory, with that boundary derived from the
 canonical datastore root rather than from a potentially linked model directory.
+Literal dotted field names use a hash of their exact name in generated vault
+keys, so `a.b` and `a..b` remain distinct. Duplicate resolved vault targets,
+including explicit `vaultKey` collisions, are refused before any value is stored.
 The writer stamps
 `_swamp.sensitiveFieldsVersion: "1"` only after vaulting; serve requires this
 version before a claim can grant access. Older records can carry forged tags
@@ -1510,6 +1513,18 @@ use exponential backoff and reconnect normally. A brief network interruption
 during a session should not end the worker.
 
 ## Security and trust
+
+The orchestrator's own-namespace datastore is trusted server state, as in
+[typed-secrets Section 6.1](typed-secrets.md#61-structured-accessors). Resource
+claims authorize against records that server-side writers produced there.
+Worker-supplied values, tags, names and claims are untrusted: resource writes
+pass through `createResourceWriter`, which refuses reserved tags and vaults
+reference-looking text as a value. Workers have no raw metadata write API or
+datastore credentials. Foreign-namespace records cannot establish authority
+over the orchestrator's vaults. The writer-version tag distinguishes storage
+contracts; it does not authenticate a record against an actor who can directly
+rewrite trusted server storage. Authenticated storage provenance is outside
+this issue's scope.
 
 Proxying everything and shipping code is a net security gain over provisioning
 credentials and extensions onto workers:

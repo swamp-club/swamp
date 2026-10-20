@@ -499,6 +499,10 @@ export class CapabilityService {
    * writer vaulting every present sensitive value and on the tag's reserved
    * prefix. The writer-version tag establishes that those guards applied
    * when this record was written; older tags alone cannot authorize a read.
+   * As for typed-secrets accessors, own-namespace datastore records are
+   * trusted server state. The version tag identifies the writer contract;
+   * it is not authentication against direct tampering with that storage.
+   * Workers cannot write raw metadata: their writes use createResourceWriter.
    * Typed-secrets Phase 5 applies the same rule on its protected route.
    */
   async #assertResourceClaim(

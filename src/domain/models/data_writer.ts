@@ -380,19 +380,20 @@ export function sanitizeVaultKey(key: string): string {
     .replace(/\0/g, "");
 }
 
-/** Bytes of a vary suffix's SHA-256 a hashed key segment carries. */
-const VARY_SUFFIX_DIGEST_BYTES = 16;
+/** Bytes of a segment's SHA-256 a hashed vault key segment carries. */
+const VAULT_KEY_SEGMENT_DIGEST_BYTES = 16;
 
 /**
  * Longest vary suffix a generated vault key carries as written: shorter than
  * the hashed form (`h-` and 32 hex digits), so keeping a suffix never makes a
  * key longer than hashing it would.
  */
-const MAX_VERBATIM_VARY_SUFFIX_LENGTH = 32;
+const MAX_VERBATIM_VAULT_KEY_SEGMENT_LENGTH = 32;
 
 /**
- * The form a vary suffix takes inside a generated vault key
- * (swamp-club#3633). A suffix of at most 32 lowercase letters, digits and `-`
+ * The form a vary suffix or dotted own-field name takes inside a generated
+ * vault key (swamp-club#3633, swamp-club#3529). A segment of at most 32
+ * lowercase letters, digits and `-`
  * is kept as written, so the key names the instance the record is stored
  * under. Any other suffix becomes `h-` and the first 32 hex digits of its
  * SHA-256: other characters do not survive into a readable key
@@ -405,9 +406,9 @@ const MAX_VERBATIM_VARY_SUFFIX_LENGTH = 32;
  * suffix kept as written, so for one data name the two forms cannot produce
  * the same key.
  */
-async function varySuffixVaultKeySegment(suffix: string): Promise<string> {
+async function vaultKeySegment(suffix: string): Promise<string> {
   if (
-    suffix.length <= MAX_VERBATIM_VARY_SUFFIX_LENGTH &&
+    suffix.length <= MAX_VERBATIM_VAULT_KEY_SEGMENT_LENGTH &&
     /^[a-z0-9-]+$/.test(suffix)
   ) {
     return suffix;
@@ -417,7 +418,7 @@ async function varySuffixVaultKeySegment(suffix: string): Promise<string> {
     new TextEncoder().encode(suffix),
   );
   const hex = Array.from(
-    new Uint8Array(digest).slice(0, VARY_SUFFIX_DIGEST_BYTES),
+    new Uint8Array(digest).slice(0, VAULT_KEY_SEGMENT_DIGEST_BYTES),
   )
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -523,22 +524,40 @@ export async function processSensitiveResourceData(
   // access with the key the put will name, before the first value is stored,
   // so a refusal (including one from a grant revoked mid-run, or a grant
   // conditioned on the key) leaves no earlier field's value orphaned.
-  const targets = fieldsWithValues.map(({ field, originalValue }) => {
-    const targetVault = resolveSensitiveOutputVault(
-      { fieldVaultName: field.vaultName, specVaultName: spec.vaultName },
-      vaultService,
-    ) ?? userVaultNames[0];
-    if (isReservedVaultName(targetVault)) {
+  const targets = await Promise.all(
+    fieldsWithValues.map(async ({ field, originalValue }) => {
+      const targetVault = resolveSensitiveOutputVault(
+        { fieldVaultName: field.vaultName, specVaultName: spec.vaultName },
+        vaultService,
+      ) ?? userVaultNames[0];
+      if (isReservedVaultName(targetVault)) {
+        throw new Error(
+          `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,
+        );
+      }
+      // A literal dotted key is a different identity from a schema dot-path.
+      // Hash its exact name so sanitizing a.b and a..b cannot merge them.
+      const keyField = ownKeys.has(field) && field.path.includes(".")
+        ? `own-${await vaultKeySegment(field.path)}`
+        : field.path;
+      const vaultKey = field.vaultKey ??
+        sanitizeVaultKey(
+          `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}/${keyField}`,
+        );
+      return { field, originalValue, targetVault, vaultKey };
+    }),
+  );
+  const targetFields = new Map<string, string>();
+  for (const { field, targetVault, vaultKey } of targets) {
+    const target = `${targetVault}\0${vaultKey}`;
+    const previous = targetFields.get(target);
+    if (previous !== undefined) {
       throw new Error(
-        `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,
+        `Sensitive fields '${previous}' and '${field.path}' target the same vault key in '${targetVault}'. Configure distinct vaultKey values.`,
       );
     }
-    const vaultKey = field.vaultKey ??
-      sanitizeVaultKey(
-        `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}/${field.path}`,
-      );
-    return { field, originalValue, targetVault, vaultKey };
-  });
+    targetFields.set(target, field.path);
+  }
   const access = currentVaultAccess();
   if (access) {
     const checked = new Set<string>();
@@ -887,7 +906,7 @@ export function createResourceWriter(
         // own secret (swamp-club#3633).
         varySuffix === undefined
           ? name
-          : `${name}-${await varySuffixVaultKeySegment(varySuffix)}`,
+          : `${name}-${await vaultKeySegment(varySuffix)}`,
         { onEvent },
       );
       if (vaultedPaths.length > 0) {

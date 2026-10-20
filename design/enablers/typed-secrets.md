@@ -742,9 +742,11 @@ reads one view.
 
 An absent tag means no sensitive fields. Under the star value every field is
 sensitive at any depth: the writer stores each top-level field as a reference
-or leaves it null, and a container appears only where a schema marks a parent
-and a child inside it sensitive, holding the child's reference, so every leaf
-at any depth must be absent, null or a stored reference. A path list is walked
+or leaves it null. Legacy records may contain a container where a schema marked
+a parent and its child sensitive; the current writer retains the whole parent
+reference, including when the child has its own vault key (swamp-club#3529).
+Every leaf in a legacy container must be absent, null or a stored reference.
+A path list is walked
 through own properties only, as the writer walks it. Some records fail with
 `secret_reference_invalid` before they reach CEL. That happens for a malformed
 tag, an unsafe path, or a tagged non-null value that is not a stored reference.

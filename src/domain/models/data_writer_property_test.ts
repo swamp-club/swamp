@@ -234,6 +234,51 @@ Deno.test("createResourceWriter: wildcard output keeps whole top-level reference
   );
 });
 
+Deno.test("createResourceWriter: distinct dotted own keys retain distinct values after vaulting and reading", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.uniqueArray(
+        fc.stringMatching(/^[a-z]{1,3}(\.{1,3}[a-z]{1,3}){1,2}$/),
+        { minLength: 2, maxLength: 6 },
+      ),
+      async (keys) => {
+        const repo = createCapturingRepo();
+        const vault = new VaultService();
+        vault.registerVault({ name: "test-vault", type: "mock", config: {} });
+        const { writeResource } = createResourceWriter(
+          repo,
+          modelType,
+          modelId,
+          {
+            r: {
+              schema: z.record(z.string(), z.string()),
+              sensitiveOutput: true,
+              lifetime: "infinite",
+              garbageCollection: 5,
+            },
+          },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          vault,
+          "put",
+        );
+        const original = Object.fromEntries(
+          keys.map((key, i) => [key, `value-${i}`]),
+        );
+        await writeResource("r", "main", structuredClone(original));
+        const stored = JSON.parse(repo.persisted()) as Record<string, unknown>;
+        assertEquals(sensitiveVaultReferences(stored, "*").length, keys.length);
+        await resolveSensitiveVaultRefs(stored, "*", vault);
+        assertEquals(stored, original);
+      },
+    ),
+    { examples: [[["a.b", "a..b"]]] },
+  );
+});
+
 /** Tag keys a user might write: ordinary ones, and keys under `_swamp.`. */
 const arbTagKey = fc.oneof(
   fc.string({ minLength: 1, maxLength: 12 }),

@@ -3931,6 +3931,37 @@ Deno.test("processSensitiveResourceData: a dotted own key does not take a nested
   assertEquals(await vaultService.get(ref.vaultName, ref.key), "own");
 });
 
+Deno.test("processSensitiveResourceData: duplicate target keys are refused before any secret is overwritten", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "shared", "original");
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      first: z.string().meta({ sensitive: true, vaultKey: "shared" }),
+      second: z.string().meta({ sensitive: true, vaultKey: "shared" }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const data = { first: "first", second: "second" };
+  await assertRejects(
+    () =>
+      processSensitiveResourceData(
+        data,
+        spec,
+        vaultService,
+        modelType,
+        modelId,
+        "run",
+        "all",
+        "main",
+      ),
+    Error,
+    "target the same vault key",
+  );
+  assertEquals(await vaultService.get("test-vault", "shared"), "original");
+  assertEquals(data, { first: "first", second: "second" });
+});
+
 Deno.test("createResourceWriter: a caller cannot forge the sensitive-field writer version", async () => {
   const repo = createCountingRepo();
   const { writeResource } = createResourceWriter(
