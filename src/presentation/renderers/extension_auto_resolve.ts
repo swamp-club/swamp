@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { OutputMode } from "../output/output.ts";
+import type { InstallLockHolder } from "../../domain/extensions/extension_auto_resolver.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import {
   gutterLine,
@@ -361,6 +362,54 @@ export function renderAutoResolveNetworkError(
     );
     writeContentLine(
       `Install manually with: swamp extension pull <extension-name>`,
+    );
+  }
+}
+
+/** Why a waiting process gave up on the install lock, in words. */
+export function installBusyMessage(
+  extension: string,
+  holder: InstallLockHolder | null,
+  waitedMs: number,
+): string {
+  const who = holder
+    ? `another swamp process (${holder.holder}, pid ${holder.pid})`
+    : "another swamp process";
+  return `${who} was still installing ${extension} after ${
+    Math.round(waitedMs / 1000)
+  }s; retry once it finishes`;
+}
+
+export function renderAutoResolveInstallBusy(
+  type: string,
+  extension: string,
+  holder: InstallLockHolder | null,
+  waitedMs: number,
+  mode: OutputMode,
+): void {
+  const error = installBusyMessage(extension, holder, waitedMs);
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "failed",
+        type,
+        extension,
+        reason: "install_busy",
+        holder: holder?.holder ?? null,
+        hostname: holder?.hostname ?? null,
+        pid: holder?.pid ?? null,
+        waitedMs,
+        error,
+      }),
+    );
+  } else {
+    writeOutput(
+      gutterLine(
+        "Error",
+        STATUS_COLORS.error,
+        `auto-resolution failed for type ${type}: ${error}`,
+      ),
     );
   }
 }

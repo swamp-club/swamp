@@ -31,12 +31,18 @@ import {
 } from "./client_identity.ts";
 import type { Fetcher } from "./recording_fetcher.ts";
 import {
-  fetchWithRateLimitRetry,
   hasCredential,
   rateLimitError,
   readRateLimit,
   type Sleep,
 } from "./rate_limit.ts";
+import {
+  describeRequestTarget,
+  fetchWithTransientRetry,
+  formatElapsed,
+  type RetryOutcome,
+  TransientRequestError,
+} from "./transient_retry.ts";
 
 export type { ClientIdentity };
 
@@ -48,6 +54,20 @@ export type { ClientIdentity };
  */
 export const REGISTRY_FORBIDDEN_CODE = "forbidden";
 export const REGISTRY_TOKEN_SCOPE_CODE = "token_scope";
+/** Per-attempt timeout of an extension archive download. */
+export const DOWNLOAD_ATTEMPT_TIMEOUT_MS = 120_000;
+/** Total time an archive download may take across its retries. */
+export const DOWNLOAD_BUDGET_MS = 300_000;
+
+/** `" after 3 attempts over 7s"` for a retried request, else empty. */
+function retriedSuffix(outcome: RetryOutcome | undefined): string {
+  return outcome && outcome.attempts > 1
+    ? ` after ${outcome.attempts} attempts over ${
+      formatElapsed(outcome.elapsedMs)
+    }`
+    : "";
+}
+
 /** The message a 401 from the registry API is reported with. */
 export const REGISTRY_NOT_AUTHENTICATED_MESSAGE =
   "Not authenticated. Run 'swamp auth login' first.";
@@ -333,6 +353,9 @@ export class ExtensionApiClient {
     private readonly options: { sleep?: Sleep; fetch?: Fetcher } = {},
   ) {}
 
+  /** How each returned response was retried, read by checkResponse. */
+  private readonly retryOutcomes = new WeakMap<Response, RetryOutcome>();
+
   /**
    * Pre-flight: check latest published version.
    * Returns null if the extension has never been published
@@ -576,6 +599,7 @@ export class ExtensionApiClient {
     version: string,
     apiKey?: string,
     channel?: string,
+    signal?: AbortSignal,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
     const encodedVersion = encodeURIComponent(version);
@@ -587,6 +611,7 @@ export class ExtensionApiClient {
         method: "GET",
         redirect: "manual",
         headers,
+        ...(signal ? { signal } : {}),
       },
     );
 
@@ -616,32 +641,73 @@ export class ExtensionApiClient {
     version: string,
     apiKey?: string,
     channel?: string,
+    signal?: AbortSignal,
   ): Promise<Uint8Array> {
     const downloadUrl = await this.getDownloadUrl(
       name,
       version,
       apiKey,
       channel,
+      signal,
     );
     if (!downloadUrl) {
       throw new UserError(
         `Extension ${name}@${version} not found in the registry.`,
       );
     }
+    const label = `${name}@${version}`;
+    const doFetch = this.options.fetch ?? globalThis.fetch;
+    let archive: Uint8Array | undefined;
     try {
-      const res = await fetch(downloadUrl, {
-        signal: AbortSignal.timeout(120_000),
-      });
+      // The fetch and the body read share one attempt, so a connection
+      // lost mid-body is retried from the start. Bytes stay in memory
+      // until complete, so a failed attempt leaves nothing on disk.
+      const { response: res, outcome } = await fetchWithTransientRetry(
+        async (attemptSignal) => {
+          // Called directly, not through this.fetch: the signed URL carries
+          // its own authorization, and identity headers or an API key must
+          // never reach the storage host. A recording fetcher would capture
+          // the signed query string, so no client built with one downloads.
+          const res = await doFetch(downloadUrl, { signal: attemptSignal });
+          if (!res.ok) return res;
+          archive = await readArchiveBody(res, label);
+          return new Response(null, { status: res.status });
+        },
+        {
+          method: "GET",
+          target: describeRequestTarget(downloadUrl),
+          service: "extension download",
+          signal,
+          attemptTimeoutMs: DOWNLOAD_ATTEMPT_TIMEOUT_MS,
+          budgetMs: DOWNLOAD_BUDGET_MS,
+          sleep: this.options.sleep,
+        },
+      );
       if (!res.ok) {
+        await res.body?.cancel();
         throw new UserError(
-          `Failed to download extension archive (HTTP ${res.status}).`,
+          `Failed to download extension archive (HTTP ${res.status})${
+            retriedSuffix(outcome)
+          }.`,
         );
       }
-      return await readArchiveBody(res, `${name}@${version}`);
+      return archive ?? new Uint8Array();
     } catch (error) {
       if (error instanceof UserError) throw error;
-      if (error instanceof DOMException && error.name === "TimeoutError") {
-        throw new UserError("Extension download timed out.");
+      if (error instanceof TransientRequestError) {
+        const after = retriedSuffix(error.outcome);
+        if (error.kind === "timeout") {
+          throw new UserError(`Extension download timed out${after}.`);
+        }
+        if (error.kind === "deadline") {
+          throw new UserError(
+            `Extension download timed out: its deadline passed${after}.`,
+          );
+        }
+        const cause = error.cause instanceof Error
+          ? error.cause.message
+          : String(error.cause);
+        throw new UserError(`Extension download failed${after}: ${cause}`);
       }
       const message = error instanceof Error ? error.message : String(error);
       throw new UserError(`Extension download failed: ${message}`);
@@ -657,6 +723,7 @@ export class ExtensionApiClient {
     version: string,
     apiKey?: string,
     channel?: string,
+    signal?: AbortSignal,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
     const encodedVersion = encodeURIComponent(version);
@@ -667,6 +734,7 @@ export class ExtensionApiClient {
       {
         method: "GET",
         headers,
+        ...(signal ? { signal } : {}),
       },
     );
 
@@ -941,8 +1009,9 @@ export class ExtensionApiClient {
     }
 
     const endpoint = res.url ? ` [${res.url}]` : "";
-    const message =
-      `Extension API error (HTTP ${res.status}): ${serverMessage}${endpoint}`;
+    const message = `Extension API error (HTTP ${res.status}${
+      retriedSuffix(this.retryOutcomes.get(res))
+    }): ${serverMessage}${endpoint}`;
     if (res.status >= 500) throw new RegistryUnavailableError(message);
     throw new UserError(message);
   }
@@ -956,17 +1025,13 @@ export class ExtensionApiClient {
     const headers = mergeIdentityHeaders(this.identity, init.headers);
     const doFetch = this.options.fetch ?? globalThis.fetch;
     try {
-      // Each attempt gets its own timeout so a Retry-After wait never
-      // eats into the next request's budget.
-      const res = await fetchWithRateLimitRetry(
-        () =>
-          doFetch(url, {
-            ...init,
-            headers,
-            signal: init.signal ?? AbortSignal.timeout(15_000),
-          }),
+      // Each attempt gets its own timeout, combined with the caller's
+      // signal, so a retry wait never eats into the next request's budget.
+      const { response: res, outcome } = await fetchWithTransientRetry(
+        (signal) => doFetch(url, { ...init, headers, signal }),
         {
           method: init.method,
+          target: describeRequestTarget(path),
           signal: init.signal ?? undefined,
           sleep: this.options.sleep,
         },
@@ -976,23 +1041,51 @@ export class ExtensionApiClient {
           rateLimitError({
             ...(await readRateLimit(res)),
             credentialed: hasCredential(headers),
-          }).message,
+          }).message + retriedSuffix(outcome),
         );
       }
+      this.retryOutcomes.set(res, outcome);
       return res;
     } catch (error) {
       if (error instanceof UserError) throw error;
-      if (error instanceof DOMException && error.name === "TimeoutError") {
-        throw new RegistryUnavailableError(
-          `Request to ${this.serverUrl} timed out. Is the server running?`,
-          { cause: error },
-        );
+      if (error instanceof TransientRequestError) {
+        throw this.requestError(error);
       }
       const message = error instanceof Error ? error.message : String(error);
       throw new RegistryUnavailableError(
         `Could not connect to ${this.serverUrl}: ${message}`,
         { cause: error },
       );
+    }
+  }
+
+  /** The error reported when no attempt of a request got an answer. */
+  private requestError(error: TransientRequestError): RegistryUnavailableError {
+    const { method, target } = error.outcome;
+    const after = retriedSuffix(error.outcome);
+    const request = `${this.serverUrl} ${method} ${target}`;
+    switch (error.kind) {
+      case "timeout":
+        return new RegistryUnavailableError(
+          `Request to ${request} timed out${
+            after || ` after ${formatElapsed(error.attemptTimeoutMs)}`
+          }. Is the server running?`,
+          { cause: error.cause },
+        );
+      case "deadline":
+        return new RegistryUnavailableError(
+          `Request to ${request} timed out: its deadline passed${after}.`,
+          { cause: error.cause },
+        );
+      default: {
+        const cause = error.cause instanceof Error
+          ? error.cause.message
+          : String(error.cause);
+        return new RegistryUnavailableError(
+          `Could not connect to ${this.serverUrl} (${method} ${target}${after}): ${cause}`,
+          { cause: error.cause },
+        );
+      }
     }
   }
 }

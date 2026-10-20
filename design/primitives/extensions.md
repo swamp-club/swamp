@@ -363,6 +363,37 @@ takes the per-checkout pulled-extensions lock (see
 [Concurrency Safety](#concurrency-safety)), which serializes it against
 explicit installs and removals.
 
+The registry calls one auto-install makes — for the extension and each
+dependency it pulls — share a single 150s deadline
+(`AUTO_RESOLVE_INSTALL_DEADLINE_MS` in `src/cli/auto_resolver_adapters.ts`), so
+the process holding the lock releases it before the 180s lock wait of a process
+behind it runs out. A process that does give up waiting reports which process
+holds the lock (`installBusy`, JSON reason `install_busy` with `holder`,
+`hostname`, `pid` and `waitedMs`) instead of reporting the type as not
+registered.
+
+### Registry retries
+
+Registry reads retry transient failures
+(`src/infrastructure/http/transient_retry.ts`): a timeout, a connection failure,
+HTTP 502/503/504, or a 429 whose Retry-After is 60s or less (at most twice). A
+read makes an initial attempt plus at most five retries, waiting 1s, 2s, 4s, 8s
+and 16s with up to 25% jitter (or the Retry-After when longer), with a 15s
+timeout per attempt and 120s in total; an archive download gets 120s per attempt
+and 300s in total, and its fetch and body read are retried together. One loop,
+one retry count and one total budget cover every kind of failure, so rate-limit
+and transient retries never multiply. Writes — push, upload, confirm, yank,
+deprecate, promote — are never retried, nor are other statuses or a caller's
+own cancellation or deadline.
+
+Before each wait one warning names the service, request, reason, wait and count,
+for example
+`swamp-club registry: GET /api/v1/extensions/… timed out after 15s · retrying in 2s (retry 2/5)`.
+It goes to stderr in log mode; JSON mode attaches no console sink, so stdout
+stays valid JSON. The final error names the method, the path without its query
+string, the attempts and the elapsed time. A signed download URL is shown by
+origin and path only and never receives identity headers.
+
 ### Lockfile
 
 A team commits `upstream_extensions.json`, and checkouts on different OSes

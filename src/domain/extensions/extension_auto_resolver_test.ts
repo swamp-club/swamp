@@ -90,6 +90,13 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
     noStableVersion(extension: string) {
       calls.push(`noStableVersion:${extension}`);
     },
+    installBusy(type: string, extension: string, holder, waitedMs: number) {
+      calls.push(
+        `installBusy:${type}:${extension}:${holder?.holder ?? "unknown"}:${
+          holder?.pid ?? "?"
+        }:${waitedMs}`,
+      );
+    },
   };
 }
 
@@ -1247,7 +1254,46 @@ Deno.test("ExtensionAutoResolver - returns false when the install lock times out
   assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), false);
   assertEquals(installer.inspectCalls, []);
   assertEquals(installer.installCalls, []);
-  assertEquals(output.calls, ["searching:@swamp/aws/ec2/instance"]);
+  assertEquals(output.calls, [
+    "searching:@swamp/aws/ec2/instance",
+    "installBusy:@swamp/aws/ec2/instance:@swamp/aws:unknown:?:1",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - names the process holding the install lock when it times out", async () => {
+  const output = createMockOutput();
+  const holder = {
+    holder: "ci@runner-3",
+    hostname: "runner-3",
+    pid: 4242,
+    acquiredAt: "2026-10-20T12:00:00.000Z",
+    ttlMs: 30_000,
+  };
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    { state: "missing" },
+    [],
+    {
+      lockError: new LockTimeoutError(
+        ".extension-install.lock",
+        holder,
+        180_000,
+      ),
+    },
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), false);
+  assertEquals(output.calls, [
+    "searching:@swamp/aws/ec2/instance",
+    "installBusy:@swamp/aws/ec2/instance:@swamp/aws:ci@runner-3:4242:180000",
+  ]);
 });
 
 Deno.test("ExtensionAutoResolver - installs once when two types from one extension resolve concurrently", async () => {

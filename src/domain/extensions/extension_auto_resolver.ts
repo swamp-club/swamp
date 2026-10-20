@@ -25,7 +25,10 @@ import type { ExtensionContentMetadata } from "./extension_content.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../webhooks/webhook_type_registry.ts";
-import { LockTimeoutError } from "../datastore/distributed_lock.ts";
+import {
+  type LockInfo,
+  LockTimeoutError,
+} from "../datastore/distributed_lock.ts";
 import { RegistryUnavailableError } from "./registry_unavailable_error.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
@@ -223,7 +226,22 @@ export interface AutoResolveOutputPort {
    */
   localSourceFailed(type: string): void;
   noStableVersion(extension: string): void;
+  /**
+   * Emitted when another process held the install lock for longer than
+   * this one would wait, so the type is reported as busy rather than
+   * unregistered. `holder` names that process, or is null when the lock
+   * file could not be read (swamp-club#3656).
+   */
+  installBusy(
+    type: string,
+    extension: string,
+    holder: InstallLockHolder | null,
+    waitedMs: number,
+  ): void;
 }
+
+/** The process holding the install lock, as its lock file records it. */
+export type InstallLockHolder = Pick<LockInfo, "holder" | "hostname" | "pid">;
 
 /**
  * Configuration for the ExtensionAutoResolver.
@@ -419,7 +437,20 @@ export class ExtensionAutoResolver {
       );
     } catch (error) {
       if (error instanceof LockTimeoutError) {
-        logger.warn`${error.message}`;
+        logger.debug`${error.message}`;
+        const holder = error.holder
+          ? {
+            holder: error.holder.holder,
+            hostname: error.holder.hostname,
+            pid: error.holder.pid,
+          }
+          : null;
+        output.installBusy(
+          normalizedType,
+          extensionName,
+          holder,
+          error.waitedMs,
+        );
         return false;
       }
       throw error;

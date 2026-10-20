@@ -1069,11 +1069,18 @@ export function configureExtensionAutoResolver(
           extensionClient.getLatestVersionDetail(name, apiKey),
       },
       extensionInstaller: createAutoResolveInstallerAdapter({
-        getExtension: (name) => extensionClient.getExtension(name, apiKey),
-        downloadArchive: (name, version, channel) =>
-          extensionClient.downloadArchive(name, version, apiKey, channel),
-        getChecksum: (name, version, channel) =>
-          extensionClient.getChecksum(name, version, apiKey, channel),
+        getExtension: (name, signal) =>
+          extensionClient.getExtension(name, apiKey, signal),
+        downloadArchive: (name, version, channel, signal) =>
+          extensionClient.downloadArchive(
+            name,
+            version,
+            apiKey,
+            channel,
+            signal,
+          ),
+        getChecksum: (name, version, channel, signal) =>
+          extensionClient.getChecksum(name, version, apiKey, channel, signal),
         lockfilePath: effectiveLockfilePath,
         repoDir,
         denoRuntime,
