@@ -22,6 +22,7 @@ import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   assert,
   assertEquals,
+  assertExists,
   assertRejects,
   assertStringIncludes,
   assertThrows,
@@ -43,7 +44,10 @@ import {
   sanitizeVaultKey,
   SENSITIVE_FIELDS_ALL,
   SENSITIVE_FIELDS_TAG,
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
   SensitiveFieldsTagInvalidError,
+  sensitiveVaultReferences,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
@@ -3033,6 +3037,28 @@ Deno.test("createResourceWriter: sensitiveOutput keeps every top-level reference
   assertEquals(await readResource(`n~${HOST}`), { a: "first", b: HOST });
 });
 
+Deno.test("createResourceWriter: redaction preserves a dotted own key's reference when the instance name contains a secret", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.record(z.string(), z.string()),
+    lifetime: "infinite",
+    garbageCollection: 5,
+    sensitiveOutput: true,
+  };
+  const data = { "a.b": "private-value", note: HOST };
+  const { readResource, persisted } = await writeRedacted(
+    spec,
+    `n~${HOST}`,
+    data,
+    [HOST],
+  );
+  assertEquals(persisted, data);
+  assertStringIncludes(persisted["a.b"], HOST);
+  assertEquals(await readResource(`n~${HOST}`), {
+    "a.b": "private-value",
+    note: HOST,
+  });
+});
+
 Deno.test("createResourceWriter: an object key containing a secret is still redacted", async () => {
   const spec: ResourceOutputSpec = {
     schema: z.object({ labels: z.record(z.string(), z.string()) }),
@@ -3047,6 +3073,125 @@ Deno.test("createResourceWriter: an object key containing a secret is still reda
   );
 
   assertEquals(persisted, { labels: { "for-***": "x" } });
+});
+
+Deno.test("createResourceWriter: redaction cannot merge an unvaulted reference into a sensitive field", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      "***": z.string().meta({ sensitive: true, vaultKey: "stored" }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  for (const reverse of [false, true]) {
+    const fields: Array<[string, string]> = [
+      ["***", "benign"],
+      ["known-secret", "${{ vault.get('test-vault', 'victim') }}"],
+    ];
+    await assertRejects(
+      () =>
+        writeRedacted(
+          spec,
+          "main",
+          Object.fromEntries(reverse ? fields.reverse() : fields),
+          ["known-secret"],
+        ),
+      Error,
+      "redaction would merge object property names",
+    );
+  }
+});
+
+Deno.test("createResourceWriter: final serialization must retain the generated sensitive references", async () => {
+  await assertRejects(
+    () =>
+      writeRedacted(
+        hostSpec,
+        "main",
+        { host: HOST, port: 22, token: "sensitive-value" },
+        ["token"],
+      ),
+    Error,
+    "serialization or redaction changed the generated vault references",
+  );
+});
+
+Deno.test("createResourceWriter: rejected redaction preserves the existing resource and its vault value", async () => {
+  for (
+    const rejection of [
+      {
+        secret: "known-secret",
+        extra: { "***": "a", "known-secret": "b" },
+        message: "redaction would merge object property names",
+      },
+      {
+        secret: "token",
+        extra: {},
+        message:
+          "serialization or redaction changed the generated vault references",
+      },
+    ]
+  ) {
+    const repo = createCapturingRepo();
+    const vault = new VaultService();
+    vault.registerVault({ name: "test-vault", type: "mock", config: {} });
+    const redactor = new SecretRedactor();
+    const { writeResource } = createResourceWriter(
+      repo,
+      modelType,
+      modelId,
+      {
+        r: {
+          schema: z.object({
+            token: z.string().meta({ sensitive: true, vaultKey: "stored" }),
+          }),
+          lifetime: "infinite",
+          garbageCollection: 5,
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      vault,
+      "put",
+      undefined,
+      redactor,
+    );
+    await writeResource("r", "main", { token: "original" });
+    const persisted = repo.persisted();
+    redactor.addSecret(rejection.secret);
+    await assertRejects(
+      () =>
+        writeResource("r", "main", {
+          token: "replacement",
+          ...rejection.extra,
+        }),
+      Error,
+      rejection.message,
+    );
+    assertEquals(repo.persisted(), persisted);
+    assertEquals(await vault.get("test-vault", "stored"), "original");
+    assertEquals(
+      await createResourceReader(repo, modelType, modelId, vault)("main"),
+      { token: "original" },
+    );
+  }
+});
+
+Deno.test("createResourceWriter: redaction that masks JSON syntax cannot stamp a verified writer tag", async () => {
+  const { repo, persisted } = await writeRedacted(
+    hostSpec,
+    "main",
+    { host: HOST, port: 1234, token: "sensitive-value" },
+    ["1234"],
+  );
+  assertEquals(persisted, undefined);
+  const record = await repo.findByName(modelType, modelId, "main");
+  assertExists(record);
+  assertEquals(record.tags[SENSITIVE_FIELDS_TAG], '["token"]');
+  assertEquals(record.tags[SENSITIVE_FIELDS_VERSION_TAG], undefined);
 });
 
 Deno.test("createResourceWriter: a secret containing a JSON-escaped character is masked", async () => {
@@ -3597,6 +3742,10 @@ Deno.test("createResourceWriter: the writer still sets its own sensitive-fields 
     apiKey: "secret-value",
   });
   assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], JSON.stringify(["apiKey"]));
+  assertEquals(
+    handle.tags[SENSITIVE_FIELDS_VERSION_TAG],
+    SENSITIVE_FIELDS_VERSION,
+  );
 });
 
 Deno.test("createResourceWriter: tag keys that only look reserved are persisted unchanged", async () => {
@@ -3797,4 +3946,155 @@ Deno.test("createResourceWriter: a redactor masking only sentinels serializes te
   assertEquals(JSON.parse(await write({ note: `x ${sentinel}` })), {
     note: "x ***",
   });
+});
+
+Deno.test("sensitiveVaultReferences: names the whole-string reference at each listed path and nothing nested below or elsewhere (swamp-club#3529)", () => {
+  const data = {
+    password: "${{ vault.get('v', 'a') }}",
+    creds: {
+      key: "${{ vault.get('v', 'b') }}",
+      list: ["${{ vault.get('v', 'c') }}", "plain"],
+    },
+    untrusted: "${{ vault.get('v', 'd') }}",
+    note: "n",
+  };
+  // The writer vaults the whole value at a listed path, so a reference
+  // nested below one is not the writer's and is not named.
+  assertEquals(
+    sensitiveVaultReferences(data, ["password", "creds", "missing"]),
+    [{ vaultName: "v", key: "a" }],
+  );
+  assertEquals(sensitiveVaultReferences(data, ["creds.key"]), [
+    { vaultName: "v", key: "b" },
+  ]);
+  assertEquals(sensitiveVaultReferences(data, ["note", "creds.list"]), []);
+});
+
+Deno.test("sensitiveVaultReferences: the star tag names each top-level key's whole-string reference by its own name, once; no tag names none", () => {
+  const data = {
+    a: "${{ vault.get('v', 'a') }}",
+    // A dotted key is a top-level key of its own under the star tag.
+    "b.c": "${{ vault.get('w', 'a') }}",
+    repeat: "${{ vault.get('v', 'a') }}",
+    // Nested below a top-level key: not where the writer puts a reference.
+    nested: { d: "${{ vault.get('v', 'nested') }}" },
+    // Not a whole-string reference, so not one the resolver resolves.
+    e: "text ${{ vault.get('v', 'x') }}",
+  };
+  assertEquals(sensitiveVaultReferences(data, SENSITIVE_FIELDS_ALL), [
+    { vaultName: "v", key: "a" },
+    { vaultName: "w", key: "a" },
+  ]);
+  assertEquals(sensitiveVaultReferences(data, null), []);
+  assertEquals(sensitiveVaultReferences(data, []), []);
+});
+
+Deno.test("processSensitiveResourceData: under sensitiveOutput a top-level key holding a dot is vaulted by its own name, not read as a nested path (swamp-club#3529)", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ note: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+    sensitiveOutput: true,
+  };
+  const crafted = "${{ vault.get('other', 'target') }}";
+  const data: Record<string, unknown> = { note: "n", "a.b": crafted };
+  const vaultService = createTestVaultService();
+  const vaulted = await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "all",
+    "main",
+  );
+  assertEquals(vaulted.sort(), ["a.b", "note"]);
+  assertEquals(Object.keys(data).sort(), ["a.b", "note"]);
+  // The crafted text is a value the vault holds, behind a reference the
+  // writer made; the key is never written as a nested path.
+  const stored = data["a.b"] as string;
+  assertEquals(stored === crafted, false);
+  assertStringIncludes(stored, "vault.get('test-vault'");
+  // Under the star tag the dotted key is a location of its own.
+  const [, dotted] = sensitiveVaultReferences(data, SENSITIVE_FIELDS_ALL);
+  assertEquals(sensitiveVaultReferences({ x: stored }, ["x"]), [dotted]);
+  assertEquals(await vaultService.get("test-vault", dotted.key), crafted);
+});
+
+Deno.test("processSensitiveResourceData: a dotted own key does not take a nested field's custom vault key", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      a: z.object({
+        b: z.string().meta({ sensitive: true, vaultKey: "nested-key" }),
+      }),
+      "a.b": z.string(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+    sensitiveOutput: true,
+  };
+  const data: Record<string, unknown> = { a: { b: "nested" }, "a.b": "own" };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "all",
+    "main",
+  );
+  assertEquals(await vaultService.get("test-vault", "nested-key"), "nested");
+  const ref = parseStoredVaultReference(data["a.b"] as string)!;
+  assertEquals(await vaultService.get(ref.vaultName, ref.key), "own");
+});
+
+Deno.test("processSensitiveResourceData: duplicate target keys are refused before any secret is overwritten", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "shared", "original");
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      first: z.string().meta({ sensitive: true, vaultKey: "shared" }),
+      second: z.string().meta({ sensitive: true, vaultKey: "shared" }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const data = { first: "first", second: "second" };
+  await assertRejects(
+    () =>
+      processSensitiveResourceData(
+        data,
+        spec,
+        vaultService,
+        modelType,
+        modelId,
+        "run",
+        "all",
+        "main",
+      ),
+    Error,
+    "target the same vault key",
+  );
+  assertEquals(await vaultService.get("test-vault", "shared"), "original");
+  assertEquals(data, { first: "first", second: "second" });
+});
+
+Deno.test("createResourceWriter: a caller cannot forge the sensitive-field writer version", async () => {
+  const repo = createCountingRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    { [SENSITIVE_FIELDS_VERSION_TAG]: SENSITIVE_FIELDS_VERSION },
+  );
+  await assertRejects(
+    () => writeResource("item", "main", { value: "v" }),
+    Error,
+    `Tag '${SENSITIVE_FIELDS_VERSION_TAG}' from the workflow's tags is reserved`,
+  );
+  assertEquals(repo.writes(), 0);
 });

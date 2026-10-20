@@ -24,25 +24,40 @@
  * bridge (runner channel → supervisor bridge → serve CapabilityService, with
  * the dispatch registry wired as `swamp serve` wires it) and a real
  * DataPlaneClient holding a per-dispatch credential against the harness's
- * port-0 data plane. Pins how serve authorizes the read, and that the remote
- * reader, fed the verified bundle's resource specs as exec_dispatch feeds it,
- * reads an untagged record and a malformed sensitive-fields tag exactly as
- * the local reader does (swamp-club#3530).
+ * port-0 data plane. Pins how serve authorizes tagged fields through a
+ * resource claim verified against the record (swamp-club#3529), and that the
+ * remote reader, fed the verified bundle's resource specs, reads an untagged
+ * record and a malformed sensitive-fields tag as the local reader does
+ * (swamp-club#3530).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { dirname, join } from "@std/path";
 import { z } from "zod";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Data } from "../src/domain/data/data.ts";
+import { CompositeUnifiedDataRepository } from "../src/domain/data/composite_data_repository.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
 import {
+  createFileWriterFactory,
   createResourceReader,
+  createResourceWriter,
   SENSITIVE_FIELDS_TAG,
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
+  sensitiveVaultReferences,
 } from "../src/domain/models/data_writer.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../src/domain/vaults/secret_reference_errors.ts";
+import { PathTraversalError } from "../src/infrastructure/persistence/safe_path.ts";
+import { createEphemeralStore } from "../src/infrastructure/persistence/ephemeral_store.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import { extractVaultReferences } from "../src/domain/expressions/vault_reference_extractor.ts";
 import type { VaultExtractionResult } from "../src/domain/expressions/vault_reference_extractor.ts";
@@ -114,7 +129,7 @@ async function seedResource(
     tags: { type: "resource", specName: SPEC, ...extraTags },
     ownerDefinition: {
       ownerType: "model-method",
-      ownerRef: `${type.normalized}:${modelId}`,
+      ownerRef: modelId,
     },
   });
   await o.repoContext.unifiedDataRepo.save(
@@ -312,48 +327,374 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: readResource: a tagged sensitive field resolves only when the allowlist names it",
+    "remote secrets baseline: readResource: a tagged sensitive field resolves through a resource claim serve verifies against the record, with the allowlist empty (swamp-club#3529)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const key = `rr-tagged-${crypto.randomUUID()}`;
     const secret = canary("rr-tagged");
-    const seed = async (f: Fixture) => {
-      await f.o.putSecret(key, secret);
-      await seedResource(f.o, f.typeA, f.modelIdA, "tagged", {
-        password: vaultRef(key),
-        note: "n",
-      }, { [SENSITIVE_FIELDS_TAG]: JSON.stringify(["password"]) });
-    };
-
-    // The allowlist DispatchService derives from post-resolution args with
-    // no vault expression left in them is empty, so the resolveSecret that
-    // readResource issues for a tagged field is refused. Suspected
-    // functional bug (swamp-club#3529); see the
-    // allowlist baseline (path 1).
+    const other = `rr-other-${crypto.randomUUID()}`;
     await withFixture(async (f) => {
-      await seed(f);
-      const error = await assertRejects(
-        () => f.context.readResource!("tagged"),
-        Error,
+      await f.o.putSecret(other, canary("rr-other"));
+      const { writeResource } = createResourceWriter(
+        f.o.repoContext.unifiedDataRepo,
+        f.typeA,
+        f.modelIdA,
+        RESOURCE_SPECS,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        await VaultService.fromRepository(f.o.repoDir),
+        "run",
       );
-      assertStringIncludes(
-        error.message,
+      const handle = await writeResource(SPEC, "tagged", {
+        password: secret,
+        note: "n",
+      });
+      assertEquals(
+        handle.tags[SENSITIVE_FIELDS_VERSION_TAG],
+        SENSITIVE_FIELDS_VERSION,
+      );
+      const [{ key }] = sensitiveVaultReferences(handle.attributes!, [
+        "password",
+      ]);
+      await seedResource(f.o, f.typeA, f.modelIdA, "plain", {
+        password: vaultRef(other),
+        note: "n",
+      });
+
+      // The allowlist a workflow step's dispatch registers is empty, so the
+      // read resolves only because the reader claims the record it is for
+      // and serve verifies the claim against that record's tagged fields.
+      assertEquals(await f.context.readResource!("tagged"), {
+        password: secret,
+        note: "n",
+      });
+
+      const resolve = (
+        secretKey: string,
+        resource?: { name: string; version: number },
+      ) =>
+        f.o.capabilityService.resolveSecret(WORKER, {
+          vaultName: BASELINE_VAULT,
+          secretKey,
+          dispatchId: f.dispatchId,
+          ...(resource ? { resource } : {}),
+        });
+      // Without a claim, the empty allowlist refuses the same key.
+      await assertRejects(
+        () => resolve(key),
+        Error,
         `resolveSecret: secret '${key}' is not referenced by the dispatched step`,
       );
+      // A claim is verified against the record: a resource the dispatch
+      // does not have, a reference the tagged fields do not hold, an
+      // untagged record, and a wrong version are each refused.
+      const refused = (k: string, name: string, reason: string) =>
+        `resolveSecret: secret '${k}' is not a tagged sensitive field of resource '${name}' (${reason})`;
+      await assertRejects(
+        () => resolve(key, { name: "missing", version: 1 }),
+        Error,
+        refused(key, "missing", "no such resource of the dispatched behavior"),
+      );
+      await assertRejects(
+        () => resolve(other, { name: "tagged", version: 1 }),
+        Error,
+        refused(other, "tagged", "its sensitive fields do not reference it"),
+      );
+      await assertRejects(
+        () => resolve(other, { name: "plain", version: 1 }),
+        Error,
+        refused(other, "plain", "the record has no sensitive fields"),
+      );
+      await assertRejects(
+        () => resolve(key, { name: "tagged", version: 2 }),
+        Error,
+        refused(key, "tagged", "no such resource of the dispatched behavior"),
+      );
     });
+  },
+});
 
-    // With the reference in the allowlist, the same read resolves it.
-    await withFixture(
-      async (f) => {
-        await seed(f);
-        assertEquals(await f.context.readResource!("tagged"), {
-          password: secret,
-          note: "n",
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: legacy forged tags and unvaulted dotted keys cannot authorize a secret (swamp-club#3529)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const key = `rr-preplanted-${crypto.randomUUID()}`;
+    await withFixture(async (f) => {
+      await f.o.putSecret(key, canary("rr-preplanted"));
+      // These are the shapes older writers could persist: a caller-supplied
+      // tag on an ordinary field, or a dotted own key skipped by vaulting.
+      // Neither has the version stamp issued by the corrected writer.
+      for (
+        const { name, content, tag } of [
+          {
+            name: "forged-tag",
+            content: { note: vaultRef(key) },
+            tag: '["note"]',
+          },
+          { name: "dotted-key", content: { "a.b": vaultRef(key) }, tag: "*" },
+        ]
+      ) {
+        await seedResource(f.o, f.typeA, f.modelIdA, name, content, {
+          [SENSITIVE_FIELDS_TAG]: tag,
         });
-      },
-      extractVaultReferences({ ref: vaultRef(key) }),
-    );
+        await assertRejects(
+          () => f.context.readResource!(name),
+          Error,
+          "the record predates verified sensitive-field writes",
+        );
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: overlapping sensitive fields retain writer references through redaction and claim authorization",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const secret = canary("overlapping");
+      const host = "192.0.2.10";
+      const redactor = new SecretRedactor();
+      redactor.addSecret(host);
+      const { writeResource } = createResourceWriter(
+        f.o.repoContext.unifiedDataRepo,
+        f.typeA,
+        f.modelIdA,
+        {
+          [SPEC]: {
+            schema: z.object({
+              credentials: z.object({
+                token: z.string().meta({ sensitive: true }),
+                note: z.string(),
+              }).meta({ sensitive: true }),
+            }),
+            sensitiveOutput: true,
+            lifetime: "infinite",
+            garbageCollection: 5,
+          },
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        await VaultService.fromRepository(f.o.repoDir),
+        "run",
+        undefined,
+        redactor,
+      );
+      const name = `overlapping-${host}`;
+      await writeResource(SPEC, name, {
+        credentials: { token: secret, note: "preserved" },
+      });
+      const expected = {
+        credentials: JSON.stringify({ token: secret, note: "preserved" }),
+      };
+      assertEquals(await f.context.readResource!(name), expected);
+      assertEquals(await readLocally(f, name), expected);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: resource claims refuse content shadowed by an ephemeral file between metadata and content reads",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const persistent = f.o.repoContext.unifiedDataRepo;
+      const ephemeral = createEphemeralStore(persistent.namespace);
+      try {
+        const repo = new CompositeUnifiedDataRepository(
+          persistent,
+          ephemeral.repo,
+        );
+        const dispatch = f.o.dispatches.forDispatch(WORKER, f.dispatchId);
+        assertExists(dispatch);
+        dispatch.dataRepo = repo;
+        const target = `shadow-target-${crypto.randomUUID()}`;
+        await f.o.putSecret(target, canary("shadow-target"));
+        const original = canary("shadow-original");
+        const { writeResource } = createResourceWriter(
+          repo,
+          f.typeA,
+          f.modelIdA,
+          RESOURCE_SPECS,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          await VaultService.fromRepository(f.o.repoDir),
+          "run",
+        );
+        const resource = await writeResource(SPEC, "state", {
+          password: original,
+          note: "persistent",
+        });
+        const [{ vaultName, key }] = sensitiveVaultReferences(
+          resource.attributes!,
+          ["password"],
+        );
+        const { createFileWriter } = createFileWriterFactory(
+          repo,
+          f.typeA,
+          f.modelIdA,
+          {
+            shadow: {
+              contentType: "application/json",
+              lifetime: "ephemeral",
+              garbageCollection: 5,
+            },
+          },
+        );
+        const findByName = repo.findByName.bind(repo);
+        let shadowWritten = false;
+        repo.findByName = async (...args) => {
+          const metadata = await findByName(...args);
+          if (!shadowWritten) {
+            shadowWritten = true;
+            // Complete a normal file write after persistent metadata was
+            // selected and before the claim verifier asks for its content.
+            const shadow = await createFileWriter("shadow", "state").writeText(
+              JSON.stringify({ password: vaultRef(target) }),
+            );
+            assertEquals(shadow.version, resource.version);
+          }
+          return metadata;
+        };
+        const resolve = (secretKey: string) =>
+          f.o.capabilityService.resolveSecret(WORKER, {
+            dispatchId: f.dispatchId,
+            vaultName,
+            secretKey,
+            resource: { name: "state", version: resource.version },
+          });
+        await assertRejects(
+          () => resolve(target),
+          Error,
+          "the record content does not match its checksum",
+        );
+        assertEquals(shadowWritten, true);
+        // A failed check must not cache the shadow file's arbitrary reference.
+        // Once it is gone, only the genuine writer's reference is admitted.
+        await ephemeral.repo.delete(f.typeA, f.modelIdA, "state");
+        await assertRejects(
+          () => resolve(target),
+          Error,
+          "its sensitive fields do not reference it",
+        );
+        assertEquals(await resolve(key), { value: original });
+      } finally {
+        ephemeral.dispose();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: resource claims refuse symlinks into another behavior's records",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (const level of ["resource", "model", "content"] as const) {
+      await withFixture(async (f) => {
+        const repo = f.o.repoContext.unifiedDataRepo;
+        const vault = await VaultService.fromRepository(f.o.repoDir);
+        const write = async (type: ModelType, modelId: string) => {
+          const { writeResource } = createResourceWriter(
+            repo,
+            type,
+            modelId,
+            RESOURCE_SPECS,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            vault,
+            "run",
+          );
+          return await writeResource(SPEC, "state", {
+            password: canary("symlink-target"),
+            note: "n",
+          });
+        };
+        const own = await write(f.typeA, f.modelIdA);
+        const other = await write(f.typeB, f.modelIdB);
+        const [{ vaultName, key }] = sensitiveVaultReferences(
+          other.attributes!,
+          ["password"],
+        );
+        const ownVersion = repo.getPath(
+          f.typeA,
+          f.modelIdA,
+          "state",
+          own.version,
+        );
+        const otherVersion = repo.getPath(
+          f.typeB,
+          f.modelIdB,
+          "state",
+          other.version,
+        );
+        const atLevel = (version: string) =>
+          level === "content"
+            ? join(version, "raw")
+            : level === "resource"
+            ? dirname(version)
+            : dirname(dirname(version));
+        const linked = atLevel(ownVersion);
+        await Deno.remove(linked, { recursive: level !== "content" });
+        await Deno.symlink(atLevel(otherVersion), linked, {
+          type: level === "content" ? "file" : "dir",
+        });
+        await assertRejects(
+          () =>
+            f.o.capabilityService.resolveSecret(WORKER, {
+              vaultName,
+              secretKey: key,
+              dispatchId: f.dispatchId,
+              resource: { name: "state", version: own.version },
+            }),
+          PathTraversalError,
+        );
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: a legacy tagged reference still resolves when the arguments independently allow it",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const key = `rr-authorized-${crypto.randomUUID()}`;
+    const secret = canary("rr-authorized");
+    await withFixture(async (f) => {
+      await f.o.putSecret(key, secret);
+      await seedResource(f.o, f.typeA, f.modelIdA, "legacy-tagged", {
+        password: vaultRef(key),
+        note: "n",
+      }, { [SENSITIVE_FIELDS_TAG]: '["password"]' });
+      assertEquals(await f.context.readResource!("legacy-tagged"), {
+        password: secret,
+        note: "n",
+      });
+    }, {
+      staticRefs: [{ vaultName: BASELINE_VAULT, secretKey: key }],
+      hasDynamicRefs: false,
+    });
   },
 });
 

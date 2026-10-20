@@ -17,11 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import {
   extractVaultReferences,
   findVaultGetCalls,
   isDynamicVaultArgument,
+  withVaultReferences,
 } from "./vault_reference_extractor.ts";
 
 Deno.test("extractVaultReferences: extracts single quoted reference", () => {
@@ -259,4 +260,42 @@ Deno.test("findVaultGetCalls: refuses incomplete calls and mismatched delimiters
   ) {
     assertEquals(findVaultGetCalls(source), [], source);
   }
+});
+
+Deno.test("withVaultReferences: admits references the arguments no longer show, after the extracted ones and without repeats (swamp-club#3529)", () => {
+  const extracted = extractVaultReferences({
+    a: "${{ vault.get('v', 'shown') }}",
+  });
+  assertEquals(
+    withVaultReferences(extracted, [
+      { vaultName: "v", key: "shown" },
+      { vaultName: "v", key: "bag" },
+      { vaultName: "v", key: "bag" },
+    ]),
+    {
+      staticRefs: [
+        { vaultName: "v", secretKey: "shown" },
+        { vaultName: "v", secretKey: "bag" },
+      ],
+      hasDynamicRefs: false,
+    },
+  );
+  // The input is not changed.
+  assertEquals(extracted.staticRefs, [{ vaultName: "v", secretKey: "shown" }]);
+});
+
+Deno.test("withVaultReferences: keeps a dynamic result dynamic, and returns the input for no references", () => {
+  const dynamic = extractVaultReferences({
+    a: "${{ vault.get(inputs.v, inputs.k) }}",
+  });
+  assertEquals(
+    withVaultReferences(dynamic, [{ vaultName: "v", key: "k" }]),
+    {
+      staticRefs: [{ vaultName: "v", secretKey: "k" }],
+      hasDynamicRefs: true,
+    },
+  );
+  const empty = extractVaultReferences({});
+  assertStrictEquals(withVaultReferences(empty, undefined), empty);
+  assertStrictEquals(withVaultReferences(empty, []), empty);
 });

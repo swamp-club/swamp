@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator
 enables: [serve]
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-10-20 @ 0a0690b03
 ---
 
 # Remote Execution
@@ -745,7 +745,7 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | `queryData`      | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading | ws        | CEL predicate over the catalog; always live. Control-plane records excluded (below). `select` projection rejected |
 | `listVersions`   | `repo.listVersions`                                                                   | ws        | Version history for one item. No dispatch-scope assertion; control-plane types list nothing                       |
 | `deleteData`     | `repo.delete`, `repo.removeLatestMarker`                                              | ws        | Used by lifecycle/GC-aware methods                                                                                |
-| `resolveSecret`  | `vaultService.get` / `getAnnotation`                                                  | ws        | Authorized per step: denylist + allowlist (below)                                                                 |
+| `resolveSecret`  | `vaultService.get` / `getAnnotation`                                                  | ws        | Authorized per step: denylist + allowlist, or a verified resource claim (below)                                   |
 | `putSecret`      | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                             | ws        | Denylist only (below)                                                                                             |
 | `readDefinition` | `definitionRepository.findByName`                                                     | ws        | Lazy-load; no cache. A control-plane type reads as not found                                                      |
 | `readOutput`     | `outputRepository` execution-history reads                                            | ws        | Optional context member. A control-plane type reads as empty                                                      |
@@ -787,14 +787,54 @@ exception is a fleet-probe dispatch reading its own `swamp/fleet-probe`
 records. When the server cannot tell which dispatch a read belongs to, every
 control-plane type is hidden (swamp-club#3129).
 
-`resolveSecret` checks the infrastructure denylist and an expression-based
-allowlist taken from the dispatched step's args. The allowlist is disabled when
-the step has dynamic vault references. Before the reply leaves, the value joins
-the dispatch's `SecretRedactor` on its `ActiveDispatch` registration, so the
-data plane scrubs it from the dispatch's resource writes as it does the
-pre-dispatch `secretValues` (swamp-club#3527). `putSecret` checks only the
-denylist, because write targets are not declared in vault expressions. The
-denylist (`src/serve/capability_service.ts`) covers the `server-token-*` and
+`resolveSecret` checks the infrastructure denylist and a per-step allowlist:
+the vault references the step's secret bag holds, which the orchestrator
+passes on the dispatch request because the dispatched args carry the resolved
+values. It captures references from both method and global arguments before
+global resolution and validation. Serve also includes any `vault.get()`
+expression still written in the dispatched args
+(a direct dispatch such as the fleet probe). The allowlist is disabled when the
+dispatched args hold a dynamic vault reference; a workflow step's references
+are evaluated before dispatch, so its allowlist is always exact
+(swamp-club#3529). A read for a tagged sensitive field of the dispatch's own
+resource carries a resource claim (the record's name and version) as another
+way to authorize the value read:
+serve looks the record up under the dispatch's behavior type and model id,
+checks its canonical name, version, and owner, and admits the read only if a
+tagged location of the record holds that exact
+reference as its whole value: the value at a listed path, or each top-level
+key's own value under the `*` tag, never anything nested below one. The claim
+rests on the data writer vaulting every present sensitive value, reference
+text included and each `sensitiveOutput` key by its own name, and on the
+`_swamp.` tag prefix being written by swamp alone, so a tagged location only
+ever holds a reference the writer made. Under `sensitiveOutput`, a nested
+schema-sensitive field still populates its configured vault key, but only
+the whole top-level value's reference is persisted; a child cannot overwrite
+its parent's reference. Metadata and content reads follow symlinks only within
+the requested behavior's directory, with that boundary derived from the
+canonical datastore root rather than from a potentially linked model directory.
+Literal dotted field names use a hash of their exact name in generated vault
+keys, so `a.b` and `a..b` remain distinct. Duplicate resolved vault targets,
+including explicit `vaultKey` collisions, are refused before any value is stored.
+The writer refuses property-name collisions caused by redaction and checks
+that the final serialized object's tagged references match those generated by
+preparation. It validates those bytes before committing any vault values, so
+a rejected update leaves the previous resource's secrets intact. Only then
+does it stamp `_swamp.sensitiveFieldsVersion: "1"`; a
+payload whose JSON syntax was masked carries no version stamp. Serve requires this
+version before a claim can grant access. Older records can carry forged tags
+or unvaulted dotted keys, so their tags alone cannot authorize a read. Such
+records remain readable when the argument allowlist independently permits the
+reference. Serve remembers each verified record's references for the dispatch,
+so a read of several tagged fields parses the record once.
+
+Before the reply leaves, the value joins the dispatch's `SecretRedactor` on
+its `ActiveDispatch` registration, so the data plane scrubs it from resource
+writes as it does the pre-dispatch `secretValues` (swamp-club#3527).
+
+`putSecret` checks only the denylist, because write targets are not declared
+in vault expressions. The denylist (`src/serve/capability_service.ts`) covers
+the `server-token-*` and
 `worker-token-*` key prefixes, `oauth-client-secret`, `oauth-access-token-*`,
 `oauth-bootstrap-access-token`, `oauth-resolved-admins`, and the control-plane
 token-secrets vault by name.
@@ -1480,6 +1520,22 @@ during a session should not end the worker.
 
 ## Security and trust
 
+The orchestrator's own-namespace datastore is trusted server state, as in
+[typed-secrets Section 6.1](typed-secrets.md#61-structured-accessors). Resource
+claims authorize against records that server-side writers produced there.
+The content must match the checksum in the authorizing metadata before any
+references are admitted or cached. This binds the bytes to that record even
+when a concurrent ephemeral write changes which store supplies a content read;
+a mismatch refuses the claim.
+Worker-supplied values, tags, names and claims are untrusted: resource writes
+pass through `createResourceWriter`, which refuses reserved tags and vaults
+reference-looking text as a value. Workers have no raw metadata write API or
+datastore credentials. Foreign-namespace records cannot establish authority
+over the orchestrator's vaults. The writer-version tag distinguishes storage
+contracts; it does not authenticate a record against an actor who can directly
+rewrite trusted server storage. Authenticated storage provenance is outside
+this issue's scope.
+
 Proxying everything and shipping code is a net security gain over provisioning
 credentials and extensions onto workers:
 
@@ -1492,7 +1548,9 @@ credentials and extensions onto workers:
   authorizes every data-plane request against the step lease, so it is the
   single point for authorization and audit. Per-step secret
   scoping is the orchestrator refusing a `resolveSecret` outside the step's
-  allowed set, or outside the dispatching run's vault scope. Secrets are resolved on the orchestrator and sent only for the
+  allowed set (the references its secret bag holds, or a verified claim on
+  one of its own tagged resources), or outside the dispatching run's vault
+  scope. Secrets are resolved on the orchestrator and sent only for the
   step that needs them, as in the out-of-process resolution pattern of the
   removed execution-drivers design.
 

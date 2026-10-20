@@ -21,14 +21,17 @@
  * Remote-secrets baseline, path 1: the per-dispatch secret allowlist
  * (swamp-club#3512).
  *
- * Serve registers each dispatch with `allowedSecrets` =
- * `extractVaultReferences(globalArgs, methodArgs)` and `resolveSecret` from
- * the worker is held to it, after the reserved-vault and key-prefix
- * denylists. These tests pin how the allowlist is derived on the production
- * path and what each check admits or refuses today.
+ * Serve registers each dispatch with `allowedSecrets`: the references the
+ * step's secret bag holds, passed on the dispatch request because the
+ * dispatched args carry resolved values, plus any `vault.get()` expression
+ * still written in those args (swamp-club#3529). `resolveSecret` from the
+ * worker is held to it, after the reserved-vault and key-prefix denylists,
+ * unless it carries a resource claim serve verifies against the record (see
+ * the readResource baseline, path 2). These tests pin how the allowlist is
+ * derived on the production path and what each check admits or refuses.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
 import "../src/domain/models/models.ts";
@@ -51,6 +54,11 @@ import {
   WorkerMethod,
 } from "../src/domain/remote/protocol.ts";
 import type { ActiveDispatch } from "../src/serve/dispatch_registry.ts";
+import { DataPlaneClient } from "../src/worker/data_plane_client.ts";
+import {
+  parseSensitiveFieldsTag,
+  sensitiveVaultReferences,
+} from "../src/domain/models/data_writer.ts";
 import type { VaultExtractionResult } from "../src/domain/expressions/vault_reference_extractor.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../src/domain/vaults/control_plane_vault_provider.ts";
 import { tokenSecretKey } from "../src/domain/models/worker/enrollment_token_model.ts";
@@ -74,19 +82,64 @@ const SUCCESS: DispatchResult = {
   durationMs: 1,
 };
 
-/** Registers a per-run model type whose `read` method takes one string. */
-function registerReaderType(): ModelType {
+/** The resource spec of a vaulting type: `password` is schema-sensitive. */
+const VAULTING_SPEC = "secret";
+/** The resource spec of a vaulting type whose every field is sensitive. */
+const VAULTING_ALL_SPEC = "all";
+
+/**
+ * Registers a per-run model type whose `read` method takes one string. With
+ * `withResource`, the type also declares a `secret` resource whose
+ * `password` field is schema-sensitive and an `all` resource with
+ * `sensitiveOutput`, so a dispatch of it can write those resources over the
+ * data plane.
+ */
+function registerReaderType(
+  withResource = false,
+  globalOnly = false,
+): ModelType {
   const type = ModelType.create(
     `test/secrets-baseline-allowlist-${crypto.randomUUID()}`,
   );
   modelRegistry.register({
     type,
     version: "2026.10.15.1",
-    globalArguments: z.object({}),
+    globalArguments: globalOnly
+      ? z.object({ value: z.string() })
+      : z.object({}),
+    ...(withResource
+      ? {
+        resources: {
+          [VAULTING_SPEC]: {
+            description: "a resource with one sensitive field",
+            schema: z.object({
+              password: z.string().meta({ sensitive: true }),
+              note: z.string(),
+            }),
+            lifetime: "infinite" as const,
+            garbageCollection: 5,
+          },
+          [VAULTING_ALL_SPEC]: {
+            description: "a resource whose every top-level field is sensitive",
+            schema: z.record(z.string(), z.string()),
+            lifetime: "infinite" as const,
+            garbageCollection: 5,
+            sensitiveOutput: true,
+          },
+          collision: {
+            schema: z.object({
+              "***": z.string().meta({ sensitive: true, vaultKey: "stored" }),
+            }),
+            lifetime: "infinite" as const,
+            garbageCollection: 5,
+          },
+        },
+      }
+      : {}),
     methods: {
       read: {
         description: "Runs on a worker; the body never runs in-process",
-        arguments: z.object({ value: z.string() }),
+        arguments: globalOnly ? z.object({}) : z.object({ value: z.string() }),
         execute: () => Promise.resolve({}),
       },
     },
@@ -121,19 +174,24 @@ function answerDispatches(
   });
 }
 
-/** Calls the worker-facing `resolveSecret` verb; returns the value or the refusal. */
+/**
+ * Calls the worker-facing `resolveSecret` verb, with a resource claim when
+ * given; returns the value or the refusal.
+ */
 async function tryResolve(
   o: BaselineOrchestrator,
   workerName: string,
   dispatchId: string | undefined,
   vaultName: string,
   secretKey: string,
+  resource?: { name: string; version: number },
 ): Promise<{ value?: unknown; refused?: string }> {
   try {
     const { value } = await o.capabilityService.resolveSecret(workerName, {
       vaultName,
       secretKey,
       ...(dispatchId ? { dispatchId } : {}),
+      ...(resource ? { resource } : {}),
     });
     return { value };
   } catch (error) {
@@ -191,90 +249,116 @@ async function runWorkflow(
   return { status, errors };
 }
 
-Deno.test({
-  name:
-    "remote secrets baseline: allowlist: a workflow step's vault.get argument reaches serve already resolved, so its allowlist is empty and the worker is refused that same secret",
-  ...SANITIZE,
-  fn: () =>
-    withTempDir(async (dir) => {
-      const o = await startBaselineOrchestrator(dir);
-      setRemoteStepDispatcher(o.dispatchService);
-      try {
-        const key = `allowlist-${crypto.randomUUID()}`;
-        const secret = canary("allowlist-e2e");
-        await o.putSecret(key, secret);
+for (const argumentSource of ["method", "global"] as const) {
+  Deno.test({
+    name:
+      `remote secrets baseline: allowlist: a workflow step's ${argumentSource} vault.get argument retains its reference after resolution (swamp-club#3529)`,
+    ...SANITIZE,
+    fn: () =>
+      withTempDir(async (dir) => {
+        const o = await startBaselineOrchestrator(dir);
+        setRemoteStepDispatcher(o.dispatchService);
+        try {
+          const key = `allowlist-${crypto.randomUUID()}`;
+          const secret = canary("allowlist-e2e");
+          await o.putSecret(key, secret);
+          const other = `allowlist-other-${crypto.randomUUID()}`;
+          await o.putSecret(other, canary("allowlist-other"));
 
-        const type = registerReaderType();
-        const definition = Definition.create({
-          name: "allowlist-reader",
-          methods: {
-            read: {
-              arguments: {
-                value: `\${{ vault.get('${BASELINE_VAULT}', '${key}') }}`,
-              },
+          const type = registerReaderType(false, argumentSource === "global");
+          const args = {
+            value: `\${{ vault.get('${BASELINE_VAULT}', '${key}') }}`,
+          };
+          const definition = Definition.create({
+            name: "allowlist-reader",
+            globalArguments: argumentSource === "global" ? args : {},
+            methods: {
+              read: { arguments: argumentSource === "method" ? args : {} },
             },
-          },
-        });
-        await o.repoContext.definitionRepo.save(type, definition);
-
-        const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
-        const worker = await connectInMemoryWorker(o, workerName);
-        const seen: Array<{
-          methodArgs: Record<string, unknown>;
-          allowedSecrets: VaultExtractionResult | undefined;
-          resolved: { value?: unknown; refused?: string };
-        }> = [];
-        answerDispatches(o, worker, workerName, async ({ params, active }) => {
-          seen.push({
-            methodArgs: params.execution.methodArgs,
-            allowedSecrets: active.allowedSecrets,
-            resolved: await tryResolve(
-              o,
-              workerName,
-              params.dispatchId,
-              BASELINE_VAULT,
-              key,
-            ),
           });
-        });
+          await o.repoContext.definitionRepo.save(type, definition);
 
-        const { status, errors } = await runWorkflow(
-          dir,
-          Workflow.create({
-            name: `allowlist-${crypto.randomUUID().slice(0, 8)}`,
-            jobs: [Job.create({
-              name: "main",
-              steps: [Step.create({
-                name: "read",
-                task: StepTask.model("allowlist-reader", "read"),
-                labels: { tier: "baseline" },
+          const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
+          const worker = await connectInMemoryWorker(o, workerName);
+          const seen: Array<{
+            methodArgs: Record<string, unknown>;
+            globalArgs: Record<string, unknown>;
+            allowedSecrets: VaultExtractionResult | undefined;
+            resolved: { value?: unknown; refused?: string };
+            unreferenced: { value?: unknown; refused?: string };
+          }> = [];
+          answerDispatches(
+            o,
+            worker,
+            workerName,
+            async ({ params, active }) => {
+              seen.push({
+                methodArgs: params.execution.methodArgs,
+                globalArgs: params.execution.globalArgs,
+                allowedSecrets: active.allowedSecrets,
+                resolved: await tryResolve(
+                  o,
+                  workerName,
+                  params.dispatchId,
+                  BASELINE_VAULT,
+                  key,
+                ),
+                unreferenced: await tryResolve(
+                  o,
+                  workerName,
+                  params.dispatchId,
+                  BASELINE_VAULT,
+                  other,
+                ),
+              });
+            },
+          );
+
+          const { status, errors } = await runWorkflow(
+            dir,
+            Workflow.create({
+              name: `allowlist-${crypto.randomUUID().slice(0, 8)}`,
+              jobs: [Job.create({
+                name: "main",
+                steps: [Step.create({
+                  name: "read",
+                  task: StepTask.model("allowlist-reader", "read"),
+                  labels: { tier: "baseline" },
+                })],
               })],
-            })],
-          }),
-        );
-        assertEquals(status, "succeeded", errors.join("\n"));
-        assertEquals(seen.length, 1);
+            }),
+          );
+          assertEquals(status, "succeeded", errors.join("\n"));
+          assertEquals(seen.length, 1);
 
-        // The dispatched args hold the plaintext, not the expression.
-        assertEquals(seen[0].methodArgs, { value: secret });
-        // Functional bug, not a disclosure (swamp-club#3529):
-        // the allowlist is extracted from those post-resolution args, so a
-        // step that references a secret gets an empty allowlist ...
-        assertEquals(seen[0].allowedSecrets, {
-          staticRefs: [],
-          hasDynamicRefs: false,
-        });
-        // ... and the worker's own read of that secret is refused.
-        assertEquals(seen[0].resolved, {
-          refused:
-            `resolveSecret: secret '${key}' is not referenced by the dispatched step`,
-        });
-      } finally {
-        setRemoteStepDispatcher(null);
-        await o.shutdown();
-      }
-    }),
-});
+          // The dispatched args hold the plaintext, not the expression ...
+          assertEquals(
+            seen[0].methodArgs,
+            argumentSource === "method" ? { value: secret } : {},
+          );
+          assertEquals(
+            seen[0].globalArgs,
+            argumentSource === "global" ? { value: secret } : {},
+          );
+          // ... so the allowlist comes from the step's secret bag, exact and
+          // not dynamic (swamp-club#3529) ...
+          assertEquals(seen[0].allowedSecrets, {
+            staticRefs: [{ vaultName: BASELINE_VAULT, secretKey: key }],
+            hasDynamicRefs: false,
+          });
+          // ... and the worker reads that secret and no other.
+          assertEquals(seen[0].resolved, { value: secret });
+          assertEquals(seen[0].unreferenced, {
+            refused:
+              `resolveSecret: secret '${other}' is not referenced by the dispatched step`,
+          });
+        } finally {
+          setRemoteStepDispatcher(null);
+          await o.shutdown();
+        }
+      }),
+  });
+}
 
 Deno.test({
   name:
@@ -535,6 +619,158 @@ Deno.test({
           refused:
             "putSecret: access denied — infrastructure secrets are not accessible from dispatched methods",
         });
+      } finally {
+        await o.shutdown();
+      }
+    }),
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: allowlist: a crafted reference written into a sensitive field is vaulted as text, so a resource claim cannot launder a read of the secret it names (swamp-club#3529)",
+  ...SANITIZE,
+  fn: () =>
+    withTempDir(async (dir) => {
+      const o = await startBaselineOrchestrator(dir);
+      try {
+        const target = `launder-target-${crypto.randomUUID()}`;
+        const targetSecret = canary("launder-target");
+        await o.putSecret(target, targetSecret);
+        const crafted = `\${{ vault.get('${BASELINE_VAULT}', '${target}') }}`;
+
+        const type = registerReaderType(true);
+        const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
+        const worker = await connectInMemoryWorker(o, workerName);
+        interface Observed {
+          tags: Record<string, string>;
+          content: Record<string, unknown>;
+          targetClaim: { value?: unknown; refused?: string };
+          storedClaims: Array<{ value?: unknown; refused?: string }>;
+        }
+        const observed: Record<string, Observed> = {};
+        answerDispatches(o, worker, workerName, async ({ params, active }) => {
+          const { dispatchCredential } = params as DispatchParams & {
+            dispatchCredential?: string;
+          };
+          const client = new DataPlaneClient({
+            baseUrl: o.dataPlaneUrl,
+            credential: () => dispatchCredential ?? "",
+          });
+          const repo = o.repoContext.unifiedDataRepo;
+          // A property containing a delivered secret would redact to the
+          // sensitive field's name. The data plane must refuse that write
+          // before a record can authorize the unvaulted reference.
+          await assertRejects(
+            () =>
+              client.writeResource({
+                specName: "collision",
+                name: "collision",
+                data: { "***": "benign", "known-secret": crafted },
+              }),
+            Error,
+            "redaction would merge object property names",
+          );
+          assertEquals(
+            await repo.findByName(
+              active.modelType,
+              active.modelId,
+              "collision",
+            ),
+            null,
+          );
+          // The worker writes the crafted text as a sensitive value: a
+          // schema-sensitive field, and under sensitiveOutput a top-level
+          // key holding a dot, which the writer must address by its name.
+          const writes = [
+            {
+              specName: VAULTING_SPEC,
+              name: "crafted",
+              data: { password: crafted, note: "n" },
+            },
+            {
+              specName: VAULTING_ALL_SPEC,
+              name: "crafted-all",
+              data: { "a.b": crafted, note: "n" },
+            },
+          ];
+          for (const write of writes) {
+            await client.writeResource(write);
+            const record = await repo.findByName(
+              active.modelType,
+              active.modelId,
+              write.name,
+            );
+            if (!record) throw new Error(`${write.name} was not stored`);
+            const bytes = await repo.getContent(
+              active.modelType,
+              active.modelId,
+              write.name,
+              record.version,
+            );
+            const content = JSON.parse(new TextDecoder().decode(bytes!));
+            const claim = { name: write.name, version: record.version };
+            observed[write.name] = {
+              tags: record.tags,
+              content,
+              // A claim for the secret the crafted text names ...
+              targetClaim: await tryResolve(
+                o,
+                workerName,
+                params.dispatchId,
+                BASELINE_VAULT,
+                target,
+                claim,
+              ),
+              // ... and one for each reference the writer stored instead.
+              storedClaims: [],
+            };
+            for (
+              const stored of sensitiveVaultReferences(
+                content,
+                parseSensitiveFieldsTag(record.tags),
+              )
+            ) {
+              observed[write.name].storedClaims.push(
+                await tryResolve(
+                  o,
+                  workerName,
+                  params.dispatchId,
+                  stored.vaultName,
+                  stored.key,
+                  claim,
+                ),
+              );
+            }
+          }
+        });
+
+        await o.dispatchService.executeRemote(
+          {
+            ...remoteRequest(type, { value: "plain" }),
+            secretValues: ["known-secret"],
+          },
+        );
+
+        // The writer vaulted the crafted text under keys of its own and
+        // tagged the fields, which never hold the crafted reference ...
+        const schema = observed["crafted"];
+        const all = observed["crafted-all"];
+        assertEquals(parseSensitiveFieldsTag(schema.tags), ["password"]);
+        assertNotEquals(schema.content.password, crafted);
+        assertEquals(parseSensitiveFieldsTag(all.tags), "*");
+        assertNotEquals(all.content["a.b"], crafted);
+        assertNotEquals(all.content.note, "n");
+        // ... so the claim for the named secret is refused, and the claims
+        // for the stored references yield the crafted text and the note,
+        // never the secret the text names.
+        for (const name of ["crafted", "crafted-all"]) {
+          assertEquals(observed[name].targetClaim, {
+            refused:
+              `resolveSecret: secret '${target}' is not a tagged sensitive field of resource '${name}' (its sensitive fields do not reference it)`,
+          });
+        }
+        assertEquals(schema.storedClaims, [{ value: crafted }]);
+        assertEquals(all.storedClaims, [{ value: crafted }, { value: "n" }]);
       } finally {
         await o.shutdown();
       }

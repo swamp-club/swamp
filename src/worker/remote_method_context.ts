@@ -276,9 +276,16 @@ function createRemoteDataRepository(
   } as UnifiedDataRepository;
 }
 
+/**
+ * The vault proxy over the capability verbs. With `resource`, every value
+ * read carries that claim: the reference is a tagged sensitive field of the
+ * dispatch's own resource, which serve verifies against the record before
+ * it answers (swamp-club#3529). A method's own vault reads carry none.
+ */
 function createRemoteVaultService(
   options: RemoteContextOptions,
   redactor: SecretRedactor,
+  resource?: { name: string; version: number },
 ): VaultService {
   const { channel, signal } = options;
   const resolveSecret = (params: Record<string, unknown>) =>
@@ -290,7 +297,11 @@ function createRemoteVaultService(
 
   const proxy = {
     get: async (vaultName: string, secretKey: string) => {
-      const result = await resolveSecret({ vaultName, secretKey });
+      const result = await resolveSecret({
+        vaultName,
+        secretKey,
+        ...(resource ? { resource } : {}),
+      });
       const value = result.value as string;
       // The worker has now received this value, so its redactor must know it
       // before the method does: output lines and console output are scrubbed
@@ -640,15 +651,18 @@ export function createRemoteMethodContext(
       )
     : undefined;
 
-  // The reader a local run uses, over the proxies: the sensitive-fields tag
-  // names the fields to resolve, an untagged record falls back to the
-  // bundle's resource schema, and a malformed tag refuses the read
-  // (swamp-club#3530).
+  // Share local parsing, schema fallback and malformed-tag handling
+  // (swamp-club#3530), with each vault read claiming the record that supplied
+  // its reference so serve can authorize it independently (swamp-club#3529).
   const readResource = createResourceReader(
     dataRepository,
     modelType,
     execution.modelId,
-    vaultService,
+    (record) =>
+      createRemoteVaultService(options, redactor, {
+        name: record.name,
+        version: record.version,
+      }),
     redactor,
     options.resourceSpecs,
   );

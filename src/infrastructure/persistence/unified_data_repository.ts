@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { existsSync } from "@std/fs";
-import { join, resolve, SEPARATOR } from "@std/path";
+import { join, relative, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
   signalChange,
@@ -39,7 +39,11 @@ import {
 } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
-import { assertSafePath } from "./safe_path.ts";
+import {
+  assertContainedPath,
+  assertSafePath,
+  resolveRealPath,
+} from "./safe_path.ts";
 import { verifiedContentStream } from "./verified_content_stream.ts";
 import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
 import { getSwampLogger } from "../logging/logger.ts";
@@ -887,6 +891,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
       versionToRead,
     );
+    await this.assertModelReadPath(metadataPath, type, modelId);
     try {
       const content = await Deno.readTextFile(metadataPath);
       const metadata = parseYaml(content) as DataMetadata | null;
@@ -1476,7 +1481,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
       versionToRead,
     );
+    await this.assertModelReadPath(contentPath, type, modelId);
     await this.ensureContentFile(type, modelId, dataName, versionToRead);
+    await this.assertModelReadPath(contentPath, type, modelId);
     try {
       return await Deno.readFile(contentPath);
     } catch (error) {
@@ -3001,6 +3008,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const result = join(typeDir, modelId);
     this.assertPathContained(result, typeDir, `modelId "${modelId}"`);
     return result;
+  }
+
+  /**
+   * Record reads used for resource claims must stay in the requested model.
+   * Resolve the configured datastore root, then append the model identity
+   * lexically: resolving the model boundary itself would trust a symlink
+   * that redirects the entire model directory into another model.
+   */
+  private async assertModelReadPath(
+    path: string,
+    type: ModelType,
+    modelId: string,
+  ): Promise<void> {
+    const boundary = join(
+      await resolveRealPath(this.baseDir),
+      relative(this.baseDir, this.getModelDataDir(type, modelId)),
+    );
+    assertContainedPath(
+      relative(boundary, await resolveRealPath(path)),
+      boundary,
+    );
   }
 
   getDataNameDir(

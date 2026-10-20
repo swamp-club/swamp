@@ -28,6 +28,7 @@
  */
 
 import { ModelType } from "../domain/models/model_type.ts";
+import { computeChecksum } from "../domain/models/checksum.ts";
 import type { Data } from "../domain/data/data.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import { createDataId } from "../domain/data/data_id.ts";
@@ -82,6 +83,15 @@ import {
   workerHiddenStoredTypes,
 } from "./worker_control_plane_visibility.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import {
+  parseSensitiveFieldsTag,
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
+  sensitiveVaultReferences,
+} from "../domain/models/data_writer.ts";
+
+/** How many verified resource claims the service remembers at once. */
+const CLAIM_CACHE_LIMIT = 256;
 
 const capLogger = getSwampLogger(["serve", "capability"]);
 
@@ -159,6 +169,14 @@ export class CapabilityService {
   readonly #dispatches: DispatchRegistry | undefined;
   readonly #createVaultService: () => Promise<VaultService>;
   #vaultService: Promise<VaultService> | null = null;
+  /**
+   * The references each verified resource claim admits, keyed by dispatch,
+   * record name and version, so a read that resolves several tagged fields
+   * of one record reads and parses it once. A version's content never
+   * changes, and the key holds the dispatch, so an entry is never answered
+   * for another. Bounded: the oldest entry goes when it is full.
+   */
+  readonly #claimReferences = new Map<string, ReadonlySet<string>>();
 
   constructor(options: CapabilityServiceOptions) {
     this.#repoDir = options.repoDir;
@@ -458,22 +476,118 @@ export class CapabilityService {
     }
   }
 
-  #assertSecretInAllowlist(
+  #secretInAllowlist(
     dispatch: ActiveDispatch,
     vaultName: string,
     secretKey: string,
-    verb: string,
-  ): void {
+  ): boolean {
     const allowed = dispatch.allowedSecrets;
-    if (!allowed) return;
-    if (allowed.hasDynamicRefs) return;
-    const isAllowed = allowed.staticRefs.some(
+    if (!allowed || allowed.hasDynamicRefs) return true;
+    return allowed.staticRefs.some(
       (ref) => ref.vaultName === vaultName && ref.secretKey === secretKey,
     );
-    if (!isAllowed) {
-      throw new Error(
-        `${verb}: secret '${secretKey}' is not referenced by the dispatched step`,
+  }
+
+  /**
+   * Admits a read the worker claims is for a tagged sensitive field of the
+   * dispatch's own resource, by checking the claim against the stored
+   * record: the record is looked up under the dispatch's behavior type and
+   * model id at the claimed version, so a resource of any other model is
+   * not found, and the read is admitted only when the record's tagged
+   * fields hold that exact reference (swamp-club#3529). A verified claim
+   * supplements the argument allowlist; the denylists ran before it and
+   * the run's vault scope applies after it. The claim rests on the data
+   * writer vaulting every present sensitive value and on the tag's reserved
+   * prefix. The writer-version tag establishes that those guards applied
+   * when this record was written; older tags alone cannot authorize a read.
+   * As for typed-secrets accessors, own-namespace datastore records are
+   * trusted server state. The version tag identifies the writer contract;
+   * it is not authentication against direct tampering with that storage.
+   * Workers cannot write raw metadata: their writes use createResourceWriter.
+   * Typed-secrets Phase 5 applies the same rule on its protected route.
+   */
+  async #assertResourceClaim(
+    workerName: string,
+    dispatch: ActiveDispatch,
+    claim: { name: string; version: number },
+    vaultName: string,
+    secretKey: string,
+  ): Promise<void> {
+    const refused = (reason: string) =>
+      new Error(
+        `resolveSecret: secret '${secretKey}' is not a tagged sensitive field of resource '${claim.name}' (${reason})`,
       );
+    const cacheKey =
+      `${dispatch.dispatchId}\u0000${claim.name}\u0000${claim.version}`;
+    let admitted = this.#claimReferences.get(cacheKey);
+    if (admitted === undefined) {
+      const repo = this.#repoForWorker(workerName, dispatch.dispatchId);
+      const record = await repo.findByName(
+        dispatch.modelType,
+        dispatch.modelId,
+        claim.name,
+        claim.version,
+      );
+      if (record === null) {
+        throw refused("no such resource of the dispatched behavior");
+      }
+      if (
+        record.name !== claim.name || record.version !== claim.version ||
+        record.ownerDefinition.ownerType !== "model-method" ||
+        record.ownerDefinition.ownerRef !== dispatch.modelId
+      ) {
+        throw refused(
+          "the record identity does not match the dispatched behavior",
+        );
+      }
+      const sensitiveFields = parseSensitiveFieldsTag(record.tags);
+      if (sensitiveFields === null) {
+        throw refused("the record has no sensitive fields");
+      }
+      if (
+        record.tags[SENSITIVE_FIELDS_VERSION_TAG] !== SENSITIVE_FIELDS_VERSION
+      ) {
+        throw refused("the record predates verified sensitive-field writes");
+      }
+      if (record.checksum === undefined) {
+        throw refused("the record has no content checksum");
+      }
+      const content = await repo.getContent(
+        dispatch.modelType,
+        dispatch.modelId,
+        claim.name,
+        claim.version,
+      );
+      if (content === null) throw refused("the record has no content");
+      // A concurrent ephemeral write can change which backing store supplies
+      // getContent after findByName returned persistent metadata. Only bytes
+      // matching that metadata may authorize references or enter the cache.
+      if (await computeChecksum(content) !== record.checksum) {
+        throw refused("the record content does not match its checksum");
+      }
+      let data: unknown;
+      try {
+        data = JSON.parse(new TextDecoder().decode(content));
+      } catch {
+        throw refused("the record is not JSON");
+      }
+      if (data === null || typeof data !== "object" || Array.isArray(data)) {
+        throw refused("the record is not an object");
+      }
+      admitted = new Set(
+        sensitiveVaultReferences(
+          data as Record<string, unknown>,
+          sensitiveFields,
+        ).map((ref) => `${ref.vaultName}\u0000${ref.key}`),
+      );
+      if (this.#claimReferences.size >= CLAIM_CACHE_LIMIT) {
+        const oldest = this.#claimReferences.keys().next().value;
+        if (oldest !== undefined) this.#claimReferences.delete(oldest);
+      }
+      this.#claimReferences.set(cacheKey, admitted);
+    }
+    if (!admitted.has(`${vaultName}\u0000${secretKey}`)) {
+      throw refused("its sensitive fields do not reference it");
     }
   }
 
@@ -495,12 +609,43 @@ export class CapabilityService {
           `resolveSecret: worker '${workerName}' has no active dispatch`,
         );
       }
-      this.#assertSecretInAllowlist(
-        dispatch,
-        params.vaultName,
-        params.secretKey,
-        "resolveSecret",
-      );
+      if (params.resource !== undefined) {
+        // A claim admits a secret value only; the reader never asks for an
+        // annotation, so one with a claim is malformed and fails closed.
+        if (params.annotation) {
+          throw new Error(
+            "resolveSecret: a resource claim admits a secret value, not an annotation",
+          );
+        }
+        // A claim adds authority; it never removes access the arguments
+        // already grant. This also preserves reads of legacy records whose
+        // tags predate the write-path guards required for a verified claim.
+        if (
+          !this.#secretInAllowlist(
+            dispatch,
+            params.vaultName,
+            params.secretKey,
+          )
+        ) {
+          await this.#assertResourceClaim(
+            workerName,
+            dispatch,
+            params.resource,
+            params.vaultName,
+            params.secretKey,
+          );
+        }
+      } else if (
+        !this.#secretInAllowlist(
+          dispatch,
+          params.vaultName,
+          params.secretKey,
+        )
+      ) {
+        throw new Error(
+          `resolveSecret: secret '${params.secretKey}' is not referenced by the dispatched step`,
+        );
+      }
     }
     const scope = dispatch?.vaultAccess;
     const vault = await this.#vault();

@@ -23,8 +23,13 @@ import { CapabilityService } from "./capability_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
 import type { ActiveDispatch } from "./dispatch_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import { computeChecksum } from "../domain/models/checksum.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { VaultExtractionResult } from "../domain/expressions/vault_reference_extractor.ts";
+import {
+  SENSITIVE_FIELDS_VERSION,
+  SENSITIVE_FIELDS_VERSION_TAG,
+} from "../domain/models/data_writer.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import {
   currentVaultAccess,
@@ -1160,3 +1165,351 @@ for (const { name, call } of SCOPED_CALLS) {
     await call(service, "roomcontrol");
   });
 }
+
+// ── resource claim tests (swamp-club#3529) ─────────────────────────────
+
+const CLAIM_DISPATCH_TYPE = ModelType.create("acme/invoices");
+
+/** A stored record of the dispatch's model, as the claim check reads it. */
+interface StoredRecord {
+  name: string;
+  version: number;
+  tags: Record<string, string>;
+  content: unknown;
+  metadata?: {
+    name?: string;
+    version?: number;
+    ownerRef?: string;
+    checksum?: string | null;
+  };
+}
+
+/**
+ * A service whose data repository holds `record` for every model, and
+ * records the identity each lookup asked for, so a test can see the claim
+ * check look under the dispatch's own behavior type and model id.
+ */
+function createServiceWithRecord(
+  dispatches: DispatchRegistry,
+  record: StoredRecord | null,
+  secrets: Record<string, string> = {},
+): { service: CapabilityService; lookups: unknown[][] } {
+  const lookups: unknown[][] = [];
+  const encode = (content: unknown) =>
+    new TextEncoder().encode(
+      typeof content === "string" ? content : JSON.stringify(content),
+    );
+  const repoContext = {
+    dataQueryService: {
+      query: () => Promise.resolve([]),
+      querySync: () => [],
+    },
+    unifiedDataRepo: {
+      findByName: async (
+        type: ModelType,
+        modelId: string,
+        name: string,
+        version?: number,
+      ) => {
+        lookups.push([type.normalized, modelId, name, version]);
+        const found = record !== null && record.name === name &&
+          (version === undefined || version === record.version);
+        return found
+          ? {
+            name: record.metadata?.name ?? name,
+            version: record.metadata?.version ?? record.version,
+            tags: record.tags,
+            checksum: record.metadata?.checksum === null
+              ? undefined
+              : record.metadata?.checksum ??
+                await computeChecksum(encode(record.content)),
+            ownerDefinition: {
+              ownerType: "model-method",
+              ownerRef: record.metadata?.ownerRef ?? modelId,
+            },
+          }
+          : null;
+      },
+      getContent: (_type: ModelType, _modelId: string, name: string) =>
+        Promise.resolve(
+          record !== null && record.name === name
+            ? encode(record.content)
+            : null,
+        ),
+    },
+  } as unknown as RepositoryContext;
+  const service = new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext,
+    dispatches,
+    createVaultService: () =>
+      Promise.resolve({
+        get: (_vault: string, key: string) =>
+          key in secrets
+            ? Promise.resolve(secrets[key])
+            : Promise.reject(new Error(`secret not found: ${key}`)),
+        getAnnotation: () => Promise.resolve({ note: "annotated" }),
+        put: () => Promise.resolve(),
+        putAnnotation: () => Promise.resolve(),
+        deleteAnnotation: () => Promise.resolve(),
+      } as never),
+  });
+  return { service, lookups };
+}
+
+const TAGGED: StoredRecord = {
+  name: "state-main",
+  version: 2,
+  tags: {
+    "_swamp.sensitiveFields": JSON.stringify(["password"]),
+    [SENSITIVE_FIELDS_VERSION_TAG]: SENSITIVE_FIELDS_VERSION,
+  },
+  content: {
+    password: "${{ vault.get('default', 'generated-key') }}",
+    note: "${{ vault.get('default', 'untagged-key') }}",
+  },
+};
+
+/** An empty allowlist, as a workflow step's dispatch registers today. */
+const EMPTY_ALLOWLIST: VaultExtractionResult = {
+  staticRefs: [],
+  hasDynamicRefs: false,
+};
+
+Deno.test("resolveSecret: a resource claim preserves independently allowlisted reads of legacy or missing records", async () => {
+  for (
+    const allowedSecrets of [
+      undefined,
+      { staticRefs: [], hasDynamicRefs: true },
+      {
+        staticRefs: [{ vaultName: "default", secretKey: "legacy-key" }],
+        hasDynamicRefs: false,
+      },
+    ]
+  ) {
+    const dispatches = new DispatchRegistry();
+    withDispatchAndSecrets(dispatches, allowedSecrets);
+    const { service, lookups } = createServiceWithRecord(dispatches, null, {
+      "legacy-key": "already-authorized",
+    });
+    assertEquals(
+      await service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "legacy-key",
+        resource: { name: "legacy", version: 1 },
+      }),
+      { value: "already-authorized" },
+    );
+    assertEquals(lookups, []);
+  }
+});
+
+Deno.test("resolveSecret: a verified resource claim admits a tagged field's reference the allowlist does not name, looked up under the dispatch's own model", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+  const { service, lookups } = createServiceWithRecord(dispatches, TAGGED, {
+    "generated-key": "s3cret",
+  });
+  const result = await service.resolveSecret("worker-1", {
+    vaultName: "default",
+    secretKey: "generated-key",
+    resource: { name: "state-main", version: 2 },
+  });
+  assertEquals(result.value, "s3cret");
+  assertEquals(lookups, [[
+    CLAIM_DISPATCH_TYPE.normalized,
+    "m-1",
+    "state-main",
+    2,
+  ]]);
+  // Without the claim the same read is still held to the allowlist.
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "generated-key",
+      }),
+    Error,
+    "not referenced by the dispatched step",
+  );
+});
+
+Deno.test("resolveSecret: a claim is refused for a missing resource, a wrong version, an untagged record, a reference outside the tagged fields, and a non-JSON record", async () => {
+  const cases: Array<
+    {
+      record: StoredRecord | null;
+      claim: { name: string; version: number };
+      key: string;
+      reason: string;
+    }
+  > = [
+    ...[
+      { name: "other-resource" },
+      { version: 3 },
+      { ownerRef: "other-model" },
+    ].map((metadata) => ({
+      record: { ...TAGGED, metadata },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record identity does not match the dispatched behavior",
+    })),
+    {
+      record: null,
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "no such resource of the dispatched behavior",
+    },
+    {
+      record: TAGGED,
+      claim: { name: "state-main", version: 1 },
+      key: "generated-key",
+      reason: "no such resource of the dispatched behavior",
+    },
+    {
+      record: { ...TAGGED, tags: {} },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record has no sensitive fields",
+    },
+    {
+      record: { ...TAGGED, metadata: { checksum: null } },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record has no content checksum",
+    },
+    {
+      record: { ...TAGGED, metadata: { checksum: "0".repeat(64) } },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record content does not match its checksum",
+    },
+    ...[undefined, "0", "2"].map((version) => ({
+      record: {
+        ...TAGGED,
+        tags: {
+          "_swamp.sensitiveFields": JSON.stringify(["password"]),
+          ...(version === undefined
+            ? {}
+            : { [SENSITIVE_FIELDS_VERSION_TAG]: version }),
+        },
+      },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record predates verified sensitive-field writes",
+    })),
+    {
+      record: TAGGED,
+      claim: { name: "state-main", version: 2 },
+      key: "untagged-key",
+      reason: "its sensitive fields do not reference it",
+    },
+    {
+      record: { ...TAGGED, content: "not json" },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record is not JSON",
+    },
+    {
+      record: { ...TAGGED, content: ["list"] },
+      claim: { name: "state-main", version: 2 },
+      key: "generated-key",
+      reason: "the record is not an object",
+    },
+  ];
+  for (const { record, claim, key, reason } of cases) {
+    const dispatches = new DispatchRegistry();
+    withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+    const { service } = createServiceWithRecord(dispatches, record, {
+      [key]: "value",
+    });
+    await assertRejects(
+      () =>
+        service.resolveSecret("worker-1", {
+          vaultName: "default",
+          secretKey: key,
+          resource: claim,
+        }),
+      Error,
+      `resolveSecret: secret '${key}' is not a tagged sensitive field of resource '${claim.name}' (${reason})`,
+    );
+  }
+});
+
+Deno.test("resolveSecret: a claim never admits an annotation read or a denylisted key", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+  const { service, lookups } = createServiceWithRecord(dispatches, {
+    ...TAGGED,
+    content: {
+      password: "${{ vault.get('default', 'server-token-x') }}",
+      note: "n",
+    },
+  }, { "server-token-x": "token", "generated-key": "s3cret" });
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "server-token-x",
+        resource: { name: "state-main", version: 2 },
+      }),
+    Error,
+    "infrastructure secrets are not accessible",
+  );
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "generated-key",
+        annotation: true,
+        resource: { name: "state-main", version: 2 },
+      }),
+    Error,
+    "a resource claim admits a secret value, not an annotation",
+  );
+  // Neither refusal consulted the record.
+  assertEquals(lookups, []);
+});
+
+Deno.test("resolveSecret: a record's verified references are read once per dispatch, record and version", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatchAndSecrets(dispatches, EMPTY_ALLOWLIST);
+  const { service, lookups } = createServiceWithRecord(dispatches, {
+    ...TAGGED,
+    tags: { ...TAGGED.tags, "_swamp.sensitiveFields": "*" },
+    content: {
+      password: "${{ vault.get('default', 'generated-key') }}",
+      "dotted.key": "${{ vault.get('default', 'dotted-key') }}",
+      nested: { deep: "${{ vault.get('default', 'nested-key') }}" },
+    },
+  }, { "generated-key": "s3cret", "dotted-key": "d0tted", "nested-key": "n" });
+  const claim = { name: "state-main", version: 2 };
+  const read = (secretKey: string) =>
+    service.resolveSecret("worker-1", {
+      vaultName: "default",
+      secretKey,
+      resource: claim,
+    });
+  assertEquals((await read("generated-key")).value, "s3cret");
+  // Under the star tag a dotted top-level key is a location of its own,
+  // and a reference nested below a key is not one the writer made.
+  assertEquals((await read("dotted-key")).value, "d0tted");
+  await assertRejects(
+    () => read("nested-key"),
+    Error,
+    "its sensitive fields do not reference it",
+  );
+  // Three reads of one record: one lookup.
+  assertEquals(lookups.length, 1);
+  // Another version is its own record.
+  await assertRejects(
+    () =>
+      service.resolveSecret("worker-1", {
+        vaultName: "default",
+        secretKey: "generated-key",
+        resource: { name: "state-main", version: 3 },
+      }),
+    Error,
+    "no such resource of the dispatched behavior",
+  );
+  assertEquals(lookups.length, 2);
+});
