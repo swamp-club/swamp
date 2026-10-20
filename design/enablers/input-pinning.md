@@ -355,6 +355,14 @@ Done in one PR on the swamp-club#3583 branch:
   passes the copy it matched on; a direct in-process caller supersedes nothing,
   so loading there is safe. The loader is a required field of the supersede
   deps, so a caller cannot wire superseding without it.
+- Runs from before this change are pinned from their record. A key an older
+  swamp resumed with is listed in `resumeInputs` without a value, so a value
+  supplied for it is refused; a resume that died between saving the key names
+  and recording the merged inputs is refused the same way, and a new run is
+  the way out. A run whose older resume overrode a stored value keeps the
+  original in its record, so the guard compares against that original rather
+  than the value the later steps ran with; nothing in the record can tell
+  them apart.
 - Not done: an authoring-time warning for a step that reads an optional,
   default-less input in a tolerant form and does not run after a gate. It
   would read only the authored workflow at `workflow validate` and be

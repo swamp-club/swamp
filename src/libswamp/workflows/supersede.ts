@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { mayHoldPlaintextSensitiveValues } from "../../domain/expressions/persisted_evaluation.ts";
 import { replayInputs } from "../../domain/workflows/persisted_workflow.ts";
 import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -114,6 +115,11 @@ export function supersedeMatchInputs(
 ): Record<string, unknown> | undefined {
   if (!lastEvaluated) return supplied;
   if (!cache) return undefined;
+  // What execution refuses before it replays, so a refused run supersedes
+  // nothing: a cache that may hold plaintext secrets, or one whose
+  // provenance cannot be read.
+  if (mayHoldPlaintextSensitiveValues(cache)) return undefined;
+  if (cache.provenance === "unreadable") return undefined;
   const replay = replayInputs(cache, supplied);
   return "inputs" in replay ? replay.inputs : undefined;
 }

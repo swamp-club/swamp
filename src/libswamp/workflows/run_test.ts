@@ -38,6 +38,7 @@ import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
+import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { StepOutputResolver } from "../../domain/workflows/step_output_resolver.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
@@ -1914,4 +1915,35 @@ Deno.test("workflowRun records a parent step and a concurrent same-named nested 
   await collect(workflowRun(ctx, deps, { workflowIdOrName: "test-workflow" }));
 
   assertEquals(recorded, ["ping:true", "execute:true"]);
+});
+
+Deno.test("workflowRun: a --last-evaluated cache that cannot be read is reported as an error, not thrown (swamp-club#3583)", async () => {
+  const workflow = createTestWorkflow();
+  const captured: { options?: Record<string, unknown> } = {};
+  const deps = {
+    ...createTestDepsWithCapture(workflow, [], captured),
+    supersede: {
+      findSuspendedRuns: () => Promise.resolve([]),
+      findEvaluatedWorkflow: () => Promise.resolve(null),
+      runClaims: unclaimedRuns,
+      evaluatedCache: () => Promise.reject(new Error("corrupt cache")),
+    },
+  };
+
+  const events = await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: workflow.name,
+    lastEvaluated: true,
+  }));
+
+  const error = events.find((e) => e.kind === "error");
+  assertEquals(error?.kind, "error");
+  assertEquals(
+    error?.kind === "error" && error.error.message.includes("corrupt cache"),
+    true,
+  );
+  assertEquals(
+    events.map((e) => e.kind).includes("evaluating_workflow"),
+    false,
+  );
+  assertEquals(captured.options, undefined);
 });

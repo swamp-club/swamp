@@ -306,6 +306,18 @@ async function evaluateWorkflowInternal(
   // for the source's expressions even after the source has been edited.
   const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
 
+  // Coerce string CLI inputs to schema types and apply schema defaults
+  // (matching run.ts behavior), so the cache records the same set a fresh
+  // run records and a --last-evaluated run compares against (swamp-club#3583).
+  // Before the early return below: a workflow with no expressions and no
+  // supplied inputs still records its defaults.
+  const coercedInputs = workflow.inputs
+    ? new InputValidationService().applyDefaults(
+      coerceInputTypes(inputs, workflow.inputs),
+      workflow.inputs,
+    )
+    : coerceInputTypes(inputs, workflow.inputs);
+
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
     await deps.saveEvaluatedWorkflow(
@@ -313,7 +325,7 @@ async function evaluateWorkflowInternal(
       ProvenanceMap.authored(),
       authoredExpressions,
       undefined,
-      { inputs: {} },
+      { inputs: coercedInputs },
     );
     return {
       id: workflow.id,
@@ -322,16 +334,6 @@ async function evaluateWorkflowInternal(
       outputPath: deps.getEvaluatedPath(workflow.id),
     };
   }
-
-  // Coerce string CLI inputs to schema types and apply schema defaults
-  // (matching run.ts behavior), so the cache records the same set a fresh
-  // run records and a --last-evaluated run compares against (swamp-club#3583).
-  const coercedInputs = workflow.inputs
-    ? new InputValidationService().applyDefaults(
-      coerceInputTypes(inputs, workflow.inputs),
-      workflow.inputs,
-    )
-    : coerceInputTypes(inputs, workflow.inputs);
 
   // Build expression context with inputs
   const sensitiveValues = new RunSensitiveValues();

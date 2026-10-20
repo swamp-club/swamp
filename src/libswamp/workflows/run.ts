@@ -76,6 +76,7 @@ import {
   supersedeMatchInputs,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
+import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
 import {
   type CascadedNestedRunData,
@@ -899,10 +900,19 @@ export async function* workflowRun(
 
           // One copy of the evaluated cache for the whole start: superseding
           // matches on it and the execution service replays it
-          // (swamp-club#3583).
-          const evaluatedCache = resolvedInput.lastEvaluated && deps.supersede
-            ? await deps.supersede.evaluatedCache(workflow.name)
-            : undefined;
+          // (swamp-club#3583). A cache that cannot be read is reported like
+          // any other failure to start, not thrown out of the stream.
+          let evaluatedCache: EvaluatedWorkflowCache | null | undefined;
+          if (resolvedInput.lastEvaluated && deps.supersede) {
+            try {
+              evaluatedCache = await deps.supersede.evaluatedCache(
+                workflow.name,
+              );
+            } catch (error) {
+              yield { kind: "error", error: workflowExecutionFailed(error) };
+              return;
+            }
+          }
           // Undefined when the run will be refused before it starts.
           const supersedeInputs = !resolvedInput.noSupersede && deps.supersede
             ? supersedeMatchInputs(

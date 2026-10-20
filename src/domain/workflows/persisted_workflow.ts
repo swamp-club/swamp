@@ -21,6 +21,7 @@ import type { DeferredExpression } from "../expressions/deferred_expression.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
+import { quoteShellWord } from "../shell_word.ts";
 import {
   type DataPath,
   definedEntry,
@@ -88,7 +89,9 @@ export function replayInputs(
     return {
       refusal:
         `The evaluated workflow cached for "${name}" was written before the inputs it was evaluated with were recorded, so it cannot be replayed. ` +
-        `Run the workflow once without --last-evaluated; that rewrites the cache.`,
+        `Run the workflow once without --last-evaluated, or evaluate it again (swamp workflow evaluate ${
+          quoteShellWord(name)
+        } --input ...); either rewrites the cache.`,
     };
   }
   const merged = deepMerge({ ...recorded }, supplied);
@@ -101,7 +104,9 @@ export function replayInputs(
     return {
       refusal:
         `The evaluated workflow cached for "${name}" was evaluated with other values for --input ${quoted}, or without them, and its steps run as evaluated. ` +
-        `Evaluate it again with these inputs (swamp workflow evaluate ${name} --input ...), or run it without --last-evaluated.`,
+        `Evaluate it again with these inputs (swamp workflow evaluate ${
+          quoteShellWord(name)
+        } --input ...), or run it without --last-evaluated.`,
     };
   }
   return { inputs: merged };

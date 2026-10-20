@@ -89,7 +89,7 @@ function gatedDestroy(): Workflow {
 
 Deno.test({
   name:
-    "serve resume: an --input the gate and approval already read is refused (swamp-club#3583)",
+    "serve resume: an --input that changes a value the run has is refused (swamp-club#3583)",
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {

@@ -79,8 +79,10 @@ function changedKeys(
 /**
  * The supplied keys an earlier resume supplied without recording a value: a
  * run resumed by an older swamp listed the key names but kept its inputs as
- * started. The run has such a key, with a value nothing can compare, so it
- * cannot take another.
+ * started. A resume that died between saving the key names and recording the
+ * merged inputs looks the same. The run has such a key, with a value nothing
+ * can compare, so it cannot take another: refusing is the safe side, and the
+ * way out is a new run.
  */
 function unrecordedKeys(
   run: WorkflowRun,

@@ -1232,3 +1232,38 @@ Deno.test("workflowEvaluate: the cache records the inputs it was evaluated with 
   assertEquals(events.at(-1)?.kind, "completed");
   assertEquals(recorded, [{ inputs: { target: "scratch" } }]);
 });
+
+Deno.test("workflowEvaluate: the cache records schema defaults, with no expressions and no inputs too (swamp-club#3583)", async () => {
+  // A fresh run records its defaults, so the cache must too, or a replay
+  // would run without them and supersede on a different set.
+  const workflow = Workflow.fromData({
+    ...makeWorkflow().toData(),
+    name: "defaults-only",
+    inputs: {
+      properties: { region: { type: "string", default: "us-east-1" } },
+    },
+    jobs: [{
+      name: "main",
+      steps: [{
+        name: "s",
+        task: { type: "model_method", modelIdOrName: "m", methodName: "run" },
+      }],
+    }],
+  });
+  const recorded: unknown[] = [];
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(workflow),
+    saveEvaluatedWorkflow: (_w, _p, _a, _r, inputs) => {
+      recorded.push(inputs);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "defaults-only",
+      inputs: {},
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(recorded, [{ inputs: { region: "us-east-1" } }]);
+});

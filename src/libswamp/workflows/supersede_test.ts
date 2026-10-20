@@ -567,4 +567,21 @@ Deno.test("supersedeMatchInputs: a --last-evaluated run that will be refused sup
     undefined,
   );
   assertEquals(supersedeMatchInputs({}, true, cacheOf(workflow)), undefined);
+  // What execution refuses before it replays: a provenance record it
+  // cannot read, or a cache an older swamp wrote that may hold a secret in
+  // plaintext.
+  assertEquals(
+    supersedeMatchInputs({}, true, {
+      ...cacheOf(workflow, { target: "scratch" }),
+      provenance: "unreadable",
+    }),
+    undefined,
+  );
+  assertEquals(
+    supersedeMatchInputs({}, true, {
+      ...cacheOf(workflow, { target: "scratch" }),
+      authoredExpressions: new Set(["${{ data.latest('x', 'y') }}"]),
+    }),
+    undefined,
+  );
 });
