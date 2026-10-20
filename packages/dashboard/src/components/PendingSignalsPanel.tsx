@@ -20,6 +20,7 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 import { useEffect, useState } from "react";
+import { useTabVisible } from "../client/run_activity.ts";
 import { heldAt, type PendingSignalRow } from "../client/signal_wait_state.ts";
 import { formatAbsoluteTime } from "../lib/format.ts";
 import { formatWait } from "../lib/wait_order.ts";
@@ -49,17 +50,20 @@ const DETAIL_STYLE = {
 
 /**
  * The time to judge held signals by: re-read every {@link TICK_MS} while
- * `active`, so a page counting held signals drops a lapsed one when the
- * panel does.
+ * `active` and the tab is in view, so a page counting held signals drops a
+ * lapsed one when the panel does. A hidden tab stops the clock, and it
+ * catches up on coming back into view (swamp-club#3661).
  */
 export function useHeldSignalClock(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
+  const tabVisible = useTabVisible();
+  const ticking = active && tabVisible;
   useEffect(() => {
-    if (!active) return;
+    if (!ticking) return;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(timer);
-  }, [active]);
+  }, [ticking]);
   return now;
 }
 

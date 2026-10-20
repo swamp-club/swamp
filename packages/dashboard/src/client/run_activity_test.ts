@@ -23,12 +23,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   ageOutDelayMs,
   ageOutTimerStep,
+  cameIntoView,
   MAX_TIMER_MS,
   nextRefetch,
   RUN_ACTIVITY_REFETCH_MS,
   runActivityChanged,
   RunActivityProvider,
+  useDocumentVisible,
   useTabVisible,
+  visibleIntervalMs,
 } from "./run_activity.ts";
 
 const T0 = Date.UTC(2026, 9, 14, 16, 0, 0);
@@ -180,6 +183,35 @@ Deno.test("useTabVisible: in view outside a provider, and inside one with no doc
         children: createElement(VisibilityProbe),
       }),
     ),
+    "<span>visible</span>",
+  );
+});
+
+Deno.test("visibleIntervalMs: runs while in view and stops while hidden", () => {
+  assertEquals(visibleIntervalMs(2500, true), 2500);
+  assertEquals(visibleIntervalMs(2500, false), null);
+  assertEquals(visibleIntervalMs(null, true), null);
+  assertEquals(visibleIntervalMs(null, false), null);
+});
+
+Deno.test("cameIntoView: only hidden to in view", () => {
+  assertEquals(cameIntoView(false, true), true);
+  assertEquals(cameIntoView(true, false), false);
+  assertEquals(cameIntoView(true, true), false);
+  assertEquals(cameIntoView(false, false), false);
+});
+
+function DocumentVisibilityProbe() {
+  return createElement(
+    "span",
+    null,
+    useDocumentVisible() ? "visible" : "hidden",
+  );
+}
+
+Deno.test("useDocumentVisible: in view with no document", () => {
+  assertEquals(
+    renderToStaticMarkup(createElement(DocumentVisibilityProbe)),
     "<span>visible</span>",
   );
 });

@@ -47,7 +47,10 @@ import {
 } from "./components/sidebar_state.ts";
 import { useRouter } from "./hooks/useRouter.ts";
 import { TimeRangeProvider } from "./client/time_range.ts";
-import { RunActivityProvider } from "./client/run_activity.ts";
+import {
+  RunActivityProvider,
+  useDocumentVisible,
+} from "./client/run_activity.ts";
 import { TimeRangePicker } from "./components/TimeRangePicker.tsx";
 import { Login } from "./views/Login.tsx";
 import { Overview } from "./views/Overview.tsx";
@@ -169,7 +172,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     closeDetail,
     goUp,
   } = useRouter();
-  const { health, denied: healthDenied } = useHealthStream();
+  // A hidden tab closes the stream: no snapshots, no re-renders.
+  const { health, denied: healthDenied } = useHealthStream(
+    useDocumentVisible(),
+  );
   const auditStream = useAuditStream();
 
   const { data: approvalsData, refetch: refetchApprovals } = useRequest(
