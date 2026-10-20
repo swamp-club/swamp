@@ -41,10 +41,6 @@ import {
   MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
 import {
-  extractBareSpecifierNames,
-  importMapTarget,
-} from "../../domain/models/bundle.ts";
-import {
   type CollectiveMismatch,
   collectiveMismatchesForTypes,
   validateContentCollectives,
@@ -674,6 +670,9 @@ import {
 import type { MissingLocalModule } from "../../domain/extensions/extension_source_graph.ts";
 import {
   applySpecifierRewrites,
+  bareImportRewrites,
+  mergeSpecifierRewrites,
+  planBareImports,
   type SourceArchiveKind,
   type SourceArchivePlan,
 } from "../../domain/extensions/source_archive_plan.ts";
@@ -1829,23 +1828,17 @@ export async function readImportMap(
 }
 
 /**
- * The bare-specifiers finding's message: what happens (the registry cannot
- * score the extension) and, per name, the explicit specifier to write
- * instead, taken from the import map when it has one.
+ * The bare-specifiers finding's message: which bare imports ship as
+ * written, why the registry cannot score the extension because of them,
+ * and what lets push rewrite them (swamp-club#3637).
  */
-export function bareSpecifiersMessage(
-  names: string[],
-  imports: Record<string, string> | undefined,
-): string {
-  const fixes = names.map((name) => {
-    const target = importMapTarget(name, imports);
-    return target
-      ? `"${name}" with "${target}"`
-      : `"${name}" with an explicit npm: or jsr: specifier`;
-  });
-  return "Extension uses bare import specifiers, which the registry's scorer " +
-    "cannot resolve, so it would publish unscored. Replace " +
-    `${fixes.join("; ")}.`;
+export function bareSpecifiersMessage(names: string[]): string {
+  return "Extension has bare imports that ship as written, which the " +
+    "registry's scorer cannot resolve, so it would publish unscored: " +
+    `${names.map((n) => JSON.stringify(n)).join(", ")}. Push rewrites a ` +
+    "bare import only when the deno.json import map resolves it to an " +
+    "npm:, jsr:, node: or URL specifier; add such an entry for each, or " +
+    "write the specifier in its place.";
 }
 
 /**
@@ -1960,8 +1953,10 @@ export async function runQualityFindings(
   }
   const reviewRulesResult = await deps.checkReviewRules(reviewInput);
 
-  // Bare specifiers: the server-side scorer cannot resolve bare imports (it
-  // strips deno.json and writes a controlled one).
+  // Bare imports that ship as written: the server-side scorer cannot
+  // resolve them (it strips deno.json and writes a controlled one). Push
+  // rewrites the ones the deno.json import map resolves (swamp-club#3637),
+  // so only the rest count; without a deno.json, every bare import does.
   const sourceFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
@@ -1969,11 +1964,12 @@ export async function runQualityFindings(
     ...input.allReportFiles,
     ...input.allWebhookFiles,
   ];
+  const imports = await readImportMap(input.denoConfigPath);
   const bareSpecifiers = new Set<string>();
   for (const file of sourceFiles) {
     try {
       const src = await Deno.readTextFile(file);
-      for (const name of extractBareSpecifierNames(src)) {
+      for (const name of planBareImports(src, imports, file).shippedAsWritten) {
         bareSpecifiers.add(name);
       }
     } catch {
@@ -1981,13 +1977,12 @@ export async function runQualityFindings(
     }
   }
   if (bareSpecifiers.size > 0) {
-    const imports = await readImportMap(input.denoConfigPath);
     reviewRulesResult.warnings.push({
       ruleId: "bare-specifiers",
       dimension: "scoring",
       severity: "medium",
       file: "(multiple files)",
-      message: bareSpecifiersMessage([...bareSpecifiers].sort(), imports),
+      message: bareSpecifiersMessage([...bareSpecifiers].sort()),
       remediation: remediationFor("bare-specifiers"),
     });
   }
@@ -3166,7 +3161,21 @@ async function createArchive(
     }
 
     // Copy every local module the entry points reach to its planned path,
-    // rewriting the imports the plan names; the rest are byte for byte.
+    // rewriting the imports the plan names and, under a deno.json, each bare
+    // import its import map resolves to an npm:, jsr:, node: or URL
+    // specifier (swamp-club#3637), so the archive's source resolves without
+    // the project config. Data modules and files with nothing to rewrite
+    // are byte for byte.
+    const imports = input.denoConfigPath
+      ? await readImportMap(input.denoConfigPath)
+      : undefined;
+    const codeModules = new Set([
+      ...input.allModelFiles,
+      ...input.allVaultFiles,
+      ...input.allDatastoreFiles,
+      ...input.allReportFiles,
+      ...input.allWebhookFiles,
+    ]);
     for (const entry of input.sourcePlan.entries) {
       const parts = entry.archivePath.split("/");
       if (
@@ -3180,14 +3189,23 @@ async function createArchive(
       }
       const destPath = join(extDir, ...parts);
       await Deno.mkdir(dirname(destPath), { recursive: true });
-      if (entry.rewrites.length === 0) {
+      let text: string | undefined;
+      let rewrites = entry.rewrites;
+      if (imports && codeModules.has(entry.sourcePath)) {
+        text = await Deno.readTextFile(entry.sourcePath);
+        rewrites = mergeSpecifierRewrites(
+          entry.rewrites,
+          bareImportRewrites(text, imports, entry.sourcePath),
+        );
+      }
+      if (rewrites.length === 0) {
         await Deno.copyFile(entry.sourcePath, destPath);
       } else {
         await Deno.writeTextFile(
           destPath,
           applySpecifierRewrites(
-            await Deno.readTextFile(entry.sourcePath),
-            entry.rewrites,
+            text ?? await Deno.readTextFile(entry.sourcePath),
+            rewrites,
           ),
         );
       }

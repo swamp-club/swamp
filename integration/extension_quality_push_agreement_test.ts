@@ -247,11 +247,32 @@ async function runFmtCheck(fixture: Fixture): Promise<boolean> {
   return last.data.passed;
 }
 
-Deno.test("quality and push agree: bare specifiers are the same warning with the same import-map fix", async () => {
+Deno.test("quality and push agree: a bare import the import map resolves raises no warning, and the extension is registry-scorable (swamp-club#3637)", async () => {
   await withExtension({
     model:
       'import { z } from "zod";\nexport const model = { s: z.string() };\n',
     denoJson: JSON.stringify({ imports: { zod: "npm:zod@4.3.6" } }),
+  }, async (fixture) => {
+    const pushed = await extensionPushPrepare(
+      ctx,
+      prepareDeps(),
+      fixture.prepareInput,
+    );
+    const quality = await runQuality(fixture);
+    const bare = (warnings: { ruleId: string }[]) =>
+      warnings.filter((w) => w.ruleId === "bare-specifiers");
+
+    assertEquals(bare(pushed.reviewRulesResult.warnings), []);
+    assertEquals(bare(quality.findings.reviewRulesResult.warnings), []);
+    assertEquals(quality.registryScorable, true);
+    assertEquals(quality.gateFailures, []);
+  });
+});
+
+Deno.test("quality and push agree: a bare import that ships as written is the same warning", async () => {
+  await withExtension({
+    model:
+      'import { z } from "zod";\nexport const model = { s: z.string() };\n',
   }, async (fixture) => {
     const pushed = await extensionPushPrepare(
       ctx,
@@ -268,7 +289,8 @@ Deno.test("quality and push agree: bare specifiers are the same warning with the
 
     assertEquals(pushBare.length, 1);
     assertEquals(qualityBare, pushBare);
-    assertStringIncludes(pushBare[0].message, '"zod" with "npm:zod@4.3.6"');
+    assertStringIncludes(pushBare[0].message, "ship as written");
+    assertStringIncludes(pushBare[0].message, '"zod"');
     assertEquals(quality.registryScorable, false);
     assertEquals(quality.gateFailures, []);
   });
