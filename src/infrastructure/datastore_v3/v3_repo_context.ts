@@ -99,7 +99,7 @@ import {
 } from "./litestream/v3_copy.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import {
-  readWriterMarker,
+  readWriterMarkerFile,
   recoverInterruptedWriter,
   removeOwnWriterMarker,
   writerMarkerPath,
@@ -115,6 +115,8 @@ import {
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
+import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -473,8 +475,12 @@ export async function ensureV3CopyCurrent(
           await release?.();
         }
       } else {
-        // The read model replays every commit from the start; only files
-        // of dropped commits may stay until then.
+        // The read model replays every commit from the start. Files only
+        // dropped commits wrote may stay: the reset keeps the files it
+        // shows present as removal candidates (swamp-club#3617), but only
+        // a compacted-base load removes them, so they go only when the
+        // restored store has compacted history, and then possibly by a
+        // reader without the writer lease.
         rebuilt.catalogStore.invalidate();
         await rebuilt.catchUp();
       }
@@ -695,8 +701,9 @@ async function recoverAndMark(
   // A marker that is left stays: another host's, or a still-running
   // process's, whose writer may yet leave uncommitted files, or this
   // process's own from before a kept close. Its start is no later than this
-  // process's writes, so it covers them too.
-  if (await readWriterMarker(repoDir) === undefined) {
+  // process's writes, so it covers them too. An unreadable one was
+  // recovered above, never written over first (swamp-club#3617).
+  if ((await readWriterMarkerFile(repoDir)).kind === "absent") {
     await writeWriterMarker(repoDir);
   }
 }
@@ -910,7 +917,12 @@ export async function v3RepositoryFactoryConfig(
      */
     readonly readOnly?: boolean;
   } = {},
-): Promise<Pick<RepositoryFactoryConfig, "commitLog" | "catalogStore">> {
+): Promise<
+  Pick<
+    RepositoryFactoryConfig,
+    "commitLog" | "catalogStore" | "unreadableContent"
+  >
+> {
   if (
     options.managedConfig === true &&
     !datastoreKeyFilter(config.directories, config.exclude)(
@@ -967,6 +979,9 @@ export async function v3RepositoryFactoryConfig(
         readOnly: options.readOnly === true,
       }),
     catalogStore: handle.catalogStore,
+    // A read of a record the read model could not materialise fails loudly
+    // (swamp-club#3617).
+    unreadableContent: unreadableContentLookup(repoDir, handle.readModel),
   };
 }
 
@@ -1547,6 +1562,16 @@ export const SERVE_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 /** How long one chunk sweep in serve may run. */
 const SERVE_CHUNK_GC_TIMEOUT_MS = 10 * 60 * 1000;
 
+/**
+ * How many bytes of chunks each maintenance tick reads and checks before
+ * its sweep, from a random shard prefix (swamp-club#3617): the only place
+ * stored chunks are verified, so same-size damage is found while serve
+ * runs. A CLI sweep verifies nothing, and neither does serve on bucket
+ * storage: it cannot move a damaged chunk aside, so a pass there would
+ * only spend reads on reporting.
+ */
+export const SERVE_CHUNK_VERIFY_BYTES = 64 * 1024 * 1024;
+
 /** The datastores whose deferred chunk collection was logged at info. */
 const deferredCollections = new Set<string>();
 
@@ -1558,14 +1583,23 @@ const deferredCollections = new Set<string>();
 export async function collectChunksQuietly(
   handle: V3Datastore,
   timeoutMs: number = SERVE_CHUNK_GC_TIMEOUT_MS,
+  /** Bytes of chunks to verify first; none unless given. */
+  verifyBytes = 0,
 ): Promise<ChunkCollectionReport | undefined> {
   try {
     const report = await handle.collectChunks(
       AbortSignal.timeout(timeoutMs),
+      ...(verifyBytes > 0 ? [{ bytes: verifyBytes }] : []),
     );
     if (report.deleted > 0) {
       logger
         .debug`Deleted ${report.deleted} unreferenced chunks of the v3 datastore at ${handle.datastorePath}`;
+    }
+    if (report.damaged.length > 0) {
+      logger
+        .warn`Found ${report.damaged.length} damaged chunks in the v3 datastore at ${handle.datastorePath}; ${
+        report.damaged.filter((chunk) => chunk.referenced).length
+      } of them named by commits`;
     }
     return report;
   } catch (error) {
@@ -1748,7 +1782,13 @@ export class V3MaintenanceTimer {
     if (this.#running !== undefined) return;
     this.#running = (async () => {
       await compactQuietly(this.handle);
-      await collectChunksQuietly(this.handle);
+      await collectChunksQuietly(
+        this.handle,
+        SERVE_CHUNK_GC_TIMEOUT_MS,
+        // Only storage that quarantines a damaged chunk is verified: the
+        // filesystem's own `_blobs/` (swamp-club#3617).
+        isChunkQuarantine(this.handle.storage) ? SERVE_CHUNK_VERIFY_BYTES : 0,
+      );
       await syncUnsyncedQuietly(this.handle);
     })().finally(() => {
       this.#running = undefined;

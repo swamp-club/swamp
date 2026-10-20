@@ -201,10 +201,11 @@ All extension types follow the same lifecycle:
 
 ## Key Rules (All Types)
 
-1. **Import**: `import { z } from "npm:zod@4";` — never bare `"zod"` in source
-   files. The scorer strips the repo's `deno.json` and runs without an imports
-   map, so bare specifiers fail at score time even if a `deno.json` maps them
-   locally.
+1. **Import**: `import { z } from "npm:zod@4";`. A bare `"zod"` is fine only
+   when the `deno.json` imports map resolves it — push writes the map's target
+   in its place in the shipped source. The scorer strips the repo's `deno.json`,
+   so an unmapped bare import (or any bare import in a `package.json` project)
+   fails at score time.
 2. **Static imports only**: Dynamic `import()` is rejected during push
 3. **Pin npm versions**: Always pin — inline, via `deno.json`, or `package.json`
 4. **Reserved collectives**: Cannot use `swamp` or `si` in the type

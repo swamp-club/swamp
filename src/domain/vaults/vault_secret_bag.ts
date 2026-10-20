@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type DataReferenceEntry,
   type DataSecretEntry,
   holdsValue,
   isIssuedEntry,
@@ -255,10 +256,8 @@ export class VaultSecretBag {
   private issue(
     entry:
       | Omit<VaultReferenceEntry, "sentinel">
-      | Omit<
-        DataSecretEntry,
-        "sentinel"
-      >,
+      | Omit<DataSecretEntry, "sentinel">
+      | Omit<DataReferenceEntry, "sentinel">,
   ): string {
     if (this.loaded !== undefined) {
       throw new Error("A delivery view of a secret bag issues no sentinels");
@@ -313,6 +312,22 @@ export class VaultSecretBag {
     return sentinel;
   }
 
+  /**
+   * Adds a sensitive-field reference a typed data read brought into an
+   * expression (typed-secrets 3.3), read at `location`, and returns a unique
+   * sentinel that stands for it. No value is read: a load at delivery reads
+   * it, as for {@link addSecret}. Unlike {@link addDataSecret}, nothing is
+   * shared on a repeat, because no value is known to share by.
+   */
+  addDataReference(reference: SecretReference, location: string): string {
+    return this.issue({
+      reference,
+      encoding: "raw",
+      dataOrigin: true,
+      location,
+    });
+  }
+
   /** The entry behind a sentinel the run issued, if it is one. */
   entryOf(sentinel: string): RegistryEntry | undefined {
     return this.registry.entryOf(sentinel);
@@ -333,9 +348,9 @@ export class VaultSecretBag {
 
   /**
    * The value `sentinel` stands for: a data entry's or a shipped entry's
-   * own, or the value this delivery view loaded for a vault reference.
-   * Undefined for text that is not a sentinel of the run. A vault reference
-   * no load filled throws, so its sentinel is never delivered as a value.
+   * own, or the value this delivery view loaded for a reference-only entry.
+   * Undefined for text that is not a sentinel of the run. A reference no
+   * load filled throws, so its sentinel is never delivered as a value.
    */
   private valueOf(sentinel: string): string | undefined {
     const entry = this.registry.entryOf(sentinel);
@@ -426,9 +441,10 @@ export class VaultSecretBag {
    * `target`, so a value sanitized before a step started (at workflow
    * evaluation) is delivered through that step's own bag and ships with it.
    * Each source sentinel maps to one target sentinel, whatever its origin,
-   * with the same reference, encoding and origin; a vault reference moves
-   * as a reference, with no value. Other text is left as it is; a sentinel
-   * from another bag still resolves through the registry.
+   * with the same reference, encoding and origin; a reference-only entry,
+   * vault or data origin, moves as a reference, with no value. Other text is
+   * left as it is; a sentinel from another bag still resolves through the
+   * registry.
    */
   rehomeSentinels(data: unknown, target: VaultSecretBag): unknown {
     const rehomed = new Map<string, string>();
@@ -442,8 +458,10 @@ export class VaultSecretBag {
           "A secret bag entry without a reference cannot be rehomed",
         );
       }
-      const issued = entry.dataOrigin
+      const issued = holdsValue(entry)
         ? target.addDataSecret(entry.value, entry.reference, entry.encoding)
+        : entry.dataOrigin
+        ? target.addDataReference(entry.reference, entry.location)
         : target.addSecret(entry.reference, entry.location);
       rehomed.set(sentinel, issued);
       return issued;

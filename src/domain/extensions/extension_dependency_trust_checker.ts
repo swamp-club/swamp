@@ -26,6 +26,7 @@ import {
   type ShippedVersion,
   type ShippedVersionSource,
   specifierKind,
+  suggestVersion,
 } from "./dependency_version_resolution.ts";
 
 export { resolveAuditVersion };
@@ -54,12 +55,24 @@ export interface DependencyTrustIssue {
   message: string;
   /** Present on not-audited and the shipped-version findings only. */
   cause?: DependencyTrustCause;
+  /**
+   * The version to move to, on `jsr-yanked` and `deprecated-version`
+   * findings when another stable version exists.
+   */
+  suggestedVersion?: string;
+  /** How to resolve a finding that has a cause. */
+  remediation?: string;
 }
 
 export interface DependencyAuditSummary {
   name: string;
-  /** The import specifier as the source writes it, e.g. `npm:ms@^2.1.0`. */
+  /**
+   * The import specifier as the source writes it, e.g. `npm:ms@^2.1.0`, or
+   * the one the import map resolves a bare import to.
+   */
   specifier: string;
+  /** The bare specifier the source wrote, when the import map resolved it. */
+  importedAs?: string;
   version: string;
   /** Where `version` came from; absent when nothing resolved. */
   resolvedFrom?: ShippedVersionSource;
@@ -136,6 +149,8 @@ interface NpmPackageFacts {
   latestDeprecated?: boolean;
   /** npm's deprecation notice for the version that ships. */
   deprecationReason?: string;
+  /** The newest stable version that is not deprecated, when one exists. */
+  suggestedVersion?: string;
   maintainerCount: number;
   weeklyDownloads: number | null;
   lastPublish: string | null;
@@ -486,12 +501,25 @@ function factsFor(packument: NpmPackument, version: string): NpmPackageFacts {
   const latestNotice = deprecationOf(latest?.deprecated ?? pkg.deprecated);
   const notice = deprecationOf(shipped?.deprecated ?? pkg.deprecated);
   const maintainers = shipped?.maintainers ?? pkg.maintainers;
+  const suggestion = notice === null ? null : suggestVersion(
+    version,
+    packument.publishedVersions,
+    new Set(
+      packument.publishedVersions.filter((v) =>
+        deprecationOf(packument.manifests[v]?.deprecated ?? pkg.deprecated) !==
+          null
+      ),
+    ),
+  );
   return {
     version,
     license: licenseOf(shipped?.license ?? pkg.license),
     deprecated: notice !== null,
     latestDeprecated: latestNotice !== null,
     ...(notice ? { deprecationReason: sanitiseNotice(notice) } : {}),
+    ...(notice !== null && suggestion !== null
+      ? { suggestedVersion: suggestion }
+      : {}),
     maintainerCount: Array.isArray(maintainers) ? maintainers.length : 0,
     weeklyDownloads: packument.weeklyDownloads,
     lastPublish: packument.lastPublish,
@@ -597,6 +625,12 @@ export function evaluateNpmTrustGates(
         facts.deprecationReason ? `: ${facts.deprecationReason}` : ""
       }`,
       cause: "deprecated-version",
+      ...(facts.suggestedVersion
+        ? { suggestedVersion: facts.suggestedVersion }
+        : {}),
+      remediation: facts.suggestedVersion
+        ? `Move to ${facts.suggestedVersion}, the newest version that isn't deprecated.`
+        : "Move to a non-deprecated version of the package.",
     });
   }
 
@@ -651,6 +685,16 @@ function specifierText(spec: DependencySpecifier): string {
   }`;
 }
 
+/** What to add to a fix when the lockfile, not the source, chose the version. */
+function lockRefreshNote(
+  shipped: ShippedVersion,
+  lock: LockedDependencyVersions | undefined,
+): string {
+  return shipped.from === "lockfile" && lock
+    ? ` Then refresh ${lock.source} so it records the new version.`
+    : "";
+}
+
 /**
  * An unpinned, range or dist-tag specifier's finding, naming the version
  * this push resolves; null for an exact pin.
@@ -676,6 +720,36 @@ function looseSpecifierFinding(
       specifierText(spec)
     } is ${phrase}; audited ${shipped.version}, the version this push resolves${from}`,
     cause: "loose-specifier",
+    remediation:
+      `Pin the exact version this push resolved (${shipped.version}) to ensure that the audited version is the one that ships.`,
+  };
+}
+
+/**
+ * Names the bare imports a finding came from, so the pusher can find the
+ * line the import map resolved.
+ */
+function importedAsSuffix(names: readonly string[]): string {
+  return ` (imported as ${
+    names.map((n) => `"${n}"`).join(", ")
+  } via deno.json)`;
+}
+
+/** A specifier's audit, its findings naming the bare import it came from. */
+function attributeToImport(
+  spec: DependencySpecifier,
+  audit: SpecifierAudit,
+): SpecifierAudit {
+  if (spec.importedAs === undefined) return audit;
+  const suffix = importedAsSuffix([spec.importedAs]);
+  const attribute = (issue: DependencyTrustIssue): DependencyTrustIssue => ({
+    ...issue,
+    message: issue.message + suffix,
+  });
+  return {
+    errors: audit.errors.map(attribute),
+    warnings: audit.warnings.map(attribute),
+    summary: { ...audit.summary, importedAs: spec.importedAs },
   };
 }
 
@@ -686,10 +760,23 @@ interface SpecifierAudit {
   summary: DependencyAuditSummary;
 }
 
+/**
+ * How to resolve a dependency that was not audited, by why it was not: a
+ * lookup outage clears on a re-run, a wrong name or specifier never does.
+ */
+const NOT_AUDITED_FIX = {
+  outage: "Re-run when OSV, npm and JSR are reachable.",
+  name: "Correct the package name in the import.",
+  specifier: "Change the specifier to a version the registry publishes.",
+  unexpected: "Re-run; if it fails again, report it.",
+  other: "Resolve the reason above, then re-run.",
+} as const;
+
 function notAudited(
   spec: DependencySpecifier,
   reason: string,
   summary: Omit<DependencyAuditSummary, "passed" | "cause" | "reason">,
+  fix: keyof typeof NOT_AUDITED_FIX = "other",
   errors: DependencyTrustIssue[] = [],
   warnings: DependencyTrustIssue[] = [],
 ): SpecifierAudit {
@@ -699,6 +786,7 @@ function notAudited(
       dependency: spec.name,
       message: `not audited: ${reason}`,
       cause: "not-audited",
+      remediation: NOT_AUDITED_FIX[fix],
     }],
     summary: { ...summary, passed: false, cause: "not-audited", reason },
   };
@@ -726,7 +814,7 @@ async function auditNpmPackage(
         license: null,
         weeklyDownloads: null,
         publishedAgo: null,
-      })
+      }, "name")
     );
   }
 
@@ -759,12 +847,16 @@ async function auditNpmPackage(
     const osv = osvLookup === null ? null : await osvLookup;
 
     const failures: string[] = [];
+    // A wrong specifier fails the same way on every re-run; a lookup that
+    // failed may not.
+    let wrongSpecifier = false;
     if (npm.kind === "unavailable") {
       failures.push(`npm registry lookup failed (${npm.reason})`);
     } else if (
       version !== null && !Object.hasOwn(npm.value.manifests, version)
     ) {
       failures.push(`npm lists no version ${version}`);
+      wrongSpecifier = true;
     }
     if (osv === null) {
       failures.push(
@@ -774,6 +866,7 @@ async function auditNpmPackage(
           })`
           : "OSV not queried (no resolvable version)",
       );
+      if (npm.kind === "found") wrongSpecifier = true;
     } else if (osv.kind === "unavailable") {
       failures.push(`OSV lookup failed (${osv.reason})`);
     }
@@ -786,6 +879,12 @@ async function auditNpmPackage(
       ? evaluateNpmTrustGates(name, facts, vulns, thresholds)
       : evaluateVulns(name, vulns);
     if (shipped) {
+      const note = lockRefreshNote(shipped, lock);
+      for (const w of warnings) {
+        if (w.cause === "deprecated-version" && w.remediation) {
+          w.remediation += note;
+        }
+      }
       const loose = looseSpecifierFinding(spec, shipped, lock);
       if (loose) warnings.push(loose);
     }
@@ -802,7 +901,14 @@ async function auditNpmPackage(
     };
     audits.push(
       failures.length > 0
-        ? notAudited(spec, failures.join("; "), summary, errors, warnings)
+        ? notAudited(
+          spec,
+          failures.join("; "),
+          summary,
+          wrongSpecifier ? "specifier" : "outage",
+          errors,
+          warnings,
+        )
         : {
           errors,
           warnings,
@@ -848,7 +954,12 @@ async function auditJsrPackage(
     if (meta === null) return missing("invalid JSR package name");
     if (meta.kind === "missing") return missing("JSR package not found");
     if (meta.kind === "unavailable") {
-      return notAudited(spec, `JSR lookup failed (${meta.reason})`, base);
+      return notAudited(
+        spec,
+        `JSR lookup failed (${meta.reason})`,
+        base,
+        "outage",
+      );
     }
 
     const shipped = resolveShippedVersion("jsr", name, spec.version, lock, {
@@ -866,10 +977,25 @@ async function auditJsrPackage(
 
     const warnings: DependencyTrustIssue[] = [];
     if (meta.value.yanked.has(shipped.version)) {
+      const suggested = suggestVersion(
+        shipped.version,
+        meta.value.versions,
+        meta.value.yanked,
+      );
       warnings.push({
         dependency: name,
-        message: `version ${shipped.version} is yanked on JSR`,
+        message:
+          `version ${shipped.version} was withdrawn (yanked) by its author on JSR. ${
+            suggested
+              ? `Newest version that isn't yanked: ${suggested}.`
+              : "No other version is available."
+          }`,
         cause: "jsr-yanked",
+        ...(suggested ? { suggestedVersion: suggested } : {}),
+        remediation: (suggested
+          ? `Pin jsr:${name}@${suggested} (or the newest non-yanked version your code supports).`
+          : "Wait for the author to publish a replacement, or replace the dependency.") +
+          lockRefreshNote(shipped, lock),
       });
     }
     const loose = looseSpecifierFinding(spec, shipped, lock);
@@ -931,17 +1057,24 @@ export async function checkDependencyTrust(
     );
 
     for (const [index, result] of results.entries()) {
+      const specs = batch[index];
       if (result.status === "rejected") {
+        // Named by its bare imports only when no specifier writes it out.
+        const bare = specs.every((spec) => spec.importedAs !== undefined)
+          ? [...new Set(specs.flatMap((spec) => spec.importedAs ?? []))]
+          : [];
         allWarnings.push({
-          dependency: batch[index][0].name,
+          dependency: specs[0].name,
           message: `not audited: audit check failed (${
             describeFailure(result.reason)
-          })`,
+          })${bare.length > 0 ? importedAsSuffix(bare) : ""}`,
           cause: "not-audited",
+          remediation: NOT_AUDITED_FIX.unexpected,
         });
         continue;
       }
-      for (const audit of result.value) {
+      for (const [i, raw] of result.value.entries()) {
+        const audit = attributeToImport(specs[i], raw);
         for (const error of audit.errors) allErrors.push(error);
         for (const warning of audit.warnings) allWarnings.push(warning);
         audited.push(audit.summary);
@@ -958,16 +1091,28 @@ export async function checkDependencyTrust(
 }
 
 /**
- * The findings that cost the rubric's dependency-trust factor besides an
- * unaudited dependency: every error, and a deprecated shipped version, which
- * push only warns about (it waits for swamp-club#3354 to block) but the
- * registry's scorecard already scores against.
+ * The findings that cost both points of the rubric's dependency-trust factor
+ * besides an unaudited dependency: every error, a deprecated shipped version
+ * and a yanked JSR version. Push only warns about the last two (`--yes`
+ * accepts them) but the rubric scores against them, as the registry's
+ * scorecard does.
  */
 export function dependencyTrustBlockerCount(
   result: DependencyTrustResult,
 ): number {
   return result.errors.length +
-    result.warnings.filter((w) => w.cause === "deprecated-version").length;
+    result.warnings.filter((w) =>
+      w.cause === "deprecated-version" || w.cause === "jsr-yanked"
+    ).length;
+}
+
+/** How many dependencies have a loose specifier; each costs one point. */
+export function looseSpecifierCount(result: DependencyTrustResult): number {
+  return new Set(
+    result.warnings
+      .filter((w) => w.cause === "loose-specifier")
+      .map((w) => w.dependency),
+  ).size;
 }
 
 /** How many dependencies a lookup failure left unaudited. */

@@ -194,6 +194,10 @@ class FakeWorld {
       },
       now: () => this.time,
       sleep: async (ms) => {
+        // A launched fake supervisor records itself before the clock moves:
+        // under load its real lock and write could outlast the fake start
+        // wait (swamp-club#3653).
+        await Promise.allSettled(this.starting);
         this.time += ms;
         // Lets a launched fake supervisor take its lock.
         await new Promise((resolve) => setTimeout(resolve, 2));

@@ -29,18 +29,24 @@ import { z } from "zod";
 import { UserError } from "../errors.ts";
 import {
   bundleExtension,
+  denoProjectArgs,
   extractBareSpecifierNames,
   fixCjsEsmInterop,
   importMapTarget,
   installZodGlobal,
   isEsbuildInstallRace,
   isExpectedBundleFailure,
+  isStaleLockfile,
+  isZod3Specifier,
+  isZod4Specifier,
   rejectZodV3Imports,
   rewriteZodImports,
   runFirstAlone,
   sanitizeDataUrlError,
   sourceHasBareSpecifiers,
+  staleLockfileError,
   uint8ArrayToBase64,
+  zod4SpecifiersReachedFrom,
 } from "./bundle.ts";
 
 const DENO_PATH = Deno.execPath();
@@ -456,6 +462,224 @@ Deno.test("rewriteZodImports: leaves zod@3 imports untouched", () => {
   const input = `import { z } from "npm:zod@3.22.4";`;
   const result = rewriteZodImports(input);
   assertEquals(result, input);
+});
+
+// --- zod version spellings (swamp-club#3637) ---
+
+Deno.test("isZod4Specifier: accepts every spelling that admits only zod 4", () => {
+  for (
+    const spec of [
+      "zod",
+      "npm:zod",
+      "npm:zod@4",
+      "npm:zod@4.3.6",
+      "npm:zod@^4",
+      "npm:zod@^4.1.0",
+      "npm:zod@~4.2",
+      "npm:zod@4.x",
+      "npm:zod@>=4.1 <5",
+      "npm:zod@4.3.6/v4",
+      "npm:zod@^4.1/v4",
+    ]
+  ) {
+    assertEquals(isZod4Specifier(spec), true, spec);
+  }
+});
+
+Deno.test("isZod4Specifier: rejects zod 3, ranges that leave 4.x, and other packages", () => {
+  for (
+    const spec of [
+      "npm:zod@3.23.8",
+      "npm:zod@^3",
+      "npm:zod@>=3 <5",
+      "npm:zod@*",
+      "npm:zod@latest",
+      "npm:zod@5",
+      "npm:zodiac@4",
+      "npm:zod-to-json-schema@4",
+      "jsr:@zod/zod@4",
+      "npm:zod@3.25.0/v4",
+      "zod/v4",
+      "npm:zod@4.3.6/v4/core",
+      "npm:zod@^4/mini",
+    ]
+  ) {
+    assertEquals(isZod4Specifier(spec), false, spec);
+  }
+});
+
+Deno.test("isZod3Specifier: accepts only spellings that admit only zod 3", () => {
+  assertEquals(isZod3Specifier("npm:zod@3"), true);
+  assertEquals(isZod3Specifier("npm:zod@^3.22"), true);
+  assertEquals(isZod3Specifier("npm:zod@~3.23.0"), true);
+  assertEquals(isZod3Specifier("zod"), false);
+  assertEquals(isZod3Specifier("npm:zod@^4"), false);
+  assertEquals(isZod3Specifier("npm:zod@>=3 <5"), false);
+});
+
+Deno.test("rewriteZodImports: rewrites ranged zod 4 imports", () => {
+  assertEquals(
+    rewriteZodImports(`import { z } from "npm:zod@^4.1.0";`),
+    `const { z } = globalThis.__swamp_zod;`,
+  );
+  assertEquals(
+    rewriteZodImports(`import * as zod from "npm:zod@~4.2";`),
+    `const zod = globalThis.__swamp_zod;`,
+  );
+});
+
+Deno.test("rewriteZodImports: rewrites a zod 4 import with a subpath, as before", () => {
+  assertEquals(
+    rewriteZodImports(`import { z } from "npm:zod@4.3.6/v4";`),
+    `const { z } = globalThis.__swamp_zod;`,
+  );
+});
+
+Deno.test("rewriteZodImports: still rewrites a pinned zod 4 subpath an older swamp externalized", () => {
+  assertEquals(
+    rewriteZodImports(`import { z } from "npm:zod@4.3.6/v4/core";`),
+    `const { z } = globalThis.__swamp_zod;`,
+  );
+});
+
+Deno.test("rewriteZodImports: leaves a ranged zod 3 import untouched", () => {
+  const input = `import { z } from "npm:zod@^3.22.4";`;
+  assertEquals(rewriteZodImports(input), input);
+});
+
+Deno.test("rejectZodV3Imports: throws on a ranged zod 3 import", () => {
+  assertThrows(
+    () => rejectZodV3Imports(`import { z } from "npm:zod@^3.22";`),
+    Error,
+    "Swamp requires Zod v4",
+  );
+});
+
+Deno.test("rejectZodV3Imports: allows a ranged zod 4 import", () => {
+  rejectZodV3Imports(`import { z } from "npm:zod@^4.1";`);
+});
+
+Deno.test("bundleExtension: keeps ranged zod 4 external in a module the entry point imports", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  try {
+    await Deno.mkdir(join(dir, "lib"));
+    await Deno.writeTextFile(
+      join(dir, "lib", "schema.ts"),
+      `import { z } from "npm:zod@^4.1.0";\nexport const schema = z.object({ id: z.string() });\n`,
+    );
+    const entry = join(dir, "ext.ts");
+    await Deno.writeTextFile(
+      entry,
+      `export { schema } from "./lib/schema.ts";\n`,
+    );
+    const js = await bundleExtension(entry, DENO_PATH);
+    assertEquals(js.length < 10_000, true);
+    const mod = await importBundled(js);
+    assertEquals(mod.schema instanceof z.ZodType, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("bundleExtension: keeps a zod 4 range with spaces external in an imported module", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  try {
+    await Deno.mkdir(join(dir, "lib"));
+    await Deno.writeTextFile(
+      join(dir, "lib", "schema.ts"),
+      `import { z } from "npm:zod@>=4.1 <5";\nexport const schema = z.string();\n`,
+    );
+    const entry = join(dir, "ext.ts");
+    await Deno.writeTextFile(
+      entry,
+      `export { schema } from "./lib/schema.ts";\n`,
+    );
+    const js = await bundleExtension(entry, DENO_PATH);
+    assertEquals(js.length < 10_000, true);
+    const mod = await importBundled(js);
+    assertEquals(mod.schema instanceof z.ZodType, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("zod4SpecifiersReachedFrom: collects zod 4 spellings across relative imports, once each", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  try {
+    await Deno.mkdir(join(dir, "lib", "deep"), { recursive: true });
+    const entry = join(dir, "ext.ts");
+    await Deno.writeTextFile(
+      entry,
+      [
+        'import { z } from "npm:zod@4.3.6";',
+        'import "./lib/a.ts";',
+        'export * from "./lib/b.ts";',
+        'const lazy = () => import("./lib/deep/c.ts");',
+        '// import { z } from "npm:zod@~4.9";',
+        'const t = `import { z } from "npm:zod@^4.8"`;',
+        'import { ms } from "npm:ms@2";',
+      ].join("\n"),
+    );
+    await Deno.writeTextFile(
+      join(dir, "lib", "a.ts"),
+      'import { z } from "npm:zod@^4.1";\nimport "../ext.ts";\n',
+    );
+    await Deno.writeTextFile(
+      join(dir, "lib", "b.ts"),
+      'import { z } from "npm:zod@^3.22";\nimport { y } from "npm:zod@^4 || ^3";\n',
+    );
+    await Deno.writeTextFile(
+      join(dir, "lib", "deep", "c.ts"),
+      'export { z } from "npm:zod@>=4.1 <5";\nimport { v } from "npm:zod@4.3.6/v4";\nimport d from "./d.json" with { type: "json" };\n',
+    );
+    assertEquals(await zod4SpecifiersReachedFrom(entry), [
+      "npm:zod@4.3.6",
+      "npm:zod@4.3.6/v4",
+      "npm:zod@>=4.1 <5",
+      "npm:zod@^4.1",
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("zod4SpecifiersReachedFrom: skips a relative import that does not exist", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  try {
+    const entry = join(dir, "ext.ts");
+    await Deno.writeTextFile(
+      entry,
+      'import "./missing.ts";\nimport { z } from "npm:zod@^4";\n',
+    );
+    assertEquals(await zod4SpecifiersReachedFrom(entry), ["npm:zod@^4"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("bundleExtension: externalizes a bare zod the deno.json maps to a zod 4 range", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  try {
+    const config = join(dir, "deno.json");
+    await Deno.writeTextFile(
+      config,
+      JSON.stringify({ imports: { zod: "npm:zod@^4.1.0" } }),
+    );
+    const entry = join(dir, "ext.ts");
+    await Deno.writeTextFile(
+      entry,
+      `import { z } from "zod";\nexport const schema = z.string();\n`,
+    );
+    const js = await bundleExtension(entry, DENO_PATH, {
+      denoConfigPath: config,
+      readOnlyLock: {},
+    });
+    assertEquals(js.length < 10_000, true);
+    const mod = await importBundled(js);
+    assertEquals(mod.schema instanceof z.ZodType, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 // --- uint8ArrayToBase64 unit tests ---
@@ -1442,4 +1666,137 @@ Deno.test("isEsbuildInstallRace: matches only the esbuild copy failure", () => {
     ),
     false,
   );
+});
+
+// Deno 2.9.7's --frozen refusal, colours and all, as `deno bundle` and
+// `deno info` print it. If an embedded Deno bump changes this text, the
+// stale-lock message falls back to the generic failure: update it here.
+const STALE_LOCK_OUTPUT = "\u001b[0m\u001b[1m\u001b[31merror\u001b[0m: " +
+  "Prepare module load error\n\nCaused by:\n    The lockfile is out of " +
+  "date. Run `deno install --frozen=false`, or rerun with `--frozen=false` " +
+  'to update it.\n    changes:\n     4 | -    "npm:ms@2": "2.1.3"\n' +
+  '     4 | +    "npm:ms@^2.1.0": "2.1.3"\n';
+
+Deno.test("denoProjectArgs: without readOnlyLock the flags are unchanged", () => {
+  assertEquals(denoProjectArgs({ denoConfigPath: "/p/deno.json" }), [
+    "--config",
+    "/p/deno.json",
+  ]);
+  assertEquals(denoProjectArgs({ packageJsonDir: "/p" }), [
+    "--node-modules-dir=auto",
+  ]);
+  assertEquals(denoProjectArgs(), ["--no-lock", "--node-modules-dir=none"]);
+});
+
+Deno.test("denoProjectArgs: readOnlyLock freezes an existing lock and disables a missing one", () => {
+  const lockPath = "/p/deno.lock";
+  assertEquals(
+    denoProjectArgs({
+      denoConfigPath: "/p/deno.json",
+      readOnlyLock: { lockPath },
+    }),
+    ["--config", "/p/deno.json", "--frozen"],
+  );
+  assertEquals(
+    denoProjectArgs({ denoConfigPath: "/p/deno.json", readOnlyLock: {} }),
+    ["--config", "/p/deno.json", "--no-lock"],
+  );
+  assertEquals(
+    denoProjectArgs({ packageJsonDir: "/p", readOnlyLock: { lockPath } }),
+    ["--node-modules-dir=auto", "--frozen"],
+  );
+  assertEquals(
+    denoProjectArgs({ packageJsonDir: "/p", readOnlyLock: {} }),
+    ["--node-modules-dir=auto", "--no-lock"],
+  );
+  assertEquals(denoProjectArgs({ readOnlyLock: {} }), [
+    "--no-lock",
+    "--node-modules-dir=none",
+  ]);
+});
+
+Deno.test("isStaleLockfile: matches Deno's --frozen refusal only", () => {
+  assertEquals(isStaleLockfile(STALE_LOCK_OUTPUT), true);
+  assertEquals(
+    isStaleLockfile('error: Module not found "file:///x.ts".'),
+    false,
+  );
+});
+
+Deno.test("staleLockfileError: names the lock, the config and the fix, and keeps the changes", () => {
+  const configDir = join("ext", "proj");
+  const error = staleLockfileError(
+    join(configDir, "deno.lock"),
+    join(configDir, "mod.ts"),
+    { denoConfigPath: join(configDir, "deno.json") },
+    STALE_LOCK_OUTPUT,
+  );
+  assertEquals(error instanceof UserError, true);
+  assertStringIncludes(
+    error.message,
+    `${join(configDir, "deno.lock")} is out of date with ${
+      join(configDir, "deno.json")
+    }`,
+  );
+  assertStringIncludes(
+    error.message,
+    `Run \`deno install --entrypoint ${
+      join(configDir, "mod.ts")
+    }\` in ${configDir}`,
+  );
+  assertStringIncludes(error.message, '+    "npm:ms@^2.1.0": "2.1.3"');
+  assertEquals(error.message.includes("--frozen=false"), false);
+  assertEquals(error.message.includes("\u001b"), false);
+});
+
+Deno.test("staleLockfileError: package.json mode names package.json and its directory", () => {
+  const dir = join("ext", "pkg");
+  const error = staleLockfileError(
+    join(dir, "deno.lock"),
+    join(dir, "mod.ts"),
+    { packageJsonDir: dir },
+    STALE_LOCK_OUTPUT,
+  );
+  assertStringIncludes(error.message, "is out of date with package.json");
+  assertStringIncludes(error.message, `\` in ${dir}, commit`);
+});
+
+Deno.test("bundleExtension: readOnlyLock bundles with --frozen and reports a stale lock", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    const lockPath = join(path, "..", "deno.lock");
+    const { calls } = await withMockedCommand(
+      [{ stdout: "", stderr: STALE_LOCK_OUTPUT, code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            bundleExtension(path, DENO_PATH, {
+              denoConfigPath: join(path, "..", "deno.json"),
+              readOnlyLock: { lockPath },
+              env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+            }),
+          UserError,
+          `${lockPath} is out of date`,
+        );
+      },
+    );
+    assertEquals(calls[0].args.includes("--frozen"), true);
+  });
+});
+
+Deno.test("bundleExtension: without readOnlyLock a stale-lock failure is the generic bundle error", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    await withMockedCommand(
+      [{ stdout: "", stderr: STALE_LOCK_OUTPUT, code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            bundleExtension(path, DENO_PATH, {
+              env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+            }),
+          Error,
+          "deno bundle failed for",
+        );
+      },
+    );
+  });
 });

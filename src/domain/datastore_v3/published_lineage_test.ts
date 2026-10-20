@@ -21,6 +21,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   collectableLineages,
   compareTxid,
+  copyNeverRestored,
   copyStateAdvances,
   currentLineage,
   decideChunkCollection,
@@ -108,6 +109,18 @@ Deno.test("currentLineage: the highest confirmed lineage under the root", () => 
 Deno.test("currentLineage: nothing confirmed is no current state", () => {
   assertEquals(currentLineage([published(3)], ROOT), undefined);
   assertEquals(currentLineage([], ROOT), undefined);
+});
+
+Deno.test("copyNeverRestored: a missing copy, or one no restore or writer recorded, never held the state", () => {
+  assertEquals(copyNeverRestored(undefined), true);
+  assertEquals(copyNeverRestored({}), true);
+});
+
+Deno.test("copyNeverRestored: a restored copy, or a writer's own, held the state", () => {
+  const copy = { replicaRoot: ROOT, lineageFence: 3, txid: txid(5) };
+  assertEquals(copyNeverRestored({ copy }), false);
+  assertEquals(copyNeverRestored({ lineage: own(4) }), false);
+  assertEquals(copyNeverRestored({ copy, lineage: own(4) }), false);
 });
 
 Deno.test("decideLocalCopy: nothing published leaves the copy as it is", () => {

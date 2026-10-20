@@ -46,6 +46,7 @@ import {
 } from "./pull.ts";
 import { createLibSwampContext } from "../context.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { canonicalLockfilePath } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { PulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import { UserError } from "../../domain/errors.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
@@ -729,6 +730,18 @@ async function withSkillRepo(
   }
 }
 
+/** `path` as the lockfile records it: repo-relative, with `/` on every OS. */
+function lockPath(repoDir: string, path: string): string {
+  return canonicalLockfilePath(relative(repoDir, path));
+}
+
+/** Asserts every reported path is in the lockfile's `/` form. */
+function assertLockfileForm(paths: ReadonlyArray<string> | undefined): void {
+  for (const path of paths ?? []) {
+    assertEquals(path, canonicalLockfilePath(path));
+  }
+}
+
 function skillInstallContext(
   repoDir: string,
   lockfile: LockfileRepository,
@@ -781,9 +794,12 @@ Deno.test(
         { name, version: null },
         skillInstallContext(repoDir, lockfile, { [name]: archive }),
       );
-      const root = relative(repoDir, join(repoDir, ".claude", "skills", "foo"));
+      const root = lockPath(repoDir, join(repoDir, ".claude", "skills", "foo"));
       assertEquals(result?.extractedFiles.includes(root), true);
       assertEquals(result?.createdPaths.includes(root), true);
+      assertLockfileForm(result?.extractedFiles);
+      assertLockfileForm(result?.createdPaths);
+      assertLockfileForm(result?.skillFiles);
       assertEquals(lockfile.getEntry(name)?.files?.includes(root), true);
     });
   },
@@ -809,8 +825,8 @@ Deno.test(
           ),
         ConflictError,
       );
-      assertEquals(error.conflicts, [relative(repoDir, userSkill)]);
-      assertEquals(error.skillDirs, [relative(repoDir, userSkill)]);
+      assertEquals(error.conflicts, [lockPath(repoDir, userSkill)]);
+      assertEquals(error.skillDirs, [lockPath(repoDir, userSkill)]);
       assertStringIncludes(error.message, "other files kept");
       assertEquals(
         await Deno.readTextFile(join(userSkill, "notes.md")),
@@ -840,13 +856,15 @@ Deno.test(
           force: true,
         }),
       );
-      const root = relative(repoDir, userSkill);
-      const skillMd = relative(repoDir, join(userSkill, "SKILL.md"));
-      const readme = relative(repoDir, join(userSkill, "README.md"));
+      const root = lockPath(repoDir, userSkill);
+      const skillMd = lockPath(repoDir, join(userSkill, "SKILL.md"));
+      const readme = lockPath(repoDir, join(userSkill, "README.md"));
       const files = lockfile.getEntry(name)?.files ?? [];
       assertEquals(files.includes(root), false);
       assertEquals(files.includes(skillMd), true);
       assertEquals(files.includes(readme), true);
+      assertLockfileForm(result?.extractedFiles);
+      assertLockfileForm(result?.skillFiles);
       // Only the file that did not exist before may be rolled back.
       assertEquals(result?.createdPaths.includes(skillMd), true);
       assertEquals(result?.createdPaths.includes(readme), false);
@@ -872,7 +890,7 @@ Deno.test(
         { name, version: null },
         skillInstallContext(repoDir, lockfile, { [name]: archive }),
       );
-      const root = relative(repoDir, join(repoDir, ".claude", "skills", "foo"));
+      const root = lockPath(repoDir, join(repoDir, ".claude", "skills", "foo"));
       // Still owned as the root, but nothing new to roll back.
       assertEquals(lockfile.getEntry(name)?.files?.includes(root), true);
       assertEquals(result?.createdPaths.includes(root), false);
@@ -928,10 +946,10 @@ Deno.test(
         }),
       );
       const files = lockfile.getEntry(name)?.files ?? [];
-      assertEquals(files.includes(relative(repoDir, kiroSkill)), true);
-      assertEquals(files.includes(relative(repoDir, claudeSkill)), false);
+      assertEquals(files.includes(lockPath(repoDir, kiroSkill)), true);
+      assertEquals(files.includes(lockPath(repoDir, claudeSkill)), false);
       assertEquals(
-        files.includes(relative(repoDir, join(claudeSkill, "SKILL.md"))),
+        files.includes(lockPath(repoDir, join(claudeSkill, "SKILL.md"))),
         true,
       );
     });
@@ -961,12 +979,12 @@ Deno.test(
       );
       const skillDir = join(repoDir, ".claude", "skills", "foo");
       assertEquals(
-        lockfile.getEntry(parent)?.files?.includes(relative(repoDir, skillDir)),
+        lockfile.getEntry(parent)?.files?.includes(lockPath(repoDir, skillDir)),
         true,
       );
       assertEquals(
         lockfile.getEntry(dep)?.files?.includes(
-          relative(repoDir, join(skillDir, "dep.md")),
+          lockPath(repoDir, join(skillDir, "dep.md")),
         ),
         true,
       );
@@ -998,7 +1016,7 @@ Deno.test(
           ),
         ConflictError,
       );
-      assertEquals(error.conflicts, [relative(repoDir, link)]);
+      assertEquals(error.conflicts, [lockPath(repoDir, link)]);
     });
   },
 );
@@ -1037,6 +1055,70 @@ Deno.test(
 );
 
 Deno.test(
+  "installExtension: pruned lists the swapped-out files and the skill walk's files in the lockfile's form",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const owner = uniqueExtName();
+      const dep = uniqueExtName();
+      const oldFile = join(extRootOf(repoDir, owner), "files", "old.txt");
+      await ensureDir(dirname(oldFile));
+      await Deno.writeTextFile(oldFile, "old");
+      const skillDir = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "owner");
+      await lockfile.writeEntry(owner, "2025.01.01.1", [
+        relative(repoDir, oldFile),
+        relative(repoDir, skillDir),
+      ]);
+      // The new version drops files/old.txt and skill foo, and its
+      // dependency merges a file into foo, so the prune walks foo.
+      const archives = {
+        [owner]: await buildSkillArchive({
+          name: owner,
+          skills: { bar: { "SKILL.md": "bar" } },
+          files: { "files/new.txt": "new" },
+          dependencies: [dep],
+        }),
+        [dep]: await buildSkillArchive({
+          name: dep,
+          skills: { foo: { "dep.md": "dep" } },
+        }),
+      };
+      const result = await installExtension(
+        { name: owner, version: null },
+        skillInstallContext(repoDir, lockfile, archives),
+      );
+      assertEquals(result?.pruned, [
+        lockPath(repoDir, oldFile),
+        lockPath(repoDir, join(skillDir, "SKILL.md")),
+      ]);
+      assertEquals(await Deno.readTextFile(join(skillDir, "dep.md")), "dep");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: missingSourceFiles lists a nested missing import in the lockfile's form",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+        files: {
+          "models/sub/a.ts": 'export { b } from "./gone/b.ts";\n',
+        },
+      });
+      const result = await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      assertEquals(result?.missingSourceFiles, ["sub/gone/b.ts"]);
+    });
+  },
+);
+
+Deno.test(
   "installExtension: orphan prune still removes an unclaimed dropped skill dir",
   async () => {
     await withSkillRepo(async (repoDir, lockfile) => {
@@ -1054,7 +1136,7 @@ Deno.test(
         { name, version: null },
         skillInstallContext(repoDir, lockfile, { [name]: archive }),
       );
-      assertEquals(result?.pruned, [root]);
+      assertEquals(result?.pruned, [canonicalLockfilePath(root)]);
       assertEquals(await exists(skillDir), false);
     });
   },
@@ -1082,7 +1164,7 @@ Deno.test(
       assertEquals(result?.pruned, []);
       assertEquals(await Deno.readTextFile(join(skillDir, "SKILL.md")), "new");
       assertEquals(
-        lockfile.getEntry(name)?.files?.includes(relative(repoDir, skillDir)),
+        lockfile.getEntry(name)?.files?.includes(lockPath(repoDir, skillDir)),
         true,
       );
     });
@@ -1113,11 +1195,11 @@ Deno.test(
       );
       const created = result?.createdPaths ?? [];
       assertEquals(
-        created.includes(relative(repoDir, join(userSkill, "SKILL.md"))),
+        created.includes(lockPath(repoDir, join(userSkill, "SKILL.md"))),
         false,
       );
       assertEquals(
-        created.includes(relative(repoDir, join(userSkill, "extra.md"))),
+        created.includes(lockPath(repoDir, join(userSkill, "extra.md"))),
         true,
       );
     });
@@ -1721,8 +1803,8 @@ Deno.test(
       assertEquals(await exists(join(skills, "c", "SKILL.md")), true);
       const files = (await LockfileRepository.create(lockfilePath))
         .getEntry(name)?.files ?? [];
-      assertEquals(files.includes(relative(repoDir, join(skills, "c"))), true);
-      assertEquals(files.includes(relative(repoDir, join(skills, "b"))), false);
+      assertEquals(files.includes(lockPath(repoDir, join(skills, "c"))), true);
+      assertEquals(files.includes(lockPath(repoDir, join(skills, "b"))), false);
     });
   },
 );
@@ -1874,7 +1956,7 @@ Deno.test(
       // The lockfile does not list bundle cache files, so the swap
       // removes v1's bundle without reporting it.
       assertEquals(result?.pruned, [
-        relative(
+        lockPath(
           repoDir,
           join(extRootOf(repoDir, name), "models", "old_only.ts"),
         ),
@@ -1958,7 +2040,7 @@ Deno.test(
       // The entry lists what the extension shipped, not the user's files,
       // and its anchor covers the tree on disk.
       const entry = lockfile.getEntry(name)!;
-      assertEquals(entry.files?.includes(relative(repoDir, extra)), false);
+      assertEquals(entry.files?.includes(lockPath(repoDir, extra)), false);
       assertEquals(
         entry.filesChecksum,
         await readInstalledExtensionDigest(extRoot),
@@ -2018,7 +2100,7 @@ Deno.test(
       assertEquals(warnings.length, 1);
       assertStringIncludes(
         warnings[0],
-        relative(repoDir, join(under, "inner.txt")),
+        lockPath(repoDir, join(under, "inner.txt")),
       );
     });
   },
@@ -2059,10 +2141,10 @@ Deno.test(
       });
       assertEquals(await installedTree(repoDir), freshTree);
       assertEquals(warnings.length, 1);
-      assertStringIncludes(warnings[0], relative(repoDir, extra));
+      assertStringIncludes(warnings[0], lockPath(repoDir, extra));
       assertStringIncludes(
         warnings[0],
-        relative(repoDir, join(extRoot, "models", "new_only.ts")),
+        lockPath(repoDir, join(extRoot, "models", "new_only.ts")),
       );
     });
   },
@@ -2258,7 +2340,7 @@ Deno.test(
       assertEquals(await readTree(target), targetBefore);
       assertEquals(result?.pruned, []);
       assertEquals(warnings.length, 1);
-      assertStringIncludes(warnings[0], relative(repoDir, extRoot));
+      assertStringIncludes(warnings[0], lockPath(repoDir, extRoot));
       assertStringIncludes(warnings[0], target);
     });
   },
@@ -2439,7 +2521,7 @@ Deno.test(
       const entry = lockfile.getEntry(name);
       const oldSkillFile = join(skillDir, "old.md");
       assertEquals(
-        entry?.files?.includes(relative(repoDir, oldSkillFile)),
+        entry?.files?.includes(lockPath(repoDir, oldSkillFile)),
         true,
       );
 
@@ -2499,7 +2581,7 @@ Deno.test("detectConflicts: lists conflicting files in per-level name order", as
     );
 
     assertEquals(
-      conflicts.map((c) => c.replaceAll("\\", "/")),
+      conflicts,
       [
         "models/apple.ts",
         "models/ns/banana.ts",
@@ -3217,7 +3299,7 @@ Deno.test(
         );
         assertEquals(
           lockfile.getEntry(name)!.files!.includes(
-            relative(repoDir, join(root, ...rel.split("/"))),
+            lockPath(repoDir, join(root, ...rel.split("/"))),
           ),
           true,
           rel,
@@ -3320,7 +3402,7 @@ Deno.test(
       );
       assertStringIncludes(
         error.message,
-        relative(repoDir, join(root, "lib", "cmp.ts")),
+        lockPath(repoDir, join(root, "lib", "cmp.ts")),
       );
     });
   },
@@ -3361,7 +3443,7 @@ Deno.test(
       );
       assertStringIncludes(
         error.message,
-        relative(repoDir, join(root, "lib", "cmp.ts")),
+        lockPath(repoDir, join(root, "lib", "cmp.ts")),
       );
     });
   },
@@ -3395,7 +3477,7 @@ Deno.test(
       );
       const files = lockfile.getEntry(name)!.files!;
       assertEquals(
-        files.includes(relative(repoDir, join(root, "lib", "old.ts"))),
+        files.includes(lockPath(repoDir, join(root, "lib", "old.ts"))),
         false,
       );
     });

@@ -23,6 +23,8 @@ import {
   DATASTORE_FORMAT_MARKER_FILE,
   DatastoreFormatMismatchError,
   InvalidDatastoreFormatMarkerError,
+  LostDatastoreFormatMarkerError,
+  lostFormatMarkerAdvice,
   UnreachableDatastoreFormatMarkerError,
   UnreadableDatastoreFormatMarkerError,
   UnsupportedDatastoreFormatError,
@@ -43,6 +45,7 @@ import {
   datastoreEngineOf,
   ensureSupportedDatastoreFormat,
   isV2CustomDatastore,
+  lostDatastoreFormatMarker,
 } from "./datastore_format_guard.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -519,4 +522,195 @@ Deno.test("isV2CustomDatastore: an extension datastore is v2 unless it opened as
     false,
   );
   assertEquals(isV2CustomDatastore({ type: "filesystem", path: "/ds" }), false);
+});
+
+// --- swamp-club#3617: a v3 datastore whose marker a crash lost ---
+
+/** Plants a v3 commit log at the datastore root: stat-only, so any bytes. */
+async function plantCommitLog(dir: string): Promise<void> {
+  await Deno.writeTextFile(join(dir, "commits.db"), "not opened");
+}
+
+const BLANK_MARKERS = ["", "  \n\t", "\0".repeat(96)];
+
+Deno.test("ensureSupportedDatastoreFormat: a format-3 config over a missing marker beside commits.db points at doctor --repair (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    await plantCommitLog(dir);
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: dir,
+      format: 3,
+    };
+    const error = await assertRejects(
+      () => ensureSupportedDatastoreFormat("/repo", config),
+      DatastoreFormatMismatchError,
+    );
+    assertEquals(error.code, "datastore_format_mismatch");
+    assertEquals(
+      error.message,
+      new DatastoreFormatMismatchError(
+        3,
+        undefined,
+        lostFormatMarkerAdvice("v3-config"),
+      ).message,
+    );
+    assertStringIncludes(error.message, "swamp doctor datastores --repair");
+    assertEquals(checkedDatastoreEngine(config), undefined);
+  });
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a format-3 config over a missing marker without commits.db keeps its refusal (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const error = await assertRejects(
+      () =>
+        ensureSupportedDatastoreFormat("/repo", {
+          type: "filesystem",
+          path: dir,
+          format: 3,
+        }),
+      DatastoreFormatMismatchError,
+    );
+    assertEquals(
+      error.message,
+      new DatastoreFormatMismatchError(3, undefined).message,
+    );
+  });
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a blank marker beside commits.db stays an invalid marker, with advice for where it was met (swamp-club#3617)", async () => {
+  for (const blank of BLANK_MARKERS) {
+    await withTempDir(async (dir) => {
+      await plantCommitLog(dir);
+      const path = join(dir, DATASTORE_FORMAT_MARKER_FILE);
+      await Deno.writeTextFile(path, blank);
+      const cases = [
+        {
+          config: { type: "filesystem", path: dir, format: 3 } as const,
+          setupTarget: false,
+          context: "v3-config" as const,
+        },
+        {
+          config: { type: "filesystem", path: dir, format: 2 } as const,
+          setupTarget: false,
+          context: "config" as const,
+        },
+        {
+          config: { type: "filesystem", path: dir } as const,
+          setupTarget: true,
+          context: "setup-target" as const,
+        },
+      ];
+      for (const { config, setupTarget, context } of cases) {
+        const error = await assertRejects(
+          () =>
+            ensureSupportedDatastoreFormat("/repo", config, { setupTarget }),
+          InvalidDatastoreFormatMarkerError,
+        );
+        assertEquals(error.code, "datastore_format_marker_invalid");
+        assertEquals(
+          error.message,
+          new InvalidDatastoreFormatMarkerError(
+            path,
+            "not valid JSON",
+            lostFormatMarkerAdvice(context),
+          ).message,
+          JSON.stringify(blank),
+        );
+        assertEquals(errorPaths(error), [path]);
+      }
+    });
+  }
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a blank marker without commits.db keeps the default advice (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, DATASTORE_FORMAT_MARKER_FILE);
+    await Deno.writeTextFile(path, "");
+    const error = await assertRejects(
+      () =>
+        ensureSupportedDatastoreFormat("/repo", {
+          type: "filesystem",
+          path: dir,
+        }),
+      InvalidDatastoreFormatMarkerError,
+    );
+    assertEquals(
+      error.message,
+      new InvalidDatastoreFormatMarkerError(path, "not valid JSON").message,
+    );
+  });
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a missing marker beside commits.db is never opened as v2 (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    await plantCommitLog(dir);
+    for (
+      const [config, setupTarget, context] of [
+        [{ type: "filesystem", path: dir }, false, "config"],
+        [{ type: "filesystem", path: dir, format: 2 }, false, "config"],
+        [{ type: "filesystem", path: dir }, true, "setup-target"],
+      ] as const
+    ) {
+      const error = await assertRejects(
+        () => ensureSupportedDatastoreFormat("/repo", config, { setupTarget }),
+        LostDatastoreFormatMarkerError,
+      );
+      assertEquals(error.code, "datastore_format_mismatch");
+      assertEquals(error.context, context);
+      assertEquals(error.datastorePath, dir);
+      assertEquals(errorPaths(error), [dir]);
+      assertEquals(checkedDatastoreEngine(config), undefined);
+    }
+  });
+});
+
+Deno.test("ensureSupportedDatastoreFormat: a commits.db that is not a regular file is no v3 commit log (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(dir, "commits.db"));
+    assertEquals(
+      await ensureSupportedDatastoreFormat("/repo", {
+        type: "filesystem",
+        path: dir,
+      }),
+      "v2",
+    );
+  });
+  if (Deno.build.os === "windows") return;
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(join(dir, "elsewhere.db"), "x");
+    await Deno.symlink(join(dir, "elsewhere.db"), join(dir, "commits.db"), {
+      type: "file",
+    });
+    assertEquals(
+      await ensureSupportedDatastoreFormat("/repo", {
+        type: "filesystem",
+        path: dir,
+      }),
+      "v2",
+    );
+  });
+});
+
+Deno.test("lostDatastoreFormatMarker: a missing or blank marker beside a regular commits.db, nothing else (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(await lostDatastoreFormatMarker(dir), undefined);
+    await plantCommitLog(dir);
+    assertEquals(await lostDatastoreFormatMarker(dir), "absent");
+    const marker = join(dir, DATASTORE_FORMAT_MARKER_FILE);
+    for (const blank of BLANK_MARKERS) {
+      await Deno.writeTextFile(marker, blank);
+      assertEquals(await lostDatastoreFormatMarker(dir), "blank");
+    }
+    await Deno.writeTextFile(marker, '{"format": 3, "minReaderFormat":');
+    assertEquals(await lostDatastoreFormatMarker(dir), undefined);
+    await Deno.writeTextFile(marker, V3_MARKER);
+    assertEquals(await lostDatastoreFormatMarker(dir), undefined);
+    await Deno.remove(marker);
+    await Deno.mkdir(marker);
+    assertEquals(await lostDatastoreFormatMarker(dir), undefined);
+  });
+  assertEquals(
+    await lostDatastoreFormatMarker(join("/nonexistent", crypto.randomUUID())),
+    undefined,
+  );
 });

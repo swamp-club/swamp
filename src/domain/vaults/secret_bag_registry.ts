@@ -62,9 +62,9 @@ export interface VaultReferenceEntry {
 }
 
 /**
- * A secret that reached a step through a data read. It keeps the value the
- * read brought into the expression, until typed-secrets Phase 4 makes data
- * reads return references too.
+ * A secret that reached a step through a data read on the legacy path. It
+ * keeps the value the read brought into the expression, until typed-secrets
+ * Phase 4 makes every data read return references.
  */
 export interface DataSecretEntry extends SecretBagEntry {
   reference: SecretReference;
@@ -73,13 +73,34 @@ export interface DataSecretEntry extends SecretBagEntry {
 }
 
 /**
+ * A sensitive-field reference a typed data read brought into an expression
+ * (typed-secrets 3.3). It holds no value: a load reads one at delivery, as
+ * for a vault.get() reference, and the location names the record and the
+ * field the reference was read from.
+ */
+export interface DataReferenceEntry {
+  sentinel: string;
+  reference: SecretReference;
+  encoding: "raw";
+  dataOrigin: true;
+  /** The record and field the reference was read from, for a load's errors. */
+  location: string;
+}
+
+/** An issued entry that holds no value, so a delivery loads one. */
+export type ReferenceOnlyEntry = VaultReferenceEntry | DataReferenceEntry;
+
+/**
  * An entry a pass of a run issued. It answers its reference, its encoding
  * and its origin without reading a value. Every entry an orchestrator
  * issues is one; only a worker rebuilding a dispatched bag stores the plain
  * shape, because the dispatch carries no reference until typed-secrets
  * Phase 5.
  */
-export type IssuedSecretBagEntry = VaultReferenceEntry | DataSecretEntry;
+export type IssuedSecretBagEntry =
+  | VaultReferenceEntry
+  | DataSecretEntry
+  | DataReferenceEntry;
 
 /** Any entry a registry holds. */
 export type RegistryEntry = IssuedSecretBagEntry | SecretBagEntry;
@@ -91,7 +112,7 @@ export function isIssuedEntry(
   return "reference" in entry;
 }
 
-/** Whether an entry holds its value, which a vault reference never does. */
+/** Whether an entry holds its value, which a reference-only entry never does. */
 export function holdsValue(
   entry: RegistryEntry,
 ): entry is SecretBagEntry | DataSecretEntry {

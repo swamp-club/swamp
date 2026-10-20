@@ -22,8 +22,10 @@ import type {
   DoctorDatastoresEvent,
   RepairCatalogDuplicateLatestEvent,
   RepairCatalogIndexEvent,
+  RepairDatastoreFormatMarkerEvent,
   RepairDatastoresEvent,
   RepairUnmigratedDataEvent,
+  V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
@@ -116,6 +118,58 @@ export function retentionDetailLines(summary: RetentionCheckSummary): string[] {
   return lines;
 }
 
+/**
+ * The entries of a failed v3 content check in log mode, each with how to
+ * repair it (swamp-club#3617).
+ */
+export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
+  const lines: string[] = [];
+  const more = (total: number, shown: number) => {
+    if (total > shown) lines.push(dim(`    … and ${total - shown} more`));
+  };
+  if (summary.unreadableRecords > 0) {
+    lines.push(`\n${red("Unreadable records:")}`);
+    for (const record of summary.unreadable) {
+      lines.push(
+        `  ${bold(record.recordKey)}${
+          record.namespace === "" ? "" : dim(` [${record.namespace}]`)
+        }: ${
+          record.chunk === undefined
+            ? "a chunk of its content"
+            : `chunk ${record.chunk}`
+        } is ${record.reason}`,
+      );
+      lines.push(dim(`    ${record.advice}`));
+    }
+    more(summary.unreadableRecords, summary.unreadable.length);
+  }
+  if (summary.atRiskCopies > 0) {
+    lines.push(`\n${red("Checkout files held aside:")}`);
+    for (const copy of summary.atRisk) {
+      lines.push(
+        `  ${bold(copy.recordKey || copy.sha256)}${
+          copy.namespace === "" ? "" : dim(` [${copy.namespace}]`)
+        }: ${copy.size.toLocaleString()} bytes`,
+      );
+    }
+    more(summary.atRiskCopies, summary.atRisk.length);
+    lines.push(dim(`  ${summary.atRiskAdvice}`));
+  }
+  if (summary.tornChunks > 0) {
+    lines.push(`\n${red("Torn chunks:")}`);
+    for (const chunk of summary.torn) {
+      lines.push(
+        `  ${bold(chunk.sha256)}${
+          chunk.namespace === "" ? "" : dim(` [${chunk.namespace}]`)
+        }: ${chunk.size.toLocaleString()} of ${chunk.expectedSize.toLocaleString()} bytes, named by ${chunk.recordKey}`,
+      );
+      lines.push(dim(`    ${chunk.advice}`));
+    }
+    more(summary.tornChunks, summary.torn.length);
+  }
+  return lines;
+}
+
 export type DoctorDatastoresStatus = "pass" | "fail";
 
 export interface DoctorDatastoresRenderer {
@@ -192,6 +246,10 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           writeOutput(retentionDetailLines(data.retentionFinding).join("\n"));
         }
 
+        if (data.v3ContentFinding) {
+          writeOutput(v3ContentDetailLines(data.v3ContentFinding).join("\n"));
+        }
+
         // Render vault mismatch advisory (yellow, does not cause failure)
         if (data.vaultMismatchFindings.length > 0) {
           writeOutput(
@@ -246,6 +304,7 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               catalogCompletenessFinding: data.catalogCompletenessFinding ??
                 null,
               retentionFinding: data.retentionFinding ?? null,
+              v3ContentFinding: data.v3ContentFinding ?? null,
             },
             null,
             2,
@@ -788,5 +847,122 @@ export function createCatalogDuplicateLatestRepairRenderer(
       return new JsonCatalogDuplicateLatestRepairRenderer();
     case "log":
       return new LogCatalogDuplicateLatestRepairRenderer();
+  }
+}
+
+// ============================================================================
+// Repair: a v3 datastore's lost format marker (swamp-club#3617)
+// ============================================================================
+
+export type DatastoreFormatMarkerRepairStatus = "pass" | "fail" | "preview";
+
+export interface DatastoreFormatMarkerRepairRenderer {
+  handlers(): EventHandlers<RepairDatastoreFormatMarkerEvent>;
+  readonly overallStatus: DatastoreFormatMarkerRepairStatus;
+}
+
+function lostMarkerDescription(marker: "absent" | "blank"): string {
+  return marker === "absent" ? "is missing" : "is blank";
+}
+
+class LogDatastoreFormatMarkerRepairRenderer
+  implements DatastoreFormatMarkerRepairRenderer {
+  overallStatus: DatastoreFormatMarkerRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairDatastoreFormatMarkerEvent> {
+    return {
+      inspecting: () => {
+        writeOutput(dim("Checking the v3 datastore's format marker…"));
+      },
+      preview: (e) => {
+        this.overallStatus = "preview";
+        writeOutput(`\n${bold("Lost datastore format marker:")}`);
+        writeOutput(
+          `  ${e.data.markerPath} ${
+            lostMarkerDescription(e.data.marker)
+          }, beside the v3 commit log of ${e.data.datastorePath}`,
+        );
+        writeOutput(dim("\n  Run with -y to restore it."));
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        writeOutput(
+          `\n${green("✓")} ${bold("Datastore format marker restored:")}`,
+        );
+        writeOutput(`  Wrote ${e.data.markerPath} (format 3)`);
+        writeOutput(
+          dim("\n  Run `swamp doctor datastores` to check the datastore."),
+        );
+      },
+      not_needed: (e) => {
+        this.overallStatus = "pass";
+        writeOutput(
+          dim(`The format marker of ${e.datastorePath} is not lost.`),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message, e.error.code);
+      },
+    };
+  }
+}
+
+class JsonDatastoreFormatMarkerRepairRenderer
+  implements DatastoreFormatMarkerRepairRenderer {
+  overallStatus: DatastoreFormatMarkerRepairStatus = "pass";
+
+  handlers(): EventHandlers<RepairDatastoreFormatMarkerEvent> {
+    return {
+      inspecting: () => {},
+      preview: (e) => {
+        this.overallStatus = "preview";
+        console.log(
+          JSON.stringify(
+            { status: "format_marker_preview", ...e.data },
+            null,
+            2,
+          ),
+        );
+      },
+      completed: (e) => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            { status: "format_marker_restored", ...e.data },
+            null,
+            2,
+          ),
+        );
+      },
+      not_needed: (e) => {
+        this.overallStatus = "pass";
+        console.log(
+          JSON.stringify(
+            {
+              status: "format_marker_not_needed",
+              datastorePath: e.datastorePath,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+      error: (e) => {
+        this.overallStatus = "fail";
+        throw new UserError(e.error.message, e.error.code);
+      },
+    };
+  }
+}
+
+export function createDatastoreFormatMarkerRepairRenderer(
+  mode: OutputMode,
+): DatastoreFormatMarkerRepairRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonDatastoreFormatMarkerRepairRenderer();
+    case "log":
+      return new LogDatastoreFormatMarkerRepairRenderer();
   }
 }

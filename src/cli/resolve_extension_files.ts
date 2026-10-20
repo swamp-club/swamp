@@ -715,13 +715,17 @@ export function isPulledExtensionManifest(
 
 /**
  * The module graph reader push, quality and fmt resolve files with: the
- * embedded deno, run with the environment the bundler gets.
+ * embedded deno, run with the environment the bundler gets. Push and quality
+ * pass `readOnlyLock` so the read never writes the extension's lockfile.
  */
-export async function createModuleGraphReader(): Promise<ModuleGraphReader> {
+export async function createModuleGraphReader(
+  options?: { readOnlyLock?: boolean },
+): Promise<ModuleGraphReader> {
   const runtime = new EmbeddedDenoRuntime();
   return new DenoInfoModuleGraphReader(
     await runtime.ensureDeno(),
     runtime.getDenoEnv(),
+    options,
   );
 }
 

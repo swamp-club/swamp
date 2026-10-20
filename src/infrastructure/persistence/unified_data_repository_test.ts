@@ -42,6 +42,7 @@ import type {
   UnreadableModelRecord,
 } from "../../domain/data/repositories.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
+import { UserError } from "../../domain/errors.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -1586,6 +1587,172 @@ Deno.test("getContent: returns null without hook when raw file is missing", asyn
       await Deno.remove(tmpDir, { recursive: true });
     }
   }
+});
+
+/**
+ * A repository whose unreadable-content lookup answers `answer` and records
+ * the paths it was asked about (swamp-club#3617).
+ */
+async function withUnreadableLookup(
+  answer: UserError | undefined,
+  fn: (
+    repo: FileSystemUnifiedDataRepository,
+    asked: string[],
+  ) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  const asked: string[] = [];
+  try {
+    await fn(
+      new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        SOLO_NAMESPACE,
+        false,
+        undefined,
+        undefined,
+        (absPath) => {
+          asked.push(absPath);
+          return Promise.resolve(answer);
+        },
+      ),
+      asked,
+    );
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("getContent: throws the error the unreadable-content lookup returns for missing content", async () => {
+  const unreadable = new UserError(
+    "unreadable",
+    "datastore_v3_record_unreadable",
+  );
+  await withUnreadableLookup(unreadable, async (repo, asked) => {
+    await repo.save(testType, "model-1", makeData("lost"), new Uint8Array([1]));
+    const contentPath = repo.getContentPath(testType, "model-1", "lost", 1);
+    await Deno.remove(contentPath);
+
+    const error = await assertRejects(() =>
+      repo.getContent(testType, "model-1", "lost", 1)
+    );
+    assert(error === unreadable);
+    assertEquals(asked, [contentPath]);
+  });
+});
+
+Deno.test("stream: throws the error the unreadable-content lookup returns for missing content", async () => {
+  const unreadable = new UserError(
+    "unreadable",
+    "datastore_v3_record_unreadable",
+  );
+  await withUnreadableLookup(unreadable, async (repo, asked) => {
+    await repo.save(testType, "model-1", makeData("lost"), new Uint8Array([1]));
+    const contentPath = repo.getContentPath(testType, "model-1", "lost", 1);
+    await Deno.remove(contentPath);
+
+    const error = await assertRejects(async () => {
+      for await (const _ of repo.stream(testType, "model-1", "lost", 1)) {
+        // drain
+      }
+    });
+    assert(error === unreadable);
+    assertEquals(asked, [contentPath]);
+  });
+});
+
+Deno.test("ensureContentLocal: throws the error the unreadable-content lookup returns for missing content", async () => {
+  const unreadable = new UserError(
+    "unreadable",
+    "datastore_v3_record_unreadable",
+  );
+  await withUnreadableLookup(unreadable, async (repo, asked) => {
+    await repo.save(testType, "model-1", makeData("lost"), new Uint8Array([1]));
+    const contentPath = repo.getContentPath(testType, "model-1", "lost", 1);
+    await Deno.remove(contentPath);
+
+    // The synchronous readers ensure content first, so this is where they
+    // fail loudly; the latest version is found when none is given.
+    for (const version of [1, undefined]) {
+      const error = await assertRejects(() =>
+        repo.ensureContentLocal(testType, "model-1", "lost", version)
+      );
+      assert(error === unreadable);
+    }
+    assertEquals(asked, [contentPath, contentPath]);
+  });
+});
+
+Deno.test("ensureContentLocal: without a hydrate hook, present content never asks the lookup and unknown missing content stays current", async () => {
+  const unreadable = new UserError(
+    "unreadable",
+    "datastore_v3_record_unreadable",
+  );
+  await withUnreadableLookup(unreadable, async (repo, asked) => {
+    await repo.save(testType, "model-1", makeData("here"), new Uint8Array([7]));
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "here", 1),
+      "current",
+    );
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "never-written"),
+      "current",
+    );
+    assertEquals(asked, []);
+  });
+  await withUnreadableLookup(undefined, async (repo, asked) => {
+    await repo.save(testType, "model-1", makeData("gone"), new Uint8Array([1]));
+    const contentPath = repo.getContentPath(testType, "model-1", "gone", 1);
+    await Deno.remove(contentPath);
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "gone", 1),
+      "current",
+    );
+    assertEquals(asked, [contentPath]);
+  });
+});
+
+Deno.test("getContent and stream: missing content the lookup does not know reads as absent", async () => {
+  await withUnreadableLookup(undefined, async (repo, asked) => {
+    await repo.save(testType, "model-1", makeData("gone"), new Uint8Array([1]));
+    await Deno.remove(repo.getContentPath(testType, "model-1", "gone", 1));
+
+    assertEquals(await repo.getContent(testType, "model-1", "gone", 1), null);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of repo.stream(testType, "model-1", "gone", 1)) {
+      chunks.push(chunk);
+    }
+    assertEquals(chunks, []);
+    assertEquals(asked.length, 2);
+  });
+});
+
+Deno.test("getContent and stream: present content never asks the unreadable-content lookup", async () => {
+  const unreadable = new UserError(
+    "unreadable",
+    "datastore_v3_record_unreadable",
+  );
+  await withUnreadableLookup(unreadable, async (repo, asked) => {
+    await repo.save(testType, "model-1", makeData("here"), new Uint8Array([7]));
+
+    assertEquals(
+      await repo.getContent(testType, "model-1", "here", 1),
+      new Uint8Array([7]),
+    );
+    for await (const _ of repo.stream(testType, "model-1", "here", 1)) {
+      // drain
+    }
+    assertEquals(asked, []);
+  });
 });
 
 Deno.test("save: does not prune versions without enableWriteGc", async () => {

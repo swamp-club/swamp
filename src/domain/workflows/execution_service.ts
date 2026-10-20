@@ -176,6 +176,7 @@ import {
   type HydrateFileHook,
   isUnpublishedDataError,
   type MarkDirtyHook,
+  type UnreadableContentLookup,
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
@@ -813,7 +814,10 @@ function resumeVaultAccess(
 
 /**
  * A step's data output overrides layered over its definition's `resources`
- * overrides: a step override replaces the definition's for the same spec.
+ * overrides. For the same spec they merge field by field: each field the step
+ * sets wins, and the definition supplies the rest, so a step that sets only
+ * `vary` keeps the definition's `vaultName`, `lifetime` and
+ * `garbageCollection`.
  */
 export function mergeDataOutputOverrides(
   definitionResources: ResourceOverrides | undefined,
@@ -835,7 +839,10 @@ export function mergeDataOutputOverrides(
   for (const stepOvr of stepOverrides) {
     const idx = merged.findIndex((o) => o.specName === stepOvr.specName);
     if (idx >= 0) {
-      merged[idx] = stepOvr;
+      const set = Object.fromEntries(
+        Object.entries(stepOvr).filter(([, value]) => value !== undefined),
+      );
+      merged[idx] = { ...merged[idx], ...set };
     } else {
       merged.push(stepOvr);
     }
@@ -1497,6 +1504,7 @@ export class DefaultStepExecutor implements StepExecutor {
     private readonly stepLockHook?: StepLockHook,
     private readonly hydrateFile?: HydrateFileHook,
     private readonly fetchForeignContent?: ForeignContentFetcher,
+    private readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this._directTypeResolver = directTypeResolver;
   }
@@ -1516,6 +1524,7 @@ export class DefaultStepExecutor implements StepExecutor {
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
       fetchForeignContent?: ForeignContentFetcher;
+      unreadableContent?: UnreadableContentLookup;
       namespace?: Namespace;
       vaultsDir?: string;
       autoGc?: boolean;
@@ -1542,6 +1551,7 @@ export class DefaultStepExecutor implements StepExecutor {
       markDirty: this.markDirty,
       hydrateFile: this.hydrateFile,
       fetchForeignContent: this.fetchForeignContent,
+      unreadableContent: this.unreadableContent,
       namespace: ctx.namespace,
       vaultsDir: ctx.vaultsDir,
       autoGc: ctx.autoGc,
@@ -1566,6 +1576,7 @@ export class DefaultStepExecutor implements StepExecutor {
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
       fetchForeignContent?: ForeignContentFetcher;
+      unreadableContent?: UnreadableContentLookup;
       namespace?: Namespace;
       vaultsDir?: string;
       autoGc?: boolean;
@@ -1594,6 +1605,7 @@ export class DefaultStepExecutor implements StepExecutor {
       opts.autoGc ?? false,
       undefined,
       opts.fetchForeignContent,
+      opts.unreadableContent,
     );
     const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, opts.ephemeralRepo)
@@ -2821,6 +2833,7 @@ export class DefaultStepExecutor implements StepExecutor {
             ? ctx.sensitiveValues.tagsWithPlaceholders(override.tags)
             : override.tags,
           resolvedVarySuffix,
+          vaultName: override.vaultName,
         };
       })
       : undefined;
@@ -3457,6 +3470,7 @@ export class WorkflowExecutionService {
     private readonly datastoreResolver?: DatastorePathResolver,
     private readonly autoGc: boolean = false,
     private readonly fetchForeignContent?: ForeignContentFetcher,
+    private readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -3466,6 +3480,7 @@ export class WorkflowExecutionService {
         stepLockHook,
         hydrateFile,
         fetchForeignContent,
+        unreadableContent,
       );
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
@@ -3485,10 +3500,13 @@ export class WorkflowExecutionService {
       dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
       markDirty,
     );
+    // Loud on an evaluated workflow the v3 read model could not materialise,
+    // which only --last-evaluated reads: a run without it evaluates afresh.
     this.evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
       repoDir,
       dsPath(SWAMP_SUBDIRS.workflowsEvaluated),
       markDirty,
+      unreadableContent,
     );
     const fsDataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
@@ -3500,6 +3518,7 @@ export class WorkflowExecutionService {
       autoGc,
       undefined,
       fetchForeignContent,
+      unreadableContent,
     );
     this.dataRepo = ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, ephemeralRepo)
@@ -7231,6 +7250,7 @@ export class WorkflowExecutionService {
       this.datastoreResolver,
       this.autoGc,
       this.fetchForeignContent,
+      this.unreadableContent,
     );
     childService.signalWaits = this.signalWaits;
     childService.runCheckpointer = this.runCheckpointer;

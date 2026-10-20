@@ -32,7 +32,8 @@
  *   check runs again and the entry settles;
  * - the partition head is still the entry's base: its commit is rebuilt at
  *   the head under this writer's fence and identity, after a check that its
- *   chunks are present, and appended;
+ *   chunks are present and the chunk barrier over them (swamp-club#3617),
+ *   and appended;
  * - otherwise the partition moved on, and the entry is dropped: landing it
  *   now could overwrite what was committed since.
  *
@@ -81,7 +82,7 @@ export interface OutboxRecoveryTarget {
     SqliteCommitStore,
     "append" | "headIdentity" | "landedSeq"
   >;
-  readonly chunkStore: Pick<ChunkStore, "missing">;
+  readonly chunkStore: Pick<ChunkStore, "missing" | "syncStored">;
 }
 
 /** Options for {@link recoverCommitOutbox}. */
@@ -341,14 +342,25 @@ async function recoverEntry(
   }
   // Its content cannot be stored again, so a commit naming a missing chunk
   // never lands; the outbox kept its chunks from sweeps, so this is damage.
+  // On a storage that reads sizes, a chunk a crash left short (torn) is
+  // missing too (swamp-club#3617).
   const missing = await missingChunks(chunkStore, namespace, commit, signal);
   if (missing.length > 0) {
     return {
       kind: "dropped",
       reason: "missing-chunk",
-      detail: `chunk ${missing[0]} is missing`,
+      detail: `chunk ${missing[0]} is missing or damaged`,
     };
   }
+  // The chunk barrier (swamp-club#3617): a swamp from before it prepared
+  // entries with its chunks' renames perhaps still in the page cache, so
+  // their names are made durable before the commit naming them lands. A
+  // failed barrier leaves the entry for the next recovery.
+  await chunkStore.syncStored(
+    namespace || SOLO_NAMESPACE,
+    [...new Set(blobsOf(commit).flatMap((blob) => blob.chunkHashes()))],
+    signal,
+  );
   let rebuilt: Commit;
   try {
     rebuilt = Commit.create({
@@ -431,7 +443,7 @@ async function warnMissingChunks(
   logger
     .warn`Commit ${commit.seq} of v3 partition ${commit.partition.toString()} names chunk ${
     missing[0]
-  }, which is missing; reads of that content will fail`;
+  }, which is missing or damaged; reads of that content will fail`;
 }
 
 const REASONS: Record<OutboxDropReason, string> = {
@@ -444,7 +456,7 @@ const REASONS: Record<OutboxDropReason, string> = {
     "it is a workflow run record of a unit whose other changes were dropped",
   "head-moved": "the partition was written since",
   "refused": "the commit store refused it",
-  "missing-chunk": "content it names is missing",
+  "missing-chunk": "content it names is missing or damaged",
   "unreadable": "it could not be rebuilt",
 };
 

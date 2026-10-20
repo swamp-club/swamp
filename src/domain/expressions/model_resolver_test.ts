@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
-import { assertEquals, assertExists, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
+import { UserError } from "../errors.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
@@ -3684,5 +3685,311 @@ Deno.test("resolveVaultExpressions: the issued entry carries the vault name, key
     encoding: "raw",
     dataOrigin: false,
     location: "test",
+  });
+});
+
+// ============================================================================
+// typed-secrets 3.3: stored reads and the reader's namespace
+// ============================================================================
+
+Deno.test("data.latest with the stored option returns tagged references as written and reads no vault, on both paths", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+      );
+      const type = ModelType.create("test/model");
+      // "holder" has a definition, so latest() reads by its coordinates;
+      // "orphan" has none, so latest() falls back to the catalog.
+      const holder = Definition.create({ name: "holder" });
+      await defRepo.save(type, holder);
+      const orphan = Definition.create({ name: "orphan" });
+      for (const model of [holder, orphan]) {
+        const data = Data.create({
+          name: "creds",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: {
+            type: "resource",
+            modelName: model.name,
+            "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+          },
+          ownerDefinition: owner,
+        });
+        await dataRepo.save(
+          type,
+          model.id,
+          data,
+          new TextEncoder().encode(JSON.stringify({
+            apiKey: "${{ vault.get('my-vault', 'api-key') }}",
+            plain: "p",
+          })),
+        );
+      }
+      const dqs = new DataQueryService(catalog, dataRepo);
+      await dqs.query('name == ""');
+
+      let reads = 0;
+      const vaultService = {
+        get: () => {
+          reads++;
+          return Promise.resolve("secret-123");
+        },
+      } as unknown as VaultService;
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+        vaultService,
+      });
+      const values = new RunSensitiveValues();
+      const ctx = await resolver.buildContext(values);
+      for (const name of ["holder", "orphan"]) {
+        const stored = await ctx.data!.latest(name, "creds", {
+          sensitiveFields: "stored",
+        });
+        assertExists(stored, name);
+        assertEquals(
+          stored.attributes.apiKey,
+          "${{ vault.get('my-vault', 'api-key') }}",
+          name,
+        );
+        assertEquals(stored.attributes.plain, "p");
+      }
+      assertEquals(reads, 0);
+      assertEquals(values.list(), []);
+
+      // The default, and an explicit resolve, read as today.
+      const resolved = await ctx.data!.latest("holder", "creds");
+      assertEquals(resolved?.attributes.apiKey, "secret-123");
+      const explicit = await ctx.data!.latest("orphan", "creds", {
+        sensitiveFields: "resolve",
+      });
+      assertEquals(explicit?.attributes.apiKey, "secret-123");
+      assertEquals(reads, 2);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("DataNamespace.namespace: the reader's own namespace, on the full and the light context", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+      );
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: new DataQueryService(catalog, dataRepo),
+      });
+      const full = await resolver.buildContext(new RunSensitiveValues());
+      assertEquals(full.data?.namespace, dataRepo.namespace);
+      assertEquals(
+        resolver.buildLightContext(new RunSensitiveValues()).data?.namespace,
+        dataRepo.namespace,
+      );
+      // With no repository, the solo namespace.
+      assertEquals(
+        new ModelResolver(defRepo).buildLightContext(new RunSensitiveValues())
+          .data?.namespace,
+        "",
+      );
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+// ============================================================================
+// Loud reads of records the v3 datastore could not materialise
+// (swamp-club#3617)
+// ============================================================================
+
+/**
+ * Saves STATE for model `vpc` in a repository shaped as a v3 checkout's: no
+ * hydrate hook, and a lookup that reports the evicted content unreadable
+ * (`answer`), or does not know it (undefined).
+ */
+async function setupUnreadableFixture(
+  repoDir: string,
+  answer: UserError | undefined,
+) {
+  await setupRepoDir(repoDir);
+  const defRepo = new YamlDefinitionRepository(repoDir);
+  const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+  const asked: string[] = [];
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    "" as Namespace,
+    false,
+    undefined,
+    undefined,
+    (absPath) => {
+      asked.push(absPath);
+      return Promise.resolve(answer);
+    },
+  );
+  const type = ModelType.create("test/model");
+  const model = Definition.create({ name: "vpc", globalArguments: {} });
+  await defRepo.save(type, model);
+  await dataRepo.save(
+    type,
+    model.id,
+    Data.create({
+      name: STATE.name,
+      contentType: STATE.contentType,
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: STATE.specName, modelName: "vpc" },
+      ownerDefinition: owner,
+    }),
+    new TextEncoder().encode(STATE.body),
+  );
+  await Deno.remove(dataRepo.getContentPath(type, model.id, STATE.name, 1));
+  const dqs = new DataQueryService(catalog, dataRepo);
+  await dqs.query('name == ""');
+  const resolver = new ModelResolver(defRepo, {
+    repoDir,
+    dataRepo,
+    dataQueryService: dqs,
+  });
+  return { resolver, catalog, asked };
+}
+
+const UNREADABLE = () =>
+  new UserError("record unreadable", "datastore_v3_record_unreadable");
+
+Deno.test("loud reads: the model map's resource attributes of an unreadable record fail with its error as the cause", async () => {
+  await withTempDir(async (repoDir) => {
+    const unreadable = UNREADABLE();
+    const { resolver, catalog } = await setupUnreadableFixture(
+      repoDir,
+      unreadable,
+    );
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      const error = await assertRejects(() =>
+        evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId")
+      );
+      // Not wrapped in a download error: the record's error, with its code.
+      assertEquals((error as Error).cause, unreadable);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("loud reads: data.latest and data.query of an unreadable record throw its error", async () => {
+  await withTempDir(async (repoDir) => {
+    const unreadable = UNREADABLE();
+    const { resolver, catalog } = await setupUnreadableFixture(
+      repoDir,
+      unreadable,
+    );
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      // Through the definition's coordinates, the catalog fallback and a
+      // query.
+      const thrown = [
+        await assertRejects(() => ctx.data!.latest("vpc", "main")),
+        await assertRejects(() =>
+          resolver.buildLightContext(new RunSensitiveValues()).data!.latest(
+            "vpc",
+            "main",
+          )
+        ),
+        await assertRejects(() =>
+          ctx.data!.query('modelName == "vpc" && attributes.vpcId != ""')
+        ),
+      ];
+      for (const error of thrown) assertEquals(error, unreadable);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("loud reads: content the lookup does not know reads as before", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, asked } = await setupUnreadableFixture(
+      repoDir,
+      undefined,
+    );
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      const record = await ctx.data!.latest("vpc", "main");
+      assertExists(record);
+      assertEquals(record.attributes, {});
+      assertEquals(record.path, "");
+      assert(asked.length > 0, "the lookup was asked about the absent file");
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("loud reads: data.version's content check rethrows an unreadable record's error", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const unreadable = UNREADABLE();
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    // The content is local when the query reads it; only the single-record
+    // lookup's own content check then reports it unreadable.
+    class UnreadableOnEnsure extends FileSystemUnifiedDataRepository {
+      override ensureContentLocal(): Promise<never> {
+        return Promise.reject(unreadable);
+      }
+    }
+    const dataRepo = new UnreadableOnEnsure(repoDir, undefined, catalog);
+    const type = ModelType.create("test/model");
+    const model = Definition.create({ name: "vpc", globalArguments: {} });
+    await defRepo.save(type, model);
+    await dataRepo.save(
+      type,
+      model.id,
+      Data.create({
+        name: STATE.name,
+        contentType: STATE.contentType,
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", specName: STATE.specName, modelName: "vpc" },
+        ownerDefinition: owner,
+      }),
+      new TextEncoder().encode(STATE.body),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    try {
+      const ctx = await resolver.buildContext(new RunSensitiveValues());
+      assertEquals(
+        await assertRejects(() => ctx.data!.version("vpc", "main", 1)),
+        unreadable,
+      );
+    } finally {
+      catalog.close();
+    }
   });
 });

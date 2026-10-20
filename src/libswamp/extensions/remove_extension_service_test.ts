@@ -28,6 +28,7 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { FaultingStubRepository } from "../../infrastructure/persistence/test_helpers/faulting_stub_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { canonicalLockfilePath } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import {
   bundleNamespace,
@@ -1271,6 +1272,54 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "RemoveExtensionService.execute: failedFiles lists tracked files and bundle namespace dirs in the lockfile's form",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/locked-ns-${crypto.randomUUID()}`;
+        const extRoot = join(swampPath(repoDir, "pulled-extensions"), extName);
+        const trackedFile =
+          `.swamp/pulled-extensions/${extName}/models/model.ts`;
+        await ensureDir(join(extRoot, "models"));
+        await Deno.writeTextFile(
+          join(extRoot, "models", "model.ts"),
+          "// stub",
+        );
+        await stageBundleNamespaceDirs(repoDir, extName);
+        await lockfileRepository.writeEntry(extName, "1.0.0", [trackedFile]);
+        const lockedNamespace = join(
+          swampPath(repoDir, "bundles"),
+          bundleNamespace(join(extRoot, "models"), repoDir),
+        );
+        const locked = new Set([join(repoDir, trackedFile), lockedNamespace]);
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+          removePath: (path, options) =>
+            locked.has(path)
+              ? Promise.reject(new Deno.errors.PermissionDenied("locked"))
+              : Deno.remove(path, options),
+        });
+        const result = await removeSvc.execute(extName);
+
+        assertEquals(result.failedFiles, [
+          { path: trackedFile, reason: "PermissionDenied" },
+          {
+            path: canonicalLockfilePath(relative(repoDir, lockedNamespace)),
+            reason: "PermissionDenied",
+          },
+        ]);
+        for (const failed of result.failedFiles) {
+          assertEquals(failed.path.includes("\\"), false, failed.path);
+        }
+      },
+    );
+  },
+);
+
 // ===== Shared skill dirs (swamp-club#2494) =====
 
 async function exists(path: string): Promise<boolean> {
@@ -1340,7 +1389,7 @@ Deno.test(
         }).execute(owner);
 
         assertEquals(result.retainedFiles, [{
-          path: root,
+          path: canonicalLockfilePath(root),
           claimedBy: [other],
         }]);
         assertEquals(result.filesDeleted, 0);
@@ -1475,7 +1524,7 @@ Deno.test(
         }).execute(owner);
 
         assertEquals(result.retainedFiles, [{
-          path: root,
+          path: canonicalLockfilePath(root),
           claimedBy: [other],
         }]);
         assertEquals(
@@ -1524,7 +1573,7 @@ Deno.test(
 
         const result = await removal;
         assertEquals(result.retainedFiles, [{
-          path: root,
+          path: canonicalLockfilePath(root),
           claimedBy: [other],
         }]);
         assertEquals(

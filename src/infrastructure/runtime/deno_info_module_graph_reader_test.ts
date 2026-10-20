@@ -308,3 +308,88 @@ Deno.test("DenoInfoModuleGraphReader: an npm package in a manual node_modules di
     });
   }
 });
+
+const STALE_LOCK_STDERR = "error: Prepare module load error\n\nCaused by:\n" +
+  "    The lockfile is out of date. Run `deno install --frozen=false`, or " +
+  "rerun with `--frozen=false` to update it.\n    changes:\n" +
+  '     4 | -    "npm:ms@2": "2.1.3"\n';
+
+async function withLockedProject(
+  fn: (dir: string, entry: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-lock-" });
+  try {
+    const entry = join(dir, "m.ts");
+    await Deno.writeTextFile(entry, "export {};\n");
+    await Deno.writeTextFile(join(dir, "deno.json"), "{}");
+    await Deno.writeTextFile(join(dir, "deno.lock"), '{"version":"5"}');
+    await fn(dir, entry);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+}
+
+Deno.test("DenoInfoModuleGraphReader: readOnlyLock reads with --frozen and reports a stale lock", async () => {
+  await withLockedProject(async (dir, entry) => {
+    const { calls } = await withMockedCommand(
+      [{ stdout: "", stderr: STALE_LOCK_STDERR, code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            new DenoInfoModuleGraphReader("deno", undefined, {
+              readOnlyLock: true,
+            }).read(entry, { denoConfigPath: join(dir, "deno.json") }),
+          UserError,
+          `${join(dir, "deno.lock")} is out of date`,
+        );
+      },
+    );
+    assertEquals(calls[0].args.includes("--frozen"), true);
+  });
+});
+
+Deno.test("DenoInfoModuleGraphReader: readOnlyLock reads a project without a lock with --no-lock", async () => {
+  await withLockedProject(async (dir, entry) => {
+    await Deno.remove(join(dir, "deno.lock"));
+    const { calls } = await withMockedCommand(
+      () => ({
+        stdout: JSON.stringify({
+          modules: [{
+            kind: "esm",
+            mediaType: "TypeScript",
+            specifier: toFileUrl(entry).href,
+          }],
+        }),
+        code: 0,
+      }),
+      () =>
+        new DenoInfoModuleGraphReader("deno", undefined, {
+          readOnlyLock: true,
+        }).read(entry, { denoConfigPath: join(dir, "deno.json") }),
+    );
+    assertEquals(calls[0].args.includes("--no-lock"), true);
+    assertEquals(calls[0].args.includes("--frozen"), false);
+  });
+});
+
+Deno.test("DenoInfoModuleGraphReader: without readOnlyLock the lock flags are Deno's defaults", async () => {
+  await withLockedProject(async (dir, entry) => {
+    const { calls } = await withMockedCommand(
+      [{ stdout: "", stderr: STALE_LOCK_STDERR, code: 1 }],
+      async () => {
+        await assertRejects(
+          () =>
+            new DenoInfoModuleGraphReader("deno").read(entry, {
+              denoConfigPath: join(dir, "deno.json"),
+            }),
+          UserError,
+          `Could not read the module graph of ${entry}`,
+        );
+      },
+    );
+    assertEquals(calls[0].args.includes("--frozen"), false);
+    assertEquals(calls[0].args.includes("--no-lock"), false);
+  });
+});

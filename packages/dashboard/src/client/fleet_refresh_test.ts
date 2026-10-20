@@ -22,6 +22,7 @@ import {
   activeDispatchIds,
   chunk,
   clampTtlMinutes,
+  coalesceStep,
   formatTtl,
   TTL_MAX_MINUTES,
   workerSignature,
@@ -72,4 +73,20 @@ Deno.test("activeDispatchIds: unique and sorted, so the request payload is stabl
     ]),
     ["a", "b", "c"],
   );
+});
+
+Deno.test("coalesceStep: reads nothing while hidden, once on return, else on a change", () => {
+  const step = (
+    visible: boolean,
+    cameBack: boolean,
+    changed: boolean,
+    pending: boolean,
+  ) => coalesceStep({ visible, cameBack, changed, pending });
+  assertEquals(step(false, false, true, false), "none");
+  assertEquals(step(false, false, true, true), "cancel");
+  assertEquals(step(true, true, false, false), "now");
+  assertEquals(step(true, true, true, true), "now");
+  assertEquals(step(true, false, true, false), "later");
+  assertEquals(step(true, false, true, true), "none");
+  assertEquals(step(true, false, false, false), "none");
 });

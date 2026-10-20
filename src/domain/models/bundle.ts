@@ -21,6 +21,7 @@ import { parse, type ParserPlugin } from "@babel/parser";
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { dirname, join, resolve } from "@std/path";
+import { parseRange, rangeIntersects, tryParseRange } from "@std/semver";
 import * as zodModule from "zod";
 import { markErrorPaths, UserError } from "../errors.ts";
 
@@ -183,8 +184,61 @@ function findImportDeclarations(
   return spans;
 }
 
-const ZOD_V3_IMPORT_RE =
-  /import\s+(?:\{[^}]+\}|\*\s+as\s+\w+)\s+from\s*["'](?:npm:)?zod@3[^"']*["']/;
+/**
+ * Whether every version `version` admits has major `major`: an exact
+ * version or a range such as `^4`, `~4.2` or `>=4.1 <5`.
+ */
+function versionWithinMajor(version: string, major: number): boolean {
+  const range = tryParseRange(version);
+  if (!range) return false;
+  // A prerelease of `major` (4.0.0-beta.1) counts; the next major's
+  // prereleases are left out, as `<5.0.0` itself leaves them in.
+  return rangeIntersects(
+    range,
+    parseRange(`>=${major}.0.0-0 <${major + 1}.0.0`),
+  ) &&
+    !rangeIntersects(range, parseRange(`<${major}.0.0-0`)) &&
+    !rangeIntersects(range, parseRange(`>=${major + 1}.0.0`));
+}
+
+/**
+ * The version a zod specifier writes, without a subpath a versioned
+ * specifier may carry (`npm:zod@4.3.6/v4` is `4.3.6`); null when
+ * unversioned, undefined when it is not zod.
+ */
+function zodSpecifierVersion(specifier: string): string | null | undefined {
+  const match = /^(?:npm:)?zod(?:@([^/]+)(?:\/.*)?)?$/.exec(specifier);
+  if (!match) return undefined;
+  return match[1] ?? null;
+}
+
+/**
+ * Whether an import of `specifier` gets the host's zod 4: `zod`, `npm:zod`,
+ * or a version or range every admitted version of which is 4.x (`npm:zod@4`,
+ * `npm:zod@4.3.6`, `npm:zod@^4.1`, `npm:zod@~4.2`), at the root or `/v4`
+ * subpath. Push can ship any of these, rewritten from an import-map target
+ * (swamp-club#3637).
+ */
+export function isZod4Specifier(specifier: string): boolean {
+  const version = zodSpecifierVersion(specifier);
+  if (version === undefined) return false;
+  // Only the root and `/v4` are the namespace the host shares; another
+  // subpath (`/v4/core`, `/mini`) has its own exports and stays bundled.
+  const subpath = /^[^@]*@[^/]+(\/.*)?$/.exec(specifier)?.[1];
+  if (subpath !== undefined && subpath !== "/v4") return false;
+  return version === null || versionWithinMajor(version, 4);
+}
+
+/** Whether `specifier` imports zod 3 at every version it admits. */
+export function isZod3Specifier(specifier: string): boolean {
+  const version = zodSpecifierVersion(specifier);
+  return typeof version === "string" && versionWithinMajor(version, 3);
+}
+
+// An import declaration whose specifier names zod at some version; the
+// specifier is checked with isZod3Specifier.
+const ZOD_VERSIONED_IMPORT_RE =
+  /import\s+(?:\{[^}]+\}|\*\s+as\s+\w+)\s+from\s*["']((?:npm:)?zod@[^"']*)["']/;
 
 /**
  * Detects Zod v3 imports in bundled JS and throws with upgrade guidance.
@@ -193,10 +247,10 @@ const ZOD_V3_IMPORT_RE =
  * import text inside a string or template literal is the extension's data.
  */
 export function rejectZodV3Imports(js: string, origin?: string): void {
-  if (!ZOD_V3_IMPORT_RE.test(js)) return;
+  if (!ZOD_VERSIONED_IMPORT_RE.test(js)) return;
   for (const { start, end } of findImportDeclarations(js, origin)) {
-    const match = ZOD_V3_IMPORT_RE.exec(js.slice(start, end));
-    if (match) {
+    const match = ZOD_VERSIONED_IMPORT_RE.exec(js.slice(start, end));
+    if (match && isZod3Specifier(match[1])) {
       throw new UserError(
         `Extension imports Zod v3 (${match[0].trim()}). ` +
           `Swamp requires Zod v4 — update your zod dependency to v4 and ` +
@@ -209,18 +263,17 @@ export function rejectZodV3Imports(js: string, origin?: string): void {
 // Match: import { ... } from "npm:zod...", "zod", or 'zod'
 // Handles both npm: prefixed specifiers (existing extensions) and
 // bare "zod" specifiers (when externalized via deno.json import map).
-// Only matches zod 4.x or unversioned — zod 3.x is detected separately
-// at bundle-creation time via rejectZodV3Imports (not here, because
+// Matches any zod version but an obvious 3.x (so a cached zod 3 bundle is
+// never parsed); only declarations whose specifier passes isZod4Specifier
+// are rewritten — zod 3.x is detected separately at
+// bundle-creation time via rejectZodV3Imports (not here, because
 // rewriteZodImports is also called at runtime on cached bundles).
 const ZOD_NAMED_IMPORT_RE =
-  /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
+  /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@(?![\^~=v]?3)[^"']*)?["']\s*;?/g;
 
 // Match: import * as <name> from "npm:zod..." or "zod"
-// Only matches zod 4.x or unversioned.
 const ZOD_STAR_IMPORT_RE =
-  /import\s*\*\s*as\s+(\w+)\s+from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
-
-const ZOD_SPECIFIER_RE = /^(?:npm:)?zod(?:@4.*)?$/;
+  /import\s*\*\s*as\s+(\w+)\s+from\s*["'](?:npm:)?zod(?:@(?![\^~=v]?3)[^"']*)?["']\s*;?/g;
 
 /** Rewrites the text of one zod import declaration. */
 function rewriteZodImportDeclaration(declaration: string): string {
@@ -243,6 +296,17 @@ function rewriteZodImportDeclaration(declaration: string): string {
     .replace(ZOD_STAR_IMPORT_RE, (_match, name: string) => {
       return `const ${name} = globalThis.__swamp_zod;`;
     });
+}
+
+/**
+ * The zod imports a loaded bundle shares with the host: those
+ * {@link isZod4Specifier} accepts, and, for bundles an older swamp built and
+ * cached, any `zod@4…` spelling it externalized, subpath included, as the
+ * runtime rewrite always matched it. New bundles never externalize another
+ * subpath, so only those older bundles reach the second case.
+ */
+function isRuntimeSharedZodSpecifier(specifier: string): boolean {
+  return isZod4Specifier(specifier) || /^(?:npm:)?zod@4/.test(specifier);
 }
 
 /**
@@ -276,7 +340,7 @@ export function rewriteZodImports(js: string, origin?: string): string {
   for (
     const { start, end, specifier } of findImportDeclarations(js, origin)
   ) {
-    if (!ZOD_SPECIFIER_RE.test(specifier)) continue;
+    if (!isRuntimeSharedZodSpecifier(specifier)) continue;
     parts.push(js.slice(cursor, start));
     parts.push(rewriteZodImportDeclaration(js.slice(start, end)));
     cursor = end;
@@ -291,15 +355,72 @@ export function rewriteZodImports(js: string, origin?: string): string {
  * does: the project's deno.json, or its package.json and node_modules (run
  * with `cwd` at the package.json directory), or no project at all. Shared
  * with the module graph read, so push packages the modules it bundles.
+ *
+ * With `readOnlyLock`, the project's lockfile is never written: `--frozen`
+ * when it has one (a lock that no longer satisfies a specifier fails rather
+ * than being rewritten), `--no-lock` when it has none (so none is created).
  */
 export function denoProjectArgs(
-  options?: { denoConfigPath?: string; packageJsonDir?: string },
+  options?: {
+    denoConfigPath?: string;
+    packageJsonDir?: string;
+    readOnlyLock?: ReadOnlyLock;
+  },
 ): string[] {
-  return options?.denoConfigPath
+  const project = options?.denoConfigPath
     ? ["--config", options.denoConfigPath]
     : options?.packageJsonDir
     ? ["--node-modules-dir=auto"]
-    : ["--no-lock", "--node-modules-dir=none"];
+    : undefined;
+  if (!project) return ["--no-lock", "--node-modules-dir=none"];
+  if (!options?.readOnlyLock) return project;
+  return [
+    ...project,
+    options.readOnlyLock.lockPath ? "--frozen" : "--no-lock",
+  ];
+}
+
+/**
+ * Bundle a project without writing its lockfile. `lockPath` is the lock the
+ * project has, or undefined when it has none.
+ */
+export interface ReadOnlyLock {
+  lockPath?: string;
+}
+
+/** Whether deno output names a lockfile `--frozen` refused to update. */
+export function isStaleLockfile(output: string): boolean {
+  return stripAnsiCode(output).includes("The lockfile is out of date");
+}
+
+/**
+ * The error for a lockfile that no longer matches the project: push would
+ * have to rewrite it, and it treats the author's lock as read-only. Names
+ * the command that brings the lock up to date, and keeps the change list
+ * from the deno output but not its `--frozen=false` hint.
+ */
+export function staleLockfileError(
+  lockPath: string,
+  entryPoint: string,
+  project: { denoConfigPath?: string; packageJsonDir?: string },
+  output: string,
+): UserError {
+  const projectFile = project.denoConfigPath ?? "package.json";
+  const projectDir = project.denoConfigPath
+    ? dirname(project.denoConfigPath)
+    : project.packageJsonDir ?? dirname(lockPath);
+  const plain = stripAnsiCode(output);
+  const changesAt = plain.indexOf("changes:");
+  const changes = changesAt >= 0 ? `\n${plain.slice(changesAt).trimEnd()}` : "";
+  return markErrorPaths(
+    new UserError(
+      `${lockPath} is out of date with ${projectFile}, and push and quality ` +
+        `never rewrite your lockfile. Run \`deno install --entrypoint ` +
+        `${entryPoint}\` in ${projectDir}, commit the updated lock, and try ` +
+        `again.${changes}`,
+    ),
+    [lockPath, projectFile, entryPoint, projectDir],
+  );
 }
 
 /** Options for controlling bundle output. */
@@ -325,6 +446,14 @@ export interface BundleOptions {
    * Mutually exclusive with `denoConfigPath`.
    */
   packageJsonDir?: string;
+
+  /**
+   * Leave the project's lockfile untouched: bundle with `--frozen` when it
+   * has one, so a stale lock fails with {@link staleLockfileError}, and with
+   * `--no-lock` when it has none. Push and quality set this; local loading
+   * does not.
+   */
+  readOnlyLock?: ReadOnlyLock;
 
   /**
    * Environment variables for the subprocess. When provided, the bundler
@@ -363,7 +492,7 @@ export interface BundleOptions {
 const IMPORT_SPECIFIER_RE =
   /(?:import|export)\s+[^;()]*?from\s+["']([^"']+)["']/g;
 
-function isBareSpecifier(specifier: string): boolean {
+export function isBareSpecifier(specifier: string): boolean {
   // A specifier carrying a `${...}` placeholder is interpolated at runtime, not
   // a package name. stripSourceComments already removes the common source of
   // these (generated code inside template literals), but `import x from
@@ -393,13 +522,18 @@ function isBareSpecifier(specifier: string): boolean {
 // cannot recognise — the span is re-emitted verbatim rather than blanked, so an
 // unbalanced backtick degrades to a no-op instead of erasing the rest of the
 // file from the caller's view.
-function stripSourceComments(source: string): string {
+//
+// Every blanked character becomes a space and newlines stay, so an offset in
+// the output is the same offset in `source` (findImportSpecifiers reads import
+// spans from it, swamp-club#3637).
+export function stripSourceComments(source: string): string {
   const result: string[] = [];
   let i = 0;
 
   while (i < source.length) {
     // Single-line comment — blank to end of line
     if (source[i] === "/" && i + 1 < source.length && source[i + 1] === "/") {
+      result.push(" ", " ");
       i += 2;
       while (i < source.length && source[i] !== "\n") {
         result.push(" ");
@@ -701,6 +835,55 @@ export function isExpectedBundleFailure(
   }
 }
 
+// A static, side-effect or literal dynamic import, or a re-export: the
+// specifier each import or export statement names.
+const IMPORTED_SPECIFIER_RE = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"'\n]+)["']/g;
+
+/** How many modules {@link zod4SpecifiersReachedFrom} reads at most. */
+const MAX_ZOD_SCAN_MODULES = 2000;
+
+/**
+ * The `npm:zod` specifiers admitting only zod 4 that `entry` and the
+ * modules it reaches through relative imports write, read as text with
+ * comments and template literals blanked. Exact spellings, so `deno bundle
+ * --external` matches each of them; no deno call. A module that cannot be
+ * read is skipped: the bundler reports it. Reading stops after
+ * {@link MAX_ZOD_SCAN_MODULES} modules; a zod import past that is inlined.
+ */
+export async function zod4SpecifiersReachedFrom(
+  entry: string,
+): Promise<string[]> {
+  const found = new Set<string>();
+  const seen = new Set<string>([entry]);
+  const queue = [entry];
+  while (queue.length > 0 && seen.size <= MAX_ZOD_SCAN_MODULES) {
+    const path = queue.shift()!;
+    let source: string;
+    try {
+      source = await Deno.readTextFile(path);
+    } catch {
+      continue;
+    }
+    for (
+      const match of stripSourceComments(source).matchAll(
+        IMPORTED_SPECIFIER_RE,
+      )
+    ) {
+      const spec = match[1];
+      if (spec.startsWith("npm:zod") && isZod4Specifier(spec)) {
+        found.add(spec);
+      } else if (spec.startsWith("./") || spec.startsWith("../")) {
+        const target = resolve(dirname(path), spec);
+        if (!seen.has(target) && /\.[cm]?[jt]sx?$/.test(target)) {
+          seen.add(target);
+          queue.push(target);
+        }
+      }
+    }
+  }
+  return [...found].sort();
+}
+
 /**
  * Reads a deno.json import map and determines how "zod" is mapped.
  * If it maps to a zod 4.x npm specifier, returns the resolved specifier
@@ -716,11 +899,15 @@ async function resolveZodFromConfig(
     const raw = await Deno.readTextFile(denoConfigPath);
     const config = JSON.parse(raw);
     const imports = config.imports as Record<string, string> | undefined;
-    if (!imports || !imports["zod"]) return undefined;
+    if (!imports || typeof imports["zod"] !== "string") return undefined;
 
     const target = imports["zod"];
-    // Match npm:zod@4 or npm:zod@4.x.y — must start with major version 4
-    if (/^npm:zod@4(?:\.|$)/.test(target)) return target;
+    // npm:zod at a version or range that admits only 4.x (npm:zod@4,
+    // npm:zod@4.3.6, npm:zod@^4.1); bare "zod" would resolve to zod 3 or
+    // to nothing otherwise.
+    if (target.startsWith("npm:zod@") && isZod4Specifier(target)) {
+      return target;
+    }
     return undefined;
   } catch {
     return undefined;
@@ -851,15 +1038,13 @@ export async function bundleExtension(
     if (!options?.selfContained) {
       args.push("--external", "npm:zod@4", "--external", "npm:zod");
 
-      // Scan the source file for the exact zod specifier (e.g., npm:zod@4.3.6)
-      // and externalize it too. The --external npm:zod@4 pattern only matches
-      // exact "npm:zod@4", not fully-pinned versions like "npm:zod@4.3.6".
-      const source = await Deno.readTextFile(absolutePath);
-      const zodSpecMatch = source.match(
-        /from\s*["'](npm:zod@4\.[^"']+)["']/,
-      );
-      if (zodSpecMatch) {
-        args.push("--external", zodSpecMatch[1]);
+      // Every other zod 4 spelling — pinned (npm:zod@4.3.6) or ranged
+      // (npm:zod@^4.1, npm:zod@>=4.1 <5), as push ships an import-map target
+      // in place of a bare "zod" (swamp-club#3637) — matches only as
+      // written, so externalize each one the modules the entry point
+      // reaches write.
+      for (const spec of await zod4SpecifiersReachedFrom(absolutePath)) {
+        args.push("--external", spec);
       }
 
       // When using a deno.json import map, bare specifier "zod" is resolved
@@ -924,6 +1109,15 @@ export async function bundleExtension(
     });
 
     if (!output.success) {
+      const lockPath = options?.readOnlyLock?.lockPath;
+      if (lockPath && isStaleLockfile(outputText(output))) {
+        throw staleLockfileError(
+          lockPath,
+          absolutePath,
+          options,
+          outputText(output),
+        );
+      }
       const rawDetails = outputText(output).trim() ||
         "(no output — try running deno 2.7.x or later)";
       const details = stripAnsiCode(rawDetails);

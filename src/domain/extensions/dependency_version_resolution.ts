@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  compare,
   format,
   maxSatisfying,
   type Range,
@@ -175,4 +176,38 @@ export function resolveShippedVersion(
     ? resolveJsrVersion(specVersion, published)
     : resolveAuditVersion(specVersion, published.versions, published.distTags);
   return version === null ? null : { version, from: "registry" };
+}
+
+/**
+ * The version to move to when `shipped` should not be used: the newest
+ * stable version that is not in `excluded`, preferring the shipped version's
+ * major (its minor too for 0.x, where the minor is the breaking line) and
+ * falling back to the newest overall. Only versions that parse as semver
+ * qualify, so registry metadata cannot put arbitrary text in a suggestion;
+ * the version is returned as the registry lists it.
+ * Null when no other version qualifies.
+ */
+export function suggestVersion(
+  shipped: string,
+  candidates: readonly string[],
+  excluded: ReadonlySet<string>,
+): string | null {
+  const current = tryParse(shipped);
+  const usable = candidates
+    .filter((v) => !excluded.has(v))
+    .flatMap((raw) => {
+      const version = tryParse(raw);
+      return version !== undefined && (version.prerelease?.length ?? 0) === 0 &&
+          format(version) !== shipped
+        ? [{ raw, version }]
+        : [];
+    });
+  const sameLine = ({ version }: { version: SemVer }): boolean =>
+    current !== undefined && version.major === current.major &&
+    (current.major !== 0 || version.minor === current.minor);
+  const newest = (list: typeof usable): string | null =>
+    list.length === 0
+      ? null
+      : list.reduce((a, b) => compare(a.version, b.version) >= 0 ? a : b).raw;
+  return newest(usable.filter(sameLine)) ?? newest(usable);
 }

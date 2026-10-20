@@ -25,9 +25,10 @@
  * asset fetches. Served from the same listener as the control socket; over
  * TLS Deno negotiates HTTP/2 via ALPN, over plain TCP the identical handlers
  * run on HTTP/1.1. Every route is bearer-authenticated with the worker's
- * session credential, and every write is authorized against the worker's
- * active dispatch: persistence flows through the same data writers a local
- * run uses, so declared-spec enforcement comes for free.
+ * session credential, and every data read and write is authorized against
+ * the worker's active dispatch: a read is held to the dispatch's behavior
+ * type, and persistence flows through the same data writers a local run
+ * uses, so declared-spec enforcement comes for free.
  *
  * Routes:
  *   GET    /data/{type}/{modelId}/{dataName}/{version}   read artifact bytes
@@ -386,7 +387,7 @@ export class DataPlane {
     if (dispatches.length === 0) {
       throw new DataPlaneError(
         400,
-        `Worker '${workerName}' has no active dispatch — writes are lease-scoped`,
+        `Worker '${workerName}' has no active dispatch — reads and writes are lease-scoped`,
       );
     }
     if (dispatches.length === 1) return dispatches[0];
@@ -491,6 +492,18 @@ export class DataPlane {
       ? this.#options.dispatches.forDispatch(workerName, dispatchId)
       : soleDispatch(this.#options.dispatches.forWorker(workerName));
     if (isHiddenFromWorker(type.normalized, dispatch)) return notFound();
+
+    // Every other read is held to the dispatch's own behavior type, as
+    // `getData` is (swamp-club#3528): judged on the normalized type, before
+    // the lookup and the ETag branch, so a refused read learns nothing about
+    // the record. With no resolvable dispatch, #activeDispatch says why.
+    const active = dispatch ?? this.#activeDispatch(workerName, dispatchId);
+    if (type.normalized !== active.modelType.normalized) {
+      return errorResponse(
+        403,
+        `Behavior type '${type.normalized}' is outside the active dispatch scope`,
+      );
+    }
 
     const repo = this.#repoForWorker(workerName, dispatchId);
     const data = await repo.findByName(

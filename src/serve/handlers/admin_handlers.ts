@@ -162,6 +162,7 @@ import { fleetMemberSuffix } from "../worker_gateway.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import { DEFAULT_WORKER_GC_GRACE_PERIOD_MS } from "../worker_gc_service.ts";
 import {
+  type DatastoreConfig,
   externalFilesystemDatastoreRoot,
   isCustomDatastoreConfig,
   resolveSyncTimeoutMs,
@@ -256,6 +257,7 @@ import { isReservedVaultName } from "./vault_handlers.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 import { createV3LockfileSync } from "../../infrastructure/datastore_v3/v3_lockfile_sync.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
+import { inspectV3Content } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
 import {
   v3DatastoreConfigOf,
   v3DatastoreFor,
@@ -1749,6 +1751,13 @@ export async function handleDoctorDatastores(
           ),
           new Date(),
         ),
+      // Checkout-local state and chunk stats only (swamp-club#3617).
+      ...(resolverEngine(ctx.datastoreResolver) === "v3"
+        ? {
+          checkV3Content: (config: DatastoreConfig) =>
+            inspectV3Content({ repoDir, datastoreConfig: config }),
+        }
+        : {}),
     };
 
     let result: Record<string, unknown> | undefined;

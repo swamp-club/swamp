@@ -101,9 +101,11 @@ The skill verification workflow also needs:
 - **`TESSL_TOKEN`** — for `deno task review-skills` (calls `npx tessl`). Add it
   to `verify.env`. If missing, skill review **fails** (exit 1) — an incomplete
   verification is not a valid attestation.
-- **`ANTHROPIC_API_KEY`** — for `deno task eval-skill-triggers` (calls the
-  Anthropic API). Already available from `verify.env` or claude.ai login. If
-  missing, trigger evals are skipped gracefully (exit 0).
+- **`deno task eval-skill-triggers`** needs no API key. It answers every eval
+  case through `claude -p` on your claude.ai login (the `cli` route). If the
+  `claude` CLI is missing or logged out, the preflight **fails** (exit 1) — the
+  evals never skip. The `ANTHROPIC_API_KEY` is only for the `api` route, which
+  CI uses.
 
 To create the env file, read the values out of 1Password:
 
@@ -113,17 +115,16 @@ deno run setup-verify-env --check    # reports what is missing, writes nothing
 ```
 
 It expects one 1Password item per variable, titled by the variable's own name
-(`TESSL_TOKEN`, `ANTHROPIC_API_KEY`), and names no vault or item path itself —
+(`TESSL_TOKEN`), and names no vault or item path itself —
 this repository is public. Pass `--account` (or set `OP_ACCOUNT`) when more
 than one 1Password account is signed in; `op` refuses with "multiple accounts
 found" otherwise. Keys the script does not manage are left in the file
 untouched.
 
 Run `--check` before a verification rather than after. A missing
-`TESSL_TOKEN` surfaces as `skill-review` exiting 1 several minutes into a run,
-and a missing `ANTHROPIC_API_KEY` does not surface at all — trigger evals skip
-at exit 0 and the reviews fall back to a claude.ai login, so the gate goes
-green having checked less than it appears to have checked.
+`TESSL_TOKEN` surfaces as `skill-review` exiting 1 several minutes into a run.
+Nothing else is needed locally: the trigger evals and the reviews both run on
+the claude.ai login.
 
 Writing the file is not enough. Nothing reads it automatically, so export it
 in the shell that launches the workflows:
@@ -136,7 +137,6 @@ To write it by hand instead:
 
 ```
 cat > ~/.config/swamp/verify.env << 'EOF'
-ANTHROPIC_API_KEY=sk-ant-...
 TESSL_TOKEN=tsk-...
 EOF
 chmod 600 ~/.config/swamp/verify.env
@@ -156,12 +156,14 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
 
 The workflow detects changed files and guards both steps behind a skill-path
 filter (`.claude/skills/**`, `CLAUDE.md`, `scripts/review_skills.ts`,
-`evals/promptfoo/**`). When no skill files changed, both steps are skipped.
+`scripts/eval_skill_triggers_promptfoo.ts`, `scripts/promptfoo_install.ts`,
+`evals/promptfoo/**`). When no
+skill files changed, both steps are skipped.
 
 | Step | Command | Env Var | Missing Behavior |
 | --- | --- | --- | --- |
 | skill-review | `deno task review-skills` | `TESSL_TOKEN` | **Fails** (exit 1) — must be configured |
-| skill-trigger-eval | `deno task eval-skill-triggers` | `ANTHROPIC_API_KEY` | Skipped (exit 0) if missing |
+| skill-trigger-eval | `deno task eval-skill-triggers` | none (claude.ai login) | **Fails** (exit 1) if the `claude` CLI is unusable |
 
 ## Running All Three in Parallel
 

@@ -22,6 +22,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream.ts";
 import { useFleetData } from "../client/useFleetData.ts";
+import { useTabVisible } from "../client/run_activity.ts";
 import {
   clampTtlMinutes,
   formatTtl,
@@ -31,6 +32,7 @@ import {
 } from "../client/fleet_refresh.ts";
 import {
   assignSlots,
+  fleetCounts,
   type FleetLease,
   type FleetWorker,
   freeSlots,
@@ -38,7 +40,6 @@ import {
   groupValue,
   isEligible,
   isEmptySelector,
-  isUp,
   isVisible,
   parseSelector,
   type Slot,
@@ -65,6 +66,9 @@ const STATUSES: readonly WorkerStatus[] = [
   "draining",
   "disconnected",
 ];
+
+/** Header breakdown of the connected count, in the order STATUSES lists them. */
+const CONNECTED_STATUSES = STATUSES.filter((s) => s !== "disconnected");
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
   unverified: "Unverified",
@@ -125,11 +129,15 @@ export function Workers(
 
   const fleet = useFleetData(health?.workers, ttlMinutes);
   const ttlMs = ttlMinutes * 60_000;
+  const tabVisible = useTabVisible();
 
+  // The clock stops while the tab is hidden and catches up on return.
   useEffect(() => {
+    if (!tabVisible) return;
+    setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(timer);
-  }, []);
+  }, [tabVisible]);
 
   // Slots keep their dispatch across refreshes; ended leases show briefly.
   const slotsRef = useRef(new Map<string, Slot[]>());
@@ -166,22 +174,7 @@ export function Workers(
     : [];
   const selected = fleet.workers.find((w) => w.name === selectedName) ?? null;
 
-  const counts: Record<WorkerStatus, number> = {
-    unverified: 0,
-    idle: 0,
-    busy: 0,
-    draining: 0,
-    disconnected: 0,
-  };
-  let usedSlots = 0;
-  let totalSlots = 0;
-  for (const worker of fleet.workers) {
-    counts[worker.status]++;
-    if (isUp(worker)) {
-      usedSlots += worker.activeDispatchIds.length;
-      totalSlots += worker.capacity;
-    }
-  }
+  const counts = fleetCounts(fleet.workers);
 
   function chooseGroup(key: string) {
     setGroupBy(key);
@@ -199,13 +192,27 @@ export function Workers(
       <div className="page-header">
         <h1>Workers</h1>
         <div className="header-right fleet-stats" aria-live="polite">
-          {STATUSES.map((s) => (
-            <span key={s}>
-              <strong>{counts[s]}</strong> {STATUS_LABEL[s].toLowerCase()}
+          <span className="fleet-stats-group">
+            <span className="fleet-stats-lead">
+              <strong>{counts.connected}</strong> connected
             </span>
-          ))}
-          <span>
-            <strong>{usedSlots}/{totalSlots}</strong> slots in use
+            {CONNECTED_STATUSES.map((s) => (
+              <span key={s}>
+                <strong>{counts.byStatus[s]}</strong>{" "}
+                {STATUS_LABEL[s].toLowerCase()}
+              </span>
+            ))}
+          </span>
+          <span className="fleet-stats-group">
+            <span>
+              <strong>{counts.usedSlots}/{counts.totalSlots}</strong>{" "}
+              slots in use
+            </span>
+          </span>
+          <span className="fleet-stats-group fleet-stats-muted">
+            <span>
+              <strong>{counts.byStatus.disconnected}</strong> disconnected
+            </span>
           </span>
         </div>
       </div>
@@ -322,7 +329,8 @@ export function Workers(
             </span>
           ))}
           <span>
-            Disconnected workers fade out over the TTL.
+            Disconnected records are replaced or stopped workers, drawn hollow
+            and fading out over the visibility TTL.
           </span>
         </div>
       </div>
@@ -363,6 +371,7 @@ export function Workers(
               selectedName={selectedName}
               onSelect={setSelectedName}
               label={`Workers grouped by ${groupLabel(activeGroupBy)}`}
+              hidden={!tabVisible}
             />
           </div>
           {selected && (

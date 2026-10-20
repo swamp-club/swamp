@@ -56,6 +56,7 @@ function recordingOutput(): AutoResolveOutputPort & { events: string[] } {
     collectiveNotTrusted: record("collectiveNotTrusted"),
     localSourceFailed: record("localSourceFailed"),
     noStableVersion: record("noStableVersion"),
+    installBusy: record("installBusy"),
   };
 }
 
@@ -72,9 +73,28 @@ const unreachableInstaller: ExtensionInstallerPort = {
   providesType: () => Promise.resolve(false),
 };
 
+/** Installer whose install succeeds and provides the requested type. */
+function succeedingInstaller(): ExtensionInstallerPort & {
+  installs: string[];
+} {
+  const installs: string[] = [];
+  return {
+    ...unreachableInstaller,
+    installs,
+    inspectInstallation: () => Promise.resolve({ state: "missing" }),
+    install: (name) => {
+      installs.push(name);
+      return Promise.resolve({ version: "2026.10.20.1" });
+    },
+    providesType: () => Promise.resolve(installs.length > 0),
+  };
+}
+
 /** Resolves {@link TYPE} against a registry whose every answer is `fetch`. */
 async function resolveAgainst(
   fetch: (url: string | URL) => Promise<Response>,
+  installer: ExtensionInstallerPort = unreachableInstaller,
+  expected = false,
 ): Promise<string[]> {
   const client = new ExtensionApiClient("http://registry.test", {}, {
     sleep: () => Promise.resolve(),
@@ -88,10 +108,10 @@ async function resolveAgainst(
       searchExtensions: (params) => client.searchExtensions(params),
       getLatestVersionDetail: (name) => client.getLatestVersionDetail(name),
     },
-    extensionInstaller: unreachableInstaller,
+    extensionInstaller: installer,
     output,
   });
-  assertEquals(await resolver.resolve(TYPE), false);
+  assertEquals(await resolver.resolve(TYPE), expected);
   return output.events;
 }
 
@@ -99,10 +119,35 @@ Deno.test("integration: auto-resolver reports a registry timeout as a network er
   const events = await resolveAgainst(() =>
     Promise.reject(new DOMException("Signal timed out.", "TimeoutError"))
   );
-  assertEquals(events, [
-    "searching",
-    "networkError: Request to http://registry.test timed out. Is the server running?",
-  ]);
+  assertEquals(events.length, 2);
+  assertEquals(events[0], "searching");
+  assertStringIncludes(
+    events[1],
+    "networkError: Request to http://registry.test GET /api/v1/extensions/%40swamp%2Fs3-datastore timed out after 6 attempts over",
+  );
+  assertStringIncludes(events[1], "Is the server running?");
+});
+
+// swamp-club#3656: one stalled registry request no longer fails extension
+// setup; the read is retried and the install goes ahead.
+Deno.test("integration: auto-resolver installs after a registry timeout that recovers", async () => {
+  let calls = 0;
+  const installer = succeedingInstaller();
+  const events = await resolveAgainst(
+    () =>
+      calls++ === 0
+        ? Promise.reject(new DOMException("Signal timed out.", "TimeoutError"))
+        : Promise.resolve(Response.json({
+          name: TYPE,
+          description: "S3 datastore",
+          latestVersion: "2026.10.20.1",
+        })),
+    installer,
+    true,
+  );
+  assertEquals(installer.installs, [TYPE]);
+  assertEquals(events.includes("installed"), true);
+  assertEquals(events.some((e) => e.startsWith("networkError")), false);
 });
 
 Deno.test("integration: auto-resolver reports a registry 5xx as a network error", async () => {
@@ -111,10 +156,13 @@ Deno.test("integration: auto-resolver reports a registry 5xx as a network error"
       status: 503,
     }))
   );
-  assertEquals(events, [
-    "searching",
-    "networkError: Extension API error (HTTP 503): upstream unavailable",
-  ]);
+  assertEquals(events.length, 2);
+  assertEquals(events[0], "searching");
+  assertStringIncludes(
+    events[1],
+    "networkError: Extension API error (HTTP 503 after 6 attempts over",
+  );
+  assertStringIncludes(events[1], "upstream unavailable");
 });
 
 Deno.test("integration: auto-resolver reports an exhausted rate limit as a network error", async () => {

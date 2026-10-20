@@ -100,6 +100,7 @@ export async function workflowHistoryGetAction(
       repoContext.workflowRepo,
       undefined,
       signalWaitsOf(repoContext),
+      repoContext.unreadableContent,
     ),
     retentionWatermarks: repoContext.retentionWatermarks,
   };

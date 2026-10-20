@@ -552,21 +552,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     }
   };
 
-  /** An ended unit may retain an unrecorded discard from a checkpoint. */
-  const abandonUnit = async () => {
-    if (unit === undefined) return;
-    let mayLand = false;
-    try {
-      await unit.abandon();
-    } catch (error) {
-      if (!(error instanceof MayLandLaterError)) throw error;
-      coverage.mayLand++;
-      mayLand = true;
-    }
-    if (!mayLand) await reportFailed(unitNo);
-    unit = undefined;
-  };
-
   const flushUnder = async (
     selected: Fault,
     flush: () => Promise<void>,
@@ -599,6 +584,22 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     } finally {
       actions.clear();
     }
+  };
+
+  /**
+   * Abandons the open unit and marks its unlanded groups failed, unless the
+   * unit says they may land: a drop or discard it could not record
+   * (swamp-club#3645), as a flush's end does.
+   */
+  const endAbandoned = async (ending: CommitLogUnitOfWork) => {
+    try {
+      await ending.abandon();
+    } catch (error) {
+      if (!(error instanceof MayLandLaterError)) throw error;
+      coverage.mayLand++;
+      return;
+    }
+    await reportFailed(unitNo);
   };
 
   const recover = async () => {
@@ -740,7 +741,9 @@ async function runModel(commands: readonly Command[]): Promise<void> {
           break;
         }
         case "abandon":
-          await abandonUnit();
+          if (unit === undefined) break;
+          await endAbandoned(unit);
+          unit = undefined;
           break;
         case "acknowledge":
           if (unit === undefined) break;
@@ -749,7 +752,10 @@ async function runModel(commands: readonly Command[]): Promise<void> {
           break;
         case "restart": {
           // A live process ends its unit first; a killed one left it.
-          await abandonUnit();
+          if (unit !== undefined) {
+            await endAbandoned(unit);
+            unit = undefined;
+          }
           await takeLease(command.takeover);
           if (command.cutAfter !== undefined) {
             cutAfterRemovals = command.cutAfter;
@@ -841,6 +847,18 @@ const DISCARD_THEN_CUT: Command[][] = [
   ],
 ];
 
+/**
+ * An aged entry dropped by a retry whose discard and mark both fail: the
+ * abandon at the restart says the commit may land (swamp-club#3645).
+ */
+const ABANDON_MAY_LAND: Command[] = [
+  STAGE,
+  { kind: "checkpoint", fault: "fail-append-and-discard" },
+  { kind: "age" },
+  { kind: "checkpoint", fault: "fail-append-discard-and-mark" },
+  { kind: "restart", takeover: false },
+];
+
 for (const ending of ["abandon", "restart"] as const) {
   Deno.test(`v3 outbox (model): ${ending} preserves an expired checkpoint's uncertain outcome through recovery and a power cut (swamp-club#3685)`, async () => {
     const mayLand = coverage.mayLand;
@@ -861,7 +879,9 @@ for (const ending of ["abandon", "restart"] as const) {
 Deno.test("v3 outbox (model): over random interleavings no commit lands after its failure, a takeover or off its head, no run names refused data, and no commit names a missing chunk", async () => {
   await fc.assert(fc.asyncProperty(arbInterleaving, runModel), {
     numRuns: 1000,
-    examples: DISCARD_THEN_CUT.map((commands): [Command[]] => [commands]),
+    examples: [...DISCARD_THEN_CUT, ABANDON_MAY_LAND].map((
+      commands,
+    ): [Command[]] => [commands]),
   });
 });
 

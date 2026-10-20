@@ -286,11 +286,11 @@ function createSensitiveOutputVaultResolver(
       vaultConfig ??= loadVaultConfig();
       return sensitiveOutputTargetVaults(
         modelDef.resources,
-        // As the step executor passes them: a step override carries no
-        // vaultName into the run, and replaces the definition's for its spec.
+        // As the step executor passes them: a step override merges over the
+        // definition's for its spec, field by field.
         mergeDataOutputOverrides(
           definitionResources,
-          step.dataOutputOverrides.map(({ vaultName: _, ...rest }) => rest),
+          [...step.dataOutputOverrides],
         ),
         await vaultConfig,
       );

@@ -258,7 +258,7 @@ Deno.test("lock hand-off: the run waits for a structural command still working u
 });
 
 Deno.test("lock hand-off: the run fails instead of writing when the structural command outlasts the lock timeout", async () => {
-  await withHeldLock({ SWAMP_LOCK_TIMEOUT_MS: "20" }, async (fixture) => {
+  await withHeldLock({}, async (fixture) => {
     await runUnderModelLocks(fixture.locks, async () => {
       const hop = await processLockHolderMarker.beginChildHandOff();
       const global = fixture.globalLock();
@@ -267,7 +267,12 @@ Deno.test("lock hand-off: the run fails instead of writing when the structural c
         await drain(fixture, shellChild(hop.lent), {
           publishSkipping: (lockIds) => global.publishSkipping(lockIds),
         });
-        await assertRejects(() => hop.end(), LockTimeoutError);
+        // Only the hop's end gets the short timeout: the fixture's own
+        // lock acquisition under load must not hit it (swamp-club#3668).
+        await assertRejects(
+          () => withMockedEnv({ SWAMP_LOCK_TIMEOUT_MS: "20" }, () => hop.end()),
+          LockTimeoutError,
+        );
       } finally {
         await global.release();
       }

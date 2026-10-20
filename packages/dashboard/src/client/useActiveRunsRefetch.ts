@@ -29,6 +29,11 @@ import {
  * finishing a run, or still driving one the rows show suspended. Keeps
  * approved runs that serve resumes itself in step with serve, whoever made
  * the approval. At most one refetch per snapshot.
+ *
+ * Needs no visibility check of its own: a hidden tab closes the health
+ * stream, so `activeRuns` holds still, and the first snapshot after coming
+ * back into view is compared with the runs from before, refetching once if
+ * a run started or finished meanwhile (swamp-club#3661).
  */
 export function useActiveRunsRefetch(
   activeRuns: readonly ActiveRunRef[] | undefined,

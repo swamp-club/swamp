@@ -17,10 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
+import { z } from "zod";
 import "../domain/models/models.ts";
+import { defineModel, modelRegistry } from "../domain/models/model.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import {
   type DispatchExecution,
+  type DispatchResult,
   REMOTE_PROTOCOL_VERSION,
 } from "../domain/remote/protocol.ts";
 import {
@@ -29,14 +33,50 @@ import {
 } from "../domain/remote/stdio_transport.ts";
 import { definitionFromExecution, runDispatchRunner } from "./exec_dispatch.ts";
 
+/**
+ * Runs one dispatch through the runner in this process and returns the
+ * result frame it wrote, or undefined when it sent none.
+ */
+async function runRunner(
+  bootstrap: Record<string, unknown>,
+): Promise<DispatchResult | undefined> {
+  const stdin = new TransformStream<Uint8Array, Uint8Array>();
+  const stdinWriter = new StdioTransport(stdin.writable);
+  stdinWriter.send(JSON.stringify(bootstrap));
+
+  const written: Uint8Array[] = [];
+  const stdout = new WritableStream<Uint8Array>({
+    write(chunk) {
+      written.push(chunk);
+    },
+  });
+
+  await runDispatchRunner(stdin.readable, stdout);
+
+  stdinWriter.close();
+  await stdin.writable.close();
+
+  const frames: string[] = [];
+  await createStdioReader(
+    ReadableStream.from(written),
+    (frame) => frames.push(frame),
+    () => {},
+  );
+  return frames
+    .map((f) => JSON.parse(f))
+    .find((f) => f.type === "runner.result")?.result as
+      | DispatchResult
+      | undefined;
+}
+
 Deno.test("runDispatchRunner: returns after sending its result frame instead of exiting", async () => {
   const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
   try {
     // stdin: one bootstrap frame for a dispatch whose model type does not
     // exist, so the runner reports an error result without network access.
-    const stdin = new TransformStream<Uint8Array, Uint8Array>();
-    const stdinWriter = new StdioTransport(stdin.writable);
-    stdinWriter.send(JSON.stringify({
+    // Before swamp-club#2467 the runner called Deno.exit(0) after the result
+    // frame, which would end this test process instead of resolving.
+    const result = await runRunner({
       sessionCredential: "cred",
       dataPlaneUrl: "http://127.0.0.1:9",
       cacheDirPath,
@@ -56,33 +96,68 @@ Deno.test("runDispatchRunner: returns after sending its result frame instead of 
         reportBundleFingerprints: [],
         environmentSnapshot: {},
       },
-    }));
+    });
+    assertEquals(result?.status, "error");
+  } finally {
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
 
-    const written: Uint8Array[] = [];
-    const stdout = new WritableStream<Uint8Array>({
-      write(chunk) {
-        written.push(chunk);
+Deno.test("runDispatchRunner: the result error is scrubbed with the dispatch redactor, like the console capture (swamp-club#3525)", async () => {
+  // Registered per run: the registry is process-global.
+  const type = ModelType.create(`swamp/runner-test-${crypto.randomUUID()}`);
+  defineModel({
+    type,
+    version: "2026.10.20.1",
+    methods: {
+      fail: {
+        description: "logs and throws its secret argument",
+        kind: "action",
+        arguments: z.object({ secret: z.string() }),
+        execute: (args) => {
+          const { secret } = args as { secret: string };
+          console.log(`console line ${secret}`);
+          throw new Error(`method failed holding ${secret}`);
+        },
+      },
+    },
+  });
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const secret = `canary-${crypto.randomUUID()}`;
+    const result = await runRunner({
+      sessionCredential: "cred",
+      dataPlaneUrl: "http://127.0.0.1:9",
+      cacheDirPath,
+      dispatch: {
+        dispatchId: crypto.randomUUID(),
+        leaseId: crypto.randomUUID(),
+        execution: {
+          protocolVersion: REMOTE_PROTOCOL_VERSION,
+          modelType: type.normalized,
+          modelId: crypto.randomUUID(),
+          methodName: "fail",
+          globalArgs: {},
+          methodArgs: { secret },
+          definitionMeta: {
+            id: crypto.randomUUID(),
+            name: "runner-test",
+            version: 1,
+            tags: {},
+          },
+        },
+        bundleFingerprint: `builtin:${type.normalized}`,
+        reportBundleFingerprints: [],
+        environmentSnapshot: {},
+        secretValues: [secret],
       },
     });
-
-    // Before swamp-club#2467 the runner called Deno.exit(0) here, which
-    // would end this test process instead of resolving.
-    await runDispatchRunner(stdin.readable, stdout);
-
-    stdinWriter.close();
-    await stdin.writable.close();
-
-    const frames: string[] = [];
-    await createStdioReader(
-      ReadableStream.from(written),
-      (frame) => frames.push(frame),
-      () => {},
-    );
-    const result = frames
-      .map((f) => JSON.parse(f))
-      .find((f) => f.type === "runner.result");
-    assertEquals(result?.result.status, "error");
+    assertEquals(result?.status, "error");
+    assertEquals(result?.error, "method failed holding ***");
+    assert(result?.logs.includes("console line ***"));
+    assertEquals(result?.logs.filter((line) => line.includes(secret)), []);
   } finally {
+    modelRegistry.invalidateType(type);
     await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
   }
 });

@@ -46,6 +46,7 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import { lineageRegistryFor } from "../src/infrastructure/datastore_v3/litestream/v3_copy.ts";
+import { V3_RESTORE_FAILED_CODE } from "../src/infrastructure/datastore_v3/litestream/litestream_restorer.ts";
 import {
   currentLineage,
   newestStartedFence,
@@ -95,6 +96,10 @@ interface World {
       readonly gated?: boolean;
       /** It keeps its datastore warnings for a `warnings` request. */
       readonly captureWarnings?: boolean;
+      /** How long it waits for a lock; 30 s by default. */
+      readonly lockTimeoutMs?: number;
+      /** Its Litestream binary cannot be found. */
+      readonly binaryMissing?: boolean;
     },
   ): Promise<Machine>;
   /** What the published lineages say, as a reader sees them. */
@@ -174,13 +179,16 @@ async function withMachines(
         privateRoot,
         datastorePath,
         repoDir: join(root, machineOptions.checkout ?? name),
-        lockTimeoutMs: 30_000,
+        lockTimeoutMs: machineOptions.lockTimeoutMs ?? 30_000,
         ...(machineOptions.namespace !== undefined
           ? { namespace: machineOptions.namespace }
           : {}),
         ...(machineOptions.gated === true ? { gated: true } : {}),
         ...(machineOptions.captureWarnings === true
           ? { captureWarnings: true }
+          : {}),
+        ...(machineOptions.binaryMissing === true
+          ? { binaryMissing: true }
           : {}),
       });
       return {
@@ -971,6 +979,163 @@ Deno.test({
       await Deno.writeTextFile(empty, "");
       const b = await world.machine("b");
       assertEquals((await read(b)).commits, 2);
+    });
+  },
+});
+
+/**
+ * Makes the current lineage's replica path unreadable, as a bucket that
+ * answers Litestream's reads with 404 does: the lineage records still name
+ * it, so a restore is attempted and fails. `writer`'s sidecars are stopped
+ * first, so none writes the path again.
+ */
+async function hideCurrentLineage(
+  world: World,
+  writer: Machine,
+): Promise<void> {
+  await writer.stopSidecars();
+  const fence = (await world.lineages()).current!;
+  const path = replicaPathFor(world.replicaRoot, fence);
+  await Deno.rename(path, `${path}.hidden`);
+}
+
+Deno.test({
+  name:
+    "v3 restore: a fresh checkout whose restore fails refuses to read instead of reading an empty datastore (swamp-club#3642)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      await hideCurrentLineage(world, a);
+      const b = await world.machine("b");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const refused = await assertRejects(() => read(b), MachineError);
+        assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+        assertStringIncludes(
+          refused.message,
+          "Restoring the v3 datastore copy failed",
+        );
+      }
+      // A write fails the same way, as it did before.
+      const write = await assertRejects(
+        () => b.send({ kind: "write", commits: 1, close: true }),
+        MachineError,
+      );
+      assertEquals(write.code, V3_RESTORE_FAILED_CODE);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a copy left as an empty file by a waiting reader still counts as never restored (swamp-club#3642)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      await hideCurrentLineage(world, a);
+      const empty = await withMockedEnv(
+        { [V3_REPLICA_ENV]: world.replica },
+        () =>
+          Promise.resolve(
+            v3CommitsDbPath(world.datastorePath, join(world.root, "b")),
+          ),
+      );
+      await Deno.mkdir(dirname(empty), { recursive: true });
+      await Deno.writeTextFile(empty, "");
+      const b = await world.machine("b");
+      const refused = await assertRejects(() => read(b), MachineError);
+      assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a fresh checkout whose restore cannot run refuses to read with the restore's code (swamp-club#3642)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      const b = await world.machine("b", { binaryMissing: true });
+      const refused = await assertRejects(() => read(b), MachineError);
+      assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+      assertStringIncludes(
+        refused.message,
+        "no Litestream binary on this host",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a fresh checkout that cannot take the restore lock refuses to read (swamp-club#3642)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      // The copy's directory, as another process restoring it made it; no
+      // commits.db yet.
+      const copyDb = await withMockedEnv(
+        { [V3_REPLICA_ENV]: world.replica },
+        () =>
+          Promise.resolve(
+            v3CommitsDbPath(world.datastorePath, join(world.root, "b")),
+          ),
+      );
+      await Deno.mkdir(dirname(copyDb), { recursive: true });
+      const b = await world.machine("b", { lockTimeoutMs: 500 });
+      // That process holds the restore lock throughout.
+      const lockPath = await b.send({ kind: "restoreLock" }) as string;
+      await Deno.mkdir(dirname(lockPath), { recursive: true });
+      const lock = await Deno.open(lockPath, {
+        read: true,
+        write: true,
+        create: true,
+      });
+      await lock.lock(true);
+      try {
+        const refused = await assertRejects(() => read(b), MachineError);
+        assertEquals(refused.code, V3_RESTORE_FAILED_CODE);
+        assertStringIncludes(
+          refused.message,
+          "another swamp process is restoring this checkout's copy",
+        );
+      } finally {
+        await lock.unlock();
+        lock.close();
+      }
+      assertEquals((await read(b)).commits, 2);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a restored copy whose refresh fails is read as it is, with one warning (swamp-club#3642)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      const b = await world.machine("b", { captureWarnings: true });
+      assertEquals((await read(b)).commits, 2);
+      await a.send({ kind: "write", commits: 1, close: true });
+      await hideCurrentLineage(world, a);
+      assertEquals(await read(b), { commits: 2, restored: null });
+      const warned = (await b.send({ kind: "warnings" }) as string[]).filter(
+        (message) => message.includes("could not be brought up to date"),
+      );
+      assertEquals(warned.length, 1, JSON.stringify(warned));
+      assertStringIncludes(
+        warned[0],
+        "Restoring the v3 datastore copy failed",
+      );
     });
   },
 });

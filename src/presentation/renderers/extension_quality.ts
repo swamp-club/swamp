@@ -129,7 +129,7 @@ function qualityFailureMessage(data: ExtensionQualityData): string | undefined {
   }
   if (!data.registryScorable) {
     reasons.push(
-      "the registry cannot score this extension (it uses bare import specifiers)",
+      "the registry cannot score this extension (it has bare imports that ship as written)",
     );
   }
   if (reasons.length === 0) return undefined;
@@ -249,7 +249,13 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             }
             if (dep.reason) parts.push(`not audited: ${dep.reason}`);
             const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
-            logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
+            if (dep.importedAs !== undefined) {
+              // The bare import the source wrote, as JSON's importedAs.
+              logger
+                .info`      ${mark} ${dep.name}@${dep.version} (as ${dep.importedAs})${detail}`;
+            } else {
+              logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
+            }
           }
         } else {
           logger.info`      No npm/jsr dependencies to audit`;
@@ -285,6 +291,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             {
               safetyWarnings: findings.safetyWarnings,
               reviewWarnings: findings.reviewRulesResult.warnings,
+              dependencyWarnings: dependencyTrustResult.warnings,
               acceptances: findings.acceptances,
               commentSites: findings.commentSites,
             },
@@ -320,7 +327,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         }
         if (!registryScorable) {
           logger
-            .error`The registry cannot score this extension: it uses bare import specifiers, so it would publish unscored. The rubric above resolves the import map locally; the registry does not.`;
+            .error`The registry cannot score this extension: it has bare imports that ship as written, so it would publish unscored. Push rewrites only the bare imports the deno.json import map resolves; the rubric above resolves the import map locally, the registry does not.`;
         }
         const failure = qualityFailureMessage(e.data);
         if (failure) {
@@ -430,6 +437,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
               {
                 safetyWarnings: findings.safetyWarnings,
                 reviewWarnings: findings.reviewRulesResult.warnings,
+                dependencyWarnings: dependencyTrustResult.warnings,
                 acceptances: findings.acceptances,
                 commentSites: findings.commentSites,
               },

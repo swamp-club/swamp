@@ -266,7 +266,25 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
 - A run cancelled by Ctrl+C or SIGTERM commits its `cancelled` record and the
   outputs it wrote. After a hard kill, a crash or a second Ctrl+C, the next
   command in that checkout removes the run's uncommitted files and logs a
-  warning; there is nothing to clean up by hand.
+  warning. Only a file holding content the datastore refused to store again is
+  moved aside instead of removed; `swamp doctor datastores` lists such copies
+  and how to store or discard them.
+- After a crash or power loss, a record whose content chunk is missing or
+  damaged fails reads with `datastore_v3_record_unreadable` (it does not read as
+  absent) while other records keep working. `swamp doctor datastores --json`
+  lists such records, checkout files moved aside and short chunks (check
+  `v3_content`) with the way out for each. If the checkout's content cannot be
+  inspected at all (e.g. a read-only `.swamp/` state directory), `v3_content`
+  fails and the command exits 1.
+- A refusal with `datastore_format_mismatch` or
+  `datastore_format_marker_invalid` saying a crash may have lost the format
+  marker: run `swamp doctor datastores --repair` (preview), then add `-y` to
+  restore it. A `setup --format 3` that stopped part-way is simply re-run. The
+  repair's `--json` output is one object whose `status` is
+  `format_marker_preview` (no `-y`; also `datastorePath`, `markerPath`, and
+  `marker`: `absent` or `blank`), `format_marker_restored` (same fields), or
+  `format_marker_not_needed` (`datastorePath` only). A failed restore exits 1
+  with its own error code, or `format_marker_repair_failed`.
 
 ### Setting Up a v3 Datastore on S3 or GCS
 

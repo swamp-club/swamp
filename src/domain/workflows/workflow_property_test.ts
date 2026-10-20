@@ -145,14 +145,13 @@ const arbLifetime = fc.oneof(
     .map(([n, unit]) => `${n}${unit}`),
 );
 
-// `vaultName` is deliberately omitted: Step.fromData/toData drop it (see the
-// "step dataOutputOverrides drop vaultName" property below).
 const arbDataOutputOverride: fc.Arbitrary<DataOutputOverride> = fc.record({
   specName: arbShortString,
   lifetime: arbLifetime,
   garbageCollection: fc.integer({ min: 1, max: 10 }),
   tags: arbStringRecord,
   vary: fc.array(arbShortString, { minLength: 1, maxLength: 2 }),
+  vaultName: arbShortString,
 }, { requiredKeys: ["specName"] });
 
 const arbStepTask: fc.Arbitrary<StepTask> = fc.oneof(
@@ -516,12 +515,7 @@ Deno.test("property: isFilenameSafeName rejects over-long names", () => {
   );
 });
 
-Deno.test("property: step dataOutputOverrides drop vaultName (current behavior)", () => {
-  // BUG CANDIDATE: DataOutputOverrideSchema accepts `vaultName` and
-  // data_writer.ts consumes it, but Step.fromData (step.ts ~L228) and
-  // Step.toData (~L305) rebuild overrides field-by-field without vaultName,
-  // so a step-level vault override is silently discarded. This property
-  // encodes today's lossy behavior rather than the intended one.
+Deno.test("property: step dataOutputOverrides keep vaultName (swamp-club#3606)", () => {
   fc.assert(
     fc.property(arbShortString, arbShortString, (specName, vaultName) => {
       const step = Step.create({
@@ -529,8 +523,12 @@ Deno.test("property: step dataOutputOverrides drop vaultName (current behavior)"
         task: StepTask.modelMethod("test/model", "run"),
         dataOutputOverrides: [{ specName, vaultName }],
       });
-      assertEquals(step.dataOutputOverrides[0].vaultName, undefined);
-      assertEquals(step.toData().dataOutputOverrides?.[0].vaultName, undefined);
+      assertEquals(step.dataOutputOverrides[0].vaultName, vaultName);
+      assertEquals(step.toData().dataOutputOverrides?.[0].vaultName, vaultName);
+      assertEquals(
+        Step.fromData(step.toData()).dataOutputOverrides[0].vaultName,
+        vaultName,
+      );
     }),
     { numRuns: 50 },
   );

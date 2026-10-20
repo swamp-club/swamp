@@ -65,13 +65,12 @@ function tabVisible(): boolean {
   return tabDocument()?.visibilityState !== "hidden";
 }
 
-/** Shares the health snapshot's run activity and the tab's visibility. */
-export function RunActivityProvider(
-  { activeRuns, children }: {
-    activeRuns: readonly ActiveRunRef[] | undefined;
-    children: ReactNode;
-  },
-) {
+/**
+ * Whether the document is in view, following `visibilitychange`; true
+ * without a document. For code above a `RunActivityProvider` (the health
+ * stream); views read `useTabVisible` instead.
+ */
+export function useDocumentVisible(): boolean {
   const [visible, setVisible] = useState(tabVisible);
   useEffect(() => {
     const doc = tabDocument();
@@ -80,12 +79,44 @@ export function RunActivityProvider(
     doc.addEventListener("visibilitychange", onChange);
     return () => doc.removeEventListener("visibilitychange", onChange);
   }, []);
+  return visible;
+}
+
+/** Shares the health snapshot's run activity and the tab's visibility. */
+export function RunActivityProvider(
+  { activeRuns, children }: {
+    activeRuns: readonly ActiveRunRef[] | undefined;
+    children: ReactNode;
+  },
+) {
+  const visible = useDocumentVisible();
   const activityKey = activeRunsKey(activeRuns);
   const value = useMemo(() => ({ activityKey, visible }), [
     activityKey,
     visible,
   ]);
   return createElement(RunActivityContext.Provider, { value }, children);
+}
+
+/** Whether the tab is in view; true outside a `RunActivityProvider`. */
+export function useTabVisible(): boolean {
+  return useContext(RunActivityContext).visible;
+}
+
+/**
+ * A clock or poll's interval while the tab is in view, and null (stopped)
+ * while it is hidden (swamp-club#3661).
+ */
+export function visibleIntervalMs(
+  intervalMs: number | null,
+  visible: boolean,
+): number | null {
+  return visible ? intervalMs : null;
+}
+
+/** Whether the tab went from hidden to in view. */
+export function cameIntoView(previous: boolean, next: boolean): boolean {
+  return !previous && next;
 }
 
 /**
@@ -97,7 +128,7 @@ export function runActivityChanged(
   next: RunActivity,
 ): boolean {
   return previous.activityKey !== next.activityKey ||
-    (!previous.visible && next.visible);
+    cameIntoView(previous.visible, next.visible);
 }
 
 export type RefetchStep =

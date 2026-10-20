@@ -82,8 +82,9 @@
  * again. The exceptions are repair after a chunk GC race: a retry that
  * reuses a kept op refreshes its chunks first, and every landed commit runs
  * the post-commit check ({@link restoreMissingChunks}); each reads the source
- * again only when one of the commit's chunks is actually missing. A
- * superseded put that was dropped never commits, so it needs no check.
+ * again only when one of the commit's chunks is actually missing; a kept
+ * op whose put was superseded since is skipped instead, as an unstored one
+ * is. A superseded put that was dropped never commits, so it needs no check.
  *
  * **The outbox (swamp-club#3490).** The unit appends through a
  * {@link CommitSink}. A sink with an {@link SinkOutbox} (a v3 datastore's)
@@ -125,7 +126,10 @@ import type {
 } from "../../domain/datastore/unit_of_work.ts";
 import type { Namespace } from "../../domain/data/namespace.ts";
 import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
-import type { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
+import type {
+  ChunkBatch,
+  ChunkStore,
+} from "../../domain/datastore_v3/chunk_store.ts";
 import {
   Commit,
   type CommitWriter,
@@ -484,9 +488,11 @@ export function createCommitLogUnitOfWork(
   /** Each pending put's op once its content is stored, for retries. */
   const stored = new WeakMap<PendingPut, PutOp>();
   /**
-   * Unstored stream puts of the group being appended that a later change
-   * superseded: that group cannot change under its append, so it skips them
-   * when it reaches them, and on a retry.
+   * Stream puts of pending groups that a later change superseded but that
+   * stay in their group: unstored ones of the group being appended, which
+   * cannot change under its append, and stored ones, whose op is kept. A
+   * group skips an unstored one when it reaches it, and a stored one when a
+   * retry finds its chunks missing, instead of reading its source again.
    */
   const supersededInFlight = new WeakSet<PendingPut>();
   /** The unflushed stream puts by partition and key, where they sit. */
@@ -534,19 +540,20 @@ export function createCommitLogUnitOfWork(
     pending = pending.flatMap((group) => {
       if (group === inFlight) {
         for (const other of group.changes) {
-          if (
-            "put" in other && !stored.has(other.put) &&
-            streamPutSlot(other) === slot
-          ) {
+          if ("put" in other && streamPutSlot(other) === slot) {
             supersededInFlight.add(other.put);
           }
         }
         return [group];
       }
-      const changes = group.changes.filter((other) =>
-        !("put" in other) || stored.has(other.put) ||
-        streamPutSlot(other) !== slot
-      );
+      const changes = group.changes.filter((other) => {
+        if (!("put" in other) || streamPutSlot(other) !== slot) return true;
+        if (!stored.has(other.put)) return false;
+        // A stored put's op is kept; a retry that finds its chunks missing
+        // skips it rather than read a source that may be gone.
+        supersededInFlight.add(other.put);
+        return true;
+      });
       if (changes.length === group.changes.length) return [group];
       // A group left empty has nothing to commit; a commit carries an op.
       return changes.length === 0 ? [] : [{ ...group, changes }];
@@ -564,10 +571,7 @@ export function createCommitLogUnitOfWork(
     if (slot === undefined) return;
     for (const group of pending) {
       for (const other of group.changes) {
-        if (
-          "put" in other && !stored.has(other.put) &&
-          streamPutSlot(other) === slot
-        ) {
+        if ("put" in other && streamPutSlot(other) === slot) {
           supersededInFlight.add(other.put);
         }
       }
@@ -1090,6 +1094,13 @@ function runRank(group: Group): number {
  * lock, so two units in one process never take the same seq. Once the
  * commit has landed, any of its chunks that chunk garbage collection
  * deleted meanwhile are stored again (see {@link restoreMissingChunks}).
+ *
+ * The chunk barrier (swamp-club#3617): the group's content goes into one
+ * {@link ChunkBatch}, committed before the commit is prepared or appended.
+ * Its new chunks are synced together, then renamed into place, and every
+ * chunk the commit names, stored now or found present, has its name made
+ * durable, so a power loss never leaves a commit naming a chunk whose bytes
+ * or rename were lost. Chunks stored again later get a batch of their own.
  */
 async function appendGroup(
   group: Group,
@@ -1114,46 +1125,25 @@ async function appendGroup(
   const sweepBefore = await outbox?.sweepState();
   const ops: Op[] = [];
   const stored: StoredContent[] = [];
-  for (const change of group.changes) {
-    if ("op" in change) {
-      ops.push(change.op);
-      continue;
-    }
-    // A retry reuses the content stored the first time, so it never reads
-    // a stream twice or reopens a file removed since.
-    let op = storedOps.get(change.put);
-    if (op === undefined) {
-      if (superseded.has(change.put)) continue;
-      try {
-        op = await storePut(change.put, options);
-      } catch (error) {
-        // Superseded while this group was being stored: its file may be
-        // gone, and a later change records what the key ends as.
-        if (superseded.has(change.put)) continue;
-        throw error;
-      }
-      storedOps.set(change.put, op);
-    } else if ("blob" in op.content) {
-      // A retry refreshes what it stored the first time, and stores again
-      // what a sweep deleted since, before it prepares (swamp-club#3586).
-      const missing = await options.chunkStore.refresh(
-        options.namespace,
-        op.content.blob,
-        options.signal,
-      );
-      if (missing.length > 0) {
-        await storeAgain(change.put.content, op.content.blob, missing, options);
-      }
-    }
-    // Every blob the commit names gets the post-commit check, a reused op
-    // included: a sweep may have deleted its chunks since they were stored.
-    if ("blob" in op.content) {
-      stored.push({ source: change.put.content, blob: op.content.blob });
-    }
-    ops.push(op);
+  const chunks = options.chunkStore.beginBatch(options.namespace);
+  try {
+    await storeGroup(
+      group,
+      options,
+      storedOps,
+      superseded,
+      chunks,
+      ops,
+      stored,
+    );
+    // Every op was a superseded put: nothing to commit.
+    if (ops.length === 0) return;
+    // A failed barrier fails the group as a failed store does: nothing is
+    // prepared or appended.
+    await chunks.commit(options.signal);
+  } finally {
+    await chunks.discard();
   }
-  // Every op was a superseded put: nothing to commit.
-  if (ops.length === 0) return;
   await withPartitionLock(
     options.sink,
     options.namespace,
@@ -1234,6 +1224,71 @@ async function appendGroup(
           .debug`Settling the outbox entry of a landed commit failed; the next recovery settles it: ${error}`
       );
     }
+  }
+}
+
+/**
+ * Stores the group's content into `chunks` and collects its ops in `ops`,
+ * and the blobs they name in `stored`. A retry reuses the content stored
+ * the first time, so it never reads a stream twice or reopens a file
+ * removed since.
+ */
+async function storeGroup(
+  group: Group,
+  options: CommitLogUnitOptions,
+  storedOps: WeakMap<PendingPut, PutOp>,
+  superseded: WeakSet<PendingPut>,
+  chunks: ChunkBatch,
+  ops: Op[],
+  stored: StoredContent[],
+): Promise<void> {
+  for (const change of group.changes) {
+    if ("op" in change) {
+      ops.push(change.op);
+      continue;
+    }
+    let op = storedOps.get(change.put);
+    if (op === undefined) {
+      if (superseded.has(change.put)) continue;
+      try {
+        op = await storePut(change.put, options, chunks);
+      } catch (error) {
+        // Superseded while this group was being stored: its file may be
+        // gone, and a later change records what the key ends as.
+        if (superseded.has(change.put)) continue;
+        throw error;
+      }
+      storedOps.set(change.put, op);
+    } else if ("blob" in op.content) {
+      // A retry refreshes what it stored the first time, and stores again
+      // what a sweep deleted, or a failed barrier never stored, before it
+      // prepares (swamp-club#3586).
+      const missing = await options.chunkStore.refresh(
+        options.namespace,
+        op.content.blob,
+        options.signal,
+      );
+      if (missing.length > 0) {
+        // Superseded since it was stored: its source may be gone, and a
+        // later change records what the key ends as, as for a first store.
+        if (superseded.has(change.put)) continue;
+        await storeAgain(
+          change.put.content,
+          op.content.blob,
+          missing,
+          options,
+          chunks,
+        );
+      }
+    }
+    // Every blob the commit names gets the barrier and the post-commit
+    // check, a reused op included: a sweep may have deleted its chunks
+    // since they were stored.
+    if ("blob" in op.content) {
+      chunks.include(op.content.blob.chunkHashes());
+      stored.push({ source: change.put.content, blob: op.content.blob });
+    }
+    ops.push(op);
   }
 }
 
@@ -1349,17 +1404,68 @@ interface StoredContent {
  * stored again from the put's content source, which stays readable until
  * the unit ends. Content stored again must give the same reference; a
  * source that changed cannot repair the commit, and the caller reports it
- * as a warning, since the commit has landed (swamp-club#3586).
+ * as a warning, since the commit has landed (swamp-club#3586). What is
+ * stored again goes into one {@link ChunkBatch}, committed before this
+ * returns: the chunk barrier (swamp-club#3617). One blob that cannot be
+ * stored again does not cost the others: the batch still commits what was
+ * staged, then the first failure is thrown (an `AggregateError` for more
+ * than one). An abort of `options.signal` ends the check and is thrown as
+ * itself, never wrapped as one blob's failure.
  */
 async function restoreMissingChunks(
   stored: readonly StoredContent[],
   options: CommitLogUnitOptions,
 ): Promise<void> {
   const { chunkStore, namespace, signal } = options;
-  for (const { source, blob } of stored) {
-    const missing = await chunkStore.missing(namespace, blob, signal);
-    if (missing.length === 0) continue;
-    await storeAgain(source, blob, missing, options);
+  const chunks = chunkStore.beginBatch(namespace);
+  const errors: unknown[] = [];
+  try {
+    let restored = false;
+    for (const content of stored) {
+      signal?.throwIfAborted();
+      try {
+        const missing = await chunkStore.missing(
+          namespace,
+          content.blob,
+          signal,
+        );
+        if (missing.length === 0) continue;
+        restored = true;
+        await storeAgain(
+          content.source,
+          content.blob,
+          missing,
+          options,
+          chunks,
+        );
+        chunks.include(content.blob.chunkHashes());
+      } catch (error) {
+        // An abort ends the check: it is not one blob's failure.
+        signal?.throwIfAborted();
+        errors.push(error);
+      }
+    }
+    // Chunks staged for a blob that then failed are committed too: no
+    // commit names them, so they are as harmless as any unreferenced chunk.
+    if (restored) {
+      try {
+        await chunks.commit(signal);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  } finally {
+    await chunks.discard();
+  }
+  signal?.throwIfAborted();
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(
+      errors,
+      `Storing the content of a landed v3 commit again failed ${errors.length} times; the first: ${
+        errors[0]
+      }`,
+    );
   }
 }
 
@@ -1372,12 +1478,14 @@ async function storeAgain(
   blob: BlobRef,
   missing: readonly string[],
   options: CommitLogUnitOptions,
+  chunks: ChunkBatch,
 ): Promise<void> {
   const { chunkStore, namespace, signal } = options;
   const again = await chunkStore.write(
     namespace,
     source instanceof Uint8Array ? source : await source(),
     signal,
+    chunks,
   );
   if (!again.equals(blob)) {
     throw new Error(
@@ -1395,8 +1503,9 @@ const SEQ_GAP_ATTEMPTS = 2;
 async function storePut(
   put: PendingPut,
   options: CommitLogUnitOptions,
+  chunks: ChunkBatch,
 ): Promise<PutOp> {
-  const content = await storeContent(put.content, options);
+  const content = await storeContent(put.content, options, chunks);
   return await putOp({
     intent: put.intent,
     key: put.key,
@@ -1407,20 +1516,21 @@ async function storePut(
 
 /**
  * Inlines content of at most {@link MAX_INLINE_BYTES}, and stores anything
- * longer through the chunk store. A stream source is read, a piece at a
- * time, until it ends or holds more than the inline limit; what was read is
- * then handed to the chunk store ahead of the rest.
+ * longer through the chunk store, into `chunks`. A stream source is read, a
+ * piece at a time, until it ends or holds more than the inline limit; what
+ * was read is then handed to the chunk store ahead of the rest.
  */
 async function storeContent(
   source: ContentSource,
   options: CommitLogUnitOptions,
+  chunks: ChunkBatch,
 ): Promise<{ inline: string } | { blob: BlobRef }> {
   const { chunkStore, namespace, signal } = options;
   signal.throwIfAborted();
   if (source instanceof Uint8Array) {
     return source.length <= MAX_INLINE_BYTES
       ? { inline: toBase64(source) }
-      : { blob: await chunkStore.write(namespace, source, signal) };
+      : { blob: await chunkStore.write(namespace, source, signal, chunks) };
   }
   const reader = (await source()).getReader();
   const head: Uint8Array[] = [];
@@ -1438,7 +1548,12 @@ async function storeContent(
     // source, when the write fails or aborts.
     handedOn = true;
     return {
-      blob: await chunkStore.write(namespace, resume(head, reader), signal),
+      blob: await chunkStore.write(
+        namespace,
+        resume(head, reader),
+        signal,
+        chunks,
+      ),
     };
   } finally {
     if (!handedOn) await reader.cancel().catch(() => {});

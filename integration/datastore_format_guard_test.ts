@@ -43,6 +43,7 @@ import {
   DATASTORE_FORMAT_UNSUPPORTED_CODE,
 } from "../src/domain/datastore/datastore_format.ts";
 import { errorPaths, UserError } from "../src/domain/errors.ts";
+import { initializeV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -643,5 +644,140 @@ Deno.test("datastore format guard: a filesystem datastore with no marker or a fo
     await runCli({
       args: ["data", "gc", "--force", "--repo-dir", repoDir, "--json"],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// swamp-club#3617: a v3 datastore whose format marker a crash lost
+// ---------------------------------------------------------------------------
+
+/** The datastore of `repoDir` made a v3 datastore whose marker is lost. */
+async function loseV3Marker(datastore: string, marker?: string) {
+  await initializeV3Datastore(datastore, "test");
+  const path = join(datastore, DATASTORE_FORMAT_MARKER_FILE);
+  await Deno.remove(path);
+  if (marker !== undefined) await Deno.writeTextFile(path, marker);
+}
+
+Deno.test("datastore format guard: a repo not configured for v3 is refused a v3 datastore whose marker a crash lost, by every entry point, writing nothing (swamp-club#3617)", async () => {
+  await withFilesystemRepo({}, async ({ repoDir, datastore }) => {
+    await loseV3Marker(datastore);
+    const before = await snapshotDir(datastore);
+    for (const args of FILESYSTEM_COMMANDS) {
+      const label = `swamp ${args.join(" ")}`;
+      const error = await runCliRejecting({
+        args: [...args, "--repo-dir", repoDir, "--json"],
+      });
+      assertRefused(error, DATASTORE_FORMAT_MISMATCH_CODE, label);
+      assert(
+        (error as Error).message.includes("swamp doctor datastores --repair"),
+        label,
+      );
+      assertEquals(errorPaths(error as Error), [datastore], label);
+      assertEquals(await snapshotDir(datastore), before, label);
+    }
+  });
+});
+
+Deno.test("datastore format guard: doctor --repair previews a v3 repo's lost marker writing nothing, restores it with -y, then refuses as before (swamp-club#3617)", async () => {
+  for (const lost of [undefined, "", "\0".repeat(48)]) {
+    await withFilesystemRepo({}, async ({ repoDir, datastore }) => {
+      await appendToDatastoreBlock(repoDir, "  format: 3");
+      await loseV3Marker(datastore, lost);
+      const before = await snapshotDir(datastore);
+      const refused = await runCliRejecting({
+        args: ["data", "gc", "--force", "--repo-dir", repoDir, "--json"],
+      });
+      assertRefused(
+        refused,
+        lost === undefined
+          ? DATASTORE_FORMAT_MISMATCH_CODE
+          : DATASTORE_FORMAT_MARKER_INVALID_CODE,
+        "refused",
+      );
+      assertEquals(await snapshotDir(datastore), before);
+
+      const preview = await runCli({
+        args: [
+          "doctor",
+          "datastores",
+          "--repair",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+      });
+      assertEquals(
+        JSON.parse(preview.join("\n")).status,
+        "format_marker_preview",
+      );
+      assertEquals(await snapshotDir(datastore), before, "preview");
+
+      const restored = await runCli({
+        args: [
+          "doctor",
+          "datastores",
+          "--repair",
+          "-y",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+      });
+      assertEquals(
+        JSON.parse(restored.join("\n")).status,
+        "format_marker_restored",
+      );
+      const marker = JSON.parse(
+        await Deno.readTextFile(join(datastore, DATASTORE_FORMAT_MARKER_FILE)),
+      );
+      assertEquals(marker, {
+        format: 3,
+        minReaderFormat: 3,
+        writtenBy: VERSION,
+      });
+
+      // A healthy v3 datastore: the refusal swamp-uat pins, byte for byte,
+      // and nothing in the datastore changes.
+      const healthy = await snapshotDir(datastore);
+      const error = await runCliRejecting({
+        args: [
+          "doctor",
+          "datastores",
+          "--repair",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+      });
+      assertEquals(
+        (error as Error).message,
+        "`swamp doctor datastores --repair` is not available for v3 " +
+          "datastores yet. A v3 checkout rebuilds its records and catalog " +
+          "from the commit log; run `swamp doctor datastores` to check it. " +
+          "Nothing was changed.",
+      );
+      assertEquals(await snapshotDir(datastore), healthy);
+    });
+  }
+});
+
+Deno.test("datastore format guard: doctor --repair rethrows a lost-marker refusal unchanged when the repo is not configured for v3 (swamp-club#3617)", async () => {
+  await withFilesystemRepo({}, async ({ repoDir, datastore }) => {
+    await loseV3Marker(datastore);
+    const before = await snapshotDir(datastore);
+    const error = await runCliRejecting({
+      args: [
+        "doctor",
+        "datastores",
+        "--repair",
+        "-y",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+    });
+    assertRefused(error, DATASTORE_FORMAT_MISMATCH_CODE, "doctor");
+    assertEquals(await snapshotDir(datastore), before);
   });
 });

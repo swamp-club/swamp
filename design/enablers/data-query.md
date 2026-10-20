@@ -1170,7 +1170,8 @@ resources:
 ```
 
 These become `dataOutputOverrides` and merge with any workflow step overrides
-(step wins).
+field by field: each field the step sets wins, and the definition supplies the
+rest.
 
 ### Remote execution
 

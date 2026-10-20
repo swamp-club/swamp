@@ -156,7 +156,7 @@ Deno.test("sidecarDirectives: a bare-specifiers entry is refused, naming the imp
   assertEquals(directives, []);
   assertEquals(invalid.map((i) => i.line), [1]);
   assertStringIncludes(invalid[0].problem, "not a rule that can be accepted");
-  assertStringIncludes(invalid[0].problem, "import-map target");
+  assertStringIncludes(invalid[0].problem, "deno.json imports");
 });
 
 Deno.test("sidecarDirectives: a generated declaration accepts testing-completeness for the package", () => {

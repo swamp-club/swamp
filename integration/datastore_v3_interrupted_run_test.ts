@@ -40,6 +40,7 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
+import { Data } from "../src/domain/data/data.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -60,6 +61,7 @@ import {
 import { openV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
   readWriterMarker,
+  readWriterMarkerFile,
   writerMarkerPath,
 } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
@@ -707,5 +709,131 @@ Deno.test("v3 interrupted run: a restarted container's process recovers its pred
     await holdV3Writer(config, repos.repoA);
     await closeV3Datastores();
     await assertRecovered(repos, datastorePath, left);
+  });
+});
+
+/**
+ * Leaves an interrupted writer whose marker a crash left `text`
+ * (swamp-club#3617), dated when that writer started.
+ */
+async function leaveUnreadableMarker(
+  repos: RowRepos,
+  datastorePath: string,
+  text: string,
+): Promise<{ kept: string[]; overwritten: string; committed: string }> {
+  const started = new Date(Math.floor(Date.now() / 1000) * 1000);
+  const left = await leaveInterruptedWriter(repos, datastorePath);
+  await Deno.writeTextFile(writerMarkerPath(repos.repoA), text);
+  await Deno.utime(writerMarkerPath(repos.repoA), started, started);
+  return left;
+}
+
+Deno.test("v3 interrupted run: a writing command recovers a checkout whose marker a crash left empty, never writing over it first (swamp-club#3617)", async () => {
+  for (const text of ["", "\0".repeat(64)]) {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      const left = await leaveUnreadableMarker(repos, datastorePath, text);
+      const config = filesystemConfig(repos);
+      await holdV3Writer(config, repos.repoA);
+      assertEquals((await readWriterMarker(repos.repoA))?.pid, Deno.pid);
+      await v3RepositoryFactoryConfig(repos.repoA, config);
+      await closeV3Datastores();
+      await assertRecovered(repos, datastorePath, left);
+    });
+  }
+});
+
+Deno.test("v3 interrupted run: a read-only command recovers an unreadable marker only once no live process holds the lease (swamp-club#3617)", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    const left = await leaveUnreadableMarker(repos, datastorePath, "");
+    const config = filesystemConfig(repos);
+    const residue = () =>
+      datastoreRecords(repos.repoA).then((records) =>
+        [...records.keys()].filter((key) => key.includes("/uncommitted/"))
+      );
+    const before = await residue();
+    assert(before.length > 0);
+
+    // A live process holds the lease: it may be the marker's writer.
+    const live = await writeLock(datastorePath, Deno.ppid, new Date());
+    await v3RepositoryFactoryConfig(repos.repoA, config, { readOnly: true });
+    assertEquals(await residue(), before);
+    assertEquals((await readWriterMarkerFile(repos.repoA)).kind, "unreadable");
+    await live.release();
+
+    // Once the lease is free, the next read recovers.
+    await v3RepositoryFactoryConfig(repos.repoA, config, { readOnly: true });
+    await assertRecovered(repos, datastorePath, left);
+  });
+});
+
+Deno.test("v3 interrupted run: recovery stores a chunk a power cut tore again from the checkout file, so every checkout can read the record (swamp-club#3617)", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    // Content over the inline limit, stored as one chunk.
+    const big = new TextEncoder().encode(
+      JSON.stringify({ value: "x".repeat(20_000) }),
+    );
+    const model = await inRoot(repos, () => saveModel(repos.serveRepo, "m1"));
+    await inRoot(repos, async () => {
+      const data = Data.create({
+        name: "big",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource", modelName: model.name },
+        ownerDefinition: {
+          ownerType: "model-method",
+          ownerRef: `${repos.serveRepo.modelType.normalized}:${model.id}`,
+        },
+      });
+      await repos.serveRepo.repoContext.unifiedDataRepo.save(
+        repos.serveRepo.modelType,
+        model.id,
+        data,
+        big,
+      );
+    });
+    const key = [...(await datastoreRecords(repos.repoA)).keys()]
+      .find((key) => key.includes("/big/") && key.endsWith("/raw"));
+    assertExists(key, "the big record's content file");
+    const digest = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", big)),
+      (b) => b.toString(16).padStart(2, "0"),
+    ).join("");
+    const chunk = join(
+      datastorePath,
+      "_blobs",
+      "_default",
+      "sha256",
+      digest.slice(0, 2),
+      digest,
+    );
+    // The power went before the chunk reached the disk; the writer's
+    // checkout file is its only good copy, and the writer is gone.
+    v3DatastoreFor(repos.repoA, filesystemConfig(repos)).forgetDroppedWork();
+    await closeV3Datastores();
+    await Deno.truncate(chunk, 10);
+    await Deno.writeTextFile(
+      writerMarkerPath(repos.repoA),
+      JSON.stringify({
+        hostname: Deno.hostname(),
+        pid: GONE_PID,
+        since: Date.now() - 60_000,
+      }),
+    );
+    await writeLock(datastorePath, GONE_PID, new Date());
+    await v3RepositoryFactoryConfig(repos.repoA, filesystemConfig(repos), {
+      readOnly: true,
+    });
+    assertEquals((await Deno.stat(chunk)).size, big.length);
+    const b = openV3Datastore({ repoDir: repos.repoB, datastorePath });
+    try {
+      await b.catchUp();
+    } finally {
+      await b.close();
+    }
+    assertEquals(
+      await Deno.readFile(join(swampPath(repos.repoB), ...key.split("/"))),
+      big,
+    );
   });
 });

@@ -33,6 +33,7 @@ import {
   WorkerAffinityLostError,
 } from "./dispatch_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
+import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import { BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { join } from "@std/path";
 import {
@@ -329,6 +330,57 @@ Deno.test("DispatchService: remote method error fails the lease and rethrows", a
     h.transitions.map((t) => t.methodName),
     ["acquire", "fail"],
   );
+  // Nothing shipped, nothing to scrub: the message reaches the lease as is.
+  assertEquals(h.transitions[1].inputs.error, "boom in method");
+});
+
+Deno.test("DispatchService: a remote method error is scrubbed with the dispatch redactor before the lease and the step see it (swamp-club#3525)", async () => {
+  const h = createHarness();
+  const secret = `s3cret-${crypto.randomUUID()}`;
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: `method failed holding ${secret}`,
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    })
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest({ secretValues: [secret] })),
+    Error,
+    "method failed holding ***",
+  );
+  assertEquals(error.message.includes(secret), false);
+  const fail = h.transitions.find((t) => t.methodName === "fail");
+  assertEquals(fail?.inputs.error, "method failed holding ***");
+});
+
+Deno.test("DispatchService: the lease scrub reads the registration's redactor, so a value learned mid-dispatch is masked too (swamp-club#3525, swamp-club#3527)", async () => {
+  const h = createHarness();
+  const learned = `l3arned-${crypto.randomUUID()}`;
+  h.setBehavior((name, params) => {
+    // As CapabilityService.resolveSecret does when it delivers a value to a
+    // dispatch that shipped no secrets: the redactor is created on the
+    // registration, which a local copy taken at dispatch time never sees.
+    const active = h.dispatches.forDispatch(name, params.dispatchId);
+    if (!active) throw new Error("dispatch is not registered");
+    (active.redactor ??= new SecretRedactor()).addSecret(learned);
+    return Promise.resolve({
+      status: "error",
+      error: `method failed holding ${learned}`,
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    Error,
+    "method failed holding ***",
+  );
+  const fail = h.transitions.find((t) => t.methodName === "fail");
+  assertEquals(fail?.inputs.error, "method failed holding ***");
 });
 
 Deno.test("DispatchService: remote method error keeps the worker's marked paths (swamp-club#2830)", async () => {

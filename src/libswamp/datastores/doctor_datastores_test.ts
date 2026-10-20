@@ -36,7 +36,14 @@ import {
   repairUnmigratedData,
   type RepairUnmigratedDataDeps,
   type RepairUnmigratedDataEvent,
+  type V3ContentSummary,
 } from "./doctor_datastores.ts";
+import {
+  repairDatastoreFormatMarker,
+  type RepairDatastoreFormatMarkerDeps,
+  type RepairDatastoreFormatMarkerEvent,
+} from "./doctor_datastores.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { RetentionCheckSummary } from "./retention_check.ts";
 
@@ -1316,5 +1323,231 @@ Deno.test("doctorDatastores: the retention check fails on overdue items or v3 hi
       ),
     );
     assertEquals(finding?.passed, false);
+  }
+});
+
+// --- swamp-club#3617: restoring a v3 datastore's lost format marker ---
+
+function markerRepairDeps(
+  state: "absent" | "blank" | undefined,
+  restore: () => Promise<string>,
+): RepairDatastoreFormatMarkerDeps {
+  return {
+    datastorePath: "/data/v3",
+    markerPath: "/data/v3/datastore-format.json",
+    inspect: () => Promise.resolve(state),
+    restore,
+  };
+}
+
+Deno.test("repairDatastoreFormatMarker: previews a lost marker without restoring it (swamp-club#3617)", async () => {
+  let restored = false;
+  const events = await collect<RepairDatastoreFormatMarkerEvent>(
+    repairDatastoreFormatMarker(
+      createLibSwampContext(),
+      markerRepairDeps("blank", () => {
+        restored = true;
+        return Promise.resolve("/data/v3/datastore-format.json");
+      }),
+      { confirm: false },
+    ),
+  );
+  assertEquals(events, [
+    { kind: "inspecting" },
+    {
+      kind: "preview",
+      data: {
+        datastorePath: "/data/v3",
+        markerPath: "/data/v3/datastore-format.json",
+        marker: "blank",
+      },
+    },
+  ]);
+  assertEquals(restored, false);
+});
+
+Deno.test("repairDatastoreFormatMarker: restores with confirm, and reports a marker that is not lost (swamp-club#3617)", async () => {
+  const events = await collect<RepairDatastoreFormatMarkerEvent>(
+    repairDatastoreFormatMarker(
+      createLibSwampContext(),
+      markerRepairDeps("absent", () => Promise.resolve("/data/v3/m.json")),
+      { confirm: true },
+    ),
+  );
+  assertEquals(events.at(-1), {
+    kind: "completed",
+    data: {
+      datastorePath: "/data/v3",
+      markerPath: "/data/v3/m.json",
+      marker: "absent",
+    },
+  });
+  const none = await collect<RepairDatastoreFormatMarkerEvent>(
+    repairDatastoreFormatMarker(
+      createLibSwampContext(),
+      markerRepairDeps(undefined, () => Promise.reject(new Error("no"))),
+      { confirm: true },
+    ),
+  );
+  assertEquals(none.at(-1), { kind: "not_needed", datastorePath: "/data/v3" });
+});
+
+Deno.test("repairDatastoreFormatMarker: a refused restore is an error event carrying its code (swamp-club#3617)", async () => {
+  const refusal = new UserError("not restored", "some_code");
+  const events = await collect<RepairDatastoreFormatMarkerEvent>(
+    repairDatastoreFormatMarker(
+      createLibSwampContext(),
+      markerRepairDeps("absent", () => Promise.reject(refusal)),
+      { confirm: true },
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind !== "error") return;
+  assertEquals(last.error.code, "some_code");
+  assertEquals(last.error.message, "not restored");
+  const plain = await collect<RepairDatastoreFormatMarkerEvent>(
+    repairDatastoreFormatMarker(
+      createLibSwampContext(),
+      markerRepairDeps("absent", () => Promise.reject(new Error("disk"))),
+      { confirm: true },
+    ),
+  );
+  const failed = plain.at(-1);
+  assertEquals(
+    failed?.kind === "error" ? failed.error.code : undefined,
+    "format_marker_repair_failed",
+  );
+});
+
+const CLEAN_V3_CONTENT: V3ContentSummary = {
+  unreadableRecords: 0,
+  unreadable: [],
+  atRiskCopies: 0,
+  atRisk: [],
+  atRiskDir: "/repo/.swamp/_read_model_v3/at-risk",
+  atRiskAdvice: "delete it to discard them",
+  tornChunks: 0,
+  torn: [],
+};
+
+async function v3ContentScan(
+  summary: V3ContentSummary | undefined,
+): Promise<{
+  findings: { check: string; passed: boolean; message: string }[];
+  data: unknown;
+  configs: DatastoreConfig[];
+}> {
+  const configs: DatastoreConfig[] = [];
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(
+      filesystemConfig,
+      { healthy: true, message: "ok", latencyMs: 1 },
+      [],
+    ),
+    ...(summary !== undefined
+      ? {
+        checkV3Content: (config: DatastoreConfig) => {
+          configs.push(config);
+          return Promise.resolve(summary);
+        },
+      }
+      : {}),
+  };
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  return {
+    findings: completed.data.healthFindings,
+    data: completed.data.v3ContentFinding,
+    configs,
+  };
+}
+
+Deno.test("doctorDatastores: the v3 content check passes on a clean checkout, and is absent without the dependency (swamp-club#3617)", async () => {
+  const clean = await v3ContentScan(CLEAN_V3_CONTENT);
+  const finding = clean.findings.find((f) => f.check === "v3_content");
+  assertEquals(finding?.passed, true);
+  assertEquals(clean.data, undefined);
+  assertEquals(clean.configs, [filesystemConfig]);
+
+  const v2 = await v3ContentScan(undefined);
+  assertEquals(v2.findings.some((f) => f.check === "v3_content"), false);
+});
+
+Deno.test("doctorDatastores: the v3 content check fails with counts and first keys for unreadable records, at-risk copies and torn chunks (swamp-club#3617)", async () => {
+  const summary: V3ContentSummary = {
+    ...CLEAN_V3_CONTENT,
+    unreadableRecords: 5,
+    unreadable: ["a", "b", "c", "d"].map((name) => ({
+      namespace: "",
+      recordKey: `data/m/${name}/1/raw`,
+      reason: "missing" as const,
+      advice: "write that data again",
+    })),
+    atRiskCopies: 1,
+    atRisk: [{
+      namespace: "",
+      sha256: "b".repeat(64),
+      recordKey: "outputs/m/out.yaml",
+      size: 9,
+    }],
+    tornChunks: 1,
+    torn: [{
+      namespace: "",
+      sha256: "c".repeat(64),
+      recordKey: "data/m/torn/1/raw",
+      expectedSize: 10,
+      size: 3,
+      advice: "write it again",
+    }],
+  };
+  const scan = await v3ContentScan(summary);
+  const finding = scan.findings.find((f) => f.check === "v3_content");
+  assertEquals(finding?.passed, false);
+  assertEquals(scan.data, summary);
+  const message = finding?.message ?? "";
+  assertStringIncludes(
+    message,
+    "5 record(s) cannot be read: a chunk is missing or damaged in the datastore (data/m/a/1/raw, data/m/b/1/raw, data/m/c/1/raw and 2 more)",
+  );
+  assertStringIncludes(
+    message,
+    "1 checkout file(s) were moved aside into /repo/.swamp/_read_model_v3/at-risk",
+  );
+  assertStringIncludes(message, "outputs/m/out.yaml");
+  assertStringIncludes(
+    message,
+    "1 chunk(s) the checkout's records name are stored short (data/m/torn/1/raw)",
+  );
+});
+
+Deno.test("doctorDatastores: a v3 content check that throws is a failed finding, and the scan completes (swamp-club#3617)", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(
+      filesystemConfig,
+      { healthy: true, message: "Datastore is accessible", latencyMs: 1 },
+      [],
+    ),
+    checkV3Content: () =>
+      Promise.reject(new Error("attempt to write a readonly database")),
+  };
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(
+      completed.data.healthFindings.map((f) => [f.check, f.passed]),
+      [["health", true], ["v3_content", false]],
+    );
+    assertEquals(
+      completed.data.healthFindings[1].message,
+      "Could not inspect this v3 checkout's content: attempt to write a readonly database",
+    );
+    assertEquals(completed.data.v3ContentFinding, undefined);
   }
 });

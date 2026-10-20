@@ -23,6 +23,7 @@ import fc from "fast-check";
 import {
   type LockedDependencyVersions,
   resolveShippedVersion,
+  suggestVersion,
 } from "./dependency_version_resolution.ts";
 
 const versionArb = fc.tuple(
@@ -62,6 +63,31 @@ Deno.test("resolveShippedVersion: a resolved range version satisfies the range a
             ? locked.includes(shipped.version)
             : published.includes(shipped.version),
         );
+      },
+    ),
+  );
+});
+
+Deno.test("suggestVersion: a suggestion is stable, published, not excluded and not the shipped version", () => {
+  fc.assert(
+    fc.property(
+      versionArb,
+      fc.uniqueArray(
+        fc.oneof(versionArb, versionArb.map((v) => `${v}-rc.1`)),
+        { maxLength: 10 },
+      ),
+      versionsArb,
+      (shipped, candidates, excluded) => {
+        const suggested = suggestVersion(
+          shipped,
+          candidates,
+          new Set(excluded),
+        );
+        if (suggested === null) return;
+        assert(candidates.includes(suggested));
+        assert(!excluded.includes(suggested));
+        assert(suggested !== shipped);
+        assert(parse(suggested).prerelease?.length === 0);
       },
     ),
   );

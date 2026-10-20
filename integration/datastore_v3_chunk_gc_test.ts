@@ -330,3 +330,46 @@ for (const landing of ["before re-check", "after re-check"] as const) {
     });
   });
 }
+
+Deno.test("chunk gc: verifying moves a damaged chunk aside on the filesystem storage and removes it, leaving no temp file, and the next write stores it again (swamp-club#3617)", async () => {
+  await withV3Env(async (env) => {
+    const named = await writeHistory(env, SOLO_NAMESPACE);
+    const fs = new FileSystemStorage(join(env.dir, "datastore"));
+    const sha256 = named.named[0];
+    const shard = join(
+      env.dir,
+      "datastore",
+      "_blobs",
+      "_default",
+      "sha256",
+      sha256.slice(0, 2),
+    );
+    const path = join(shard, sha256);
+    const good = await Deno.readFile(path);
+    // Same-size damage: only a re-hash finds it.
+    await Deno.writeFile(path, new Uint8Array(good.length));
+
+    const report = await new ChunkCollector({
+      commitStore: env.store,
+      storage: fs,
+      tempFiles: fs,
+    }).collect(SOLO_NAMESPACE, {
+      verifyBytes: Number.MAX_SAFE_INTEGER,
+      verifyFrom: sha256.slice(0, 2),
+      signal: signal(),
+    });
+
+    assertEquals(report.damaged, [{ sha256, referenced: true }]);
+    assertEquals(
+      (await storedChunks(env, "_default")).includes(sha256),
+      false,
+    );
+    const left: string[] = [];
+    for await (const entry of Deno.readDir(shard)) left.push(entry.name);
+    assertEquals(left.filter((name) => name.endsWith(".tmp")), []);
+
+    // Writes trust has(): with the damaged chunk gone, the write puts it.
+    await fs.put("_default", sha256, good, signal());
+    assertEquals(await Deno.readFile(path), good);
+  });
+});

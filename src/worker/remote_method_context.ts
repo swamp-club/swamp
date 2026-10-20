@@ -265,6 +265,7 @@ function createRemoteDataRepository(
 
 function createRemoteVaultService(
   options: RemoteContextOptions,
+  redactor: SecretRedactor,
 ): VaultService {
   const { channel, signal } = options;
   const resolveSecret = (params: Record<string, unknown>) =>
@@ -277,7 +278,12 @@ function createRemoteVaultService(
   const proxy = {
     get: async (vaultName: string, secretKey: string) => {
       const result = await resolveSecret({ vaultName, secretKey });
-      return result.value as string;
+      const value = result.value as string;
+      // The worker has now received this value, so its redactor must know it
+      // before the method does: output lines and console output are scrubbed
+      // with it before they leave the worker (swamp-club#3527).
+      if (typeof value === "string") redactor.addSecret(value);
+      return value;
     },
     getAnnotation: async (vaultName: string, secretKey: string) => {
       const result = await resolveSecret({
@@ -524,6 +530,22 @@ export interface RemoteMethodContextResult {
   redact: (text: string) => string;
 }
 
+/**
+ * The per-dispatch redactor, holding the values the orchestrator resolved
+ * before the dispatch (`secretValues`). The method context extends it with
+ * what the method learns; the runner uses it from the first frame, so a
+ * failure before the context exists is scrubbed too (swamp-club#3525).
+ */
+export function dispatchRedactor(
+  secretValues: readonly string[] | undefined,
+): SecretRedactor {
+  const redactor = new SecretRedactor();
+  for (const value of secretValues ?? []) {
+    redactor.addSecret(value);
+  }
+  return redactor;
+}
+
 /** Whether the orchestrator shipped the step's secret bag (swamp-club#2760). */
 function shipsSecretBag(
   dispatch: DispatchParams,
@@ -561,8 +583,12 @@ export function createRemoteMethodContext(
   const { dispatch, channel, signal } = options;
   const execution = dispatch.execution;
   const modelType = ModelType.create(execution.modelType);
+  // Every secret value the worker receives for this dispatch: the values it
+  // was dispatched with, and each one the vault proxy resolves while the
+  // method runs.
+  const redactor = dispatchRedactor(dispatch.secretValues);
   const dataRepository = createRemoteDataRepository(options);
-  const vaultService = createRemoteVaultService(options);
+  const vaultService = createRemoteVaultService(options, redactor);
   const definitionRepository = createRemoteDefinitionRepository(options);
   const outputRepository = createRemoteOutputRepository(options);
   const writers = createRemoteWriters(options);
@@ -584,19 +610,13 @@ export function createRemoteMethodContext(
       }, { signal }),
   } as unknown as DataQueryService;
 
-  const redactor = new SecretRedactor();
-  if (dispatch.secretValues) {
-    for (const value of dispatch.secretValues) {
-      redactor.addSecret(value);
-    }
-  }
   const redact = (text: string) =>
     redactor.hasSecrets ? redactor.redact(text) : text;
-  // The orchestrator writes output lines to the run log, and its redactor
-  // knows only what it resolved before the dispatch. Secrets the method
-  // learns here (a sensitive field of a resource it reads, say) are known to
-  // this redactor alone, so lines are scrubbed before they leave
-  // (swamp-club#3080).
+  // The orchestrator writes output lines to the run log, and its run-log
+  // redactor knows only what it resolved before the dispatch. Secrets the
+  // method learns here (a value the vault proxy resolves, or a sensitive
+  // field of a resource it reads) are known to this redactor alone, so lines
+  // are scrubbed before they leave (swamp-club#3080, swamp-club#3527).
   const onEvent: MethodContext["onEvent"] = options.onEvent
     ? (event) =>
       options.onEvent!(

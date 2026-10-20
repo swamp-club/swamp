@@ -30,6 +30,7 @@ import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
 import type { LibSwampContext } from "../context.ts";
 import { layoutCollisionMessage } from "./namespace_migrate.ts";
 import type { SwampError } from "../errors.ts";
+import { UserError } from "../../domain/errors.ts";
 
 import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -77,6 +78,41 @@ export interface NamespaceContaminationFinding {
   totalForeignObjects: number;
 }
 
+/**
+ * What a v3 checkout's read model holds that it could not materialise or
+ * moved aside, and the torn chunks its live records name
+ * (swamp-club#3617). Each list holds the first few entries; the counts
+ * hold them all.
+ */
+export interface V3ContentSummary {
+  unreadableRecords: number;
+  unreadable: ReadonlyArray<{
+    namespace: string;
+    recordKey: string;
+    reason: "missing" | "damaged";
+    chunk?: string;
+    advice: string;
+  }>;
+  atRiskCopies: number;
+  atRisk: ReadonlyArray<{
+    namespace: string;
+    sha256: string;
+    recordKey: string;
+    size: number;
+  }>;
+  atRiskDir: string;
+  atRiskAdvice: string;
+  tornChunks: number;
+  torn: ReadonlyArray<{
+    namespace: string;
+    sha256: string;
+    recordKey: string;
+    expectedSize: number;
+    size: number;
+    advice: string;
+  }>;
+}
+
 /** Outcome of a `doctor datastores` scan. */
 export interface DoctorDatastoresData {
   datastoreType: string;
@@ -87,6 +123,8 @@ export interface DoctorDatastoresData {
   catalogCompletenessFinding?: CatalogCompletenessSummary;
   /** Present when the scan ran with `retention` (swamp-club#3473). */
   retentionFinding?: RetentionCheckSummary;
+  /** Present when the v3 content check found something (swamp-club#3617). */
+  v3ContentFinding?: V3ContentSummary;
 }
 
 /** Options for a `doctor datastores` scan. */
@@ -129,6 +167,61 @@ export interface DoctorDatastoresDeps {
    * the `retention` option. Read-only.
    */
   checkRetention?: () => Promise<RetentionCheckSummary>;
+  /**
+   * Reads a v3 checkout's read model state for records it could not
+   * materialise, checkout files it moved aside, and torn chunks; given only
+   * on a v3 datastore. Read-only, from checkout-local state and chunk stats.
+   */
+  checkV3Content?: (config: DatastoreConfig) => Promise<V3ContentSummary>;
+}
+
+/** Whether the v3 content check found nothing. */
+export function v3ContentPassed(summary: V3ContentSummary): boolean {
+  return summary.unreadableRecords === 0 && summary.atRiskCopies === 0 &&
+    summary.tornChunks === 0;
+}
+
+/** The one-line message of the v3 content check. */
+export function v3ContentFindingMessage(summary: V3ContentSummary): string {
+  if (v3ContentPassed(summary)) {
+    return "Every record of this v3 checkout is readable, and no content is held aside";
+  }
+  const parts: string[] = [];
+  if (summary.unreadableRecords > 0) {
+    parts.push(
+      `${summary.unreadableRecords} record(s) cannot be read: a chunk is missing or damaged in the datastore (${
+        firstOf(
+          summary.unreadable.map((r) => r.recordKey),
+          summary.unreadableRecords,
+        )
+      })`,
+    );
+  }
+  if (summary.atRiskCopies > 0) {
+    parts.push(
+      `${summary.atRiskCopies} checkout file(s) were moved aside into ${summary.atRiskDir} because the datastore refused their chunks (${
+        firstOf(
+          summary.atRisk.map((c) => c.recordKey || c.sha256),
+          summary.atRiskCopies,
+        )
+      })`,
+    );
+  }
+  if (summary.tornChunks > 0) {
+    parts.push(
+      `${summary.tornChunks} chunk(s) the checkout's records name are stored short (${
+        firstOf(summary.torn.map((c) => c.recordKey), summary.tornChunks)
+      })`,
+    );
+  }
+  return `${parts.join("; ")}.`;
+}
+
+/** The first keys of a list and how many more there are. */
+function firstOf(keys: readonly string[], total: number): string {
+  const shown = keys.slice(0, 3);
+  const more = total - shown.length;
+  return more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ");
 }
 
 /** The one-line message of the retention check. */
@@ -186,6 +279,7 @@ export async function* doctorDatastores(
       let contaminationFinding: NamespaceContaminationFinding | undefined;
       let catalogCompletenessFinding: CatalogCompletenessSummary | undefined;
       let retentionFinding: RetentionCheckSummary | undefined;
+      let v3ContentFinding: V3ContentSummary | undefined;
 
       // Health check
       const { healthy, message } = await deps.checkHealth(config);
@@ -301,6 +395,35 @@ export async function* doctorDatastores(
         });
       }
 
+      // v3 content check — checkout-local state only (swamp-club#3617).
+      // A check that cannot read the state (a read-only state directory,
+      // where SQLite cannot create the WAL's shared-memory file) fails on
+      // its own; the other checks still report.
+      if (deps.checkV3Content) {
+        let summary: V3ContentSummary | undefined;
+        let failure: string | undefined;
+        try {
+          summary = await deps.checkV3Content(config);
+        } catch (error) {
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        if (summary === undefined) {
+          healthFindings.push({
+            check: "v3_content",
+            passed: false,
+            message: `Could not inspect this v3 checkout's content: ${failure}`,
+          });
+        } else {
+          const passed = v3ContentPassed(summary);
+          if (!passed) v3ContentFinding = summary;
+          healthFindings.push({
+            check: "v3_content",
+            passed,
+            message: v3ContentFindingMessage(summary),
+          });
+        }
+      }
+
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {
         const vaults = await deps.getVaultConfigs();
@@ -324,6 +447,7 @@ export async function* doctorDatastores(
           contaminationFinding,
           catalogCompletenessFinding,
           ...(retentionFinding ? { retentionFinding } : {}),
+          ...(v3ContentFinding ? { v3ContentFinding } : {}),
         },
       };
     })(),
@@ -800,6 +924,91 @@ export async function* repairCatalogDuplicateLatest(
             code: "duplicate_latest_repair_failed",
             message:
               `Could not repair duplicate is_latest flags: ${message}. No changes were made.`,
+            cause: err instanceof Error ? err : undefined,
+          },
+        };
+      }
+    })(),
+  );
+}
+
+// ============================================================================
+// Repair: a v3 datastore's lost format marker (swamp-club#3617)
+// ============================================================================
+
+/** How a v3 datastore's format marker was lost: missing, or left blank. */
+export type LostFormatMarkerState = "absent" | "blank";
+
+/** What {@link repairDatastoreFormatMarker} found, or restored. */
+export interface DatastoreFormatMarkerRepairData {
+  datastorePath: string;
+  markerPath: string;
+  marker: LostFormatMarkerState;
+}
+
+export type RepairDatastoreFormatMarkerEvent =
+  | { kind: "inspecting" }
+  | { kind: "preview"; data: DatastoreFormatMarkerRepairData }
+  | { kind: "completed"; data: DatastoreFormatMarkerRepairData }
+  | { kind: "not_needed"; datastorePath: string }
+  | { kind: "error"; error: SwampError };
+
+export interface RepairDatastoreFormatMarkerDeps {
+  /** The filesystem v3 datastore whose marker is restored. */
+  datastorePath: string;
+  markerPath: string;
+  /**
+   * How its marker is lost, or undefined when it is not. Stats the commit
+   * log and never opens it.
+   */
+  inspect: () => Promise<LostFormatMarkerState | undefined>;
+  /** Restores the marker; resolves with its path. */
+  restore: () => Promise<string>;
+}
+
+/**
+ * Restores the format marker a crash lost from a filesystem v3 datastore
+ * (swamp-club#3617), for `swamp doctor datastores --repair` in a repository
+ * whose config says format 3. Without `confirm` it previews what it found,
+ * having opened nothing in the datastore; with it, it restores the marker.
+ */
+export async function* repairDatastoreFormatMarker(
+  _ctx: LibSwampContext,
+  deps: RepairDatastoreFormatMarkerDeps,
+  options: { confirm: boolean },
+): AsyncGenerator<RepairDatastoreFormatMarkerEvent> {
+  yield* withGeneratorSpan(
+    "swamp.doctor.datastores.repair.format_marker",
+    {},
+    (async function* () {
+      yield { kind: "inspecting" };
+
+      const marker = await deps.inspect();
+      if (marker === undefined) {
+        yield { kind: "not_needed", datastorePath: deps.datastorePath };
+        return;
+      }
+      const data: DatastoreFormatMarkerRepairData = {
+        datastorePath: deps.datastorePath,
+        markerPath: deps.markerPath,
+        marker,
+      };
+      if (!options.confirm) {
+        yield { kind: "preview", data };
+        return;
+      }
+
+      try {
+        const markerPath = await deps.restore();
+        yield { kind: "completed", data: { ...data, markerPath } };
+      } catch (err) {
+        yield {
+          kind: "error",
+          error: {
+            code: err instanceof UserError && err.code
+              ? err.code
+              : "format_marker_repair_failed",
+            message: err instanceof Error ? err.message : String(err),
             cause: err instanceof Error ? err : undefined,
           },
         };

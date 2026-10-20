@@ -19,13 +19,16 @@
 
 /** The commit-log unit's use of the commit outbox (swamp-club#3490). */
 
+import { waitFor } from "@swamp-club/swamp-testing";
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { dirname, join } from "@std/path";
 import { OUTBOX_RETRY_BOUND_MS } from "../../domain/datastore_v3/commit_outbox.ts";
 import {
   MayLandLaterError,
   PartitionsRefusedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import {
   dataKey,
   MemoryStorage,
@@ -34,7 +37,9 @@ import {
   modelPartition,
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { MemorySink } from "./commit_log_test_helpers.ts";
 import { createCommitLogUnitOfWork } from "./commit_log_unit_of_work.ts";
+import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 import {
   AT,
   contextHook,
@@ -442,4 +447,318 @@ Deno.test("commit-log unit with an outbox: a refusal in the unit's own commit wh
     const error = await assertRejects(() => uow.commit(), MayLandLaterError);
     assert(error.message.includes("disk is full"), ending);
   }
+});
+
+/**
+ * A memory storage that syncs chunk directories as the filesystem storage
+ * does, recording each barrier in `events` as `sync:<hashes>` (sorted).
+ */
+class SyncingStorage extends MemoryStorage {
+  failSync = false;
+
+  constructor(readonly events: string[]) {
+    super({ maxChunkBytes: 32 * 1024 });
+  }
+
+  syncChunkDirectories(
+    _namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    if (this.failSync) return Promise.reject(new Error("fsync failed"));
+    this.events.push(`sync:${[...hashes].sort().join(",")}`);
+    return Promise.resolve();
+  }
+}
+
+/** The barrier event naming every chunk of `content`. */
+async function syncEventOf(content: Uint8Array): Promise<string> {
+  const { parts } = await new ChunkStore(memory()).refOf(
+    content,
+    new AbortController().signal,
+  );
+  return `sync:${[...new Set(parts.map((p) => p.sha256))].sort().join(",")}`;
+}
+
+Deno.test("commit-log unit with an outbox: one chunk directory barrier covers the group's chunks, a dedupe hit's included, before the prepare (swamp-club#3617)", async () => {
+  const sink = new OutboxMemorySink();
+  const storage = new SyncingStorage(sink.events);
+  const options = unitOptions(sink, storage);
+  const sync = await syncEventOf(bytesOf(100 * 1024));
+
+  const first = createCommitLogUnitOfWork(contextHook(), options);
+  await first.stageOp(blobChange("x"));
+  await first.commit();
+  const [landed] = sink.landed;
+  assertEquals(sink.events, [
+    sync,
+    `prepare:${landed.txnId}`,
+    `append:${landed.txnId}`,
+    `settle:${landed.txnId}`,
+  ]);
+
+  // The same content again: every chunk is a dedupe hit, put by no one
+  // now, and its shard is still synced before the prepare.
+  sink.events.length = 0;
+  const puts = storage.puts();
+  const second = createCommitLogUnitOfWork(contextHook(), options);
+  await second.stageOp(blobChange("y"));
+  await second.commit();
+  assertEquals(storage.puts(), puts);
+  assertEquals(sink.events.slice(0, 2), [
+    sync,
+    `prepare:${sink.landed[1].txnId}`,
+  ]);
+});
+
+Deno.test("commit-log unit without an outbox: the chunk directory barrier runs before the append (swamp-club#3617)", async () => {
+  const sink = new MemorySink();
+  const events: string[] = [];
+  sink.beforeAppend = (commit) => {
+    events.push(`append:${commit.txnId}`);
+  };
+  const options = unitOptions(sink, new SyncingStorage(events));
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(blobChange("x"));
+  await uow.commit();
+  assertEquals(events, [
+    await syncEventOf(bytesOf(100 * 1024)),
+    `append:${sink.landed[0].txnId}`,
+  ]);
+});
+
+Deno.test("commit-log unit with an outbox: a group whose content is all inline has no chunk directory barrier (swamp-club#3617)", async () => {
+  const sink = new OutboxMemorySink();
+  const options = unitOptions(sink, new SyncingStorage(sink.events));
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await uow.commit();
+  assertEquals(sink.events.filter((e) => e.startsWith("sync:")), []);
+  assertEquals(sink.landed.length, 1);
+});
+
+Deno.test("commit-log unit with an outbox: a failed chunk directory barrier prepares and appends nothing, and the next unit syncs the chunks again (swamp-club#3617)", async () => {
+  const sink = new OutboxMemorySink();
+  const storage = new SyncingStorage(sink.events);
+  const options = unitOptions(sink, storage);
+  storage.failSync = true;
+  const failed = createCommitLogUnitOfWork(contextHook(), options);
+  await failed.stageOp(blobChange("x"));
+  await assertRejects(() => failed.commit(), Error, "fsync failed");
+  assertEquals(sink.events, []);
+  assertEquals(sink.landed, []);
+  assertEquals(sink.entries.size, 0);
+
+  // The chunks are stored but their names may not be durable: a later unit
+  // that finds them present syncs them before it prepares.
+  storage.failSync = false;
+  const next = createCommitLogUnitOfWork(contextHook(), options);
+  await next.stageOp(blobChange("x"));
+  await next.commit();
+  assertEquals(sink.events[0], await syncEventOf(bytesOf(100 * 1024)));
+  assertEquals(sink.events[1], `prepare:${sink.landed[0].txnId}`);
+});
+
+Deno.test("commit-log unit with an outbox: chunks stored again before or after the append get their own barrier (swamp-club#3617)", async () => {
+  const sink = new OutboxMemorySink();
+  const storage = new SyncingStorage(sink.events);
+  const options = unitOptions(sink, storage);
+  const sync = await syncEventOf(bytesOf(100 * 1024));
+  // A sweep overlaps: the chunks vanish after the first barrier, are stored
+  // again under the lock, and vanish again before the post-commit check.
+  sink.sweepStates = [
+    { epoch: 4, active: false },
+    { epoch: 5, active: false },
+  ];
+  sink.beforeHead = () => storage.chunks.clear();
+  sink.afterAppend = () => storage.chunks.clear();
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(blobChange("x"));
+  await uow.commit();
+  const [landed] = sink.landed;
+  assertEquals(sink.events, [
+    sync,
+    `prepare:${landed.txnId}`,
+    sync,
+    `append:${landed.txnId}`,
+    sync,
+    `settle:${landed.txnId}`,
+  ]);
+  assert(storage.chunks.size > 0);
+});
+
+/** 100 KiB of content that differs by `seed`: one chunk each. */
+function seededBytes(seed: number): Uint8Array {
+  const bytes = new Uint8Array(100 * 1024);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + seed) % 251;
+  return bytes;
+}
+
+function seededChange(name: string, seed: number) {
+  return {
+    partition: MODEL,
+    put: {
+      intent: modelIntent({ kind: "data.save", name, version: 1 }),
+      key: dataKey(name, 1),
+      content: seededBytes(seed),
+    },
+  };
+}
+
+/**
+ * A filesystem storage in a temp directory whose file and directory syncs
+ * are recorded in `events` (`file:<chunks renamed so far>`, `dir:<path>`),
+ * with memos of its own. `syncFile` runs inside each file sync.
+ */
+async function withRecordingFs(
+  events: string[],
+  fn: (
+    storage: FileSystemStorage,
+    chunkPath: (sha256: string) => string,
+    hooks: { syncFile?: () => Promise<void> },
+  ) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-uow-barrier-" });
+  const chunkPath = (sha256: string) =>
+    join(dir, "_blobs", "_default", "sha256", sha256.slice(0, 2), sha256);
+  const hooks: { syncFile?: () => Promise<void> } = {};
+  const storage = new FileSystemStorage(dir, {
+    syncFile: async (file) => {
+      await hooks.syncFile?.();
+      await file.sync();
+    },
+    syncDirectory: (path) => {
+      events.push(`dir:${path}`);
+      return Promise.resolve();
+    },
+    syncedAncestors: new Map(),
+    durableChunks: new Map(),
+  });
+  try {
+    await fn(storage, chunkPath, hooks);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function hashOf(bytes: Uint8Array): Promise<string> {
+  return (await new ChunkStore(memory()).refOf(
+    bytes,
+    new AbortController().signal,
+  )).sha256;
+}
+
+async function present(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("commit-log unit with an outbox: a group's new chunks are synced together before any is renamed, then one directory barrier, then the prepare (swamp-club#3617)", async () => {
+  const sink = new OutboxMemorySink();
+  await withRecordingFs(sink.events, async (storage, chunkPath, hooks) => {
+    const seeds = [1, 2, 3];
+    const paths = await Promise.all(
+      seeds.map(async (seed) => chunkPath(await hashOf(seededBytes(seed)))),
+    );
+    let entered = 0;
+    hooks.syncFile = async () => {
+      entered++;
+      // Each file sync waits for the others: the group's syncs run at once.
+      await waitFor(() => entered === seeds.length, "every file sync", {
+        timeoutMs: 2_000,
+        intervalMs: 1,
+      });
+      let renamed = 0;
+      for (const path of paths) if (await present(path)) renamed++;
+      sink.events.push(`file:${renamed}`);
+    };
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, storage),
+    );
+    for (const seed of seeds) {
+      await uow.stageOp(seededChange(`x${seed}`, seed));
+    }
+    await uow.commit();
+    const [landed] = sink.landed;
+    const prepareAt = sink.events.indexOf(`prepare:${landed.txnId}`);
+    const before = sink.events.slice(0, prepareAt);
+    // Every file synced before any chunk was renamed into place.
+    assertEquals(before.filter((e) => e.startsWith("file:")), [
+      "file:0",
+      "file:0",
+      "file:0",
+    ]);
+    // Then the directories, each shard once, after every file sync.
+    const dirs = before.filter((e) => e.startsWith("dir:"));
+    const shards = [...new Set(paths.map((path) => `dir:${dirname(path)}`))];
+    for (const shard of shards) {
+      assertEquals(dirs.filter((e) => e === shard).length, 1, shard);
+    }
+    assertEquals(
+      before.findIndex((e) => e.startsWith("dir:")),
+      seeds.length,
+    );
+    for (const path of paths) assert(await present(path));
+  });
+});
+
+Deno.test("commit-log unit with an outbox: a dedupe hit on chunks this process made durable syncs no directory (swamp-club#3617)", async () => {
+  const sink = new OutboxMemorySink();
+  await withRecordingFs(sink.events, async (storage) => {
+    const options = unitOptions(sink, storage);
+    const first = createCommitLogUnitOfWork(contextHook(), options);
+    await first.stageOp(seededChange("x", 1));
+    await first.commit();
+    assert(sink.events.some((e) => e.startsWith("dir:")));
+
+    sink.events.length = 0;
+    const second = createCommitLogUnitOfWork(contextHook(), options);
+    await second.stageOp(seededChange("y", 1));
+    await second.commit();
+    assertEquals(sink.events, [
+      `prepare:${sink.landed[1].txnId}`,
+      `append:${sink.landed[1].txnId}`,
+      `settle:${sink.landed[1].txnId}`,
+    ]);
+  });
+});
+
+Deno.test("commit-log unit with an outbox: a failed file sync prepares nothing and leaves none of the group's chunks in place (swamp-club#3617)", async () => {
+  const sink = new OutboxMemorySink();
+  await withRecordingFs(sink.events, async (storage, chunkPath, hooks) => {
+    let syncs = 0;
+    hooks.syncFile = () =>
+      ++syncs === 2
+        ? Promise.reject(new Error("disk gone"))
+        : Promise.resolve();
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, storage),
+    );
+    await uow.stageOp(seededChange("x1", 1));
+    await uow.stageOp(seededChange("x2", 2));
+    await assertRejects(() => uow.commit(), Error, "disk gone");
+    assertEquals(sink.landed, []);
+    assertEquals(sink.events.filter((e) => e.startsWith("prepare:")), []);
+    for (const seed of [1, 2]) {
+      const path = chunkPath(await hashOf(seededBytes(seed)));
+      assertEquals(await present(path), false, path);
+      // No temp file is left beside it either.
+      const left = await present(dirname(path))
+        ? [...Deno.readDirSync(dirname(path))]
+        : [];
+      assertEquals(left, []);
+    }
+  });
 });

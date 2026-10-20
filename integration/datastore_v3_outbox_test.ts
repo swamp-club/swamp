@@ -146,6 +146,12 @@ async function killWriter(
         worker.postMessage("resume");
       }
     };
+    // A worker that fails to load, or throws outside its own catch, fails
+    // the wait at once rather than at its deadline.
+    worker.onerror = (event) => {
+      event.preventDefault();
+      failed = event.message;
+    };
     worker.postMessage(
       {
         datastorePath,
@@ -159,9 +165,13 @@ async function killWriter(
         pauses: options.pauses,
       } satisfies OutboxCrashRequest,
     );
+    // The wait covers the worker loading its module graph as well as its
+    // commit, which a loaded host can stretch past the default 10 s
+    // (swamp-club#3640, swamp-club#3673).
     await waitFor(
       () => killed || failed !== undefined || done,
       "the writer to reach its kill point",
+      { timeoutMs: 60_000 },
     );
   } finally {
     worker.terminate();

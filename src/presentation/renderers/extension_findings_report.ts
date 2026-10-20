@@ -27,6 +27,7 @@ import {
   type CommentSites,
 } from "../../domain/extensions/extension_acceptances.ts";
 import { isAcceptableRule } from "../../domain/extensions/extension_rule_catalog.ts";
+import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { DeclaredAcceptances } from "../../libswamp/extensions/push.ts";
@@ -64,6 +65,8 @@ export interface FindingsReport {
 export interface GatedFindings {
   safetyWarnings: SafetyIssue[];
   reviewWarnings: ReviewFinding[];
+  /** The dependency-trust warnings; only those with a cause are reported. */
+  dependencyWarnings: DependencyTrustIssue[];
   acceptances: DeclaredAcceptances;
   /** The warned lines a comment acceptance can go above, from the quality pass. */
   commentSites: Readonly<Record<string, CommentSites>>;
@@ -106,6 +109,18 @@ function unresolvedWarning(
   };
 }
 
+/** The `file` label of a dependency finding, which has no file. */
+export const DEPENDENCY_FILE_LABEL = "(dependency)";
+
+function dependencyWarning(w: DependencyTrustIssue): UnresolvedWarning {
+  return {
+    ruleId: w.cause ?? "dependency",
+    file: DEPENDENCY_FILE_LABEL,
+    message: `${w.dependency}: ${w.message.split("\n")[0]}`,
+    ...(w.remediation !== undefined ? { remediation: w.remediation } : {}),
+  };
+}
+
 /**
  * Builds the report. A collapsed testing-completeness finding expands to one
  * entry per remaining file, so each has its own header comment.
@@ -141,6 +156,11 @@ export function buildFindingsReport(
         unresolvedWarning(w, manifestDir, findings.commentSites),
       );
     }
+  }
+  // Findings without a cause (age, downloads, license) are advisory and stay
+  // out of the report, as they stay out of the push gate.
+  for (const w of findings.dependencyWarnings) {
+    if (w.cause !== undefined) unresolvedWarnings.push(dependencyWarning(w));
   }
   const hasAcceptances = findings.acceptances.accepted.length > 0 ||
     findings.acceptances.generated !== undefined;

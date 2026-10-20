@@ -21,7 +21,9 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
+  AUTO_RESOLVE_INSTALL_DEADLINE_MS,
   createAutoResolveInstallerAdapter,
+  EXTENSION_INSTALL_LOCK_MAX_WAIT_MS,
   hotLoadDatastoreDirs,
   isBundleArtifactPath,
   isPulledSkillPath,
@@ -33,6 +35,10 @@ import { ExtensionRepository } from "../infrastructure/persistence/extension_rep
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { PathTraversalError } from "../infrastructure/persistence/safe_path.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
@@ -860,6 +866,149 @@ Deno.test("auto_resolver_adapters: install treats a dependency in the resolved l
     assertEquals(fetched, [parent]);
     const recorded = await LockfileRepository.create(lockfilePath);
     assertEquals(Object.keys(recorded.getAllEntries()), [parent]);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
+/** A packed extension archive with one skill and the given dependencies. */
+async function packExtension(
+  name: string,
+  version: string,
+  dependencies: string[],
+  skill = `skill-${crypto.randomUUID().slice(0, 8)}`,
+): Promise<Uint8Array> {
+  const archiveDir = await Deno.makeTempDir({ prefix: "swamp_test_arc_" });
+  try {
+    const extDir = join(archiveDir, "extension");
+    await ensureDir(join(extDir, "skills", skill));
+    const deps = dependencies.length > 0
+      ? `dependencies:\n${dependencies.map((d) => `  - "${d}"\n`).join("")}`
+      : "";
+    await Deno.writeTextFile(
+      join(extDir, "manifest.yaml"),
+      `manifestVersion: 1\nname: "${name}"\nversion: "${version}"\n` +
+        `skills:\n  - ${skill}\n${deps}`,
+    );
+    await Deno.writeTextFile(join(extDir, "skills", skill, "SKILL.md"), "x");
+    await createTarGz(extDir, join(archiveDir, "a.tar.gz"));
+    return await Deno.readFile(join(archiveDir, "a.tar.gz"));
+  } finally {
+    await Deno.remove(archiveDir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("auto_resolver_adapters: the install deadline ends before a waiter gives up on the lock", () => {
+  // At least 30s is left for the local extract and bundle work, which the
+  // registry deadline does not bound.
+  assertEquals(
+    EXTENSION_INSTALL_LOCK_MAX_WAIT_MS - AUTO_RESOLVE_INSTALL_DEADLINE_MS >=
+      30_000,
+    true,
+  );
+});
+
+Deno.test("auto_resolver_adapters: install shares one registry deadline across an extension and its dependencies", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const id = crypto.randomUUID().slice(0, 8);
+    const parent = `@t/parent-${id}`;
+    const dep = `@t/dep-${id}`;
+    const version = "2026.01.01.1";
+    const lockfilePath = await seedLockfile(repoDir, {});
+    const archives: Record<string, Uint8Array> = {
+      [parent]: await packExtension(parent, version, [dep]),
+      [dep]: await packExtension(dep, version, []),
+    };
+
+    const calls: { call: string; name: string; signal?: AbortSignal }[] = [];
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: (name, signal) => {
+        calls.push({ call: "getExtension", name, signal });
+        return Promise.resolve({
+          name,
+          description: "",
+          latestVersion: version,
+        });
+      },
+      downloadArchive: (name, _version, _channel, signal) => {
+        calls.push({ call: "downloadArchive", name, signal });
+        return Promise.resolve(archives[name]);
+      },
+      getChecksum: (name, _version, _channel, signal) => {
+        calls.push({ call: "getChecksum", name, signal });
+        return Promise.resolve(null);
+      },
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    const result = await adapter.install(parent);
+
+    assertEquals(result?.version, version);
+    assertEquals(new Set(calls.map((c) => c.name)), new Set([parent, dep]));
+    assertEquals(
+      new Set(calls.map((c) => c.call)),
+      new Set(["getExtension", "downloadArchive", "getChecksum"]),
+    );
+    const deadline = calls[0].signal;
+    assertEquals(deadline instanceof AbortSignal, true);
+    assertEquals(calls.every((c) => c.signal === deadline), true);
+
+    // A second install gets a deadline of its own.
+    const before = calls.length;
+    await adapter.install(dep).catch(() => {});
+    const later = calls.slice(before);
+    assertEquals(later.length > 0, true);
+    assertEquals(later.every((c) => c.signal !== deadline), true);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("auto_resolver_adapters: a forced re-run after a skill conflict keeps the install's deadline", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const id = crypto.randomUUID().slice(0, 8);
+    const name = `@t/conflict-${id}`;
+    const skill = `skill-${id}`;
+    const version = "2026.01.01.1";
+    const lockfilePath = await seedLockfile(repoDir, {});
+    const archive = await packExtension(name, version, [], skill);
+    // A skill dir already on disk makes the first run raise a conflict the
+    // adapter retries with force.
+    const skillDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills, skill);
+    await ensureDir(skillDir);
+    await Deno.writeTextFile(join(skillDir, "SKILL.md"), "old");
+
+    const signals: (AbortSignal | undefined)[] = [];
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: (n, signal) => {
+        signals.push(signal);
+        return Promise.resolve({
+          name: n,
+          description: "",
+          latestVersion: version,
+        });
+      },
+      downloadArchive: (_n, _v, _c, signal) => {
+        signals.push(signal);
+        return Promise.resolve(archive);
+      },
+      getChecksum: (_n, _v, _c, signal) => {
+        signals.push(signal);
+        return Promise.resolve(null);
+      },
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    const result = await adapter.install(name);
+
+    assertEquals(result?.version, version);
+    // Both runs made registry calls, all under the one deadline.
+    assertEquals(signals.length, 6);
+    assertEquals(signals.every((s) => s === signals[0]), true);
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }

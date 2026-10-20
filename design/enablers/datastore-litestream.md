@@ -165,8 +165,11 @@ The first run of a newly extracted binary on macOS took 240–380 ms, against
 13–17 ms for later runs. This is the OS checking a new executable, and it is
 paid once per version. Extracting the binary from the compiled swamp binary took
 12 ms and hashing it 14 ms. A forced sync to a local file costs more on macOS
-(14 ms) than on Linux (2–4 ms), because SQLite and Litestream use `F_FULLFSYNC`
-there.
+(14 ms) than on Linux (2–4 ms). Litestream's syncs (Go's `File.Sync`) are
+`F_FULLFSYNC` on macOS; SQLite's are not: `node:sqlite` runs with
+`PRAGMA fullfsync=0` and `checkpoint_fullfsync=0`, and swamp sets neither, so
+they are plain `fsync` there (checked for
+swamp-club#3617 with Deno 2.9.7, in memory and on a WAL file).
 
 **Passive lag**, with no forced sync and the defaults `monitor-interval: 1s` and
 `sync-interval: 1s`: p50 650–690 ms and p90 0.69–1.95 s, from commit to the
@@ -855,6 +858,13 @@ filesystem-v3 datastore then behave like two machines on a bucket, which is
 what the tests use. `v3CommitsDbPath` alone decides the file; a fitness rule
 pins it.
 
+A replicated filesystem datastore holds no `commits.db` at its root, so a
+format marker a crash lost there is not recognised as a lost v3 marker
+(swamp-club#3617): under a config that says format 3 the guard refuses it
+as a plain format mismatch (no readable marker), under any other it reads as
+format 2, and neither `doctor datastores --repair` nor a setup re-run
+restores it. Restoring it is out of scope.
+
 **The published lineage.** Each lineage's records live in the datastore's
 control plane, beside the lease, at `_control/lineage/<fence>/`:
 
@@ -947,9 +957,14 @@ the one before it is current.
 Restores of one copy are serialized by `restore.lock`, and the copy's
 sidecar is stopped for the restore (`LitestreamReplicator.quiesce`, which
 holds `use.lock` exclusively so none starts meanwhile). A read-only command
-that cannot get either within the lock timeout reads its copy as it is; a
-writer fails. A reader in a checkout another process is writing does not
-restore: that writer keeps the copy current.
+that cannot get either within the lock timeout, or whose restore fails,
+reads a copy that was restored before as it is, and warns that it shows
+the checkout's last restored state; a writer fails. So does a reader of a
+copy that was never restored (no `commits.db`, or neither `copy.json` nor
+its own writer's `lineage.json`), with `datastore_v3_restore_failed`: that
+copy would read as an empty datastore (swamp-club#3642). A reader in a
+checkout another process is writing does not restore: that writer keeps
+the copy current.
 
 **The checkout after a restore.** When the commit at the read model's cursor
 changed (a foreign lineage, or dropped commits that were never

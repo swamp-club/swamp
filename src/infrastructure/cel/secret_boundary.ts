@@ -30,9 +30,11 @@
  *   lazy `model.*.resource` loaders stay lazy). A read that yields a `Secret`
  *   counts toward the container rule (Section 4.3 item 5).
  * - Results: a `Secret` becomes its sentinel, issued into the run's
- *   registry, and a composition becomes its text with a sentinel for each
- *   reference. Views become new plain objects. This runs before the
- *   adapter's own post-processing, after recording stops.
+ *   registry (a vault reference as a vault entry, a sensitive-field
+ *   reference the accessor adapter read as a value-less data-origin entry),
+ *   and a composition becomes its text with a sentinel for each reference.
+ *   Views become new plain objects. This runs before the adapter's own
+ *   post-processing, after recording stops.
  *
  * No `Secret` and no view leaves the adapter.
  */
@@ -64,9 +66,9 @@ const SENTINEL_MARK = "__SWAMP_VSEC_";
 /**
  * Whether cel-js reads `value` as a map: an object whose prototype is
  * `Object.prototype` or `null`. A `Secret`, a class instance, a `Map` or a
- * `Set` is not one.
+ * `Set` is not one. The accessor adapter shares this reading.
  */
-function isPlainMap(value: unknown): value is Record<string, unknown> {
+export function isPlainMap(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
@@ -242,14 +244,17 @@ export class SecretBoundary {
     if (part.sentinel !== undefined) return part.sentinel;
     let sentinel = this.issued.get(part);
     if (sentinel === undefined) {
-      if (part.dataOrigin || part.location === undefined) {
-        // The accessor adapter (typed-secrets 3.3) issues these; until then
-        // nothing makes one, and it must not leave CEL without a sentinel.
+      if (part.location === undefined) {
+        // Every reference vault.get or the accessor adapter creates names
+        // where it was read, and a load's error names that place; one with
+        // no location cannot be loaded, so it must not leave CEL.
         throw new Error(
-          "A secret read from data has no sentinel to leave the expression as",
+          "A secret with no location has no sentinel to leave the expression as",
         );
       }
-      sentinel = this.bag.addSecret(part.reference, part.location);
+      sentinel = part.dataOrigin
+        ? this.bag.addDataReference(part.reference, part.location)
+        : this.bag.addSecret(part.reference, part.location);
       this.issued.set(part, sentinel);
     }
     return sentinel;
@@ -267,6 +272,27 @@ export function refuseUnboundSecrets(value: unknown, expression: string): void {
       "a secret result with no run to issue its sentinel",
       expression,
     );
+  }
+}
+
+/**
+ * Reads `value` as {@link SecretBoundary.release} would, firing the getters of
+ * every view in it, so that a record the expression returned without
+ * selecting into it is adapted, and its references recorded, before release.
+ * Reads the whole value: a `Secret` met first, such as a sentinel bound from
+ * the context, decides nothing about the records behind it, and one left
+ * unread here would be adapted by release, which issues its references
+ * after the check.
+ */
+export function readResult(value: unknown): void {
+  if (value instanceof Optional) {
+    if (value.hasValue()) readResult(value.value());
+  } else if (Array.isArray(value)) {
+    for (const item of value) readResult(item);
+  } else if (value instanceof Map) {
+    for (const item of value.values()) readResult(item);
+  } else if (isPlainMap(value)) {
+    for (const key of Object.keys(value)) readResult(value[key]);
   }
 }
 

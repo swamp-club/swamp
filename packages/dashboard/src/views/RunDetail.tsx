@@ -36,6 +36,11 @@ import {
   resumeStateFor,
 } from "../client/resume_state.ts";
 import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch.ts";
+import {
+  cameIntoView,
+  useTabVisible,
+  visibleIntervalMs,
+} from "../client/run_activity.ts";
 import type { HealthSnapshot } from "../client/useHealthStream.ts";
 import {
   nullableParam,
@@ -216,8 +221,21 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   // run and its logs change while it runs; the search row (trigger,
   // awaiting resume) is re-read when the run's status changes, when serve
   // starts or stops driving a run, and after a resume (swamp-club#3444).
+  // A hidden tab neither polls nor ticks; coming back into view re-reads a
+  // live run once, since a stuck run changes no run activity
+  // (swamp-club#3661).
   const live = run !== null && LIVE_STATUSES.has(run.status);
-  usePolling(refetchLive, live ? LIVE_POLL_MS : null);
+  const tabVisible = useTabVisible();
+  usePolling(
+    refetchLive,
+    visibleIntervalMs(live ? LIVE_POLL_MS : null, tabVisible),
+  );
+  const seenVisible = useRef(tabVisible);
+  useEffect(() => {
+    const returned = cameIntoView(seenVisible.current, tabVisible);
+    seenVisible.current = tabVisible;
+    if (returned && live) refetchLive();
+  }, [tabVisible, live, refetchLive]);
   const seenStatus = useRef(run?.status);
   useEffect(() => {
     if (seenStatus.current === run?.status) return;
@@ -226,7 +244,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
     // The first answer is the row's own first fetch.
     if (!first) refetchRow();
   }, [run?.status, refetchRow]);
-  const now = useNow(live ? 1000 : null);
+  const now = useNow(visibleIntervalMs(live ? 1000 : null, tabVisible));
 
   const graph = useMemo(
     () => (run ? buildRunGraph(run, definition) : null),

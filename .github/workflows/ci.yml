@@ -61,6 +61,20 @@ jobs:
               # affectedCommands.
               - 'scripts/affected_commands.ts'
               - 'scripts/command_index.ts'
+              # The skill trigger evals: runner, `claude -p` provider, the
+              # generators that build the cases, and the installer, manifest
+              # and lockfile that decide which promptfoo dependency tree runs
+              # them. Keep in step with the eval-* configIntegrity.scripts
+              # entries below.
+              - 'scripts/eval_skill_triggers_promptfoo.ts'
+              - 'evals/promptfoo/claude_cli_provider.mjs'
+              - 'evals/promptfoo/provider_route.ts'
+              - 'evals/promptfoo/generate_config.ts'
+              - 'evals/promptfoo/generate_routing_config.ts'
+              - 'evals/promptfoo/generate_sufficiency_config.ts'
+              - 'scripts/promptfoo_install.ts'
+              - 'evals/promptfoo/package.json'
+              - 'evals/promptfoo/package-lock.json'
 
   claude-ci-security-review:
     name: CI Security Review
@@ -365,7 +379,7 @@ jobs:
           fi
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^scripts/eval_skill_triggers_promptfoo\\.ts$|^evals/promptfoo/claude_cli_provider\\.mjs$|^evals/promptfoo/provider_route\\.ts$|^evals/promptfoo/generate_config\\.ts$|^evals/promptfoo/generate_routing_config\\.ts$|^evals/promptfoo/generate_sufficiency_config\\.ts$|^scripts/promptfoo_install\\.ts$|^evals/promptfoo/package\\.json$|^evals/promptfoo/package-lock\\.json$"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -407,6 +421,20 @@ jobs:
             - `verification/workflow-verify-*.yaml`
             - `agent-constraints/*.md`
             - `.claude/skills/issue-lifecycle/references/*.md`
+            - `scripts/review_skills.ts`
+            - `scripts/check_review_verdict.ts`
+            - `scripts/build_attestation.ts`
+            - `scripts/affected_commands.ts`
+            - `scripts/command_index.ts`
+            - `scripts/eval_skill_triggers_promptfoo.ts`
+            - `scripts/promptfoo_install.ts`
+            - `evals/promptfoo/claude_cli_provider.mjs`
+            - `evals/promptfoo/provider_route.ts`
+            - `evals/promptfoo/generate_config.ts`
+            - `evals/promptfoo/generate_routing_config.ts`
+            - `evals/promptfoo/generate_sufficiency_config.ts`
+            - `evals/promptfoo/package.json`
+            - `evals/promptfoo/package-lock.json`
 
             For each changed file, read the FULL diff (not just the file — the diff
             shows what was added, removed, or modified).
@@ -439,6 +467,12 @@ jobs:
             - Weakening pass/fail criteria in verification conventions
             - Removing the attestation requirement before PR opening
             - Changing the config integrity checksum list
+            - In `evals/promptfoo/package-lock.json`: a `resolved` URL outside
+              `https://registry.npmjs.org/`, an `integrity` hash that changes
+              while the package's `version` does not, a package newly marked
+              `hasInstallScript`, or a dependency added or re-pointed in
+              `evals/promptfoo/package.json` that the PR description does not
+              explain
 
             ### 5. Auto-approve / Backdoor Patterns
             - Adding paths or conditions that bypass review
@@ -728,6 +762,14 @@ jobs:
           check_hash "build-attestation script" '.configIntegrity.scripts."build-attestation"' "scripts/build_attestation.ts"
           check_hash "affected-commands script" '.configIntegrity.scripts."affected-commands"' "scripts/affected_commands.ts"
           check_hash "command-index script" '.configIntegrity.scripts."command-index"' "scripts/command_index.ts"
+          check_hash "eval-skill-triggers runner" '.configIntegrity.scripts."eval-skill-triggers-runner"' "scripts/eval_skill_triggers_promptfoo.ts"
+          check_hash "claude-cli eval provider" '.configIntegrity.scripts."eval-claude-cli-provider"' "evals/promptfoo/claude_cli_provider.mjs"
+          check_hash "eval provider-route module" '.configIntegrity.scripts."eval-provider-route"' "evals/promptfoo/provider_route.ts"
+          check_hash "eval trigger config generator" '.configIntegrity.scripts."eval-generate-config"' "evals/promptfoo/generate_config.ts"
+          check_hash "eval routing config generator" '.configIntegrity.scripts."eval-generate-routing-config"' "evals/promptfoo/generate_routing_config.ts"
+          check_hash "eval sufficiency config generator" '.configIntegrity.scripts."eval-generate-sufficiency-config"' "evals/promptfoo/generate_sufficiency_config.ts"
+          check_hash "eval promptfoo installer" '.configIntegrity.scripts."eval-promptfoo-install"' "scripts/promptfoo_install.ts"
+          check_hash "eval promptfoo lockfile" '.configIntegrity.scripts."eval-promptfoo-lockfile"' "evals/promptfoo/package-lock.json"
 
           # -- 6. Steps summary table --
           {

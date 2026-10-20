@@ -610,6 +610,41 @@ export type HydrateFileHook = (
 ) => Promise<boolean>;
 
 /**
+ * Asks the datastore whether content missing from the local cache is a
+ * record it could not materialise (swamp-club#3617): a v3 read model leaves
+ * the file absent when a chunk its content names is missing or damaged.
+ * Repositories consult it only after a read of the content found no file,
+ * and throw the error it returns, so the read fails loudly instead of
+ * reading as absent. Undefined when the datastore has no such records.
+ *
+ * Takes the absolute path the repository read, spelled as the repository
+ * spells it; resolves to the error to throw, or undefined when the content
+ * is simply absent.
+ *
+ * `under`, when the datastore can answer it, lists the records under a
+ * directory instead: for a read that cannot name the file it wants (a
+ * lookup by an id the file name does not carry) and for a listing, which
+ * would otherwise leave such a record out without a word.
+ */
+export type UnreadableContentLookup =
+  & ((absPath: string) => Promise<UserError | undefined>)
+  & {
+    readonly under?: (
+      absDir: string,
+    ) => Promise<readonly UnreadableContentEntry[]>;
+  };
+
+/** A record {@link UnreadableContentLookup}'s `under` lists. */
+export interface UnreadableContentEntry {
+  /** Its absolute path, spelled under the directory the caller gave. */
+  readonly path: string;
+  /** The error a read of it throws. */
+  readonly error: UserError;
+  /** What brings it back, or removes it. */
+  readonly advice: string;
+}
+
+/**
  * Thrown when a datastore sync operation exceeds the configured timeout.
  *
  * Raised by the coordinator's hard `Promise.race` deadline, so it fires

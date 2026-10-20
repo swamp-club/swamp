@@ -253,6 +253,18 @@ function ciJsonPaths(source: string): string[] {
     .sort();
 }
 
+/**
+ * The hashed files that no directory-wide trust-root pattern covers: the
+ * scripts and promptfoo eval inputs, each of which the review lists have to
+ * name one by one.
+ */
+function hashedScriptPaths(): string[] {
+  return CONFIG_FILES
+    .map((f) => f.path)
+    .filter((path) => path.startsWith("scripts/") || path.startsWith("evals/"))
+    .sort();
+}
+
 Deno.test("attestation: the generator hashes exactly the files CI re-hashes", async () => {
   const ci = await Deno.readTextFile(CI_WORKFLOW);
 
@@ -280,10 +292,7 @@ Deno.test("attestation: the generator hashes exactly the files CI re-hashes", as
 Deno.test("attestation: every hashed script is also agent-reviewed", async () => {
   const ci = await Deno.readTextFile(CI_WORKFLOW);
 
-  const hashedScripts = CONFIG_FILES
-    .map((f) => f.path)
-    .filter((path) => path.startsWith("scripts/"))
-    .sort();
+  const hashedScripts = hashedScriptPaths();
 
   const trustRoot = ci.match(/trust_root:\n([\s\S]*?)\n\n/);
   if (!trustRoot) {
@@ -296,7 +305,7 @@ Deno.test("attestation: every hashed script is also agent-reviewed", async () =>
   assertEquals(
     hashedScripts.length > 0,
     true,
-    "No scripts/ paths in CONFIG_FILES.",
+    "No scripts/ or evals/ paths in CONFIG_FILES.",
   );
 
   const unreviewed = hashedScripts.filter((path) =>
@@ -335,13 +344,11 @@ Deno.test("attestation: every hashed script re-triggers review integrity", async
   // The pattern is a jq string inside YAML: each backslash is doubled.
   const pattern = new RegExp(skipPattern[1].replaceAll("\\\\", "\\"));
 
-  const hashedScripts = CONFIG_FILES
-    .map((f) => f.path)
-    .filter((path) => path.startsWith("scripts/"));
+  const hashedScripts = hashedScriptPaths();
   assertEquals(
     hashedScripts.length > 0,
     true,
-    "No scripts/ paths in CONFIG_FILES.",
+    "No scripts/ or evals/ paths in CONFIG_FILES.",
   );
 
   assertEquals(
@@ -349,5 +356,38 @@ Deno.test("attestation: every hashed script re-triggers review integrity", async
     [],
     "These scripts are hash-pinned in the attestation but a change to them " +
       "after a review-integrity approval would not re-run the check.",
+  );
+});
+
+Deno.test("attestation: the integrity auditor is told to read every hashed script", async () => {
+  const ci = await Deno.readTextFile(CI_WORKFLOW);
+
+  // The trust_root filter only decides that the review-integrity job runs;
+  // the auditor reads the files its prompt lists. A hashed script missing
+  // from that list starts the review without ever being read — which is how
+  // the eval lockfile and every scripts/ entry sat outside it.
+  const audit = ci.match(
+    /## Files to audit\n([\s\S]*?)\n\n\s*For each changed file/,
+  );
+  if (!audit) {
+    throw new Error(
+      'No "Files to audit" list in the review-integrity prompt in ' +
+        ".github/workflows/ci.yml — it was renamed, which would make this " +
+        "rule a vacuous pass.",
+    );
+  }
+
+  const hashedScripts = hashedScriptPaths();
+  assertEquals(
+    hashedScripts.length > 0,
+    true,
+    "No scripts/ or evals/ paths in CONFIG_FILES.",
+  );
+
+  assertEquals(
+    hashedScripts.filter((path) => !audit[1].includes(`\`${path}\``)),
+    [],
+    "These files are hash-pinned in the attestation but the review-integrity " +
+      "prompt does not tell the auditor to read them.",
   );
 });

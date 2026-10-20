@@ -61,6 +61,27 @@ export function workerSignature(
     .join("|");
 }
 
+/**
+ * What a health-stream update does to the coalesced fleet refetch. While the
+ * tab is hidden nothing is read, and a refetch already waiting is dropped;
+ * on coming back into view the fleet is read once, at once; otherwise a
+ * changed worker set arms one refetch unless one is already waiting.
+ */
+export type CoalesceStep = "now" | "later" | "cancel" | "none";
+
+export function coalesceStep(
+  { visible, cameBack, changed, pending }: {
+    visible: boolean;
+    cameBack: boolean;
+    changed: boolean;
+    pending: boolean;
+  },
+): CoalesceStep {
+  if (!visible) return pending ? "cancel" : "none";
+  if (cameBack) return "now";
+  return changed && !pending ? "later" : "none";
+}
+
 /** Clamps a TTL in minutes to the stepper's range. */
 export function clampTtlMinutes(minutes: number): number {
   if (!Number.isFinite(minutes)) return TTL_DEFAULT_MINUTES;

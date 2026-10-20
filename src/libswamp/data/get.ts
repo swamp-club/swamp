@@ -313,12 +313,18 @@ export function createDataGetDeps(
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
+  // The injected data repository's lookup, so the run records and
+  // auto-definitions read here fail loudly, as its content does, on a record
+  // the v3 read model could not materialise (swamp-club#3617).
+  const unreadableContent = injectedDataRepo?.unreadableContent;
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(
       repoDir,
       undefined,
       undefined,
       autoDefDir ?? undefined,
+      undefined,
+      unreadableContent,
     );
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
@@ -334,6 +340,9 @@ export function createDataGetDeps(
     repoDir,
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
+    undefined,
+    undefined,
+    unreadableContent,
   );
   const workflowDataService = new WorkflowDataService(
     definitionRepo,

@@ -45,6 +45,7 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   dependencyTrustBlockerCount,
   type DependencyTrustResult,
+  looseSpecifierCount,
   notAuditedCount,
 } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
@@ -307,9 +308,10 @@ export async function* extensionQuality(
         ctx.logger.debug`Cache put: ${archiveBytes.length} bytes at ${hash}`;
       }
 
-      // The registry's scorer strips deno.json, so it cannot resolve bare
-      // specifiers and leaves such an extension unscored. The local score
-      // below resolves the import map, so say so rather than hide it.
+      // The registry's scorer strips deno.json, so it cannot resolve a bare
+      // import push ships as written (one the import map does not resolve,
+      // swamp-club#3637) and leaves such an extension unscored. The local
+      // score below resolves the import map, so say so rather than hide it.
       const registryScorable = !prepared.reviewRulesResult.warnings.some((w) =>
         w.ruleId === "bare-specifiers"
       );
@@ -337,6 +339,9 @@ export async function* extensionQuality(
             prepared.dependencyTrustResult,
           ),
           dependencyNotAuditedCount: notAuditedCount(
+            prepared.dependencyTrustResult,
+          ),
+          dependencyLooseCount: looseSpecifierCount(
             prepared.dependencyTrustResult,
           ),
           importMap,

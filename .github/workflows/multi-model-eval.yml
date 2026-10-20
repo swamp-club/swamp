@@ -66,7 +66,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-        run: deno run eval-skill-triggers --model ${{ matrix.model }} --concurrency ${{ matrix.concurrency }}
+        run: deno run eval-skill-triggers --model ${{ matrix.model }} --concurrency ${{ matrix.concurrency }} --route api
 
       - name: Upload eval results
         if: steps.check.outputs.run == 'true' && always()

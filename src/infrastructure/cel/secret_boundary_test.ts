@@ -38,11 +38,15 @@ import {
 } from "./secret_boundary.ts";
 import { runInFaultScope, SecretRefusal } from "./secret_fault_context.ts";
 import {
+  composeSecrets,
+  dataReferenceSecret,
   isSecret,
+  type Secret,
   secretFromParts,
   secretParts,
   vaultReferenceSecret,
 } from "./secret_value.ts";
+import { adaptDataRecord } from "./sensitive_record_adapter.ts";
 
 const reference = { vaultName: "prod", key: "DB_PASS" };
 
@@ -284,4 +288,107 @@ Deno.test("detachForDestination: copies containers with their prototype, and ref
       { operation: "the inputs", code: SECRET_DESTINATION_REFUSED },
     ]);
   });
+});
+
+Deno.test("SecretBoundary.release: a data-origin reference with a location is issued once as a value-less data-origin entry", () => {
+  const { bag } = issuingBag();
+  const location =
+    "data.latest of model 'db' record r1 version 2 (data.latest), field 'password'";
+  const secret = dataReferenceSecret(reference, location);
+  const boundary = new SecretBoundary(bag);
+  const sentinel = boundary.release(secret) as string;
+  assertEquals(bag.registry.entryOf(sentinel), {
+    sentinel,
+    reference,
+    encoding: "raw",
+    dataOrigin: true,
+    location,
+  });
+  assertEquals(boundary.release(secret), sentinel);
+  assertEquals(boundary.release([secret, { k: secret }]), [sentinel, {
+    k: sentinel,
+  }]);
+  assertEquals(bag.rawValues, []);
+});
+
+Deno.test("SecretBoundary.bind: a data-origin reference sentinel rebinds as a data-origin Secret with its location, and a composition keeps each part's origin", () => {
+  const { bag, sentinel: vault } = issuingBag();
+  const location =
+    "data.latest of model 'db' record r1 version 2 (data.latest), field 'password'";
+  const data = bag.addDataReference({ vaultName: "prod", key: "P" }, location);
+  const boundary = new SecretBoundary(bag);
+  const bindings = boundary.bind({
+    data,
+    mixed: `${vault}:${data}`,
+    optional: Optional.of(data),
+  });
+  assertEquals(secretParts(bindings.data), [{
+    reference: { vaultName: "prod", key: "P" },
+    dataOrigin: true,
+    location,
+    sentinel: data,
+  }]);
+  const parts = secretParts(bindings.mixed)!;
+  assertEquals(parts.length, 3);
+  assertEquals((parts[0] as { dataOrigin: boolean }).dataOrigin, false);
+  assertEquals((parts[2] as { dataOrigin: boolean }).dataOrigin, true);
+  assertEquals(boundary.release(bindings.mixed), `${vault}:${data}`);
+  assertEquals(
+    boundary.release(composeSecrets(bindings.data as Secret, "!")),
+    `${data}!`,
+  );
+  assertEquals(
+    (boundary.release(bindings.optional) as Optional).value(),
+    data,
+  );
+});
+
+Deno.test("SecretBoundary.release: an adapter view leaves as plain data, with no getter, no Secret and no view", () => {
+  const { bag } = issuingBag();
+  const attributes = {
+    password: "${{ vault.get('prod', 'P') }}",
+    nested: { token: "${{ vault.get('prod', 'T') }}", plain: "p" },
+    list: [1, "x"],
+  };
+  const record = {
+    id: "r1",
+    name: "n",
+    version: 1,
+    namespace: "",
+    modelName: "db",
+    attributes,
+    content: attributes,
+    tags: {
+      "_swamp.sensitiveFields": JSON.stringify(["password", "nested.token"]),
+    },
+  };
+  const released = runInFaultScope(() => {
+    const view = adaptDataRecord(record, "", "data.latest");
+    return new SecretBoundary(bag).release(view) as typeof record;
+  });
+  structuredClone(released);
+  for (
+    const [target, key] of [
+      [released, "attributes"],
+      [released.attributes, "password"],
+      [released.attributes.nested, "token"],
+    ] as const
+  ) {
+    assertEquals(
+      Object.getOwnPropertyDescriptor(target, key)?.get,
+      undefined,
+      key,
+    );
+  }
+  assert(typeof released.attributes.password === "string");
+  assert(
+    bag.registry.issuedEntryOf(released.attributes.password) !== undefined,
+  );
+  assert(
+    bag.registry.issuedEntryOf(released.attributes.nested.token) !== undefined,
+  );
+  assertEquals(released.attributes.nested.plain, "p");
+  assertEquals(released.attributes.list, [1, "x"]);
+  assertEquals(released.content, released.attributes);
+  assertEquals(released.name, "n");
 });

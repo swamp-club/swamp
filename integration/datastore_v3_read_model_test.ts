@@ -34,12 +34,9 @@ import {
 } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
-import { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
+import { type BlobPart, BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
 import type { CatalogAction } from "../src/domain/datastore_v3/catalog_projection.ts";
-import {
-  ChunkMissingError,
-  ChunkStore,
-} from "../src/domain/datastore_v3/chunk_store.ts";
+import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
 import {
   leaseOp,
   type Op,
@@ -533,7 +530,9 @@ Deno.test("read model: files a reboot lost after their page committed are repair
     boot = "boot-id:2";
     const reopened = open();
     try {
-      assertEquals(await reopened.catchUp(signal()), { applied: 5, cursor: 5 });
+      // Each file is rewritten or removed to match the state, without a
+      // replay (swamp-club#3617).
+      assertEquals(await reopened.catchUp(signal()), { applied: 0, cursor: 5 });
     } finally {
       await reopened.close();
     }
@@ -678,8 +677,9 @@ Deno.test({
       boot = "boot-id:2";
       const reopened = open();
       try {
+        // Rewritten from the state, without a replay (swamp-club#3617).
         assertEquals(await reopened.catchUp(signal()), {
-          applied: 5,
+          applied: 0,
           cursor: 5,
         });
       } finally {
@@ -1577,7 +1577,7 @@ for (const at of ["directory", "file"] as const) {
   });
 }
 
-Deno.test("read model: a missing chunk fails the commit until the chunk is stored", async () => {
+Deno.test("read model: a missing chunk makes its record unreadable, not the commit, until the chunk is stored (swamp-club#3617)", async () => {
   await withV3Env(async (env) => {
     const blob = await env.chunkStore.write(SOLO_NAMESPACE, LARGE, signal());
     const firstPart = blob.parts![0].sha256;
@@ -1594,32 +1594,108 @@ Deno.test("read model: a missing chunk fails the commit until the chunk is store
         }),
       ],
     }));
-    const readModel = env.openReadModel();
+    const path = join(
+      swampPath(env.repoDir),
+      ...dataKey("a", 1).toString().split("/"),
+    );
+    let now = new Date("2026-10-19T00:00:00Z");
+    const readModel = env.openReadModel({ clock: () => now });
     try {
-      const error = await assertRejects(
-        () => readModel.catchUp(signal()),
-        ReadModelApplyError,
-      );
-      assertInstanceOf(error.cause, ChunkMissingError);
-      await assertRejects(
-        () => readModel.chunksInUse(""),
-        ReadModelIncompleteError,
-      );
-
-      await env.chunkStore.write(SOLO_NAMESPACE, LARGE, signal());
+      // The commit applies, the index completes, and the record is
+      // recorded as unreadable with no file.
       assertEquals(await readModel.catchUp(signal()), {
         applied: 1,
         cursor: 1,
       });
-      assertEquals(
-        await Deno.readFile(
-          join(
-            swampPath(env.repoDir),
-            ...dataKey("a", 1).toString().split("/"),
-          ),
-        ),
-        LARGE,
+      assertEquals((await readModel.chunksInUse("")).size, blob.parts!.length);
+      const record = await readModel.unreadableRecord(
+        "",
+        dataKey("a", 1).toString(),
       );
+      assertEquals(record?.chunk, firstPart);
+      assertEquals(record?.reason, "missing");
+      await assertRejects(() => Deno.stat(path), Deno.errors.NotFound);
+      // Listed under its directory too (swamp-club#3617).
+      assertEquals(
+        (await readModel.unreadableRecordsUnder("", "data")).map((r) =>
+          r.recordKey
+        ),
+        [dataKey("a", 1).toString()],
+      );
+      assertEquals(await readModel.unreadableRecordsUnder("", "outputs"), []);
+
+      // Once the chunk is stored, a catch-up past the retry interval (this
+      // storage cannot read sizes) writes it.
+      await env.chunkStore.write(SOLO_NAMESPACE, LARGE, signal());
+      now = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+      assertEquals(await readModel.catchUp(signal()), {
+        applied: 0,
+        cursor: 1,
+      });
+      assertEquals(await Deno.readFile(path), LARGE);
+      assertEquals(
+        await readModel.unreadableRecord("", dataKey("a", 1).toString()),
+        undefined,
+      );
+    } finally {
+      await readModel.close();
+    }
+    // A closed read model lists nothing, as a command shutting down reads.
+    assertEquals(await readModel.unreadableRecordsUnder("", "data"), []);
+  });
+});
+
+Deno.test("read model: a chunk of the wrong bytes is recorded as the damaged chunk the read named, without reading the parts again (swamp-club#3617)", async () => {
+  await withV3Env(async (env) => {
+    const blob = await env.chunkStore.write(SOLO_NAMESPACE, LARGE, signal());
+    const damaged = blob.parts![1].sha256;
+    // Same size, wrong bytes: the read of that part names it.
+    await Deno.writeFile(
+      join(
+        env.dir,
+        "datastore",
+        "_blobs",
+        "_default",
+        "sha256",
+        damaged.slice(0, 2),
+        damaged,
+      ),
+      new Uint8Array(blob.parts![1].size),
+    );
+    await env.store.append(commitOf({
+      seq: 1,
+      partition: PARTITION,
+      namespace: "",
+      ops: [
+        await putOp({
+          intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
+          key: dataKey("a", 1),
+          blob,
+        }),
+      ],
+    }));
+    class SpyChunkStore extends ChunkStore {
+      verifies = 0;
+      override verifyParts<P extends BlobPart>(
+        namespace: Parameters<ChunkStore["verifyParts"]>[0],
+        parts: readonly P[],
+        abort: AbortSignal,
+      ): Promise<P[]> {
+        this.verifies++;
+        return super.verifyParts(namespace, parts, abort);
+      }
+    }
+    const chunkStore = new SpyChunkStore(env.storage);
+    const readModel = env.openReadModel({ chunkStore });
+    try {
+      await readModel.catchUp(signal());
+      const record = await readModel.unreadableRecord(
+        "",
+        dataKey("a", 1).toString(),
+      );
+      assertEquals(record?.chunk, damaged);
+      assertEquals(record?.reason, "damaged");
+      assertEquals(chunkStore.verifies, 0);
     } finally {
       await readModel.close();
     }
@@ -1677,5 +1753,170 @@ Deno.test("read model: every call after close rejects", async () => {
       "closed",
     );
     await assertRejects(() => readModel.chunksInUse(""), Error, "closed");
+  });
+});
+
+Deno.test("read model: a same-boot catalog reset keeps a file tombstoned in this boot and written again uncommitted (swamp-club#3617)", async () => {
+  await withV3Env(async (env) => {
+    const reader = () =>
+      env.openReadModel({
+        bootIdentity: () => Promise.resolve("boot-id:1"),
+      });
+    const path = join(
+      swampPath(env.repoDir),
+      ...dataKey("a", 1).toString().split("/"),
+    );
+    await env.store.append(commitOf({
+      seq: 1,
+      partition: PARTITION,
+      namespace: "",
+      ops: [await savePut("a", 1)],
+    }));
+    let readModel = reader();
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    await env.store.append(commitOf({
+      seq: 2,
+      partition: PARTITION,
+      namespace: "",
+      ops: [deleteVersion("a", 1)],
+    }));
+    readModel = reader();
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    // A live writer in this boot writes the key again, not yet committed.
+    await Deno.mkdir(dirname(path), { recursive: true });
+    await Deno.writeTextFile(path, "uncommitted");
+    const catalog = new CatalogStore(catalogV3Path(env));
+    catalog.invalidate();
+    catalog.close();
+    readModel = reader();
+    try {
+      assertEquals((await readModel.catchUp(signal())).cursor, 2);
+    } finally {
+      await readModel.close();
+    }
+    // Its removal this boot stays done: only files the state showed
+    // present were removal candidates.
+    assertEquals(await Deno.readTextFile(path), "uncommitted");
+  });
+});
+
+Deno.test("read model: the check after a reboot reads the commit at a mark once for every inline file it rewrites from it (swamp-club#3617)", async () => {
+  await withV3Env(async (env) => {
+    await env.store.append(commitOf({
+      seq: 1,
+      partition: PARTITION,
+      namespace: "",
+      ops: [await savePut("a", 1), await savePut("b", 1)],
+    }));
+    let boot = "boot-id:1";
+    let markReads = 0;
+    const store = new Proxy(env.store, {
+      get(target, property) {
+        if (property === "changesSince") {
+          return (after: number, limit: number) => {
+            if (limit === 1) markReads++;
+            return target.changesSince(after, limit);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const reader = () =>
+      env.openReadModel({
+        commitStore: store,
+        bootIdentity: () => Promise.resolve(boot),
+      });
+    let readModel = reader();
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    const paths = ["a", "b"].map((name) =>
+      join(swampPath(env.repoDir), ...dataKey(name, 1).toString().split("/"))
+    );
+    // A power cut lost both files.
+    for (const path of paths) await Deno.remove(path);
+    boot = "boot-id:2";
+    markReads = 0;
+    readModel = reader();
+    try {
+      assertEquals(await readModel.catchUp(signal()), {
+        applied: 0,
+        cursor: 1,
+      });
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await Deno.readTextFile(paths[0]), "a@1");
+    assertEquals(await Deno.readTextFile(paths[1]), "b@1");
+    assertEquals(markReads, 1);
+  });
+});
+
+Deno.test("read model: an unreadable-record lookup made during a page waits for it and never sees what the page rolls back (swamp-club#3617)", async () => {
+  await withV3Env(async (env) => {
+    const blob = await env.chunkStore.write(SOLO_NAMESPACE, LARGE, signal());
+    await env.storage.delete("_default", blob.parts![0].sha256, signal());
+    await env.store.append(commitOf({
+      seq: 1,
+      partition: PARTITION,
+      namespace: "",
+      ops: [
+        await putOp({
+          intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
+          key: dataKey("a", 1),
+          blob,
+        }),
+      ],
+    }));
+    const key = dataKey("a", 1).toString();
+    let lookup: Promise<unknown> | undefined;
+    let settledDuringPage = false;
+    let failBarrier = true;
+    const holder: { readModel?: SqliteReadModel } = {};
+    class ReadingBatch extends DurableWriteBatch {
+      override async barrier(): Promise<void> {
+        if (!failBarrier) return await super.barrier();
+        lookup = holder.readModel!.unreadableRecord("", key);
+        lookup.then(
+          () => settledDuringPage = true,
+          () => settledDuringPage = true,
+        );
+        await super.barrier();
+        assertEquals(settledDuringPage, false);
+        throw new Error("injected crash at the barrier");
+      }
+    }
+    const readModel = env.openReadModel({
+      writeBatch: () => new ReadingBatch(),
+    });
+    holder.readModel = readModel;
+    try {
+      await assertRejects(
+        () => readModel.catchUp(signal()),
+        Error,
+        "injected crash",
+      );
+      assertEquals(await lookup!, undefined);
+      failBarrier = false;
+      await readModel.catchUp(signal());
+      assertEquals(
+        (await readModel.unreadableRecord("", key))?.chunk,
+        blob.parts![0].sha256,
+      );
+    } finally {
+      await readModel.close();
+    }
   });
 });

@@ -34,9 +34,11 @@ import {
 import {
   fadeFraction,
   type FleetWorker,
+  groupCaption,
   type GroupStats,
   groupValue,
   groupWorkers,
+  hostMapDrawMode,
   isEligible,
   isEmptySelector,
   type Selector,
@@ -68,6 +70,8 @@ export interface HostMapProps {
   onSelect: (name: string | null) => void;
   /** Accessible name for the map. */
   label: string;
+  /** The tab is hidden: draw nothing until it is back in view. */
+  hidden?: boolean;
 }
 
 interface SimNode extends SimulationNodeDatum {
@@ -86,6 +90,13 @@ const GLIDE_MS = 700;
 const SETTLE_TICKS = 260;
 /** Golden angle, for sunflower seeding of a card's workers. */
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/**
+ * A disconnected worker starts half faded, so it reads as gone rather than
+ * failed, and fades by this much more over the visibility TTL — ending above
+ * the placement selector's `.hm-dim` (host-map.css).
+ */
+const DISCONNECTED_OPACITY = 0.5;
+const DISCONNECTED_FADE = 0.3;
 
 const STATUS_ORDER: readonly WorkerStatus[] = [
   "unverified",
@@ -148,6 +159,8 @@ export function HostMap(props: HostMapProps) {
     exitTimer?: ReturnType<typeof setTimeout>;
     /** Set while workers glide to a settled layout; ticks must not move them. */
     glideTimer?: ReturnType<typeof setTimeout>;
+    /** A draw was skipped while the tab was hidden. */
+    skipped: boolean;
     initialized: boolean;
     ids: Map<string, string>;
   }>({
@@ -158,6 +171,7 @@ export function HostMap(props: HostMapProps) {
     order: [],
     prefix: `hm${Math.random().toString(36).slice(2, 8)}`,
     dataKey: "",
+    skipped: false,
     initialized: false,
     ids: new Map(),
   });
@@ -227,11 +241,22 @@ export function HostMap(props: HostMapProps) {
     const frame = frameRef.current;
     const st = stateRef.current;
     if (!svgEl || !frame || !st.sim) return;
+    const p = propsRef.current;
+    const mode = hostMapDrawMode({
+      hidden: p.hidden === true,
+      skipped: st.skipped,
+    });
+    if (mode === "skip") {
+      pause(svgEl);
+      return;
+    }
     // While leaving workers exit, the old layout must stay installed: the
     // follow-up draw then sees the change and glides to it.
     if (st.exitTimer !== undefined) return;
-    const p = propsRef.current;
     const reduced = prefersReducedMotion();
+    // Back in view, the map goes straight to where it is now.
+    const still = reduced || mode === "snap";
+    st.skipped = false;
     const width = Math.max(
       320,
       (frame as unknown as { clientWidth: number }).clientWidth,
@@ -259,7 +284,7 @@ export function HostMap(props: HostMapProps) {
     // Leaving workers shrink away where they stand first; only then do the
     // cards re-flow and the remaining workers move. Otherwise a leaving
     // worker fades at a spot its card has already moved away from.
-    if (!reduced) {
+    if (!still) {
       const staying = new Set(p.workers.map((w) => w.name));
       const leaving = [...st.nodes.keys()].filter((name) => !staying.has(name));
       if (leaving.length > 0) {
@@ -276,7 +301,7 @@ export function HostMap(props: HostMapProps) {
     const svg = select(svgEl)
       .attr("viewBox", `0 0 ${width} ${layout.height}`)
       .attr("height", layout.height);
-    const duration = reduced ? 0 : GLIDE_MS;
+    const duration = still ? 0 : GLIDE_MS;
 
     drawCells(svg, layout.cells, groups, duration);
 
@@ -342,12 +367,13 @@ export function HostMap(props: HostMapProps) {
         .join(",");
     const dataChanged = dataKey !== st.dataKey;
     st.dataKey = dataKey;
-    if (!dataChanged && !regrouped && !reduced) return;
+    if (!dataChanged && !regrouped && !still) return;
 
     st.sim.nodes(nextNodes);
-    if (reduced || !st.initialized) {
-      // First paint (and reduced motion): come to rest off-screen, then draw
-      // workers where they settled, with no visible shuffle.
+    if (still || !st.initialized) {
+      // First paint (and reduced motion, and back in view): come to rest
+      // off-screen, then draw workers where they settled, with no visible
+      // shuffle.
       settle();
       st.initialized = true;
       if (reduced) {
@@ -360,6 +386,23 @@ export function HostMap(props: HostMapProps) {
     } else {
       st.sim.alpha(Math.max(st.sim.alpha(), 0.05)).restart();
     }
+  }
+
+  /**
+   * Stops all motion while the tab is hidden. Animation frames are paused
+   * there, so transitions scheduled now would pile up unstarted for as long
+   * as the tab stays hidden; the next visible draw snaps instead.
+   */
+  function pause(svgEl: SVGSVGElement) {
+    const st = stateRef.current;
+    if (st.skipped) return;
+    st.skipped = true;
+    st.sim?.stop();
+    if (st.exitTimer !== undefined) clearTimeout(st.exitTimer);
+    if (st.glideTimer !== undefined) clearTimeout(st.glideTimer);
+    st.exitTimer = undefined;
+    st.glideTimer = undefined;
+    select(svgEl).selectAll("*").interrupt().interrupt("glide");
   }
 
   function settle() {
@@ -459,9 +502,7 @@ export function HostMap(props: HostMapProps) {
     all.select("text.hm-cell-name").text((c) => c.key);
     all.select("text.hm-cell-count").text((c) => {
       const g = statsByKey.get(c.key);
-      if (!g) return "";
-      const slots = `${g.usedSlots}/${g.totalSlots} slots`;
-      return c.w < 190 ? slots : `${g.up}/${g.workers.length} up · ${slots}`;
+      return g ? groupCaption(g, c.w) : "";
     });
     all.each(function (c) {
       const g = statsByKey.get(c.key);
@@ -591,7 +632,9 @@ export function HostMap(props: HostMapProps) {
         "opacity",
         (d) =>
           d.worker.status === "disconnected"
-            ? 1 - 0.85 * fadeFraction(d.worker, Date.now(), p.ttlMs)
+            ? DISCONNECTED_OPACITY -
+              DISCONNECTED_FADE *
+                fadeFraction(d.worker, Date.now(), p.ttlMs)
             : 1,
       );
 

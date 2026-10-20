@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { Command } from "@cliffy/command";
 import { join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -28,7 +29,16 @@ import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/d
 import {
   catalogCompletenessDataDir,
   compareCatalogToDisk,
+  doctorDatastoresCommand,
+  repairLostV3FormatMarker,
 } from "./doctor_datastores.ts";
+import { initializeV3Datastore } from "../../infrastructure/datastore_v3/v3_datastore.ts";
+import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { UserError } from "../../domain/errors.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 /**
  * Writes a data item to disk the way the repository lays it out:
@@ -292,3 +302,211 @@ Deno.test(
     assertEquals(summary.shortfalls.length, 1);
   }),
 );
+
+// --- swamp-club#3617: --repair restores a v3 datastore's lost marker ---
+
+async function captureLogs(fn: () => Promise<unknown>): Promise<string> {
+  const originalLog = console.log;
+  const lines: string[] = [];
+  console.log = (...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return lines.join("\n");
+}
+
+async function snapshot(dir: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  for await (const entry of Deno.readDir(dir)) {
+    files[entry.name] = entry.isFile
+      ? Array.from(await Deno.readFile(join(dir, entry.name))).join(",")
+      : "dir";
+  }
+  return files;
+}
+
+/** A repo whose .swamp.yaml says `format` over a v3 datastore it holds. */
+async function withV3Repo(
+  format: 2 | 3 | undefined,
+  fn: (repoDir: string, datastorePath: string) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-doctor-marker-" });
+  try {
+    const datastorePath = join(repoDir, "ds");
+    await initializeV3Datastore(datastorePath, "test");
+    await new RepoMarkerRepository().write(RepoPath.create(repoDir), {
+      swampVersion: "0.0.0",
+      initializedAt: new Date().toISOString(),
+      repoId: crypto.randomUUID(),
+      datastore: {
+        type: "filesystem",
+        path: datastorePath,
+        ...(format !== undefined ? { format } : {}),
+      },
+    });
+    await withMockedEnv(
+      { SWAMP_DATASTORE: undefined },
+      () => fn(repoDir, datastorePath),
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("repairLostV3FormatMarker: previews a lost marker opening nothing, then restores it with -y (swamp-club#3617)", async () => {
+  await withV3Repo(3, async (repoDir, datastorePath) => {
+    const markerPath = join(datastorePath, "datastore-format.json");
+    for (const lost of [undefined, "", "\0\0\0\0"]) {
+      await Deno.remove(markerPath).catch(() => {});
+      if (lost !== undefined) await Deno.writeTextFile(markerPath, lost);
+      const refusal = await assertRejects(() =>
+        ensureSupportedDatastoreFormat(repoDir, {
+          type: "filesystem",
+          path: datastorePath,
+          format: 3,
+        })
+      );
+      const before = await snapshot(datastorePath);
+      let status: string | undefined;
+      const preview = await captureLogs(async () => {
+        status = await repairLostV3FormatMarker(
+          repoDir,
+          refusal,
+          "json",
+          false,
+        );
+      });
+      assertEquals(status, "preview");
+      assertEquals(JSON.parse(preview), {
+        status: "format_marker_preview",
+        datastorePath,
+        markerPath,
+        marker: lost === undefined ? "absent" : "blank",
+      });
+      assertEquals(await snapshot(datastorePath), before);
+
+      const restored = await captureLogs(async () => {
+        status = await repairLostV3FormatMarker(
+          repoDir,
+          refusal,
+          "json",
+          true,
+        );
+      });
+      assertEquals(status, "pass");
+      assertEquals(JSON.parse(restored).status, "format_marker_restored");
+      assertEquals(
+        await ensureSupportedDatastoreFormat(repoDir, {
+          type: "filesystem",
+          path: datastorePath,
+          format: 3,
+        }),
+        "v3",
+      );
+    }
+  });
+});
+
+Deno.test("repairLostV3FormatMarker: leaves every other refusal to be rethrown unchanged (swamp-club#3617)", async () => {
+  // A config that does not say format 3: the marker is not restored here.
+  await withV3Repo(undefined, async (repoDir, datastorePath) => {
+    await Deno.remove(join(datastorePath, "datastore-format.json"));
+    const refusal = await assertRejects(() =>
+      ensureSupportedDatastoreFormat(repoDir, {
+        type: "filesystem",
+        path: datastorePath,
+      })
+    );
+    assertEquals(
+      await repairLostV3FormatMarker(repoDir, refusal, "json", true),
+      undefined,
+    );
+    assertEquals(
+      (await snapshot(datastorePath))["datastore-format.json"],
+      undefined,
+    );
+  });
+  // A healthy v3 datastore, and errors that are not format refusals.
+  await withV3Repo(3, async (repoDir) => {
+    for (
+      const error of [
+        new UserError("mismatch", "datastore_format_mismatch"),
+        new UserError("other", "validation_failed"),
+        new Error("boom"),
+      ]
+    ) {
+      assertEquals(
+        await repairLostV3FormatMarker(repoDir, error, "json", true),
+        undefined,
+      );
+    }
+  });
+});
+
+Deno.test("doctor datastores --repair: a v3 datastore whose marker was lost is refused, previewed under --repair, and restored with -y, in log and json modes (swamp-club#3617)", async () => {
+  await initializeLogging({});
+  for (const json of [false, true]) {
+    await withV3Repo(3, async (repoDir, datastorePath) => {
+      const markerPath = join(datastorePath, "datastore-format.json");
+      await Deno.remove(markerPath);
+      const doctor = (...args: string[]) =>
+        captureLogs(() =>
+          new Command()
+            .globalOption("--json", "JSON output")
+            .command("datastores", doctorDatastoresCommand)
+            .parse([
+              "datastores",
+              "--repo-dir",
+              repoDir,
+              ...args,
+              ...(json ? ["--json"] : []),
+            ])
+        );
+
+      // Without --repair the guard's refusal stands.
+      await assertRejects(() => doctor(), UserError);
+
+      const before = await snapshot(datastorePath);
+      const preview = await doctor("--repair");
+      assertEquals(await snapshot(datastorePath), before);
+      if (json) {
+        assertEquals(JSON.parse(preview), {
+          status: "format_marker_preview",
+          datastorePath,
+          markerPath,
+          marker: "absent",
+        });
+      } else {
+        assertStringIncludes(preview, "Lost datastore format marker:");
+        assertStringIncludes(preview, `${markerPath} is missing`);
+      }
+
+      const restored = await doctor("--repair", "-y");
+      if (json) {
+        assertEquals(JSON.parse(restored).status, "format_marker_restored");
+      } else {
+        assertStringIncludes(restored, "Datastore format marker restored:");
+        assertStringIncludes(
+          restored,
+          "Run `swamp doctor datastores` to check the datastore.",
+        );
+      }
+      assertEquals(
+        await ensureSupportedDatastoreFormat(repoDir, {
+          type: "filesystem",
+          path: datastorePath,
+          format: 3,
+        }),
+        "v3",
+      );
+    });
+  }
+});

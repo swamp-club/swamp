@@ -390,6 +390,7 @@ function factorsAllEarned(): Parameters<typeof composeScore>[0] {
     dependencyTrustPassed: true,
     dependencyTrustBlockerCount: 0,
     dependencyNotAuditedCount: 0,
+    dependencyLooseCount: 0,
   };
 }
 
@@ -874,6 +875,7 @@ Deno.test(
       dependencyTrustPassed: false,
       dependencyTrustBlockerCount: 0,
       dependencyNotAuditedCount: 0,
+      dependencyLooseCount: 0,
     });
   },
 );
@@ -1007,6 +1009,7 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       dependencyTrustPassed: false,
       dependencyTrustBlockerCount: 0,
       dependencyNotAuditedCount: 0,
+      dependencyLooseCount: 0,
     },
     makeManifest({
       description: "",
@@ -1143,6 +1146,39 @@ Deno.test("composeScore: dependency-trust remediation names blockers before unau
   const factor = score.factors.find((f) => f.id === "dependency-trust")!;
   assertEquals(factor.earnedPoints, 0);
   assertStringIncludes(factor.remediation ?? "", "1 dependency blocker(s)");
+});
+
+Deno.test("composeScore: dependency-trust loses one point for loose specifiers alone", () => {
+  const score = composeScore(
+    { ...factorsAllEarned(), dependencyLooseCount: 2 },
+    makeManifest(),
+  );
+  const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+  assertEquals(factor.earnedPoints, 1);
+  assertEquals(factor.maxPoints, 2);
+  assertEquals(factor.status, "missing");
+  assertStringIncludes(
+    factor.remediation ?? "",
+    "2 loose dependency specifier(s) (loose-specifier) cost 1 of 2 points",
+  );
+  assertEquals(score.allPassed, false);
+});
+
+Deno.test("composeScore: dependency-trust stays at 0 when loose specifiers join a blocker or an unaudited dependency", () => {
+  for (
+    const extra of [
+      { dependencyTrustPassed: false, dependencyTrustBlockerCount: 1 },
+      { dependencyNotAuditedCount: 1 },
+    ]
+  ) {
+    const score = composeScore(
+      { ...factorsAllEarned(), ...extra, dependencyLooseCount: 1 },
+      makeManifest(),
+    );
+    const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+    assertEquals(factor.earnedPoints, 0);
+    assertStringIncludes(factor.remediation ?? "", "Also: 1 loose dependency");
+  }
 });
 
 // ── scoreExtensionTarball: import map merging ────────────────────────

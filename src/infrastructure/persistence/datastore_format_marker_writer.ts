@@ -25,6 +25,7 @@ import {
 } from "../../domain/datastore/datastore_format.ts";
 import type { WritableDatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { syncDirectory } from "./sync_directory.ts";
 
 /** A format marker as it is written, on a filesystem or a control plane. */
 export function datastoreFormatMarkerText(
@@ -60,6 +61,11 @@ export async function writeControlPlaneFormatMarker(
  * It refuses to replace anything already at that path, atomically: a
  * datastore's format changes only by migration, never by a second setup.
  *
+ * The marker is durable when this returns (swamp-club#3617): its content
+ * is synced and its file closed before it is linked into place, and the
+ * directory is synced after, so a power cut leaves no marker or a whole
+ * one, never an empty one beside the files it names.
+ *
  * @throws UserError when something already exists at the marker path
  */
 export async function writeDatastoreFormatMarker(
@@ -68,11 +74,17 @@ export async function writeDatastoreFormatMarker(
   options: {
     /** The hard-link call; injectable so a test can stand in a filesystem without links. */
     readonly link?: (from: string, to: string) => Promise<void>;
+    /** How the written file is synced; `file.sync()` by default (tests). */
+    readonly syncFile?: (file: Deno.FsFile) => Promise<void>;
+    /** How the datastore directory is synced (tests). */
+    readonly syncDirectory?: (dir: string) => Promise<void>;
   } = {},
 ): Promise<string> {
   const path = join(datastorePath, DATASTORE_FORMAT_MARKER_FILE);
-  const text = datastoreFormatMarkerText(marker);
+  const bytes = new TextEncoder().encode(datastoreFormatMarkerText(marker));
   const link = options.link ?? Deno.link;
+  const syncFile = options.syncFile ?? ((file: Deno.FsFile) => file.sync());
+  const syncDir = options.syncDirectory ?? syncDirectory;
   const exists = () =>
     markErrorPaths(
       new UserError(
@@ -85,7 +97,18 @@ export async function writeDatastoreFormatMarker(
   // anything is already at the path, so of two concurrent setups exactly
   // one writes the marker, and a reader never sees a partial one.
   const tmpPath = join(datastorePath, `.${crypto.randomUUID()}.tmp`);
-  await Deno.writeTextFile(tmpPath, text, { createNew: true });
+  // Synced and closed before the link: the link must never name content
+  // that is not on disk yet, and Windows prefers a closed file.
+  const tmp = await Deno.open(tmpPath, { write: true, createNew: true });
+  try {
+    await writeAll(tmp, bytes);
+    await syncFile(tmp);
+  } catch (error) {
+    tmp.close();
+    await Deno.remove(tmpPath).catch(() => {});
+    throw error;
+  }
+  tmp.close();
   let linked = false;
   try {
     await link(tmpPath, path);
@@ -97,7 +120,10 @@ export async function writeDatastoreFormatMarker(
   } finally {
     await Deno.remove(tmpPath).catch(() => {});
   }
-  if (linked) return path;
+  if (linked) {
+    await syncDir(datastorePath);
+    return path;
+  }
   // Exclusive create: still exactly one of two concurrent setups wins. A
   // reader may see a partial marker only while setup writes it, and the
   // format guard refuses a garbled one.
@@ -109,14 +135,18 @@ export async function writeDatastoreFormatMarker(
     throw error;
   }
   try {
-    const bytes = new TextEncoder().encode(text);
-    let written = 0;
-    while (written < bytes.length) {
-      written += await file.write(bytes.subarray(written));
-    }
-    await file.sync();
+    await writeAll(file, bytes);
+    await syncFile(file);
   } finally {
     file.close();
   }
+  await syncDir(datastorePath);
   return path;
+}
+
+async function writeAll(file: Deno.FsFile, bytes: Uint8Array): Promise<void> {
+  let written = 0;
+  while (written < bytes.length) {
+    written += await file.write(bytes.subarray(written));
+  }
 }

@@ -20,7 +20,10 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
-import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import {
+  holdsValue,
+  SecretBagRegistry,
+} from "../vaults/secret_bag_registry.ts";
 import {
   rehydratePersistedForm,
   toPersistedForm,
@@ -348,6 +351,33 @@ Deno.test("rehydratePersistedForm: an issued sentinel carries the written entry'
   });
   assertEquals(values.sentinels.issuedEntryOf(bodySentinel)?.encoding, "json");
   const bodyEntry = values.sentinels.issuedEntryOf(bodySentinel);
-  assertEquals(bodyEntry?.dataOrigin && bodyEntry.value, 'p\\"w');
+  assertEquals(
+    bodyEntry !== undefined && holdsValue(bodyEntry) && bodyEntry.value,
+    'p\\"w',
+  );
   assertEquals(JSON.parse(bag.resolveRaw(restored.sanitized.body)).k, 'p"w');
+});
+
+Deno.test("toPersistedForm: a data-origin reference sentinel is written as its reference from its entry, with data origin and no recorded value", () => {
+  const values = new RunSensitiveValues();
+  const bag = new VaultSecretBag(values.sentinels);
+  const sentinel = bag.addDataReference(
+    { vaultName: "prod", key: "k" },
+    "data.latest of model 'db' record r1 version 1 (data.latest), field 'password'",
+  );
+  const form = toPersistedForm({ run: `echo ${sentinel}` }, values, {
+    applies: () => false,
+  });
+  assertEquals(form.data, {
+    run: `echo ${vaultReferenceText({ vaultName: "prod", key: "k" })}`,
+  });
+  assertEquals(form.writtenReferences, [{
+    path: ["run"],
+    occurrence: 0,
+    vaultName: "prod",
+    key: "k",
+    encoding: "raw",
+    dataOrigin: true,
+  }]);
+  assertEquals(values.list(), []);
 });

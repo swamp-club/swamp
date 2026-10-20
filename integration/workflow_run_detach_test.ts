@@ -119,8 +119,16 @@ async function submitDetached(
   return runId;
 }
 
-/** Follows a run by id over `run.attach` and returns its event kinds. */
-function attachUntilDone(server: string, runId: string): Promise<string[]> {
+/**
+ * Follows a run by id over `run.attach` and returns its event kinds.
+ * `onAttached` runs once serve has accepted the attach, so a caller holding
+ * the run open can release it knowing the run cannot finish first.
+ */
+function attachUntilDone(
+  server: string,
+  runId: string,
+  onAttached: () => void,
+): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const kinds: string[] = [];
     const socket = new WebSocket(server);
@@ -136,6 +144,7 @@ function attachUntilDone(server: string, runId: string): Promise<string[]> {
         event?: { kind: string };
         error?: { message: string };
       };
+      if (frame.type === "run.attached") onAttached();
       if (frame.type === "event" && frame.event) kinds.push(frame.event.kind);
       if (frame.type === "done") {
         socket.close();
@@ -238,10 +247,10 @@ Deno.test({
             "Too many concurrent runs",
           );
 
-          // The returned id reattaches to the run, from its first event.
-          const attached = attachUntilDone(server.url, first);
-          openGate();
-          const kinds = await attached;
+          // The returned id reattaches to the run, from its first event. The
+          // step is released only once serve has accepted the attach, so
+          // the run is still active when it does (swamp-club#3638).
+          const kinds = await attachUntilDone(server.url, first, openGate);
           assertEquals(kinds[0], "validating_inputs");
           assert(kinds.includes("started"));
           assertEquals(kinds.at(-1), "completed");

@@ -27,6 +27,10 @@ import {
   DatastoreFormatMismatchError,
   engineForFormat,
   InvalidDatastoreFormatMarkerError,
+  isBlankDatastoreFormatMarker,
+  LostDatastoreFormatMarkerError,
+  lostFormatMarkerAdvice,
+  type LostFormatMarkerContext,
   parseDatastoreFormatMarker,
   supportedDatastoreFormatsFor,
   UnsupportedDatastoreFormatError,
@@ -281,5 +285,130 @@ Deno.test("DatastoreFormatMismatchError: names both formats, or the missing mark
   assertStringIncludes(
     new DatastoreFormatMismatchError(3, undefined).message,
     "no readable format marker",
+  );
+});
+
+// swamp-uat pins these refusals (src/cli/helpers/datastore_format_marker.ts):
+// the regexes are copied here so a change to the texts they match fails in
+// this repository first.
+const UAT_INVALID_MARKER_MESSAGE =
+  /^The datastore format marker .+ is not a valid format marker \(not valid JSON\)\. swamp will not use a datastore whose format it cannot determine\. .*Nothing was changed\.$/s;
+function uatFormatMismatchMessage(configured: number, marked: number): RegExp {
+  return new RegExp(
+    `^The datastore config in \\.swamp\\.yaml says format ${configured}, but ` +
+      `the datastore's format marker says format ${marked}\\. Check that the ` +
+      "datastore path is the one setup created, or run `swamp datastore " +
+      "setup` again\\. Nothing was changed\\.$",
+  );
+}
+
+const LOST_CONTEXTS: readonly LostFormatMarkerContext[] = [
+  "v3-config",
+  "config",
+  "setup-target",
+];
+
+Deno.test("isBlankDatastoreFormatMarker: an empty, whitespace or NUL marker is blank; partial JSON is not (swamp-club#3617)", () => {
+  const blank = (text: string) =>
+    isBlankDatastoreFormatMarker(new TextEncoder().encode(text));
+  assertEquals(blank(""), true);
+  assertEquals(blank(" \n\t\r "), true);
+  assertEquals(blank("\0".repeat(64)), true);
+  assertEquals(blank("\0 \n\0"), true);
+  assertEquals(blank('{"format": 3, "minReaderFormat":'), false);
+  assertEquals(blank("\0{"), false);
+});
+
+Deno.test("format refusals: the default texts are unchanged, byte for byte (swamp-club#3617)", () => {
+  assertEquals(
+    new InvalidDatastoreFormatMarkerError(SOURCE, "not valid JSON").message,
+    `The datastore format marker ${SOURCE} is not a valid format marker ` +
+      "(not valid JSON). swamp will not use a datastore whose format it " +
+      "cannot determine. Check who wrote it; if swamp did, report it with " +
+      "`swamp issue bug`. Nothing was changed.",
+  );
+  assertEquals(
+    new DatastoreFormatMismatchError(2, 3).message,
+    "The datastore config in .swamp.yaml says format 2, but the datastore's " +
+      "format marker says format 3. Check that the datastore path is the one " +
+      "setup created, or run `swamp datastore setup` again. Nothing was " +
+      "changed.",
+  );
+  assertEquals(
+    new DatastoreFormatMismatchError(3, undefined).message,
+    "The datastore config in .swamp.yaml says format 3, but the datastore " +
+      "has no readable format marker. Check that the datastore path is the " +
+      "one setup created, or run `swamp datastore setup` again. Nothing was " +
+      "changed.",
+  );
+});
+
+Deno.test("format refusals: lost-marker advice changes only the next step, and swamp-uat's pins still match (swamp-club#3617)", () => {
+  for (const context of LOST_CONTEXTS) {
+    const advice = lostFormatMarkerAdvice(context);
+    const invalid = new InvalidDatastoreFormatMarkerError(
+      SOURCE,
+      "not valid JSON",
+      advice,
+    );
+    assertEquals(invalid.code, DATASTORE_FORMAT_MARKER_INVALID_CODE);
+    assertEquals(
+      invalid.message,
+      `The datastore format marker ${SOURCE} is not a valid format marker ` +
+        "(not valid JSON). swamp will not use a datastore whose format it " +
+        `cannot determine. ${advice} Nothing was changed.`,
+    );
+    assertEquals(UAT_INVALID_MARKER_MESSAGE.test(invalid.message), true);
+  }
+  assertEquals(
+    UAT_INVALID_MARKER_MESSAGE.test(
+      new InvalidDatastoreFormatMarkerError(SOURCE, "not valid JSON").message,
+    ),
+    true,
+  );
+  assertEquals(
+    uatFormatMismatchMessage(2, 3).test(
+      new DatastoreFormatMismatchError(2, 3).message,
+    ),
+    true,
+  );
+  const lostV3 = new DatastoreFormatMismatchError(
+    3,
+    undefined,
+    lostFormatMarkerAdvice("v3-config"),
+  );
+  assertEquals(lostV3.code, "datastore_format_mismatch");
+  assertEquals(
+    lostV3.message,
+    "The datastore config in .swamp.yaml says format 3, but the datastore " +
+      "has no readable format marker. It holds a v3 commit log, so a crash " +
+      "may have lost its format marker. Run `swamp doctor datastores " +
+      "--repair` to check the datastore and restore the marker. Nothing was " +
+      "changed.",
+  );
+});
+
+Deno.test("LostDatastoreFormatMarkerError: a mismatch refusal whose advice fits where it was met (swamp-club#3617)", () => {
+  for (const context of LOST_CONTEXTS) {
+    const error = new LostDatastoreFormatMarkerError("/data/ds", context);
+    assertEquals(error instanceof UserError, true);
+    assertEquals(error.code, "datastore_format_mismatch");
+    assertEquals(error.context, context);
+    assertEquals(error.datastorePath, "/data/ds");
+    assertEquals(
+      error.message,
+      "The datastore /data/ds has no format marker. swamp will not open it " +
+        `as format 2. ${lostFormatMarkerAdvice(context)} Nothing was changed.`,
+    );
+  }
+  assertStringIncludes(
+    lostFormatMarkerAdvice("config"),
+    "If a datastore override (SWAMP_DATASTORE or --datastore) points here, " +
+      "unset it. Then run `swamp doctor datastores --repair` in the " +
+      "repository whose .swamp.yaml uses this datastore with format 3",
+  );
+  assertStringIncludes(
+    lostFormatMarkerAdvice("setup-target"),
+    "swamp datastore setup filesystem --format 3",
   );
 });

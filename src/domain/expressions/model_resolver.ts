@@ -46,6 +46,7 @@ import { isUuid } from "../models/model_lookup.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
+import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import { markModelWording, wordedText } from "../behavior_wording.ts";
 import { freeRoots } from "./cel_grammar.ts";
 import {
@@ -282,13 +283,33 @@ export interface ModelData {
 }
 
 /**
+ * How a data read treats a record's tagged sensitive fields.
+ *
+ * - `resolve` (the default): own-namespace tagged fields are read from the
+ *   reader's vaults into plaintext, as today.
+ * - `stored`: the record is returned as stored, references and all, and no
+ *   vault is read. The typed expression path (typed-secrets 3.3) reads this
+ *   way and authorizes each reference itself.
+ */
+export interface DataReadOptions {
+  readonly sensitiveFields?: "resolve" | "stored";
+}
+
+/**
  * Namespace for data versioning functions in CEL expressions.
  */
 export interface DataNamespace {
   /**
+   * The reader's own namespace: the one whose records' tagged fields are
+   * this repository's to resolve. Absent on a namespace built without a
+   * repository.
+   */
+  readonly namespace?: Namespace;
+
+  /**
    * Get a specific version of data. Delegates to catalog query with an
    * explicit `version == N` predicate (which opts out of the implicit
-   * latest-only filter).
+   * latest-only filter). Always returns the record as stored.
    */
   version(
     modelName: string,
@@ -299,10 +320,12 @@ export interface DataNamespace {
   /**
    * Get the latest version of data. Delegates to catalog query — the
    * implicit `isLatest == true` injection handles latest-only filtering.
+   * `options` chooses how tagged sensitive fields are read.
    */
   latest(
     modelName: string,
     dataName: string,
+    options?: DataReadOptions,
   ): Promise<DataRecord | null>;
 
   /**
@@ -1016,6 +1039,7 @@ export class ModelResolver {
         record.size,
       );
     } catch (error) {
+      if (isUnreadableContentError(error)) throw error;
       getLogger(["swamp", "expressions"])
         .debug`Could not hydrate ${record.modelName}/${record.name}@v${record.version}: ${
         String(error)
@@ -1118,6 +1142,7 @@ export class ModelResolver {
               data.size,
             );
           } catch (error) {
+            if (isUnreadableContentError(error)) throw error;
             const worded = wordedText((w) =>
               `Could not download ${data.name} of ${w.noun} ${ref}, which ` +
               `the expression reads: ${
@@ -1238,6 +1263,7 @@ export class ModelResolver {
         );
 
     return {
+      namespace: ownNamespace,
       version: async (
         rawModelName: string,
         dataName: string,
@@ -1288,9 +1314,14 @@ export class ModelResolver {
       latest: async (
         rawModelName: string,
         dataName: string,
+        options?: DataReadOptions,
       ): Promise<DataRecord | null> => {
         if (!this.dataRepo) return null;
         const ns = routeNamespace(rawModelName, ownNamespace);
+        // A stored read returns the record's references as written and
+        // reads no vault; the typed expression path authorizes them itself
+        // (typed-secrets 3.3).
+        const resolveSensitive = options?.sensitiveFields !== "stored";
 
         if (!ns.isWildcard) {
           // A namespaced name is never read through the caller's own
@@ -1342,6 +1373,7 @@ export class ModelResolver {
                     data.size,
                   ) !== "missing";
                 } catch (error) {
+                  if (isUnreadableContentError(error)) throw error;
                   getLogger(["swamp", "expressions"])
                     .debug`Could not hydrate ${ns.modelName}/${data.name}@v${data.version}: ${
                     String(error)
@@ -1355,11 +1387,13 @@ export class ModelResolver {
                   undefined,
                   ns.modelName,
                 );
-                await this.resolveRecordVaultRefs(
-                  record,
-                  data.tags,
-                  sensitiveValues,
-                );
+                if (resolveSensitive) {
+                  await this.resolveRecordVaultRefs(
+                    record,
+                    data.tags,
+                    sensitiveValues,
+                  );
+                }
                 // Content was ensured above, so the path only needs to name
                 // a present file; it is not requested a second time.
                 if (record?.path && (!available || !fileExists(record.path))) {
@@ -1392,7 +1426,7 @@ export class ModelResolver {
             // readers return it: its tags and values are that namespace's to
             // write, and must not choose which of this repository's secrets
             // are read (swamp-club#3306).
-            if (record?.namespace === ownNamespace) {
+            if (resolveSensitive && record?.namespace === ownNamespace) {
               await this.resolveRecordVaultRefs(
                 record,
                 record.tags,

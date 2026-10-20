@@ -17,8 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  type DependencySpecifier,
+  extractDependencySpecifiers,
+} from "../../domain/extensions/extension_dependency_extractor.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { walk } from "@std/fs";
+import { join, relative } from "@std/path";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -44,7 +49,10 @@ import type { CollectiveEntitlement } from "../../domain/extensions/extension_pu
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
-import { listTarGzEntries } from "../../infrastructure/archive/tar_archive.ts";
+import {
+  extractTarGz,
+  listTarGzEntries,
+} from "../../infrastructure/archive/tar_archive.ts";
 import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 import { emptyArchiveIndex } from "./extension_tree_index_test_helpers.ts";
 import type {
@@ -2351,12 +2359,12 @@ Deno.test("extensionPushPrepare: a sidecar entry for bare-specifiers is an inval
     );
     assertStringIncludes(
       details.reviewRuleErrors[0].message,
-      '"bare-specifiers" is not a rule that can be accepted. Replace each bare name',
+      '"bare-specifiers" is not a rule that can be accepted. Map each bare name',
     );
   });
 });
 
-Deno.test("extensionPushPrepare: the bare-specifiers finding names each import-map replacement and stays a warning", async () => {
+Deno.test("extensionPushPrepare: the bare-specifiers finding names only the bare imports that ship as written", async () => {
   await withAcceptanceFixture({
     "models/a.ts":
       'import { z } from "zod";\nimport { join } from "@std/path";\nimport x from "lodash";\nexport const a = [z, join, x];\n',
@@ -2375,11 +2383,176 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names each import-m
     assertEquals(bare[0].severity, "medium");
     assertEquals(
       bare[0].message,
-      "Extension uses bare import specifiers, which the registry's scorer " +
-        "cannot resolve, so it would publish unscored. Replace " +
-        '"@std/path" with "jsr:@std/path"; ' +
-        '"lodash" with an explicit npm: or jsr: specifier; ' +
-        '"zod" with "npm:zod@4.3.6".',
+      "Extension has bare imports that ship as written, which the " +
+        "registry's scorer cannot resolve, so it would publish unscored: " +
+        '"lodash". Push rewrites a bare import only when the deno.json ' +
+        "import map resolves it to an npm:, jsr:, node: or URL specifier; " +
+        "add such an entry for each, or write the specifier in its place.",
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: no bare-specifiers finding when the import map resolves every bare import", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import { z } from "zod";\nconst m = await import("ms");\nexport const a = [z, m];\n',
+    "deno.json": JSON.stringify({
+      imports: { "zod": "npm:zod@^4", "ms": "npm:ms@2.1.3" },
+    }),
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...acceptanceInput(dir, [paths["models/a.ts"]]),
+      denoConfigPath: paths["deno.json"],
+    });
+    assertEquals(
+      result.reviewRulesResult.warnings.filter((w) =>
+        w.ruleId === "bare-specifiers"
+      ),
+      [],
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: without a deno.json every bare import still raises the bare-specifiers finding", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": 'import ms from "ms";\nexport const a = ms;\n',
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    const bare = result.reviewRulesResult.warnings.filter((w) =>
+      w.ruleId === "bare-specifiers"
+    );
+    assertEquals(bare.length, 1);
+    assertStringIncludes(bare[0].message, '"ms"');
+  });
+});
+
+/** The text of each file under the archive's `extension/` directory, by path below it. */
+async function archiveTexts(
+  bytes: Uint8Array,
+): Promise<Record<string, string>> {
+  const root = await Deno.makeTempDir({ prefix: "archive-texts-" });
+  try {
+    await extractTarGz(ReadableStream.from([bytes]), root);
+    const texts: Record<string, string> = {};
+    for await (
+      const entry of walk(join(root, "extension"), { includeDirs: false })
+    ) {
+      const rel = relative(join(root, "extension"), entry.path)
+        .replaceAll("\\", "/");
+      texts[rel] = await Deno.readTextFile(entry.path);
+    }
+    return texts;
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+}
+
+Deno.test("extensionPushPrepare: the archive's source carries each bare import's import-map target", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": [
+      'import ms from "ms";',
+      'import { posix } from "@std/path/posix";',
+      "import fp from 'lodash/fp';",
+      'import u from "unmapped";',
+      'import { b } from "./b.ts";',
+      'const t = `import ms from "ms"`;',
+      "export const a = [ms, posix, fp, u, b, t];",
+      "",
+    ].join("\n"),
+    "models/b.ts": 'export { default as b } from "ms";\n',
+    "models/data.json": '{ "import": "ms" }\n',
+    "deno.json": JSON.stringify({
+      imports: {
+        "ms": "npm:ms@^2",
+        "@std/path": "jsr:@std/path@^1",
+        "lodash/": "npm:/lodash@4/",
+      },
+    }),
+  }, async (dir, paths) => {
+    const models = [paths["models/a.ts"], paths["models/b.ts"]];
+    const input = acceptanceInput(dir, models);
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...input,
+      denoConfigPath: paths["deno.json"],
+      dataFilesByKind: { models: [paths["models/data.json"]] },
+      sourcePlan: {
+        entries: [
+          ...input.sourcePlan.entries,
+          {
+            sourcePath: paths["models/data.json"],
+            archivePath: "models/data.json",
+            rewrites: [],
+          },
+        ],
+      },
+    });
+    const texts = await archiveTexts(result.archiveBytes);
+    assertEquals(
+      texts["models/a.ts"],
+      [
+        'import ms from "npm:ms@^2";',
+        'import { posix } from "jsr:@std/path@^1/posix";',
+        "import fp from 'npm:lodash@4/fp';",
+        'import u from "unmapped";',
+        'import { b } from "./b.ts";',
+        'const t = `import ms from "ms"`;',
+        "export const a = [ms, posix, fp, u, b, t];",
+        "",
+      ].join("\n"),
+    );
+    assertEquals(
+      texts["models/b.ts"],
+      'export { default as b } from "npm:ms@^2";\n',
+    );
+    assertEquals(texts["models/data.json"], '{ "import": "ms" }\n');
+    for (const name of ["deno.json", "deno.lock"]) {
+      assertEquals(
+        Object.keys(texts).some((p) => p.endsWith(name)),
+        false,
+        `${name} must not ship`,
+      );
+    }
+  });
+});
+
+Deno.test("extensionPushPrepare: without a deno.json the archive's source keeps its bare imports", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": 'import ms from "ms";\nexport const a = ms;\n',
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    const texts = await archiveTexts(result.archiveBytes);
+    assertEquals(
+      texts["models/a.ts"],
+      'import ms from "ms";\nexport const a = ms;\n',
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: an import-map target that could escape its string literal fails the push", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": 'import ms from "ms";\nexport const a = ms;\n',
+    "deno.json": JSON.stringify({
+      imports: { "ms": 'npm:ms@2"; globalThis.pwned = true; "' },
+    }),
+  }, async (dir, paths) => {
+    await assertRejects(
+      () =>
+        extensionPushPrepare(ctx, makePrepareDeps(), {
+          ...acceptanceInput(dir, [paths["models/a.ts"]]),
+          denoConfigPath: paths["deno.json"],
+        }),
+      UserError,
+      'Fix the import map entry for "ms"',
     );
   });
 });
@@ -2423,6 +2596,30 @@ Deno.test("extensionPushPrepare: the dependency audit gets the project the bundl
   });
 });
 
+Deno.test("extensionPushPrepare: bundles never write the extension's lockfile", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": "export const a = 1;\n",
+    "deno.json": "{}",
+    "deno.lock": '{"version":"5"}',
+  }, async (dir, paths) => {
+    const options: unknown[] = [];
+    const deps = makePrepareDeps({
+      bundleEntryPoint: (_entryPoint, _denoPath, bundleOptions) => {
+        options.push(bundleOptions?.readOnlyLock);
+        return Promise.resolve("export const a = 1;\n");
+      },
+    });
+    const input = {
+      ...acceptanceInput(dir, [paths["models/a.ts"]]),
+      denoConfigPath: paths["deno.json"],
+    };
+    await extensionPushPrepare(ctx, deps, input);
+    await Deno.remove(paths["deno.lock"]);
+    await extensionPushPrepare(ctx, deps, input);
+    assertEquals(options, [{ lockPath: paths["deno.lock"] }, {}]);
+  });
+});
+
 Deno.test("extensionPushPrepare: a missing JSR version fails the dependency-trust gate", async () => {
   await withCollectFixture({}, async (_dir, input) => {
     const missing = {
@@ -2454,6 +2651,56 @@ Deno.test("extensionPushPrepare: a missing JSR version fails the dependency-trus
       f.gate === "dependency-trust"
     );
     assertEquals(failure !== undefined, true);
+  });
+});
+
+Deno.test("extensionPushPrepare: a bare import the deno.json maps is audited and its error fails the dependency-trust gate", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import { assert } from "missing-assert";\nexport const a = assert;\n',
+    "deno.json": JSON.stringify({
+      imports: { "missing-assert": "jsr:@std/assert@0.0.999" },
+    }),
+  }, async (dir, paths) => {
+    const audited: DependencySpecifier[][] = [];
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps({
+          extractDependencySpecifiers,
+          checkDependencyTrust: (specifiers) => {
+            audited.push(specifiers);
+            return Promise.resolve({
+              errors: [{
+                dependency: "@std/assert",
+                message:
+                  'version 0.0.999 not found on JSR (imported as "missing-assert" via deno.json)',
+                cause: "jsr-missing",
+              }],
+              warnings: [],
+              audited: [],
+              passed: false,
+            });
+          },
+        }),
+        {
+          ...acceptanceInput(dir, [paths["models/a.ts"]]),
+          denoConfigPath: paths["deno.json"],
+        },
+      )
+    ) as SwampError;
+    assertEquals(error.code, "validation_failed");
+    assertStringIncludes(
+      error.message,
+      "Extension has dependency trust errors that must be resolved before pushing.",
+    );
+    assertEquals(audited, [[{
+      name: "@std/assert",
+      version: "0.0.999",
+      registry: "jsr",
+      sourceFile: paths["models/a.ts"],
+      importedAs: "missing-assert",
+    }]]);
   });
 });
 

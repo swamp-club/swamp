@@ -27,6 +27,7 @@ import { join } from "@std/path";
 import {
   createRemoteMethodContext,
   dispatchMethodArgs,
+  dispatchRedactor,
   UnsupportedOnRemoteWorkerError,
 } from "./remote_method_context.ts";
 import { definitionFromExecution } from "./exec_dispatch.ts";
@@ -339,6 +340,39 @@ Deno.test("remote context: vault get and put proxy as capability verbs", async (
       ).length,
       2,
     );
+  });
+});
+
+Deno.test("remote context: vault get registers the value it receives with the redactor (swamp-club#3527)", async () => {
+  await withScratch(async (dir) => {
+    const events: Record<string, unknown>[] = [];
+    const h = harness(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      (e) => events.push(e),
+    );
+    assertEquals(h.context.redactor!.hasSecrets, false);
+
+    assertEquals(await h.context.vaultService!.get("local", "k"), "s3cret");
+
+    assertEquals(
+      h.context.redactor!.redact("value s3cret here"),
+      "value *** here",
+    );
+    // Output lines and console output leave the worker scrubbed.
+    h.context.logger.info("logged s3cret");
+    assertEquals(events.map((e) => e.line), ["logged ***"]);
+    assertEquals(h.redact("console s3cret"), "console ***");
+  });
+});
+
+Deno.test("remote context: vault getAnnotation registers nothing with the redactor", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    await h.context.vaultService!.getAnnotation("local", "k");
+    assertEquals(h.context.redactor!.hasSecrets, false);
   });
 });
 
@@ -740,4 +774,15 @@ Deno.test("remote context: the worker resolves shipped args as the orchestrator 
     assertEquals(seenArgs?.run, d.execution.methodArgs.run);
     assertEquals(seenUnresolved?.run, d.unresolvedMethodArgs!.run);
   });
+});
+
+Deno.test("dispatchRedactor: masks the shipped values and leaves text alone without any (swamp-club#3525)", () => {
+  const secret = `s3cret-${crypto.randomUUID()}`;
+  const text = `method failed holding ${secret}`;
+  assertEquals(
+    dispatchRedactor([secret]).redact(text),
+    "method failed holding ***",
+  );
+  assertEquals(dispatchRedactor(undefined).redact(text), text);
+  assertEquals(dispatchRedactor([]).redact(text), text);
 });

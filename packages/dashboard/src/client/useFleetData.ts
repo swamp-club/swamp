@@ -20,10 +20,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "./SwampProvider.tsx";
 import { createRequestSequence } from "./request_sequence.ts";
+import { useTabVisible } from "./run_activity.ts";
 import {
   activeDispatchIds,
   chunk,
   COALESCE_MS,
+  coalesceStep,
   ENDED_WITHIN_MS,
   FALLBACK_MS,
   LEASE_BATCH,
@@ -57,7 +59,8 @@ function tabVisible(): boolean {
  * Workers (including those disconnected within the TTL) and the step leases
  * on their slots. Keeps the last data while refreshing, so the map never
  * flashes back to a skeleton; refreshes on health-stream worker changes and
- * on a slow fallback while the tab is visible.
+ * on a slow fallback while the tab is visible, and once on coming back into
+ * view.
  */
 export function useFleetData(
   healthWorkers: readonly WorkerSnapshotLike[] | undefined,
@@ -122,7 +125,7 @@ export function useFleetData(
     refetch();
   }, [refetch]);
 
-  useCoalescedRefetch(healthWorkers, refetch);
+  useCoalescedRefetch(healthWorkers, refetch, useTabVisible());
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -144,24 +147,43 @@ export function useFleetData(
  * COALESCE_MS (a throttle, not a debounce): a busy fleet changes it on every
  * dispatch and the reads it triggers are audited, but a steady stream of
  * changes must still refresh. The first signature seen does not refetch.
+ * Reads nothing while the tab is hidden, and once on coming back into view.
  */
 export function useCoalescedRefetch(
   healthWorkers: readonly WorkerSnapshotLike[] | undefined,
   refetch: () => void,
+  visible = true,
 ): void {
   const signature = workerSignature(healthWorkers);
   const lastFetched = useRef(signature);
   const latest = useRef({ signature, refetch });
   latest.current = { signature, refetch };
   const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasVisible = useRef(visible);
   useEffect(() => {
-    if (signature === lastFetched.current || pending.current !== null) return;
-    pending.current = setTimeout(() => {
+    const cameBack = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    const step = coalesceStep({
+      visible,
+      cameBack,
+      changed: signature !== lastFetched.current,
+      pending: pending.current !== null,
+    });
+    if (step === "cancel" || step === "now") {
+      if (pending.current !== null) clearTimeout(pending.current);
       pending.current = null;
-      lastFetched.current = latest.current.signature;
+    }
+    if (step === "now") {
+      lastFetched.current = signature;
       latest.current.refetch();
-    }, COALESCE_MS);
-  }, [signature]);
+    } else if (step === "later") {
+      pending.current = setTimeout(() => {
+        pending.current = null;
+        lastFetched.current = latest.current.signature;
+        latest.current.refetch();
+      }, COALESCE_MS);
+    }
+  }, [signature, visible]);
   useEffect(() => () => {
     if (pending.current !== null) clearTimeout(pending.current);
   }, []);

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { relative } from "@std/path";
 import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { isBundleArtifactPath } from "./paths.ts";
@@ -77,6 +78,14 @@ export type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
  */
 export function canonicalLockfilePath(path: string): string {
   return path.replaceAll("\\", "/");
+}
+
+/**
+ * The path from `from` to `to` in the lockfile's form, which every
+ * extension report also uses: `relative()` with forward slashes.
+ */
+export function lockfileRelative(from: string, to: string): string {
+  return canonicalLockfilePath(relative(from, to));
 }
 
 /**

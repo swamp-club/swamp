@@ -576,3 +576,15 @@ Deno.test("sentinelStandInOf: a data sentinel stands in for its value and a vaul
     [sanitized.length - twin.length, sanitized.length],
   ]);
 });
+
+Deno.test("sentinelIdentityOf: a data-origin reference stands in as data origin, like a legacy data entry, with no value read", () => {
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const reference = bag.addDataReference({ vaultName: "v", key: "a" }, "loc");
+  const legacy = bag.addDataSecret("pw-value", { vaultName: "v", key: "a" });
+  const vault = bag.addSecret({ vaultName: "v", key: "a" }, "inputs.a");
+  const identity = sentinelIdentityOf(registry);
+  assertEquals(identity(reference), identity(legacy));
+  assertEquals(identity(reference) !== identity(vault), true);
+  assertEquals(identity(reference)!.includes("pw-value"), false);
+});

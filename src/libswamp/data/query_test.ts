@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
+import { UserError } from "../../domain/errors.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   dataQuery,
@@ -292,6 +293,27 @@ Deno.test("dataQuery: yields QUERY_FAILED error when the repository query throws
   assertEquals(events[1], {
     kind: "error",
     error: { code: "QUERY_FAILED", message: "predicate parse error" },
+  });
+});
+
+Deno.test("dataQuery: an unreadable record's error keeps its code (swamp-club#3617)", async () => {
+  const deps: DataQueryDeps = {
+    query: () =>
+      Promise.reject(
+        new UserError("record unreadable", "datastore_v3_record_unreadable"),
+      ),
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, { predicate: "true" }),
+  );
+
+  assertEquals(events[1], {
+    kind: "error",
+    error: {
+      code: "datastore_v3_record_unreadable",
+      message: "record unreadable",
+    },
   });
 });
 

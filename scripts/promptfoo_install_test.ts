@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { fromFileUrl } from "@std/path";
 import { libsqlBindingPackage, npmInstallArgs } from "./promptfoo_install.ts";
 
 Deno.test("libsqlBindingPackage: maps supported hosts to libsql's binding packages", () => {
@@ -51,10 +52,10 @@ Deno.test("libsqlBindingPackage: returns undefined for hosts libsql has no bindi
   );
 });
 
-Deno.test("npmInstallArgs: omits optional deps and ignores the lockfile", () => {
+Deno.test("npmInstallArgs: installs from the lockfile without rewriting it", () => {
   assertEquals(npmInstallArgs(), [
     "install",
-    "--package-lock=false",
+    "--no-save",
     "--omit=optional",
     "--no-audit",
     "--no-fund",
@@ -73,8 +74,45 @@ Deno.test("npmInstallArgs: adds packages without saving them", () => {
     npmInstallArgs({
       cacheDir: "/tmp/cache",
       packages: ["@libsql/linux-x64-gnu@0.5.29"],
-    }).slice(-4),
-    ["--cache", "/tmp/cache", "--no-save", "@libsql/linux-x64-gnu@0.5.29"],
+    }),
+    [
+      "install",
+      "--no-save",
+      "--omit=optional",
+      "--no-audit",
+      "--no-fund",
+      "--cache",
+      "/tmp/cache",
+      "@libsql/linux-x64-gnu@0.5.29",
+    ],
   );
-  assertEquals(npmInstallArgs({ packages: [] }).includes("--no-save"), false);
+  assertEquals(npmInstallArgs({ packages: [] }), npmInstallArgs());
+});
+
+interface NpmManifest {
+  dependencies?: Record<string, string>;
+}
+
+interface NpmLockfile {
+  packages: Record<string, { version?: string; dependencies?: Record<string, string> }>;
+}
+
+async function readPromptfooJson<T>(name: string): Promise<T> {
+  const path = fromFileUrl(
+    new URL(`../evals/promptfoo/${name}`, import.meta.url),
+  );
+  return JSON.parse(await Deno.readTextFile(path)) as T;
+}
+
+// npm install resolves anything the lockfile does not cover, so a promptfoo
+// bump without a regenerated lockfile would quietly unpin the changed tree.
+Deno.test("promptfoo lockfile: is in step with package.json", async () => {
+  const manifest = await readPromptfooJson<NpmManifest>("package.json");
+  const lock = await readPromptfooJson<NpmLockfile>("package-lock.json");
+
+  assertEquals(lock.packages[""].dependencies, manifest.dependencies);
+  assertEquals(
+    lock.packages["node_modules/promptfoo"].version,
+    manifest.dependencies?.promptfoo,
+  );
 });

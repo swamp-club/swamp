@@ -113,6 +113,7 @@ export const workflowHistoryLogsCommand = withRemoteOptions(
       repoDir,
       datastoreResolver,
       repoContext.workflowRepo,
+      repoContext.unreadableContent,
     ),
     retentionWatermarks: repoContext.retentionWatermarks,
   };

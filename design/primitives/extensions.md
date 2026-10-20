@@ -363,6 +363,40 @@ takes the per-checkout pulled-extensions lock (see
 [Concurrency Safety](#concurrency-safety)), which serializes it against
 explicit installs and removals.
 
+The registry calls one auto-install makes — for the extension and each
+dependency it pulls — share a single 150s deadline
+(`AUTO_RESOLVE_INSTALL_DEADLINE_MS` in `src/cli/auto_resolver_adapters.ts`), so
+the process holding the lock releases it before the 180s lock wait of a process
+behind it runs out. A process that does give up waiting reports which process
+holds the lock (`installBusy`, JSON reason `install_busy` with `holder`,
+`hostname`, `pid` and `waitedMs`) instead of reporting the type as not
+registered.
+
+### Registry retries
+
+Registry reads retry transient failures
+(`src/infrastructure/http/transient_retry.ts`): a timeout, a connection failure,
+HTTP 502/503/504, or a 429 whose Retry-After is 60s or less (at most twice). A
+read makes an initial attempt plus at most five retries, waiting 1s, 2s, 4s, 8s
+and 16s with up to 25% jitter (or the Retry-After when longer), with a 15s
+timeout per attempt and 150s in total (room for two capped Retry-After waits); an
+archive download gets 120s per attempt
+and 300s in total, and its fetch and body read are retried together. One loop,
+one retry count and one total budget cover every kind of failure, so rate-limit
+and transient retries never multiply. Writes — push, upload, confirm, yank,
+deprecate, promote — are never retried, nor are other statuses or a caller's
+own cancellation or deadline.
+
+Before each wait one warning names the service, request, reason, wait and count,
+for example
+`swamp-club registry: GET /api/v1/extensions/… timed out after 15s · retrying in 2s (retry 2/5)`.
+It goes to stderr in log mode; JSON mode attaches no console sink, so stdout
+stays valid JSON. The final error names the method, the path without its query
+string, the attempts and the elapsed time. Every URL in a notice or error,
+including one embedded in a fetch error's own message, is reduced to origin and
+path, so a signed download URL's signature never reaches a log; the signed URL
+never receives identity headers.
+
 ### Lockfile
 
 A team commits `upstream_extensions.json`, and checkouts on different OSes
@@ -380,6 +414,10 @@ missing-files warning. Reads never rewrite it: the next lockfile write does,
 and `swamp extension install` rewrites it even when every extension is up to
 date. The managed lockfile is not committed, so install leaves it as the
 datastore holds it.
+
+The paths that pull, update, install and rm report, in log output and in
+`--json`, use the same repo-relative forward-slash form on every OS
+(`lockfileRelative`), so a report never mixes separators.
 
 The `upstream_extensions.json` entry records the install channel in a `channel`
 field. It is written only for non-stable installs, so entries without it read
@@ -866,8 +904,10 @@ Every lint of extension code (push, `extension quality`, `extension fmt`)
 passes `--rules-exclude=no-import-prefix`: with a project config Deno's
 recommended set forbids the `npm:`/`jsr:` imports the bare-specifier finding
 asks for, so the two would contradict. The project's other rules still apply.
-The `bare-specifiers` finding names, per name, the import-map target to write
-instead (exact key, else the longest trailing-slash prefix key).
+The `bare-specifiers` finding names only the bare imports that ship as written
+(see [Bare imports in the shipped source](#bare-imports-in-the-shipped-source)):
+under a `deno.json`, those its import map does not resolve; without one, every
+bare import.
 
 In the bare-specifier row, `--node-modules-dir=auto` also creates `.deno/`
 metadata if needed.
@@ -887,16 +927,25 @@ Zod is externalized with `--external` flags matching the specifier as written.
 The bundler handles:
 
 - `npm:zod@4` and `npm:zod` (base patterns, always applied)
-- Fully pinned versions like `npm:zod@4.3.6` (found by scanning the source)
-- Bare `"zod"` via `deno.json`: when the import map maps it to zod 4.x, both the
-  resolved specifier and bare `"zod"` are externalized
+- Every other zod 4 spelling, pinned (`npm:zod@4.3.6`) or ranged
+  (`npm:zod@^4.1`, `npm:zod@>=4.1 <5`), exactly as written: the bundler reads
+  the entry point and every module it reaches through relative imports as text
+  (`zod4SpecifiersReachedFrom`, no `deno` call) and externalizes each `npm:zod`
+  specifier that admits only 4.x. Push ships such a spelling whenever the
+  import map maps `"zod"` to one (swamp-club#3637), so a pulled extension
+  rebundles with zod still shared.
+- Bare `"zod"` via `deno.json`: when the import map maps it to a version or
+  range that admits only zod 4.x, both the resolved specifier and bare `"zod"`
+  are externalized
 - Bare `"zod"` via `package.json`: when `dependencies` or `devDependencies`
   lists zod 4.x
 
 After bundling, `rewriteZodImports` rewrites each externalized zod import to
 `globalThis.__swamp_zod`, which `installZodGlobal()` sets at runtime. The
-rewrite matches `npm:zod@4.x` and bare `"zod"` but excludes zod 3.x, to avoid
-silent runtime breakage.
+rewrite matches bare `"zod"`, `npm:zod`, and any version or range every admitted
+version of which is 4.x (`isZod4Specifier`), but excludes zod 3.x, to avoid
+silent runtime breakage; an import whose version or range admits only 3.x is
+refused at bundle time.
 
 The rewrite applies to import declarations only. The bundle is parsed to find
 them, so the same text inside a string, template literal, comment or regex
@@ -910,10 +959,12 @@ the parser does not support. The zod 3.x check is scoped the same way.
 
 At runtime, loaders look for cached bundles in `.swamp/bundles/` (or the
 matching `-bundles/` directory). If the source has bare specifiers that need a
-project config and a cached bundle exists, the loader uses it, since
-re-bundling without the config would fail. This serves pulled extensions built
-in a `deno.json` or `package.json` project, whose archive has pre-built bundles
-but no project config. Imports inside template literals don't count here either,
+project config and a cached bundle exists, the loader uses it, since re-bundling
+without the config would fail. This serves pulled extensions built in a
+`package.json` project, or whose bare imports a `deno.json` import map did not
+resolve, whose archive has pre-built bundles but no project config. Bare imports
+the import map resolves were rewritten to their targets on push, so that source
+re-bundles on its own. Imports inside template literals don't count here either,
 so an extension that only generates code re-bundles normally.
 
 With a non-filesystem datastore (e.g. `@swamp/s3-datastore`), bundle paths go
@@ -1086,6 +1137,51 @@ An extension nested under another (`@a/b/lib` under `@a/b`) cannot be installed
 at a directory where its parent keeps shared sources, nor the parent installed
 over such a nested entry. Either install fails and names the extension to remove
 first.
+
+### Bare imports in the shipped source
+
+The archive never holds the project's `deno.json` or `deno.lock`, and the
+registry's scorer strips any it finds, so a bare import (`from "ms"`) would not
+resolve in the shipped source. Under a `deno.json`, push rewrites each bare
+import a code module writes to the specifier its import map resolves it to
+(swamp-club#3637), in the archived copy only, at the import's exact span, beside
+the relative rewrites above:
+
+- Resolution is `resolveBareImport` (swamp-club#3611): an exact key, else the
+  longest `key/` prefix, and a key mapped to an `npm:` or `jsr:` package also
+  covers its subpaths. It reads the JSON `imports` object only, never an
+  `importMap` file reference or `scopes`, and adds no `deno` call.
+- The imports are the ones the dependency audit reads (`findImportSpecifiers`):
+  string literals in import position, with comments and template literals
+  blanked, so generated import text is never rewritten. Push audits every code
+  module it rewrites, JavaScript included. A site is rewritten only when Babel
+  parses that exact literal as an import's module specifier (static import,
+  `export ... from`, `import()` or `typeof import()`), since the token scanner
+  can read a quote inside a regex literal as a string. A `.tsx` or `.jsx`
+  module is parsed with JSX. A module that does not parse gets no rewrite, and
+  its bare imports count as shipping as written: the rewrite and the
+  `bare-specifiers` finding come from one plan (`planBareImports`).
+- The target is written as the map writes it, version or range included,
+  exactly as a specifier written out in source would ship. A `key/` target
+  written `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
+  the registry's parser reads at all. A zod target the host shares (4.x at the
+  root or `/v4`, the same namespace) ships as `npm:zod@4`: zod is never bundled
+  or audited, every swamp shares its own, and `npm:zod@4` is the spelling older
+  swamp versions externalize when they rebundle a pulled source. Another zod
+  subpath (`/v4/core`, `/mini`) has its own exports, ships as the map writes
+  it, and is bundled.
+- Only `npm:`, `jsr:`, `node:` and `http(s):` targets are written. A target
+  that is a local path is a local module edge the plan already places; any
+  other bare import ships as written and raises the `bare-specifiers` finding.
+- A target the source uses that holds a quote, backslash, backtick, line break
+  or `${` fails the push and names the map key. The safety, review and lint
+  gates read the source on disk, so the archived copy must hold no code they
+  did not see.
+
+The registry's dependency scan then audits these imports as `npm:`/`jsr:`
+specifiers, `deno doc` resolves them so the extension is scored, and a pulled
+extension's source rebundles without the author's config. In package.json
+mode no import is rewritten.
 
 ## Per-Subdirectory Extension Identity
 
@@ -1889,7 +1985,21 @@ from `@bixu/wheelshop`:
 ### The version that ships
 
 Each `npm:` and `jsr:` specifier is audited at the version the push ships
-(swamp-club#3352). The rules live in
+(swamp-club#3352), whether the source writes it out or writes a bare import
+the project `deno.json` import map resolves to it (swamp-club#3611). The
+extractor resolves bare imports as the bundler does: an exact key, else the
+longest `key/` prefix, where a key mapped to an `npm:` or `jsr:` package also
+covers its subpaths (`"@std/path"` resolves `@std/path/posix`) unless the
+map has its own `key/` entry. It reads the map as JSON, resolves only the
+bare imports the source uses, and takes only a string literal in import
+position (after `from`, a side-effect `import` or `import(`), with comments
+and template literals blanked, so import text inside a string, comment or
+template literal is never audited. These are the same imports push rewrites
+to their targets in the shipped source (swamp-club#3637), and the audit reads
+every code module the graph reports, JavaScript included, so nothing ships as
+an `npm:`/`jsr:` specifier unaudited. A package
+both written out and mapped at the same specifier is audited once, as the
+written form. The rules live in
 `src/domain/extensions/dependency_version_resolution.ts` and run no Deno
 tooling, so they outlive the runtime:
 
@@ -1905,15 +2015,32 @@ tooling, so they outlive the runtime:
    lock. The lockfile sits behind the `LockedDependencyVersions` port; the
    Deno adapter (`src/infrastructure/runtime/deno_lockfile_reader.ts`) reads
    lock formats 4 and 5 as data, capped at 16 MiB. A lock entry that no
-   longer satisfies the specifier falls through, as Deno re-resolves it.
+   longer satisfies the specifier falls through; push itself never gets
+   there, because it refuses a stale lock (below).
 3. Otherwise, the registry. npm resolves the way the registry's scorecard
    does: a range to the highest published release that satisfies it, a
    dist-tag through `dist-tags`, no version to `latest`. JSR takes the
    highest version that is neither yanked nor a prerelease, falling back to
    a yanked match as Deno does, and `latest` for no version.
 
-The audit summary carries the source text (`specifier`), the resolved
-`version` and `resolvedFrom` (`exact`, `lockfile` or `registry`). npm
+Push and quality treat the author's lockfile as read-only
+(swamp-club#3613). The module graph read (`deno info`) and the bundle run
+with `--frozen` when the project has the lock the bundler honours, and with
+`--no-lock` when it has none (`readOnlyLockFor` in the lockfile adapter; a
+`deno.json` that is not plain JSON keeps the `deno.lock` beside it). A lock
+that no longer matches the project fails the push with an error naming the
+lock, the config and `deno install --entrypoint <file>`, instead of being
+rewritten in the author's tree, so the version the audit reads from the lock
+is the version that ships. Local loading and `serve` reload keep Deno's
+default lock handling.
+
+The audit summary carries the source text (`specifier`; for a mapped import,
+the specifier the map resolves it to), the bare import as written
+(`importedAs`, mapped imports only; `extension quality`'s log mode prints it
+as `(as "<bare name>")` on the dependency's line), the resolved `version` and
+`resolvedFrom` (`exact`, `lockfile` or `registry`). Every finding for a
+mapped import ends `(imported as "<bare name>" via deno.json)`, and blocks or
+warns exactly as it would written out. npm
 license, maintainers and deprecation come from that version's manifest; a
 version the packument does not list is not audited. The age warning keeps
 the package's latest publish, since it measures maintenance. Each package is
@@ -1934,6 +2061,20 @@ wording is pinned by
 `src/domain/extensions/testdata/dependency_audit_vectors.json`, which
 swamp-club's scorecard (swamp-club#3353) copies. swamp-club#3354 makes
 deprecated pins and loose specifiers errors after a two-week window.
+
+Every finding with a cause carries a `remediation`, and `jsr-yanked` and
+`deprecated-version` findings carry a `suggestedVersion` when another stable
+version exists (the newest in the shipped version's major, or its minor for
+0.x, else the newest overall; yanked, deprecated and prerelease versions never
+qualify). When the lockfile chose the shipped version, the remediation also
+says to refresh it. The findings report that closes push, dry run and
+`extension quality` lists each of them under Unresolved warnings with
+`file` `(dependency)` and its remediation as the `fix:` line. The summary
+repeats what the Dependency warnings block already printed, on purpose: it is
+the recap an author or agent reads. A `not-audited` remediation depends on why
+the audit could not run (a lookup outage, an invalid name, a specifier no
+published version matches, or an unexpected failure), because a re-run only
+helps the first.
 
 ### Not audited
 
@@ -1964,12 +2105,16 @@ downloads, age) do not apply.
 ### Quality Rubric Factor
 
 Dependency trust is a rubric factor (`dependency-trust`, worth 2 points) in both
-`swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores
-when every dependency passes the trust gates with no hard errors. In the CLI an
-unaudited dependency loses the factor the same way a hard error does, and so
-does a `deprecated-version` warning (a pinned deprecated version), matching the
-registry's scorecard; `dependencyTrustBlockerCount` counts the errors and those
-warnings. The `loose-specifier` and `jsr-yanked` warnings do not cost it.
+`swamp extension quality` (CLI) and swamp-club's server-side scorer. It scores 2
+when every dependency passes the trust gates with no findings, 1 when the only
+findings are `loose-specifier` warnings (one point however many), and 0 when
+any dependency has a blocker. A blocker is a hard error, a `deprecated-version`
+warning (a pinned deprecated version), a `jsr-yanked` warning, or an unaudited
+dependency (`not-audited`). Push still only warns on the last four (`--yes`
+accepts them); nothing here becomes a push error. `dependencyTrustBlockerCount`
+counts the errors, deprecated and yanked warnings; `looseSpecifierCount` counts
+the distinct dependencies with a loose specifier. The shared vectors in
+`testdata/dependency_audit_vectors.json` pin the rule for both scorers.
 
 ## Registry
 
@@ -2316,11 +2461,13 @@ The `ExtensionLoader.buildIndex` invalidation guards detect the mismatch and
 delete stale bundle files before reconciliation, so the `bundleWithCache`
 fallback cannot reuse bundles built for an incompatible runtime.
 
-Pulled extensions cannot re-bundle locally. They use bare specifiers (e.g.,
-`from "zod"`) and ship without a `deno.json`, so `deno bundle` always fails and
-they depend on the registry package's pre-built bundles. Once a stale bundle is
-deleted, the extension enters `BundleBuildFailed` and is unavailable until
-re-pulled.
+Pulled extensions ship without a `deno.json`. Push rewrites the bare imports its
+import map resolves to their `npm:`/`jsr:` targets (swamp-club#3637), so such a
+pulled extension re-bundles locally. One whose source still has bare imports (an
+unmapped name, or one built in a `package.json` project) cannot: `deno bundle`
+fails and it depends on the registry package's pre-built bundles. Once a stale
+bundle is deleted, the extension enters `BundleBuildFailed` and is unavailable
+until re-pulled.
 
 Recovery paths:
 

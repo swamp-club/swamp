@@ -112,10 +112,18 @@ export const SECRET_OPERATION_UNSUPPORTED = "secret_operation_unsupported";
 /** An expression sent a secret where secrets are not accepted. */
 export const SECRET_DESTINATION_REFUSED = "secret_destination_refused";
 
+/**
+ * A data record's sensitive-fields tag, one of its paths, or a tagged value
+ * is not what the writer stores, so the record cannot enter an expression
+ * (design/enablers/typed-secrets.md Section 6.1).
+ */
+export const SECRET_REFERENCE_INVALID = "secret_reference_invalid";
+
 /** The stable codes an expression's secret refusal carries. */
 export type SecretRefusalCode =
   | typeof SECRET_OPERATION_UNSUPPORTED
-  | typeof SECRET_DESTINATION_REFUSED;
+  | typeof SECRET_DESTINATION_REFUSED
+  | typeof SECRET_REFERENCE_INVALID;
 
 /**
  * An expression refused an operation on a secret

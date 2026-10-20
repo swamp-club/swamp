@@ -19,14 +19,19 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { createHash } from "node:crypto";
-import type { DatastoreStorage } from "../datastore/datastore_storage.ts";
+import type {
+  ChunkStat,
+  DatastoreStorage,
+} from "../datastore/datastore_storage.ts";
 import { restoreNamespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import { BlobRef } from "./blob_ref.ts";
 import {
   CHUNK_BYTES,
   ChunkIntegrityError,
   ChunkMissingError,
+  ChunkPutError,
   ChunkStore,
+  type ContentRangeReader,
   storageNamespaceOf,
   UNNAMESPACED_STORAGE_NAMESPACE,
 } from "./chunk_store.ts";
@@ -350,4 +355,380 @@ Deno.test("ChunkStore.refresh: touches the chunks it holds and returns the missi
     );
     assert(rest.length > 0);
   }
+});
+
+/**
+ * A memory storage that reads chunk sizes and syncs chunk directories, as
+ * the filesystem storage does (swamp-club#3617).
+ */
+class StatMemoryStorage extends MemoryStorage {
+  readonly synced: { namespace: string; hashes: string[] }[] = [];
+
+  statChunks(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Map<string, ChunkStat>> {
+    signal.throwIfAborted();
+    this.calls.push(`stat ${hashes.length}`);
+    const found = new Map<string, ChunkStat>();
+    for (const sha256 of hashes) {
+      const bytes = this.chunks.get(`${namespace}/${sha256}`);
+      if (bytes !== undefined) {
+        found.set(sha256, { size: bytes.length, lastModified: new Date(0) });
+      }
+    }
+    return Promise.resolve(found);
+  }
+
+  syncChunkDirectories(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    this.synced.push({ namespace, hashes: [...hashes] });
+    return Promise.resolve();
+  }
+
+  /** Leaves the first `length` bytes of a chunk, as a power loss can. */
+  tear(namespace: string, sha256: string, length: number): void {
+    const key = `${namespace}/${sha256}`;
+    this.chunks.set(key, this.chunks.get(key)!.slice(0, length));
+  }
+}
+
+/** Reads `content` by range, as a file opened again would be. */
+function rangeOf(content: () => Uint8Array): ContentRangeReader {
+  return (offset, length, signal) => {
+    signal.throwIfAborted();
+    return Promise.resolve(content().slice(offset, offset + length));
+  };
+}
+
+Deno.test("ChunkStore: a torn chunk counts as missing on a storage that reads sizes, and writing puts it again (swamp-club#3617)", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  assert(store.readsSizes);
+  const content = bytesOf(10);
+  const ref = await store.write(NS, content, live());
+  const [first, second, third] = ref.chunkHashes();
+  storage.tear("team-a", second, 1);
+  assertEquals(await store.missing(NS, ref, live()), [second]);
+  assertEquals(await store.refresh(NS, ref, live()), [second]);
+  // An empty torn chunk is still held, at the wrong size.
+  storage.tear("team-a", third, 0);
+  assertEquals(await store.missing(NS, ref, live()), [second, third]);
+
+  storage.calls.length = 0;
+  assert((await store.write(NS, content, live())).equals(ref));
+  assertEquals(storage.calls, [
+    "stat 1",
+    "touch 1",
+    "stat 1",
+    `put ${second.slice(0, 8)}`,
+    "stat 1",
+    `put ${third.slice(0, 8)}`,
+  ]);
+  assertEquals(await store.missing(NS, ref, live()), []);
+  assertEquals(await readAll(store.read(NS, ref, live())), content);
+  assert(first !== second);
+});
+
+Deno.test("ChunkStore.missing and refresh: a chunk backing several parts is listed once (swamp-club#3617)", async () => {
+  for (
+    const storage of [
+      new MemoryStorage({ maxChunkBytes: 4 }),
+      new MemoryStorage({ maxChunkBytes: 4, touch: true }),
+      new StatMemoryStorage({ maxChunkBytes: 4 }),
+    ]
+  ) {
+    const store = new ChunkStore(storage);
+    // Three identical 4-byte chunks, then a shorter last one.
+    const ref = await store.write(NS, new Uint8Array(14), live());
+    const [repeated, , , last] = ref.chunkHashes();
+    assertEquals(ref.chunkHashes().filter((h) => h === repeated).length, 3);
+    await storage.delete("team-a", repeated, live());
+    await storage.delete("team-a", last, live());
+    assertEquals(await store.missing(NS, ref, live()), [repeated, last]);
+    assertEquals(await store.refresh(NS, ref, live()), [repeated, last]);
+  }
+});
+
+Deno.test("ChunkStore: without a size reader, a chunk the storage has is present (regression guard)", async () => {
+  const storage = new MemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  assert(!store.readsSizes);
+  const ref = await store.write(NS, bytesOf(10), live());
+  const second = ref.chunkHashes()[1];
+  storage.chunks.set(`team-a/${second}`, new Uint8Array([1]));
+  assertEquals(await store.missing(NS, ref, live()), []);
+  assertEquals(await store.refresh(NS, ref, live()), []);
+  assertEquals(await store.stat(NS, [second], live()), undefined);
+});
+
+Deno.test("ChunkStore.stat: reads stored sizes through the storage", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const ref = await store.write(SOLO_NAMESPACE, bytesOf(5), live());
+  const [first, second] = ref.chunkHashes();
+  const stats = await store.stat(
+    SOLO_NAMESPACE,
+    [first, second, "f".repeat(64)],
+    live(),
+  );
+  assertEquals(stats?.get(first)?.size, 4);
+  assertEquals(stats?.get(second)?.size, 1);
+  assertEquals(stats?.size, 2);
+});
+
+Deno.test("ChunkStore.syncStored: syncs the chunks' directories in the storage namespace, and nothing for no hashes or a storage that cannot", async () => {
+  const storage = new StatMemoryStorage();
+  const store = new ChunkStore(storage);
+  await store.syncStored(SOLO_NAMESPACE, ["a".repeat(64)], live());
+  await store.syncStored(NS, ["b".repeat(64), "c".repeat(64)], live());
+  await store.syncStored(NS, [], live());
+  assertEquals(storage.synced, [
+    { namespace: UNNAMESPACED_STORAGE_NAMESPACE, hashes: ["a".repeat(64)] },
+    { namespace: "team-a", hashes: ["b".repeat(64), "c".repeat(64)] },
+  ]);
+  // A storage without the capability: nothing to call, nothing thrown.
+  await new ChunkStore(new MemoryStorage()).syncStored(
+    NS,
+    ["a".repeat(64)],
+    live(),
+  );
+});
+
+Deno.test("ChunkStore.refOf: gives write's reference and every part with its offset, storing nothing", async () => {
+  for (const length of [0, 3, 4, 9, 12]) {
+    const storage = new MemoryStorage({ maxChunkBytes: 4 });
+    const store = new ChunkStore(storage);
+    const content = bytesOf(length);
+    const found = await store.refOf(streamOf(content, [1, 2, 5]), live());
+    assertEquals(storage.calls, []);
+    const ref = await store.write(NS, content, live());
+    assert(found.ref.equals(ref), `length ${length}`);
+    assertEquals(found.sha256, ref.sha256);
+    assertEquals(found.size, length);
+    assertEquals(
+      found.parts.map(({ sha256, size }) => ({ sha256, size })),
+      ref.parts ?? [{ sha256: ref.sha256, size: ref.size }],
+    );
+    assertEquals(
+      found.parts.map((part) => part.offset),
+      found.parts.map((_, i) => i * 4),
+    );
+  }
+});
+
+Deno.test("ChunkStore.putParts: puts every listed part from its offset, present or not", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const content = bytesOf(10);
+  await store.write(NS, content, live());
+  const { parts } = await store.refOf(content, live());
+  storage.tear("team-a", parts[1].sha256, 2);
+  storage.calls.length = 0;
+  const result = await store.putParts(
+    NS,
+    rangeOf(() => content),
+    [parts[0], parts[1]],
+    live(),
+  );
+  assertEquals(result, {
+    stored: [parts[0].sha256, parts[1].sha256],
+    changed: [],
+  });
+  assertEquals(storage.calls, [
+    `put ${parts[0].sha256.slice(0, 8)}`,
+    `put ${parts[1].sha256.slice(0, 8)}`,
+  ]);
+  assertEquals(
+    await store.missing(NS, (await store.refOf(content, live())).ref, live()),
+    [],
+  );
+});
+
+Deno.test("ChunkStore.putParts: a source that changed after refOf stores nothing under the old names (ADV-60)", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  let file = bytesOf(10);
+  const { parts } = await store.refOf(file, live());
+  // A writer replaces the file between the cut and the put: the middle
+  // part's bytes change, and the file ends sooner.
+  file = file.slice(0, 9);
+  file[5] ^= 0xff;
+  const result = await store.putParts(NS, rangeOf(() => file), parts, live());
+  assertEquals(result, {
+    stored: [parts[0].sha256],
+    changed: [parts[1].sha256, parts[2].sha256],
+  });
+  assertEquals(
+    [...storage.chunks.keys()],
+    [`team-a/${parts[0].sha256}`],
+  );
+});
+
+Deno.test("ChunkStore.putParts: a refused put is ChunkPutError; an abort rejects with its reason", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const content = bytesOf(8);
+  const { parts } = await store.refOf(content, live());
+  const denied = new Error("AccessDenied");
+  storage.put = () => Promise.reject(denied);
+  const error = await assertRejects(
+    () => store.putParts(NS, rangeOf(() => content), parts, live()),
+    ChunkPutError,
+    "AccessDenied",
+  );
+  assertEquals(error.sha256, parts[0].sha256);
+  assertEquals(error.namespace, "team-a");
+  assertEquals(error.cause, denied);
+
+  const controller = new AbortController();
+  const reason = new Error("stop");
+  storage.put = () => {
+    controller.abort(reason);
+    return Promise.reject(reason);
+  };
+  const aborted = await assertRejects(() =>
+    store.putParts(NS, rangeOf(() => content), parts, controller.signal)
+  );
+  assertEquals(aborted, reason);
+});
+
+Deno.test("ChunkStore.verifyParts: reports parts missing, short or holding other bytes", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const content = bytesOf(16);
+  await store.write(NS, content, live());
+  const { parts } = await store.refOf(content, live());
+  storage.tear("team-a", parts[1].sha256, 3);
+  const same = storage.chunks.get(`team-a/${parts[2].sha256}`)!;
+  storage.chunks.set(`team-a/${parts[2].sha256}`, same.map((b) => b ^ 1));
+  storage.chunks.delete(`team-a/${parts[3].sha256}`);
+  assertEquals(await store.verifyParts(NS, parts, live()), parts.slice(1));
+  assertEquals(await store.verifyParts(NS, [parts[0]], live()), []);
+});
+
+Deno.test("ChunkIntegrityError: names the chunk that failed its check (swamp-club#3617)", async () => {
+  const storage = new MemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const ref = await store.write(NS, bytesOf(8), live());
+  const bad = ref.parts![1].sha256;
+  storage.chunks.set(`team-a/${bad}`, new Uint8Array(3));
+  const short = await assertRejects(
+    () => readAll(store.read(NS, ref, live())),
+    ChunkIntegrityError,
+  );
+  assertEquals([short.namespace, short.sha256], ["team-a", bad]);
+  storage.chunks.set(`team-a/${bad}`, new Uint8Array(4));
+  const wrong = await assertRejects(
+    () => readAll(store.read(NS, ref, live())),
+    ChunkIntegrityError,
+  );
+  assertEquals(wrong.sha256, bad);
+});
+
+/**
+ * A storage that stages chunks ({@link ChunkStaging}) as the filesystem
+ * storage does: nothing staged is stored until the stage commits.
+ */
+class StagingMemoryStorage extends StatMemoryStorage {
+  failCommit = false;
+
+  stageChunks(namespace: string) {
+    const staged = new Map<string, Uint8Array>();
+    return {
+      put: (sha256: string, bytes: Uint8Array, signal: AbortSignal) => {
+        signal.throwIfAborted();
+        this.calls.push(`stage ${sha256.slice(0, 8)}`);
+        staged.set(sha256, bytes.slice());
+        return Promise.resolve();
+      },
+      commit: (signal: AbortSignal) => {
+        signal.throwIfAborted();
+        if (this.failCommit) return Promise.reject(new Error("sync failed"));
+        this.calls.push(`commit ${staged.size}`);
+        for (const [sha256, bytes] of staged) {
+          this.chunks.set(`${namespace}/${sha256}`, bytes);
+        }
+        staged.clear();
+        return Promise.resolve();
+      },
+      discard: () => {
+        staged.clear();
+        return Promise.resolve();
+      },
+    };
+  }
+}
+
+Deno.test("ChunkStore.beginBatch: a write stages new chunks and covers present ones; the commit stores them, then syncs every name once (swamp-club#3617)", async () => {
+  const storage = new StagingMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const present = bytesOf(4);
+  const fresh = new Uint8Array(4).fill(9);
+  await store.write(NS, present, live());
+  storage.calls.length = 0;
+
+  const batch = store.beginBatch(NS);
+  let ref: BlobRef;
+  try {
+    const content = new Uint8Array(12);
+    content.set(present, 0);
+    content.set(fresh, 4);
+    content.set(fresh, 8);
+    ref = await store.write(NS, content, live(), batch);
+    // Staged once, not stored: no commit may name it yet.
+    assertEquals(storage.calls.filter((c) => c.startsWith("stage ")), [
+      `stage ${hex(fresh).slice(0, 8)}`,
+    ]);
+    assertEquals(storage.puts(), 0);
+    assertEquals(await store.missing(NS, ref, live()), [hex(fresh)]);
+    assertEquals(storage.synced, []);
+    await batch.commit(live());
+  } finally {
+    await batch.discard();
+  }
+  assertEquals(await store.missing(NS, ref, live()), []);
+  assertEquals(storage.synced, [
+    { namespace: "team-a", hashes: [hex(present), hex(fresh)] },
+  ]);
+  await assertRejects(() => batch.commit(live()), Error, "ended");
+});
+
+Deno.test("ChunkStore.beginBatch: a failed commit stores nothing and syncs nothing; without staging, a batch puts at once", async () => {
+  const storage = new StagingMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  storage.failCommit = true;
+  const batch = store.beginBatch(NS);
+  try {
+    const ref = await store.write(NS, bytesOf(4), live(), batch);
+    await assertRejects(() => batch.commit(live()), Error, "sync failed");
+    assertEquals(await store.missing(NS, ref, live()), [ref.sha256]);
+  } finally {
+    await batch.discard();
+  }
+  assertEquals(storage.synced, []);
+
+  const plain = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const direct = new ChunkStore(plain);
+  const other = direct.beginBatch(NS);
+  try {
+    const ref = await direct.write(NS, bytesOf(4), live(), other);
+    assertEquals(plain.puts(), 1);
+    await other.commit(live());
+    assertEquals(plain.synced, [{ namespace: "team-a", hashes: [ref.sha256] }]);
+  } finally {
+    await other.discard();
+  }
+  // A batch takes only content of its own namespace.
+  await assertRejects(
+    () =>
+      direct.write(SOLO_NAMESPACE, bytesOf(4), live(), direct.beginBatch(NS)),
+    Error,
+    "namespace",
+  );
 });
