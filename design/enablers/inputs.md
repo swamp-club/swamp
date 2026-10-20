@@ -206,10 +206,17 @@ expressions without running anything. They write the result to
 
 ## Evaluated Execution
 
-`swamp workflow run` and `swamp behavior run` accept `--last-evaluated`. It
-skips evaluating inputs and CEL and runs the last evaluated version of the
-behaviors and workflows (`src/cli/commands/workflow_run.ts`,
-`src/cli/commands/model_method_run.ts`).
+`swamp workflow run` and `swamp behavior run` accept `--last-evaluated`. A
+behavior run skips evaluating its inputs and CEL and runs the last evaluated
+definition (`src/cli/commands/model_method_run.ts`). A workflow run replays the
+last evaluated workflow, forEach expansion included, with the inputs it was
+evaluated with, and evaluates each behavior definition fresh against them
+(`src/cli/commands/workflow_run.ts`).
+
+A workflow's evaluated cache records the inputs it was evaluated with, and
+`workflow run --last-evaluated` refuses an `--input` that differs from them or
+that the cache was evaluated without, and a cache that recorded none. See
+[workflows](../primitives/workflows.md) (Resume inputs).
 
 ### Combining file + key=value overrides
 

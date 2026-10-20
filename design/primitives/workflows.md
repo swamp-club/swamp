@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-10-06 @ 77141f20
+last-verified: 2026-10-20 @ b0bbe4832
 ---
 
 # Workflows
@@ -234,8 +234,8 @@ When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
 - Otherwise `swamp serve --auto-resume` (`SWAMP_AUTO_RESUME`, serve.yaml
   `auto-resume`; default off) applies, but **only to a workflow that declares
   no inputs**. Resume-time inputs are never declared separately, so a workflow
-  with inputs may rely on the placeholder-then-resume pattern below. It must
-  opt in with `autoResume: true` itself.
+  with inputs may rely on a late input supplied at resume (Resume inputs
+  below). It must opt in with `autoResume: true` itself.
 
 The resume uses the workflow name and run id the approval resolved, not the
 request fields. It counts against the approver's principal for the
@@ -671,8 +671,8 @@ because behavior code bypasses authorization. On a remote worker both return
 
 **Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
 `--input-file`, and `--stdin`, parsed as in `swamp workflow run`. They supply
-values not available at the original run, such as environment overrides or the
-vault key name of a credential minted during the gate. As on a run, each
+values not available at the original run, such as the vault key name of a
+credential minted during the gate. As on a run, each
 supplied value is coerced to its declared input type, and its value merged over
 the stored inputs is checked against the workflow's input schema; a mismatch
 is refused before the run changes (`coerceResumeInputs` in
@@ -684,19 +684,110 @@ nested records merge key by key, and the resume `--input` wins on a collision.
 The merged set is on the expression context before evaluation, so post-gate
 `inputs.*` expressions see the new values.
 
-Evaluation stays strict: a workflow must declare at run time every input it
-references. The pattern is to declare the input at run time and supply or
-override its value at resume. For audit, the run record's `resumeInputs` lists
-the key names supplied at resume.
+Evaluation stays strict: the whole workflow is evaluated at run start, so a
+plain read of an input the run does not have, such as `${{ inputs.authKey }}`
+in a step after the gate, fails the run at start with `No such key`. A late
+input, one the run starts without and a resume supplies, is declared in the
+input schema, not `required` and with no `default`, and read in a form that
+tolerates its absence: `${{ has(inputs.authKey) ? inputs.authKey : '' }}`,
+`${{ inputs.?authKey.orValue('') }}`, or inside `vault.get(...)`, which is
+resolved when the step runs. The resume re-evaluates the workflow with the
+merged inputs, so the step sees the supplied value. For audit, the run record's
+`resumeInputs` lists the key names supplied at resume.
+
+A run's inputs are write-once (swamp-club#3583). A resume may add a key the run
+does not have. A key the run has keeps its value: a gate that checked it, an
+approval that showed it, or a nested workflow step that forwarded it would
+otherwise let the steps after it act on a value nothing before them saw.
+`checkResumeInputOverrides` (`src/domain/workflows/resume_input_guard.ts`)
+compares each supplied top-level key with `run.inputs`, after type coercion and
+deep merge, and reads nothing else: not the workflow file, not the behavior
+definitions, not the evaluated caches, not what any step read. A key
+re-supplied with its stored value is no change; `cfg={"a":1}` merged over a
+stored `{"a":1,"b":2}` is no change; a schema default counts as a value the run
+has. A different value is refused before anything changes, coded
+`resume_input_immutable` locally, with the run id, the refused keys and the way
+out, never a value: for a suspended run the cancel command (`suspendedWayOut`:
+`swamp workflow cancel <wf> --run <id>`, or `--run <id> --server <url>` for a
+run serve started) and then a new run, for a failed run a new run. A `--from`
+retry makes no difference: a changed value always needs a new run. The message
+stays under serve's 512-character error limit.
+
+The guarantee covers values, not absence. A step before the gate can read a
+late input in the same tolerant forms and see its absence, or a fallback such
+as `orValue('dev')`, and the resume may still add the input. Telling whether a
+finished step did that needs to know what it read, which is the inference this
+rule does not do ([input-pinning](../enablers/input-pinning.md)). The pattern
+that makes a late input safe: a late input that must be checked or approved
+gets its own check and gate after it arrives. One gate suspends the run, the
+resume supplies the input, a step checks it, a second gate shows it, and the
+second resume runs the rest. The input is a value the run has before the second
+gate, so the write-once rule pins it from there. A step before the input
+arrives does not read it; a fallback belongs only in a step after the gate that
+supplies the value.
+
+A run started with `--last-evaluated` replays the evaluated workflow cache,
+whose steps were resolved when it was written, so it runs and records the
+inputs the cache was evaluated with. The cache records them (`evaluatedInputs`,
+written by `workflow evaluate` and by every fresh run, after type coercion and
+schema defaults; `{}` for a workflow evaluated with none). The cache is read
+once per start, in the libswamp run path, through the supersede deps'
+`evaluatedCache`, a required field so no caller that supersedes can leave it
+out (`src/libswamp/workflows/run.ts`), and that one copy serves the input check,
+superseding and execution: a `workflow evaluate` or fresh run in between cannot
+replace the cache after predecessors matching the first copy were cancelled.
+The execution service takes the loaded cache as a run option (`evaluatedCache`)
+and loads it by name only for a caller that superseded nothing. Before the run
+starts, each supplied `--input` must equal its recorded value after coercion
+and merge; a differing key, or one the cache was evaluated without, refuses the
+run, naming keys only, with a pointer to `workflow evaluate` again or a run
+without the flag (`replayInputs` in `src/domain/workflows/persisted_workflow.ts`).
+A cache that recorded no inputs is refused too, and the cache says why:
+`evaluatedInputsOmitted: sensitive` when an input held a sensitive value, which
+the cache file must not carry (`recordableEvaluatedInputs`), so the cache is
+never replayable and running fresh withholds them again; neither field when the
+cache was written before inputs were recorded, so running the workflow fresh
+once rewrites it. A parent starts nested child runs fresh, never with
+`--last-evaluated`, so the non-replayable refusal only meets a secret-input
+workflow run directly with the flag. Superseding matches a `--last-evaluated`
+run on the inputs it will record, the loaded cache's under the supplied ones,
+and a run the check refuses supersedes nothing (`supersedeMatchInputs` in
+`src/libswamp/workflows/supersede.ts`). The run records that it replayed the
+cache (`replayedEvaluatedCache`), and a resume of it is an ordinary resume: it
+re-evaluates the workflow on disk with the run's inputs and takes new keys
+under the write-once rule.
+
+A behavior step of a `--last-evaluated` run evaluates its definition fresh, as
+a fresh run does: against the run's inputs, the step's own arguments and the
+outputs of the steps before it. Those inputs equal the ones the cached workflow
+was resolved with, so the step and the workflow agree, and no definition cache
+is read, so another workflow's run or `model evaluate` rewriting the by-name
+definition cache cannot change what the step runs. The definition caches are
+still written by fresh runs and by `model evaluate`, and
+`swamp behavior run --last-evaluated` keeps reading its own behavior's cache. A
+replayed run still skips the workflow's evaluation, forEach expansion included;
+it no longer skips each definition's.
+
+The run records the merged inputs it resumes with (`captureInputs` in
+`resumeWorkflow`, after the resume's provenance is derived), so the run record,
+its summary and the history index show the values the remaining steps ran with.
+`run.inputs` holds the same merged set, so a step still to run sees one value
+through `inputs.X` and `run.inputs.X`. A child's deferred bindings leave out
+every key supplied at resume under both (`resumeDerived` names `inputs.<key>`
+and `run.inputs.<key>`), on every later resume too. A vault selector using one
+of those keys is bound in the parent before handoff. The child retains the
+selected reference and checks its own vault access when resolving it, even
+after it suspends and resumes. This also covers selectors from resume-derived
+`forEach` items. Other resume inputs remain absent from the deferred bindings.
 
 Resume inputs are ordinary inputs once merged. Their values are substituted and
 persisted wherever run inputs are: evaluated definitions, step data of behaviors
-that record their arguments, the run record on a later suspension, and child
-runs they are forwarded to. They are not a secret channel. A credential minted
-during a gate is stored with `swamp vault put` while the run is suspended, and
-the post-gate step reads it with `vault.get(...)`, which is resolved per step,
-redacted in step data, and left raw in evaluated definitions. Resume passes at
-most the vault key name (swamp-club#2585).
+that record their arguments, the run record, and child runs they are forwarded
+to. They are not a secret channel. A credential minted during a gate is stored
+with `swamp vault put` while the run is suspended, and the post-gate step reads
+it with `vault.get(...)`, which is resolved per step, redacted in step data, and
+left raw in evaluated definitions. Resume passes at most the vault key name
+(swamp-club#2585).
 
 **Input persistence:** A run's effective inputs are captured on the run record
 at run start (`run.captureInputs` in
@@ -2036,12 +2127,12 @@ in `src/domain/workflows/resume_reset.ts`.
 
 **Reset:** a retry takes the same path as `--from`. It calls
 `resetForResumeFrom()` with the reset set, then `resumeFromFailed()`, then the
-existing resume executor. The run keeps its id and `startedAt`. `--input`
-overrides merge over the stored inputs as for any resume. An override does not
-reset steps that used the old value. An override that shrinks a `forEach`
-collection, or renames its iterations through the step name, strands the
-iterations it drops: they fail with `workflow_changed`, so start a new run with
-the new inputs. Reset clears each selected step's outputs,
+existing resume executor. The run keeps its id and `startedAt`. `--input` adds
+inputs the run does not have, as for any resume; a value the run has cannot
+change (Resume inputs). A late input that shrinks a `forEach` collection
+against its fallback, or renames its iterations through the step name, strands
+the iterations it drops: they fail with `workflow_changed`, so start a new run
+with the new inputs. Reset clears each selected step's outputs,
 error, approval decision and assertion result. Only jobs that contain a reset
 step return to `pending`. Steps outside the set keep their state and outputs.
 Guards still decide whether a reset step runs. A guard that skips a reset step

@@ -25,7 +25,12 @@ import {
   type RemoteStepRequest,
   setRemoteStepDispatcher,
 } from "../src/domain/remote/remote_dispatch.ts";
-import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -308,20 +313,7 @@ Deno.test("evaluated cache: workflow steps retain saved provenance without autho
     assertExists(cached);
     assertEquals(cached.authoredExpressions.has("${{ env.HOME }}"), true);
     assertEquals(cached.authoredExpressions.has("${{ env.INJECTED }}"), false);
-    await new DefaultStepExecutor().execute(
-      Step.create({
-        name: "capture",
-        task: StepTask.modelMethod(definition.name, "run"),
-      }),
-      {
-        ...context,
-        expressionContext: { model: {}, env: {} },
-        mode: "lastEvaluated",
-        authoredExpressions: new Set(),
-      },
-    );
     assertEquals(executions, [
-      { value: "runtime-home", authored: "${{ env.INJECTED }}" },
       { value: "runtime-home", authored: "${{ env.INJECTED }}" },
     ]);
   });
@@ -597,7 +589,8 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
       });
       assertEquals(fresh.status, "succeeded", JSON.stringify(fresh.toData()));
 
-      // The cache still requires model/file even after the source stops doing so.
+      // The cached workflow still needs its namespaces after the source stops
+      // doing so; a definition is evaluated from its current source on replay.
       consumer.setMethodArgument("run", "value", "edited-source");
       await repo.definitionRepo.save(type, consumer);
       await repo.workflowRepo.save(
@@ -618,8 +611,11 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
         }),
         undefined,
       );
+      // A replay runs with the inputs the cache was evaluated with
+      // (swamp-club#3583); the deferred env expression still resolves at
+      // step time.
       const replay = await runWorkflow(repo, dir, workflow.name, true, {
-        suffix: ":replay",
+        suffix: ":fresh",
       });
       assertEquals(replay.status, "succeeded", JSON.stringify(replay.toData()));
       const value = location === "file"
@@ -627,7 +623,14 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
         : "runtime-home:source";
       assertEquals(executions, [
         { value, authored: "runtime-source:fresh" },
-        { value, authored: "runtime-source:replay" },
+        // A step input the cached workflow substituted replays as cached. A
+        // behavior definition is evaluated fresh from its current source
+        // (swamp-club#3583), so the edited value shows, and the wrong
+        // definition cache written above is never read.
+        {
+          value: location === "workflow" ? value : "edited-source",
+          authored: "runtime-source:fresh",
+        },
       ]);
     });
   });
@@ -721,11 +724,28 @@ for (const depth of [1, 2]) {
         );
         assertEquals(resumed.at(-1)?.kind, "completed");
         assertEquals(executions, [expected, expected]);
-        // Cached workflow and model reload their own records, even with different caller inputs.
-        await runWorkflow(repo, dir, child.name, true, {
-          suffix: ":child",
-          value: "changed",
-        });
+        // A different value for an input the cache was evaluated with is
+        // refused rather than recorded over what its steps ran with
+        // (swamp-club#3583).
+        const refused = await assertRejects(
+          () =>
+            runWorkflow(repo, dir, child.name, true, {
+              ...(childSuffix ? { suffix: childSuffix } : {}),
+              value: "changed",
+            }),
+          Error,
+          "was evaluated with other values for --input",
+        );
+        assertStringIncludes(refused.message, '"value"');
+        // The cached workflow replays with the inputs it recorded; the model
+        // reloads its own records.
+        await runWorkflow(
+          repo,
+          dir,
+          child.name,
+          true,
+          childSuffix ? { suffix: childSuffix } : {},
+        );
         assertEquals(executions, [expected, expected, expected]);
         if (!childSuffix) {
           await runModel(dir, {}, true);
@@ -899,11 +919,9 @@ Deno.test("nested runtime scope: dynamic vault arguments survive persistence wit
     await collect(
       service.resume(child.name, childRun.id, { fromStep: "capture" }),
     );
-    await runWorkflow(repo, dir, "child", true, {
-      vault: "missing",
-      key: "wrong",
-      suffix: ":child",
-    });
+    // The child's cache replays with the inputs it recorded: the parent's
+    // vault arguments were never the child's (swamp-club#3583).
+    await runWorkflow(repo, dir, "child", true);
     await runModel(dir, {}, true);
     assertEquals(
       executions,
@@ -1318,6 +1336,9 @@ Deno.test("assert provenance: substituted messages stay literal and predicates c
       }),
       undefined,
       cached.authoredExpressions,
+      undefined,
+      [],
+      { inputs: {} },
     );
     const substituted = await runWorkflow(repo, dir, "assert-predicate", true);
     assertEquals(substituted.status, "failed");

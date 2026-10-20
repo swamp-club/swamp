@@ -98,12 +98,17 @@ import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import {
   forEachNameWithoutSecrets,
   persistEvaluatedWorkflow,
+  recordableEvaluatedInputs,
+  type RecordedEvaluationInputs,
 } from "../../domain/workflows/persisted_workflow.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import { notFound, type SwampError } from "../errors.ts";
-import { coerceInputTypes } from "../../domain/inputs/mod.ts";
+import {
+  coerceInputTypes,
+  InputValidationService,
+} from "../../domain/inputs/mod.ts";
 
 /** Evaluation result for a single workflow. */
 export interface WorkflowEvaluateItemData {
@@ -191,6 +196,11 @@ export interface WorkflowEvaluateDeps {
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
+    /**
+     * The inputs the workflow was evaluated with, or why they are withheld
+     * (swamp-club#3583).
+     */
+    recorded?: RecordedEvaluationInputs,
   ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
@@ -264,6 +274,7 @@ export function createWorkflowEvaluateDeps(
       provenance,
       authoredExpressions,
       writtenReferences,
+      recorded,
     ) =>
       evaluatedWorkflowRepo.save(
         workflow,
@@ -271,6 +282,7 @@ export function createWorkflowEvaluateDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
+        recorded,
       ),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
@@ -294,12 +306,41 @@ async function evaluateWorkflowInternal(
   // for the source's expressions even after the source has been edited.
   const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
 
+  // Coerce string CLI inputs to schema types and apply schema defaults
+  // (matching run.ts behavior), so the cache records the same set a fresh
+  // run records and a --last-evaluated run compares against (swamp-club#3583).
+  // Before the early return below: a workflow with no expressions and no
+  // supplied inputs still records its defaults.
+  const coercedInputs = workflow.inputs
+    ? new InputValidationService().applyDefaults(
+      coerceInputTypes(inputs, workflow.inputs),
+      workflow.inputs,
+    )
+    : coerceInputTypes(inputs, workflow.inputs);
+
+  if (workflow.inputs) {
+    const validation = new InputValidationService().validate(
+      coercedInputs,
+      workflow.inputs,
+    );
+    if (!validation.valid) {
+      throw new UserError(
+        `Input validation failed for workflow "${workflow.name}":\n` +
+          validation.errors.map((error) => `  ${error.message}`).join("\n"),
+        "input_validation_failed",
+      );
+    }
+  }
+
+  const inputsProvenance = workflowInputsProvenance(coercedInputs, workflow);
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
     await deps.saveEvaluatedWorkflow(
       workflow,
       ProvenanceMap.authored(),
       authoredExpressions,
+      undefined,
+      { inputs: coercedInputs, provenance: inputsProvenance },
     );
     return {
       id: workflow.id,
@@ -308,9 +349,6 @@ async function evaluateWorkflowInternal(
       outputPath: deps.getEvaluatedPath(workflow.id),
     };
   }
-
-  // Coerce string CLI inputs to schema types (matching run.ts behavior)
-  const coercedInputs = coerceInputTypes(inputs, workflow.inputs);
 
   // Build expression context with inputs
   const sensitiveValues = new RunSensitiveValues();
@@ -322,7 +360,7 @@ async function evaluateWorkflowInternal(
   // Where data sits in the inputs, as on the run path (swamp-club#3205).
   attachInputsProvenance(
     context,
-    workflowInputsProvenance(coercedInputs, workflow),
+    inputsProvenance,
   );
 
   // Collect forEach.in expressions to skip during evaluation
@@ -625,6 +663,9 @@ async function evaluateWorkflowInternal(
     expandedProvenance,
     authoredExpressions,
     persisted.writtenReferences,
+    recordableEvaluatedInputs(coercedInputs, sensitiveValues, {
+      provenance: inputsProvenance,
+    }),
   );
 
   return {

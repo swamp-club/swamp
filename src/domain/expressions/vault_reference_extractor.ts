@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { lexSegments } from "./cel_string_lexer.ts";
+import {
+  LEX_ERROR,
+  lexSegments,
+  LexState,
+  lexStep,
+} from "./cel_string_lexer.ts";
 import { scanExpressions } from "./expression_scanner.ts";
 import {
   analyzeVaultCalls,
@@ -26,14 +31,84 @@ import {
 export { isDynamicVaultArgument } from "./vault_call_syntax.ts";
 
 /**
- * One `vault.get(vaultName, secretKey)` call. Each argument is quoted or a
- * bare token: `(['"`])(.+?)\1` reads a quoted argument, which may hold spaces
- * (`vault.get("infra", "Client ID")`), and `([^\s,)]+)` a bare one.
+ * One `vault.get(vaultName, secretKey)` call, with balanced CEL arguments.
+ * Keep the capture layout shared by the resolver and reference scanners.
  * Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
  *         [4]=quote2, [5]=quoted key,   [6]=unquoted key
  */
-const VAULT_GET_CALL =
-  /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/y;
+function matchVaultGetCall(
+  text: string,
+  start: number,
+): RegExpExecArray | undefined {
+  if (!text.startsWith("vault.get(", start)) return undefined;
+  const argsStart = start + "vault.get(".length;
+  const closing = [")"];
+  let comma: number | undefined;
+  let argumentStarted = false;
+  let state: LexState = LexState.Code;
+  let pos = argsStart;
+  while (pos < text.length) {
+    if (state === LexState.Code) {
+      const ch = text[pos];
+      if (closing.length === 1 && !argumentStarted && !/\s/.test(ch)) {
+        argumentStarted = true;
+        // Legacy bare names can contain // without starting a CEL comment.
+        // Consume a complete literal argument before entering the CEL lexer.
+        const bare = /^[^\s,)]+(?=\s*[,)])/.exec(text.slice(pos))?.[0];
+        if (bare && !isDynamicVaultArgument(bare) && !bare.startsWith("`")) {
+          pos += bare.length;
+          continue;
+        }
+      }
+      // Backtick-quoted vault names predate CEL string syntax.
+      if (ch === "`") {
+        const end = text.indexOf("`", pos + 1);
+        if (end === -1) return undefined;
+        pos = end + 1;
+        continue;
+      }
+      if (ch === "(" || ch === "[" || ch === "{") {
+        closing.push(ch === "(" ? ")" : ch === "[" ? "]" : "}");
+      } else if (ch === ")" || ch === "]" || ch === "}") {
+        if (closing.pop() !== ch) return undefined;
+        if (closing.length === 0) {
+          if (comma === undefined) return undefined;
+          const vault = text.slice(argsStart, comma).trim();
+          const key = text.slice(comma + 1, pos).trim();
+          if (!vault || !key) return undefined;
+          return Object.assign([
+            text.slice(start, pos + 1),
+            ...vaultArgumentCaptures(vault),
+            ...vaultArgumentCaptures(key),
+          ], { index: start, input: text }) as RegExpExecArray;
+        }
+      } else if (ch === "," && closing.length === 1) {
+        if (comma !== undefined) return undefined;
+        comma = pos;
+        argumentStarted = false;
+      }
+    }
+    const [next, nextState] = lexStep(text, pos, state);
+    if (next === LEX_ERROR) return undefined;
+    pos = next;
+    state = nextState;
+  }
+  return undefined;
+}
+
+/** A whole quoted argument, or the full CEL expression to evaluate. */
+function vaultArgumentCaptures(argument: string): (string | undefined)[] {
+  const segments = lexSegments(argument);
+  const quoted = /^(['"`])([^]*?)\1$/.exec(argument);
+  if (
+    quoted && (quoted[1] === "`" ||
+      (segments.length === 1 && segments[0].kind === "string" &&
+        !argument.startsWith(quoted[1].repeat(3))))
+  ) {
+    return [quoted[1], quoted[2], undefined];
+  }
+  return [undefined, undefined, argument];
+}
 
 /**
  * Finds the `vault.get(...)` calls written as code in a CEL expression, in
@@ -52,8 +127,7 @@ export function findVaultGetCalls(celExpression: string): RegExpExecArray[] {
     let at = celExpression.indexOf("vault", seg.start);
     while (at !== -1 && at < seg.end) {
       if (at >= last && isNamespaceRoot(celExpression, at)) {
-        VAULT_GET_CALL.lastIndex = at;
-        const call = VAULT_GET_CALL.exec(celExpression);
+        const call = matchVaultGetCall(celExpression, at);
         if (call) {
           calls.push(call);
           last = at + call[0].length;

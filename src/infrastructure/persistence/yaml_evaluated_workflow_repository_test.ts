@@ -22,6 +22,43 @@ import { join } from "@std/path";
 import { YamlEvaluatedWorkflowRepository } from "./yaml_evaluated_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { fakeUnreadableLookup } from "./unreadable_records_test_helpers.ts";
+import { UserError } from "../../domain/errors.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+
+Deno.test("YamlEvaluatedWorkflowRepository: malformed input metadata gives recovery advice without dumping values", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    const workflow = provenanceWorkflow();
+    await repo.save(workflow, undefined);
+    const path = repo.getPath(workflow.id);
+    const content = await Deno.readTextFile(path);
+    for (
+      const metadata of [
+        "evaluatedInputs: 42",
+        "evaluatedInputsOmitted: private-test-value",
+        "evaluatedInputsProvenance: private-test-value",
+        "inheritedExpressions: private-test-value",
+      ]
+    ) {
+      await Deno.writeTextFile(path, content + `\n${metadata}\n`);
+      const error = await assertRejects(
+        () => repo.findByNameWithProvenance(workflow.name),
+        UserError,
+        "invalid metadata",
+      );
+      assertEquals(error.code, "evaluated_workflow_cache_invalid");
+      assertEquals(error.message.includes("without --last-evaluated"), true);
+      assertEquals(error.message.includes("private-test-value"), false);
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+});
 
 Deno.test("findByName returns workflow with matching name", async () => {
   const tempDir = await Deno.makeTempDir();
@@ -409,6 +446,73 @@ Deno.test("YamlEvaluatedWorkflowRepository.findByNameWithProvenance: an evaluate
       errors.get(lost),
     );
     assertEquals(await repo.findByNameWithProvenance("other"), null);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated with round-trip apart from the workflow's input schema (swamp-club#3583)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const workflow = Workflow.create({
+      name: "evaluated-inputs",
+      inputs: {
+        properties: { target: { type: "string" } },
+        required: ["target"],
+      },
+      jobs: [...provenanceWorkflow().jobs],
+    });
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+      new Set(),
+      undefined,
+      [],
+      {
+        inputs: { target: "scratch", envs: ["a", "b"] },
+        provenance: ProvenanceMap.authored().withWholeData("target"),
+        inheritedExpressions: new Set(["${{ env.SOURCE }}"]),
+      },
+    );
+    const cached = await new YamlEvaluatedWorkflowRepository(tempDir)
+      .findByNameWithProvenance(workflow.name);
+    assertEquals(cached?.evaluatedInputs, {
+      target: "scratch",
+      envs: ["a", "b"],
+    });
+    assertEquals(cached?.evaluatedInputsOmitted, undefined);
+    assertEquals(cached?.evaluatedInputsProvenance?.toData(), {
+      whole: ["target"],
+      ranges: {},
+    });
+    assertEquals(cached?.inheritedExpressions, new Set(["${{ env.SOURCE }}"]));
+    assertEquals(cached?.workflow.inputs, workflow.inputs);
+
+    // Withheld for a sensitive value: the marker, and no inputs.
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+      new Set(),
+      undefined,
+      [],
+      { omitted: "sensitive" },
+    );
+    const omitted = await new YamlEvaluatedWorkflowRepository(tempDir)
+      .findByNameWithProvenance(workflow.name);
+    assertEquals(omitted?.evaluatedInputs, undefined);
+    assertEquals(omitted?.evaluatedInputsOmitted, "sensitive");
+    assertEquals(omitted?.evaluatedInputsProvenance, undefined);
+    assertEquals(omitted?.inheritedExpressions, new Set());
+
+    // A cache written before evaluation inputs were recorded has neither.
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+    );
+    const legacy = await new YamlEvaluatedWorkflowRepository(tempDir)
+      .findByNameWithProvenance(workflow.name);
+    assertEquals(legacy?.evaluatedInputs, undefined);
+    assertEquals(legacy?.evaluatedInputsOmitted, undefined);
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }

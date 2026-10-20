@@ -44,7 +44,6 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { mergeInputArgs, parseInputs } from "../input_parser.ts";
-import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -158,33 +157,13 @@ export const workflowEvaluateCommand = withRemoteOptions(
     });
     const workflowRepo = unlocked.repoContext.workflowRepo;
 
-    // Look up the workflow for input validation and lock resolution
+    // Look up the workflow for lock resolution. The use case coerces and
+    // validates inputs for local, remote and --all evaluations alike.
     const workflow = await workflowRepo.findByName(workflowIdOrName) ??
       await workflowRepo.findById(createWorkflowId(workflowIdOrName));
 
     if (!workflow) {
       throw new UserError(`Workflow not found: ${workflowIdOrName}`);
-    }
-
-    // Validate inputs against workflow schema if provided
-    if (workflow.inputs && Object.keys(inputs).length > 0) {
-      const validationService = new InputValidationService();
-      const inputsWithDefaults = validationService.applyDefaults(
-        inputs,
-        workflow.inputs,
-      );
-      const validationResult = validationService.validate(
-        inputsWithDefaults,
-        workflow.inputs,
-      );
-      if (!validationResult.valid) {
-        const errorMessages = validationResult.errors
-          .map((e) => `  ${e.message}`)
-          .join("\n");
-        throw new UserError(`Input validation failed:\n${errorMessages}`);
-      }
-      // Use inputs with defaults applied
-      Object.assign(inputs, inputsWithDefaults);
     }
 
     // Extract model references for per-model locking

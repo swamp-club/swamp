@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { mayHoldPlaintextSensitiveValues } from "../../domain/expressions/persisted_evaluation.ts";
+import { replayInputs } from "../../domain/workflows/persisted_workflow.ts";
+import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -85,6 +88,40 @@ export interface SupersedeDeps {
    * Without it they are only reported.
    */
   cascade?: NestedCascade;
+  /**
+   * The workflow's evaluated cache by name, for a `--last-evaluated` run
+   * (swamp-club#3583): loaded once per start, matched on here, and handed to
+   * the execution service to replay, so a cache rewritten between the two
+   * cannot split them. Required with the rest of superseding, so no caller
+   * that supersedes can leave the run to load another copy.
+   */
+  evaluatedCache: (
+    workflowName: string,
+  ) => Promise<EvaluatedWorkflowCache | null>;
+}
+
+/**
+ * The inputs a new run's suspended predecessors are matched on: the ones it
+ * will record. A `--last-evaluated` run records the inputs its cache was
+ * evaluated with, under the supplied ones (swamp-club#3583), so it is matched
+ * on `cache`, the one copy the run also executes. Undefined when the run will
+ * be refused before it starts (no cache, or an input the cache cannot take),
+ * so nothing is superseded by a run that never starts.
+ */
+export function supersedeMatchInputs(
+  supplied: Record<string, unknown>,
+  lastEvaluated: boolean,
+  cache: EvaluatedWorkflowCache | null | undefined,
+): Record<string, unknown> | undefined {
+  if (!lastEvaluated) return supplied;
+  if (!cache) return undefined;
+  // What execution refuses before it replays, so a refused run supersedes
+  // nothing: a cache that may hold plaintext secrets, or one whose
+  // provenance cannot be read.
+  if (mayHoldPlaintextSensitiveValues(cache)) return undefined;
+  if (cache.provenance === "unreadable") return undefined;
+  const replay = replayInputs(cache, supplied);
+  return "inputs" in replay ? replay.inputs : undefined;
 }
 
 /** Whether a new run of the workflow with `newInputs` supersedes `run`. */

@@ -73,8 +73,10 @@ import { findBrokenWorkflow, workflowsDirFor } from "./broken_workflow.ts";
 import {
   type SkippedSupersedeData,
   type SupersedeDeps,
+  supersedeMatchInputs,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
+import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
 import {
   type CascadedNestedRunData,
@@ -394,7 +396,13 @@ export interface WorkflowRunDeps {
   dataRepo?: UnifiedDataRepository;
   definitionRepo?: DefinitionRepository;
   telemetrySink?: WorkflowTelemetrySink;
-  /** Supersedes matching-input suspended runs when set. */
+  /**
+   * Supersedes matching-input suspended runs when set, and loads the
+   * evaluated cache a `--last-evaluated` run replays (swamp-club#3583).
+   * Without it nothing is superseded and the execution service loads the
+   * cache itself, which is safe only because nothing was superseded on
+   * another copy.
+   */
   supersede?: SupersedeDeps;
 }
 
@@ -890,11 +898,34 @@ export async function* workflowRun(
             };
           }
 
-          if (!resolvedInput.noSupersede && deps.supersede) {
+          // One copy of the evaluated cache for the whole start: superseding
+          // matches on it and the execution service replays it
+          // (swamp-club#3583). A cache that cannot be read is reported like
+          // any other failure to start, not thrown out of the stream.
+          let evaluatedCache: EvaluatedWorkflowCache | null | undefined;
+          if (resolvedInput.lastEvaluated && deps.supersede) {
+            try {
+              evaluatedCache = await deps.supersede.evaluatedCache(
+                workflow.name,
+              );
+            } catch (error) {
+              yield { kind: "error", error: workflowExecutionFailed(error) };
+              return;
+            }
+          }
+          // Undefined when the run will be refused before it starts.
+          const supersedeInputs = !resolvedInput.noSupersede && deps.supersede
+            ? supersedeMatchInputs(
+              resolvedInput.inputs ?? {},
+              resolvedInput.lastEvaluated === true,
+              evaluatedCache,
+            )
+            : undefined;
+          if (supersedeInputs && deps.supersede) {
             const { cancelledRunIds, skippedRuns, ...nested } =
               await supersedeSuspendedRuns(
                 workflow,
-                resolvedInput.inputs ?? {},
+                supersedeInputs,
                 deps.supersede,
                 deps.runRepo,
               );
@@ -949,6 +980,7 @@ export async function* workflowRun(
                 byId: resolvedInput.byId,
                 expectedName: resolvedInput.expectedName,
                 lastEvaluated: resolvedInput.lastEvaluated,
+                evaluatedCache: evaluatedCache ?? undefined,
                 inputs: resolvedInput.inputs,
                 runtimeTags: resolvedInput.runtimeTags,
                 signal: ctx.signal,

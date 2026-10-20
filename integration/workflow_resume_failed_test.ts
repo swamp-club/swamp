@@ -25,7 +25,8 @@
  * real run tracker, reloads the run through fresh repository instances, and
  * retries it with a counting step executor. The second half retries through
  * both branches of the serve handler against a real repository, where a
- * shell step's exit code comes from an input the retry overrides. The last
+ * shell step's exit code comes from an input, and the retry adds a late
+ * input that replaces it (swamp-club#3583). The last
  * section runs the `workflow resume` command in-process against a failed run
  * and checks how it reports a resume that fails (swamp-club#2432).
  *
@@ -86,6 +87,9 @@ import { isProcessGone } from "../src/infrastructure/runtime/process.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
@@ -171,7 +175,7 @@ function pipelineWorkflow(): Workflow {
           Step.create({
             name: "package",
             task: StepTask.model("test-model", "run", {
-              version: "${{ inputs.build + 1 }}",
+              version: "${{ inputs.build + inputs.?bad.orValue(1) }}",
             }),
             dependsOn: [{
               step: "compile",
@@ -230,6 +234,12 @@ function freshService(
 async function failPipeline(repoDir: string) {
   const workflow = pipelineWorkflow();
   await new YamlWorkflowRepository(repoDir).save(workflow);
+  // The definition the steps name.
+  const type = ModelType.create("command/shell");
+  await new YamlDefinitionRepository(repoDir).save(
+    type,
+    Definition.create({ name: "test-model", type: type.normalized }),
+  );
   const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
   const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
   const executor = new CountingStepExecutor(tracker);
@@ -327,6 +337,41 @@ Deno.test("retry: a reloaded failed run resumes without --from and re-runs only 
   });
 });
 
+Deno.test("retry: a legacy run with an unrecorded resume input is refused even without --input", async () => {
+  await withRepo(async (repoDir) => {
+    const { workflow, tracker, catalogStore, executor, failed } =
+      await failPipeline(repoDir);
+    try {
+      const { service, runRepo } = freshService(
+        repoDir,
+        executor,
+        tracker,
+        catalogStore,
+      );
+      failed.recordResumeInputs(["lostInput"]);
+      await runRepo.save(workflow.id, failed);
+      const before = (await runRepo.findById(workflow.id, failed.id))!.toData();
+      const calls = new Map(executor.calls);
+      executor.failing.clear();
+      const error = await assertRejects(
+        () => drainResume(service, workflow.name, failed.id),
+        UserError,
+        'input "lostInput" was supplied',
+      );
+      assertEquals(error.code, "resume_input_immutable");
+      assertEquals(
+        (await runRepo.findById(workflow.id, failed.id))?.toData(),
+        before,
+      );
+      assertEquals(executor.calls, calls);
+      assertEquals(tracker.findById(failed.id)?.status, "failed");
+    } finally {
+      tracker.close();
+      catalogStore.close();
+    }
+  });
+});
+
 Deno.test("retry: an evaluation failure after the early save leaves the reloaded run failed", async () => {
   await withRepo(async (repoDir) => {
     const { workflow, tracker, catalogStore, executor, failed } =
@@ -346,7 +391,7 @@ Deno.test("retry: an evaluation failure after the early save leaves the reloaded
         catalogStore,
       );
       await assertRejects(
-        () => drainResume(service, workflow.name, failed.id, { build: "x" }),
+        () => drainResume(service, workflow.name, failed.id, { bad: "x" }),
         Error,
         "no such overload",
       );
@@ -601,6 +646,7 @@ for (
           workflow,
           suspended.inputs,
           {
+            evaluatedCache: () => Promise.resolve(null),
             findSuspendedRuns: (id) => runRepo.findAllByWorkflowId(id),
             findEvaluatedWorkflow: () => Promise.resolve(null),
             runClaims: unclaimedRuns,
@@ -658,7 +704,8 @@ function exitCodeWorkflow(name: string): Workflow {
               "command/shell",
               `${name}-check`,
               "execute",
-              { run: "exit ${{ inputs.code }}" },
+              // `fix` is a late input the retry adds (swamp-club#3583).
+              { run: "exit ${{ inputs.?fix.orValue(inputs.code) }}" },
             ),
             dependsOn: [{
               step: "prepare",
@@ -800,7 +847,7 @@ for (const withRegistry of [false, true]) {
               workflowIdOrName: workflow.name,
               runId,
               from,
-              inputs: { code: 0 },
+              inputs: { fix: 0 },
             },
             new AbortController(),
             null,
@@ -909,7 +956,7 @@ for (const from of [undefined, "package"]) {
             failed.id,
             ...(from ? ["--from", from] : []),
             "--input",
-            "build=x",
+            "bad=x",
           ]);
 
           assertInstanceOf(error, UserError);

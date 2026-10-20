@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   freeRoots,
+  inputNamesRead,
   isBlankConstant,
   parsesAsCel,
   transformHyphenatedModelRefs,
@@ -71,6 +72,62 @@ Deno.test("freeRoots: reports the roots an expression reads", () => {
   );
   assertEquals(freeRoots("vault.get('v', 'k')"), new Set(["vault"]));
   assertEquals(freeRoots("not cel ("), undefined);
+});
+
+Deno.test("inputNamesRead: names each input an expression reads", () => {
+  const read = (cel: string) => {
+    const { names, opaque } = inputNamesRead(cel);
+    return { names: [...names].sort(), opaque };
+  };
+  assertEquals(read("inputs.target"), { names: ["target"], opaque: false });
+  assertEquals(read('inputs["target"] + inputs.region'), {
+    names: ["region", "target"],
+    opaque: false,
+  });
+  assertEquals(read("inputs.?token.orValue('')"), {
+    names: ["token"],
+    opaque: false,
+  });
+  assertEquals(read("has(inputs.force)"), { names: ["force"], opaque: false });
+  assertEquals(read("self.name + 'x'"), { names: [], opaque: false });
+});
+
+Deno.test("inputNamesRead: inputs read whole, by computed key, or unparsed is opaque", () => {
+  assertEquals(inputNamesRead("inputs").opaque, true);
+  assertEquals(inputNamesRead("inputs[self.key]").opaque, true);
+  assertEquals(inputNamesRead("size(inputs) > 0").opaque, true);
+  assertEquals(inputNamesRead("not cel (").opaque, true);
+});
+
+Deno.test("inputNamesRead: reads through run.inputs count, other run fields do not", () => {
+  assertEquals(inputNamesRead("run.inputs.target"), {
+    names: new Set(["target"]),
+    opaque: false,
+  });
+  assertEquals(inputNamesRead('run.inputs["target"]'), {
+    names: new Set(["target"]),
+    opaque: false,
+  });
+  assertEquals(inputNamesRead("run.id + run.workflowName"), {
+    names: new Set(),
+    opaque: false,
+  });
+  assertEquals(inputNamesRead("run.inputs").opaque, true);
+  assertEquals(inputNamesRead("run.inputs[self.key]").opaque, true);
+  assertEquals(inputNamesRead("run[self.field]").opaque, true);
+  assertEquals(inputNamesRead("string(run)").opaque, true);
+  assertEquals(inputNamesRead("[1].map(run, run.inputs)").opaque, false);
+});
+
+Deno.test("inputNamesRead: an inputs variable a macro binds is not the workflow's", () => {
+  assertEquals(inputNamesRead("[1].map(inputs, inputs + 1)"), {
+    names: new Set(),
+    opaque: false,
+  });
+  assertEquals(inputNamesRead("cel.bind(inputs, 1, inputs + 1)"), {
+    names: new Set(),
+    opaque: false,
+  });
 });
 
 Deno.test("isBlankConstant: true only for the empty string and null", () => {

@@ -31,7 +31,7 @@
  * the remote pre-load in remote_secrets_baseline_dispatch_payload_test.ts.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import {
@@ -77,6 +77,9 @@ import {
 } from "../src/libswamp/workflows/evaluate.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { initializeTestRepo } from "./test_helpers.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 
 await initializeLogging({});
 
@@ -257,6 +260,7 @@ async function runWorkflow(
         outcome.runId = event.runId;
       }
       if (event.kind === "completed") outcome.status = event.run.status;
+      if (event.kind === "suspended") outcome.status = event.run.status;
       if (event.kind === "step_failed") outcome.errors.push(event.error);
       if (event.kind === "error") outcome.errors.push(event.error.message);
     },
@@ -291,6 +295,191 @@ async function retryRun(
     if (event.kind === "completed") status = event.run.status;
   }
   return status;
+}
+
+for (
+  const selector of [
+    "inputs.?keyName.orValue('missing')",
+    "run.inputs.?keyName.orValue('missing')",
+    "self.item",
+  ]
+) {
+  Deno.test(`nested late vault key: ${selector} survives parent and child resumes without copying resume bindings`, async () => {
+    await withFixture(
+      { withExistence: true, secrets: { token: "late-secret-value" } },
+      async ({ repoDir, vault }) => {
+        const deliveries: Delivery[] = [];
+        const type = registerRecorder(deliveries);
+        try {
+          const consumer = Definition.create({ name: "late-consumer" });
+          const { repoContext, datastoreConfig } =
+            await requireInitializedRepoUnlocked({
+              repoDir,
+              outputMode: "log",
+            });
+          await repoContext.definitionRepo.save(
+            ModelType.create(type),
+            consumer,
+          );
+          const child = Workflow.create({
+            name: "late-child",
+            inputs: {
+              properties: {
+                token: { type: "string" },
+                keyName: { type: "string", default: "wrong-child-key" },
+              },
+              required: ["token"],
+            },
+            jobs: [Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "gate",
+                  task: StepTask.manualApproval("Use credential?"),
+                }),
+                Step.create({
+                  name: "consume",
+                  task: StepTask.model("late-consumer", "run", {
+                    token: "${{ inputs.token }}",
+                  }),
+                  dependsOn: [{
+                    step: "gate",
+                    condition: TriggerCondition.succeeded(),
+                  }],
+                }),
+              ],
+            })],
+          });
+          const parent = Workflow.create({
+            name: "late-parent",
+            inputs: {
+              properties: {
+                keyName: { type: "string" },
+                items: { type: "array" },
+              },
+            },
+            jobs: [Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "gate",
+                  task: StepTask.manualApproval("Mint credential"),
+                }),
+                Step.create({
+                  name: "call",
+                  ...(selector === "self.item"
+                    ? {
+                      forEach: {
+                        item: "item",
+                        in: "${{ inputs.?items.orValue([]) }}",
+                      },
+                    }
+                    : {}),
+                  task: StepTask.workflow(child.name, {
+                    token: `\${{ vault.get('${VAULT}', ${selector}) }}`,
+                  }),
+                  dependsOn: [{
+                    step: "gate",
+                    condition: TriggerCondition.succeeded(),
+                  }],
+                }),
+                Step.create({
+                  name: "direct",
+                  task: StepTask.model("late-consumer", "run", {
+                    token:
+                      `\${{ vault.get('${VAULT}', inputs.?keyName.orValue('missing')) }}`,
+                  }),
+                  dependsOn: [{
+                    step: "gate",
+                    condition: TriggerCondition.succeeded(),
+                  }],
+                }),
+              ],
+            })],
+          });
+          const started = await runWorkflow(repoDir, parent, [child]);
+          assertEquals(started.status, "suspended", started.errors.join("\n"));
+          const deps = await createWorkflowRunDeps(
+            repoDir,
+            repoContext,
+            datastoreConfig,
+          );
+          const service = () =>
+            deps.createExecutionService(
+              deps.workflowRepo,
+              deps.runRepo,
+              repoDir,
+              deps.catalogStore,
+            );
+          const approve = async (workflow: Workflow): Promise<WorkflowRun> => {
+            const run = await deps.runRepo.findLatestByWorkflowId(workflow.id);
+            assertExists(run);
+            const gate = run.getJob("main")!.getStep("gate")!;
+            gate.recordApprovalDecision({
+              approved: true,
+              decidedBy: "user:test",
+              decidedAt: new Date().toISOString(),
+            });
+            gate.succeed();
+            await deps.runRepo.save(workflow.id, run);
+            return run;
+          };
+          const before = await approve(parent);
+          const unrelated = `not-a-child-binding-${crypto.randomUUID()}`;
+          const resumed = await collect(
+            service().resume(parent.name, before.id, {
+              inputs: { keyName: "token", items: ["token"], unrelated },
+            }),
+          );
+          const parentRun = await deps.runRepo.findLatestByWorkflowId(
+            parent.id,
+          );
+          assertEquals(parentRun?.status, "suspended", JSON.stringify(resumed));
+          assertEquals(deliveries.map((delivery) => delivery.args.token), [
+            "late-secret-value",
+          ]);
+
+          const childRun = await approve(child);
+          assertEquals((await auditedReads(repoDir)).loads, ["token"]);
+          await vault.vault.put("token", "rotated-late-secret");
+          const serialized = JSON.stringify(childRun.toData());
+          assertEquals(serialized.includes(unrelated), false);
+          assertEquals(serialized.includes("late-secret-value"), false);
+          for (const record of childRun.deferredExpressions) {
+            assertEquals(record.bindings.inputs?.keyName, undefined);
+            assertEquals(record.bindings.run?.inputs?.keyName, undefined);
+            assertEquals(record.bindings.self?.item, undefined);
+          }
+          const childEvents = await collect(
+            service().resume(child.name, childRun.id),
+          );
+          const result = await deps.runRepo.findLatestByWorkflowId(child.id);
+          assertEquals(
+            result?.status,
+            "succeeded",
+            JSON.stringify(childEvents),
+          );
+          assertEquals(deliveries.map((delivery) => delivery.args.token), [
+            "late-secret-value",
+            "rotated-late-secret",
+          ]);
+          const cache = await new YamlEvaluatedWorkflowRepository(repoDir)
+            .findByNameWithProvenance(child.name);
+          assertEquals(
+            JSON.stringify(cache).includes("late-secret-value"),
+            false,
+          );
+          await collect(service().resume(parent.name, before.id));
+          assertEquals(
+            (await deps.runRepo.findLatestByWorkflowId(parent.id))?.status,
+            "succeeded",
+          );
+        } finally {
+          modelRegistry.invalidateType(type);
+        }
+      },
+    );
+  });
 }
 
 for (const withExistence of [true, false]) {

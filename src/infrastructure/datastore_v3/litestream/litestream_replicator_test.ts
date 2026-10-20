@@ -769,15 +769,19 @@ Deno.test({
       // Each caller releases the hold it was given; none leaks.
       await first.release();
       await second.release();
-      const probe = await Deno.open(world.paths.useLock, {
-        read: true,
-        write: true,
-      });
-      try {
-        assertEquals(await probe.tryLock(true), true);
-      } finally {
-        probe.close();
-      }
+      // Like the shared-handle case above, wait for the released file holds
+      // to disappear under parallel load; a leaked hold still times out.
+      await waitFor(async () => {
+        const probe = await Deno.open(world.paths.useLock, {
+          read: true,
+          write: true,
+        });
+        try {
+          return await probe.tryLock(true);
+        } finally {
+          probe.close();
+        }
+      }, "no retired or replacement sidecar hold leaked");
     });
   },
 });

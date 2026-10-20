@@ -115,9 +115,11 @@ export function isDeferredExpression(cel: string): boolean {
 }
 
 /**
- * `omit` names `root.key` binding paths (e.g. `inputs.token`, `self.item`)
- * whose values must not be persisted, such as resume-time inputs and forEach
- * items derived from them. Only two-segment paths are supported.
+ * `omit` names binding paths whose values must not be persisted, such as
+ * resume-time inputs and forEach items derived from them: `inputs.<key>`,
+ * `run.inputs.<key>` or `self.<key>`. Everything after the prefix is one key,
+ * dots included, since input names are the caller's. Only an own property of
+ * the copied bindings is removed, so no path reaches a prototype.
  */
 export function captureDeferredBindings(
   context: ExpressionContext,
@@ -129,8 +131,19 @@ export function captureDeferredBindings(
     JSON.stringify({ inputs, self, run, workflowRunId, steps }),
   ) as Record<string, Record<string, unknown> | undefined>;
   for (const path of omit) {
-    const [root, key] = path.split(".");
-    delete bindings[root]?.[key];
+    const [record, key] = path.startsWith("run.inputs.")
+      ? [bindings.run?.inputs, path.slice("run.inputs.".length)]
+      : path.startsWith("inputs.")
+      ? [bindings.inputs, path.slice("inputs.".length)]
+      : path.startsWith("self.")
+      ? [bindings.self, path.slice("self.".length)]
+      : [undefined, ""];
+    if (
+      record !== null && typeof record === "object" &&
+      Object.hasOwn(record, key)
+    ) {
+      delete (record as Record<string, unknown>)[key];
+    }
   }
   return bindings as DeferredExpression["bindings"];
 }

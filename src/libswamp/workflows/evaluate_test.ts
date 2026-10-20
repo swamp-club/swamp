@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import {
   isWorkflowEvaluateAllData,
   workflowEvaluate,
@@ -1208,3 +1209,119 @@ Deno.test("forEach: prepares each of the step's expressions once before resolvin
     "eval:self.env",
   ]);
 });
+
+Deno.test("workflowEvaluate: the cache records the inputs it was evaluated with (swamp-club#3583)", async () => {
+  const recorded: unknown[] = [];
+  const deps = makeDeps({
+    saveEvaluatedWorkflow: (
+      _workflow,
+      _provenance,
+      _authored,
+      _references,
+      evaluatedInputs,
+    ) => {
+      recorded.push(evaluatedInputs);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      inputs: { target: "scratch" },
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(recorded, [{
+    inputs: { target: "scratch" },
+    provenance: ProvenanceMap.authored().withWholeData("target"),
+  }]);
+});
+
+Deno.test("workflowEvaluate: the cache records schema defaults, with no expressions and no inputs too (swamp-club#3583)", async () => {
+  // A fresh run records its defaults, so the cache must too, or a replay
+  // would run without them and supersede on a different set.
+  const workflow = Workflow.fromData({
+    ...makeWorkflow().toData(),
+    name: "defaults-only",
+    inputs: {
+      properties: { region: { type: "string", default: "us-east-1" } },
+    },
+    jobs: [{
+      name: "main",
+      steps: [{
+        name: "s",
+        task: { type: "model_method", modelIdOrName: "m", methodName: "run" },
+      }],
+    }],
+  });
+  const recorded: unknown[] = [];
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(workflow),
+    saveEvaluatedWorkflow: (_w, _p, _a, _r, inputs) => {
+      recorded.push(inputs);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "defaults-only",
+      inputs: {},
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(recorded, [{
+    inputs: { region: "us-east-1" },
+    provenance: ProvenanceMap.authored(),
+  }]);
+});
+
+for (const all of [false, true]) {
+  Deno.test(`workflowEvaluate: validates coerced inputs before saving (${all ? "all" : "single"})`, async () => {
+    const workflow = Workflow.fromData({
+      ...makeWorkflow().toData(),
+      inputs: {
+        properties: {
+          n: { type: "integer" },
+          cfg: { type: "object" },
+          enabled: { type: "boolean", default: false },
+        },
+        required: ["n", "cfg", "enabled"],
+      },
+    });
+    const saved: unknown[] = [];
+    const deps = makeDeps({
+      findWorkflowByName: () => Promise.resolve(workflow),
+      findAllWorkflows: () => Promise.resolve([workflow]),
+      saveEvaluatedWorkflow: (_w, _p, _a, _r, inputs) => {
+        saved.push(inputs);
+        return Promise.resolve();
+      },
+    });
+    const evaluate = (inputs: Record<string, unknown>) =>
+      collect(workflowEvaluate(createLibSwampContext(), deps, {
+        workflowIdOrName: all ? undefined : workflow.name,
+        inputs,
+      }));
+    const events = await evaluate({ n: "3", cfg: '{"a":1}' });
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(saved, [{
+      inputs: { n: 3, cfg: { a: 1 }, enabled: false },
+      provenance: ProvenanceMap.authored().withWholeData("n").withWholeData(
+        "cfg.a",
+      ),
+    }]);
+
+    for (const inputs of [{}, { n: "bad", cfg: "{}" }]) {
+      const error = await assertRejects(
+        () => evaluate(inputs),
+        Error,
+        "Input validation failed",
+      );
+      assertEquals(
+        (error as { code?: string }).code,
+        "input_validation_failed",
+      );
+    }
+    assertEquals(saved.length, 1);
+  });
+}

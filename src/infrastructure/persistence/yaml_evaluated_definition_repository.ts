@@ -64,7 +64,7 @@ import {
   WrittenReferenceSchema,
 } from "../../domain/secrets/mod.ts";
 
-interface EvaluatedDefinitionCache {
+export interface EvaluatedDefinitionCache {
   definition: Definition;
   /**
    * Where data sits in the definition, in the coordinates of the raw copy
@@ -105,9 +105,21 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
       provenance = "unreadable";
     }
   }
-  const { provenance: _provenance, ...definitionData } = data as
+  // `evaluatedInputs` and `resolvedExpressions` were written by unreleased
+  // builds (swamp-club#3583) and are dropped on read: nothing reads them, and
+  // the definition schema rejects unknown keys.
+  const {
+    provenance: _provenance,
+    evaluatedInputs: _evaluatedInputs,
+    resolvedExpressions: _resolvedExpressions,
+    ...definitionData
+  } = data as
     & DefinitionData
-    & { provenance?: unknown };
+    & {
+      provenance?: unknown;
+      evaluatedInputs?: unknown;
+      resolvedExpressions?: unknown;
+    };
   return {
     definition: Definition.fromData(definitionData),
     provenance,

@@ -109,8 +109,8 @@ export const workflowResumeCommand = withRemoteOptions(
       "swamp workflow resume deploy-with-gate",
     )
     .example(
-      "Resume with an override input minted during the gate",
-      "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
+      "Resume with an input minted during the gate",
+      "swamp workflow resume deploy-with-gate --input authKeyName=deploy-auth-key-42",
     )
     .example(
       "Retry the failed steps of a failed run",
@@ -135,7 +135,7 @@ export const workflowResumeCommand = withRemoteOptions(
     )
     .option(
       "--input <value:string>",
-      "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
+      "Additional input for the resumed run (key=value or JSON); merged over the original run inputs. An input the run already has cannot change; start a new run instead",
       { collect: true },
     )
     .option("--arg <value:string>", "Alias for --input", {
@@ -144,11 +144,15 @@ export const workflowResumeCommand = withRemoteOptions(
     })
     .option(
       "--input-file <file:string>",
-      "Override inputs from a YAML file (cannot combine with --stdin)",
+      "Additional inputs from a YAML file, held to the rules of --input (cannot combine with --stdin)",
     )
-    .option("--stdin", "Read override inputs from stdin (piped data)", {
-      default: false,
-    })
+    .option(
+      "--stdin",
+      "Read additional inputs from stdin (piped data), held to the rules of --input",
+      {
+        default: false,
+      },
+    )
     .option(
       "--timeout <duration:string>",
       "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
@@ -367,21 +371,11 @@ export const workflowResumeCommand = withRemoteOptions(
       reportRegistry.ensureLoaded(),
     ]);
 
-    // Surface what the resume inputs do to the run's inputs. Key names only —
-    // values may be secrets and are never logged. Overrides (a resume key
-    // that collides with an existing input) are warned; purely-additive keys
-    // are info.
+    // Report supplied keys only. The execution service checks their values
+    // under the run's claim; a changed existing value will be refused.
     const resumeKeys = Object.keys(resumeInputs);
     if (resumeKeys.length > 0) {
-      const overridden = resumeKeys.filter((key) => key in run.inputs);
-      const added = resumeKeys.filter((key) => !(key in run.inputs));
-      if (overridden.length > 0) {
-        cliCtx.logger
-          .warn`Resume overriding existing input(s): ${overridden.join(", ")}`;
-      }
-      if (added.length > 0) {
-        cliCtx.logger.info`Resume adding input(s): ${added.join(", ")}`;
-      }
+      cliCtx.logger.info`Resume input(s) supplied: ${resumeKeys.join(", ")}`;
     }
 
     const directResolver: DirectTypeResolver = async (

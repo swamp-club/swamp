@@ -75,10 +75,26 @@ context and evaluating expressions, before any step runs), the run is left as it
 was, so fix the input and resume again. A refusal, such as an unknown `--from`
 step or an `--input` value that does not match its declared type (`--json` code
 `input_validation_failed` locally), keeps its own message and changes nothing.
-Other errors, such as an `--input` value that makes an expression fail to
-evaluate, exit 1 with `Workflow resume failed: ...` (`--json` code
-`workflow_resume_failed`). A failure after steps start is not rolled back: check
-the run with `swamp workflow history get <run-id>` before resuming again.
+
+`--input` may add an input the run does not have; a value the run has cannot
+change (`--json` code `resume_input_immutable` locally), whatever any step read:
+a gate that checked it, an approval that showed it, or a step that never named
+it. The refusal names the key and the way out, never the value: cancel the
+suspended run (`swamp workflow cancel <wf> --run <id>`, adding `--server <url>`
+for a run serve started) and start a new run with all its inputs; a `--from`
+retry makes no difference. A late input, one the run starts without, is declared
+optional with no default and read after the gate in a form that tolerates its
+absence (`inputs.?key.orValue('')`, `has(inputs.key)`, or inside `vault.get`),
+since the whole workflow is evaluated at run start. A step before the gate can
+see such an input absent, and the resume still adds it, so a late input that
+must be checked or approved gets its own check and gate after it arrives. A
+`--last-evaluated` run records the inputs its cache was evaluated with, refuses
+an `--input` that differs from them, and resumes like any other run. The run
+records the merged inputs it resumes with. Other errors, such as an `--input`
+value that makes an expression fail to evaluate, exit 1 with
+`Workflow resume failed: ...` (`--json` code `workflow_resume_failed`). A
+failure after steps start is not rolled back: check the run with
+`swamp workflow history get <run-id>` before resuming again.
 
 Resume uses the current workflow file. If it was edited during the approval
 window in a way the resume would walk into (a step added or moved into a job the
@@ -152,8 +168,9 @@ A `--from` or retry resume is refused, with the run left unchanged, when the
 workflow changed shape since the run: a step was renamed, moved to another job,
 or added to a job the resume re-runs, or a job was renamed or added. Removing a
 step still works. An iteration dropped from a smaller or renamed `forEach`
-collection — including one changed by an `--input` override on the resume —
-fails as `Not run: ...` (`failureKind: workflow_changed`); start a new run.
+collection — including one a late `--input` on the resume changes against its
+fallback — fails as `Not run: ...` (`failureKind: workflow_changed`); start a
+new run.
 
 ## Step Evaluation Order
 

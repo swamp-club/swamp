@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
@@ -25,11 +25,15 @@ import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
+import { deferredExpressionReference } from "../expressions/deferred_expression.ts";
+import { ProvenanceMap } from "../expressions/provenance_map.ts";
 import {
   forEachNameWithoutSecrets,
   isIdentifierMapPath,
   persistEvaluatedWorkflow,
+  recordableEvaluatedInputs,
   rehydrateEvaluatedWorkflow,
+  replayInputs,
 } from "./persisted_workflow.ts";
 
 const SECRET = "Pl41n-s3cret";
@@ -186,5 +190,123 @@ Deno.test("forEachNameWithoutSecrets: replaces each recorded value with the item
   assertEquals(
     forEachNameWithoutSecrets("deploy-us-east", 3, recorded()),
     "deploy-us-east",
+  );
+});
+
+Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are withheld, with why (swamp-club#3583)", () => {
+  const plain = { target: "scratch", envs: ["a", "b"] };
+  assertEquals(recordableEvaluatedInputs(plain, recorded()), {
+    inputs: plain,
+  });
+  assertEquals(recordableEvaluatedInputs(plain, new RunSensitiveValues()), {
+    inputs: plain,
+  });
+  assertEquals(recordableEvaluatedInputs({}, recorded()), { inputs: {} });
+  // Anywhere in the structure, whole or inside a longer string.
+  assertEquals(recordableEvaluatedInputs({ tok: SECRET }, recorded()), {
+    omitted: "sensitive",
+  });
+  assertEquals(
+    recordableEvaluatedInputs(
+      { nested: { header: `Bearer ${SECRET}` } },
+      recorded(),
+    ),
+    { omitted: "sensitive" },
+  );
+});
+
+const gated = { name: "gated" };
+
+Deno.test("recordableEvaluatedInputs: origins accompany plain inputs and are withheld with sensitive ones", () => {
+  const origins = {
+    provenance: ProvenanceMap.authored().withWholeData("data"),
+    inheritedExpressions: new Set(["${{ env.SOURCE }}"]),
+  };
+  assertEquals(
+    recordableEvaluatedInputs({ data: "plain" }, recorded(), origins),
+    {
+      inputs: { data: "plain" },
+      ...origins,
+    },
+  );
+  assertEquals(
+    recordableEvaluatedInputs({ data: SECRET }, recorded(), origins),
+    {
+      omitted: "sensitive",
+    },
+  );
+});
+
+Deno.test("replayInputs: inherited deferred inputs need their recorded provenance", () => {
+  const inputs = { nested: [deferredExpressionReference(crypto.randomUUID())] };
+  const cache = { workflow: gated, evaluatedInputs: inputs };
+  const legacy = replayInputs(cache, {});
+  assert("refusal" in legacy);
+  assertStringIncludes(
+    legacy.refusal,
+    "inherited inputs without their provenance",
+  );
+  assertEquals(
+    replayInputs({
+      ...cache,
+      evaluatedInputsProvenance: ProvenanceMap.authored(),
+    }, {}),
+    { inputs },
+  );
+});
+
+Deno.test("replayInputs: a --last-evaluated run takes the inputs its cache recorded, under its own (swamp-club#3583)", () => {
+  const recordedInputs = { target: "scratch", creds: { user: "u", key: "k" } };
+  const cache = { workflow: gated, evaluatedInputs: recordedInputs };
+  assertEquals(replayInputs(cache, {}), { inputs: recordedInputs });
+  // The same value after the merge: no change.
+  assertEquals(
+    replayInputs(cache, { target: "scratch", creds: { key: "k" } }),
+    { inputs: recordedInputs },
+  );
+  // A workflow evaluated with no inputs records an empty set, which replays.
+  assertEquals(replayInputs({ workflow: gated, evaluatedInputs: {} }, {}), {
+    inputs: {},
+  });
+});
+
+Deno.test("replayInputs: refuses an input the cache was evaluated with another value for, or without, naming keys only", () => {
+  const cache = { workflow: gated, evaluatedInputs: { target: "scratch" } };
+  const other = replayInputs(cache, { target: "protected", region: "us" });
+  assert("refusal" in other);
+  assertStringIncludes(other.refusal, 'for --input "target", "region"');
+  assertStringIncludes(
+    other.refusal,
+    "swamp workflow evaluate gated --input ...",
+  );
+  assertEquals(other.refusal.includes("protected"), false);
+  assertEquals(other.refusal.includes("scratch"), false);
+  // A nested change is a change of its top-level key.
+  const nested = replayInputs(
+    { workflow: gated, evaluatedInputs: { creds: { user: "u", key: "k" } } },
+    { creds: { key: "other" } },
+  );
+  assert("refusal" in nested);
+  assertStringIncludes(nested.refusal, '"creds"');
+});
+
+Deno.test("replayInputs: a cache that withheld its inputs for a secret is never replayed; a legacy cache is replayed once the workflow ran fresh", () => {
+  const omitted = replayInputs(
+    { workflow: gated, evaluatedInputsOmitted: "sensitive" },
+    {},
+  );
+  assert("refusal" in omitted);
+  assertStringIncludes(omitted.refusal, "held a secret");
+  assertStringIncludes(omitted.refusal, "cannot be replayed");
+  assertEquals(omitted.refusal.includes("once"), false);
+  const legacy = replayInputs({ workflow: gated }, {});
+  assert("refusal" in legacy);
+  assertStringIncludes(
+    legacy.refusal,
+    "before the inputs it was evaluated with were recorded",
+  );
+  assertStringIncludes(
+    legacy.refusal,
+    "Run the workflow once without --last-evaluated",
   );
 });

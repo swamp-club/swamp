@@ -127,6 +127,31 @@ export function freeRoots(celExpression: string): Set<string> | undefined {
 }
 
 /**
+ * The workflow inputs an expression reads, parsed the way evaluation parses
+ * it: each name read as `inputs.X`, `inputs["X"]`, `run.inputs.X` or
+ * `run.inputs["X"]`, and whether it reads them in a way that names no single
+ * input (`inputs`, `run.inputs` or `run` whole, or with a computed key). Text
+ * that does not parse reads every input, so `opaque` is set.
+ */
+export function inputNamesRead(
+  celExpression: string,
+): { names: Set<string>; opaque: boolean } {
+  const ast = parseForEvaluation(celExpression);
+  if (ast === undefined) return { names: new Set(), opaque: true };
+  const refs: References = {
+    roots: new Set(),
+    inputs: new Set(),
+    opaqueInputs: false,
+    runInputs: { names: new Set(), opaque: false },
+  };
+  collectReferences(ast, new Set(), refs);
+  return {
+    names: new Set([...refs.inputs, ...refs.runInputs!.names]),
+    opaque: refs.opaqueInputs || refs.runInputs!.opaque,
+  };
+}
+
+/**
  * Whether an expression is the empty string or null, written directly or
  * through `literal()`: a constant that carries no text at all.
  */
@@ -155,10 +180,26 @@ export interface References {
   inputs: Set<string>;
   /** `inputs` read bare or with a computed key. */
   opaqueInputs: boolean;
+  /**
+   * Set to also collect the inputs read through `run.inputs`: names read as
+   * `run.inputs.X` or `run.inputs["X"]`, and whether `run.inputs` or `run` is
+   * read whole or with a computed key.
+   */
+  runInputs?: { names: Set<string>; opaque: boolean };
 }
 
 function isFreeInputs(node: ASTNode, bound: ReadonlySet<string>): boolean {
   return node.op === "id" && node.args === "inputs" && !bound.has("inputs");
+}
+
+function isFreeRun(node: ASTNode, bound: ReadonlySet<string>): boolean {
+  return node.op === "id" && node.args === "run" && !bound.has("run");
+}
+
+/** `run.inputs`, read from the free `run` root. */
+function isRunInputs(node: ASTNode, bound: ReadonlySet<string>): boolean {
+  return (node.op === "." || node.op === ".?") &&
+    isFreeRun(node.args[0], bound) && node.args[1] === "inputs";
 }
 
 /**
@@ -177,12 +218,24 @@ export function collectReferences(
       if (bound.has(node.args)) return;
       out.roots.add(node.args);
       if (node.args === "inputs") out.opaqueInputs = true;
+      if (node.args === "run" && out.runInputs) out.runInputs.opaque = true;
       return;
     case ".":
     case ".?":
       if (isFreeInputs(node.args[0], bound)) {
         out.roots.add("inputs");
         out.inputs.add(node.args[1]);
+        return;
+      }
+      if (out.runInputs && isRunInputs(node.args[0], bound)) {
+        out.roots.add("run");
+        out.runInputs.names.add(node.args[1]);
+        return;
+      }
+      if (out.runInputs && isFreeRun(node.args[0], bound)) {
+        // `run.id` reads no input; `run.inputs` read whole reads them all.
+        out.roots.add("run");
+        if (node.args[1] === "inputs") out.runInputs.opaque = true;
         return;
       }
       collectReferences(node.args[0], bound, out);
@@ -195,6 +248,14 @@ export function collectReferences(
       ) {
         out.roots.add("inputs");
         out.inputs.add(key.args);
+        return;
+      }
+      if (
+        out.runInputs && isRunInputs(target, bound) && key.op === "value" &&
+        typeof key.args === "string"
+      ) {
+        out.roots.add("run");
+        out.runInputs.names.add(key.args);
         return;
       }
       collectReferences(target, bound, out);

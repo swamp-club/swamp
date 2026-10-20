@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   extractVaultReferences,
+  findVaultGetCalls,
   isDynamicVaultArgument,
 } from "./vault_reference_extractor.ts";
 
@@ -159,11 +160,31 @@ Deno.test("extractVaultReferences: reads only vault.get calls written as code", 
   assertEquals(result.hasDynamicRefs, false);
 });
 
-Deno.test("isDynamicVaultArgument: only a bare token with a member access is evaluated", () => {
-  for (const token of ["inputs.vaultName", "self.item.vault", "a.b"]) {
+Deno.test("isDynamicVaultArgument: expressions are evaluated and legacy bare names stay literal", () => {
+  for (
+    const token of [
+      "inputs.vaultName",
+      "self.item.vault",
+      "a.b",
+      "('key')",
+      'inputs["key"]',
+      "string(3)",
+    ]
+  ) {
     assertEquals(isDynamicVaultArgument(token), true, token);
   }
-  for (const token of ["t", "KEY", "my-vault", "API_KEY", "prod_secrets"]) {
+  for (
+    const token of [
+      "t",
+      "KEY",
+      "my-vault",
+      "API_KEY",
+      "prod_secrets",
+      "service/token",
+      "secret:key",
+      "api+key",
+    ]
+  ) {
     assertEquals(isDynamicVaultArgument(token), false, token);
   }
 });
@@ -188,4 +209,54 @@ Deno.test("extractVaultReferences: a call with one dotted bare argument is dynam
   });
   assertEquals(result.staticRefs, []);
   assertEquals(result.hasDynamicRefs, true);
+});
+
+Deno.test("extractVaultReferences: double slashes in bare names stay literal", () => {
+  assertEquals(
+    extractVaultReferences("${{ vault.get(prod//us, team//token) }}"),
+    {
+      staticRefs: [{ vaultName: "prod//us", secretKey: "team//token" }],
+      hasDynamicRefs: false,
+    },
+  );
+});
+
+for (
+  const argument of [
+    "inputs.?keyName.orValue('missing')",
+    "has(inputs.keyName) ? inputs.keyName : 'missing'",
+    "['first', 'second'][inputs.index]",
+    "{'key': 'a,b)'}[inputs.name]",
+    "inputs.?keyName.orValue('escaped\\'quote,)')",
+    "inputs.?keyName.orValue('''multi\nline,)''')",
+    "inputs.keyName // ignored , )\n",
+  ]
+) {
+  Deno.test(`findVaultGetCalls: keeps the complete argument ${argument}`, () => {
+    const source = `vault.get('default', ${argument})`;
+    const calls = findVaultGetCalls(source + " + vault.get('other', 'key')");
+    assertEquals(calls.length, 2);
+    assertEquals(calls[0][0], source);
+    assertEquals(calls[0][2], "default");
+    assertEquals(calls[0][6], argument.trim());
+    assertEquals(calls[1].index, source.length + 3);
+  });
+}
+
+Deno.test("findVaultGetCalls: quoted-looking computations are dynamic arguments", () => {
+  const [call] = findVaultGetCalls("vault.get('v' + inputs.suffix, 'key')");
+  assertEquals(call[2], undefined);
+  assertEquals(call[3], "'v' + inputs.suffix");
+});
+
+Deno.test("findVaultGetCalls: refuses incomplete calls and mismatched delimiters", () => {
+  for (
+    const source of [
+      "vault.get('v', inputs.?key.orValue('missing')",
+      "vault.get('v', [inputs.key))",
+      "vault.get('v', 'key', 'extra')",
+    ]
+  ) {
+    assertEquals(findVaultGetCalls(source), [], source);
+  }
 });

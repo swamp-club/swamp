@@ -109,7 +109,10 @@ Deno.test("ProvenanceMap.fromData refuses a malformed map", () => {
 });
 
 Deno.test("ProvenanceMap: toData/fromData round-trips (property)", () => {
-  const path = fc.stringMatching(/^[a-z]{1,3}(\.[a-z]{1,3}|\[[0-9]\]){0,3}$/);
+  const path = fc.oneof(
+    fc.constantFrom("__proto__", "constructor", "prototype"),
+    fc.stringMatching(/^[a-z]{1,3}(\.[a-z]{1,3}|\[[0-9]\]){0,3}$/),
+  );
   const range = fc.tuple(fc.nat(50), fc.nat(50)).map(([a, b]) =>
     [Math.min(a, b), Math.max(a, b)] as [number, number]
   );

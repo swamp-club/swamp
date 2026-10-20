@@ -565,6 +565,7 @@ Deno.test("nested approval: a direct run of the child workflow never supersedes 
       child,
       {},
       {
+        evaluatedCache: () => Promise.resolve(null),
         findSuspendedRuns: (id) => h.runRepo.findAllByWorkflowId(id),
         findEvaluatedWorkflow: () => Promise.resolve(null),
         runClaims: unclaimedRuns,
@@ -795,6 +796,7 @@ Deno.test("nested cascade: a new run that supersedes the waiting parent cancels 
       parent,
       {},
       {
+        evaluatedCache: () => Promise.resolve(null),
         findSuspendedRuns: (id) => h.runRepo.findAllByWorkflowId(id),
         findEvaluatedWorkflow: () => Promise.resolve(null),
         runClaims: unclaimedRuns,

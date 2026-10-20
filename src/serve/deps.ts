@@ -141,6 +141,13 @@ export async function createWorkflowRunDeps(
     reportRegistry.ensureLoaded(),
   ]);
   await refreshLocalModelsForRun();
+  // Read from the datastore-resolved path ExecutionService writes to.
+  const evaluatedWorkflows = () =>
+    new YamlEvaluatedWorkflowRepository(
+      repoDir,
+      new DefaultDatastorePathResolver(repoDir, datastoreConfig)
+        .resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+    );
   return {
     workflowRepo: repoContext.workflowRepo,
     runRepo: repoContext.workflowRunRepo,
@@ -275,13 +282,9 @@ export async function createWorkflowRunDeps(
         );
         return runs.filter((r): r is WorkflowRun => r !== null);
       },
-      // Read from the datastore-resolved path ExecutionService writes to.
-      findEvaluatedWorkflow: (runId) =>
-        new YamlEvaluatedWorkflowRepository(
-          repoDir,
-          new DefaultDatastorePathResolver(repoDir, datastoreConfig)
-            .resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
-        ).findByRunId(runId),
+      findEvaluatedWorkflow: (runId) => evaluatedWorkflows().findByRunId(runId),
+      evaluatedCache: (name) =>
+        evaluatedWorkflows().findByNameWithProvenance(name),
       // Superseded runs are locally owned, so a local approve, reject or
       // cancel can be deciding one at the same moment.
       runClaims: createWorkflowRunClaims(datastoreConfig),

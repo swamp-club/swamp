@@ -126,6 +126,7 @@ import {
   planFailedRunResume,
   type ResumeReset,
 } from "./resume_reset.ts";
+import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
   nextActionForStatus,
   RunNotSuspendedError,
@@ -166,7 +167,10 @@ import type {
 } from "../data/repositories.ts";
 import type { MethodExecutionService } from "../models/method_execution_service.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
-import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import {
+  type EvaluatedWorkflowCache,
+  YamlEvaluatedWorkflowRepository,
+} from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -244,20 +248,21 @@ import type { SecretLoader } from "../vaults/secret_loader.ts";
 import {
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
-  rehydrateEvaluatedDefinition,
 } from "../expressions/persisted_evaluation.ts";
 import {
   type PersistedEvaluatedWorkflow,
   persistEvaluatedWorkflow,
+  recordableEvaluatedInputs,
   rehydrateEvaluatedWorkflow,
+  replayInputs,
 } from "./persisted_workflow.ts";
 import {
   extractCelExpression,
   extractExpressions,
-  extractInputReferencesFromCel,
   replaceExpressions,
   replaceExpressionsTracked,
 } from "../expressions/expression_parser.ts";
+import { inputNamesRead } from "../expressions/cel_grammar.ts";
 import { replaceExpressionSpans } from "../expressions/expression_scanner.ts";
 import { requiresModelNamespace } from "../expressions/dependency_extractor.ts";
 import { extractStepDefinitionReferences } from "./model_reference_extractor.ts";
@@ -871,18 +876,6 @@ export interface StepExecutionContext {
   step?: Step;
   /** Callback to emit events into the parent event stream */
   emitEvent?: (event: WorkflowExecutionEvent) => void;
-  /**
-   * Evaluation mode for the step:
-   * - `"fresh"` (default): evaluate CEL expressions against the current
-   *   expression context, then cache the evaluated definition.
-   * - `"lastEvaluated"`: skip CEL evaluation; load the previously-cached
-   *   evaluated definition. Used when `--last-evaluated` is passed at
-   *   the CLI to re-run a workflow without re-evaluating expressions.
-   *
-   * Both modes still require `expressionContext` because runtime
-   * expressions (vault, env) and step-output tracking need it.
-   */
-  mode?: "fresh" | "lastEvaluated";
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: ForEachBinding;
   /** Zero-based forEach iteration index, exposed as self._index */
@@ -2281,86 +2274,7 @@ export class DefaultStepExecutor implements StepExecutor {
       ...authoredFromDefinition,
     ]);
 
-    if (ctx.mode === "lastEvaluated") {
-      // Load previously-evaluated definition from cache
-      runLogger?.debug("Loading last evaluated definition");
-      const lastEvaluated = await evaluatedDefRepo.findByNameWithProvenance(
-        modelType,
-        originalDefinition.name,
-      );
-      if (!lastEvaluated) {
-        throw new Error(
-          `No previously evaluated definition found for "${originalDefinition.name}". ` +
-            `Run the workflow without --last-evaluated first.`,
-        );
-      }
-      if (mayHoldPlaintextSensitiveValues(lastEvaluated)) {
-        throw new UserError(
-          `The evaluated definition cached for "${originalDefinition.name}" was written by an older swamp and may hold sensitive values in plaintext, so it is not replayed. ` +
-            `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
-        );
-      }
-      if (lastEvaluated.provenance === "unreadable") {
-        throw new UserError(
-          `The evaluated definition cached for "${originalDefinition.name}" has an unreadable provenance record, so it is not replayed. ` +
-            `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
-        );
-      }
-      // Sensitive values are cached as vault references; restore them, real
-      // values into evaluatedDefinition and sentinels into the executed copy.
-      const restored = await rehydrateEvaluatedDefinition(
-        lastEvaluated,
-        (vaultName, key) =>
-          vaultService.get(vaultName, key, "evaluated-cache:replay"),
-        ctx.sensitiveValues,
-        stepSecretBag,
-      );
-      evaluatedDefinition = restored.definition;
-      executedDefinition = restored.executedDefinition;
-      // A cache without provenance predates it and replays as it always did.
-      const cachedProvenance = lastEvaluated.provenance ??
-        ProvenanceMap.authored();
-      definitionProvenance = {
-        raw: cachedProvenance,
-        sanitized: alignProvenance(
-          cachedProvenance,
-          evaluatedDefinition.toData(),
-          executedDefinition.toData(),
-          sentinelStandInOf(stepSecretBag.registry),
-          sentinelStandInOf(stepSecretBag.registry),
-        ),
-      };
-      if (ctx.expressionContext) {
-        // The workflow cache may already have supplied the same records;
-        // de-dup by id so the definition cache does not grow per replay.
-        ctx.expressionContext.deferredExpressions = [
-          ...new Map(
-            [
-              ...(ctx.expressionContext.deferredExpressions ?? []),
-              ...restored.deferredExpressions,
-            ].map((record) => [record.id, record]),
-          ).values(),
-        ];
-      }
-      for (const expression of lastEvaluated.authoredExpressions) {
-        authoredExpressions.add(expression);
-      }
-
-      // Resolve deferred expressions (data.*, file.contents) that were
-      // skipped during workflow evaluate.  evaluateData only touches
-      // remaining ${{ }} markers; already-resolved values pass through.
-      if (task.inputs && ctx.expressionContext) {
-        stepInputs = await expressionEvaluator.evaluateDataPair(
-          stepInputPair(taskArgs),
-          ctx.expressionContext,
-          authoredExpressions,
-          stepSecretBag,
-          "passThrough",
-        );
-      } else if (task.inputs) {
-        stepInputs = stepInputPair(taskArgs);
-      }
-    } else if (ctx.expressionContext) {
+    if (ctx.expressionContext) {
       runLogger.debug("Evaluating expressions");
       // Set self context for this specific model before evaluating
       // Preserve any forEach variables that were set by the workflow engine
@@ -3575,6 +3489,12 @@ export class WorkflowExecutionService {
        */
       expectedName?: string;
       lastEvaluated?: boolean;
+      /**
+       * The evaluated cache a `--last-evaluated` run replays, as the caller
+       * loaded and superseded on (swamp-club#3583). Loaded here when absent,
+       * which is safe only for a caller that superseded nothing.
+       */
+      evaluatedCache?: EvaluatedWorkflowCache;
       inputs?: Record<string, unknown>;
       runtimeTags?: Record<string, string>;
       workflowNestingDepth?: number;
@@ -3721,6 +3641,8 @@ export class WorkflowExecutionService {
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
       let authoredExpressions: ReadonlySet<string> = new Set();
+      let inheritedExpressions: ReadonlySet<string> =
+        options?.authoredExpressions ?? new Set();
       let authoredWorkflow: Workflow | undefined;
       let deferredExpressions = options?.deferredExpressions ?? [];
       let run: WorkflowRun;
@@ -3731,6 +3653,10 @@ export class WorkflowExecutionService {
       let stepProvenance = StepProvenanceOverlay.authored();
       let workflowProvenance = ProvenanceMap.authored();
       let persistedWorkflow: PersistedEvaluatedWorkflow | undefined;
+      // The run's inputs. A run replaying the evaluated cache adds the inputs
+      // the cache was evaluated with, which its steps ran with: what a resume
+      // compares an override against (swamp-club#3583).
+      let runInputs = options?.inputs;
       const secretRedactor = options?.secretRedactor ?? new SecretRedactor();
       const sensitiveValues = options?.sensitiveValues ??
         new RunSensitiveValues(secretRedactor);
@@ -3776,8 +3702,9 @@ export class WorkflowExecutionService {
 
         if (options?.lastEvaluated) {
           // Load previously evaluated workflow from cache
-          const lastEvaluated = await this.evaluatedWorkflowRepo
-            .findByNameWithProvenance(workflow.name);
+          const lastEvaluated = options.evaluatedCache ??
+            await this.evaluatedWorkflowRepo
+              .findByNameWithProvenance(workflow.name);
           if (!lastEvaluated) {
             throw new UserError(
               `No previously evaluated workflow found for "${workflow.name}".\n\n` +
@@ -3797,6 +3724,15 @@ export class WorkflowExecutionService {
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
             );
           }
+          // The cached steps run with the inputs the cache was evaluated
+          // with, so the run records those, and a supplied input must equal
+          // its recorded value (swamp-club#3583). Key names only in the
+          // refusal: values may be secrets.
+          const replay = replayInputs(lastEvaluated, options?.inputs ?? {});
+          if ("refusal" in replay) throw new UserError(replay.refusal);
+          runInputs = replay.inputs;
+          inheritedExpressions = lastEvaluated.inheritedExpressions ??
+            new Set();
           // Sensitive values are cached as vault references: restore real
           // values into the workflow and sentinels into the step overlay.
           const vaultService = lastEvaluated.writtenReferences.length > 0
@@ -3853,21 +3789,21 @@ export class WorkflowExecutionService {
           expressionContext = await this.buildRunContext(
             workflow,
             sensitiveValues,
-            true,
             deferredExpressions,
           );
-          if (options?.inputs) {
-            expressionContext.inputs = options.inputs;
+          if (runInputs) {
+            expressionContext.inputs = runInputs;
           }
           attachInputsProvenance(
             expressionContext,
-            options?.inputsProvenance ??
+            lastEvaluated.evaluatedInputsProvenance ??
+              options?.inputsProvenance ??
               vouchInherited(
-                workflowInputsProvenance(options?.inputs, found, {
+                workflowInputsProvenance(runInputs, found, {
                   webhook: options?.triggerSource === "webhook",
                 }),
-                options?.inputs,
-                options?.authoredExpressions ?? new Set(),
+                runInputs,
+                inheritedExpressions,
               ),
           );
         } else {
@@ -3883,7 +3819,6 @@ export class WorkflowExecutionService {
           expressionContext = await this.buildRunContext(
             workflow,
             sensitiveValues,
-            false,
             deferredExpressions,
           );
           buildCtxSpan.end();
@@ -3930,6 +3865,11 @@ export class WorkflowExecutionService {
             authoredExpressions,
             persistedWorkflow.deferredExpressions,
             persistedWorkflow.writtenReferences,
+            recordableEvaluatedInputs(options?.inputs ?? {}, sensitiveValues, {
+              provenance: bindingProvenanceOf(expressionContext).inputs ??
+                ProvenanceMap.authored(),
+              inheritedExpressions,
+            }),
           );
           evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
             persistedWorkflow.workflow,
@@ -3963,11 +3903,14 @@ export class WorkflowExecutionService {
           run.recordAllowedVaults(allowedVaults);
         }
         run.attachSensitiveValues(sensitiveValues);
+        if (options?.lastEvaluated) {
+          run.recordReplayedEvaluatedCache();
+        }
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
         }
-        if (options?.inputs) {
-          run.captureInputs(options.inputs);
+        if (runInputs) {
+          run.captureInputs(runInputs);
           run.captureInputsProvenance(
             bindingProvenanceOf(expressionContext).inputs ??
               ProvenanceMap.authored(),
@@ -3975,8 +3918,8 @@ export class WorkflowExecutionService {
         }
         // Only what a parent passed in: the run's own source is re-collected
         // on resume, so persisting it would keep deleted expressions vouched.
-        if (options?.authoredExpressions?.size) {
-          run.captureInheritedExpressions(options.authoredExpressions);
+        if (inheritedExpressions.size) {
+          run.captureInheritedExpressions(inheritedExpressions);
         }
         run.captureDeferredExpressions(deferredExpressions);
         if (options?.references) {
@@ -4569,6 +4512,9 @@ export class WorkflowExecutionService {
       existingRun,
       options?.inputs ?? {},
     );
+    // A value the run has cannot change under the steps that read it
+    // (swamp-club#3583).
+    checkResumeInputOverrides(workflow, existingRun, resumeInputs);
 
     // A copy of the run that is behind the datastore's shows a suspension a
     // peer has already ended. Compared under the run's claim, so a peer that
@@ -4627,9 +4573,10 @@ export class WorkflowExecutionService {
         existingRun.resumeFromSuspended(owner);
       }
 
-      // Record the key names of any resume-time inputs for audit (never the
-      // values — they may be secrets such as a freshly minted auth key). Done
-      // before the save below so the audit trail persists immediately.
+      // Record the key names of any resume-time inputs for audit. Done before
+      // the save below so the audit trail persists immediately. The values
+      // reach the run's inputs once the resume prepares, as inputs do; a
+      // secret is passed as a vault key name, never as an input value.
       if (Object.keys(resumeInputs).length > 0) {
         existingRun.recordResumeInputs(Object.keys(resumeInputs));
       }
@@ -4853,7 +4800,6 @@ export class WorkflowExecutionService {
       const expressionContext = await this.buildRunContext(
         workflow,
         sensitiveValues,
-        false,
         existingRun.deferredExpressions,
       );
 
@@ -4861,10 +4807,11 @@ export class WorkflowExecutionService {
       // suspended. Resume overrides win on key collision; new keys are
       // additive. Set before evaluation so workflow- and step-level
       // `inputs.*` expressions resolve.
-      expressionContext.inputs = deepMerge(
+      const effectiveInputs = deepMerge(
         { ...existingRun.inputs },
         resumeInputs,
       );
+      expressionContext.inputs = effectiveInputs;
       // The provenance the run recorded when it started; runs recorded
       // before it existed fall back to deriving it. Resume-time inputs come
       // from the caller and are judged like a fresh run's.
@@ -4889,6 +4836,12 @@ export class WorkflowExecutionService {
       // new value as data, never less.
       resumedProvenance = resumedProvenance.union(resumeProvenance);
       attachInputsProvenance(expressionContext, resumedProvenance);
+      // The run records the inputs its remaining steps run with, not the ones
+      // it started with. Captured only once the provenance above is derived:
+      // a legacy run derives it from the stored inputs, which must not yet
+      // hold the resume's values.
+      existingRun.captureInputs({ ...effectiveInputs });
+      existingRun.captureInputsProvenance(resumedProvenance);
 
       expressionContext.workflowRunId = existingRun.id;
       expressionContext.run = {
@@ -4898,6 +4851,9 @@ export class WorkflowExecutionService {
         startedAt: existingRun.startedAt!.toISOString(),
         tags: { ...existingRun.tags },
         initiatedBy: existingRun.initiatedBy,
+        // The same set `inputs.*` reads: a step still to run sees one value
+        // through either, so an approval showing `run.inputs.X` shows what
+        // the step after it acts on (swamp-club#3583).
         inputs: existingRun.inputs,
       };
       expressionContext.steps = {};
@@ -5013,7 +4969,12 @@ export class WorkflowExecutionService {
         nestedRuns,
         inFlightMethodRuns,
         stepStopGraceMs: options?.stepStopGraceMs,
-        resumeDerived: existingRun.resumeInputs.map((key) => `inputs.${key}`),
+        // Read as `inputs.X` and as `run.inputs.X`; both are kept out of a
+        // child's persisted deferred bindings.
+        resumeDerived: existingRun.resumeInputs.flatMap((key) => [
+          `inputs.${key}`,
+          `run.inputs.${key}`,
+        ]),
         // workflow resume never receives CLI report flags — default so
         // resumed runs still execute reports instead of silently skipping.
         reportFilterOptions: options?.reportFilterOptions ?? {},
@@ -5859,10 +5820,16 @@ export class WorkflowExecutionService {
       const resumeKeys = (options.resumeDerived ?? [])
         .filter((path) => path.startsWith("inputs."))
         .map((path) => path.slice("inputs.".length));
-      const inRefs = extractInputReferencesFromCel(
+      // Read as `inputs.X` or `run.inputs.X`: both hold resume-time values.
+      // A collection read whole or by a computed key counts as reading them,
+      // so its items are left out rather than risk persisting one.
+      const inRefs = inputNamesRead(
         extractCelExpression(step.forEach?.in ?? "") ?? "",
       );
-      if (resumeKeys.some((key) => inRefs.has(key))) {
+      if (
+        resumeKeys.length > 0 &&
+        (inRefs.opaque || resumeKeys.some((key) => inRefs.names.has(key)))
+      ) {
         options = {
           ...options,
           resumeDerived: [
@@ -6546,7 +6513,6 @@ export class WorkflowExecutionService {
           expressionContext: stepExprContext,
           workflowRun: run,
           step,
-          mode: options.lastEvaluated ? "lastEvaluated" : "fresh",
           forEachVariable: forEachVar,
           forEachIndex,
           workflowTags: options.workflowTags,
@@ -7173,9 +7139,9 @@ export class WorkflowExecutionService {
     }
 
     // Deferred bindings are persisted by the child, so resume-derived values
-    // (audited by key, never by value) are left out. A parent runtime
-    // expression that references one fails to resolve in the child instead
-    // of persisting the secret or silently using a stale pre-resume value.
+    // are left out. Vault selectors that read them are bound in the parent
+    // before omission, preserving the selected reference for the child
+    // without copying unrelated inputs or fetching a secret (swamp-club#3583).
     const deferred = expressionContext
       ? inStepReport(() =>
         this.expressionEvaluator.deferChildInputs(
@@ -7756,63 +7722,10 @@ export class WorkflowExecutionService {
   private async buildRunContext(
     workflow: Workflow,
     sensitiveValues: RunSensitiveValues,
-    lastEvaluated = false,
     deferredExpressions: readonly DeferredExpression[] = [],
   ): Promise<ExpressionContext> {
     if (requiresModelNamespace([workflow.toData(), deferredExpressions])) {
       return await this.modelResolver.buildContext(sensitiveValues);
-    }
-
-    if (lastEvaluated) {
-      for (const job of workflow.jobs) {
-        for (const step of job.steps) {
-          const task = step.task.data;
-          if (task.type !== "model_method") continue;
-          const reference = task.modelIdOrName ?? task.modelName;
-          if (
-            !reference || reference.includes("${{") ||
-            task.modelType?.includes("${{")
-          ) {
-            return await this.modelResolver.buildContext(sensitiveValues);
-          }
-          // Match the definition the executor will load, using the source
-          // only to identify stored targets, never to inspect cached expressions.
-          let type: ModelType;
-          let name = reference;
-          if (task.modelType && task.modelName) {
-            try {
-              type = ModelType.create(task.modelType);
-            } catch {
-              // Invalid targets still fail at step execution.
-              return await this.modelResolver.buildContext(sensitiveValues);
-            }
-          } else {
-            const found = await findDefinitionByIdOrName(
-              this.definitionRepo,
-              reference,
-            );
-            if (!found) {
-              return await this.modelResolver.buildContext(sensitiveValues);
-            }
-            type = found.type;
-            name = found.definition.name;
-          }
-          const cached = await this.evaluatedDefRepo.findByNameWithProvenance(
-            type,
-            name,
-          );
-          if (
-            !cached ||
-            requiresModelNamespace([
-              cached.definition.toData(),
-              cached.deferredExpressions,
-            ])
-          ) {
-            return await this.modelResolver.buildContext(sensitiveValues);
-          }
-        }
-      }
-      return this.modelResolver.buildLightContext(sensitiveValues);
     }
 
     // A dynamic reference names an unknown definition until the step runs, so
