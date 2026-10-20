@@ -550,6 +550,32 @@ Deno.test("extensionQuality: bare imports the deno.json import map resolves leav
   );
 });
 
+Deno.test("extensionQuality: an import-map target that could escape its string literal fails quality as it fails push", async () => {
+  await withQualityFixture(
+    BARE_IMPORT_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const denoConfigPath = join(repoDir, "deno.json");
+      await Deno.writeTextFile(
+        denoConfigPath,
+        JSON.stringify({ imports: { zod: 'npm:zod@4"; globalThis.x = 1; "' } }),
+      );
+      const input = makeQualityInput(repoDir, makeManifest(), {
+        prepareInput: { denoConfigPath },
+        hashInput: { denoConfigPath },
+      });
+      const events = await collect(
+        extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
+      );
+      const failure = events.find((e) => e.kind === "error");
+      assert(failure?.kind === "error", "quality must fail");
+      assertStringIncludes(
+        failure.error.message,
+        'Fix the import map entry for "zod"',
+      );
+    },
+  );
+});
+
 Deno.test("extensionQuality: a cache hit still reports bare import specifiers as unscorable", async () => {
   await withQualityFixture(
     BARE_IMPORT_MODEL_SOURCE,
