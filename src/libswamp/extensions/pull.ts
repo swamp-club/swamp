@@ -25,6 +25,7 @@ import {
   resolve,
   SEPARATOR,
 } from "@std/path";
+import { join as posixJoin } from "@std/path/posix";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import type {
   InstallChange,
@@ -42,6 +43,7 @@ import { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import {
   canonicalLockfilePath,
+  lockfileRelative,
   readPublishedChannel,
   type UpstreamExtensionEntry,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
@@ -554,7 +556,7 @@ async function copyDir(
       } else if (entry.isFile) {
         await Deno.mkdir(dirname(destPath), { recursive: true });
         await Deno.copyFile(srcPath, destPath);
-        extracted.push(relative(repoDir, recordPath));
+        extracted.push(lockfileRelative(repoDir, recordPath));
       }
     }
   } catch (error) {
@@ -691,7 +693,7 @@ export async function detectConflicts(
     const relPath = relative(modelsSrc, file);
     const destPath = join(modelsDir, relPath);
     if (await fileExists(destPath)) {
-      conflicts.push(relative(repoDir, destPath));
+      conflicts.push(lockfileRelative(repoDir, destPath));
     }
   }
 
@@ -699,7 +701,7 @@ export async function detectConflicts(
   for (const file of await listFiles(workflowsSrc)) {
     const destPath = join(workflowsDir, basename(file));
     if (await fileExists(destPath)) {
-      conflicts.push(relative(repoDir, destPath));
+      conflicts.push(lockfileRelative(repoDir, destPath));
     }
   }
 
@@ -708,7 +710,7 @@ export async function detectConflicts(
     const relPath = relative(bundlesSrc, file);
     const destPath = join(bundlesDir, relPath);
     if (await fileExists(destPath)) {
-      conflicts.push(relative(repoDir, destPath));
+      conflicts.push(lockfileRelative(repoDir, destPath));
     }
   }
 
@@ -718,7 +720,7 @@ export async function detectConflicts(
       const relPath = relative(vaultsSrc, file);
       const destPath = join(vaultsDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -729,7 +731,7 @@ export async function detectConflicts(
       const relPath = relative(vaultBundlesSrc, file);
       const destPath = join(vaultBundlesDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -740,7 +742,7 @@ export async function detectConflicts(
       const relPath = relative(datastoresSrc, file);
       const destPath = join(datastoresDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -751,7 +753,7 @@ export async function detectConflicts(
       const relPath = relative(datastoreBundlesSrc, file);
       const destPath = join(datastoreBundlesDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -762,7 +764,7 @@ export async function detectConflicts(
       const relPath = relative(reportsSrc, file);
       const destPath = join(reportsDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -773,7 +775,7 @@ export async function detectConflicts(
       const relPath = relative(reportBundlesSrc, file);
       const destPath = join(reportBundlesDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -784,7 +786,7 @@ export async function detectConflicts(
       const relPath = relative(webhooksSrc, file);
       const destPath = join(webhooksDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -795,7 +797,7 @@ export async function detectConflicts(
       const relPath = relative(webhookBundlesSrc, file);
       const destPath = join(webhookBundlesDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -806,7 +808,7 @@ export async function detectConflicts(
       const relPath = relative(filesSrc, file);
       const destPath = join(filesDir, relPath);
       if (await fileExists(destPath)) {
-        conflicts.push(relative(repoDir, destPath));
+        conflicts.push(lockfileRelative(repoDir, destPath));
       }
     }
   }
@@ -828,7 +830,7 @@ async function detectRootSourceConflicts(
   for (const source of rootSources) {
     const destPath = join(extensionRoot, ...source.split("/"));
     if (await pathExistsNoFollow(destPath)) {
-      conflicts.push(relative(repoDir, destPath));
+      conflicts.push(lockfileRelative(repoDir, destPath));
     }
   }
   return conflicts;
@@ -879,7 +881,7 @@ export async function detectSkillConflicts(
     const absoluteSkillsDir = resolve(repoDir, skillsDir);
     for (const name of skillNames) {
       const destSkillDir = join(absoluteSkillsDir, name);
-      const rel = relative(repoDir, destSkillDir);
+      const rel = lockfileRelative(repoDir, destSkillDir);
       if (
         await pathExistsNoFollow(destSkillDir) && !claimsPath(oldFiles, rel)
       ) {
@@ -923,7 +925,7 @@ async function validateSourceCompleteness(
     try {
       await Deno.stat(resolved);
     } catch {
-      missing.push(relative(boundaryDir, resolved));
+      missing.push(lockfileRelative(boundaryDir, resolved));
     }
   }
   return missing;
@@ -1856,7 +1858,8 @@ async function pruneSkillOrphans(
     if (!stat?.isDirectory) return [];
     const out: string[] = [];
     for await (const entry of Deno.readDir(absolute)) {
-      const path = join(dir, entry.name);
+      // The lockfile's form, like the candidates the walk starts from.
+      const path = posixJoin(dir, entry.name);
       if (claimedWhole(path)) continue;
       if (!claimedUnder(path)) {
         out.push(path);
@@ -2244,7 +2247,7 @@ export async function applyInstall(
       await Deno.mkdir(dirname(stagedPath), { recursive: true });
       await Deno.copyFile(join(extractDir, ...segments), stagedPath);
       extractedFiles.push(
-        relative(repoDir, join(absoluteExtRoot, ...segments)),
+        lockfileRelative(repoDir, join(absoluteExtRoot, ...segments)),
       );
     }
 
@@ -2323,12 +2326,12 @@ export async function applyInstall(
             if (!entry.isDirectory) continue;
             const srcSkillDir = join(skillsSrc, entry.name);
             const destSkillDir = join(absoluteSkillsDir, entry.name);
-            const skillDirRelative = relative(repoDir, destSkillDir);
+            const skillDirRelative = lockfileRelative(repoDir, destSkillDir);
             const preExisted = await pathExistsNoFollow(destSkillDir);
             const filesBefore = preExisted
               ? new Set(
                 (await listFilesAndLinks(destSkillDir)).map((f) =>
-                  relative(repoDir, f)
+                  lockfileRelative(repoDir, f)
                 ),
               )
               : new Set<string>();
@@ -2390,7 +2393,7 @@ export async function applyInstall(
     );
 
     extractedFiles.push(
-      relative(repoDir, join(absoluteExtRoot, "manifest.yaml")),
+      lockfileRelative(repoDir, join(absoluteExtRoot, "manifest.yaml")),
     );
 
     // Record include files from manifest for loader skip logic
@@ -2472,7 +2475,7 @@ export async function applyInstall(
     // Reported when the install commits: a rollback puts the previous
     // root back, and with it whatever these say was replaced or removed.
     const reportCommitted = () => {
-      const extRootRel = relative(repoDir, absoluteExtRoot);
+      const extRootRel = lockfileRelative(repoDir, absoluteExtRoot);
       if (logger && replacedLinkTarget !== null) {
         logger
           .warn`Replaced the symlink ${extRootRel} (to ${replacedLinkTarget}) with an installed copy of ${ref.name}@${version}; the link's target was not changed. Re-create the link to keep using it.`;
@@ -2801,7 +2804,7 @@ async function carryForwardUserFiles(opts: {
         await walk(rel, blocked || (staged !== null && !staged.isDirectory));
         continue;
       }
-      const repoRel = relative(repoDir, livePath);
+      const repoRel = lockfileRelative(repoDir, livePath);
       if (!blocked && await lstatOrNull(stagedPath) !== null) continue;
       if (shippedBefore.has(canonicalClaimPath(repoRel))) continue;
       if (blocked || !entry.isFile) {
