@@ -170,3 +170,12 @@ Deno.test("SecretBagRegistry: a data-origin reference entry is issued, holds no 
   assertEquals(entry.dataOrigin, true);
   assertEquals("value" in entry, false);
 });
+
+Deno.test("SecretBagRegistry.typedSecrets: off unless asked for, the internal option only tests set (typed-secrets 3.4)", () => {
+  assertEquals(new SecretBagRegistry().typedSecrets, false);
+  assertEquals(new SecretBagRegistry({}).typedSecrets, false);
+  assertEquals(
+    new SecretBagRegistry({ typedSecrets: true }).typedSecrets,
+    true,
+  );
+});

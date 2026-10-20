@@ -63,6 +63,36 @@ export const ExecutionErrorSchema = z.object({
  */
 export type ExecutionError = z.infer<typeof ExecutionErrorSchema>;
 
+/** Masks text the way the run's redactor does. */
+export interface ErrorRedactor {
+  readonly hasSecrets: boolean;
+  redact(text: string): string;
+}
+
+/**
+ * The {@link ExecutionError} a failure record holds for `error`, its message
+ * and stack passed through the run's redactor, so a method error that echoes
+ * a delivered value, or a sentinel in a typed run, lands masked in
+ * `outputs/<type>/<method>/*.yaml` (design/enablers/typed-secrets.md Section
+ * 7.1). Without a redactor, or with one holding nothing, the text is kept as
+ * it is. The method boundary builds its failure record's error here; the run
+ * and workflow entry points, which write their own records, adopt it when
+ * Phase 3.5 and Phase 4 wire them.
+ */
+export function executionErrorFrom(
+  error: unknown,
+  redactor?: ErrorRedactor,
+): ExecutionError {
+  const message = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack : undefined;
+  const clean = (text: string) =>
+    redactor?.hasSecrets ? redactor.redact(text) : text;
+  return {
+    message: clean(message),
+    ...(stack === undefined ? {} : { stack: clean(stack) }),
+  };
+}
+
 /**
  * Zod schema for execution provenance.
  */

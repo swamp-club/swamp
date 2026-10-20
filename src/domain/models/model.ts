@@ -26,7 +26,9 @@ import { ModelType } from "./model_type.ts";
 import { isControlPlaneModelType } from "./control_plane_types.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import type { SecretOccurrences } from "../vaults/secret_occurrences.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
+import { assertModelSecretsMetadataValid } from "./secret_destinations.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -819,6 +821,36 @@ export interface MethodDefinition<
     args: z.infer<TArgs>,
     context: MethodContext,
   ): Promise<MethodResult>;
+
+  /**
+   * Refuses a secret at a destination this method's argument schema cannot
+   * describe with `.meta({ secrets: "refuse" })`, before any secret is loaded
+   * (design/enablers/typed-secrets.md Sections 6.3 and 7.1). The method
+   * boundary calls it for a locally placed step of a typed run, after the
+   * schema-marked refusals, with the arguments as `unresolvedMethodArgs`
+   * carries them and a value-free view of the run's secrets; it throws
+   * `SecretDestinationRefusedError` to refuse. The built-in `command/shell`
+   * behavior uses it for environment variable names and for shell
+   * placements no environment reference can expand.
+   */
+  refuseSecretDestinations?(args: SecretDestinationArgs): void;
+}
+
+/**
+ * What a method's {@link MethodDefinition.refuseSecretDestinations} hook
+ * receives: the authored arguments, with sentinels in place of secrets, and
+ * what the run knows about those sentinels without reading a value.
+ */
+export interface SecretDestinationArgs {
+  /**
+   * The method's arguments as `unresolvedMethodArgs` carries them: the raw
+   * per-method arguments over the raw global arguments that hold no
+   * unresolved expression, whichever of the two a field was authored under.
+   * Read before coercion and validation, so any shape is possible.
+   */
+  readonly arguments: Record<string, unknown>;
+  /** The run's secrets, as occurrences and origins only. */
+  readonly secrets: SecretOccurrences;
 }
 
 /**
@@ -1340,6 +1372,10 @@ export class ModelRegistry {
       }
     }
 
+    // A field marked both sensitive and secrets: "refuse" is a schema error
+    // (design/enablers/typed-secrets.md Section 6.3).
+    assertModelSecretsMetadataValid(model);
+
     this.models.set(key, model);
   }
 
@@ -1401,6 +1437,8 @@ export class ModelRegistry {
         }
       }
     }
+
+    assertModelSecretsMetadataValid({ type: modelType, methods });
 
     // Create a new merged ModelDefinition (immutable)
     const merged: ModelDefinition = {
@@ -1489,6 +1527,11 @@ export class ModelRegistry {
         }
       }
     }
+
+    assertModelSecretsMetadataValid({
+      type: modelType,
+      methods: { ...(additions.methods ?? {}), ...(overrides.methods ?? {}) },
+    });
 
     const hasChecks = existing.checks || additions.checks || overrides.checks;
     const hasResources = existing.resources || additions.resources ||

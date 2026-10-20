@@ -766,3 +766,28 @@ Deno.test("ConsoleModelMethodRunRenderer: the behavior surface words the libswam
     "              Data stored under this behavior will vary depending on these environment variables at runtime. Consider using separate behaviors per environment, or vault.get() for sensitive values.",
   ]);
 });
+
+Deno.test("ModelMethodRunRenderer: a destination refusal is an error carrying its code and no value, in log and json modes (typed-secrets 3.4)", () => {
+  for (const mode of ["log", "json"] as const) {
+    const renderer = createModelMethodRunRenderer(mode, {
+      modelName: "test-model",
+      methodName: "run",
+    });
+    const error = assertThrows(
+      () =>
+        renderer.handlers().error({
+          kind: "error",
+          error: {
+            code: "secret_destination_refused",
+            message: "Refused to deliver secret 'DB_PASS' in vault 'prod' to " +
+              "method argument 'workingDir' (at " +
+              "methods.execute.arguments.workingDir): the field refuses secrets",
+          },
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "secret_destination_refused", mode);
+    assertStringIncludes(error.message, "method argument 'workingDir'");
+    assertStringIncludes(error.message, "secret 'DB_PASS' in vault 'prod'");
+  }
+});

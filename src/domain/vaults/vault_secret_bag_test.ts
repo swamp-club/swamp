@@ -19,8 +19,13 @@
 
 import { assertEquals, assertStrictEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
-import { getQuoteContext } from "./vault_secret_bag.ts";
+import {
+  getQuoteContext,
+  planPowerShellPlacement,
+  planShellPlacement,
+} from "./vault_secret_bag.ts";
 import { isIssuedEntry, SecretBagRegistry } from "./secret_bag_registry.ts";
+import { secretOccurrencesOf } from "./secret_occurrences.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 
 /** The reference every secret of these tests stands for. */
@@ -1151,6 +1156,7 @@ Deno.test("VaultSecretBag: a loaded data-origin reference delivers as a data val
     env: { __SWAMP_VAULT_0: "loaded-value" },
     dataInCommandLine: false,
     singleQuoted: [],
+    envNames: new Map([[sentinel, "__SWAMP_VAULT_0"]]),
   });
   // A quoted here-document is placed as a data entry's value is placed
   // today, and says so (typed-secrets 3.4 turns it into a refusal).
@@ -1193,4 +1199,81 @@ Deno.test("VaultSecretBag.rehomeSentinels: a data-origin reference moves as a re
     location: DATA_LOCATION,
   });
   assertEquals(target.rawValues, []);
+});
+
+Deno.test("planShellPlacement: plans every occurrence from references alone, with no value loaded (typed-secrets 3.4)", () => {
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const data = bag.addDataReference(REF, "db/main.password");
+  const vault = issue(bag, "two words");
+  const command =
+    `echo ${data} '${vault}' "${vault}"\ncat <<'EOF'\n${data}\nEOF`;
+  const plan = planShellPlacement(
+    command,
+    [],
+    secretOccurrencesOf(registry).originOf,
+  );
+  assertEquals(
+    plan.occurrences.map((o) => [o.placement, o.text ?? o.where]),
+    [
+      ["environment", '"${__SWAMP_VAULT_0}"'],
+      ["literal", '"${__SWAMP_VAULT_1}"'],
+      ["environment", "${__SWAMP_VAULT_1}"],
+      ["refused", "a here-document with a quoted delimiter"],
+    ],
+  );
+  assertEquals(plan.singleQuoted, [vault]);
+  assertEquals(plan.refused.map((o) => o.sentinel), [data]);
+  assertEquals(
+    plan.envNames,
+    new Map([[data, "__SWAMP_VAULT_0"], [vault, "__SWAMP_VAULT_1"]]),
+  );
+  for (const occurrence of plan.occurrences) {
+    assertEquals(
+      command.slice(occurrence.start, occurrence.end),
+      occurrence.sentinel,
+    );
+  }
+  // The bag is unloaded: a fill throws where the plan needed nothing.
+  assertThrows(() => bag.resolveForShell(command));
+});
+
+Deno.test("planShellPlacement and resolveForShell: generated names skip the authored keys exactly, and the resolution reports them", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const s = issue(bag, "v");
+  const resolved = loaded(bag).resolveForShell(`echo ${s}`, [
+    "__SWAMP_VAULT_0",
+    "__swamp_vault_1",
+  ]);
+  // POSIX names are case-sensitive: the lower-case key is no collision.
+  assertEquals(resolved.command, 'echo "${__SWAMP_VAULT_1}"');
+  assertEquals(resolved.env, { __SWAMP_VAULT_1: "v" });
+  assertEquals(resolved.envNames, new Map([[s, "__SWAMP_VAULT_1"]]));
+});
+
+Deno.test("planPowerShellPlacement and resolveForPowerShell: names skip authored keys whatever their case, and a single-quoted data value is refused", () => {
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const data = bag.addDataSecret("s3cret", REF);
+  const vault = issue(bag, "v");
+  const command = `Write-Output '${data}' ${vault}`;
+  const authored = ["__swamp_vault_0", "__SWAMP_VAULT_1"];
+  const plan = planPowerShellPlacement(
+    command,
+    authored,
+    secretOccurrencesOf(registry).originOf,
+  );
+  assertEquals([...plan.envNames.values()], [
+    "__SWAMP_VAULT_2",
+    "__SWAMP_VAULT_3",
+  ]);
+  assertEquals(plan.refused.map((o) => o.where), ["PowerShell single quotes"]);
+  // The legacy fill pastes what the plan refused, and says so.
+  const resolved = loaded(bag).resolveForPowerShell(command, authored);
+  assertEquals(
+    resolved.command,
+    `Write-Output 's3cret' "$env:__SWAMP_VAULT_3"`,
+  );
+  assertEquals(resolved.dataInCommandLine, true);
+  assertEquals(resolved.env, { __SWAMP_VAULT_3: "v" });
 });

@@ -32,6 +32,11 @@ import {
   type VaultReferenceEntry,
 } from "./secret_bag_registry.ts";
 import {
+  secretOccurrencesOf,
+  type SecretOrigin,
+  type SecretOriginLookup,
+} from "./secret_occurrences.ts";
+import {
   classifyShellPositions,
   type ShellContext,
 } from "./shell_context_scanner.ts";
@@ -58,7 +63,60 @@ export interface ShellSecretResolution {
    * the reference stays a literal; each sentinel listed once.
    */
   singleQuoted: string[];
+  /** The generated environment name of each sentinel in the command. */
+  envNames: ReadonlyMap<string, string>;
 }
+
+/** Where one occurrence of a sentinel in a shell command is placed. */
+export interface ShellOccurrencePlacement {
+  readonly sentinel: string;
+  /** The offset of the sentinel in the command. */
+  readonly start: number;
+  /** The offset just past the sentinel. */
+  readonly end: number;
+  readonly dataOrigin: boolean;
+  /** The generated environment variable the occurrence refers to. */
+  readonly envName: string;
+  /**
+   * `environment`: replaced by `text`, a reference the shell expands from
+   * the child environment. `literal`: a vault.get() reference inside single
+   * quotes, replaced by `text` but left unexpanded by the shell, which is
+   * warned about. `refused`: a data-origin value no environment reference
+   * can expand where it sits (`where`); a typed run refuses the delivery,
+   * and the legacy fill pastes the value and reports it.
+   */
+  readonly placement: "environment" | "literal" | "refused";
+  readonly text?: string;
+  /** For a refused placement, the position as a user reads it. */
+  readonly where?: string;
+  /** For a refused placement, what to write instead. */
+  readonly fix?: string;
+}
+
+/**
+ * A plan of a shell command's secret placement
+ * (design/enablers/typed-secrets.md Section 7.2), computed from references
+ * alone: no value is read, so a destination policy can refuse before the
+ * load, and the fill after the load places exactly what the plan says.
+ */
+export interface ShellPlacementPlan {
+  readonly occurrences: readonly ShellOccurrencePlacement[];
+  /**
+   * The generated environment name of each sentinel present, in the run's
+   * issue order. A name never equals an authored environment key.
+   */
+  readonly envNames: ReadonlyMap<string, string>;
+  /** The occurrences no environment reference can expand. */
+  readonly refused: readonly ShellOccurrencePlacement[];
+  /**
+   * vault.get() sentinels with an occurrence inside single quotes, where
+   * the reference stays a literal; each sentinel listed once.
+   */
+  readonly singleQuoted: readonly string[];
+}
+
+/** The prefix of every generated environment variable name. */
+export const GENERATED_ENV_PREFIX = "__SWAMP_VAULT_";
 
 /** Characters after which a quote begins a new here-document token. */
 const TOKEN_BOUNDARY = /[\s=(|;&{[,:]/;
@@ -639,117 +697,18 @@ export class VaultSecretBag {
    *   prevent word splitting and glob expansion)
    * - Inside single quotes the reference stays a literal and the sentinel
    *   is listed in `singleQuoted`
+   *
+   * The fill of {@link planShellPlacement}: `authoredEnvKeys` are the names
+   * the command's own `env` sets, which no generated name may take.
    */
   resolveForShell(
     command: string,
+    authoredEnvKeys: Iterable<string> = [],
   ): ShellSecretResolution {
-    return this.resolveOccurrences(
+    return this.fill(
       command,
-      classifyShellPositions,
-      (envName, context: ShellContext) => {
-        switch (context) {
-          case "double":
-          case "heredoc":
-            return `\${${envName}}`;
-          case "single":
-            return `'"\${${envName}}"'`;
-          case "ansi-c":
-            return `'"\${${envName}}"$'`;
-          case "heredoc-literal":
-            return undefined;
-          default:
-            return `"\${${envName}}"`;
-        }
-      },
-      posixVaultQuoter(command),
-      (envName, quote) =>
-        quote === "double" ? `\${${envName}}` : `"\${${envName}}"`,
+      planShellPlacement(command, authoredEnvKeys, this.originOf),
     );
-  }
-
-  /**
-   * Replaces sentinels in a command with references built by the callers,
-   * per occurrence from the context `classify` gives it: a data-origin
-   * sentinel's by `dataRef`, a vault.get sentinel's by `vaultRef` from the
-   * quote context `vaultQuote` reads there. A `dataRef` of undefined means
-   * no reference can expand there, so the raw value is substituted and the
-   * result reports that a data value is in the command line.
-   */
-  private resolveOccurrences<C>(
-    command: string,
-    classify: (command: string, positions: number[]) => C[],
-    dataRef: (envName: string, context: C) => string | undefined,
-    vaultQuote: (position: number, context: C) => QuoteContext,
-    vaultRef: (envName: string, quote: QuoteContext) => string,
-  ): ShellSecretResolution {
-    const env: Record<string, string> = {};
-    const envNames = new Map<string, string>();
-    const dataOrigin = new Map<string, boolean>();
-    // Only the sentinels present are looked up, never the whole registry;
-    // environment names then follow issue order across the run, so a
-    // step's own sentinels are numbered as they were added.
-    const present = [
-      ...new Set(
-        [...command.matchAll(VaultSecretBag.SENTINEL_PATTERN)].map((m) => m[0]),
-      ),
-    ].filter((sentinel) => this.registry.entryOf(sentinel) !== undefined)
-      .sort((a, b) =>
-        this.registry.sequenceOf(a)! - this.registry.sequenceOf(b)!
-      );
-    present.forEach((sentinel, envIdx) => {
-      const envName = `__SWAMP_VAULT_${envIdx}`;
-      envNames.set(sentinel, envName);
-      dataOrigin.set(sentinel, this.registry.entryOf(sentinel)!.dataOrigin);
-      env[envName] = this.valueOf(sentinel)!;
-    });
-    if (envNames.size === 0) {
-      return { command, env, dataInCommandLine: false, singleQuoted: [] };
-    }
-
-    const occurrences = [...command.matchAll(VaultSecretBag.SENTINEL_PATTERN)]
-      .filter((match) => envNames.has(match[0]));
-    const contexts = classify(
-      command,
-      occurrences.map((match) => match.index ?? 0),
-    );
-
-    let dataInCommandLine = false;
-    const singleQuoted = new Set<string>();
-    const referenced = new Set<string>();
-    let result = "";
-    let last = 0;
-    occurrences.forEach((match, i) => {
-      const sentinel = match[0];
-      const start = match.index ?? 0;
-      result += command.slice(last, start);
-      if (dataOrigin.get(sentinel)) {
-        const ref = dataRef(envNames.get(sentinel)!, contexts[i]);
-        if (ref === undefined) {
-          dataInCommandLine = true;
-          result += env[envNames.get(sentinel)!];
-        } else {
-          result += ref;
-          referenced.add(sentinel);
-        }
-      } else {
-        const quote = vaultQuote(start, contexts[i]);
-        if (quote === "single") singleQuoted.add(sentinel);
-        result += vaultRef(envNames.get(sentinel)!, quote);
-        referenced.add(sentinel);
-      }
-      last = start + sentinel.length;
-    });
-    result += command.slice(last);
-    // A data value substituted raw everywhere needs no environment entry.
-    for (const [sentinel, envName] of envNames) {
-      if (!referenced.has(sentinel)) delete env[envName];
-    }
-    return {
-      command: result,
-      env,
-      dataInCommandLine,
-      singleQuoted: [...singleQuoted],
-    };
   }
 
   /**
@@ -776,22 +735,241 @@ export class VaultSecretBag {
    * users hitting that corner case can avoid it by keeping vault
    * sentinels outside single-quoted regions, the same advice that
    * applies to the POSIX resolver.
+   *
+   * The fill of {@link planPowerShellPlacement}.
    */
   resolveForPowerShell(
     command: string,
+    authoredEnvKeys: Iterable<string> = [],
   ): ShellSecretResolution {
-    const psRef = (envName: string, quote: QuoteContext) =>
-      quote === "double" ? `$env:${envName}` : `"$env:${envName}"`;
-    return this.resolveOccurrences(
+    return this.fill(
       command,
-      (text, positions) =>
-        positions.map((position) => getQuoteContext(text, position)),
-      (envName, context: QuoteContext) =>
-        // PowerShell has no break-out from a single-quoted string that is
-        // safe in every command position, so the value stays in place.
-        context === "single" ? undefined : psRef(envName, context),
-      (_position, context) => context,
-      psRef,
+      planPowerShellPlacement(command, authoredEnvKeys, this.originOf),
     );
   }
+
+  /** The origin of a sentinel the run issued, read from the registry. */
+  private get originOf(): SecretOriginLookup {
+    return secretOccurrencesOf(this.registry).originOf;
+  }
+
+  /**
+   * Places each occurrence as `plan` says and fills the environment with
+   * the values of the sentinels the command refers to. A refused occurrence
+   * is the legacy paste: the value goes into the command line and the
+   * result says so; a typed run refuses the delivery before this is
+   * reached. A sentinel no load filled throws.
+   */
+  private fill(
+    command: string,
+    plan: ShellPlacementPlan,
+  ): ShellSecretResolution {
+    const env: Record<string, string> = {};
+    if (plan.envNames.size === 0) {
+      return {
+        command,
+        env,
+        dataInCommandLine: false,
+        singleQuoted: [],
+        envNames: plan.envNames,
+      };
+    }
+    let dataInCommandLine = false;
+    const referenced = new Set<string>();
+    let result = "";
+    let last = 0;
+    for (const occurrence of plan.occurrences) {
+      result += command.slice(last, occurrence.start);
+      if (occurrence.placement === "refused") {
+        dataInCommandLine = true;
+        result += this.valueOf(occurrence.sentinel)!;
+      } else {
+        result += occurrence.text!;
+        referenced.add(occurrence.sentinel);
+      }
+      last = occurrence.end;
+    }
+    result += command.slice(last);
+    // A data value substituted raw everywhere needs no environment entry.
+    for (const [sentinel, envName] of plan.envNames) {
+      if (referenced.has(sentinel)) env[envName] = this.valueOf(sentinel)!;
+    }
+    return {
+      command: result,
+      env,
+      dataInCommandLine,
+      singleQuoted: [...plan.singleQuoted],
+      envNames: plan.envNames,
+    };
+  }
+}
+
+/** The POSIX reference a data-origin occurrence becomes in `context`. */
+function posixDataReference(
+  envName: string,
+  context: ShellContext,
+): string | undefined {
+  switch (context) {
+    case "double":
+    case "heredoc":
+      return `\${${envName}}`;
+    case "single":
+      return `'"\${${envName}}"'`;
+    case "ansi-c":
+      return `'"\${${envName}}"$'`;
+    case "heredoc-literal":
+      return undefined;
+    default:
+      return `"\${${envName}}"`;
+  }
+}
+
+/** The POSIX reference a vault.get() occurrence becomes in `quote`. */
+function posixVaultReference(envName: string, quote: QuoteContext): string {
+  return quote === "double" ? `\${${envName}}` : `"\${${envName}}"`;
+}
+
+/** The PowerShell reference an occurrence becomes in `quote`. */
+function powerShellReference(envName: string, quote: QuoteContext): string {
+  return quote === "double" ? `$env:${envName}` : `"$env:${envName}"`;
+}
+
+/**
+ * Plans the placement of every sentinel of the run in a POSIX `sh -c`
+ * command, from references alone: each occurrence's context from the shell
+ * context scanner, the environment reference that expands there, a literal
+ * vault.get() reference inside single quotes, or a refusal where nothing
+ * expands (a data value in a here-document with a quoted delimiter).
+ * Generated names follow the run's issue order and skip any name in
+ * `authoredEnvKeys`.
+ */
+export function planShellPlacement(
+  command: string,
+  authoredEnvKeys: Iterable<string>,
+  originOf: SecretOriginLookup,
+): ShellPlacementPlan {
+  return planOccurrences(command, authoredEnvKeys, originOf, {
+    caseInsensitiveNames: false,
+    classify: classifyShellPositions,
+    dataReference: posixDataReference,
+    vaultQuote: posixVaultQuoter(command),
+    vaultReference: posixVaultReference,
+    refusedWhere: "a here-document with a quoted delimiter",
+    refusedFix: "use an unquoted here-document delimiter",
+  });
+}
+
+/**
+ * PowerShell sibling of {@link planShellPlacement}: contexts come from
+ * `getQuoteContext`, and a data value inside single quotes is refused,
+ * since PowerShell has no break-out from a single-quoted string that is
+ * safe in every command position. Environment variable names are
+ * case-insensitive on Windows, so generated names skip authored keys
+ * whatever their case.
+ */
+export function planPowerShellPlacement(
+  command: string,
+  authoredEnvKeys: Iterable<string>,
+  originOf: SecretOriginLookup,
+): ShellPlacementPlan {
+  return planOccurrences(command, authoredEnvKeys, originOf, {
+    caseInsensitiveNames: true,
+    classify: (text, positions) =>
+      positions.map((position) => getQuoteContext(text, position)),
+    dataReference: (envName, context: QuoteContext) =>
+      context === "single" ? undefined : powerShellReference(envName, context),
+    vaultQuote: (_position, context) => context,
+    vaultReference: powerShellReference,
+    refusedWhere: "PowerShell single quotes",
+    refusedFix: "use double quotes",
+  });
+}
+
+/** How one shell reads contexts and writes references. */
+interface ShellPlacementRules<C> {
+  caseInsensitiveNames: boolean;
+  classify: (command: string, positions: number[]) => C[];
+  /** The reference for a data-origin occurrence; undefined where none expands. */
+  dataReference: (envName: string, context: C) => string | undefined;
+  vaultQuote: (position: number, context: C) => QuoteContext;
+  vaultReference: (envName: string, quote: QuoteContext) => string;
+  refusedWhere: string;
+  refusedFix: string;
+}
+
+function planOccurrences<C>(
+  command: string,
+  authoredEnvKeys: Iterable<string>,
+  originOf: SecretOriginLookup,
+  rules: ShellPlacementRules<C>,
+): ShellPlacementPlan {
+  // Only the sentinels present are looked up, never the whole registry;
+  // environment names then follow issue order across the run, so a step's
+  // own sentinels are numbered as they were added.
+  const origins = new Map<string, SecretOrigin>();
+  for (const match of command.matchAll(VaultSecretBag.SENTINEL_PATTERN)) {
+    if (origins.has(match[0])) continue;
+    const origin = originOf(match[0]);
+    if (origin) origins.set(match[0], origin);
+  }
+  const present = [...origins.keys()].sort((a, b) =>
+    origins.get(a)!.sequence - origins.get(b)!.sequence
+  );
+  const fold = (name: string) =>
+    rules.caseInsensitiveNames ? name.toUpperCase() : name;
+  const taken = new Set([...authoredEnvKeys].map(fold));
+  const envNames = new Map<string, string>();
+  let next = 0;
+  for (const sentinel of present) {
+    let name = `${GENERATED_ENV_PREFIX}${next++}`;
+    while (taken.has(fold(name))) name = `${GENERATED_ENV_PREFIX}${next++}`;
+    envNames.set(sentinel, name);
+  }
+  if (envNames.size === 0) {
+    return { occurrences: [], envNames, refused: [], singleQuoted: [] };
+  }
+
+  const matches = [...command.matchAll(VaultSecretBag.SENTINEL_PATTERN)]
+    .filter((match) => envNames.has(match[0]));
+  const contexts = rules.classify(
+    command,
+    matches.map((match) => match.index ?? 0),
+  );
+  const singleQuoted = new Set<string>();
+  const occurrences = matches.map((match, i): ShellOccurrencePlacement => {
+    const sentinel = match[0];
+    const start = match.index ?? 0;
+    const envName = envNames.get(sentinel)!;
+    const base = {
+      sentinel,
+      start,
+      end: start + sentinel.length,
+      dataOrigin: origins.get(sentinel)!.dataOrigin,
+      envName,
+    };
+    if (base.dataOrigin) {
+      const text = rules.dataReference(envName, contexts[i]);
+      return text === undefined
+        ? {
+          ...base,
+          placement: "refused",
+          where: rules.refusedWhere,
+          fix: rules.refusedFix,
+        }
+        : { ...base, placement: "environment", text };
+    }
+    const quote = rules.vaultQuote(start, contexts[i]);
+    if (quote === "single") singleQuoted.add(sentinel);
+    return {
+      ...base,
+      placement: quote === "single" ? "literal" : "environment",
+      text: rules.vaultReference(envName, quote),
+    };
+  });
+  return {
+    occurrences,
+    envNames,
+    refused: occurrences.filter((o) => o.placement === "refused"),
+    singleQuoted: [...singleQuoted],
+  };
 }

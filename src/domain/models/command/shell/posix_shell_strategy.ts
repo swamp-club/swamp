@@ -17,9 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  ShellSecretResolution,
-  VaultSecretBag,
+import type { SecretOriginLookup } from "../../../vaults/secret_occurrences.ts";
+import {
+  planShellPlacement,
+  type ShellPlacementPlan,
+  type ShellSecretResolution,
+  type VaultSecretBag,
 } from "../../../vaults/vault_secret_bag.ts";
 import type { ShellStrategy } from "./shell_strategy.ts";
 
@@ -38,10 +41,19 @@ export class PosixShellStrategy implements ShellStrategy {
     return { command: "sh", args: ["-c", command] };
   }
 
+  planSecrets(
+    command: string,
+    authoredEnvKeys: Iterable<string>,
+    originOf: SecretOriginLookup,
+  ): ShellPlacementPlan {
+    return planShellPlacement(command, authoredEnvKeys, originOf);
+  }
+
   resolveSecrets(
     command: string,
     secretBag: VaultSecretBag,
+    authoredEnvKeys: Iterable<string> = [],
   ): ShellSecretResolution {
-    return secretBag.resolveForShell(command);
+    return secretBag.resolveForShell(command, authoredEnvKeys);
   }
 }

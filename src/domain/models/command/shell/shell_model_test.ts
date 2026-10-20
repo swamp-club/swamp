@@ -17,18 +17,30 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { assertNotEquals } from "@std/assert/not-equals";
 import { join } from "@std/path";
 import { createExtensionCelEnvironment } from "../../../../infrastructure/cel/cel_evaluator.ts";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
+  refuseShellSecretDestinations,
+  SHELL_ENVIRONMENT_VALUE_REFUSED,
   SHELL_MODEL_TYPE,
   ShellDataAttributesSchema,
   type ShellInputAttributes,
   ShellInputAttributesSchema,
   shellModel,
 } from "./shell_model.ts";
+import { UserError } from "../../../errors.ts";
+import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
+import { SecretDestinationRefusedError } from "../../secret_destinations.ts";
+import { extractFieldsWithMetadata } from "../../zod_field_metadata.ts";
+import { selectShellStrategy } from "./shell_strategy.ts";
 import type { DataHandle, DataWriter, MethodContext } from "../../model.ts";
 import { ModelType } from "../../model_type.ts";
 import type { UnifiedDataRepository } from "../../../data/repositories.ts";
@@ -1799,5 +1811,288 @@ posixOnlyTest(
     await shellModel.methods.execute.execute({ run: "placeholder" }, context);
     const attrs = getResultAttributes(getResults(), "result");
     assertEquals(attrs?.stdout, "v=early-s3cret");
+  },
+);
+
+// ---------- typed-secrets 3.4: the shell's destination policy ----------
+
+/** A typed run and its issuing bag. */
+function typedRun(): { registry: SecretBagRegistry; bag: VaultSecretBag } {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  return { registry, bag: new VaultSecretBag(registry) };
+}
+
+Deno.test("ShellInputAttributesSchema: workingDir refuses secrets (typed-secrets 3.4)", () => {
+  assertEquals(
+    extractFieldsWithMetadata(
+      ShellInputAttributesSchema,
+      (meta) => meta.secrets === "refuse",
+    ).map((field) => field.path),
+    ["workingDir"],
+  );
+});
+
+Deno.test("shellModel: the execute method declares the shell destination policy", () => {
+  assertEquals(
+    shellModel.methods.execute.refuseSecretDestinations,
+    refuseShellSecretDestinations,
+  );
+});
+
+Deno.test("refuseShellSecretDestinations: a secret in an environment variable name is refused; a secret as its value is not", () => {
+  const { registry, bag } = typedRun();
+  const sentinel = bag.addSecret(REF, "methods.execute.arguments.env");
+  const secrets = secretOccurrencesOf(registry);
+  const error = assertThrows(
+    () =>
+      refuseShellSecretDestinations({
+        arguments: { run: "echo", env: { [sentinel]: "x" } },
+        secrets,
+      }),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(error.destination, "an environment variable name");
+  assertEquals(error.code, "secret_destination_refused");
+  assertEquals(error.message.includes(sentinel), false);
+  refuseShellSecretDestinations({
+    arguments: { run: "echo", env: { X: sentinel } },
+    secrets,
+  });
+});
+
+posixOnlyTest(
+  "refuseShellSecretDestinations: a data value in a quoted here-document is refused before any load, and a vault.get there or a data value elsewhere is not",
+  () => {
+    const { registry, bag } = typedRun();
+    const data = bag.addDataReference(REF, "db/main.password");
+    const vault = bag.addSecret(REF, "methods.execute.arguments.run");
+    const secrets = secretOccurrencesOf(registry);
+    const error = assertThrows(
+      () =>
+        refuseShellSecretDestinations({
+          arguments: { run: `cat <<'EOF'\n${data}\nEOF` },
+          secrets,
+        }),
+      SecretDestinationRefusedError,
+    );
+    assertEquals(
+      error.destination,
+      "the shell command inside a here-document with a quoted delimiter",
+    );
+    assertEquals(error.reference, REF);
+    assertStringIncludes(error.message, "(at db/main.password)");
+    assertEquals(error.message.includes(data), false);
+    // The bag was never loaded: the plan needed no value.
+    refuseShellSecretDestinations({
+      arguments: {
+        run: `cat <<'EOF'\n${vault}\nEOF\necho '${vault}' ${data} "${data}"`,
+      },
+      secrets,
+    });
+  },
+);
+
+windowsOnlyTest(
+  "refuseShellSecretDestinations (powershell): a data value in single quotes is refused before any load",
+  () => {
+    const { registry, bag } = typedRun();
+    const data = bag.addDataReference(REF, "db/main.password");
+    const error = assertThrows(
+      () =>
+        refuseShellSecretDestinations({
+          arguments: { run: `Write-Output '${data}'` },
+          secrets: secretOccurrencesOf(registry),
+        }),
+      SecretDestinationRefusedError,
+    );
+    assertEquals(
+      error.destination,
+      "the shell command inside PowerShell single quotes",
+    );
+  },
+);
+
+Deno.test("refuseShellSecretDestinations: a run that is not a string or an env that is not an object is left to validation", () => {
+  const { registry, bag } = typedRun();
+  bag.addSecret(REF, "loc");
+  const secrets = secretOccurrencesOf(registry);
+  refuseShellSecretDestinations({
+    arguments: { run: 42, env: "nope" },
+    secrets,
+  });
+  refuseShellSecretDestinations({ arguments: { env: ["a"] }, secrets });
+  refuseShellSecretDestinations({ arguments: {}, secrets });
+});
+
+posixOnlyTest(
+  "shellModel.methods.execute: a generated environment name never takes an authored key, so both reach the command",
+  async () => {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
+    const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+    const vaultSecrets = bag.withLoaded(new Map([[sentinel, "s3cret-value"]]));
+    const env = { __SWAMP_VAULT_0: "mine" };
+    const { context, getResults } = createTestContext({
+      vaultSecrets,
+      unresolvedMethodArgs: {
+        run: `echo "$__SWAMP_VAULT_0:${sentinel}"`,
+        env,
+      },
+    });
+    await shellModel.methods.execute.execute(
+      { run: "placeholder", env },
+      context,
+    );
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, "mine:s3cret-value");
+  },
+);
+
+Deno.test("shellModel.methods.execute: in a typed run a NUL in a loaded secret is refused before the lock hand-off and the launch, with no result written, ignoreExitCode or not", async () => {
+  const { bag } = typedRun();
+  const sentinel = bag.addSecret(
+    { vaultName: "prod", key: "DB_PASS" },
+    "methods.execute.arguments.run",
+  );
+  const vaultSecrets = bag.withLoaded(new Map([[sentinel, "nul\u0000inside"]]));
+  for (const ignoreExitCode of [false, true]) {
+    const { context, getResults } = createTestContext({
+      vaultSecrets,
+      unresolvedMethodArgs: { run: `echo ${sentinel}` },
+    });
+    const error = await assertRejects(
+      () =>
+        shellModel.methods.execute.execute(
+          { run: "placeholder", ignoreExitCode },
+          context,
+        ),
+      UserError,
+    );
+    assertEquals(error.code, SHELL_ENVIRONMENT_VALUE_REFUSED);
+    assertStringIncludes(error.message, "the secret 'DB_PASS' in vault 'prod'");
+    assertEquals(error.message.includes("inside"), false);
+    assertEquals(getResults(), []);
+  }
+});
+
+Deno.test("shellModel.methods.execute: in a typed run a NUL in an authored environment value names the variable, never the value", async () => {
+  const { bag } = typedRun();
+  bag.addSecret(REF, "loc");
+  const { context, getResults } = createTestContext({
+    vaultSecrets: bag,
+    unresolvedMethodArgs: { run: "echo hi" },
+  });
+  const error = await assertRejects(
+    () =>
+      shellModel.methods.execute.execute(
+        { run: "echo hi", env: { TOKEN: "a\u0000b" } },
+        context,
+      ),
+    UserError,
+  );
+  assertEquals(error.code, SHELL_ENVIRONMENT_VALUE_REFUSED);
+  assertStringIncludes(error.message, "the environment variable 'TOKEN'");
+  assertEquals(error.message.includes("a\u0000b"), false);
+  assertEquals(getResults(), []);
+});
+
+posixOnlyTest(
+  "shellModel.methods.execute: option off, a NUL in a loaded secret takes the launch failure path as today: exit code -1 and a written result",
+  async () => {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
+    const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+    const vaultSecrets = bag.withLoaded(
+      new Map([[sentinel, "nul\u0000inside"]]),
+    );
+    const { context, getResults } = createTestContext({
+      vaultSecrets,
+      unresolvedMethodArgs: { run: `echo ${sentinel}` },
+    });
+    await assertRejects(
+      () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
+      Error,
+      "Command exited with code -1",
+    );
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, -1);
+    assertStringIncludes(String(attrs?.stderr), "nul byte");
+  },
+);
+
+Deno.test("shellModel.methods.execute: a sentinel no load filled fails the step before the lock hand-off, with no result written", async () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
+  const { context, getResults } = createTestContext({
+    vaultSecrets: bag,
+    unresolvedMethodArgs: { run: `echo ${sentinel}` },
+  });
+  await assertRejects(
+    () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
+    Error,
+    "was not loaded before delivery",
+  );
+  assertEquals(getResults(), []);
+});
+
+Deno.test("shell placement: the hook's plan over the authored arguments and the fill over the validated ones name the same environment variables", () => {
+  const { registry, bag } = typedRun();
+  const sentinel = bag.addSecret(REF, "globalArguments.run");
+  const run = `echo ${sentinel} "$__SWAMP_VAULT_0"`;
+  // The same keys, as authored under globalArguments and as validation
+  // returns them to executeCommand: evaluation never rewrites an object key.
+  const authored = { __SWAMP_VAULT_0: "mine", OTHER: `x-${sentinel}` };
+  const validated = { __SWAMP_VAULT_0: "mine", OTHER: "x-resolved" };
+  const plan = selectShellStrategy().planSecrets(
+    run,
+    Object.keys(authored),
+    secretOccurrencesOf(registry).originOf,
+  );
+  const filled = selectShellStrategy().resolveSecrets(
+    run,
+    bag.withLoaded(new Map([[sentinel, "s3cret"]])),
+    Object.keys(validated),
+  );
+  assertEquals(filled.envNames, plan.envNames);
+  assertEquals([...plan.envNames.values()], ["__SWAMP_VAULT_1"]);
+});
+
+posixOnlyTest(
+  "shellModel.methods.execute: in a typed run the shell refuses a prohibited data-origin placement itself, before any launch, however it was reached",
+  async () => {
+    const { bag } = typedRun();
+    const sentinel = bag.addDataSecret("data-s3cret", REF);
+    const { context, getResults } = createTestContext({
+      vaultSecrets: bag,
+      unresolvedMethodArgs: { run: `cat <<'EOF'\n${sentinel}\nEOF` },
+    });
+    const error = await assertRejects(
+      () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
+      SecretDestinationRefusedError,
+    );
+    assertEquals(
+      error.destination,
+      "the shell command inside a here-document with a quoted delimiter",
+    );
+    assertEquals(getResults(), []);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): in a typed run the shell refuses a single-quoted data-origin placement itself, before any launch",
+  async () => {
+    const { bag } = typedRun();
+    const sentinel = bag.addDataSecret("data-s3cret", REF);
+    const { context, getResults } = createTestContext({
+      vaultSecrets: bag,
+      unresolvedMethodArgs: { run: `Write-Output '${sentinel}'` },
+    });
+    const error = await assertRejects(
+      () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
+      SecretDestinationRefusedError,
+    );
+    assertEquals(
+      error.destination,
+      "the shell command inside PowerShell single quotes",
+    );
+    assertEquals(getResults(), []);
   },
 );

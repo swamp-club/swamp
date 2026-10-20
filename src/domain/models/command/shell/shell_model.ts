@@ -25,7 +25,13 @@ import {
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
+  type SecretDestinationArgs,
 } from "../../model.ts";
+import { UserError } from "../../../errors.ts";
+import type { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
+import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
+import { coerceMethodArgs } from "../../zod_type_coercion.ts";
+import { SecretDestinationRefusedError } from "../../secret_destinations.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 import {
   createSafeMethodEnv,
@@ -44,7 +50,9 @@ export const ShellInputAttributesSchema = z.object({
   run: z.string().min(1).meta({ foreignTemplate: true }).describe(
     "The shell command to execute",
   ),
-  workingDir: z.string().optional().describe(
+  // A path destination: a secret never becomes a working directory
+  // (design/enablers/typed-secrets.md Section 7.1).
+  workingDir: z.string().meta({ secrets: "refuse" }).optional().describe(
     "Working directory for command execution",
   ),
   timeout: z.number().int().positive().optional().describe(
@@ -91,6 +99,101 @@ export type ShellDataAttributes = z.infer<typeof ShellDataAttributesSchema>;
  */
 export const SHELL_MODEL_TYPE = ModelType.create("command/shell");
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null);
+}
+
+/**
+ * The shell's own destination policy (design/enablers/typed-secrets.md
+ * Section 7.2), run by the method boundary before any secret is loaded, over
+ * the arguments as `unresolvedMethodArgs` carries them, so `run` and `env`
+ * authored under `globalArguments` are covered too. A secret in an
+ * environment variable name is refused: expression evaluation never reaches
+ * an object key, but an `env` authored as a JSON string is parsed by argument
+ * coercion, which is why the boundary coerces the arguments before this runs.
+ * A data-origin secret at a
+ * position no environment reference can expand (a here-document with a
+ * quoted delimiter; PowerShell single quotes) is refused instead of pasted
+ * into the command. A `run` that is not a string or an `env` that is not an
+ * object is left to argument validation.
+ */
+export function refuseShellSecretDestinations(
+  { arguments: args, secrets }: SecretDestinationArgs,
+): void {
+  const env = isPlainObject(args.env) ? args.env : undefined;
+  const envKeys = env ? Object.keys(env) : [];
+  for (const key of envKeys) {
+    const [occurrence] = secrets.occurrencesIn(key);
+    if (occurrence) {
+      throw new SecretDestinationRefusedError(
+        "an environment variable name",
+        occurrence.reference,
+        occurrence.location,
+        "a secret can be an environment variable's value, never its name",
+      );
+    }
+  }
+  const run = args.run;
+  if (typeof run !== "string") return;
+  // The same plan executeCommand fills after the load: both read the
+  // authored env keys from the arguments as written, and expression
+  // evaluation never changes an object key, so the two agree.
+  const plan = shellStrategy.planSecrets(run, envKeys, secrets.originOf);
+  const refused = plan.refused[0];
+  if (refused === undefined) return;
+  const occurrence = secrets.occurrencesIn(run).find((o) =>
+    o.start === refused.start
+  );
+  throw new SecretDestinationRefusedError(
+    `the shell command inside ${refused.where}`,
+    occurrence?.reference,
+    occurrence?.location,
+    "no environment variable reference expands there, so the value would " +
+      `be pasted into the command line; ${refused.fix}`,
+  );
+}
+
+/** The error code of a child environment value swamp cannot pass on. */
+export const SHELL_ENVIRONMENT_VALUE_REFUSED =
+  "shell_environment_value_refused";
+
+/**
+ * Refuses a child environment value that holds a NUL character, which no
+ * process environment can carry, before anything is launched
+ * (design/enablers/typed-secrets.md Section 7.1). The message names the
+ * authored variable, or for a generated name the vault and key the value
+ * was loaded for, never the value. This check depends on loaded values, so
+ * it comes after the load, unlike the destination refusals, which need none.
+ */
+function assertNoNulInEnvironment(
+  env: Record<string, string>,
+  envNames: ReadonlyMap<string, string>,
+  registry: SecretBagRegistry,
+): void {
+  const generated = new Map(
+    [...envNames].map(([sentinel, name]) => [name, sentinel]),
+  );
+  for (const [name, value] of Object.entries(env)) {
+    if (!value.includes("\u0000")) continue;
+    const sentinel = generated.get(name);
+    const entry = sentinel === undefined
+      ? undefined
+      : registry.issuedEntryOf(sentinel);
+    const what = entry
+      ? `the secret '${entry.reference.key}' in vault '${entry.reference.vaultName}'`
+      : `the environment variable '${name}'`;
+    // The code is in the text too: the in-process executor reports a
+    // method's error by its message.
+    throw new UserError(
+      `Refused to launch the command: ${what} holds a NUL character, which ` +
+        `no process environment can carry (${SHELL_ENVIRONMENT_VALUE_REFUSED})`,
+      SHELL_ENVIRONMENT_VALUE_REFUSED,
+    );
+  }
+}
+
 /**
  * Executes a shell command and captures the output.
  */
@@ -107,43 +210,72 @@ async function executeCommand(
   const redact = (text: string) =>
     context.redactor?.hasSecrets ? context.redactor.redact(text) : text;
 
+  // Resolve vault secrets via environment variables to prevent shell injection.
+  // The unresolved run field contains sentinel tokens for vault secrets.
+  // The strategy replaces sentinels with shell-appropriate env var references
+  // (`${VAR}` on POSIX, `$env:VAR` on PowerShell) and returns the raw secret
+  // values to inject via the process environment, so the shell never parses
+  // secret content as syntax. Done before the lock hand-off and the try
+  // below: a refusal here is an error of the step, with no result written
+  // for a command that never launched.
+  let shellCommand = args.run;
+  let shellEnv = args.env ?? {};
+  let envNames: ReadonlyMap<string, string> = new Map();
+  const secretBag = context.vaultSecrets;
+  if (secretBag?.resolvesAny && context.unresolvedMethodArgs) {
+    const unresolvedRun = context.unresolvedMethodArgs.run;
+    if (typeof unresolvedRun === "string") {
+      // The method boundary applies this policy before the load; a typed
+      // caller that reaches the method another way meets it here, so the
+      // command line is safe however the shell is reached.
+      if (secretBag.registry.typedSecrets) {
+        // The authored env, with its sentinels, read as validation reads it;
+        // `args.env` already holds the values.
+        const authored = coerceMethodArgs(
+          { env: context.unresolvedMethodArgs.env },
+          ShellInputAttributesSchema,
+        );
+        refuseShellSecretDestinations({
+          arguments: {
+            run: unresolvedRun,
+            env: authored.env ?? args.env ?? {},
+          },
+          secrets: secretOccurrencesOf(secretBag.registry),
+        });
+      }
+      const resolved = shellStrategy.resolveSecrets(
+        unresolvedRun,
+        secretBag,
+        Object.keys(shellEnv),
+      );
+      if (resolved.singleQuoted.length > 0) {
+        context.onEvent?.({
+          type: "vault_single_quote_warning",
+          message:
+            "Vault secret expression inside single quotes will not be expanded by the shell — use double quotes instead",
+        });
+      }
+      if (resolved.dataInCommandLine) {
+        context.onEvent?.({
+          type: "sensitive_value_in_command_line",
+          message:
+            "Sensitive data value inside a quoted here-document or a single-quoted PowerShell string is passed on the command line — use an unquoted here-document delimiter or double quotes instead",
+        });
+      }
+      shellCommand = resolved.command;
+      shellEnv = { ...shellEnv, ...resolved.env };
+      envNames = resolved.envNames;
+    }
+  }
+  if (secretBag?.registry.typedSecrets) {
+    assertNoNulInEnvironment(shellEnv, envNames, secretBag.registry);
+  }
+
   // The command is lent the locks held for this run. Begun outside the try
   // below, which turns a thrown error into a result that is still written.
   const lockHandOff = await processLockHolderMarker.beginChildHandOff();
 
   try {
-    // Resolve vault secrets via environment variables to prevent shell injection.
-    // The unresolved run field contains sentinel tokens for vault secrets.
-    // The strategy replaces sentinels with shell-appropriate env var references
-    // (`${VAR}` on POSIX, `$env:VAR` on PowerShell) and returns the raw secret
-    // values to inject via the process environment, so the shell never parses
-    // secret content as syntax.
-    let shellCommand = args.run;
-    let shellEnv = args.env ?? {};
-    const secretBag = context.vaultSecrets;
-    if (secretBag?.resolvesAny && context.unresolvedMethodArgs) {
-      const unresolvedRun = context.unresolvedMethodArgs.run;
-      if (typeof unresolvedRun === "string") {
-        const resolved = shellStrategy.resolveSecrets(unresolvedRun, secretBag);
-        if (resolved.singleQuoted.length > 0) {
-          context.onEvent?.({
-            type: "vault_single_quote_warning",
-            message:
-              "Vault secret expression inside single quotes will not be expanded by the shell — use double quotes instead",
-          });
-        }
-        if (resolved.dataInCommandLine) {
-          context.onEvent?.({
-            type: "sensitive_value_in_command_line",
-            message:
-              "Sensitive data value inside a quoted here-document or a single-quoted PowerShell string is passed on the command line — use an unquoted here-document delimiter or double quotes instead",
-          });
-        }
-        shellCommand = resolved.command;
-        shellEnv = { ...shellEnv, ...resolved.env };
-      }
-    }
-
     const invocation = shellStrategy.buildInvocation(shellCommand);
     // This execution's own trace context and held locks override whatever
     // the shared process env holds; explicit user env still wins over both.
@@ -274,6 +406,7 @@ export const shellModel: ModelDefinition = defineModel({
         "Execute the shell command and capture stdout, stderr, and exit code",
       arguments: ShellInputAttributesSchema,
       execute: executeCommand,
+      refuseSecretDestinations: refuseShellSecretDestinations,
     },
   },
 });

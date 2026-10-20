@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { SecretOriginLookup } from "../../../vaults/secret_occurrences.ts";
 import type {
+  ShellPlacementPlan,
   ShellSecretResolution,
   VaultSecretBag,
 } from "../../../vaults/vault_secret_bag.ts";
@@ -59,9 +61,25 @@ export interface ShellStrategy {
   };
 
   /**
+   * Plan where each sentinel of the run in `command` is placed, from
+   * references alone (design/enablers/typed-secrets.md Section 7.2): the
+   * environment reference that expands there, a literal reference inside
+   * single quotes, or a refusal where nothing expands. `authoredEnvKeys`
+   * are the names the command's own `env` sets; no generated name takes
+   * one. Reads no value, so a destination policy can run it before the
+   * load.
+   */
+  planSecrets(
+    command: string,
+    authoredEnvKeys: Iterable<string>,
+    originOf: SecretOriginLookup,
+  ): ShellPlacementPlan;
+
+  /**
    * Replace vault sentinels in `command` with shell-appropriate
    * environment variable references, returning the rewritten command
-   * and the env map of secret values to inject.
+   * and the env map of secret values to inject: the fill of
+   * {@link planSecrets} over a loaded bag.
    *
    * The env map's keys are the variable names referenced from the
    * rewritten command; the values are the raw secret strings.
@@ -69,6 +87,7 @@ export interface ShellStrategy {
   resolveSecrets(
     command: string,
     secretBag: VaultSecretBag,
+    authoredEnvKeys?: Iterable<string>,
   ): ShellSecretResolution;
 }
 

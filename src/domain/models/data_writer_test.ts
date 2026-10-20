@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   assert,
   assertEquals,
@@ -3748,4 +3750,51 @@ Deno.test("parseStoredVaultReference: text that is not one whole stored referenc
       JSON.stringify(text),
     );
   }
+});
+
+Deno.test("createResourceWriter: a redactor masking only sentinels serializes text without them as plain JSON.stringify, and masks a sentinel that reaches the data (typed-secrets 3.4)", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({ note: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const sentinel = new VaultSecretBag(registry).addSecret(
+    { vaultName: "v", key: "k" },
+    "loc",
+  );
+  const redactor = new SecretRedactor();
+  redactor.maskSentinelsOf(registry);
+  assertEquals(redactor.hasSecrets, true);
+  const write = async (data: Record<string, unknown>) => {
+    const repo = createCapturingRepo();
+    const vaultService = new VaultService();
+    vaultService.registerVault({
+      name: "test-vault",
+      type: "mock",
+      config: {},
+    });
+    const { writeResource } = createResourceWriter(
+      repo,
+      modelType,
+      modelId,
+      { r: spec },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      vaultService,
+      "put",
+      undefined,
+      redactor,
+    );
+    await writeResource("r", "main", data);
+    return repo.persisted();
+  };
+  const plain = { note: "plain", when: new Date(0), gone: undefined };
+  assertEquals(await write(plain), JSON.stringify(plain));
+  assertEquals(JSON.parse(await write({ note: `x ${sentinel}` })), {
+    note: "x ***",
+  });
 });

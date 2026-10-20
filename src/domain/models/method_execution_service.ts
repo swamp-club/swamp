@@ -35,11 +35,12 @@ import {
   processLockHolderMarker,
   type RemoteLockHolder,
 } from "../datastore/lock_holder_marker.ts";
-import type { Definition } from "../definitions/definition.ts";
+import { Definition } from "../definitions/definition.ts";
 import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
-import { ModelOutput } from "./model_output.ts";
+import { executionErrorFrom, ModelOutput } from "./model_output.ts";
+import { refuseSecretDestinations } from "./secret_destinations.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
@@ -89,6 +90,10 @@ import {
 import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
+import {
+  type SecretOccurrences,
+  secretOccurrencesOf,
+} from "../vaults/secret_occurrences.ts";
 
 /**
  * Filters data entries to only those belonging to declared resource specs.
@@ -284,6 +289,91 @@ function isDataHandleShaped(value: unknown): value is DataHandle {
 }
 
 /**
+ * The method's arguments as `unresolvedMethodArgs` carries them, from the
+ * definition as evaluated: the raw method arguments over the raw global
+ * arguments, sentinels in place of secrets. A global argument holding an
+ * unresolved `${{ ... }}` expression is left out, as the merge in `execute()`
+ * leaves it out; another templating system's `${{ ... }}` text is kept, see
+ * `containsSwampExpression`.
+ */
+function unresolvedArgumentsOf(
+  definition: Definition,
+  methodName: string,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(definition.globalArguments)) {
+    if (containsSwampExpression(value)) continue;
+    merged[key] = value;
+  }
+  return { ...merged, ...definition.getMethodArguments(methodName) };
+}
+
+/**
+ * The merge of a run that holds secrets with the parsed global arguments
+ * laid under it: a global argument takes the value global validation parsed
+ * (its Zod defaults and coercions, as the merge of a run with no secrets has
+ * them), except that every leaf holding a sentinel keeps its authored form,
+ * so a secret stays a sentinel for the shell's fill while its siblings are
+ * parsed. A global whose parsed value reads as an expression is left out, as
+ * every other merge leaves it out. Method arguments stay as authored, as
+ * they always have in `unresolvedMethodArgs`.
+ */
+function withParsedGlobals(
+  merged: Record<string, unknown>,
+  definition: Definition,
+  methodName: string,
+  secrets: SecretOccurrences,
+): Record<string, unknown> {
+  const holdsSentinel = (value: unknown): boolean => {
+    if (typeof value === "string") {
+      return secrets.occurrencesIn(value).length > 0;
+    }
+    if (Array.isArray(value)) return value.some(holdsSentinel);
+    if (value !== null && typeof value === "object") {
+      return Object.values(value).some(holdsSentinel);
+    }
+    return false;
+  };
+  const isPlain = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null);
+  /** `parsed` with each leaf of `authored` that holds a sentinel put back. */
+  const overlay = (parsed: unknown, authored: unknown): unknown => {
+    if (!holdsSentinel(authored)) return parsed;
+    if (typeof authored === "string") return authored;
+    if (Array.isArray(authored) && Array.isArray(parsed)) {
+      return authored.length === parsed.length
+        ? parsed.map((item, index) => overlay(item, authored[index]))
+        : authored;
+    }
+    if (isPlain(authored) && isPlain(parsed)) {
+      const out: Record<string, unknown> = { ...parsed };
+      for (const [key, item] of Object.entries(authored)) {
+        if (holdsSentinel(item)) out[key] = overlay(parsed[key], item);
+      }
+      return out;
+    }
+    return authored;
+  };
+  const methodArguments = definition.getMethodArguments(methodName);
+  const result: Record<string, unknown> = {};
+  const excluded = new Set<string>();
+  for (const [key, parsed] of Object.entries(definition.globalArguments)) {
+    if (Object.hasOwn(methodArguments, key)) continue;
+    if (containsSwampExpression(parsed)) {
+      excluded.add(key);
+      continue;
+    }
+    result[key] = overlay(parsed, merged[key]);
+  }
+  for (const [key, value] of Object.entries(merged)) {
+    if (!Object.hasOwn(result, key) && !excluded.has(key)) result[key] = value;
+  }
+  return result;
+}
+
+/**
  * The refusal of a pre-run vault check, ending in one fix: list the vault in
  * the workflow when the workflow's `vaults:` list refused, otherwise the
  * grant advice the refusal gives (or, when it gives none, a grant change).
@@ -436,11 +526,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Merge raw (pre-vault-resolution) global args as fallback so vault
       // sentinel tokens from either source are preserved for env-var isolation.
       // Filter out unresolved ${{ }} expressions (same policy as the method
-      // args merge above).
-      unresolvedMethodArgs: {
-        ...filteredRawGlobalArgs,
-        ...rawMethodArgs,
-      },
+      // args merge above). A run that holds secrets reaches this method
+      // through executeWorkflow, which built the merge before it resolved the
+      // global arguments and hands it in through the context, since by now
+      // `definition` holds the values (swamp-club#3627); a caller that hands
+      // in none gets the merge built here, and a run with no secrets never
+      // reads the context's.
+      unresolvedMethodArgs:
+        (secretBag?.resolvesAny && context.unresolvedMethodArgs) ||
+        { ...filteredRawGlobalArgs, ...rawMethodArgs },
     };
 
     // Execute the method with pre-validated args
@@ -664,7 +758,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Upgrade definition if needed
       const upgradeService = new DefinitionUpgradeService();
       const upgradeResult = upgradeService.upgrade(definition, modelDef);
-      const currentDefinition = upgradeResult.definition;
+      let currentDefinition = upgradeResult.definition;
 
       // Surface a definition whose arguments will not be migrated. Two states
       // warrant a warning, one per run, derived from the resolved state rather
@@ -734,6 +828,47 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
+      // A remotely placed step runs its method body on a worker; checks and
+      // the shell policy belong to the host that runs the body.
+      const isRemotePlacement = context.placement &&
+        hasPlacement(context.placement);
+
+      // The merge as `unresolvedMethodArgs` carries it, built here while the
+      // global arguments still hold their sentinels, with or without the
+      // internal option: the resolution below writes values into them, and a
+      // method such as command/shell reads `run` from this merge wherever it
+      // was authored, so a secret under globalArguments is placed through
+      // the environment and never reaches the command line (swamp-club#3627).
+      // A run with no secrets has nothing to keep and builds no merge here.
+      const registry = context.vaultSecrets?.registry;
+      const secrets =
+        registry !== undefined && context.vaultSecrets?.resolvesAny === true
+          ? secretOccurrencesOf(registry)
+          : undefined;
+      const sentinelArguments = secrets !== undefined
+        ? unresolvedArgumentsOf(currentDefinition, methodName)
+        : undefined;
+      // Refuse a secret at a destination that takes none, before any load
+      // (design/enablers/typed-secrets.md Sections 6.3 and 7.1): a field
+      // marked secrets: "refuse" in the global arguments or in the merged
+      // arguments the method will see, then the method's own destinations
+      // for a local placement. The decision reads the run's sentinels, never
+      // a value, so a refused attempt reads no vault. Behind the internal
+      // option, which only a typed run's registry carries.
+      if (
+        registry !== undefined && registry.typedSecrets &&
+        sentinelArguments !== undefined
+      ) {
+        refuseSecretDestinations({
+          modelDef,
+          method,
+          globalArguments: currentDefinition.globalArguments,
+          mergedArguments: sentinelArguments,
+          registry,
+          localPlacement: !isRemotePlacement,
+        });
+      }
+
       // Load the vault references this attempt delivers, once and before
       // anything receives them (design/enablers/typed-secrets.md Section
       // 3.3). From here on `context` is the attempt's: global argument
@@ -754,20 +889,20 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Resolve vault sentinels in globalArguments before validation.
       // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
       // regex()) validate against actual secret values, not sentinel tokens.
-      // This writes values into `currentDefinition`, which is the caller's
-      // definition when no upgrade ran: every attempt starts from a freshly
-      // evaluated definition (a retry or resume evaluates again), so a value
-      // written here never reaches another attempt.
+      // The values go into a copy of the definition, never into the object the
+      // caller passed (its own when no upgrade ran): that object keeps its
+      // sentinels, so no value outlives the attempt in it, and a second
+      // delivery of the same instance loads again and starts from the
+      // sentinels, as a freshly evaluated definition does (swamp-club#3627).
+      // Global validation below writes its parsed values into the same copy.
       const secretBag = context.vaultSecrets;
       if (secretBag?.resolvesAny) {
-        const rawGlobal = currentDefinition.globalArguments;
-        const resolvedGlobal = secretBag.resolveDeep(rawGlobal) as Record<
-          string,
-          unknown
-        >;
-        for (const [key, value] of Object.entries(resolvedGlobal)) {
-          currentDefinition.setGlobalArgument(key, value);
-        }
+        currentDefinition = Definition.fromData({
+          ...currentDefinition.toData(),
+          globalArguments: secretBag.resolveDeep(
+            currentDefinition.globalArguments,
+          ) as Record<string, unknown>,
+        });
       }
 
       // Validate globalArguments against schema (after upgrade and runtime resolution).
@@ -841,31 +976,32 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const methodKind = inferMethodKind(methodName, method);
 
       // Build unresolvedMethodArgs for pre-flight checks so they can
-      // validate method arguments. Mirrors the merge in execute() (line ~326):
+      // validate method arguments. Mirrors the merge in execute():
       // per-method args override global args, with unresolved ${{ }}
-      // expressions filtered from global args.
-      const rawMethodArgs = currentDefinition.getMethodArguments(methodName);
-      const filteredRawGlobalArgs: Record<string, unknown> = {};
-      for (
-        const [key, value] of Object.entries(
-          currentDefinition.globalArguments,
-        )
-      ) {
-        if (containsSwampExpression(value)) {
-          continue;
-        }
-        filteredRawGlobalArgs[key] = value;
+      // expressions filtered from global args. In a run that holds secrets
+      // it is the merge built before the resolution, with the values
+      // validation parsed laid under its non-secret globals.
+      const checkUnresolvedMethodArgs =
+        sentinelArguments === undefined || secrets === undefined
+          ? unresolvedArgumentsOf(currentDefinition, methodName)
+          : withParsedGlobals(
+            sentinelArguments,
+            currentDefinition,
+            methodName,
+            secrets,
+          );
+      if (sentinelArguments !== undefined) {
+        // The checks and the method see this merge, with the sentinels in
+        // place, as `unresolvedMethodArgs` (Section 6.3): execute() reads it
+        // from the context, since by then the definition holds the values.
+        context = {
+          ...context,
+          unresolvedMethodArgs: checkUnresolvedMethodArgs,
+        };
       }
-      const checkUnresolvedMethodArgs: Record<string, unknown> = {
-        ...filteredRawGlobalArgs,
-        ...rawMethodArgs,
-      };
 
       // Skip pre-flight checks for remotely-placed steps — checks run on
       // the orchestrator where worker-local filesystem state is unavailable.
-      const isRemotePlacement = context.placement &&
-        hasPlacement(context.placement);
-
       if (isRemotePlacement && modelDef.checks && isMutatingKind(methodKind)) {
         context.logger.info(
           "Skipping pre-flight checks for remotely-placed step",
@@ -1218,10 +1354,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       } catch (error) {
         if (output && context.outputRepository) {
-          output.markFailed({
-            message: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined,
-          });
+          // The record holds the error with every delivered value, and in a
+          // typed run every sentinel, masked (Section 7.1).
+          output.markFailed(executionErrorFrom(error, context.redactor));
           await context.outputRepository.save(
             modelDef.type,
             methodName,

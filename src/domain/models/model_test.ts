@@ -1805,3 +1805,83 @@ Deno.test("FileWriterOverridesSchema: accepts file overrides and rejects bad typ
     false,
   );
 });
+
+Deno.test("ModelRegistry.register: a field marked both sensitive and secrets: refuse is a schema error (typed-secrets 3.4)", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    ...createTestModel("swamp/conflict"),
+    methods: {
+      run: {
+        description: "r",
+        arguments: z.object({
+          a: z.string().meta({ sensitive: true, secrets: "refuse" }),
+        }),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+  const error = assertThrows(() => registry.register(model), Error);
+  assertEquals(
+    error.message.startsWith(
+      "Behavior type 'swamp/conflict' method 'run' arguments: field 'a' is " +
+        'marked both sensitive and secrets: "refuse"',
+    ),
+    true,
+    error.message,
+  );
+  assertEquals(registry.has("swamp/conflict"), false);
+  // Marked one way or the other, or with another secrets value, registers.
+  registry.register({
+    ...createTestModel("swamp/fine"),
+    globalArguments: z.object({ g: z.string().meta({ sensitive: true }) }),
+    methods: {
+      run: {
+        description: "r",
+        arguments: z.object({
+          a: z.string().meta({ secrets: "refuse" }),
+          b: z.string().meta({ sensitive: true, secrets: "other" }),
+        }),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  assertEquals(registry.has("swamp/fine"), true);
+});
+
+Deno.test("ModelRegistry.extend and applyExtensionMembers: a method with the sensitive and refuse conflict is refused and the type is untouched", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/base"));
+  const before = Object.keys(registry.get("swamp/base")!.methods);
+  const bad: MethodDefinition = {
+    description: "r",
+    arguments: z.object({
+      a: z.string().meta({ sensitive: true, secrets: "refuse" }),
+    }),
+    execute: () => Promise.resolve({}),
+  };
+  assertThrows(
+    () => registry.extend("swamp/base", { extra: bad }),
+    Error,
+    "method 'extra' arguments: field 'a'",
+  );
+  assertEquals(Object.keys(registry.get("swamp/base")!.methods), before);
+  assertThrows(
+    () =>
+      registry.applyExtensionMembers(
+        "swamp/base",
+        { methods: { extra: bad } },
+        {},
+      ),
+    Error,
+    "method 'extra' arguments: field 'a'",
+  );
+  assertThrows(
+    () =>
+      registry.applyExtensionMembers("swamp/base", {}, {
+        methods: { [before[0]]: bad },
+      }),
+    Error,
+    `method '${before[0]}' arguments: field 'a'`,
+  );
+  assertEquals(Object.keys(registry.get("swamp/base")!.methods), before);
+});

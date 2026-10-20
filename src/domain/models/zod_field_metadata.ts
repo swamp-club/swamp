@@ -739,6 +739,129 @@ export function findValuesWithMetadata(
 }
 
 /**
+ * The paths of the fields in `schema` whose metadata, read across the whole
+ * wrapper chain of the field (`.meta().optional()` and `.optional().meta()`
+ * alike, and both sides of a `.pipe()`), satisfies `matches`, reading the
+ * schema alone. Unlike {@link extractFieldsWithMetadata} it enters arrays,
+ * tuples, records, unions, intersections and lazy schemas: an array element
+ * or tuple rest is written `[]`, a tuple item `[<i>]`, a record value or
+ * `.catchall()` key `[*]`, and a union or intersection member keeps the path
+ * of the field it describes and continues its chain, so metadata on the
+ * union and on a member are read together. A schema two fields share is read
+ * once per distinct chain it is reached with, under the first path; a schema
+ * that contains itself is entered once per path. Metadata on the root schema
+ * itself is not reported.
+ *
+ * @param schema - A Zod schema (typically an object schema)
+ * @param matches - Decides from a field's metadata, outermost wrapper first
+ * @returns The matching field paths, in visit order
+ */
+export function findFieldsWhere(
+  schema: z.ZodTypeAny,
+  matches: (metadata: readonly FieldMetadata[]) => boolean,
+): string[] {
+  const found: string[] = [];
+  /** The schemas on the way down to the current one, to stop on a cycle. */
+  const ancestors = new Set<z.ZodTypeAny>();
+  /**
+   * The chains each schema was already read under. A schema two fields
+   * share is read once per distinct inherited chain, so a DAG-shaped schema
+   * costs one visit per node and chain, not one per path.
+   */
+  const seen = new Map<z.ZodTypeAny, Set<string>>();
+  const chainIds = new WeakMap<FieldMetadata, number>();
+  let nextChainId = 0;
+  const chainKey = (chain: readonly FieldMetadata[]) =>
+    chain.map((meta) => {
+      let id = chainIds.get(meta);
+      if (id === undefined) chainIds.set(meta, id = nextChainId++);
+      return id;
+    }).join(",");
+  const visit = (
+    node: z.ZodTypeAny,
+    path: string,
+    root: boolean,
+    inherited: readonly FieldMetadata[] = [],
+  ): void => {
+    if (ancestors.has(node)) return;
+    const key = chainKey(inherited);
+    const keys = seen.get(node) ?? new Set<string>();
+    if (keys.has(key)) return;
+    keys.add(key);
+    seen.set(node, keys);
+    ancestors.add(node);
+    try {
+      visitWithin(node, path, root, inherited);
+    } finally {
+      ancestors.delete(node);
+    }
+  };
+  const visitWithin = (
+    node: z.ZodTypeAny,
+    path: string,
+    root: boolean,
+    inherited: readonly FieldMetadata[],
+  ): void => {
+    // The chain of wrappers down to the core, each contributing its metadata;
+    // a union or intersection member continues the chain of its field.
+    const chain: FieldMetadata[] = [...inherited];
+    const seen = new Set<z.ZodTypeAny>();
+    let current: z.ZodTypeAny | undefined = node;
+    let core: z.ZodTypeAny = node;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      core = current;
+      const meta = readMetadata(current);
+      if (meta) chain.push(meta);
+      if (getSchemaType(current) === "pipe") {
+        const pipe = getSchemaDef(current);
+        if (pipe.in && pipe.out && getSchemaType(pipe.in) !== "transform") {
+          const outMeta = readMetadata(pipe.out);
+          if (outMeta) chain.push(outMeta);
+        }
+      }
+      current = innerSchema(current);
+    }
+    if (!root && chain.length > 0 && matches(chain)) found.push(path);
+
+    const def = getSchemaDef(core);
+    if (!def?.type) return;
+    switch (def.type) {
+      case "object":
+        for (const [key, field] of Object.entries(def.shape ?? {})) {
+          visit(field, appendKey(path, key), false);
+        }
+        if (def.catchall) visit(def.catchall, `${path}[*]`, false);
+        break;
+      case "record":
+        if (def.valueType) visit(def.valueType, `${path}[*]`, false);
+        break;
+      case "array":
+        if (def.element) visit(def.element, `${path}[]`, false);
+        break;
+      case "tuple":
+        (def.items ?? []).forEach((item, index) =>
+          visit(item, `${path}[${index}]`, false)
+        );
+        if (def.rest) visit(def.rest, `${path}[]`, false);
+        break;
+      case "union":
+        for (const option of def.options ?? []) {
+          visit(option, path, root, chain);
+        }
+        break;
+      case "intersection":
+        for (const side of [def.left, def.right]) {
+          if (side) visit(side, path, root, chain);
+        }
+        break;
+    }
+  };
+  visit(schema, "", true);
+  return found;
+}
+
+/**
  * Answers of {@link schemaHoldsMetadata}, per `matches` function and schema.
  * Weak on both, so an entry lasts no longer than the schema it describes.
  */

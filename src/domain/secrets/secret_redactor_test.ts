@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretRedactor } from "./secret_redactor.ts";
 
 Deno.test("SecretRedactor", async (t) => {
@@ -141,4 +143,36 @@ Deno.test("SecretRedactor", async (t) => {
     redactor.addSecret("ab\r");
     assertEquals(redactor.redact("ab ab\r"), "ab ***");
   });
+});
+
+Deno.test("SecretRedactor.maskSentinelsOf: masks every sentinel the run issued before any value is registered, and hasSecrets says so", () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const redactor = new SecretRedactor();
+  redactor.maskSentinelsOf(registry);
+  // An empty registry masks nothing yet.
+  assertEquals(redactor.hasSecrets, false);
+  const bag = new VaultSecretBag(registry);
+  const vault = bag.addSecret({ vaultName: "v", key: "k" }, "loc");
+  const data = bag.addDataReference({ vaultName: "v", key: "j" }, "db/main.p");
+  assertEquals(redactor.hasSecrets, true);
+  const other = `__SWAMP_VSEC_${"ab".repeat(16)}_0__`;
+  assertEquals(
+    redactor.redact(`a ${vault} b ${data} c ${other}`),
+    `a *** b *** c ${other}`,
+  );
+  // Values and sentinels are masked together.
+  redactor.addSecret("hunter2-long");
+  assertEquals(redactor.redact(`${vault}=hunter2-long`), "***=***");
+  assertEquals(redactor.redact("nothing here"), "nothing here");
+});
+
+Deno.test("SecretRedactor: without an attached registry a sentinel is text", () => {
+  const registry = new SecretBagRegistry();
+  const sentinel = new VaultSecretBag(registry).addSecret(
+    { vaultName: "v", key: "k" },
+    "loc",
+  );
+  const redactor = new SecretRedactor();
+  assertEquals(redactor.hasSecrets, false);
+  assertEquals(redactor.redact(`x ${sentinel}`), `x ${sentinel}`);
 });

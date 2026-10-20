@@ -1,16 +1,16 @@
 ---
 audience: maintainer
 enables: [behaviors, workflows, vaults, serve]
-last-verified: 2026-10-19 @ dbcd9639d
+last-verified: 2026-10-20 @ b7790f667
 ---
 
 # Typed Secrets for Expressions
 
 **Status:** implementation plan. Phases 0, 1 and 2 have shipped
 (swamp-club#3510, swamp-club#3511, swamp-club#3512, swamp-club#3551,
-swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1, 3.2 and
-3.3 (swamp-club#3619, swamp-club#3625, swamp-club#3626) behind the internal
-option. This revision replaces the earlier engine-2 plan, and
+swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1 to 3.4
+(swamp-club#3619, swamp-club#3625, swamp-club#3626, swamp-club#3627) behind
+the internal option. This revision replaces the earlier engine-2 plan, and
 [Why this design](#why-this-design) says what changed. Until Phase 4 ships,
 [expressions](./expressions.md) describes current behavior.
 
@@ -290,7 +290,10 @@ refuses it to a principal that is not an access admin before any provider call,
 and only rehydration refuses it by name. A load reads through the vault service
 the existence check asked, the evaluator's, so a refresh hook refreshes on load
 as it did on the eager read. One attempt is one call of the method execution
-service; a retry is a new attempt and loads again. Each loaded value is
+service; a retry is a new attempt and loads again. The loaded values are
+resolved into a copy of the step's definition: the object the caller passed
+keeps its sentinels, so a second delivery of the same instance loads again and
+starts from them, as a freshly evaluated definition does. Each loaded value is
 registered with the run's `SecretRedactor`.
 
 A load failure fails the step before any check or method runs. The error names
@@ -802,14 +805,37 @@ and files is unchanged.
 At the execution boundary the method execution service does three things:
 
 1. It refuses a secret anywhere in a field marked
-   `.meta({ secrets: "refuse" })`, across the merged global and method
-   arguments. The new metadata sits beside `sensitive`, and the walker that
-   reads `sensitive` reads it too (`findValuesWithMetadata`). A field marked
-   both `sensitive` and `refuse` is a schema error.
+   `.meta({ secrets: "refuse" })`: in the global arguments against their
+   schema, then in the merged arguments against the method's schema. The
+   merged arguments are the ones `unresolvedMethodArgs` carries, the raw
+   method arguments over the raw global arguments that hold no unresolved
+   expression, so a field reaches the policy whichever side it was authored
+   under, and a type with no `globalArguments` schema is covered too. The
+   metadata sits beside `sensitive`, and the walker that reads `sensitive`
+   reads it too (`findValuesWithMetadata`); only the exact value `refuse`
+   means anything, since `.meta()` is a free-form bag. A field marked both
+   `sensitive` and `refuse` is a schema error at registration. A method may
+   add destinations its schema cannot express through the optional
+   `refuseSecretDestinations` hook on its definition, called after the
+   schema-marked refusals, for a local placement only (a remotely placed step
+   runs its body on a worker; Phase 5 owns it), with the same merged
+   arguments and a value-free view of the run's secrets (`SecretOccurrences`:
+   each sentinel's position, reference and origin, never a value). The shell
+   behavior uses the hook (Section 7.2). Every refusal reads the run's
+   sentinels, so a refused attempt reads no vault, and the error names the
+   destination, the reference and where it was written or read.
 2. It loads the step's sentinels for the attempt (Section 3.3).
 3. It resolves sentinels in method and global arguments, then merges and
    validates them as today. Global arguments with unresolved expressions stay
-   excluded.
+   excluded. The merge of item 1, built before the resolution wrote values
+   into the global arguments and with the values validation parsed laid under
+   its non-secret globals, is what the checks and the method receive as
+   `unresolvedMethodArgs`, with or without the option, so a shell `run`
+   authored under `globalArguments` keeps its sentinels for the placement
+   fill (before swamp-club#3627 that merge was built from the resolved
+   definition, and such a `run` reached the command line as plaintext). The
+   refusal of a literal sensitive global argument stays where it lives, in
+   the create and save paths.
 
 Pre-flight checks run on the orchestrator before a local method. They receive
 resolved `globalArgs`, and method arguments with sentinels in
@@ -864,11 +890,24 @@ with authored environment keys.
 Today two cases paste a value into the command, with a warning event. One is a
 data-origin value inside a here-document with a quoted delimiter. The other is a
 data-origin value inside PowerShell single quotes (`resolveForPowerShell`). Both
-become refusals. A `vault.get` inside single quotes keeps today's behavior on
-both shells: the reference stays literal and a warning is emitted.
+become refusals: the shell behavior's `refuseSecretDestinations` hook plans the
+placement from references alone (`planShellPlacement`,
+`planPowerShellPlacement`) and refuses before the load; the fill after the
+load (`resolveForShell`, `resolveForPowerShell`) is the same plan with values,
+and still pastes with the warning when the option is off. A `vault.get` inside
+single quotes keeps today's behavior on both shells: the reference stays
+literal and a warning is emitted. A `vault.get` inside a here-document with a
+quoted delimiter also stays literal, with no warning, as before.
 
 `workingDir` carries `.meta({ secrets: "refuse" })`, and the shell behavior
-refuses a secret in an environment key. Swamp supplies secrets only through the
+refuses a secret in an environment key, from the merged arguments, so `run`,
+`env` and `workingDir` authored under `globalArguments` are covered. Generated
+environment names skip the authored `env` keys, case-insensitively on
+PowerShell. The shell resolves its command and checks the child environment
+before it borrows the run's locks and before the launch, so a refusal is an
+error of the step with no result or log written; a value holding a NUL fails
+there with `shell_environment_value_refused`, naming the authored variable or
+the vault and key, never the value. Swamp supplies secrets only through the
 environment. A script that traces, prints, or passes a value into another
 program's arguments is responsible for that. Examples should use a tool's own
 environment or stdin credential interface:
@@ -1199,6 +1238,38 @@ missing key failing only at load, invalid records, and the option-off path,
 results (3.5), production entry points, workflows/queries and remote transport
 remain later slices.
 
+Phase 3.4 (swamp-club#3627) adds the destination policy of Sections 6.3 and 7.2
+at the local method boundary, still enabled only by tests. The internal option
+has two switches, set together by one test fixture and flipped in one place by
+Phase 3.5: `CelEvaluatorOptions.typedSecrets` for the engine and
+`SecretBagRegistry.typedSecrets` for the run's destinations, read by
+`executeWorkflow`, the shell behavior, `RunSensitiveValues`, `SecretRedactor`
+and the fitness test; Phase 4 removes both. The slice ships the `.meta({
+secrets: "refuse" })` metadata and the registration-time conflict check
+(`secret_destinations.ts`), the value-free `SecretOccurrences` view,
+`SecretDestinationRefusedError`, the `refuseSecretDestinations` hook with the
+shell's implementation, the value-free shell placement plan with generated names
+that skip authored keys, the NUL rejection before the launch, sentinel-derived
+stand-ins and masks in `RunSensitiveValues` and `SecretRedactor` (`hasSecrets`
+counts an attached typed registry), and `executionErrorFrom` for value-free
+output records. Integration tests wire the boundary from real components, with
+the shell cases on the host shell and the argv read from `/proc` on Linux. Three
+changes reach the option-off path, all stricter: a method boundary's failure
+record is redacted of the values the run loaded; a shell resolution that fails
+(a sentinel no load filled) fails the step before any result is written; and the
+merge the checks and the method receive as `unresolvedMethodArgs` is built
+before the resolution writes values into the global arguments, so a shell `run`
+or `env` authored under `globalArguments` is placed through the environment
+instead of reaching the command line as plaintext, an exposure that predates the
+slice, with the values resolved into a copy of the definition so that the object
+the caller passed keeps its sentinels for a second delivery (Section 3.3). A
+redactor is created per run; one shared across runs would keep every typed
+registry it is handed. Carried over: the shell result record's `command`
+attribute is still the resolved command through the value redactor (a Phase 4
+data-record gate), and generated `__SWAMP_VAULT_N` variables are not stripped
+from a nested swamp's inherited environment. Entry points keep building untyped
+registries until 3.5 wires them.
+
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any
 load. Non-secret behavior is unchanged.
@@ -1302,14 +1373,15 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (`resolveVaultExpressions`, option off)                                                                                                                                                                                                                                                                |
 | Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
 | Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts`, `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace`), `integration/typed_data_secrets_test.ts` |
-| Sentinels and shell placement                 | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`), `vault_secret_bag.ts` (`addDataReference`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts`                                                                                                                                                                           |
+| Destination policy (Sections 6.3, 7.1)        | `src/domain/models/secret_destinations.ts` (`refuseSecretsInRefusingFields`, `refuseSecretDestinations`, `assertNoSensitiveRefuseConflict`, `SecretDestinationRefusedError`), `zod_field_metadata.ts` (`findFieldsWhere`), `src/domain/vaults/secret_occurrences.ts` (`SecretOccurrences`), `integration/typed_secret_destinations_test.ts` |
+| Sentinels and shell placement | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`, `typedSecrets`), `vault_secret_bag.ts` (`addDataReference`, `planShellPlacement`, `planPowerShellPlacement`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts` (`refuseShellSecretDestinations`), `shell_strategy.ts` (`planSecrets`) |
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
 | Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
 | Loading at delivery (Section 3.3)             | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`)                                                                                       |
-| Sensitive values and persisted form           | `src/domain/secrets/run_sensitive_values.ts`, `persisted_sensitive_form.ts`, `secret_redactor.ts`, `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts`                                                                                                                                                                     |
+| Sensitive values and persisted form | `src/domain/secrets/run_sensitive_values.ts` (sentinel-derived masks and stand-ins), `persisted_sensitive_form.ts`, `secret_redactor.ts` (`maskSentinelsOf`), `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts` |
 | Sensitive fields and schema metadata          | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                                                                                                                                                     |
 | Queries                                       | `src/domain/data/data_query_service.ts`                                                                                                                                                                                                                                                                                                                               |
-| Method boundary and checks                    | `src/domain/models/method_execution_service.ts`, `method_context.ts`, `model.ts`                                                                                                                                                                                                                                                                                      |
+| Method boundary and checks | `src/domain/models/method_execution_service.ts` (`unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
 | Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts`, `src/domain/workflows/trigger_input_resolver.ts`                                                                                                                                                                                                                                                                     |
 | Workflow execution and forEach                | `src/domain/workflows/execution_service.ts`, `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts`                                                                                                                                                                                                                                                    |
 | Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |

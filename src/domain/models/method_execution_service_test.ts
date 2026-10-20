@@ -25,7 +25,11 @@ import {
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../datastore/lock_holder_marker.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
-import { RunSensitiveValues } from "../secrets/mod.ts";
+import { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
+import { SecretDestinationRefusedError } from "./secret_destinations.ts";
+import type { OutputRepository } from "./repositories.ts";
+import type { SecretDestinationArgs } from "./model.ts";
+import { shellModel } from "./command/shell/shell_model.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   type RemoteStepRequest,
@@ -5231,4 +5235,559 @@ Deno.test("executeWorkflow - a vault reference with no loader fails closed inste
     "was not loaded before delivery",
   );
   assertEquals(delivered.args, undefined);
+});
+
+// ---------- typed-secrets 3.4: destination refusals before the load ----------
+
+/**
+ * A type whose `workingDir` refuses secrets, with a recording check, method
+ * and destination hook, and no globalArguments schema.
+ */
+function destinationModel(
+  hook?: (args: SecretDestinationArgs) => void,
+): {
+  model: ModelDefinition;
+  seen: {
+    check: number;
+    method: Record<string, unknown>[];
+    hook: SecretDestinationArgs[];
+  };
+} {
+  const seen = {
+    check: 0,
+    method: [] as Record<string, unknown>[],
+    hook: [] as SecretDestinationArgs[],
+  };
+  const model: ModelDefinition = {
+    type: ModelType.create("test/destinations"),
+    version: "2026.10.20.1",
+    methods: {
+      create: {
+        description: "Records what it receives",
+        arguments: z.object({
+          workingDir: z.string().meta({ secrets: "refuse" }).optional(),
+          command: z.string().optional(),
+        }),
+        execute: (args) => {
+          seen.method.push(args as Record<string, unknown>);
+          return Promise.resolve({});
+        },
+        refuseSecretDestinations: (args) => {
+          seen.hook.push(args);
+          hook?.(args);
+        },
+      },
+    },
+    checks: {
+      record: {
+        description: "Counts its runs",
+        execute: () => {
+          seen.check++;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  return { model, seen };
+}
+
+/** A typed run that issued one vault.get() reference to key `token`. */
+function typedToken(): { bag: VaultSecretBag; sentinel: string } {
+  const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets: true }));
+  return {
+    bag,
+    sentinel: bag.addSecret(
+      { vaultName: "v", key: "token" },
+      "methods.create.arguments.workingDir",
+    ),
+  };
+}
+
+Deno.test("executeWorkflow: a secret in a refusing method field is refused before any load, check or method (typed-secrets 3.4)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { model, seen } = destinationModel();
+  const { bag, sentinel } = typedToken();
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: {},
+    methods: { create: { arguments: { workingDir: sentinel } } },
+  });
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(definition, model, "create", context, {
+        secretLoader: loader,
+      }),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(error.destination, "method argument 'workingDir'");
+  assertEquals(error.code, "secret_destination_refused");
+  assertEquals(error.message.includes(sentinel), false);
+  assertEquals(reads, []);
+  assertEquals(seen.check, 0);
+  assertEquals(seen.method, []);
+  assertEquals(seen.hook, []);
+});
+
+Deno.test("executeWorkflow: a refusing field authored under globalArguments of a type with no global schema is refused through the merged arguments", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { model, seen } = destinationModel();
+  const { bag, sentinel } = typedToken();
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: { workingDir: sentinel },
+    methods: { create: { arguments: {} } },
+  });
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(definition, model, "create", context, {
+        secretLoader: loader,
+      }),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(error.destination, "method argument 'workingDir'");
+  assertEquals(reads, []);
+  assertEquals(seen.method, []);
+});
+
+Deno.test("executeWorkflow: the method hook receives the merged arguments before the load, for local placement only, and its refusal reaches the caller", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { model, seen } = destinationModel();
+  const { bag, sentinel } = typedToken();
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: { command: `echo ${sentinel}` },
+    methods: { create: { arguments: {} } },
+  });
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+  await service.executeWorkflow(definition, model, "create", context, {
+    secretLoader: loader,
+  });
+  assertEquals(seen.hook.length, 1);
+  assertEquals(seen.hook[0].arguments, { command: `echo ${sentinel}` });
+  const [occurrence] = seen.hook[0].secrets.occurrencesIn(`echo ${sentinel}`);
+  assertEquals(occurrence.reference, { vaultName: "v", key: "token" });
+  assertEquals("value" in occurrence, false);
+  // The load came after the hook, once, and the method got the value.
+  assertEquals(reads, ["token"]);
+  assertEquals(seen.method, [{ command: "echo s3cret-value" }]);
+  assertEquals(seen.check, 1);
+
+  // A remotely placed step runs its body on a worker, whose shell may
+  // differ: the hook is not asked; the refusing fields still are.
+  const remote = destinationModel();
+  const { context: remoteContext } = createTestContext({
+    modelType: remote.model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+    placement: { target: "worker-1" },
+  });
+  const remoteError = await assertRejects(() =>
+    service.executeWorkflow(definition, remote.model, "create", remoteContext, {
+      secretLoader: loader,
+    })
+  );
+  assertEquals(remoteError instanceof SecretDestinationRefusedError, false);
+  assertEquals(remote.seen.hook, []);
+
+  // A hook refusal propagates as it is, before any load.
+  const refusing = destinationModel(() => {
+    throw new SecretDestinationRefusedError(
+      "the shell command inside a here-document with a quoted delimiter",
+      { vaultName: "v", key: "token" },
+      undefined,
+      "test",
+    );
+  });
+  const fresh = mockLoader({ token: "s3cret-value" });
+  const { context: refusingContext } = createTestContext({
+    modelType: refusing.model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+  await assertRejects(
+    () =>
+      service.executeWorkflow(
+        definition,
+        refusing.model,
+        "create",
+        refusingContext,
+        { secretLoader: fresh.loader },
+      ),
+    SecretDestinationRefusedError,
+    "the shell command",
+  );
+  assertEquals(fresh.reads, []);
+  assertEquals(refusing.seen.method, []);
+});
+
+Deno.test("executeWorkflow: option off, a secret in a refusing field is delivered as today", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { model, seen } = destinationModel();
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.create.arguments.workingDir",
+  );
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: {},
+    methods: { create: { arguments: { workingDir: sentinel } } },
+  });
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+  });
+  await service.executeWorkflow(definition, model, "create", context, {
+    secretLoader: loader,
+  });
+  assertEquals(reads, ["token"]);
+  assertEquals(seen.hook, []);
+  assertEquals(seen.method, [{ workingDir: "s3cret-value" }]);
+});
+
+Deno.test("executeWorkflow: a failed method's output record holds its error with values and sentinels masked", async () => {
+  const service = new DefaultMethodExecutionService();
+  const saved: ModelOutput[] = [];
+  const outputRepository = {
+    save: (_type: ModelType, _method: string, output: ModelOutput) => {
+      saved.push(output);
+      return Promise.resolve();
+    },
+  } as unknown as OutputRepository;
+  const redactor = new SecretRedactor();
+  // The run's loader registers each value it loads; this mock loader does
+  // not take a redactor, so the value is registered here.
+  redactor.addSecret("s3cret-value");
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  // The run's sensitive values attach the redactor to the typed registry.
+  new RunSensitiveValues(redactor, registry);
+  const bag = new VaultSecretBag(registry);
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.create.arguments.command",
+  );
+  const model: ModelDefinition = {
+    type: ModelType.create("test/leaky"),
+    version: "2026.10.20.1",
+    methods: {
+      create: {
+        description: "Echoes what it was given into its error",
+        arguments: z.object({ command: z.string() }),
+        execute: (args) => {
+          throw new Error(
+            `leaked ${(args as { command: string }).command} and ${sentinel}`,
+          );
+        },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: {},
+    methods: { create: { arguments: { command: sentinel } } },
+  });
+  const { loader } = mockLoader({ token: "s3cret-value" });
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "create",
+    vaultSecrets: bag,
+    redactor,
+    outputRepository,
+  });
+  await assertRejects(
+    () =>
+      service.executeWorkflow(definition, model, "create", context, {
+        secretLoader: loader,
+      }),
+    Error,
+    "leaked",
+  );
+  const failed = saved.find((output) => output.status === "failed");
+  assertEquals(failed?.error?.message, "leaked *** and ***");
+  assertEquals(failed?.error?.message.includes("s3cret-value"), false);
+});
+
+Deno.test("executeWorkflow: the checks and the method receive the global arguments in unresolvedMethodArgs with their sentinels, as the shell needs, with the option on or off", async () => {
+  const service = new DefaultMethodExecutionService();
+  const seen: {
+    method?: Record<string, unknown>;
+    check?: Record<string, unknown>;
+    args?: Record<string, unknown>;
+  } = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/unresolved-merge"),
+    version: "2026.10.20.1",
+    globalArguments: z.object({
+      command: z.string().optional(),
+      retries: z.number().default(3),
+      port: z.coerce.number().optional(),
+    }),
+    methods: {
+      create: {
+        description: "Records the unresolved merge",
+        arguments: z.object({
+          command: z.string().optional(),
+          retries: z.number().optional(),
+          port: z.number().optional(),
+        }),
+        execute: (args, context) => {
+          seen.method = { ...context.unresolvedMethodArgs };
+          seen.args = { ...(args as Record<string, unknown>) };
+          return Promise.resolve({});
+        },
+      },
+    },
+    checks: {
+      record: {
+        description: "Records the unresolved merge",
+        execute: (context) => {
+          seen.check = { ...context.unresolvedMethodArgs };
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  for (const typedSecrets of [true, false]) {
+    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+    const sentinel = bag.addSecret(
+      { vaultName: "v", key: "token" },
+      "globalArguments.command",
+    );
+    // `command` is authored under globalArguments, not the method.
+    const definition = Definition.create({
+      name: "d",
+      globalArguments: { command: `echo ${sentinel}`, port: "8080" },
+      methods: { create: { arguments: {} } },
+    });
+    const { loader } = mockLoader({ token: "s3cret-value" });
+    const { context } = createTestContext({
+      modelType: model.type,
+      methodName: "create",
+      vaultSecrets: bag,
+    });
+    await service.executeWorkflow(definition, model, "create", context, {
+      secretLoader: loader,
+    });
+    // The merge is built before the boundary writes values into the global
+    // arguments, in either mode (swamp-club#3627): option off, a shell run
+    // under globalArguments used to reach the command line as plaintext.
+    const expected = `echo ${sentinel}`;
+    for (const merge of [seen.method, seen.check]) {
+      assertEquals(merge?.command, expected, `typed ${typedSecrets}`);
+      // A global that holds no secret carries what validation parsed, in
+      // either mode: the default the author left out, the coerced number.
+      assertEquals(merge?.retries, 3, `typed ${typedSecrets}`);
+      assertEquals(merge?.port, 8080, `typed ${typedSecrets}`);
+    }
+    // The method's validated arguments hold the value either way.
+    assertEquals(seen.args?.command, "echo s3cret-value");
+  }
+});
+
+Deno.test("executeWorkflow: delivering one Definition instance twice keeps the caller's sentinels, so the second attempt loads again and the merge the shell fills from still holds them, with the option on or off", async () => {
+  const service = new DefaultMethodExecutionService();
+  const seen: {
+    method?: Record<string, unknown>;
+    check?: Record<string, unknown>;
+    args?: Record<string, unknown>;
+  } = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/twice-delivered"),
+    version: "2026.10.20.1",
+    globalArguments: z.object({ command: z.string().optional() }),
+    methods: {
+      create: {
+        description: "Records the unresolved merge",
+        arguments: z.object({ command: z.string().optional() }),
+        execute: (args, context) => {
+          seen.method = { ...context.unresolvedMethodArgs };
+          seen.args = { ...(args as Record<string, unknown>) };
+          return Promise.resolve({});
+        },
+      },
+    },
+    checks: {
+      record: {
+        description: "Records the unresolved merge",
+        execute: (context) => {
+          seen.check = { ...context.unresolvedMethodArgs };
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  for (const typedSecrets of [true, false]) {
+    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+    const sentinel = bag.addSecret(
+      { vaultName: "v", key: "token" },
+      "globalArguments.command",
+    );
+    // `command` is authored under globalArguments, not the method.
+    const definition = Definition.create({
+      name: "d",
+      globalArguments: { command: `echo ${sentinel}` },
+      methods: { create: { arguments: {} } },
+    });
+    const { loader, reads } = mockLoader({ token: "s3cret-value" });
+    for (const attempt of [1, 2]) {
+      const where = `typed ${typedSecrets}, attempt ${attempt}`;
+      const { context } = createTestContext({
+        modelType: model.type,
+        methodName: "create",
+        vaultSecrets: bag,
+      });
+      await service.executeWorkflow(definition, model, "create", context, {
+        secretLoader: loader,
+      });
+      // The values go into a copy, so the object the caller holds keeps its
+      // sentinel after the attempt (swamp-club#3627)...
+      assertEquals(
+        definition.globalArguments.command,
+        `echo ${sentinel}`,
+        where,
+      );
+      // ...and a second delivery loads again and fills from the sentinel,
+      // while the validated arguments hold the value as before.
+      assertEquals(reads, Array(attempt).fill("token"), where);
+      for (const merge of [seen.method, seen.check]) {
+        assertEquals(merge?.command, `echo ${sentinel}`, where);
+      }
+      assertEquals(seen.args?.command, "echo s3cret-value", where);
+    }
+  }
+});
+
+Deno.test("executeWorkflow: in a typed run an env authored as a JSON string with a secret as a key is refused, and the shell refuses it itself when reached without the boundary", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { bag, sentinel } = typedToken();
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: {},
+    methods: {
+      execute: {
+        arguments: {
+          run: "printenv",
+          env: JSON.stringify({ [sentinel]: "1" }),
+        },
+      },
+    },
+  });
+  const { loader, reads } = mockLoader({ token: "s3cret-value" });
+  const { context } = createTestContext({
+    modelType: shellModel.type,
+    methodName: "execute",
+    vaultSecrets: bag,
+  });
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(definition, shellModel, "execute", context, {
+        secretLoader: loader,
+      }),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(error.destination, "an environment variable name");
+  assertEquals(reads, []);
+  // Reached without the boundary, the shell applies the same policy over the
+  // unresolved arguments, coerced as validation coerces them.
+  const loaded = bag.withLoaded(new Map([[sentinel, "s3cret-value"]]));
+  const { context: direct } = createTestContext({
+    modelType: shellModel.type,
+    methodName: "execute",
+    vaultSecrets: loaded,
+    unresolvedMethodArgs: {
+      run: "printenv",
+      env: JSON.stringify({ [sentinel]: "1" }),
+    },
+  });
+  const directError = await assertRejects(
+    () =>
+      shellModel.methods.execute.execute(
+        { run: "printenv", env: { "s3cret-value": "1" } },
+        direct,
+      ),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(directError.destination, "an environment variable name");
+});
+
+Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a global while its siblings are parsed, and leaves out a global whose value reads as an expression, with the option on or off", async () => {
+  const service = new DefaultMethodExecutionService();
+  /** The merge the method received, one per mode. */
+  const seen: Record<string, unknown>[] = [];
+  const model: ModelDefinition = {
+    type: ModelType.create("test/leaf-overlay"),
+    version: "2026.10.20.1",
+    globalArguments: z.object({
+      config: z.object({
+        token: z.string(),
+        retries: z.coerce.number().default(3),
+        verbose: z.boolean().default(false),
+      }),
+      shaped: z.string().optional(),
+    }),
+    methods: {
+      create: {
+        description: "Records the unresolved merge",
+        arguments: z.object({}),
+        execute: (_args, context) => {
+          seen.push({ ...context.unresolvedMethodArgs });
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+  for (const [index, typedSecrets] of [true, false].entries()) {
+    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+    const sentinel = bag.addSecret({ vaultName: "v", key: "token" }, "loc");
+    const shaped = bag.addSecret({ vaultName: "v", key: "shaped" }, "loc2");
+    const definition = Definition.create({
+      name: "d",
+      globalArguments: {
+        config: { token: sentinel, retries: "5" },
+        shaped,
+      },
+      methods: { create: { arguments: {} } },
+    });
+    // The second value resolves to text that reads as an expression, which
+    // every merge leaves out.
+    const { loader } = mockLoader({
+      token: "s3cret-value",
+      shaped: "${{ vault.get('v', 'k') }}",
+    });
+    const { context } = createTestContext({
+      modelType: model.type,
+      methodName: "create",
+      vaultSecrets: bag,
+    });
+    await service.executeWorkflow(definition, model, "create", context, {
+      secretLoader: loader,
+    });
+    const merge = seen[index];
+    assertEquals(seen.length, index + 1, `typed ${typedSecrets}`);
+    assertEquals(
+      merge?.config,
+      { token: sentinel, retries: 5, verbose: false },
+      `typed ${typedSecrets}`,
+    );
+    assertEquals(Object.hasOwn(merge ?? {}, "shaped"), false);
+  }
 });

@@ -19,7 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
-import { VaultSecretBag } from "./vault_secret_bag.ts";
+import { planShellPlacement, VaultSecretBag } from "./vault_secret_bag.ts";
 import {
   holdsValue,
   isIssuedEntry,
@@ -27,6 +27,7 @@ import {
   SecretBagRegistry,
   SENTINEL_EXACT,
 } from "./secret_bag_registry.ts";
+import { secretOccurrencesOf } from "./secret_occurrences.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
@@ -389,6 +390,77 @@ Deno.test("VaultSecretBag.withLoaded: a vault reference resolves only through a 
           sentinels.filter((s) => values.has(s)),
         );
         assertEquals(bag.toEntries(), []);
+      },
+    ),
+  );
+});
+
+type Placement = Quote | "heredoc-literal";
+
+/** One use of the sentinel, including a here-document with a quoted delimiter. */
+function place(sentinel: string, placement: Placement): string {
+  return placement === "heredoc-literal"
+    ? `cat <<'EOF'\n${sentinel}\nEOF`
+    : use(sentinel, placement);
+}
+
+const arbPlacements = fc.array(
+  fc.constantFrom<Placement>("unquoted", "double", "single", "heredoc-literal"),
+  { minLength: 1, maxLength: 6 },
+);
+
+const arbAuthoredKeys = fc.array(
+  fc.constantFrom(
+    "__SWAMP_VAULT_0",
+    "__SWAMP_VAULT_1",
+    "__SWAMP_VAULT_2",
+    "PATH",
+    "HOME",
+  ),
+  { maxLength: 4 },
+);
+
+Deno.test("planShellPlacement: the plan and the resolution agree on every occurrence, and generated names are unique and never authored (typed-secrets 3.4)", () => {
+  fc.assert(
+    fc.property(
+      arbPlacements,
+      arbSeparator,
+      arbAuthoredKeys,
+      fc.boolean(),
+      (placements, separator, authored, dataOrigin) => {
+        const registry = new SecretBagRegistry();
+        const bag = new VaultSecretBag(registry);
+        const s = dataOrigin
+          ? bag.addDataSecret("s3cret", REF)
+          : issue(bag, "s3cret");
+        const command = placements.map((p) => place(s, p)).join(separator);
+        const plan = planShellPlacement(
+          command,
+          authored,
+          secretOccurrencesOf(registry).originOf,
+        );
+        const resolved = loaded(bag).resolveForShell(command, authored);
+        const names = [...plan.envNames.values()];
+        assertEquals(new Set(names).size, names.length);
+        for (const name of names) assertEquals(authored.includes(name), false);
+        assertEquals(resolved.envNames, plan.envNames);
+        // Rebuilding the command from the plan is the resolution.
+        let rebuilt = "";
+        let last = 0;
+        for (const o of plan.occurrences) {
+          rebuilt += command.slice(last, o.start) +
+            (o.placement === "refused" ? "s3cret" : o.text);
+          last = o.end;
+        }
+        rebuilt += command.slice(last);
+        assertEquals(resolved.command, rebuilt);
+        assertEquals(resolved.dataInCommandLine, plan.refused.length > 0);
+        assertEquals(resolved.singleQuoted, [...plan.singleQuoted]);
+        // Only a data value in a quoted here-document is refused.
+        assertEquals(
+          plan.refused.length > 0,
+          dataOrigin && placements.includes("heredoc-literal"),
+        );
       },
     ),
   );

@@ -23,6 +23,7 @@ import {
   extractFieldsWithMetadata,
   type FieldMetadata,
   findFieldMetadata,
+  findFieldsWhere,
   findValuesWithMetadata,
   schemaHoldsMetadata,
 } from "./zod_field_metadata.ts";
@@ -807,4 +808,123 @@ Deno.test("schemaHoldsMetadata: searches a schema once per matches function", ()
   assertEquals(calls, afterFirst);
   // Another function gets its own answer.
   assertEquals(schemaHoldsMetadata(schema, () => false), false);
+});
+
+Deno.test("findFieldsWhere: reads a field's metadata across its wrapper chain and enters containers, unions and pipes", () => {
+  const marked = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.marked === true);
+  const both = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.a === true) &&
+    chain.some((meta) => meta.b === true);
+  const schema = z.object({
+    plain: z.string(),
+    direct: z.string().meta({ marked: true }),
+    inner: z.string().meta({ marked: true }).optional(),
+    outer: z.string().optional().meta({ marked: true }),
+    nested: z.object({ deep: z.string().meta({ marked: true }) }),
+    list: z.array(z.string().meta({ marked: true })),
+    tuple: z.tuple(
+      [z.string(), z.string().meta({ marked: true })],
+      z.string().meta({ marked: true }),
+    ),
+    record: z.record(z.string(), z.string().meta({ marked: true })),
+    union: z.union([
+      z.object({ u: z.string().meta({ marked: true }) }),
+      z.string(),
+    ]),
+    piped: z.string().meta({ a: true }).pipe(z.string().meta({ b: true })),
+    split: z.string().meta({ a: true }).optional().meta({ b: true }),
+  });
+  assertEquals(findFieldsWhere(schema, marked), [
+    "direct",
+    "inner",
+    "outer",
+    "nested.deep",
+    "list[]",
+    "tuple[1]",
+    "tuple[]",
+    "record[*]",
+    "union.u",
+  ]);
+  assertEquals(findFieldsWhere(schema, both), ["piped", "split"]);
+  // Metadata on the root schema itself is not a field.
+  assertEquals(
+    findFieldsWhere(z.object({ x: z.string() }).meta({ marked: true }), marked),
+    [],
+  );
+});
+
+Deno.test("findFieldsWhere: a recursive schema is visited once", () => {
+  interface Node {
+    name: string;
+    children: Node[];
+  }
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({
+      name: z.string().meta({ marked: true }),
+      children: z.array(node),
+    })
+  );
+  assertEquals(
+    findFieldsWhere(
+      z.object({ root: node }),
+      (chain) => chain.some((meta) => meta.marked === true),
+    ),
+    ["root.name"],
+  );
+});
+
+Deno.test("findFieldsWhere: metadata on a union and on one of its members are read as one chain", () => {
+  const both = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.a === true) &&
+    chain.some((meta) => meta.b === true);
+  const schema = z.object({
+    choice: z.union([z.string().meta({ b: true }), z.number()]).meta({
+      a: true,
+    }),
+    apart: z.union([z.string().meta({ b: true }), z.number()]),
+    nested: z.union([z.object({ x: z.string().meta({ b: true }) }), z.number()])
+      .meta({ a: true }),
+  });
+  // The chain continues into a member, which describes the same field, not
+  // into a member's own fields, which are fields of their own.
+  assertEquals(findFieldsWhere(schema, both), ["choice"]);
+});
+
+Deno.test("findFieldsWhere: a schema two fields share is read under each of them", () => {
+  const shared = z.string().meta({ b: true });
+  const schema = z.object({
+    a: shared,
+    b: z.union([shared, z.number()]).meta({ a: true }),
+  });
+  const both = (chain: readonly FieldMetadata[]) =>
+    chain.some((meta) => meta.a === true) &&
+    chain.some((meta) => meta.b === true);
+  assertEquals(findFieldsWhere(schema, both), ["b"]);
+  // Under the union's chain the shared schema is read again, so both fields
+  // report it.
+  assertEquals(
+    findFieldsWhere(schema, (chain) => chain.some((meta) => meta.b === true)),
+    ["a", "b"],
+  );
+});
+
+Deno.test("findFieldsWhere: a DAG-shaped schema costs one visit per node and chain, not one per path", () => {
+  // Thirty levels, each with two fields referencing the same sub-schema:
+  // a billion paths, a few dozen distinct nodes.
+  let level: z.ZodTypeAny = z.string().meta({ marked: true });
+  for (let i = 0; i < 30; i++) {
+    level = z.object({ left: level, right: level });
+  }
+  let asked = 0;
+  const marked = (chain: readonly FieldMetadata[]) => {
+    asked++;
+    return chain.some((meta) => meta.marked === true);
+  };
+  assertEquals(findFieldsWhere(level, marked), [
+    Array(30).fill("left").join("."),
+  ]);
+  // Only a node with metadata is asked, and the shared leaf is read once
+  // under its first path: one question, not a billion.
+  assertEquals(asked, 1);
 });
