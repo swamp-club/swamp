@@ -191,16 +191,22 @@ export function renderRedactionNotice(
 }
 
 /**
- * Renders the notice that redaction was deliberately skipped via
- * --no-redact, so the choice is visible and auditable in both modes.
+ * Renders the notice that redaction was deliberately skipped, via
+ * --no-redact or by answering w at the redaction prompt, so the choice is
+ * visible and auditable in both modes.
  */
-export function renderRedactionSkipped(mode: OutputMode): void {
+export function renderRedactionSkipped(
+  mode: OutputMode,
+  source: "flag" | "prompt" = "flag",
+): void {
   if (mode === "json") {
     console.error(JSON.stringify({ redaction: { skipped: true } }));
     return;
   }
   getSwampLogger(["issue", "redact"]).info(
-    "Redaction skipped (--no-redact); content submitted as written.",
+    source === "prompt"
+      ? "Redaction skipped at your choice; content submitted as written."
+      : "Redaction skipped (--no-redact); content submitted as written.",
   );
 }
 

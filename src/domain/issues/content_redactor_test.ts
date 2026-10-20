@@ -1022,3 +1022,83 @@ Deno.test("redactIssueContent: redacting already-redacted text is a no-op", () =
   assertEquals(twice.text, once.text);
   assertEquals(twice.summary.totalRedactions, 0);
 });
+
+// --- Git object ids and colon-separated runs (swamp-club#3686) ---
+
+Deno.test("redactIssueContent: a commit id after a git word is kept", () => {
+  const sha1 = "a4fd943795dbca86a77083347c021a329fb32aa0";
+  const sha256 =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  for (
+    const input of [
+      `failed in verify-build for branch issue-3526 at commit ${sha1}.`,
+      `commit id: ${sha1}`,
+      `the commit SHA ${sha1} is on main`,
+      `Run \`git checkout ${sha1}\` to replay it`,
+      `rev=${sha1}`,
+      `tree ${sha256}`,
+      `see https://github.com/swamp-club/swamp/commit/${sha1}`,
+      `see https://github.com/swamp-club/swamp/blob/${sha1}/deno.json`,
+      `commit \`${sha1}\``,
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, input);
+    assertEquals(result.summary.totalRedactions, 0, input);
+  }
+});
+
+Deno.test("redactIssueContent: hex without git context, or of another length, is still redacted", () => {
+  const sha1 = "a4fd943795dbca86a77083347c021a329fb32aa0";
+  for (
+    const input of [
+      `The value ${sha1} was found`,
+      `token: ${sha1}`,
+      `api key ${sha1}`,
+      `commit token: ${sha1}`,
+      `commit ${"a".repeat(41)}`,
+      `commit ${"a".repeat(63)}`,
+      `commit ${"a".repeat(65)}`,
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertStringIncludes(result.text, "[REDACTED-SECRET-1]", input);
+  }
+});
+
+Deno.test("redactIssueContent: a fast-check replay path is not an IP address", () => {
+  for (
+    const input of [
+      "fast-check reported seed -1781746823, path 992:3:11:17:17:12, endOnFailure true",
+      'path: "3:1:0:0:2:1"',
+      "groups 1:2:3:4:5:6:7",
+      "too long 1:2:3:4:5:6:7:8:9",
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, input);
+    assertEquals(result.summary.totalRedactions, 0, input);
+  }
+});
+
+Deno.test("redactIssueContent: compressed IPv6 addresses leave no group in clear", () => {
+  for (
+    const [input, address] of [
+      ["addr 2001:db8:85a3::8a2e:370:7334 x", "2001:db8:85a3"],
+      ["addr 2a00:1450:4009::200e x", "2a00:1450:4009"],
+      ["addr 2001:db8::1 x", "2001:db8"],
+      ["addr ::ffff:a00:1 x", "ffff:a00:1"],
+      ["bind [2001:db8:1::5]:8080", "2001:db8:1"],
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text.includes(address), false, input);
+    assertStringIncludes(result.text, "[IP-1]", input);
+    assertEquals(result.summary.totalRedactions, 1, input);
+  }
+});
+
+Deno.test("redactIssueContent: MAC addresses are still redacted", () => {
+  const result = redactIssueContent("interface aa:bb:cc:dd:ee:0f is up");
+  assertEquals(result.text, "interface [IP-1] is up");
+});

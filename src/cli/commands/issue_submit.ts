@@ -40,6 +40,7 @@ import {
 import {
   createIssueCreateRenderer,
   renderExtensionRepositoryHandoff,
+  renderIssueCancelled,
   renderRedactionNotice,
   renderRedactionSkipped,
 } from "../../presentation/renderers/issue_create.ts";
@@ -50,6 +51,7 @@ import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
+import { confirmRedactions } from "./issue_redaction_confirm.ts";
 import {
   type DispatcherDeps,
   dispatchRepositoryReport,
@@ -312,8 +314,20 @@ export async function dispatchExtensionRepositoryReport(
       { label: "title", result: redacted.title },
       { label: "body", result: redacted.body },
     ], ctx.outputMode);
-    title = redacted.title.text;
-    body = redacted.body.text;
+    const decision = await confirmRedactions(redacted.summary, ctx.outputMode);
+    if (decision === "cancel") {
+      renderIssueCancelled(
+        { type: input.type, reason: "cancelled" },
+        ctx.outputMode,
+      );
+      return;
+    }
+    if (decision === "as-written") {
+      renderRedactionSkipped(ctx.outputMode, "prompt");
+    } else {
+      title = redacted.title.text;
+      body = redacted.body.text;
+    }
   }
 
   const reporterContext = collectReporterContext({
@@ -371,7 +385,23 @@ export async function submitIssue(
       { label: "title", result: redacted.title },
       { label: "body", result: redacted.body },
     ], ctx.outputMode);
-    input = { ...input, title: redacted.title.text, body: redacted.body.text };
+    const decision = await confirmRedactions(redacted.summary, ctx.outputMode);
+    if (decision === "cancel") {
+      renderIssueCancelled(
+        { type: input.type, reason: "cancelled" },
+        ctx.outputMode,
+      );
+      return;
+    }
+    if (decision === "as-written") {
+      renderRedactionSkipped(ctx.outputMode, "prompt");
+    } else {
+      input = {
+        ...input,
+        title: redacted.title.text,
+        body: redacted.body.text,
+      };
+    }
   }
 
   if (destination.method === "email") {

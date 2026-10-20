@@ -200,6 +200,15 @@ function isUnlabelledKeyPayload(payload: string): boolean {
   return /\d/.test(payload.replace(VERSION_SUFFIX_RE, ""));
 }
 
+// A git word just before a hex run marks it as an object id (commit <sha>,
+// git checkout <sha>, /commit/<sha>). The separators exclude _ and -, so
+// joined forms (commit_<sha>, sha-<hash>) stay with the labelled-key rules.
+const GIT_ID_CONTEXT_RE =
+  /(?:\b(?:commits?|sha(?:1|256)?|rev(?:ision)?|object|tree|blob|parent|head|merge|ref|checkout|git)(?: (?:id|sha|hash))?[ \t:=#@/"'`]{1,3}|\/(?:commits?|tree|blob)\/)$/i;
+
+// Git object ids are 40 (sha1) or 64 (sha256) hex characters.
+const GIT_ID_LENGTHS = new Set([40, 64]);
+
 // Generic long hex strings (40+ chars, like SHA tokens / API keys).
 // The lookbehind excludes any alphanumeric, matching what \b excluded, while
 // still allowing a run that starts right after a joiner.
@@ -243,9 +252,14 @@ const CONNECTION_STRING_RE =
 // longer dotted run.
 const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 
-// IPv6 (simplified: at least two colons in a hex group sequence)
+// IPv6 candidates, in one pattern so placeholders number in text order: the
+// full form (exactly eight groups), a run holding one "::" (validated by
+// isCompressedIpv6), and the MAC shape (six two-hex groups), which the old
+// loose pattern redacted as an address. Any other colon run, such as a
+// fast-check replay path (992:3:11:17:17:12) or a timestamp, is not an address.
+// The lookarounds refuse a match that starts or ends inside a longer run.
 const IPV6_RE =
-  /\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\b|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b|(?:[0-9a-fA-F]{1,4}:){1,6}::[0-9a-fA-F]{0,4}\b/g;
+  /(?<![0-9A-Za-z:])(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?|(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})(?![0-9A-Za-z:])/g;
 
 // Home directory paths with usernames — captures the prefix and username
 // separately so we can reconstruct positionally.
@@ -311,12 +325,13 @@ function isSafeIpv6(ip: string): boolean {
   return false;
 }
 
-function isLikelyTimestamp(s: string): boolean {
-  const parts = s.split(":");
-  if (parts.length !== 3) return false;
-  if (!parts.every((p) => /^\d{1,2}$/.test(p))) return false;
-  const [h, m, sec] = parts.map(Number);
-  return h <= 23 && m <= 59 && sec <= 59;
+// A "::" run is an address only when it names at least one and at most seven
+// groups, since "::" stands for one or more zero groups out of eight.
+function isCompressedIpv6(s: string): boolean {
+  const sides = s.split("::");
+  if (sides.length !== 2) return false;
+  const groups = sides.flatMap((side) => side === "" ? [] : side.split(":"));
+  return groups.length >= 1 && groups.length <= 7;
 }
 
 // The hash labels above, in their joined form (sha512-<hash>), for the generic
@@ -851,8 +866,8 @@ function applyRedactions(
 
   // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
   result = result.replace(IPV6_RE, (match) => {
+    if (match.includes("::") && !isCompressedIpv6(match)) return match;
     if (isSafeIpv6(match)) return match;
-    if (isLikelyTimestamp(match)) return match;
     count("IP address");
     return placeholders.get("IP", match);
   });
@@ -905,6 +920,11 @@ function applyRedactions(
       const preceding = source.slice(Math.max(0, offset - 40), offset);
       if (SAFE_HEX_KEY_RE.test(preceding)) return match;
       if (HASH_LABEL_PREFIX_RE.test(preceding)) return match;
+      if (
+        GIT_ID_LENGTHS.has(match.length) && GIT_ID_CONTEXT_RE.test(preceding)
+      ) {
+        return match;
+      }
       count("secret");
       return placeholders.get("REDACTED-SECRET", match);
     },

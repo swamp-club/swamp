@@ -167,3 +167,109 @@ Deno.test("redactIssueContent: one raw value always maps to one placeholder", ()
     ),
   );
 });
+
+// --- Git object ids and colon-separated runs (swamp-club#3686) ---
+
+const HEX_CHARS = "0123456789abcdef".split("");
+
+const arbHex = (minLength: number, maxLength: number) =>
+  fc.stringOf(fc.constantFrom(...HEX_CHARS), { minLength, maxLength });
+
+const arbGitId = fc.oneof(arbHex(40, 40), arbHex(64, 64));
+
+const arbGitContext = fc.constantFrom(
+  "at commit ",
+  "commit id: ",
+  "git checkout ",
+  "rev=",
+  "tree ",
+  "https://github.com/o/r/commit/",
+  "commit `",
+);
+
+const arbHexGroup = arbHex(1, 4);
+
+// Eight groups, never the loopback or link-local addresses the redactor keeps
+// on purpose, and never all zeros (which compresses to a bare "::").
+const arbIpv6Groups = fc.array(arbHexGroup, { minLength: 8, maxLength: 8 })
+  .filter((groups) =>
+    groups.some((g) => parseInt(g, 16) !== 0) &&
+    !groups.slice(0, 7).every((g) => parseInt(g, 16) === 0) &&
+    groups[0].toLowerCase() !== "fe80"
+  );
+
+// The eight-group form, or a compressed form made by zeroing a run of groups
+// and collapsing it to "::" (a run of all eight leaves a bare "::", which
+// names no address).
+const arbIpv6 = fc.oneof(
+  arbIpv6Groups.map((groups) => groups.join(":")),
+  fc.tuple(arbIpv6Groups, fc.nat(7), fc.nat(7)).map(([groups, a, b]) => {
+    const start = Math.min(a, b);
+    const end = Math.max(a, b);
+    const left = groups.slice(0, start);
+    const right = groups.slice(end + 1);
+    return `${left.join(":")}::${right.join(":")}`;
+  }).filter((s) =>
+    s !== "::" && s !== "::1" && !s.toLowerCase().startsWith("fe80:")
+  ),
+);
+
+Deno.test("redactIssueContent: a git object id after a git word survives", () => {
+  fc.assert(
+    fc.property(arbGitContext, arbGitId, (context, id) => {
+      const input = `${context}${id} landed`;
+      const result = redactIssueContent(input);
+      assertEquals(result.text, input);
+    }),
+  );
+});
+
+Deno.test("redactIssueContent: long hex without git context never survives", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom("", "token: ", "key=", "secret ", "commit token: "),
+      arbHex(40, 128),
+      (context, hex) => {
+        const result = redactIssueContent(`saw ${context}${hex} here`);
+        assert(!result.text.includes(hex), `hex survived in: ${result.text}`);
+      },
+    ),
+  );
+});
+
+Deno.test("redactIssueContent: a colon run that is not an address survives", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbHexGroup, { minLength: 3, maxLength: 7 }).filter((groups) =>
+        !(groups.length === 6 && groups.every((g) => g.length === 2))
+      ),
+      (groups) => {
+        const input = `path ${groups.join(":")} end`;
+        const result = redactIssueContent(input);
+        assertEquals(result.text, input);
+      },
+    ),
+  );
+});
+
+Deno.test("redactIssueContent: an IPv6 address never survives in any form", () => {
+  fc.assert(
+    fc.property(arbIpv6, (address) => {
+      const result = redactIssueContent(`addr ${address} end`);
+      assertEquals(result.text, "addr [IP-1] end", address);
+    }),
+  );
+});
+
+Deno.test("redactIssueContent: redaction stays idempotent over git ids and addresses", () => {
+  fc.assert(
+    fc.property(arbGitContext, arbGitId, arbIpv6, (context, id, address) => {
+      const once = redactIssueContent(
+        `${context}${id} then ${address} and path 992:3:11:17:17:12`,
+      );
+      const twice = redactIssueContent(once.text);
+      assertEquals(twice.text, once.text);
+      assertEquals(twice.summary.totalRedactions, 0);
+    }),
+  );
+});
