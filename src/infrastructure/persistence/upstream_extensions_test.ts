@@ -19,8 +19,11 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { relative as win32Relative } from "@std/path/windows";
 import {
   canonicalLockfileEntry,
+  canonicalLockfilePath,
+  lockfileRelative,
   readPublishedChannel,
   readUpstreamExtensions,
 } from "./upstream_extensions.ts";
@@ -163,4 +166,21 @@ Deno.test("readUpstreamExtensions: a __proto__ key stays data", async () => {
       assertEquals(read["__proto__"].files, ["a/b"]);
     },
   );
+});
+
+Deno.test("lockfileRelative: gives a repo-relative path with forward slashes", () => {
+  const repo = join("work", "repo");
+  assertEquals(
+    lockfileRelative(repo, join(repo, ".claude", "skills", "foo", "SKILL.md")),
+    ".claude/skills/foo/SKILL.md",
+  );
+});
+
+Deno.test("canonicalLockfilePath: turns a Windows relative() result into the lockfile form", () => {
+  const rel = win32Relative(
+    "C:\\work\\repo",
+    "C:\\work\\repo\\.swamp\\bundles\\2f6574ec",
+  );
+  assertEquals(rel, ".swamp\\bundles\\2f6574ec");
+  assertEquals(canonicalLockfilePath(rel), ".swamp/bundles/2f6574ec");
 });

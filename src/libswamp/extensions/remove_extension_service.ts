@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, join, relative, resolve } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import {
   assertContainedPath,
   PathTraversalError,
@@ -26,6 +26,7 @@ import { tombstoneAll } from "../../domain/extensions/extension.ts";
 import { findClaimants } from "../../domain/extensions/extension_path_claims.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { lockfileRelative } from "../../infrastructure/persistence/upstream_extensions.ts";
 import {
   bundleNamespace,
   resolvePulledExtensionsRoot,
@@ -336,7 +337,7 @@ export class RemoveExtensionService {
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           failedFiles.push({
-            path: relative(this.repoDir, namespaceDir),
+            path: lockfileRelative(this.repoDir, namespaceDir),
             reason: error instanceof Error ? error.name : "Error",
           });
         }

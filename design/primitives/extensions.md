@@ -415,6 +415,10 @@ and `swamp extension install` rewrites it even when every extension is up to
 date. The managed lockfile is not committed, so install leaves it as the
 datastore holds it.
 
+The paths that pull, update, install and rm report, in log output and in
+`--json`, use the same repo-relative forward-slash form on every OS
+(`lockfileRelative`), so a report never mixes separators.
+
 The `upstream_extensions.json` entry records the install channel in a `channel`
 field. It is written only for non-stable installs, so entries without it read
 as `"stable"` (`src/infrastructure/persistence/lockfile_repository.ts`). The
