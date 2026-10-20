@@ -72,6 +72,7 @@ function makeDeps(
 ): DatastoreSetupDeps {
   return {
     requireUpgradedRepo: () => Promise.resolve(),
+    assertV3CacheContained: () => Promise.resolve(),
     verifyPath: () => Promise.resolve({ healthy: true, message: "ok" }),
     ensureDir: () => Promise.resolve(),
     getDatastoreDirectories: () => ["data", "outputs"],
@@ -4753,4 +4754,219 @@ Deno.test("createDatastoreSetupDeps: a lost-marker skeleton is refused as a setu
       "v3",
     );
   });
+});
+
+// ============================================================================
+// Reserved namespaces and unsafe checkouts on v3 (swamp-club#3691)
+// ============================================================================
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses a repo bound to a reserved namespace before creating anything (swamp-club#3691)", async () => {
+  for (const namespace of ["data", "vault"]) {
+    let created = false;
+    const saved: unknown[] = [];
+    const deps = makeDeps({
+      currentDatastore: () => Promise.resolve({ engine: "v2", namespace }),
+      createV3Datastore: () => {
+        created = true;
+        return Promise.resolve();
+      },
+      updateRepoConfig: (_repoDir, config) => {
+        saved.push(config);
+        return Promise.resolve();
+      },
+    });
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        deps,
+        makeFilesystemInput({ format: 3 }),
+      ),
+    );
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error", namespace);
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(
+      error.error.message,
+      `Namespace "${namespace}" has the same name as a datastore layout directory`,
+    );
+    assertStringIncludes(
+      error.error.message,
+      "swamp datastore namespace set <new-name>",
+    );
+    assertEquals(created, false);
+    assertEquals(saved, []);
+  }
+});
+
+Deno.test("datastoreSetupExtension: --format 3 refuses a namespace swamp uses in .swamp/ before touching the bucket (swamp-club#3691)", async () => {
+  ensureTestExtensionType("test-ext-v3-reserved");
+  const { deps, calls, configs } = recordingV3Deps();
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({
+        type: "test-ext-v3-reserved",
+        format: 3,
+        namespace: "vault",
+      }),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertEquals(error.error.code, "validation_failed");
+  assertStringIncludes(error.error.message, 'Namespace "vault" is reserved');
+  assertEquals(calls.includes("createV3BucketDatastore"), false);
+  assertEquals(calls.includes("inspectV3BucketTarget"), false);
+  assertEquals(configs, []);
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses a checkout whose .swamp/data links out of .swamp (swamp-club#3691)", async () => {
+  if (Deno.build.os === "windows") return;
+  await withSetupTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const outside = join(dir, "elsewhere");
+    await Deno.mkdir(outside, { recursive: true });
+    await Deno.mkdir(join(repoDir, ".swamp"), { recursive: true });
+    await Deno.symlink(outside, join(repoDir, ".swamp", "data"), {
+      type: "dir",
+    });
+    let created = false;
+    const saved: unknown[] = [];
+    const deps: DatastoreSetupDeps = {
+      ...createDatastoreSetupDeps(repoDir, noTier),
+      currentDatastore: () => Promise.resolve({ engine: "v2" }),
+      createV3Datastore: () => {
+        created = true;
+        return Promise.resolve();
+      },
+      updateRepoConfig: (_repoDir, config) => {
+        saved.push(config);
+        return Promise.resolve();
+      },
+      invalidateCatalog: () => Promise.resolve(),
+    };
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        deps,
+        makeFilesystemInput({
+          format: 3,
+          repoDir,
+          datastorePath: join(dir, "datastore"),
+          skipMigration: true,
+        }),
+      ),
+    );
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(error.error.message, "outside");
+    assertStringIncludes(error.error.message, join(repoDir, ".swamp", "data"));
+    assertEquals(created, false);
+    assertEquals(saved, []);
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 accepts a .swamp/data link that stays inside .swamp (swamp-club#3691)", async () => {
+  if (Deno.build.os === "windows") return;
+  await withSetupTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const inside = join(repoDir, ".swamp", "data-real");
+    await Deno.mkdir(inside, { recursive: true });
+    await Deno.symlink(inside, join(repoDir, ".swamp", "data"), {
+      type: "dir",
+    });
+    let created = false;
+    const deps: DatastoreSetupDeps = {
+      ...createDatastoreSetupDeps(repoDir, noTier),
+      currentDatastore: () => Promise.resolve({ engine: "v2" }),
+      createV3Datastore: () => {
+        created = true;
+        return Promise.resolve();
+      },
+      updateRepoConfig: () => Promise.resolve(),
+      invalidateCatalog: () => Promise.resolve(),
+    };
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        deps,
+        makeFilesystemInput({
+          format: 3,
+          repoDir,
+          datastorePath: join(dir, "datastore"),
+          skipMigration: true,
+        }),
+      ),
+    );
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(created, true);
+  });
+});
+
+Deno.test("datastoreSetupExtension: --format 3 refuses a checkout whose materialised subdirectory links out of .swamp before touching the bucket (swamp-club#3691)", async () => {
+  ensureTestExtensionType("test-ext-v3-contained");
+  const { deps, calls, configs } = recordingV3Deps({
+    assertV3CacheContained: () =>
+      Promise.reject(new UserError(".swamp/data resolves outside .swamp")),
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-v3-contained", format: 3 }),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertEquals(error.error.code, "validation_failed");
+  assertStringIncludes(error.error.message, "resolves outside");
+  assertEquals(calls.includes("inspectV3BucketTarget"), false);
+  assertEquals(calls.includes("createV3BucketDatastore"), false);
+  assertEquals(configs, []);
+});
+
+Deno.test("datastoreSetupExtension: a v2 repo already bound to a name reserved for swamp's .swamp/ directories sets up again; v3 refuses it (swamp-club#3691)", async () => {
+  setupSyncSpyCalls.length = 0;
+  const bound = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+    namespace: "workflows",
+    namespaceAlreadyBound: true,
+  });
+  const v2 = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), makeDeps(), bound),
+  );
+  assertEquals(v2.some((e) => e.kind === "error"), false);
+  assertEquals(v2.some((e) => e.kind === "completed"), true);
+
+  ensureTestExtensionType("test-ext-v3-bound-reserved");
+  const { deps, calls } = recordingV3Deps();
+  const v3 = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({
+        type: "test-ext-v3-bound-reserved",
+        format: 3,
+        namespace: "workflows",
+        namespaceAlreadyBound: true,
+      }),
+    ),
+  );
+  const error = v3.at(-1);
+  assertEquals(error?.kind, "error");
+  assertEquals(calls.includes("createV3BucketDatastore"), false);
 });

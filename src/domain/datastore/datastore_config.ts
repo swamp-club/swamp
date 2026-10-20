@@ -69,6 +69,49 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
   "files",
 ] as const;
 
+/**
+ * Every first-level name swamp itself uses in a checkout's `.swamp/`
+ * (swamp-club#3691): the datastore layout directories, the always-local
+ * ones, the rest of `SWAMP_SUBDIRS` in `infrastructure/persistence/paths.ts`
+ * (by first segment), the package cache, and the names swamp keeps in
+ * `~/.swamp`, which is a checkout's `.swamp/` when the repository is the
+ * home directory. A v3 checkout materialises a namespace at
+ * `.swamp/{namespace}/`, so a namespace may take none of these names.
+ * Kept in the domain so the namespace rules need no infrastructure import;
+ * `integration/namespace_reserved_names_rules_test.ts` fails when swamp
+ * starts using a first-level name this list does not hold.
+ */
+export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
+  ...new Set<string>([
+    ...DEFAULT_DATASTORE_SUBDIRS,
+    ...ALWAYS_LOCAL_SUBDIRS,
+    // The rest of SWAMP_SUBDIRS.
+    "definitions",
+    "workflows",
+    "vault",
+    "inputs",
+    "inputs-evaluated",
+    "resources",
+    "datastore-bundles",
+    "pulled-extensions",
+    // Checkout-only names outside SWAMP_SUBDIRS.
+    "cache",
+    "start",
+    // Records a checkout held before joining v3 (swamp-club#3690).
+    "pre-v3-records",
+    // A file: a pending managedConfig lockfile publish.
+    "managed-config-lockfile-unpublished",
+    // ~/.swamp names.
+    "repos",
+    "deno",
+    "deno-cache",
+    "source",
+    "log",
+    "workspaces",
+    "litestream",
+  ]),
+];
+
 // All bundle directories are always-local: bundles are derived artifacts
 // rebuildable from source (local extensions) or re-extractable from archives
 // (pulled extensions). Syncing them via the datastore allows a stale remote

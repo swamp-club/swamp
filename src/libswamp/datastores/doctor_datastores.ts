@@ -26,7 +26,11 @@ import {
 } from "../../domain/datastore/datastore_config.ts";
 import type { NamespaceContaminationSummary } from "../../domain/datastore/datastore_sync_service.ts";
 
-import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
+import {
+  isReservedNamespaceName,
+  namespaceCollidesWithLayout,
+  reservedV3NamespaceMessage,
+} from "../../domain/data/namespace.ts";
 import type { LibSwampContext } from "../context.ts";
 import { layoutCollisionMessage } from "./namespace_migrate.ts";
 import type { SwampError } from "../errors.ts";
@@ -173,6 +177,12 @@ export interface DoctorDatastoresDeps {
    * on a v3 datastore. Read-only, from checkout-local state and chunk stats.
    */
   checkV3Content?: (config: DatastoreConfig) => Promise<V3ContentSummary>;
+  /**
+   * Why a v3 checkout refuses to open with the repo's current directories
+   * and exclude patterns, or undefined when it opens (swamp-club#3691);
+   * given only on a v3 datastore. Read-only, from checkout-local state.
+   */
+  checkV3Filter?: (config: DatastoreConfig) => Promise<string | undefined>;
 }
 
 /** Whether the v3 content check found nothing. */
@@ -292,16 +302,24 @@ export async function* doctorDatastores(
       // A namespace named after a layout directory shares that directory
       // with the solo layout, so the un-migrated data check below cannot
       // tell the two apart and is skipped.
+      // On v3 every reserved name collides: the checkout materialises the
+      // namespace at .swamp/<name> (swamp-club#3691).
       const namespaceCollides = config.namespace !== undefined &&
-        namespaceCollidesWithLayout(
+        (namespaceCollidesWithLayout(
           config.namespace,
           getDatastoreDirectories(config),
-        );
+        ) ||
+          (config.format === 3 && isReservedNamespaceName(config.namespace)));
       if (config.namespace && namespaceCollides) {
         healthFindings.push({
           check: "reserved_namespace",
           passed: false,
-          message: layoutCollisionMessage(config.namespace),
+          // A v3 checkout refuses to open on a reserved name, and the v2
+          // steps to move off it are refused on v3 (swamp-club#3691).
+          message: config.format === 3 &&
+              isReservedNamespaceName(config.namespace)
+            ? reservedV3NamespaceMessage(config.namespace)
+            : layoutCollisionMessage(config.namespace),
         });
       }
 
@@ -385,14 +403,63 @@ export async function* doctorDatastores(
         }
       }
 
+      // A v3 checkout whose directories changed refuses to open
+      // (swamp-club#3691): reported here, and the checks below that open
+      // it are skipped.
+      let v3FilterRefused = false;
+      if (deps.checkV3Filter) {
+        // A state it cannot read (a read-only state directory) fails this
+        // check on its own, as the v3 content check below does.
+        let refusal: string | undefined;
+        let failure: string | undefined;
+        try {
+          refusal = await deps.checkV3Filter(config);
+        } catch (error) {
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        v3FilterRefused = refusal !== undefined;
+        healthFindings.push({
+          check: "v3_directories",
+          passed: refusal === undefined && failure === undefined,
+          message: failure !== undefined
+            ? `Could not read this v3 checkout's directories: ${failure}`
+            : refusal ??
+              "This v3 checkout was built with the directories the repo's datastore config gives",
+        });
+      }
+
       // Retention check — only on request: it reads every stored record.
-      if (options.retention && deps.checkRetention) {
-        retentionFinding = await deps.checkRetention();
+      if (options.retention && deps.checkRetention && v3FilterRefused) {
         healthFindings.push({
           check: "retention",
-          passed: !retentionCheckFailed(retentionFinding),
-          message: retentionFindingMessage(retentionFinding),
+          passed: false,
+          message:
+            "Skipped: this v3 checkout does not open until its directories are restored (see v3_directories)",
         });
+      } else if (options.retention && deps.checkRetention) {
+        // The scan opens the repository, which a checkout swamp refuses to
+        // open (a v3 one on a reserved namespace, swamp-club#3691) cannot:
+        // that refusal is this check's finding, and the others still report.
+        let refusal: string | undefined;
+        try {
+          retentionFinding = await deps.checkRetention();
+        } catch (error) {
+          if (!(error instanceof UserError)) throw error;
+          refusal = error.message;
+        }
+        healthFindings.push(
+          retentionFinding === undefined
+            ? {
+              check: "retention",
+              passed: false,
+              message: `Could not run the retention check: ${refusal}`,
+            }
+            : {
+              check: "retention",
+              passed: !retentionCheckFailed(retentionFinding),
+              message: retentionFindingMessage(retentionFinding),
+            },
+        );
       }
 
       // v3 content check — checkout-local state only (swamp-club#3617).

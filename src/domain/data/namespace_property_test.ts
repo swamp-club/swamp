@@ -26,6 +26,11 @@ import {
   RESERVED_NAMESPACE_NAMES,
   restoreNamespace,
 } from "./namespace.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  ALWAYS_LOCAL_SUBDIRS,
+  DEFAULT_DATASTORE_SUBDIRS,
+} from "../datastore/datastore_config.ts";
 
 const SLUG_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789-".split("");
 
@@ -67,14 +72,59 @@ Deno.test("restoreNamespace: agrees with createNamespace on every slug it accept
   );
 });
 
-Deno.test("namespaceCollidesWithLayout: is reserved-or-listed for any directory list", () => {
+const LAYOUT_NAMES: readonly string[] = [
+  ...DEFAULT_DATASTORE_SUBDIRS,
+  ...ALWAYS_LOCAL_SUBDIRS,
+];
+
+// Only the layout directories make an existing v2 binding collide; the wider
+// reserved set applies to new claims and to v3 (swamp-club#3691).
+Deno.test("namespaceCollidesWithLayout: is layout-or-listed for any directory list", () => {
   fc.assert(
     fc.property(arbSlug, fc.array(arbSlug, { maxLength: 5 }), (slug, dirs) => {
       assertEquals(
         namespaceCollidesWithLayout(slug, dirs),
-        isReservedNamespaceName(slug) || dirs.includes(slug),
+        LAYOUT_NAMES.includes(slug) || dirs.includes(slug),
       );
     }),
     { numRuns: 500 },
+  );
+});
+
+/**
+ * The first-level `.swamp/` names swamp uses, gathered independently of the
+ * reserved list under test (swamp-club#3691): the first segments of the
+ * infrastructure's `SWAMP_SUBDIRS`, and the names written out by hand at
+ * their call sites (the package cache, start sessions, and the `~/.swamp`
+ * names a checkout at the home directory shares).
+ */
+const SWAMP_OWNED_ORACLE: readonly string[] = [
+  ...new Set([
+    ...Object.values(SWAMP_SUBDIRS).map((dir) => dir.split("/")[0]),
+    "cache",
+    "start",
+    "repos",
+    "deno",
+    "source",
+  ]),
+];
+
+Deno.test("createNamespace: accepts no slug that names a directory swamp uses in .swamp/", () => {
+  fc.assert(
+    fc.property(
+      fc.oneof(fc.constantFrom(...SWAMP_OWNED_ORACLE), arbSlug),
+      (slug) => {
+        let accepted = true;
+        try {
+          createNamespace(slug);
+        } catch {
+          accepted = false;
+        }
+        if (accepted) {
+          assertEquals(SWAMP_OWNED_ORACLE.includes(slug), false, slug);
+        }
+      },
+    ),
+    { numRuns: 300 },
   );
 });

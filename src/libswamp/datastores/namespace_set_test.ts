@@ -190,8 +190,34 @@ Deno.test("datastoreNamespaceSet: reserved slug yields error and claims nothing"
   );
   assertEquals(
     error.message,
-    'Namespace "data" is reserved: it is a directory of the datastore layout',
+    'Namespace "data" is reserved: it is a directory of the datastore layout or of swamp\'s .swamp/ directory',
   );
+  assertEquals(calls, []);
+});
+
+Deno.test("datastoreNamespaceSet: a name swamp uses in .swamp/ yields error and claims nothing (swamp-club#3691)", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    registerNamespace: () => {
+      calls.push("register");
+      return Promise.resolve();
+    },
+    updateMarkerNamespace: () => {
+      calls.push("marker");
+      return Promise.resolve();
+    },
+  });
+  for (const slug of ["vault", "definitions", "cache"]) {
+    const error = await assertErrors<NamespaceSetEvent>(
+      datastoreNamespaceSet(createLibSwampContext(), deps, { slug }),
+      "validation_failed",
+    );
+    assertEquals(
+      error.message.startsWith(`Namespace "${slug}" is reserved`),
+      true,
+      error.message,
+    );
+  }
   assertEquals(calls, []);
 });
 

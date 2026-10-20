@@ -337,6 +337,10 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     // state for unreadable records, at-risk copies and live blobs.
     "src/infrastructure/datastore_v3/v3_content_inspection.ts: inspectV3Content":
       READ_ONLY_DB,
+    // swamp-club#3691: `doctor datastores` reads the directories a v3
+    // checkout's projection was built with.
+    "src/infrastructure/datastore_v3/v3_datastore.ts: v3CheckoutFilterRefusal":
+      READ_ONLY_DB,
     "src/infrastructure/persistence/extension_catalog_store.ts: ExtensionCatalogStore":
       "Indexes installed extension metadata; no expression is evaluated into it.",
   },

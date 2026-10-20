@@ -106,6 +106,11 @@ import {
   writeWriterMarker,
 } from "./interrupted_writer_recovery.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  isReservedNamespaceName,
+  reservedV3NamespaceMessage,
+} from "../../domain/data/namespace.ts";
+import { assertV3CacheSubdirsContained } from "./cache_root_containment.ts";
 import { recoverCommitOutbox } from "./commit_outbox_recovery.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import {
@@ -117,6 +122,7 @@ import type { RepositoryFactoryConfig } from "../persistence/repository_factory.
 import { getSwampLogger } from "../logging/logger.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
+import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -510,6 +516,9 @@ export async function holdV3Writer(
     readonly retakeLost?: boolean;
   } = {},
 ): Promise<void> {
+  // Before the lease and the recovery of an interrupted writer, which
+  // would meet the same checkout (swamp-club#3691).
+  await refuseUnsafeV3Checkout(repoDir, config);
   // A checkout that holds records never joins (swamp-club#3690): refused
   // before the lease, which records this checkout in the datastore.
   await assertV3CheckoutJoinable(repoDir, config.namespace);
@@ -908,6 +917,11 @@ function legacyWriterWritesCheckout(
  * datastore `config` names: the commit-log engine and the read model's
  * catalog. Catches the read model up first, so the context reads every
  * commit made before it opened.
+ *
+ * Its `fetchForeignContent` reads another namespace's content from that
+ * namespace's cache root in the checkout (swamp-club#3691). It is marked
+ * `readsSoloNamespace`, and the context builders spread this config after
+ * the v2 sync service's fetcher, so it replaces that one.
  */
 export async function v3RepositoryFactoryConfig(
   repoDir: string,
@@ -924,7 +938,7 @@ export async function v3RepositoryFactoryConfig(
 ): Promise<
   Pick<
     RepositoryFactoryConfig,
-    "commitLog" | "catalogStore" | "unreadableContent"
+    "commitLog" | "catalogStore" | "unreadableContent" | "fetchForeignContent"
   >
 > {
   if (
@@ -940,6 +954,8 @@ export async function v3RepositoryFactoryConfig(
         "managedConfig off.",
     );
   }
+  // Before recovery and catch-up, which would write into the checkout.
+  await refuseUnsafeV3Checkout(repoDir, config);
   // A checkout that holds records never joins (swamp-club#3690): refused
   // before its copy is restored or its read model opens.
   await assertV3CheckoutJoinable(repoDir, config.namespace);
@@ -980,6 +996,7 @@ export async function v3RepositoryFactoryConfig(
     await handle.catchUp();
     if (writer) caughtUpWriters.add(handle);
   }
+  const unreadableContent = unreadableContentLookup(repoDir, handle.readModel);
   return {
     commitLog: (markDirty, runRepo) =>
       handle.engineFor(markDirty, runRepo, {
@@ -988,8 +1005,39 @@ export async function v3RepositoryFactoryConfig(
     catalogStore: handle.catalogStore,
     // A read of a record the read model could not materialise fails loudly
     // (swamp-club#3617).
-    unreadableContent: unreadableContentLookup(repoDir, handle.readModel),
+    unreadableContent,
+    // Another namespace's row is read from its own cache root in this
+    // checkout, never from this namespace's (swamp-club#3691).
+    fetchForeignContent: v3ForeignContentFetcher(
+      repoDir,
+      config,
+      unreadableContent,
+    ),
   };
+}
+
+/** Error code for a v3 checkout bound to a reserved namespace. */
+export const V3_RESERVED_NAMESPACE_CODE = "datastore_v3_reserved_namespace";
+
+/**
+ * Refuses a checkout the read model cannot materialise into safely
+ * (swamp-club#3691): one bound to a reserved namespace, whose cache root
+ * `.swamp/{namespace}/` is a directory swamp keeps its own files in, or one
+ * whose materialised subdirectories link out of their cache root, where
+ * every catch-up would fail.
+ */
+async function refuseUnsafeV3Checkout(
+  repoDir: string,
+  config: V3DatastoreConfig,
+): Promise<void> {
+  const namespace = config.namespace ?? "";
+  if (namespace !== "" && isReservedNamespaceName(namespace)) {
+    throw new UserError(
+      reservedV3NamespaceMessage(namespace),
+      V3_RESERVED_NAMESPACE_CODE,
+    );
+  }
+  await assertV3CacheSubdirsContained(repoDir, namespace, config.directories);
 }
 
 /** Whether teardown keeps the writer marker of the checkout at `repoDir`. */

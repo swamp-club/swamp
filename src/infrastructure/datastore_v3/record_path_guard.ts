@@ -41,6 +41,7 @@ import {
   PULLED_EXTENSIONS_SUBDIR,
   REPO_LOCAL_STREAM_SUBDIRS,
 } from "../../domain/datastore/datastore_config.ts";
+import { isReservedNamespaceName } from "../../domain/data/namespace.ts";
 import { lexicalRefusal } from "../../domain/datastore_v3/materialisation.ts";
 import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { swampPath } from "../persistence/paths.ts";
@@ -129,4 +130,16 @@ export function refusedKeyReason(
     return "it lands in the read model's state directory";
   }
   return undefined;
+}
+
+/**
+ * Whether the read model leaves every record of commit namespace
+ * `namespace` unmaterialised and uncatalogued (swamp-club#3691): a
+ * namespace named after one of swamp's own `.swamp/` directories, whose
+ * cache root `.swamp/<name>` is that directory. Its records stay in the
+ * read model's index, so history and chunk collection stay whole; every
+ * checkout skips them, so none of them ever reaches such a directory.
+ */
+export function isUnprojectedNamespace(namespace: string): boolean {
+  return namespace !== "" && isReservedNamespaceName(namespace);
 }

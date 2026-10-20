@@ -231,6 +231,16 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (namespace, record_key)
   ) STRICT, WITHOUT ROWID;
   `,
+  // 5 → 6 (swamp-club#3691): the checkout's datastore filter inputs
+  // (directories and exclude, as JSON) the projection was built with. Its
+  // own table, never cleared by a reset, so a changed filter is refused
+  // rather than silently re-projected. IF NOT EXISTS, as in 2 → 3.
+  `
+  CREATE TABLE IF NOT EXISTS checkout_filter (
+    only INTEGER PRIMARY KEY CHECK (only = 0),
+    inputs TEXT NOT NULL
+  ) STRICT;
+  `,
 ];
 
 export type { FileOwnership };
@@ -470,6 +480,35 @@ export class ReadModelState {
         "DELETE FROM load_touched_keys; DELETE FROM load_touched_names;",
       );
     });
+  }
+
+  /**
+   * The checkout's datastore filter inputs the projection was built with
+   * (swamp-club#3691), as {@link stampFilterInputs} recorded them; undefined
+   * when none were recorded.
+   */
+  filterInputs(): string | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare(
+      "SELECT inputs FROM checkout_filter WHERE only = 0",
+    ).get() as { inputs: string } | undefined;
+    return row?.inputs;
+  }
+
+  /**
+   * Records `inputs` as the checkout's filter inputs when none are recorded,
+   * and resolves with the recorded ones: `inputs` itself, or the earlier
+   * value it did not replace. A reset never clears them.
+   */
+  stampFilterInputs(inputs: string): string {
+    let stored = inputs;
+    this.#transaction(() => {
+      this.#db.prepare(
+        "INSERT OR IGNORE INTO checkout_filter (only, inputs) VALUES (0, ?)",
+      ).run(inputs);
+      stored = this.filterInputs() ?? inputs;
+    });
+    return stored;
   }
 
   /** The catalog generation the state was built against, if any. */

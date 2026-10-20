@@ -26,11 +26,12 @@ import type {
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { UserError } from "../errors.ts";
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
-import type {
-  ContentAvailability,
-  ForeignContentFetcher,
-  RenameForward,
-  UnifiedDataRepository,
+import {
+  type ContentAvailability,
+  type ForeignContentFetcher,
+  isForeignNamespace,
+  type RenameForward,
+  type UnifiedDataRepository,
 } from "./repositories.ts";
 
 export type { ForeignContentFetcher };
@@ -632,58 +633,19 @@ export class DataQueryService {
 
   /**
    * Fills the attributes of a JSON record of another namespace, whose content
-   * is never on local disk, through the repository's foreign content fetcher.
-   * A body is fetched once per service; a missing body or a failed fetch
-   * leaves the attributes empty and is tried again on the next read, so one
-   * transient failure never empties a record for the life of the process.
+   * is never in this repository's own layout, through the repository's
+   * foreign content fetcher. A missing body or a failed fetch leaves the
+   * attributes empty and is tried again on the next read, so one transient
+   * failure never empties a record for the life of the process; a record the
+   * datastore could not materialise fails the read (swamp-club#3691).
    */
   private async hydrateForeignRecord(record: DataRecord): Promise<void> {
-    const fetcher = this.dataRepo.fetchForeignContent;
     if (
-      !fetcher ||
-      record.namespace === this.dataRepo.namespace ||
-      record.namespace === "" ||
       record.contentType !== "application/json" ||
       Object.keys(record.attributes).length > 0
     ) return;
-    // The row is the other namespace's to write, so its fields are checked
-    // before they name a remote object: none may step out of that
-    // namespace's own data tree, whatever the datastore does with the path.
-    if (
-      !isSafePathSegment(record.namespace) ||
-      !record.modelType.split("/").every(isSafePathSegment) ||
-      !isSafePathSegment(record.modelId) ||
-      !isSafePathSegment(record.name) ||
-      !Number.isSafeInteger(record.version) || record.version < 0
-    ) {
-      logger
-        .debug`Not fetching ${record.namespace}:${record.modelName}/${record.name}@v${record.version}: its catalog row does not name a path inside that namespace`;
-      return;
-    }
-    const relPath =
-      `data/${record.modelType}/${record.modelId}/${record.name}/${record.version}/raw`;
-    const cacheKey = `${record.namespace}:${relPath}`;
-    let bytes = this.foreignContentCache.get(cacheKey) ?? null;
-    if (!bytes) {
-      try {
-        bytes = await fetcher(record.namespace, relPath);
-      } catch (error) {
-        logger
-          .debug`Could not fetch ${record.namespace}:${record.modelName}/${record.name}@v${record.version}: ${
-          String(error)
-        }`;
-        return;
-      }
-      if (!bytes) return;
-      if (this.foreignContentCache.size >= FOREIGN_CONTENT_CACHE_ENTRIES) {
-        // Maps iterate in insertion order, so this drops the oldest body.
-        for (const oldest of this.foreignContentCache.keys()) {
-          this.foreignContentCache.delete(oldest);
-          break;
-        }
-      }
-      this.foreignContentCache.set(cacheKey, bytes);
-    }
+    const bytes = await this.foreignContent(record);
+    if (!bytes) return;
     try {
       record.attributes = JSON.parse(
         new TextDecoder().decode(bytes),
@@ -691,6 +653,67 @@ export class DataQueryService {
     } catch {
       // Invalid JSON — leave attributes empty
     }
+  }
+
+  /**
+   * The bytes of a record of another namespace (see
+   * {@link isForeignNamespace}), read through the repository's foreign
+   * content fetcher, or null when there is no fetcher, the record is this
+   * repository's own, or the body is missing or could not be fetched. A body
+   * is fetched once per service. A fetch that finds the record unreadable
+   * (swamp-club#3617) is rethrown rather than read as absent.
+   */
+  private async foreignContent(
+    record: DataRecord,
+  ): Promise<Uint8Array | null> {
+    const fetcher = this.dataRepo.fetchForeignContent;
+    if (!fetcher || !isForeignNamespace(record.namespace, this.dataRepo)) {
+      return null;
+    }
+    // The row is the other namespace's to write, so its fields are checked
+    // before they name a file: none may step out of that namespace's own
+    // data tree, whatever the datastore does with the path. The solo
+    // namespace is the empty segment, reached only by a fetcher that reads
+    // it (isForeignNamespace).
+    if (
+      (record.namespace !== "" && !isSafePathSegment(record.namespace)) ||
+      !record.modelType.split("/").every(isSafePathSegment) ||
+      !isSafePathSegment(record.modelId) ||
+      !isSafePathSegment(record.name) ||
+      !Number.isSafeInteger(record.version) || record.version < 0
+    ) {
+      logger
+        .debug`Not fetching ${record.namespace}:${record.modelName}/${record.name}@v${record.version}: its catalog row does not name a path inside that namespace`;
+      return null;
+    }
+    const relPath =
+      `data/${record.modelType}/${record.modelId}/${record.name}/${record.version}/raw`;
+    const cacheKey = `${record.namespace}:${relPath}`;
+    const cached = this.foreignContentCache.get(cacheKey);
+    if (cached) return cached;
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await fetcher(record.namespace, relPath);
+    } catch (error) {
+      // A record the datastore could not materialise fails the read with its
+      // code instead of reading as empty (swamp-club#3691).
+      if (isUnreadableContentError(error)) throw error;
+      logger
+        .debug`Could not fetch ${record.namespace}:${record.modelName}/${record.name}@v${record.version}: ${
+        String(error)
+      }`;
+      return null;
+    }
+    if (!bytes) return null;
+    if (this.foreignContentCache.size >= FOREIGN_CONTENT_CACHE_ENTRIES) {
+      // Maps iterate in insertion order, so this drops the oldest body.
+      for (const oldest of this.foreignContentCache.keys()) {
+        this.foreignContentCache.delete(oldest);
+        break;
+      }
+    }
+    this.foreignContentCache.set(cacheKey, bytes);
+    return bytes;
   }
 
   /**
@@ -1577,16 +1600,17 @@ export class DataQueryService {
    * datastore, or a non-JSON item whose body cannot be read — is null, so it
    * is never mistaken for empty content. A row stamped with the empty
    * namespace (written before the repository set one) is this repository's
-   * own, and is read like any other.
+   * own, and is read like any other, unless the repository's fetcher reads
+   * the solo namespace (see {@link isForeignNamespace}). The async
+   * {@link projectedContents} reads another namespace's bytes through the
+   * fetcher instead.
    *
    * Returns undefined when the answer needs the item's bytes.
    */
   private projectedContentWithoutBytes(
     record: DataRecord,
   ): ProjectedContent | undefined {
-    if (
-      record.namespace !== "" && record.namespace !== this.dataRepo.namespace
-    ) {
+    if (isForeignNamespace(record.namespace, this.dataRepo)) {
       return { content: null, contentEncoding: null };
     }
     if (record.contentType === "application/json") {
@@ -1632,7 +1656,9 @@ export class DataQueryService {
    * which downloads a lazily-synced body the way `data get` does
    * (swamp-club#2962). Only records that passed the caller's include reach
    * here, so no body is read or downloaded for one the caller may not read.
-   * A download error fails the query, as it fails `data get`.
+   * A download error fails the query, as it fails `data get`. Another
+   * namespace's body is read through a v3 checkout's foreign content
+   * fetcher (swamp-club#3691), and is null otherwise.
    */
   private async projectedContents(
     records: DataRecord[],
@@ -1641,6 +1667,15 @@ export class DataQueryService {
     if (!readsContent) return undefined;
     const contents = new Map<DataRecord, ProjectedContent>();
     for (const record of records) {
+      // Only a v3 checkout reads another namespace's body from local disk;
+      // a v2 sync fetcher would download it, so its rows stay null below.
+      if (
+        this.dataRepo.fetchForeignContent?.readsSoloNamespace === true &&
+        isForeignNamespace(record.namespace, this.dataRepo)
+      ) {
+        contents.set(record, await this.projectedForeignContent(record));
+        continue;
+      }
       const known = this.projectedContentWithoutBytes(record);
       if (known) {
         contents.set(record, known);
@@ -1667,6 +1702,35 @@ export class DataQueryService {
       );
     }
     return contents;
+  }
+
+  /**
+   * The projected content of another namespace's record, as
+   * {@link projectedContentWithoutBytes} and {@link encodeProjected} give an
+   * own record's: a JSON body as its parsed attributes, any other as its
+   * encoded bytes, and null when the body cannot be read.
+   */
+  private async projectedForeignContent(
+    record: DataRecord,
+  ): Promise<ProjectedContent> {
+    if (
+      record.contentType === "application/json" &&
+      Object.keys(record.attributes).length > 0
+    ) {
+      return { content: record.attributes, contentEncoding: "utf-8" };
+    }
+    const bytes = await this.foreignContent(record);
+    if (bytes && record.contentType === "application/json") {
+      try {
+        return {
+          content: JSON.parse(new TextDecoder().decode(bytes)),
+          contentEncoding: "utf-8",
+        };
+      } catch {
+        return { content: {}, contentEncoding: "utf-8" };
+      }
+    }
+    return this.encodeProjected(bytes);
   }
 
   private rowToRecord(

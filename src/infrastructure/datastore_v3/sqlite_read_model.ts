@@ -56,6 +56,11 @@
  * - **Unreadable records** (swamp-club#3617). A put whose chunks cannot be
  *   read leaves its file absent and is recorded, instead of failing every
  *   later commit; a later catch-up writes it once its chunk changes.
+ * - **What is never projected** (swamp-club#3691). Records of a namespace
+ *   named after one of swamp's own `.swamp/` directories, and keys of the
+ *   solo namespace or the checkout's own that its datastore filter leaves
+ *   out (there `.swamp/` is its local tier), get no file and no catalog row.
+ *   They stay in the index, and the cursor moves past them as usual.
  *
  * @module
  */
@@ -128,10 +133,15 @@ import {
 import {
   CATALOG_V3_FILE,
   isCheckoutLocalKey,
+  isUnprojectedNamespace,
   MATERIALISED_SUBDIRS,
   refusedKeyReason,
 } from "./record_path_guard.ts";
-import { type ReadModelCatalog, V3Catalog } from "./v3_catalog.ts";
+import {
+  ProjectedCatalog,
+  type ReadModelCatalog,
+  V3Catalog,
+} from "./v3_catalog.ts";
 
 /** How many unsynced files one locked section of syncUnsyncedFiles syncs. */
 export const UNSYNCED_SYNC_BATCH = 500;
@@ -205,6 +215,49 @@ export function atRiskCopyPath(
   );
 }
 
+/**
+ * The checkout a read model projects into (swamp-club#3691): its own
+ * namespace and its datastore key filter.
+ */
+export interface ReadModelCheckout {
+  /** The checkout's namespace; `""` for a solo checkout. */
+  readonly namespace: string;
+  /**
+   * Which record keys the checkout keeps in the datastore
+   * (`datastoreKeyFilter`): the rest of its `.swamp/` subdirectories are its
+   * local tier.
+   */
+  readonly admits: (key: string) => boolean;
+}
+
+/**
+ * Why the read model never writes, removes or catalogues `key` of commit
+ * namespace `namespace` (swamp-club#3691), or undefined when it may:
+ *
+ * - `reserved`: the namespace is named after one of swamp's own `.swamp/`
+ *   directories ({@link isUnprojectedNamespace}).
+ * - `local`: a key of the solo namespace, or of the checkout's own, that
+ *   the checkout's filter leaves out. The solo namespace's cache root is
+ *   `.swamp/`, where the checkout's local tier lives, and a checkout of the
+ *   same namespace stamps its local rows with the same catalog identity, so
+ *   such a key's file and rows are the checkout's own local data.
+ */
+export function unprojectedReason(
+  namespace: string,
+  key: string,
+  checkout: ReadModelCheckout | undefined,
+): "reserved" | "local" | undefined {
+  if (isUnprojectedNamespace(namespace)) return "reserved";
+  if (
+    checkout !== undefined &&
+    (namespace === "" || namespace === checkout.namespace) &&
+    !checkout.admits(key)
+  ) {
+    return "local";
+  }
+  return undefined;
+}
+
 /** Options for {@link SqliteReadModel.open}. */
 export interface SqliteReadModelOptions {
   /** The commit store to read; never written. */
@@ -222,6 +275,11 @@ export interface SqliteReadModelOptions {
   readonly pageSize?: number;
   /** The catalog to write; `_catalog_v3.db` in the state directory by default. */
   readonly catalog?: ReadModelCatalog;
+  /**
+   * The checkout projected into (swamp-club#3691). Without it every key of
+   * the solo and own namespaces is projected; reserved namespaces never are.
+   */
+  readonly checkout?: ReadModelCheckout;
   /**
    * Makes the batch each page writes through. By default one that does not
    * sync when the boot can be named, since the files are checked after a
@@ -284,6 +342,9 @@ export class SqliteReadModel implements ReadModel {
   readonly #syncDirectory: (dir: string) => Promise<void>;
   readonly #syncFile: (path: string) => Promise<void>;
   readonly #atRiskCopyBytes: number;
+  readonly #checkout: ReadModelCheckout | undefined;
+  /** The reserved namespaces whose skipped commits were warned about. */
+  readonly #warnedReserved = new Set<string>();
   /**
    * The files this exclusive section wrote, removed, or guarded already:
    * the guard never hashes one twice, nor one this section wrote.
@@ -317,7 +378,15 @@ export class SqliteReadModel implements ReadModel {
     this.#cacheRoot = options.cacheRoot;
     this.#stateDir = options.stateDir;
     this.#pageSize = pageSize;
-    this.#catalog = catalog;
+    const checkout = options.checkout;
+    this.#checkout = checkout;
+    // One filter for every catalog action, from commits and the compacted
+    // base alike (swamp-club#3691).
+    this.#catalog = new ProjectedCatalog(
+      catalog,
+      (namespace, key) =>
+        unprojectedReason(namespace, key, checkout) !== undefined,
+    );
     this.#state = state;
     this.#writeBatch = options.writeBatch ??
       (() => new DurableWriteBatch({ sync: this.#boot === undefined }));
@@ -792,6 +861,10 @@ export class SqliteReadModel implements ReadModel {
     try {
       for (const file of this.#state.unsyncedFiles()) {
         signal.throwIfAborted();
+        // A key the checkout never projects is skipped, not a reason to
+        // apply every commit again: a state from before swamp-club#3691
+        // may list one, and its file is the checkout's own now.
+        if (this.#unprojected(file.namespace, file.record_key)) continue;
         if (file.expect === "unknown") {
           logger
             .warn`The read model's state has no live record for ${file.record_key}, written before a restart; applying every commit again`;
@@ -1210,10 +1283,36 @@ export class SqliteReadModel implements ReadModel {
   }
 
   /**
+   * Whether the read model leaves `key` of `namespace` alone
+   * ({@link unprojectedReason}): logged once per reserved namespace, and
+   * only at debug level for a key the checkout keeps local, which is
+   * expected on every commit of another checkout.
+   */
+  #unprojected(namespace: string, key: string): boolean {
+    const reason = unprojectedReason(namespace, key, this.#checkout);
+    if (reason === "reserved") {
+      if (!this.#warnedReserved.has(namespace)) {
+        this.#warnedReserved.add(namespace);
+        logger
+          .warn`Not materialising the records of namespace ${namespace}: it is named after one of swamp's own .swamp directories, so its files would land in that directory. They stay in the datastore, unmaterialised`;
+      }
+      return true;
+    }
+    if (reason === "local") {
+      logger
+        .debug`Not materialising ${key} of namespace ${namespace}: this checkout's directories keep it local`;
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * The path to write (`isPut`) or remove a key at, or undefined when the
-   * key must be left alone: a refused key, a file and a directory claiming
+   * key must be left alone: a key the checkout never projects
+   * ({@link #unprojected}), a refused key, a file and a directory claiming
    * one path, or a path resolving into the state directory. `source` names
-   * where the change came from, for the log.
+   * where the change came from, for the log. A key left alone gets no file
+   * ownership and stays in the records index.
    */
   async #target(
     namespace: string,
@@ -1221,8 +1320,9 @@ export class SqliteReadModel implements ReadModel {
     isPut: boolean,
     source: string,
   ): Promise<string | undefined> {
-    const root = this.#cacheRoot(namespace);
     const key = recordKey.toString();
+    if (this.#unprojected(namespace, key)) return undefined;
+    const root = this.#cacheRoot(namespace);
     const skip = (reason: string): undefined => {
       logger.warn`Not materialising ${key} from ${source}: ${reason}`;
       return undefined;
@@ -2216,7 +2316,10 @@ export class SqliteReadModel implements ReadModel {
       );
       if (
         owner === undefined || !owner.present ||
-        owner.owner !== record.partition || owner.mark !== record.position
+        owner.owner !== record.partition || owner.mark !== record.position ||
+        // A key the checkout never projects has no file of the read
+        // model's to retry; one recorded before swamp-club#3691 is dropped.
+        this.#unprojected(record.namespace, record.recordKey)
       ) {
         // The file no longer shows this put. Every commit that moves a
         // key's ownership decides the key and forgets its row with it, so

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join, SEPARATOR } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -1655,4 +1655,141 @@ Deno.test("repairPreV3Records: records gone by the time they would move are repo
     ),
   );
   assertEquals(events.at(-1), { kind: "not_needed", swampDir: "/repo/.swamp" });
+});
+
+Deno.test("doctorDatastores: reports a v3 checkout bound to a reserved namespace with the v3 way off it, and survives its open refusal (swamp-club#3691)", async () => {
+  const v3Config: DatastoreConfig = {
+    ...filesystemConfig,
+    namespace: "vault",
+    format: 3,
+  };
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(v3Config, { healthy: true, message: "OK", latencyMs: 1 }, []),
+    // What the read-only repository context's open throws on this binding.
+    checkRetention: () =>
+      Promise.reject(
+        new UserError(
+          'Namespace "vault" has the same name as a datastore layout ' +
+            "directory or a directory swamp keeps in .swamp/. A v3 checkout " +
+            "does not open on this namespace.",
+        ),
+      ),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps, { retention: true }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const reserved = completed.data.healthFindings.find(
+      (f) => f.check === "reserved_namespace",
+    );
+    assertEquals(reserved?.passed, false);
+    assertStringIncludes(reserved?.message ?? "", 'Namespace "vault"');
+    assertStringIncludes(reserved?.message ?? "", "new, empty v3 datastore");
+    assertEquals(
+      (reserved?.message ?? "").includes("swamp datastore namespace set"),
+      false,
+    );
+    const retention = completed.data.healthFindings.find(
+      (f) => f.check === "retention",
+    );
+    assertEquals(retention?.passed, false);
+    assertStringIncludes(retention?.message ?? "", "does not open");
+  }
+});
+
+Deno.test("doctorDatastores: reports a v3 checkout whose directories changed as a finding, and skips the retention check that would open it (swamp-club#3691)", async () => {
+  const refusal =
+    "Changing directories on an existing v3 checkout is not supported yet";
+  let retentionCalls = 0;
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(filesystemConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, []),
+    checkV3Filter: () => Promise.resolve(refusal),
+    checkRetention: () => {
+      retentionCalls++;
+      return Promise.reject(new UserError(refusal));
+    },
+  };
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps, { retention: true }),
+  );
+  const completed = events.at(-1);
+  if (completed?.kind !== "completed") throw new Error("expected completed");
+  const finding = completed.data.healthFindings.find((f) =>
+    f.check === "v3_directories"
+  );
+  assertEquals(finding?.passed, false);
+  assertStringIncludes(finding!.message, refusal);
+  assertEquals(retentionCalls, 0);
+  const skipped = completed.data.healthFindings.find((f) =>
+    f.check === "retention"
+  );
+  assertEquals(skipped?.passed, false);
+  assertStringIncludes(skipped?.message ?? "", "v3_directories");
+
+  const passing = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), {
+      ...deps,
+      checkV3Filter: () => Promise.resolve(undefined),
+      checkRetention: () => Promise.resolve(retentionSummary()),
+    }),
+  );
+  const done = passing.at(-1);
+  if (done?.kind !== "completed") throw new Error("expected completed");
+  assertEquals(
+    done.data.healthFindings.find((f) => f.check === "v3_directories")
+      ?.passed,
+    true,
+  );
+});
+
+Deno.test("doctorDatastores: a v3 filter it cannot read fails that check alone, and the other checks still report (swamp-club#3691)", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(filesystemConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, []),
+    checkV3Filter: () =>
+      Promise.reject(new Error("attempt to write a readonly database")),
+  };
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps, {}),
+  );
+  const completed = events.at(-1);
+  if (completed?.kind !== "completed") throw new Error("expected completed");
+  const finding = completed.data.healthFindings.find((f) =>
+    f.check === "v3_directories"
+  );
+  assertEquals(finding?.passed, false);
+  assertStringIncludes(finding!.message, "readonly database");
+  assert(completed.data.healthFindings.length > 1);
+});
+
+Deno.test("doctorDatastores: a v2 repo bound to a name reserved for swamp's .swamp/ directories is not reported; a v3 one is (swamp-club#3691)", async () => {
+  const reservedFinding = async (config: DatastoreConfig) => {
+    const events = await collect<DoctorDatastoresEvent>(
+      doctorDatastores(
+        createLibSwampContext(),
+        makeDeps(config, { healthy: true, message: "OK", latencyMs: 1 }, []),
+        {},
+      ),
+    );
+    const completed = events.at(-1);
+    if (completed?.kind !== "completed") throw new Error("expected completed");
+    return completed.data.healthFindings.find((f) =>
+      f.check === "reserved_namespace"
+    );
+  };
+  const v2 = { ...filesystemConfig, namespace: "workflows" };
+  assertEquals(await reservedFinding(v2), undefined);
+  const v3 = await reservedFinding({ ...v2, format: 3 });
+  assertEquals(v3?.passed, false);
+  assertStringIncludes(v3?.message ?? "", "new, empty v3 datastore");
 });

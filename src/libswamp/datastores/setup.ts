@@ -57,6 +57,8 @@ import {
 import {
   createNamespace,
   isReservedNamespaceName,
+  namespaceCollidesWithLayout,
+  restoreNamespace,
 } from "../../domain/data/namespace.ts";
 import { layoutCollisionMessage } from "./namespace_migrate.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -83,6 +85,7 @@ import {
   isFreshV3Skeleton,
 } from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import { assertV3BucketHost } from "../../infrastructure/datastore_v3/v3_datastore_binding.ts";
+import { assertV3CacheSubdirsContained } from "../../infrastructure/datastore_v3/cache_root_containment.ts";
 import { assertV3BucketExtensionVersions } from "../../infrastructure/persistence/datastore_extension_version.ts";
 import { resolveModelsDir } from "../../infrastructure/persistence/resolve_models_dir.ts";
 import {
@@ -235,6 +238,15 @@ export type V3TargetState =
 /** Dependencies for datastore setup operations. */
 export interface DatastoreSetupDeps {
   requireUpgradedRepo: (repoDir: string) => Promise<void>;
+  /**
+   * Throws a UserError when a subdirectory a v3 checkout would materialise
+   * records in links out of its cache root (swamp-club#3691).
+   */
+  assertV3CacheContained: (
+    repoDir: string,
+    namespace: string,
+    directories: readonly string[] | undefined,
+  ) => Promise<void>;
   verifyPath: (
     path: string,
   ) => Promise<{ healthy: boolean; message: string }>;
@@ -732,6 +744,29 @@ async function* setupV3Filesystem(
     error: { code: "validation_failed", message },
   });
 
+  // A v3 checkout materialises its namespace at .swamp/{namespace}/: one
+  // named after a directory swamp keeps there would be written over it
+  // (swamp-club#3691). The repo is not on v3 yet, so the v2 steps to move
+  // off the name still apply.
+  const { namespace } = await deps.currentDatastore(input.repoDir);
+  if (namespace && isReservedNamespaceName(namespace)) {
+    yield refuse(layoutCollisionMessage(namespace));
+    return;
+  }
+  // A materialised subdirectory linking out of .swamp would fail every
+  // catch-up of the new datastore (swamp-club#3691).
+  try {
+    await deps.assertV3CacheContained(
+      input.repoDir,
+      namespace ?? "",
+      input.directories ?? undefined,
+    );
+  } catch (error) {
+    if (!(error instanceof UserError)) throw error;
+    yield refuse(error.message);
+    return;
+  }
+
   const target = await deps.inspectV3Target(input.datastorePath);
   if (target.kind === "refused") {
     yield refuse(
@@ -753,7 +788,6 @@ async function* setupV3Filesystem(
     return;
   }
   const sourceDir = "error" in source ? source.currentPath : source.sourceDir;
-  const { namespace } = await deps.currentDatastore(input.repoDir);
   const repoSwampDir = swampPath(input.repoDir);
   const subdirs = deps.getDatastoreDirectories({ type: "filesystem" })
     .filter((subdir) =>
@@ -855,6 +889,20 @@ async function* setupV3Extension(
         cause: err,
       },
     };
+    return;
+  }
+
+  // As on a v3 filesystem setup: a materialised subdirectory linking out of
+  // .swamp would fail every open of the new datastore (swamp-club#3691).
+  try {
+    await deps.assertV3CacheContained(
+      input.repoDir,
+      input.namespace ?? "",
+      undefined,
+    );
+  } catch (err) {
+    if (!(err instanceof UserError)) throw err;
+    yield refuse(err.message);
     return;
   }
 
@@ -1154,7 +1202,13 @@ export async function* datastoreSetupExtension(
       );
       const ns = input.namespace;
 
-      if (ns && input.namespaceAlreadyBound && isReservedNamespaceName(ns)) {
+      // A v2 binding to a name reserved later still works unless it is a
+      // layout directory; v3 refuses every reserved name (swamp-club#3691).
+      if (
+        ns && input.namespaceAlreadyBound &&
+        (namespaceCollidesWithLayout(ns, []) ||
+          (input.format === 3 && isReservedNamespaceName(ns)))
+      ) {
         yield {
           kind: "error",
           error: {
@@ -1167,7 +1221,8 @@ export async function* datastoreSetupExtension(
 
       if (ns) {
         try {
-          createNamespace(ns);
+          if (input.namespaceAlreadyBound) restoreNamespace(ns);
+          else createNamespace(ns);
         } catch (error) {
           yield {
             kind: "error",
@@ -1946,6 +2001,7 @@ export function createDatastoreSetupDeps(
 ): DatastoreSetupDeps {
   return {
     requireUpgradedRepo,
+    assertV3CacheContained: assertV3CacheSubdirsContained,
     verifyPath: async (path: string) => {
       const verifier = new FilesystemDatastoreVerifier(path);
       return await verifier.verify();

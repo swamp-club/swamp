@@ -89,7 +89,10 @@ import {
   type DatastoreEngine,
 } from "../../domain/datastore/datastore_format.ts";
 import { lostDatastoreFormatMarker } from "../../infrastructure/persistence/datastore_format_guard.ts";
-import { restoreV3FormatMarker } from "../../infrastructure/datastore_v3/v3_datastore.ts";
+import {
+  restoreV3FormatMarker,
+  v3CheckoutFilterRefusal,
+} from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import { inspectV3Content } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
 import {
   movePreV3CheckoutRecords,
@@ -340,6 +343,14 @@ async function createDoctorDatastoresDeps(
       ? {
         checkV3Content: (config: DatastoreConfig) =>
           inspectV3Content({ repoDir, datastoreConfig: config }),
+        checkV3Filter: (config: DatastoreConfig) =>
+          Promise.resolve(
+            v3CheckoutFilterRefusal(
+              repoDir,
+              config.directories,
+              config.exclude,
+            ),
+          ),
       }
       : {}),
   };

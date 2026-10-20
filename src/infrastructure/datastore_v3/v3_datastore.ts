@@ -45,6 +45,7 @@ import {
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import {
+  DEFAULT_DATASTORE_SUBDIRS,
   getDatastoreDirectories,
   isAlwaysLocal,
 } from "../../domain/datastore/datastore_config.ts";
@@ -116,7 +117,12 @@ import {
   COMMIT_STORE_SCHEMA_VERSION,
   SqliteCommitStore,
 } from "./sqlite_commit_store.ts";
-import { NOT_RELEASED, SqliteReadModel } from "./sqlite_read_model.ts";
+import {
+  NOT_RELEASED,
+  READ_MODEL_STATE_FILE,
+  SqliteReadModel,
+} from "./sqlite_read_model.ts";
+import { ReadModelState } from "./read_model_state.ts";
 import { V3Catalog } from "./v3_catalog.ts";
 import {
   litestreamStateDirName,
@@ -337,6 +343,184 @@ export function datastoreKeyFilter(
   };
 }
 
+/** Error code for {@link V3CheckoutFilterChangedError}. */
+export const V3_CHECKOUT_FILTER_CHANGED_CODE =
+  "datastore_v3_directories_changed";
+
+/**
+ * The checkout filter inputs a v3 checkout's projection is built with
+ * (swamp-club#3691), as stored: the configured directories (order and
+ * duplicates aside; `null` for the default set, whether omitted or listed,
+ * so a swamp that changes the default does not refuse its own checkouts)
+ * and the exclude patterns. Without a `!` pattern every match excludes, so
+ * order and duplicates do not matter and are dropped; with one, the last
+ * match wins, so the patterns keep their order and a reordering is refused.
+ */
+function checkoutFilterInputs(
+  directories: readonly string[] | undefined,
+  exclude: readonly string[] | undefined,
+): string {
+  // Setup writes the default set out in full while an override such as
+  // SWAMP_DATASTORE gives none: both are the default set.
+  const listed = directories === undefined
+    ? undefined
+    : [...new Set(directories)].sort();
+  const defaults = [...new Set<string>(DEFAULT_DATASTORE_SUBDIRS)].sort();
+  const isDefault = listed === undefined ||
+    (listed.length === defaults.length &&
+      listed.every((dir, i) => dir === defaults[i]));
+  // As compilePatterns reads them: trimmed, blank and comment lines dropped.
+  const patterns = (exclude ?? []).map((p) => p.trim())
+    .filter((p) => p !== "" && !p.startsWith("#"));
+  return JSON.stringify({
+    directories: isDefault ? null : listed,
+    exclude: patterns.some((p) => p.startsWith("!"))
+      ? patterns
+      : [...new Set(patterns)].sort(),
+  });
+}
+
+/**
+ * The subdirectories a checkout built with the stored filter `inputs` keeps
+ * local: the default datastore subdirectories its directories leave out.
+ */
+function localSubdirsOf(inputs: string): string[] {
+  try {
+    const parsed = JSON.parse(inputs) as { directories: string[] | null };
+    if (parsed.directories === null) return [];
+    const listed = new Set(parsed.directories);
+    return DEFAULT_DATASTORE_SUBDIRS.filter((dir) =>
+      !listed.has(dir) && !isAlwaysLocal(dir)
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Stored checkout filter inputs as a reader sees them. */
+function describeCheckoutFilter(inputs: string): string {
+  try {
+    const parsed = JSON.parse(inputs) as {
+      directories: string[] | null;
+      exclude: string[];
+    };
+    const directories = parsed.directories === null
+      ? "the default directories"
+      : `directories [${parsed.directories.join(", ")}]`;
+    return parsed.exclude.length === 0
+      ? `${directories} and no exclude patterns`
+      : `${directories} and exclude [${parsed.exclude.join(", ")}]`;
+  } catch {
+    return inputs;
+  }
+}
+
+/**
+ * Thrown when a v3 checkout is opened with other directories or exclude
+ * patterns than its projection was built with (swamp-club#3691). The read
+ * model never projects the keys the filter keeps local, and a rebuild would
+ * lose the checkout's ownership of its files, so there is no re-projection.
+ */
+export class V3CheckoutFilterChangedError extends UserError {
+  constructor(repoDir: string, projected: string, current: string) {
+    const local = localSubdirsOf(projected);
+    const localFiles = local.length === 0
+      ? "the files its exclude patterns keep out of the datastore"
+      : `${
+        local.map((dir) => join(repoDir, ".swamp", dir)).join(", ")
+      } and any file its exclude patterns keep out of the datastore`;
+    super(
+      `Changing directories on an existing v3 checkout is not supported ` +
+        `yet. The repository's datastore config now gives ` +
+        `${describeCheckoutFilter(current)}, but the checkout at ${repoDir} ` +
+        `was built with ${describeCheckoutFilter(projected)}. The config is ` +
+        `committed with the repository, so every existing checkout of it ` +
+        `refuses on its next command until the two match again. Nothing was ` +
+        `changed. Restore the previous directories (and exclude patterns) in ` +
+        `the repository's datastore config. Otherwise, make a fresh checkout ` +
+        `of the repository: it will not have this checkout's local-only ` +
+        `files (${localFiles}), which were never committed, so copy them ` +
+        `out of this checkout first.`,
+      V3_CHECKOUT_FILTER_CHANGED_CODE,
+    );
+    this.name = "V3CheckoutFilterChangedError";
+  }
+}
+
+/**
+ * Refuses a checkout whose filter changed since its projection was built,
+ * and records the filter of one that has none recorded (a projection from
+ * before swamp-club#3691). Runs before anything of the datastore is
+ * opened, so a refusal leaves nothing open and nothing written but the
+ * state's own schema.
+ *
+ * @throws V3CheckoutFilterChangedError when the filter changed
+ */
+function assertCheckoutFilterUnchanged(
+  repoDir: string,
+  directories: readonly string[] | undefined,
+  exclude: readonly string[] | undefined,
+): void {
+  const current = checkoutFilterInputs(directories, exclude);
+  const state = ReadModelState.open(
+    join(readModelStateDir(repoDir), READ_MODEL_STATE_FILE),
+  );
+  let projected: string;
+  try {
+    projected = state.stampFilterInputs(current);
+  } finally {
+    state.close();
+  }
+  if (projected !== current) {
+    throw markErrorPaths(
+      new V3CheckoutFilterChangedError(repoDir, projected, current),
+      [repoDir],
+    );
+  }
+}
+
+/**
+ * Why the v3 checkout at `repoDir` refuses to open with `directories` and
+ * `exclude` ({@link V3CheckoutFilterChangedError}), or undefined when it
+ * opens (`doctor datastores`). Reads its state without opening the
+ * datastore, and records nothing.
+ */
+export function v3CheckoutFilterRefusal(
+  repoDir: string,
+  directories: readonly string[] | undefined,
+  exclude: readonly string[] | undefined,
+): string | undefined {
+  let path: string;
+  try {
+    path = join(
+      readModelStateDir(Deno.realPathSync(repoDir)),
+      READ_MODEL_STATE_FILE,
+    );
+    if (!Deno.statSync(path).isFile) return undefined;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+  const db = new DatabaseSync(path, { readOnly: true });
+  let projected: string | undefined;
+  try {
+    db.exec("PRAGMA busy_timeout=5000");
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'checkout_filter'",
+    ).get();
+    if (table === undefined) return undefined;
+    projected = (db.prepare(
+      "SELECT inputs FROM checkout_filter WHERE only = 0",
+    ).get() as { inputs: string } | undefined)?.inputs;
+  } finally {
+    db.close();
+  }
+  const current = checkoutFilterInputs(directories, exclude);
+  return projected === undefined || projected === current
+    ? undefined
+    : new V3CheckoutFilterChangedError(repoDir, projected, current).message;
+}
+
 /** What {@link V3Datastore.collectChunks} verifies before it sweeps. */
 export interface V3ChunkVerify {
   /** How many bytes of chunks to read and check. */
@@ -541,6 +725,9 @@ function checkoutUnitsFor(stateDir: string): CheckoutUnits {
  * Opens the v3 datastore at `options.datastorePath` for the checkout at
  * `options.repoDir`. Creates `commits.db` when absent (setup created the
  * marker first) and the checkout's read-model state directory.
+ *
+ * @throws V3CheckoutFilterChangedError when the checkout's directories or
+ *   exclude patterns changed since its projection was built
  */
 export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // SQLite cannot open a database through a symlinked directory here, so the
@@ -550,6 +737,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const repoDir = Deno.realPathSync(options.repoDir);
   const datastorePath = Deno.realPathSync(options.datastorePath);
   const namespace = options.namespace ?? "";
+  // Before anything else opens: the read model must never catch up, load
+  // or recover under another filter than it projected with
+  // (swamp-club#3691).
+  assertCheckoutFilterUnchanged(repoDir, options.directories, options.exclude);
   const writer = options.writer ?? processCommitWriter();
   // Its outbox entries belong to units of this process (swamp-club#3490).
   registerOwnCommitWriter(writer);
@@ -579,6 +770,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
     stateDir,
     catalog: new V3Catalog(catalogStore),
+    // Never written onto this checkout's local tier (swamp-club#3691).
+    checkout: { namespace, admits },
     // The checkout-copy guard stores again the chunks stored commits, the
     // compacted base or pending commits name, never released ones
     // (swamp-club#3617).

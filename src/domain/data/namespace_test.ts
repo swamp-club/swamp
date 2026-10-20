@@ -32,6 +32,7 @@ import {
 import {
   ALWAYS_LOCAL_SUBDIRS,
   DEFAULT_DATASTORE_SUBDIRS,
+  SWAMP_OWNED_DIR_NAMES,
 } from "../datastore/datastore_config.ts";
 
 // --- createNamespace validation ---
@@ -257,12 +258,39 @@ Deno.test("formatNamespacedModelName: round-trips with parseNamespacedModelName"
 
 // --- reserved names ---
 
-Deno.test("RESERVED_NAMESPACE_NAMES: is every datastore layout directory", () => {
+Deno.test("RESERVED_NAMESPACE_NAMES: is every name swamp uses in .swamp/", () => {
   assertEquals(
     [...RESERVED_NAMESPACE_NAMES].sort(),
-    [...new Set([...DEFAULT_DATASTORE_SUBDIRS, ...ALWAYS_LOCAL_SUBDIRS])]
-      .sort(),
+    [...SWAMP_OWNED_DIR_NAMES].sort(),
   );
+});
+
+Deno.test("RESERVED_NAMESPACE_NAMES: holds every datastore layout directory", () => {
+  for (const dir of [...DEFAULT_DATASTORE_SUBDIRS, ...ALWAYS_LOCAL_SUBDIRS]) {
+    assertEquals(RESERVED_NAMESPACE_NAMES.has(dir), true, dir);
+  }
+});
+
+Deno.test("createNamespace: rejects swamp's own .swamp/ names outside the datastore layout (swamp-club#3691)", () => {
+  for (
+    const name of [
+      "vault",
+      "definitions",
+      "workflows",
+      "datastore-bundles",
+      "pulled-extensions",
+      "inputs",
+      "inputs-evaluated",
+      "resources",
+      "cache",
+      "start",
+      "repos",
+      "deno",
+      "source",
+    ]
+  ) {
+    assertThrows(() => createNamespace(name), Error, "is reserved", name);
+  }
 });
 
 Deno.test("createNamespace: rejects every reserved name", () => {
@@ -321,4 +349,12 @@ Deno.test("namespaceCollidesWithLayout: false for an unrelated name", () => {
     namespaceCollidesWithLayout("infra", ["data", "scratch"]),
     false,
   );
+});
+
+Deno.test("namespaceCollidesWithLayout: a name reserved for swamp's own .swamp/ directories does not collide with the v2 layout (swamp-club#3691)", () => {
+  for (const name of ["workflows", "vault", "definitions", "log"]) {
+    assertEquals(isReservedNamespaceName(name), true, name);
+    assertEquals(namespaceCollidesWithLayout(name, []), false, name);
+  }
+  assertEquals(namespaceCollidesWithLayout("data", []), true);
 });
