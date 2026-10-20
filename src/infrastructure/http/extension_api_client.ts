@@ -37,6 +37,7 @@ import {
   type Sleep,
 } from "./rate_limit.ts";
 import {
+  causeMessage,
   describeRequestTarget,
   fetchWithTransientRetry,
   formatElapsed,
@@ -704,13 +705,11 @@ export class ExtensionApiClient {
             `Extension download timed out: its deadline passed${after}.`,
           );
         }
-        const cause = error.cause instanceof Error
-          ? error.cause.message
-          : String(error.cause);
-        throw new UserError(`Extension download failed${after}: ${cause}`);
+        throw new UserError(
+          `Extension download failed${after}: ${causeMessage(error.cause)}`,
+        );
       }
-      const message = error instanceof Error ? error.message : String(error);
-      throw new UserError(`Extension download failed: ${message}`);
+      throw new UserError(`Extension download failed: ${causeMessage(error)}`);
     }
   }
 
@@ -1051,9 +1050,8 @@ export class ExtensionApiClient {
       if (error instanceof TransientRequestError) {
         throw this.requestError(error);
       }
-      const message = error instanceof Error ? error.message : String(error);
       throw new RegistryUnavailableError(
-        `Could not connect to ${this.serverUrl}: ${message}`,
+        `Could not connect to ${this.serverUrl}: ${causeMessage(error)}`,
         { cause: error },
       );
     }
@@ -1077,15 +1075,13 @@ export class ExtensionApiClient {
           `Request to ${request} timed out: its deadline passed${after}.`,
           { cause: error.cause },
         );
-      default: {
-        const cause = error.cause instanceof Error
-          ? error.cause.message
-          : String(error.cause);
+      default:
         return new RegistryUnavailableError(
-          `Could not connect to ${this.serverUrl} (${method} ${target}${after}): ${cause}`,
+          `Could not connect to ${this.serverUrl} (${method} ${target}${after}): ${
+            causeMessage(error.cause)
+          }`,
           { cause: error.cause },
         );
-      }
     }
   }
 }

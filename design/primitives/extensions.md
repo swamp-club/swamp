@@ -379,7 +379,8 @@ Registry reads retry transient failures
 HTTP 502/503/504, or a 429 whose Retry-After is 60s or less (at most twice). A
 read makes an initial attempt plus at most five retries, waiting 1s, 2s, 4s, 8s
 and 16s with up to 25% jitter (or the Retry-After when longer), with a 15s
-timeout per attempt and 120s in total; an archive download gets 120s per attempt
+timeout per attempt and 150s in total (room for two capped Retry-After waits); an
+archive download gets 120s per attempt
 and 300s in total, and its fetch and body read are retried together. One loop,
 one retry count and one total budget cover every kind of failure, so rate-limit
 and transient retries never multiply. Writes — push, upload, confirm, yank,
@@ -391,8 +392,10 @@ for example
 `swamp-club registry: GET /api/v1/extensions/… timed out after 15s · retrying in 2s (retry 2/5)`.
 It goes to stderr in log mode; JSON mode attaches no console sink, so stdout
 stays valid JSON. The final error names the method, the path without its query
-string, the attempts and the elapsed time. A signed download URL is shown by
-origin and path only and never receives identity headers.
+string, the attempts and the elapsed time. Every URL in a notice or error,
+including one embedded in a fetch error's own message, is reduced to origin and
+path, so a signed download URL's signature never reaches a log; the signed URL
+never receives identity headers.
 
 ### Lockfile
 

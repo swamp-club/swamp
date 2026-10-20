@@ -1916,7 +1916,10 @@ Deno.test("ExtensionApiClient: a caller's signal and the per-attempt timeout bot
 });
 
 Deno.test("ExtensionApiClient: a retried failure names no query string or credential", async () => {
-  const { fetch } = scriptedFetch([() => new TypeError("connection reset")]);
+  const { fetch } = scriptedFetch([(url) =>
+    new TypeError(
+      `error sending request for url (${url}): client error (Connect)`,
+    )]);
   const client = new ExtensionApiClient("http://registry.test", {
     bearerToken: "swamp_secret_token",
   }, { sleep: noSleep, fetch });
@@ -1980,7 +1983,10 @@ Deno.test("ExtensionApiClient.downloadArchive: does not retry a refused signed U
 Deno.test("ExtensionApiClient.downloadArchive: an exhausted download names attempts but not the signature", async () => {
   const { fetch } = scriptedFetch([
     redirectToSignedUrl,
-    () => new TypeError("connection reset by storage.test?X-Goog-Signature"),
+    (url) =>
+      new TypeError(
+        `error sending request for url (${url}): client error (Connect): dns error`,
+      ),
   ]);
   const client = new ExtensionApiClient("http://registry.test", {}, {
     sleep: noSleep,
@@ -1991,6 +1997,7 @@ Deno.test("ExtensionApiClient.downloadArchive: an exhausted download names attem
     UserError,
     "Extension download failed after 6 attempts over",
   );
+  assertStringIncludes(err.message, "https://storage.test/bucket/ext.tgz");
   assertFalse(err.message.includes("topsecret"));
 });
 

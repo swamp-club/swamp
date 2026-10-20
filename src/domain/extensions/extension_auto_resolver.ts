@@ -426,16 +426,24 @@ export class ExtensionAutoResolver {
       return false;
     }
 
+    // Set once the install lock is held, so a lock timeout from work inside
+    // the locked section is not mistaken for another process installing.
+    let lockHeld = false;
     try {
-      return await extensionInstaller.withInstallLock(() =>
-        this.installAndLoadLocked(
+      return await extensionInstaller.withInstallLock(() => {
+        lockHeld = true;
+        return this.installAndLoadLocked(
           extensionName,
           normalizedType,
           extInfo,
           version,
-        )
-      );
+        );
+      });
     } catch (error) {
+      if (error instanceof LockTimeoutError && lockHeld) {
+        logger.warn`${error.message}`;
+        return false;
+      }
       if (error instanceof LockTimeoutError) {
         logger.debug`${error.message}`;
         const holder = error.holder

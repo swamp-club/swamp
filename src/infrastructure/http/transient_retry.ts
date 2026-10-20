@@ -48,10 +48,10 @@ const RETRY_AFTER_JITTER_MS = 1000;
 export const REGISTRY_ATTEMPT_TIMEOUT_MS = 15_000;
 /**
  * Total time a registry read may take across all of its attempts and waits.
- * Long enough for two Retry-After waits at the 60s cap, so rate-limit
+ * Fits two Retry-After waits at the 60s cap plus their jitter, so rate-limit
  * handling keeps the reach it had before transient retries existed.
  */
-export const REGISTRY_READ_BUDGET_MS = 120_000;
+export const REGISTRY_READ_BUDGET_MS = 150_000;
 
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD"]);
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
@@ -106,12 +106,12 @@ export class TransientRequestError extends Error {
     readonly attemptTimeoutMs: number,
     options: { cause: unknown },
   ) {
-    const cause = options.cause instanceof Error
-      ? options.cause.message
-      : String(options.cause);
-    super(`${outcome.method} ${outcome.target} failed (${kind}): ${cause}`, {
-      cause: options.cause,
-    });
+    super(
+      `${outcome.method} ${outcome.target} failed (${kind}): ${
+        causeMessage(options.cause)
+      }`,
+      { cause: options.cause },
+    );
     this.name = "TransientRequestError";
   }
 }
@@ -146,6 +146,23 @@ export function describeRequestTarget(url: string): string {
   } catch {
     return url.split(/[?#]/, 1)[0];
   }
+}
+
+/**
+ * Replace every URL in `text` with its origin and path. Deno's fetch errors
+ * embed the full request URL, signature and all, e.g. `error sending request
+ * for url (https://host/a.tgz?X-Goog-Signature=...)`.
+ */
+export function redactUrls(text: string): string {
+  return text.replace(
+    /\bhttps?:\/\/[^\s()<>"']+/g,
+    (url) => describeRequestTarget(url),
+  );
+}
+
+/** A failure's message with any URLs in it reduced to origin and path. */
+export function causeMessage(cause: unknown): string {
+  return redactUrls(cause instanceof Error ? cause.message : String(cause));
 }
 
 /** Render a duration as `850ms`, `12s` or `1m 47s`. */
@@ -299,10 +316,7 @@ export async function fetchWithTransientRetry(
       const timedOut = isTimeout(error) || timeout.aborted;
       const reason: RetryReason = timedOut
         ? { kind: "timeout", afterMs: timeoutMs }
-        : {
-          kind: "connection",
-          message: error instanceof Error ? error.message : String(error),
-        };
+        : { kind: "connection", message: causeMessage(error) };
       const waitMs = backoff();
       if (canRetry(waitMs)) {
         await waitBeforeRetry(reason, waitMs);

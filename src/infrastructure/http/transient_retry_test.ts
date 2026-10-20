@@ -26,6 +26,7 @@ import {
   formatElapsed,
   formatRetryNotice,
   MAX_TRANSIENT_RETRIES,
+  redactUrls,
   type RetryNotice,
   TransientRequestError,
   type TransientRetryOptions,
@@ -201,6 +202,38 @@ Deno.test("fetchWithTransientRetry: retries a 429 with a short Retry-After at mo
   assertEquals(outcome.attempts, 3);
   assertEquals(h.delays, [3000, 3000]);
   assertEquals(h.notices[0].reason, { kind: "rate_limit", scope: "principal" });
+});
+
+Deno.test("fetchWithTransientRetry: the default budget fits two 60s Retry-After waits with full jitter", async () => {
+  const h = harness([status(429, { "retry-after": "60" })], {
+    budgetMs: undefined,
+    random: () => 0.999,
+  });
+  const { outcome } = await h.run();
+  assertEquals(outcome.attempts, 3);
+  assertEquals(h.delays, [60_999, 60_999]);
+});
+
+Deno.test("fetchWithTransientRetry: a connection notice never carries a URL's query string", async () => {
+  const h = harness([
+    new TypeError(
+      "error sending request for url (https://storage.test/bucket/a.tgz?X-Goog-Signature=topsecret): client error (Connect)",
+    ),
+    () => new Response("ok"),
+  ]);
+  await h.run();
+  const line = formatRetryNotice(h.notices[0]);
+  assertStringIncludes(line, "https://storage.test/bucket/a.tgz");
+  assertEquals(line.includes("topsecret"), false);
+});
+
+Deno.test("redactUrls: reduces every URL in a message to origin and path", () => {
+  assertEquals(
+    redactUrls(
+      "error sending request for url (https://s.test/a.tgz?sig=x&t=1): client error; then http://r.test/search?q=secret",
+    ),
+    "error sending request for url (https://s.test/a.tgz): client error; then http://r.test/search",
+  );
 });
 
 Deno.test("fetchWithTransientRetry: rate-limit and transient retries share one ceiling", async () => {

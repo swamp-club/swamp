@@ -1260,6 +1260,29 @@ Deno.test("ExtensionAutoResolver - returns false when the install lock times out
   ]);
 });
 
+Deno.test("ExtensionAutoResolver - a lock timeout inside the install is not reported as a busy install", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(true, "2026.03.16.1", {
+    state: "intact",
+    path: "/repo/.swamp/pulled-extensions/@swamp/aws",
+    installedVersion: "2026.03.16.1",
+  });
+  installer.hotLoadModels = () =>
+    Promise.reject(new LockTimeoutError("datastore.lock", null, 5));
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), false);
+  assertEquals(
+    output.calls.some((call) => call.startsWith("installBusy")),
+    false,
+  );
+});
+
 Deno.test("ExtensionAutoResolver - names the process holding the install lock when it times out", async () => {
   const output = createMockOutput();
   const holder = {
