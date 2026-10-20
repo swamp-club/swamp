@@ -33,7 +33,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { join, toFileUrl } from "@std/path";
 import { parseExtensionManifest } from "../src/domain/extensions/extension_manifest.ts";
 import {
   computePackageCacheHash,
@@ -129,6 +129,33 @@ function scoreDeps(): RubricScoreDeps {
   };
 }
 
+/**
+ * The real archive extraction, with `deno doc --json` failing on a bare
+ * `zod` import nothing maps: deno 2.9.7's own stderr for it, against the
+ * entrypoint's URL.
+ */
+function bareZodDocFailureScoreDeps(): RubricScoreDeps {
+  return {
+    extractTarball: extractTarGz,
+    runDeno: (args) => {
+      if (args[0] === "doc" && args[1] === "--json") {
+        const url = toFileUrl(args[2]).href;
+        return Promise.resolve({
+          success: false,
+          stdout: "",
+          stderr: [
+            'Warning Import "zod" not a dependency',
+            "  hint: If you want to use the npm package, try running `deno add npm:zod`",
+            `    at ${url}:1:19`,
+            `error: Failed resolving 'zod' from '${url}'.`,
+          ].join("\n"),
+        });
+      }
+      return Promise.reject(new Error(`unexpected deno ${args.join(" ")}`));
+    },
+  };
+}
+
 interface Fixture {
   root: string;
   prepareInput: ExtensionPushPrepareInput;
@@ -212,12 +239,13 @@ async function runQuality(
     join(fixture.root, ".swamp", "cache"),
     "agreement-test",
   ),
+  makeScoreDeps: () => RubricScoreDeps = scoreDeps,
 ): Promise<ExtensionQualityData> {
   const events = await collect(extensionQuality(ctx, {
     pushPrepareDeps: prepareDeps(),
     cache,
     ensureDenoPath: () => Promise.resolve(DENO),
-    makeScoreDeps: () => scoreDeps(),
+    makeScoreDeps,
     privateSourceLookup: {
       loadCredentials: () => Promise.resolve(null),
       whoami: () => Promise.reject(new Error("not called")),
@@ -282,7 +310,13 @@ Deno.test("quality and push agree: a bare import that ships as written is the sa
     const pushBare = pushed.reviewRulesResult.warnings.filter((w) =>
       w.ruleId === "bare-specifiers"
     );
-    const quality = await runQuality(fixture);
+    // deno doc fails on the shipped bare import, as on the registry; quality
+    // still completes with the rubric (swamp-club#3669).
+    const quality = await runQuality(
+      fixture,
+      undefined,
+      bareZodDocFailureScoreDeps,
+    );
     const qualityBare = quality.findings.reviewRulesResult.warnings.filter((
       w,
     ) => w.ruleId === "bare-specifiers");
@@ -293,6 +327,12 @@ Deno.test("quality and push agree: a bare import that ships as written is the sa
     assertStringIncludes(pushBare[0].message, '"zod"');
     assertEquals(quality.registryScorable, false);
     assertEquals(quality.gateFailures, []);
+    assertEquals(
+      quality.score.docAnalysisError,
+      'The registry cannot resolve the bare import "zod"; use an explicit npm: or jsr: specifier (npm:zod@4 for zod).',
+    );
+    const symbols = quality.score.factors.find((f) => f.id === "symbols-docs");
+    assertEquals(symbols?.earnedPoints, 0);
   });
 });
 

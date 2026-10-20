@@ -95,8 +95,9 @@ export interface ExtensionQualityData {
   /** Files a gate rejected, left out of the scored archive (sorted). */
   excludedFromArchive: string[];
   /**
-   * False when the registry's scorer cannot score the published extension
-   * (bare import specifiers), whatever the local score says.
+   * False when the registry's scorer cannot resolve the published
+   * extension's bare imports, so it scores the documentation factors 0,
+   * whatever the local score says.
    */
   registryScorable: boolean;
 }
@@ -310,8 +311,8 @@ export async function* extensionQuality(
 
       // The registry's scorer strips deno.json, so it cannot resolve a bare
       // import push ships as written (one the import map does not resolve,
-      // swamp-club#3637) and leaves such an extension unscored. The local
-      // score below resolves the import map, so say so rather than hide it.
+      // swamp-club#3637) and scores the documentation factors 0. The local
+      // score below fails deno doc the same way (score.docAnalysisError).
       const registryScorable = !prepared.reviewRulesResult.warnings.some((w) =>
         w.ruleId === "bare-specifiers"
       );

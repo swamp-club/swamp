@@ -245,6 +245,14 @@ fmt, lint and review would read a symlink's target and quote it. Such an
 archive is never cached or uploaded. A push enforces: the first failure
 throws.
 
+The rubric runs `deno doc` on the archive as the registry does, with the
+author's config stripped. When the source does not resolve (a bare import
+that ships as written, a module missing from the archive), the failure is
+scored the way the registry scores it (swamp-club#3370), not thrown: lint is
+skipped, the documentation factors score 0, and `docAnalysisError` names
+what did not resolve. Quality then fails; a bare-specifiers finding, when
+there is one, is the reason given.
+
 The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a
 reused archive skips the fmt/lint gate. The version is not part of the hash,

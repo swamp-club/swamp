@@ -349,11 +349,12 @@ range (`npm:zod@^4`) ships it as `npm:zod@4`, still shared.
 `swamp extension quality` and `swamp extension push` report the same
 `bare-specifiers` warning for each bare import that ships as written; fix it by
 adding a `deno.json` imports entry for the name or writing the specifier inline.
-Quality still prints the rubric but fails, because the registry would publish
-the extension unscored; push warns. A push also fails when an import-map target
-it would write holds a quote, backslash, backtick, line break or `${`. The
-finding cannot be accepted. Swamp's lint never applies Deno's `no-import-prefix`
-rule, so a `deno.json` needs no exclude for the `npm:`/`jsr:` form.
+Quality still prints the rubric but fails, because the registry cannot resolve
+the import and would score the documentation factors 0; push warns. A push also
+fails when an import-map target it would write holds a quote, backslash,
+backtick, line break or `${`. The finding cannot be accepted. Swamp's lint never
+applies Deno's `no-import-prefix` rule, so a `deno.json` needs no exclude for
+the `npm:`/`jsr:` form.
 
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push
@@ -1034,9 +1035,12 @@ collectives, upgrade chain, dependency trust, review errors, size) it still
 prints the rubric, then each failure with its details, and exits non-zero
 (`gateFailures` in `--json`; `excludedFromArchive` lists files a check rejected
 and left out of the scored archive). `registryScorable: false` means the
-registry would publish the extension unscored. When every gate passes, the
-packaged tarball is written to `.swamp/cache/packages/<hash>/` and reused by
-dry-run and push while the source tree and swamp version are unchanged.
+registry cannot resolve the extension's bare imports and would score its
+documentation factors 0. `docAnalysisError` (null when it ran) says why
+`deno doc` could not analyse the source; quality scores the documentation
+factors 0 as the registry does, and fails. When every gate passes, the packaged
+tarball is written to `.swamp/cache/packages/<hash>/` and reused by dry-run and
+push while the source tree and swamp version are unchanged.
 
 This step is optional — skipping does not block the push. See the
 `swamp-extension` skill for the full rubric and per-factor guidance.
