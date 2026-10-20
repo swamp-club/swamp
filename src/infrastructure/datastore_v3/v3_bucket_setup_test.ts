@@ -52,15 +52,18 @@ class FormatUnsupportedError extends Error {
  * A provider over the in-memory remote whose sync service answers
  * `fetchContent` from `rootFiles`, as a real bucket's root index would:
  * the fake keeps no index files of its own. Like the extensions, it refuses
- * every read once the marker says format 3; `refuseFetch` makes it refuse
- * whatever the marker says, as when a marker is written after setup read it.
+ * every read once the marker says format 3. `refuseFetch` makes it refuse
+ * whatever the marker says: `"marker"` first writes one, as a concurrent
+ * setup would after inspection read none; `"other"` writes nothing.
+ * `namespaces` is what `listNamespaces` lists.
  */
 function provider(
   options: {
     rootFiles?: Record<string, string>;
     fetchContent?: boolean;
     listNamespaces?: boolean;
-    refuseFetch?: boolean;
+    refuseFetch?: "marker" | "other";
+    namespaces?: string[];
   } = {},
 ) {
   const remote = createInMemoryRemote({ controlPlane: true, storage: true });
@@ -68,11 +71,17 @@ function provider(
   const service = {
     fetchContent: async (relPath: string) => {
       fetched.push(relPath);
+      if (options.refuseFetch === "marker") {
+        await remote.datastoreControlPlaneStore!().put(
+          DATASTORE_FORMAT_MARKER_KEY,
+          new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
+        );
+      }
       const marker = await remote.datastoreControlPlaneStore!().get(
         DATASTORE_FORMAT_MARKER_KEY,
       );
       if (
-        options.refuseFetch === true ||
+        options.refuseFetch !== undefined ||
         (marker !== null &&
           JSON.parse(new TextDecoder().decode(marker)).format >= 3)
       ) {
@@ -97,7 +106,7 @@ function provider(
       options.fetchContent === false ? ({} as DatastoreSyncService) : service,
     ...(options.listNamespaces === false
       ? {}
-      : { listNamespaces: () => Promise.resolve([]) }),
+      : { listNamespaces: () => Promise.resolve(options.namespaces ?? []) }),
   };
   return { remote, provider, fetched };
 }
@@ -197,7 +206,7 @@ Deno.test("initializeV3BucketDatastore: accepts a format-3 marker another setup 
   );
 });
 
-Deno.test("inspectV3BucketTarget: a prefix holding only a format-3 marker is resumable from any repo, and its v2 probes are skipped (swamp-club#3643)", async () => {
+Deno.test("inspectV3BucketTarget: a prefix holding only a format-3 marker is resumable from any repo, and its v2 root data is not probed (swamp-club#3643)", async () => {
   const { provider: p, fetched } = provider();
   await initializeV3BucketDatastore(p, "@test/bucket", "1.0.0");
   for (const repoDir of ["/repo-a", "/repo-b"]) {
@@ -240,16 +249,37 @@ Deno.test("inspectV3BucketTarget: v2 root data planted beside a format-3 marker 
   );
 });
 
-Deno.test("inspectV3BucketTarget: a marker written while the prefix is probed refuses without the extension's upgrade advice (swamp-club#3643)", async () => {
-  const state = await inspectV3BucketTarget(
-    provider({ refuseFetch: true }).provider,
-    "@test/bucket",
-    "/repo",
-    undefined,
+Deno.test("inspectV3BucketTarget: v2 namespaces beside a format-3 marker are still refused (swamp-club#3643)", async () => {
+  // listNamespaces lists the bucket through the provider, not the sync
+  // service, so the marker does not stop it.
+  const { provider: p } = provider({ namespaces: ["team"] });
+  await initializeV3BucketDatastore(p, "@test/bucket", "1.0.0");
+  assertEquals(
+    await inspectV3BucketTarget(p, "@test/bucket", "/repo", undefined),
+    { kind: "refused", reason: "it holds v2 namespaces (team)" },
   );
-  assertEquals(state, {
-    kind: "refused",
-    reason: "a format marker was written to it while it was being " +
-      "inspected, which another setup may have done; run the command again",
-  });
+});
+
+Deno.test("inspectV3BucketTarget: an extension's format refusal never reaches the user, and says run again only when a marker appeared (swamp-club#3643)", async () => {
+  const cases: ["marker" | "other", string][] = [
+    [
+      "marker",
+      "a format marker was written to it while it was being inspected, " +
+      "which another setup may have done; run the command again",
+    ],
+    [
+      "other",
+      "its extension refused to read it, so swamp cannot tell whether it " +
+      "holds v2 data",
+    ],
+  ];
+  for (const [refuseFetch, reason] of cases) {
+    const state = await inspectV3BucketTarget(
+      provider({ refuseFetch }).provider,
+      "@test/bucket",
+      "/repo",
+      undefined,
+    );
+    assertEquals(state, { kind: "refused", reason }, refuseFetch);
+  }
 });

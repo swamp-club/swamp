@@ -75,10 +75,11 @@ export type V3BucketTargetState =
  * the checkout at `repoDir` (swamp-club#3534). It must be new and empty: no
  * format marker but a format-3 one, no control-plane record, no chunk, no
  * v2 namespace, and no v2 data at the root. A check that cannot be made
- * refuses rather than warns. Once a format-3 marker is there the v2 checks
- * are not made (swamp-club#3643): setup made them before it wrote the
+ * refuses rather than warns. Once a format-3 marker is there the v2 root
+ * data is not probed (swamp-club#3643): setup probed it before it wrote the
  * marker, a compliant swamp never writes v2 data beside one, and the
- * extensions' sync services refuse to read a format-3 prefix at all. Known limits: v2 data that has lost both its
+ * extensions' sync services, which the probe reads through, refuse every
+ * read of a format-3 prefix. Known limits: v2 data that has lost both its
  * root index keys is not seen, and neither are Litestream objects left
  * under `<prefix>/_litestream/` by a datastore whose control plane and
  * chunks were deleted by hand.
@@ -141,8 +142,6 @@ export async function inspectV3BucketTarget(
       }
     }
 
-    if (marked) return { kind: "resumable" };
-
     if (provider.listNamespaces === undefined) {
       return refused(
         "its extension cannot list namespaces, so swamp cannot tell whether " +
@@ -156,21 +155,25 @@ export async function inspectV3BucketTarget(
       return refused(`it holds v2 namespaces (${namespaces.join(", ")})`);
     }
 
+    if (marked) return { kind: "resumable" };
     if (await holdsV2RootData(provider, repoDir, signal)) {
       return refused("it holds v2 data");
     }
     return { kind: "new" };
   } catch (error) {
     // The extension's refusal of a format-3 prefix tells the user to
-    // upgrade swamp, which is wrong here: the marker was written after it
-    // was read, as a concurrent setup would, and a re-run sees it.
+    // upgrade swamp, which is wrong here, so its text is never shown.
     if (
       error instanceof Error &&
       (error as { code?: unknown }).code === DATASTORE_FORMAT_UNSUPPORTED_CODE
     ) {
       return refused(
-        "a format marker was written to it while it was being inspected, " +
-          "which another setup may have done; run the command again",
+        await markerNowPresent(provider, datastoreType, options.timeoutMs)
+          ? "a format marker was written to it while it was being " +
+            "inspected, which another setup may have done; run the command " +
+            "again"
+          : "its extension refused to read it, so swamp cannot tell " +
+            "whether it holds v2 data",
       );
     }
     return refused(
@@ -178,6 +181,23 @@ export async function inspectV3BucketTarget(
         error instanceof Error ? error.message : String(error)
       })`,
     );
+  }
+}
+
+/** Whether a format marker can be read on the bucket now. */
+async function markerNowPresent(
+  provider: DatastoreProvider,
+  datastoreType: string,
+  timeoutMs: number | undefined,
+): Promise<boolean> {
+  try {
+    const bytes = await datastoreWriterLeaseStore(provider, datastoreType)
+      .get(DATASTORE_FORMAT_MARKER_KEY, {
+        signal: AbortSignal.timeout(timeoutMs ?? V3_BUCKET_PROBE_TIMEOUT_MS),
+      });
+    return bytes !== null;
+  } catch {
+    return false;
   }
 }
 

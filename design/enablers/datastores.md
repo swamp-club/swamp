@@ -4870,12 +4870,15 @@ refuses, writing nothing, in this order:
   `_index/_meta.json`, read through `fetchContent` on a sync service built on
   a scratch cache, which the provider must also have. A check that cannot be
   made refuses. Known limit: v2 data that has lost both root index keys is not
-  seen. The two v2 checks are not made once a format-3 marker is there
-  (swamp-club#3643): setup made them before it wrote the marker, a compliant
-  swamp never writes v2 data beside one, and the extensions' sync services
-  refuse every read of a format-3 prefix (`datastore_format_unsupported`,
-  whose upgrade advice setup never shows). A marker that appears while the
-  checks run refuses with "run the command again";
+  seen. The v2 root data is not read once a format-3 marker is there
+  (swamp-club#3643): setup read it before it wrote the marker, a compliant
+  swamp never writes v2 data beside one, and the extensions' sync services,
+  which that read goes through, refuse every read of a format-3 prefix
+  (`datastore_format_unsupported`, whose upgrade advice setup never shows).
+  `listNamespaces` lists the bucket through the provider, so it still runs.
+  Such a refusal that still reaches the check says "run the command again"
+  when a marker is there by the time it is caught (another setup wrote one),
+  and otherwise that the extension refused the read;
 - a repository that holds records, as a v3 filesystem setup checks: the
   checkout's `.swamp/`, its namespace's, an external filesystem datastore's
   root and the current extension datastore's cache.
