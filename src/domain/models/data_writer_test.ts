@@ -2039,9 +2039,17 @@ const varySensitiveResources: Record<string, ResourceOutputSpec> = {
   },
 };
 
+/**
+ * A resource writer for one vary instance. These tests are about the vault
+ * key a vary suffix makes, so the writer runs as `os` (linux unless a test
+ * says otherwise) rather than the host: on Windows the data-name portability
+ * rule (swamp-club#3568), which has tests of its own, refuses some suffixes
+ * before any vault key is made.
+ */
 function varyResourceWriter(
   vaultService: VaultService,
   resolvedVarySuffix?: string,
+  os: typeof Deno.build.os = "linux",
 ) {
   return createResourceWriter(
     createMockRepo(),
@@ -2057,6 +2065,10 @@ function varyResourceWriter(
     undefined, // definitionName
     vaultService,
     "create", // methodName
+    undefined, // onEvent
+    undefined, // redactor
+    false, // deferred
+    os,
   ).writeResource;
 }
 
@@ -2178,6 +2190,24 @@ Deno.test("createResourceWriter: a vary suffix outside the verbatim form is hash
     const segment = await varyKeySegment(suffix);
     assert(hashed.test(segment), `${suffix} -> ${segment}`);
   }
+});
+
+Deno.test("createResourceWriter: on windows a vary suffix Windows refuses in a data name stores no secret", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "v", type: "mock", config: {} });
+  const keysBefore = await vaultService.list("v");
+
+  await assertRejects(
+    () =>
+      varyResourceWriter(vaultService, '{"region":"us"}', "windows")(
+        "creds",
+        "creds",
+        { secret: "s" },
+      ),
+    Error,
+    `Data name 'creds-{"region":"us"}'`,
+  );
+  assertEquals(await vaultService.list("v"), keysBefore);
 });
 
 Deno.test("createResourceWriter: a short vary suffix of key-safe characters is kept as written", async () => {
