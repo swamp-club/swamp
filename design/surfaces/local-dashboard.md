@@ -143,7 +143,8 @@ process in the repo, heartbeat within `STALE_TTL_MS`) to its own active runs
 live and the views' refresh-on-change covers them. Model-method rows carry no
 model name and are left out.
 
-Refresh-on-change is the only clock the dashboard has. Run summaries, and the
+Refresh-on-change drives the dashboard's reads; the only clocks are a live
+run's poll and the second-by-second clocks beside it. Run summaries, and the
 model output searches behind the Models page and a model's page, are re-read
 when a run starts or stops being driven and when the tab comes back into view,
 at most once per 30 seconds (`RUN_ACTIVITY_REFETCH_MS`) and never while the tab
@@ -164,6 +165,14 @@ schedule and webhook run lists do this. Custom and all-time ranges do not move
 and schedule nothing, nor does a serve that predates the fields. Request volume
 follows run activity and runs ageing out of the window, not how long a tab stays
 open.
+
+A hidden tab does next to nothing (swamp-club#3661). It closes its health
+stream, keeping the last snapshot, so nothing re-renders and serve's per-token
+stream slot is freed; a live run's page stops polling, and the run and
+held-signal clocks stop. On coming back into view the stream reconnects — serve
+sends a snapshot as soon as a stream opens, and a token refused earlier is
+tried again — views re-read their runs as on any return, and a live run is
+re-read once.
 
 ## Security
 

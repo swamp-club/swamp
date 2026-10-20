@@ -103,93 +103,132 @@ export interface HealthStream {
   denied: boolean;
 }
 
-export function useHealthStream(intervalMs = 5000): HealthStream {
+/** How one pass over the health stream ended. */
+export type HealthStreamEnd =
+  | { kind: "denied" }
+  | { kind: "retry"; retryMs: number };
+
+/**
+ * Opens the health stream once and reads it until it ends or `signal`
+ * aborts, handing each snapshot to `onSnapshot`. Says whether serve refused
+ * the token or how long to wait before the next pass. Nothing reaches
+ * `onSnapshot` once `signal` has aborted.
+ */
+export async function readHealthStream(
+  { url, headers, signal, onOpen, onSnapshot, fetchFn = fetch }: {
+    url: string;
+    headers: Record<string, string>;
+    signal: AbortSignal;
+    /** Serve accepted the stream. */
+    onOpen: () => void;
+    onSnapshot: (snapshot: HealthSnapshot) => void;
+    fetchFn?: typeof fetch;
+  },
+): Promise<HealthStreamEnd> {
+  let retryMs = HEALTH_RETRY_MS;
+  try {
+    const resp = await fetchFn(url, { headers, signal });
+
+    const outcome = healthStreamOutcome(resp.status);
+    if (outcome === "denied") {
+      await resp.body?.cancel();
+      return { kind: "denied" };
+    }
+
+    if (outcome === "ok" && resp.body) {
+      if (!signal.aborted) onOpen();
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let event = "message";
+
+      while (!signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line === "") {
+            event = "message";
+          } else if (line.startsWith("event: ")) {
+            event = line.slice(7);
+          } else if (line.startsWith("data: ") && event === "health") {
+            try {
+              const snapshot = JSON.parse(line.slice(6)) as HealthSnapshot;
+              if (!signal.aborted) onSnapshot(snapshot);
+            } catch {
+              // ignore parse errors
+            }
+          }
+          // A session-ended event precedes the server closing the
+          // stream; the reconnect after it then learns whether the token
+          // still works.
+        }
+      }
+    } else {
+      retryMs = healthRetryDelayMs(resp.headers.get("Retry-After"));
+      await resp.body?.cancel();
+    }
+  } catch {
+    // reconnect after delay
+  }
+  return { kind: "retry", retryMs };
+}
+
+/**
+ * Serve's health snapshot, streamed while `visible`. A hidden tab closes the
+ * stream and keeps the last snapshot; coming back into view reconnects, and
+ * serve sends a snapshot as soon as a stream opens (swamp-club#3661). A
+ * refused token stays refused until the token changes or the tab comes
+ * back into view, which tries it once more.
+ */
+export function useHealthStream(
+  visible: boolean,
+  intervalMs = 5000,
+): HealthStream {
   const { token } = useSwamp();
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [denied, setDenied] = useState(false);
 
+  // A new token starts from scratch: what the last one saw no longer holds.
   useEffect(() => {
+    setHealth(null);
+    setDenied(false);
+  }, [token]);
+
+  useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
     let retryTimeout: ReturnType<typeof setTimeout>;
     // Aborting on cleanup closes the connection itself; serve counts each
     // open stream against the token's limit until it closes.
     const abort = new AbortController();
-    // A new token starts from scratch: what the last one saw no longer holds.
-    setHealth(null);
-    setDenied(false);
 
     async function connect() {
-      let retryMs = HEALTH_RETRY_MS;
-      try {
-        const headers: Record<string, string> = {};
-        if (token) {
-          headers["Authorization"] = `Bearer ${token}`;
-        } else {
-          headers["X-Swamp-Dashboard-Origin"] = globalThis.location.origin;
-        }
-
-        const url = serverPath(`/api/v1/health/stream?interval=${intervalMs}`);
-        const resp = await fetch(url, {
-          headers: withLocalToken(headers),
-          signal: abort.signal,
-        });
-
-        const outcome = healthStreamOutcome(resp.status);
-        if (outcome === "denied") {
-          await resp.body?.cancel();
-          if (!cancelled) {
-            setHealth(null);
-            setDenied(true);
-          }
-          return;
-        }
-
-        if (outcome === "ok" && resp.body) {
-          setDenied(false);
-          const reader = resp.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let event = "message";
-
-          while (!cancelled) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-
-            for (const line of lines) {
-              if (line === "") {
-                event = "message";
-              } else if (line.startsWith("event: ")) {
-                event = line.slice(7);
-              } else if (line.startsWith("data: ") && event === "health") {
-                try {
-                  const snapshot = JSON.parse(
-                    line.slice(6),
-                  ) as HealthSnapshot;
-                  setHealth(snapshot);
-                } catch {
-                  // ignore parse errors
-                }
-              }
-              // A session-ended event precedes the server closing the
-              // stream; the reconnect below then learns whether the token
-              // still works.
-            }
-          }
-        } else {
-          retryMs = healthRetryDelayMs(resp.headers.get("Retry-After"));
-          await resp.body?.cancel();
-        }
-      } catch {
-        // reconnect after delay
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      } else {
+        headers["X-Swamp-Dashboard-Origin"] = globalThis.location.origin;
       }
 
-      if (!cancelled) {
-        retryTimeout = setTimeout(connect, retryMs);
+      const end = await readHealthStream({
+        url: serverPath(`/api/v1/health/stream?interval=${intervalMs}`),
+        headers: withLocalToken(headers),
+        signal: abort.signal,
+        onOpen: () => setDenied(false),
+        onSnapshot: setHealth,
+      });
+      if (cancelled) return;
+      if (end.kind === "denied") {
+        setHealth(null);
+        setDenied(true);
+        return;
       }
+      retryTimeout = setTimeout(connect, end.retryMs);
     }
 
     connect();
@@ -199,7 +238,7 @@ export function useHealthStream(intervalMs = 5000): HealthStream {
       clearTimeout(retryTimeout);
       abort.abort();
     };
-  }, [token, intervalMs]);
+  }, [token, intervalMs, visible]);
 
   return { health, denied };
 }
