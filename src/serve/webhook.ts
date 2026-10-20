@@ -495,6 +495,8 @@ export interface WebhookServiceDeps {
     import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
   /** Recorded on every run as `initiatedBy` (the webhook principal). */
   initiatedBy?: string;
+  /** The repo's `defaultVault`, forwarded to each run (swamp-club#3680). */
+  defaultVault?: string;
   /**
    * Authorizes each run at execution time, so queued and replayed runs are
    * both checked against the current policy. When absent every run proceeds.
@@ -1119,6 +1121,7 @@ export class WebhookService {
           triggerSource: "webhook",
           initiatedBy: this.deps.initiatedBy,
           vaultAccess: this.deps.createVaultAccess?.(),
+          defaultVault: this.deps.defaultVault,
         },
       );
 

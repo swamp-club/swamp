@@ -128,6 +128,11 @@ export async function createWorkflowRunDeps(
     telemetrySink?: WorkflowTelemetrySink;
     /** Commits each run's progress as it saves its record (swamp-club#3587). */
     runCheckpointer?: RunCheckpointer;
+    /**
+     * The repo's `defaultVault`, as serve read it at startup: where a step's
+     * sensitive outputs land when nothing names a vault (swamp-club#3680).
+     */
+    defaultVault?: string;
   },
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
@@ -239,6 +244,7 @@ export async function createWorkflowRunDeps(
         repoContext.autoGc,
         repoContext.unifiedDataRepo.fetchForeignContent,
         repoContext.unreadableContent,
+        options?.defaultVault,
       );
       service.signalWaits = repoContext.signalWaits ??
         SIGNAL_WAITS_NOT_CONFIGURED;
@@ -493,6 +499,8 @@ export async function executeWorkflowWithLocks(
      * `undefined` where no policy applies.
      */
     vaultAccess?: ServeRunVaultScope;
+    /** The repo's `defaultVault`, forwarded to the run (swamp-club#3680). */
+    defaultVault?: string;
   },
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution — by the same rule the
@@ -534,7 +542,11 @@ export async function executeWorkflowWithLocks(
     datastoreConfig,
     stepLockHook,
     runTracker,
-    { telemetrySink: runTelemetry?.sink, runCheckpointer },
+    {
+      telemetrySink: runTelemetry?.sink,
+      runCheckpointer,
+      defaultVault: options.defaultVault,
+    },
   );
   const libCtx = createLibSwampContext({
     signal,

@@ -371,3 +371,76 @@ Deno.test("serve handlers must pass vaultsDir to createWorker*Deps", async () =>
       violations.join("\n"),
   );
 });
+
+/** The argument text of each call that starts at a match of `pattern`. */
+function callArguments(content: string, pattern: RegExp): string[] {
+  const calls: string[] = [];
+  for (const match of content.matchAll(pattern)) {
+    const open = match.index! + match[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < content.length; i++) {
+      if (content[i] === "(") depth++;
+      if (content[i] === ")" && --depth === 0) {
+        calls.push(content.slice(open + 1, i));
+        break;
+      }
+    }
+  }
+  return calls;
+}
+
+Deno.test("every workflow run entry point passes the repo's defaultVault", async () => {
+  const violations: string[] = [];
+  const counts = { services: 0, runDeps: 0, triggered: 0 };
+  const serveCli = join(ROOT, "src", "cli", "commands", "serve.ts");
+
+  for await (
+    const entry of walk(join(ROOT, "src"), {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+    const check = (args: string[], what: string) => {
+      for (const arg of args) {
+        if (!arg.includes("defaultVault")) {
+          violations.push(`${rel}: ${what} without defaultVault`);
+        }
+      }
+      return args.length;
+    };
+    counts.services += check(
+      callArguments(content, /\bnew WorkflowExecutionService\(/g),
+      "new WorkflowExecutionService(...)",
+    );
+    counts.runDeps += check(
+      callArguments(content, /(?<!function )\bcreateWorkflowRunDeps\(/g),
+      "createWorkflowRunDeps(...)",
+    );
+    // Serve's triggered runs (API, schedule, webhook) name their trigger
+    // source in the options they pass to executeWorkflowWithLocks.
+    if (entry.path.startsWith(SERVE_DIR) || entry.path === serveCli) {
+      counts.triggered += check(
+        callArguments(content, /\b(?:executeWorkflowWithLocks|execute)\(/g)
+          .filter((args) => /triggerSource: "/.test(args)),
+        "a triggered executeWorkflowWithLocks(...)",
+      );
+    }
+  }
+
+  assertGreater(counts.services, 0, "expected WorkflowExecutionService calls");
+  assertGreater(counts.runDeps, 0, "expected createWorkflowRunDeps calls");
+  assertGreater(counts.triggered, 0, "expected triggered serve runs");
+  assertEquals(
+    violations,
+    [],
+    "A workflow step resolves its sensitive outputs' vault like a behavior " +
+      "run: the field, an override, the spec, then the repo's defaultVault, " +
+      "then the first vault. A run built without defaultVault skips that " +
+      "step and stores outputs in whichever vault sorts first " +
+      "(swamp-club#3680). Pass the repo marker's defaultVault (serve: the " +
+      "value it read at startup) to every entry point.\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});
