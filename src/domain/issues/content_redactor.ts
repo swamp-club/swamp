@@ -261,11 +261,13 @@ const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 // IPv6 candidates: every token of word characters joined by two or more
 // colons, taken whole and judged by redactColonToken. Reading the whole token
 // lets one rule see both the address and the words around it, so an address is
-// redacted whatever touches it (remote_addr:<addr>, <addr>: no route,
+// redacted whatever touches it (peer:addr:<addr>, <addr>: no route,
 // <addr>:8080, x2001:db8:…) while code paths (std::collections::HashMap,
 // Foo::bar) and runs that cannot hold an address (a fast-check replay path
-// such as 992:3:11:17:17:12, a timestamp) are kept.
-const IPV6_RE = /[0-9A-Za-z_]*(?::[0-9A-Za-z_]*){2,}/g;
+// such as 992:3:11:17:17:12, a timestamp) are kept. The lookbehind starts a
+// match only at the start of a word, so a long run without colons is scanned
+// once.
+const IPV6_RE = /(?<![0-9A-Za-z_])[0-9A-Za-z_]*(?::[0-9A-Za-z_]*){2,}/g;
 
 // One IPv6 group, or the empty group either side of "::".
 const HEX_GROUP_RE = /^[0-9A-Fa-f]{0,4}$/;
@@ -342,7 +344,9 @@ function isSafeIpv6(ip: string): boolean {
 // (Foo::bar, x2001:…), where "::" is as likely a code path as an address.
 function isAddressLikeColonRun(run: string, strict: boolean): boolean {
   const groups = run.split(":").filter((group) => group !== "");
-  if (groups.length === 0) return false;
+  // All zeros is the unspecified address, and the shape of passwd fields
+  // (root:x:0:0::/root): nothing to hide.
+  if (groups.every((group) => /^0+$/.test(group))) return false;
   if (groups.length >= 8) return true;
   if (!strict && run.includes("::")) return true;
   let twoHexRun = 0;
@@ -734,12 +738,14 @@ function isInsideCode(
 }
 
 /**
- * Redacts the IPv6 address or MAC in one colon token, if it holds one. Every
- * inner part must be a hex group, or the token is code or prose. An edge part
- * may be a word glued to a group (ipv6 in ipv6:<addr>, x in x2001:…): the run
- * is judged first without that group, keeping the word and a one-colon label
- * whole, then with it, strictly, so a full address glued to a word is still
- * caught. One colon at either end of the run stays outside the placeholder.
+ * Redacts each IPv6 address or MAC in one colon token. The token's parts split
+ * into word parts (labels such as peer, addr, warn) and maximal runs of hex
+ * groups between them; each run is judged on its own. A word joined to a run
+ * by one colon is a label and stays whole. A run is judged first by itself
+ * (strictly, needing eight or more groups or a MAC, when exactly "::" touches
+ * a word: Foo::bar), then strictly with the hex group glued onto a
+ * neighbouring word (x2001:db8:…), so a full address glued to a word is still
+ * caught. One colon at either end of a run stays outside the placeholder.
  */
 function redactColonToken(
   token: string,
@@ -747,18 +753,12 @@ function redactColonToken(
   count: (category: string) => void,
 ): string {
   const parts = token.split(":");
-  const inner = parts.slice(1, -1);
-  if (!inner.every((part) => HEX_GROUP_RE.test(part))) return token;
-  const first = parts[0];
-  const last = parts[parts.length - 1];
-  const headGroup = HEX_GROUP_RE.test(first)
-    ? first
-    : first.match(/[0-9A-Fa-f]{1,4}$/)?.[0] ?? "";
-  const headWord = first.slice(0, first.length - headGroup.length);
-  const tailGroup = HEX_GROUP_RE.test(last)
-    ? last
-    : last.match(/^[0-9A-Fa-f]{1,4}/)?.[0] ?? "";
-  const tailWord = last.slice(tailGroup.length);
+  const n = parts.length;
+  const isGroup = parts.map((part) => HEX_GROUP_RE.test(part));
+  // Output text per part (null once folded into a placeholder), and whether
+  // the colon before a part is dropped because a placeholder spans it.
+  const pieces: Array<string | null> = [...parts];
+  const joinedToPrevious: boolean[] = parts.map(() => false);
 
   const judge = (candidate: string, strict: boolean): string | null => {
     const lead = /^(?::(?!:)|:::)/.test(candidate) ? ":" : "";
@@ -770,29 +770,68 @@ function redactColonToken(
     return `${lead}${placeholders.get("IP", run)}${trail}`;
   };
 
-  // Without the glued edge groups. Exactly "::" right against a word
-  // (Foo::bar) is judged strictly; a label colon before "::"
-  // (remote_addr:::1:2) is not.
-  const core = [
-    headWord ? "" : headGroup,
-    ...inner,
-    tailWord ? "" : tailGroup,
-  ].join(":");
-  const touchesWord = (headWord !== "" && inner[0] === "" && inner[1] !== "") ||
-    (tailWord !== "" && inner[inner.length - 1] === "" &&
-      inner[inner.length - 2] !== "");
-  const coreResult = judge(core, touchesWord);
-  if (coreResult !== null) {
-    return (headWord ? first : "") + coreResult + (tailWord ? last : "");
+  let i = 0;
+  while (i < n) {
+    if (!isGroup[i]) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < n && isGroup[j + 1]) j++;
+    const hasLeft = i > 0;
+    const hasRight = j < n - 1;
+    const run = parts.slice(i, j + 1);
+    const touchesWord =
+      (hasLeft && run[0] === "" && (run.length === 1 || run[1] !== "")) ||
+      (hasRight && run[run.length - 1] === "" &&
+        (run.length === 1 || run[run.length - 2] !== ""));
+
+    const own = judge(run.join(":"), touchesWord);
+    if (own !== null) {
+      pieces[i] = own;
+      for (let k = i + 1; k <= j; k++) pieces[k] = null;
+    } else {
+      const left = hasLeft ? pieces[i - 1] ?? "" : "";
+      const right = hasRight ? pieces[j + 1] ?? "" : "";
+      const glueLeft = left.match(/(?<![0-9A-Fa-f])[0-9A-Fa-f]{1,4}$/)?.[0] ??
+        "";
+      const glueRight = right.match(/^[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f])/)?.[0] ??
+        "";
+      if (glueLeft || glueRight) {
+        const full = judge(
+          [
+            ...(glueLeft ? [glueLeft] : []),
+            ...run,
+            ...(glueRight ? [glueRight] : []),
+          ]
+            .join(":"),
+          true,
+        );
+        if (full !== null) {
+          pieces[i] = full;
+          for (let k = i + 1; k <= j; k++) pieces[k] = null;
+          if (glueLeft) {
+            pieces[i - 1] = left.slice(0, left.length - glueLeft.length);
+            joinedToPrevious[i] = true;
+          }
+          if (glueRight) {
+            pieces[j + 1] = right.slice(glueRight.length);
+            joinedToPrevious[j + 1] = true;
+          }
+        }
+      }
+    }
+    i = j + 1;
   }
 
-  // With them: only a full address or MAC counts.
-  if ((headWord && headGroup) || (tailWord && tailGroup)) {
-    const full = [headGroup, ...inner, tailGroup].join(":");
-    const fullResult = judge(full, true);
-    if (fullResult !== null) return headWord + fullResult + tailWord;
+  let out = "";
+  for (let k = 0; k < n; k++) {
+    const piece = pieces[k];
+    if (piece === null) continue;
+    if (k > 0 && !joinedToPrevious[k]) out += ":";
+    out += piece;
   }
-  return token;
+  return out;
 }
 
 function applyRedactions(

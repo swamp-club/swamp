@@ -1123,6 +1123,14 @@ Deno.test("redactIssueContent: an address next to a label colon or a message col
       ["mac aa:bb:cc:dd:ee:ff:8080 up", "mac [IP-1] up"],
       ["x2001:db8:85a3:0:0:8a2e:370:7334 y", "x[IP-1] y"],
       ["ipv6:2001:db8::5x up", "ipv6:2001:db8::5x up"],
+      [
+        "peer:addr:2001:db8:85a3:0:0:8a2e:370:7334 x",
+        "peer:addr:[IP-1] x",
+      ],
+      ["2001:db8:85a3:0:0:8a2e:370:7334:to:host", "[IP-1]:to:host"],
+      ["lvl:warn:aa:bb:cc:dd:ee:ff", "lvl:warn:[IP-1]"],
+      ["client:ip:2001:db8::5 x", "client:ip:[IP-1] x"],
+      ["src:2001:db8::1:dst:2001:db8::2", "src:[IP-1]:dst:[IP-2]"],
     ]
   ) {
     assertEquals(redactIssueContent(input).text, expected, input);
@@ -1166,6 +1174,7 @@ Deno.test("redactIssueContent: code paths with :: are not IP addresses", () => {
       "AWS::EC2::VPC",
       'resource: "model:AWS::EC2::*"',
       "path a:b:c:d:e:f:g:word and cafe:feed:dead:beef:face:bead:fade:west",
+      "root:x:0:0::/root:/bin/sh",
     ]
   ) {
     const result = redactIssueContent(input);

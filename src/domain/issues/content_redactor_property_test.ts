@@ -307,12 +307,45 @@ Deno.test("redactIssueContent: an IPv6 address glued to a word never survives wh
   );
 });
 
+// Zero to three word labels, as in structured-log prefixes and keys
+// (peer:addr:<addr>, <addr>:to:host).
+const arbLabelWord = fc.constantFrom(
+  "peer",
+  "addr",
+  "lvl",
+  "warn",
+  "to",
+  "host",
+);
+const arbLabelsBefore = fc.array(arbLabelWord, { maxLength: 3 }).map((words) =>
+  words.map((word) => `${word}:`).join("")
+);
+const arbLabelsAfter = fc.array(arbLabelWord, { maxLength: 3 }).map((words) =>
+  words.map((word) => `:${word}`).join("")
+);
+
 Deno.test("redactIssueContent: an IPv6 address never survives in any form", () => {
   fc.assert(
-    fc.property(arbBefore, arbIpv6, arbAfter, (before, address, after) => {
-      const result = redactIssueContent(`${before}${address}${after}`);
-      assertEquals(result.text, `${before}[IP-1]${after}`, address);
-    }),
+    fc.property(
+      arbBefore,
+      arbLabelsBefore,
+      arbIpv6,
+      arbLabelsAfter,
+      arbAfter,
+      (before, labelsBefore, address, labelsAfter, after) => {
+        // A message colon right after the address reads as a label colon
+        // when labels follow it, so only one of the two is generated.
+        fc.pre(labelsAfter === "" || !after.startsWith(":"));
+        const result = redactIssueContent(
+          `${before}${labelsBefore}${address}${labelsAfter}${after}`,
+        );
+        assertEquals(
+          result.text,
+          `${before}${labelsBefore}[IP-1]${labelsAfter}${after}`,
+          address,
+        );
+      },
+    ),
   );
 });
 
