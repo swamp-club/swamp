@@ -299,6 +299,17 @@ function rewriteZodImportDeclaration(declaration: string): string {
 }
 
 /**
+ * The zod imports a loaded bundle shares with the host: those
+ * {@link isZod4Specifier} accepts, and, for bundles an older swamp built and
+ * cached, any `zod@4…` spelling it externalized, subpath included, as the
+ * runtime rewrite always matched it. New bundles never externalize another
+ * subpath, so only those older bundles reach the second case.
+ */
+function isRuntimeSharedZodSpecifier(specifier: string): boolean {
+  return isZod4Specifier(specifier) || /^(?:npm:)?zod@4/.test(specifier);
+}
+
+/**
  * Rewrites externalized Zod imports in a bundle to reference `globalThis.__swamp_zod`.
  *
  * Handles:
@@ -329,7 +340,7 @@ export function rewriteZodImports(js: string, origin?: string): string {
   for (
     const { start, end, specifier } of findImportDeclarations(js, origin)
   ) {
-    if (!isZod4Specifier(specifier)) continue;
+    if (!isRuntimeSharedZodSpecifier(specifier)) continue;
     parts.push(js.slice(cursor, start));
     parts.push(rewriteZodImportDeclaration(js.slice(start, end)));
     cursor = end;

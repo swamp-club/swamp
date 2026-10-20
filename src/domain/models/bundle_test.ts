@@ -535,6 +535,13 @@ Deno.test("rewriteZodImports: rewrites a zod 4 import with a subpath, as before"
   );
 });
 
+Deno.test("rewriteZodImports: still rewrites a pinned zod 4 subpath an older swamp externalized", () => {
+  assertEquals(
+    rewriteZodImports(`import { z } from "npm:zod@4.3.6/v4/core";`),
+    `const { z } = globalThis.__swamp_zod;`,
+  );
+});
+
 Deno.test("rewriteZodImports: leaves a ranged zod 3 import untouched", () => {
   const input = `import { z } from "npm:zod@^3.22.4";`;
   assertEquals(rewriteZodImports(input), input);
