@@ -182,7 +182,7 @@ const arbGitContext = fc.constantFrom(
   "commit id: ",
   "git checkout ",
   "rev=",
-  "tree ",
+  "git show ",
   "https://github.com/o/r/commit/",
   "commit `",
 );
@@ -214,6 +214,18 @@ const arbIpv6 = fc.oneof(
   ),
 );
 
+// What text puts around an address or a colon run: spaces, a label colon
+// before it, a message colon after it, brackets and punctuation.
+const arbBefore = fc.constantFrom(
+  "addr ",
+  "remote_addr:",
+  "ipv6:",
+  "ip=",
+  "[",
+  "(",
+);
+const arbAfter = fc.constantFrom(" end", ": no route", ":", ",", "]", ")", "");
+
 Deno.test("redactIssueContent: a git object id after a git word survives", () => {
   fc.assert(
     fc.property(arbGitContext, arbGitId, (context, id) => {
@@ -243,8 +255,10 @@ Deno.test("redactIssueContent: a colon run that is not an address survives", () 
       fc.array(arbHexGroup, { minLength: 3, maxLength: 7 }).filter((groups) =>
         !(groups.length === 6 && groups.every((g) => g.length === 2))
       ),
-      (groups) => {
-        const input = `path ${groups.join(":")} end`;
+      arbBefore,
+      arbAfter,
+      (groups, before, after) => {
+        const input = `path ${before}${groups.join(":")}${after}`;
         const result = redactIssueContent(input);
         assertEquals(result.text, input);
       },
@@ -254,9 +268,9 @@ Deno.test("redactIssueContent: a colon run that is not an address survives", () 
 
 Deno.test("redactIssueContent: an IPv6 address never survives in any form", () => {
   fc.assert(
-    fc.property(arbIpv6, (address) => {
-      const result = redactIssueContent(`addr ${address} end`);
-      assertEquals(result.text, "addr [IP-1] end", address);
+    fc.property(arbBefore, arbIpv6, arbAfter, (before, address, after) => {
+      const result = redactIssueContent(`${before}${address}${after}`);
+      assertEquals(result.text, `${before}[IP-1]${after}`, address);
     }),
   );
 });

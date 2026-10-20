@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import type { RedactionSummary } from "../../domain/issues/content_redactor.ts";
 import {
+  chooseSubmittedContent,
   confirmRedactions,
   type RedactionConfirmDeps,
 } from "./issue_redaction_confirm.ts";
@@ -89,4 +90,50 @@ Deno.test("confirmRedactions: never asks in json mode, without a terminal, or wh
     assertEquals(await confirmRedactions(summary, mode, deps), "redacted");
     assertEquals(deps.asked.length, 0);
   }
+});
+
+Deno.test("confirmRedactions: written also submits the text as written", async () => {
+  assertEquals(
+    await confirmRedactions(redactedOnce, "log", fakeDeps("written")),
+    "as-written",
+  );
+});
+
+Deno.test("chooseSubmittedContent: returns the redacted content, the original, or null on cancel", async () => {
+  const content = {
+    redacted: { title: "t", body: "at [IP-1]" },
+    original: { title: "t", body: "at 10.20.30.40" },
+  };
+  const cases: Array<[string, typeof content.redacted | null]> = [
+    ["y", content.redacted],
+    ["w", content.original],
+    ["n", null],
+    ["", null],
+  ];
+  for (const [answer, expected] of cases) {
+    assertEquals(
+      await chooseSubmittedContent(
+        redactedOnce,
+        "log",
+        content,
+        fakeDeps(answer),
+      ),
+      expected,
+      answer,
+    );
+  }
+});
+
+Deno.test("chooseSubmittedContent: without a terminal returns the redacted content unasked", async () => {
+  const deps = fakeDeps("w", false);
+  assertEquals(
+    await chooseSubmittedContent(
+      redactedOnce,
+      "log",
+      { redacted: "at [IP-1]", original: "at 10.20.30.40" },
+      deps,
+    ),
+    "at [IP-1]",
+  );
+  assertEquals(deps.asked.length, 0);
 });

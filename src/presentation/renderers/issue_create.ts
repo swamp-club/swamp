@@ -205,7 +205,7 @@ export function renderRedactionSkipped(
   }
   getSwampLogger(["issue", "redact"]).info(
     source === "prompt"
-      ? "Redaction skipped at your choice; content submitted as written."
+      ? "Redaction skipped (chosen at prompt); content submitted as written."
       : "Redaction skipped (--no-redact); content submitted as written.",
   );
 }

@@ -1036,7 +1036,7 @@ Deno.test("redactIssueContent: a commit id after a git word is kept", () => {
       `the commit SHA ${sha1} is on main`,
       `Run \`git checkout ${sha1}\` to replay it`,
       `rev=${sha1}`,
-      `tree ${sha256}`,
+      `git show ${sha256}`,
       `see https://github.com/swamp-club/swamp/commit/${sha1}`,
       `see https://github.com/swamp-club/swamp/blob/${sha1}/deno.json`,
       `commit \`${sha1}\``,
@@ -1101,4 +1101,49 @@ Deno.test("redactIssueContent: compressed IPv6 addresses leave no group in clear
 Deno.test("redactIssueContent: MAC addresses are still redacted", () => {
   const result = redactIssueContent("interface aa:bb:cc:dd:ee:0f is up");
   assertEquals(result.text, "interface [IP-1] is up");
+});
+
+Deno.test("redactIssueContent: an address next to a label colon or a message colon is still redacted", () => {
+  for (
+    const [input, expected] of [
+      ["remote_addr:2a00:1450:4009::200e", "remote_addr:[IP-1]"],
+      [
+        "Error: 2001:db8:85a3:0:0:8a2e:370:7334: no route",
+        "Error: [IP-1]: no route",
+      ],
+      [
+        "ip=2001:db8:85a3:0:0:8a2e:370:7334: x",
+        "ip=[IP-1]: x",
+      ],
+      ["mac aa:bb:cc:dd:ee:ff: x", "mac [IP-1]: x"],
+      ["connect 2001:db8::1: refused", "connect [IP-1]: refused"],
+      ["ipv6:2001:db8::5 up", "ipv6:[IP-1] up"],
+      ["id:2001:db8::5 up", "id:[IP-1] up"],
+    ]
+  ) {
+    assertEquals(redactIssueContent(input).text, expected, input);
+  }
+});
+
+Deno.test("redactIssueContent: generic words or a nearby secret label do not keep a 40-hex value", () => {
+  const hex = "a4fd943795dbca86a77083347c021a329fb32aa0";
+  for (
+    const input of [
+      `ref: ${hex}`,
+      `object = ${hex}`,
+      `parent=${hex}`,
+      `HEAD ${hex}`,
+      `merge ${hex}`,
+      `tree ${hex}`,
+      `GITHUB_TOKEN git ${hex}`,
+      `password for git: ${hex}`,
+      `the api token for commit ${hex}`,
+    ]
+  ) {
+    assertStringIncludes(
+      redactIssueContent(input).text,
+      "[REDACTED-SECRET-1]",
+      input,
+    );
+  }
 });

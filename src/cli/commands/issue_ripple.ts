@@ -36,7 +36,7 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { requireNonBlank } from "./issue_submit.ts";
 import { redactIssueContent } from "../../domain/issues/content_redactor.ts";
-import { confirmRedactions } from "./issue_redaction_confirm.ts";
+import { chooseSubmittedContent } from "./issue_redaction_confirm.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -164,22 +164,19 @@ export const issueRippleCommand = new Command()
         [{ result: redacted }],
         ctx.outputMode,
       );
-      const decision = await confirmRedactions(
+      const chosen = await chooseSubmittedContent(
         redacted.summary,
         ctx.outputMode,
+        { redacted: redacted.text, original: body },
       );
-      if (decision === "cancel") {
+      if (chosen === null) {
         renderIssueCancelled(
           { type: "ripple", reason: "cancelled" },
           ctx.outputMode,
         );
         return;
       }
-      if (decision === "as-written") {
-        renderRedactionSkipped(ctx.outputMode, "prompt");
-      } else {
-        body = redacted.text;
-      }
+      body = chosen;
     }
 
     const statusTransition: IssueStatusTransition | undefined = options.close

@@ -51,7 +51,7 @@ import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
-import { confirmRedactions } from "./issue_redaction_confirm.ts";
+import { chooseSubmittedContent } from "./issue_redaction_confirm.ts";
 import {
   type DispatcherDeps,
   dispatchRepositoryReport,
@@ -314,20 +314,22 @@ export async function dispatchExtensionRepositoryReport(
       { label: "title", result: redacted.title },
       { label: "body", result: redacted.body },
     ], ctx.outputMode);
-    const decision = await confirmRedactions(redacted.summary, ctx.outputMode);
-    if (decision === "cancel") {
+    const chosen = await chooseSubmittedContent(
+      redacted.summary,
+      ctx.outputMode,
+      {
+        redacted: { title: redacted.title.text, body: redacted.body.text },
+        original: { title, body },
+      },
+    );
+    if (!chosen) {
       renderIssueCancelled(
         { type: input.type, reason: "cancelled" },
         ctx.outputMode,
       );
       return;
     }
-    if (decision === "as-written") {
-      renderRedactionSkipped(ctx.outputMode, "prompt");
-    } else {
-      title = redacted.title.text;
-      body = redacted.body.text;
-    }
+    ({ title, body } = chosen);
   }
 
   const reporterContext = collectReporterContext({
@@ -385,23 +387,22 @@ export async function submitIssue(
       { label: "title", result: redacted.title },
       { label: "body", result: redacted.body },
     ], ctx.outputMode);
-    const decision = await confirmRedactions(redacted.summary, ctx.outputMode);
-    if (decision === "cancel") {
+    const chosen = await chooseSubmittedContent(
+      redacted.summary,
+      ctx.outputMode,
+      {
+        redacted: { title: redacted.title.text, body: redacted.body.text },
+        original: { title: input.title, body: input.body },
+      },
+    );
+    if (!chosen) {
       renderIssueCancelled(
         { type: input.type, reason: "cancelled" },
         ctx.outputMode,
       );
       return;
     }
-    if (decision === "as-written") {
-      renderRedactionSkipped(ctx.outputMode, "prompt");
-    } else {
-      input = {
-        ...input,
-        title: redacted.title.text,
-        body: redacted.body.text,
-      };
-    }
+    input = { ...input, ...chosen };
   }
 
   if (destination.method === "email") {

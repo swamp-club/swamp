@@ -201,10 +201,16 @@ function isUnlabelledKeyPayload(payload: string): boolean {
 }
 
 // A git word just before a hex run marks it as an object id (commit <sha>,
-// git checkout <sha>, /commit/<sha>). The separators exclude _ and -, so
-// joined forms (commit_<sha>, sha-<hash>) stay with the labelled-key rules.
+// git checkout <sha>, /commit/<sha>). Only words that name a commit count:
+// ordinary words such as ref, object or head introduce tokens as often as
+// ids. The separators exclude _ and -, so joined forms (commit_<sha>,
+// sha-<hash>) stay with the labelled-key rules.
 const GIT_ID_CONTEXT_RE =
-  /(?:\b(?:commits?|sha(?:1|256)?|rev(?:ision)?|object|tree|blob|parent|head|merge|ref|checkout|git)(?: (?:id|sha|hash))?[ \t:=#@/"'`]{1,3}|\/(?:commits?|tree|blob)\/)$/i;
+  /(?:\b(?:commits?|sha(?:1|256)?|rev(?:ision)?|git (?:checkout|show|revert|cherry-pick|reset))(?: (?:id|sha|hash))?[ \t:=#@/"'`]{1,3}|\/(?:commits?|tree|blob)\/)$/i;
+
+// A secret label anywhere in the same window outweighs the git word: in
+// "the api token for commit <hex>" the value is the token.
+const SECRET_LABEL_RE = /token|key|password|passwd|secret|auth|credential/i;
 
 // Git object ids are 40 (sha1) or 64 (sha256) hex characters.
 const GIT_ID_LENGTHS = new Set([40, 64]);
@@ -257,9 +263,12 @@ const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 // isCompressedIpv6), and the MAC shape (six two-hex groups), which the old
 // loose pattern redacted as an address. Any other colon run, such as a
 // fast-check replay path (992:3:11:17:17:12) or a timestamp, is not an address.
-// The lookarounds refuse a match that starts or ends inside a longer run.
+// The lookarounds refuse a match that starts or ends inside a longer colon
+// run, while still allowing a label colon before it (remote_addr:<addr>; a
+// colon is refused only after a word that could itself be a group) and a
+// message colon after it (<addr>: no route).
 const IPV6_RE =
-  /(?<![0-9A-Za-z:])(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?|(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})(?![0-9A-Za-z:])/g;
+  /(?<![0-9A-Za-z])(?<!(?<![0-9A-Za-z_])[0-9A-Fa-f]{1,4}:)(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?|(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})(?![0-9A-Za-z]|:[0-9A-Za-z:])/g;
 
 // Home directory paths with usernames — captures the prefix and username
 // separately so we can reconstruct positionally.
@@ -921,7 +930,8 @@ function applyRedactions(
       if (SAFE_HEX_KEY_RE.test(preceding)) return match;
       if (HASH_LABEL_PREFIX_RE.test(preceding)) return match;
       if (
-        GIT_ID_LENGTHS.has(match.length) && GIT_ID_CONTEXT_RE.test(preceding)
+        GIT_ID_LENGTHS.has(match.length) &&
+        GIT_ID_CONTEXT_RE.test(preceding) && !SECRET_LABEL_RE.test(preceding)
       ) {
         return match;
       }

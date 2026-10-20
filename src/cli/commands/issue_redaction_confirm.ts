@@ -25,6 +25,7 @@
 
 import type { RedactionSummary } from "../../domain/issues/content_redactor.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
+import { renderRedactionSkipped } from "../../presentation/renderers/issue_create.ts";
 import { promptLine } from "../prompt_helpers.ts";
 
 /** What to submit: the redacted text, the text as written, or nothing. */
@@ -67,6 +68,26 @@ export async function confirmRedactions(
     "Submit with these redactions? [y] submit redacted, [w] submit as written, [N] cancel: ",
   )).toLowerCase();
   if (answer === "y" || answer === "yes") return "redacted";
-  if (answer === "w") return "as-written";
+  if (answer === "w" || answer === "written") return "as-written";
   return "cancel";
+}
+
+/**
+ * Picks the content to submit once the redaction notice has been shown:
+ * the redacted content, the original when the author answers w (which is
+ * logged like --no-redact), or null when they cancel.
+ */
+export async function chooseSubmittedContent<T>(
+  summary: RedactionSummary,
+  mode: OutputMode,
+  content: { redacted: T; original: T },
+  deps: RedactionConfirmDeps = defaultDeps,
+): Promise<T | null> {
+  const decision = await confirmRedactions(summary, mode, deps);
+  if (decision === "cancel") return null;
+  if (decision === "as-written") {
+    renderRedactionSkipped(mode, "prompt");
+    return content.original;
+  }
+  return content.redacted;
 }
