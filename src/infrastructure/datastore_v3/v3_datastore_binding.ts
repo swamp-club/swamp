@@ -422,6 +422,7 @@ export async function confirmV3BucketMarker(
     throw new UnreachableDatastoreFormatMarkerError(
       source,
       error instanceof Error ? error.message : String(error),
+      V3_DATASTORE_FORMAT,
     );
   }
   if (bytes === null) {

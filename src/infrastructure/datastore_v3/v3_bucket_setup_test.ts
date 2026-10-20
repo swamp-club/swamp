@@ -21,7 +21,10 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
-import { DatastoreFormatMismatchError } from "../../domain/datastore/datastore_format.ts";
+import {
+  DATASTORE_FORMAT_MARKER_KEY,
+  DatastoreFormatMismatchError,
+} from "../../domain/datastore/datastore_format.ts";
 import {
   initializeV3BucketDatastore,
   inspectV3BucketTarget,
@@ -29,26 +32,54 @@ import {
 } from "./v3_bucket_setup.ts";
 
 /**
+ * The refusal the S3 and GCS extensions' sync services throw for a prefix
+ * whose marker says format 3 or more (swamp-club#3549): a `code` and a
+ * message telling the user to upgrade.
+ */
+class FormatUnsupportedError extends Error {
+  readonly code = "datastore_format_unsupported";
+
+  constructor() {
+    super(
+      "This datastore uses format 3 (written by 1.0.0), which this swamp " +
+        "release can't open. Upgrade swamp to the latest release " +
+        "(`swamp update`). Nothing was synced.",
+    );
+  }
+}
+
+/**
  * A provider over the in-memory remote whose sync service answers
  * `fetchContent` from `rootFiles`, as a real bucket's root index would:
- * the fake keeps no index files of its own.
+ * the fake keeps no index files of its own. Like the extensions, it refuses
+ * every read once the marker says format 3; `refuseFetch` makes it refuse
+ * whatever the marker says, as when a marker is written after setup read it.
  */
 function provider(
   options: {
     rootFiles?: Record<string, string>;
     fetchContent?: boolean;
     listNamespaces?: boolean;
+    refuseFetch?: boolean;
   } = {},
 ) {
   const remote = createInMemoryRemote({ controlPlane: true, storage: true });
   const fetched: string[] = [];
   const service = {
-    fetchContent: (relPath: string) => {
+    fetchContent: async (relPath: string) => {
       fetched.push(relPath);
-      const text = options.rootFiles?.[relPath];
-      return Promise.resolve(
-        text === undefined ? null : new TextEncoder().encode(text),
+      const marker = await remote.datastoreControlPlaneStore!().get(
+        DATASTORE_FORMAT_MARKER_KEY,
       );
+      if (
+        options.refuseFetch === true ||
+        (marker !== null &&
+          JSON.parse(new TextDecoder().decode(marker)).format >= 3)
+      ) {
+        throw new FormatUnsupportedError();
+      }
+      const text = options.rootFiles?.[relPath];
+      return text === undefined ? null : new TextEncoder().encode(text);
     },
   } as unknown as DatastoreSyncService;
   const provider: DatastoreProvider = {
@@ -164,4 +195,61 @@ Deno.test("initializeV3BucketDatastore: accepts a format-3 marker another setup 
     () => initializeV3BucketDatastore(other.provider, "@test/bucket", "x"),
     DatastoreFormatMismatchError,
   );
+});
+
+Deno.test("inspectV3BucketTarget: a prefix holding only a format-3 marker is resumable from any repo, and its v2 probes are skipped (swamp-club#3643)", async () => {
+  const { provider: p, fetched } = provider();
+  await initializeV3BucketDatastore(p, "@test/bucket", "1.0.0");
+  for (const repoDir of ["/repo-a", "/repo-b"]) {
+    assertEquals(
+      await inspectV3BucketTarget(p, "@test/bucket", repoDir, undefined),
+      { kind: "resumable" },
+      repoDir,
+    );
+  }
+  assertEquals(fetched, []);
+});
+
+Deno.test("inspectV3BucketTarget: a format-3 marker beside a control-plane record is still refused (swamp-club#3643)", async () => {
+  const { remote, provider: p } = provider();
+  await initializeV3BucketDatastore(p, "@test/bucket", "1.0.0");
+  await remote.datastoreControlPlaneStore!().put(
+    "writer-lease",
+    new Uint8Array(),
+  );
+  assertEquals(
+    await inspectV3BucketTarget(p, "@test/bucket", "/repo", undefined),
+    {
+      kind: "refused",
+      reason: "its control plane already holds records (writer-lease)",
+    },
+  );
+});
+
+Deno.test("inspectV3BucketTarget: v2 root data planted beside a format-3 marker is not probed, and the prefix completes (swamp-club#3643)", async () => {
+  // The extensions' sync services refuse every read of a format-3 prefix,
+  // and no compliant swamp writes v2 data beside a v3 marker, so setup's
+  // v2 probes ran before it wrote the marker and are not run again.
+  const { provider: p } = provider({
+    rootFiles: { [V2_ROOT_INDEX_KEYS[0]]: "{}" },
+  });
+  await initializeV3BucketDatastore(p, "@test/bucket", "1.0.0");
+  assertEquals(
+    await inspectV3BucketTarget(p, "@test/bucket", "/repo", undefined),
+    { kind: "resumable" },
+  );
+});
+
+Deno.test("inspectV3BucketTarget: a marker written while the prefix is probed refuses without the extension's upgrade advice (swamp-club#3643)", async () => {
+  const state = await inspectV3BucketTarget(
+    provider({ refuseFetch: true }).provider,
+    "@test/bucket",
+    "/repo",
+    undefined,
+  );
+  assertEquals(state, {
+    kind: "refused",
+    reason: "a format marker was written to it while it was being " +
+      "inspected, which another setup may have done; run the command again",
+  });
 });

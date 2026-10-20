@@ -334,6 +334,7 @@ export async function ensureSupportedDatastoreFormat(
       throw new UnreachableDatastoreFormatMarkerError(
         `the ${config.type} datastore`,
         "its extension could not be loaded",
+        config.format,
       );
     }
     assertV3Hosting(provider, config.type);

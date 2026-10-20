@@ -340,17 +340,22 @@ export class UnreadableDatastoreFormatMarkerError extends UserError {
  * Thrown when an extension datastore's format marker cannot be read, and
  * its provider could host v3 (swamp-club#3534): it may say v3, and opening a
  * v3 datastore as v2 would write v2 files into it, so swamp refuses rather
- * than guess.
+ * than guess. Under a config that says format 3 it is not opened as
+ * format 2 either way, so the message says only that the marker could not
+ * be read (swamp-club#3644).
  */
 export class UnreachableDatastoreFormatMarkerError extends UserError {
   readonly source: string;
 
-  constructor(source: string, reason: string) {
+  constructor(source: string, reason: string, configuredFormat?: number) {
     super(
       `The datastore format marker ${source} could not be read (${reason}). ` +
-        "It may say format 3, so swamp will not open this datastore as " +
-        "format 2. Check the datastore's connectivity and credentials, and " +
-        "run the command again. Nothing was changed.",
+        (configuredFormat === V3_DATASTORE_FORMAT
+          ? ""
+          : "It may say format 3, so swamp will not open this datastore as " +
+            "format 2. ") +
+        "Check the datastore's connectivity and credentials, and run the " +
+        "command again. Nothing was changed.",
       DATASTORE_FORMAT_MARKER_UNREADABLE_CODE,
     );
     this.name = "UnreachableDatastoreFormatMarkerError";

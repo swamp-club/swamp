@@ -31,6 +31,7 @@ import type { DatastoreProvider } from "../../domain/datastore/datastore_provide
 import {
   DATASTORE_FORMAT_MARKER_KEY,
   DATASTORE_FORMAT_MARKER_MAX_BYTES,
+  DATASTORE_FORMAT_UNSUPPORTED_CODE,
   parseDatastoreFormatMarker,
   V3_DATASTORE_FORMAT,
 } from "../../domain/datastore/datastore_format.ts";
@@ -63,7 +64,8 @@ export type V3BucketTargetState =
   | { readonly kind: "new" }
   /**
    * Only a format-3 marker: a setup that stopped after writing it, which a
-   * re-run completes.
+   * re-run completes. The datastore it names is empty (no commits, chunks
+   * or records), so any repo may complete it, as it may a new prefix.
    */
   | { readonly kind: "resumable" }
   | { readonly kind: "refused"; readonly reason: string };
@@ -73,7 +75,10 @@ export type V3BucketTargetState =
  * the checkout at `repoDir` (swamp-club#3534). It must be new and empty: no
  * format marker but a format-3 one, no control-plane record, no chunk, no
  * v2 namespace, and no v2 data at the root. A check that cannot be made
- * refuses rather than warns. Known limits: v2 data that has lost both its
+ * refuses rather than warns. Once a format-3 marker is there the v2 checks
+ * are not made (swamp-club#3643): setup made them before it wrote the
+ * marker, a compliant swamp never writes v2 data beside one, and the
+ * extensions' sync services refuse to read a format-3 prefix at all. Known limits: v2 data that has lost both its
  * root index keys is not seen, and neither are Litestream objects left
  * under `<prefix>/_litestream/` by a datastore whose control plane and
  * chunks were deleted by hand.
@@ -136,6 +141,8 @@ export async function inspectV3BucketTarget(
       }
     }
 
+    if (marked) return { kind: "resumable" };
+
     if (provider.listNamespaces === undefined) {
       return refused(
         "its extension cannot list namespaces, so swamp cannot tell whether " +
@@ -152,8 +159,20 @@ export async function inspectV3BucketTarget(
     if (await holdsV2RootData(provider, repoDir, signal)) {
       return refused("it holds v2 data");
     }
-    return marked ? { kind: "resumable" } : { kind: "new" };
+    return { kind: "new" };
   } catch (error) {
+    // The extension's refusal of a format-3 prefix tells the user to
+    // upgrade swamp, which is wrong here: the marker was written after it
+    // was read, as a concurrent setup would, and a re-run sees it.
+    if (
+      error instanceof Error &&
+      (error as { code?: unknown }).code === DATASTORE_FORMAT_UNSUPPORTED_CODE
+    ) {
+      return refused(
+        "a format marker was written to it while it was being inspected, " +
+          "which another setup may have done; run the command again",
+      );
+    }
     return refused(
       `it could not be inspected (${
         error instanceof Error ? error.message : String(error)
