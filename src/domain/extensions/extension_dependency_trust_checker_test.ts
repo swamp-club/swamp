@@ -711,7 +711,7 @@ Deno.test("checkDependencyTrust: a range nothing satisfies is not audited", asyn
     message:
       "not audited: OSV not queried (no published version matches ^9.0.0)",
     cause: "not-audited",
-    remediation: "Re-run when OSV, npm and JSR are reachable.",
+    remediation: "Change the specifier to a version the registry publishes.",
   }]);
   const [summary] = result.audited;
   assertEquals(summary.version, "^9.0.0");
@@ -1069,7 +1069,7 @@ Deno.test("checkDependencyTrust: an invalid npm name is not audited and never fe
     dependency: "bad name?x",
     message: "not audited: invalid npm package name",
     cause: "not-audited",
-    remediation: "Re-run when OSV, npm and JSR are reachable.",
+    remediation: "Correct the package name in the import.",
   }]);
 });
 
@@ -1367,6 +1367,10 @@ Deno.test("checkDependencyTrust: an npm pin the packument does not list is not a
   );
   assertEquals(result.audited[0].passed, false);
   assertEquals(result.audited[0].reason, "npm lists no version 9.9.9");
+  assertEquals(
+    result.warnings.find((w) => w.cause === "not-audited")?.remediation,
+    "Change the specifier to a version the registry publishes.",
+  );
   assertEquals(result.audited[0].license, null);
 });
 
@@ -1497,4 +1501,47 @@ Deno.test("checkDependencyTrust: a mapped import whose lookup fails is not audit
   );
   assertEquals(result.audited[0].passed, false);
   assertEquals(result.audited[0].importedAs, "pkg");
+});
+
+Deno.test("checkDependencyTrust: a deprecated npm version the lock chose says to refresh the lock", async () => {
+  const body = {
+    ...DEPRECATION_BODY,
+    versions: {
+      "1.0.0": {
+        license: "MIT",
+        maintainers: [{ name: "a" }],
+        deprecated: "old",
+      },
+      "2.0.0": { license: "MIT", maintainers: [{ name: "a" }] },
+    },
+  };
+  const result = await checkDependencyTrust(
+    [npmSpec("pkg", "^1.0.0")],
+    routedFetcher(healthyRoutes(body)),
+    DEFAULT_TRUST_THRESHOLDS,
+    undefined,
+    lockOf({ "npm:pkg": ["1.0.0"] }),
+  );
+  const deprecated = result.warnings.find((w) =>
+    w.cause === "deprecated-version"
+  );
+  assertEquals(
+    deprecated?.remediation,
+    "Move to 2.0.0, the newest version that isn't deprecated. Then refresh deno.lock so it records the new version.",
+  );
+});
+
+Deno.test("checkDependencyTrust: an unreachable registry keeps the re-run fix", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("some-pkg", "1.0.0")],
+    routedFetcher({
+      [OSV_URL]: { status: 503, body: {} },
+      [NPM_URL]: { status: 200, body: HEALTHY_NPM_BODY },
+      [DOWNLOADS_URL]: { status: 200, body: { downloads: 50_000 } },
+    }),
+  );
+  assertEquals(
+    result.warnings[0].remediation,
+    "Re-run when OSV, npm and JSR are reachable.",
+  );
 });

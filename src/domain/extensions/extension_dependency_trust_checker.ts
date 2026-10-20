@@ -760,10 +760,23 @@ interface SpecifierAudit {
   summary: DependencyAuditSummary;
 }
 
+/**
+ * How to resolve a dependency that was not audited, by why it was not: a
+ * lookup outage clears on a re-run, a wrong name or specifier never does.
+ */
+const NOT_AUDITED_FIX = {
+  outage: "Re-run when OSV, npm and JSR are reachable.",
+  name: "Correct the package name in the import.",
+  specifier: "Change the specifier to a version the registry publishes.",
+  unexpected: "Re-run; if it fails again, report it.",
+  other: "Resolve the reason above, then re-run.",
+} as const;
+
 function notAudited(
   spec: DependencySpecifier,
   reason: string,
   summary: Omit<DependencyAuditSummary, "passed" | "cause" | "reason">,
+  fix: keyof typeof NOT_AUDITED_FIX = "other",
   errors: DependencyTrustIssue[] = [],
   warnings: DependencyTrustIssue[] = [],
 ): SpecifierAudit {
@@ -773,7 +786,7 @@ function notAudited(
       dependency: spec.name,
       message: `not audited: ${reason}`,
       cause: "not-audited",
-      remediation: "Re-run when OSV, npm and JSR are reachable.",
+      remediation: NOT_AUDITED_FIX[fix],
     }],
     summary: { ...summary, passed: false, cause: "not-audited", reason },
   };
@@ -801,7 +814,7 @@ async function auditNpmPackage(
         license: null,
         weeklyDownloads: null,
         publishedAgo: null,
-      })
+      }, "name")
     );
   }
 
@@ -834,12 +847,16 @@ async function auditNpmPackage(
     const osv = osvLookup === null ? null : await osvLookup;
 
     const failures: string[] = [];
+    // A wrong specifier fails the same way on every re-run; a lookup that
+    // failed may not.
+    let wrongSpecifier = false;
     if (npm.kind === "unavailable") {
       failures.push(`npm registry lookup failed (${npm.reason})`);
     } else if (
       version !== null && !Object.hasOwn(npm.value.manifests, version)
     ) {
       failures.push(`npm lists no version ${version}`);
+      wrongSpecifier = true;
     }
     if (osv === null) {
       failures.push(
@@ -849,6 +866,7 @@ async function auditNpmPackage(
           })`
           : "OSV not queried (no resolvable version)",
       );
+      if (npm.kind === "found") wrongSpecifier = true;
     } else if (osv.kind === "unavailable") {
       failures.push(`OSV lookup failed (${osv.reason})`);
     }
@@ -883,7 +901,14 @@ async function auditNpmPackage(
     };
     audits.push(
       failures.length > 0
-        ? notAudited(spec, failures.join("; "), summary, errors, warnings)
+        ? notAudited(
+          spec,
+          failures.join("; "),
+          summary,
+          wrongSpecifier ? "specifier" : "outage",
+          errors,
+          warnings,
+        )
         : {
           errors,
           warnings,
@@ -929,7 +954,12 @@ async function auditJsrPackage(
     if (meta === null) return missing("invalid JSR package name");
     if (meta.kind === "missing") return missing("JSR package not found");
     if (meta.kind === "unavailable") {
-      return notAudited(spec, `JSR lookup failed (${meta.reason})`, base);
+      return notAudited(
+        spec,
+        `JSR lookup failed (${meta.reason})`,
+        base,
+        "outage",
+      );
     }
 
     const shipped = resolveShippedVersion("jsr", name, spec.version, lock, {
@@ -1039,6 +1069,7 @@ export async function checkDependencyTrust(
             describeFailure(result.reason)
           })${bare.length > 0 ? importedAsSuffix(bare) : ""}`,
           cause: "not-audited",
+          remediation: NOT_AUDITED_FIX.unexpected,
         });
         continue;
       }

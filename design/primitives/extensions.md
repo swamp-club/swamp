@@ -2008,7 +2008,12 @@ version exists (the newest in the shipped version's major, or its minor for
 qualify). When the lockfile chose the shipped version, the remediation also
 says to refresh it. The findings report that closes push, dry run and
 `extension quality` lists each of them under Unresolved warnings with
-`file` `(dependency)` and its remediation as the `fix:` line.
+`file` `(dependency)` and its remediation as the `fix:` line. The summary
+repeats what the Dependency warnings block already printed, on purpose: it is
+the recap an author or agent reads. A `not-audited` remediation depends on why
+the audit could not run (a lookup outage, an invalid name, a specifier no
+published version matches, or an unexpected failure), because a re-run only
+helps the first.
 
 ### Not audited
 
