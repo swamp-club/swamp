@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A serve resume cannot change an input a finished step read
- * (swamp-club#3583). Through serve's real handlers against a real
- * repository: the run's gate read `target` and its approval showed it, so a
- * resume that changes `target` is refused before the guarded step runs, and
- * the run stays suspended with the value its approval saw.
+ * A serve resume cannot change a value the run has (swamp-club#3583).
+ * Through serve's real handlers against a real repository: the run has
+ * `target`, which its gate checked and its approval showed, so a resume that
+ * changes `target` is refused before the guarded step runs, and the run stays
+ * suspended with the value its approval saw.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";

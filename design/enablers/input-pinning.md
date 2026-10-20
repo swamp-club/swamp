@@ -36,7 +36,7 @@ late input safe: check it after it arrives ([Late inputs](#late-inputs)).
 The first rule ends the pattern of passing a placeholder at start and overriding
 it at resume. An input supplied at resume is declared optional and read in a
 form that tolerates its absence. That change, and the limit above, are the main
-decisions this plan asks for.
+decisions this design makes.
 
 ## Background
 
@@ -149,7 +149,7 @@ resume from then adding the input:
 4. `deploy` runs against prod.
 
 This is the swamp-club#3583 scenario with absence as the placeholder. Detecting
-it needs to know what `check` read, which is the inference this plan removes.
+it needs to know what `check` read, which is the inference this design removes.
 The plan accepts the limit and binds the pattern instead:
 
 - **A late input that must be checked or approved gets its own check and gate
@@ -236,7 +236,7 @@ same choice, so "run fresh once" is wrong advice for that case. Such a cache is
 non-replayable, and the refusal says so. No secret is written to the cache to
 make it replayable. Recording a sensitive input as a vault reference, the way
 `writtenReferences` records the workflow body's, would make it replayable; that
-is a possible later extension and not part of this plan. A parent starts its
+is a possible later extension and not part of this change. A parent starts its
 nested child runs fresh, never with `--last-evaluated`, so this refusal only
 meets a workflow that takes a secret as an input and is run directly with the
 flag.
@@ -278,10 +278,10 @@ expressions from the definition cache. The `lastEvaluated` branch of
 
 **Acceptance tests.** Two tests in swamp-uat use the flag. The
 `--last-evaluated` case in `tests/cli/adversarial/cel_injection_test.ts` is a
-standalone behavior run replay, which this plan leaves unchanged, and it must
+standalone behavior run replay, which this change leaves unchanged, and it must
 keep passing. The workflow case in `tests/cli/e2e/cel_evaluate_test.ts` checks
 that the run completes and says nothing about whether a definition was
-re-evaluated. Neither establishes the new rule, so this plan adds its own test,
+re-evaluated. Neither establishes the new rule, so this change adds its own test,
 below.
 
 ## Verification
@@ -322,9 +322,9 @@ Beyond the unit tests of each deleted and replacing function:
 | Refuse every resume `--input`                                  | Nothing                                     | Breaks supplying a vault key name minted during the gate                                                  |
 | Warn for one release, then refuse                              | The placeholder pattern, for one release    | The hole stays open for that release                                                                      |
 
-## Rollout
+## Delivery
 
-One PR on the swamp-club#3583 branch:
+Done in one PR on the swamp-club#3583 branch:
 
 1. Replace the resume guard with the write-once check. Delete the inference
    code and its tests. Invert the observed-absence test as described.
@@ -353,7 +353,8 @@ One PR on the swamp-club#3583 branch:
 - The execution service loads the cache by name only when its caller passed
   none. Every path that supersedes (the CLI and serve, through the libswamp run)
   passes the copy it matched on; a direct in-process caller supersedes nothing,
-  so loading there is safe.
+  so loading there is safe. The loader is a required field of the supersede
+  deps, so a caller cannot wire superseding without it.
 - Not done: an authoring-time warning for a step that reads an optional,
   default-less input in a tolerant form and does not run after a gate. It
   would read only the authored workflow at `workflow validate` and be

@@ -110,7 +110,7 @@ export const workflowResumeCommand = withRemoteOptions(
     )
     .example(
       "Resume with an input minted during the gate",
-      "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
+      "swamp workflow resume deploy-with-gate --input authKeyName=deploy-auth-key-42",
     )
     .example(
       "Retry the failed steps of a failed run",

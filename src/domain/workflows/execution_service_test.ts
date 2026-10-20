@@ -5021,9 +5021,10 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
   });
 });
 
-// swamp-club#3583: a resume --input cannot change a value a finished step
-// read. The issue's workflow: a gate that refuses "protected", an approval
-// that shows the target, and the destructive step after it.
+// swamp-club#3583: a resume --input cannot change a value the run has,
+// whatever any step read. The issue's workflow: a gate that refuses
+// "protected", an approval that shows the target, and the destructive step
+// after it.
 function gatedDestroyWorkflow(): Workflow {
   return Workflow.create({
     name: "gated-destroy",
@@ -5076,10 +5077,7 @@ class TaskInputsRecorder implements StepExecutor {
   }
 }
 
-/**
- * Saves a command/shell definition: the guard reads the definition a
- * finished step ran, and one it cannot find reads every input.
- */
+/** Saves a command/shell definition for the steps that name it. */
 async function saveShellDefinition(
   tempDir: string,
   name: string,
@@ -11262,9 +11260,9 @@ Deno.test("resume: a resume that fails before execution stops the heartbeat", as
 });
 
 /**
- * One step whose input reads `inputs.n`, so a string `n` fails evaluation.
- * Behind a gate it waits on the gate, so it has not read `n` when the run
- * suspends and a resume may still change `n` (swamp-club#3583).
+ * One step whose input adds `inputs.n` and the late input `bad`, so a string
+ * `bad` supplied at resume fails evaluation while the resume prepares. `n` is
+ * a value the run has, which a resume cannot change (swamp-club#3583).
  */
 function createArithmeticWorkflow(withGate: boolean): Workflow {
   const steps = [
@@ -18632,8 +18630,8 @@ Deno.test("resume(): a re-entered nested step does not evaluate its guard again 
               task: StepTask.workflow("gated-child"),
               // Truthy only once the nested run has finished: re-evaluated on
               // re-entry, it would skip the step and strand the child. It
-              // reads env, not an input: a resume cannot change an input the
-              // waiting step already read (swamp-club#3583).
+              // reads env, not an input: a value the run has cannot change at
+              // resume (swamp-club#3583).
               guard: '${{ env.SWAMP_TEST_NESTED_SKIP == "1" }}',
             }),
           ],

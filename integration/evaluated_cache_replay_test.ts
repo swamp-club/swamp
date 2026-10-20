@@ -184,9 +184,12 @@ Deno.test("workflow --last-evaluated: superseding and execution use the one cach
     const events = await start(
       {
         ...deps,
-        findEvaluatedWorkflowCache: () => {
-          loads++;
-          return Promise.resolve(cacheA);
+        supersede: {
+          ...deps.supersede!,
+          evaluatedCache: () => {
+            loads++;
+            return Promise.resolve(cacheA);
+          },
         },
       },
       { lastEvaluated: true },

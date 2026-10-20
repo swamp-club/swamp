@@ -332,6 +332,28 @@ Deno.test("checkResumeInputOverrides: a serve-started run is pointed to cancel i
   assertEquals(message.includes("swamp workflow cancel gated-destroy"), false);
 });
 
+Deno.test("checkResumeInputOverrides: a key an older swamp resumed with, and recorded no value for, cannot take another", () => {
+  // Before swamp-club#3583 a resume listed the keys it supplied and kept the
+  // run's inputs as started. Such a run has the key with a value nothing can
+  // compare, so it is pinned like any other.
+  const wf = gatedDestroy();
+  const data = approvedRun(wf, { target: "scratch" }).toData();
+  data.resumeInputs = ["authKey"];
+  const run = WorkflowRun.fromData(data);
+  const message = refusal(wf, run, { authKey: "other" });
+  assertStringIncludes(
+    message,
+    'input "authKey" was supplied at an earlier resume, which recorded no value to compare with, and a value a run has cannot change',
+  );
+  assertEquals(message.includes("other"), false, "message leaks a value");
+  // Both kinds in one refusal, and a key the run never had still added.
+  const both = refusal(wf, run, { target: "x", authKey: "y", region: "eu" });
+  assertStringIncludes(both, 'input "target" already has a value');
+  assertStringIncludes(both, 'input "authKey" was supplied');
+  assertEquals(both.includes("region"), false);
+  accepts(wf, run, { region: "eu" });
+});
+
 Deno.test("checkResumeInputOverrides: nothing supplied is nothing to check", () => {
   const wf = gatedDestroy();
   accepts(wf, approvedRun(wf), {});

@@ -52,9 +52,10 @@ export function checkResumeInputOverrides(
   resumeInputs: Record<string, unknown>,
 ): void {
   const changed = changedKeys(run.inputs, resumeInputs);
-  if (changed.length === 0) return;
+  const unrecorded = unrecordedKeys(run, resumeInputs);
+  if (changed.length === 0 && unrecorded.length === 0) return;
   throw new UserError(
-    refusalMessage(workflow, run, changed),
+    refusalMessage(workflow, run, changed, unrecorded),
     "resume_input_immutable",
   );
 }
@@ -76,6 +77,21 @@ function changedKeys(
 }
 
 /**
+ * The supplied keys an earlier resume supplied without recording a value: a
+ * run resumed by an older swamp listed the key names but kept its inputs as
+ * started. The run has such a key, with a value nothing can compare, so it
+ * cannot take another.
+ */
+function unrecordedKeys(
+  run: WorkflowRun,
+  resumeInputs: Record<string, unknown>,
+): string[] {
+  return Object.keys(resumeInputs).filter((key) =>
+    !Object.hasOwn(run.inputs, key) && run.resumeInputs.includes(key)
+  );
+}
+
+/**
  * Names each refused key, never a value: inputs may hold secrets. A
  * suspended run is left suspended, so the way out names the cancel command
  * first; a failed run can only be started again. The run id comes first:
@@ -84,9 +100,11 @@ function changedKeys(
 function refusalMessage(
   workflow: Workflow,
   run: WorkflowRun,
-  keys: readonly string[],
+  changed: readonly string[],
+  unrecorded: readonly string[],
 ): string {
-  const quoted = keys.map((k) => `"${k}"`).join(", ");
+  const quoted = (keys: readonly string[]) =>
+    keys.map((k) => `"${k}"`).join(", ");
   const name = quoteShellWord(workflow.name);
   const newRun =
     `a new run with all its inputs (swamp workflow run ${name} --input ...)`;
@@ -95,8 +113,23 @@ function refusalMessage(
     // run serve started is cancelled through serve.
     ? `${suspendedWayOut(workflow, run)} Then start ${newRun}.`
     : `Start ${newRun}.`;
-  const subject = keys.length === 1
-    ? `input ${quoted} already has a value`
-    : `inputs ${quoted} already have values`;
-  return `Run ${run.id} is unchanged: ${subject}, and a value a run has cannot change. ${wayOut}`;
+  const parts = [
+    ...(changed.length === 1
+      ? [`input ${quoted(changed)} already has a value`]
+      : changed.length > 1
+      ? [`inputs ${quoted(changed)} already have values`]
+      : []),
+    ...(unrecorded.length > 0
+      ? [
+        `${unrecorded.length === 1 ? "input" : "inputs"} ${
+          quoted(unrecorded)
+        } ${
+          unrecorded.length === 1 ? "was" : "were"
+        } supplied at an earlier resume, which recorded no value to compare with`,
+      ]
+      : []),
+  ];
+  return `Run ${run.id} is unchanged: ${
+    parts.join("; ")
+  }, and a value a run has cannot change. ${wayOut}`;
 }

@@ -902,15 +902,15 @@ swamp workflow approvals  # list pending approvals and expired gates with run ID
 
 A resume `--input` adds inputs the run does not have, such as the vault key name
 of a credential minted during the gate. A value the run already has cannot
-change (`--json` code `resume_input_immutable`): the refusal names the key and
-the way out, a cancel and a new run with all its inputs. Declare a late input
-optional with no default and read it only after the gate, in a form that
-tolerates its absence (`${{ inputs.?authKeyName.orValue('') }}`,
-`has(inputs.authKeyName)`, or inside `vault.get`): the whole workflow is
-evaluated at run start, so a plain read of an unset input fails the run. A step
-before the gate can see such an input absent and the resume still adds it, so a
-late input that must be checked or approved gets its own check and gate after it
-arrives.
+change (`--json` code `resume_input_immutable` locally, `workflow_resume_failed`
+through `--server`): the refusal names the key and the way out, a cancel and a
+new run with all its inputs. Declare a late input optional with no default and
+read it only after the gate, in a form that tolerates its absence
+(`${{ inputs.?authKeyName.orValue('') }}`, `has(inputs.authKeyName)`, or inside
+`vault.get`): the whole workflow is evaluated at run start, so a plain read of
+an unset input fails the run. A step before the gate can see such an input
+absent and the resume still adds it, so a late input that must be checked or
+approved gets its own check and gate after it arrives.
 
 A gate in a nested workflow suspends the parent too. Decide and resume the child
 run under the child's name, then resume the parent. Cancelling or rejecting the
@@ -1128,11 +1128,12 @@ a mismatch is refused before the run changes (`--json` code
 `input_validation_failed`, or `workflow_resume_failed` through `--server`).
 Resume inputs merge over the inputs the run had when it suspended: a resume
 `--input` adds a key the run does not have, and a key the run has keeps its
-value (`--json` code `resume_input_immutable`). The whole workflow is evaluated
-at run start, so a late input is declared optional with no default and read
-after the gate in a form that tolerates its absence (`inputs.?key.orValue('')`,
-`has(inputs.key)`, or inside `vault.get`). The run record records the resume
-input key names (not values) for audit.
+value (`--json` code `resume_input_immutable` locally, `workflow_resume_failed`
+through `--server`). The whole workflow is evaluated at run start, so a late
+input is declared optional with no default and read after the gate in a form
+that tolerates its absence (`inputs.?key.orValue('')`, `has(inputs.key)`, or
+inside `vault.get`). The run record records the resume input key names (not
+values) for audit.
 
 **Retry a failed run:** `swamp workflow resume <workflow-name> --run <run-id>`
 on a failed run retries its failed steps and their dependents in the same run;

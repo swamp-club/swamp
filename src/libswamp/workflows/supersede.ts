@@ -87,6 +87,16 @@ export interface SupersedeDeps {
    * Without it they are only reported.
    */
   cascade?: NestedCascade;
+  /**
+   * The workflow's evaluated cache by name, for a `--last-evaluated` run
+   * (swamp-club#3583): loaded once per start, matched on here, and handed to
+   * the execution service to replay, so a cache rewritten between the two
+   * cannot split them. Required with the rest of superseding, so no caller
+   * that supersedes can leave the run to load another copy.
+   */
+  evaluatedCache: (
+    workflowName: string,
+  ) => Promise<EvaluatedWorkflowCache | null>;
 }
 
 /**

@@ -700,8 +700,8 @@ Deno.test("signal wait: without allowFailure a timeout fails the run, and a retr
 });
 
 Deno.test("signal wait: a resume under which the step's guard flips still times the wait out and opens no second wait", async () => {
-  // The guard reads env, not an input: a resume cannot change an input the
-  // waiting step already read (swamp-club#3583).
+  // The guard reads env, not an input: a value the run has cannot change at
+  // resume (swamp-club#3583).
   const workflow = release("guard-flips", {
     reviewGuard: '${{ env.SWAMP_TEST_SKIP_REVIEW == "1" }}',
   });
@@ -742,6 +742,7 @@ Deno.test("signal wait: a new run does not supersede a run that waits for a sign
         workflow,
         {},
         {
+          evaluatedCache: () => Promise.resolve(null),
           findSuspendedRuns: (id) => h.runRepo.findAllByWorkflowId(id),
           findEvaluatedWorkflow: () => Promise.resolve(null),
           runClaims: unclaimedRuns,
@@ -775,6 +776,7 @@ Deno.test("signal wait: a new run does not supersede a run that waits for a sign
       fresh,
       {},
       {
+        evaluatedCache: () => Promise.resolve(null),
         findSuspendedRuns: (id) => h.runRepo.findAllByWorkflowId(id),
         findEvaluatedWorkflow: () => Promise.resolve(null),
         runClaims: unclaimedRuns,
@@ -935,8 +937,8 @@ Deno.test("signal wait: each forEach iteration gets its own wait, and the run re
 });
 
 Deno.test("signal wait: an expired iteration a resume no longer expands is timed out, not left waiting in a succeeded run", async () => {
-  // The collection reads env, not an input: a resume cannot change an input
-  // the waiting iterations already read (swamp-club#3583).
+  // The collection reads env, not an input: a value the run has cannot change
+  // at resume (swamp-club#3583).
   const perRegion = (name: string, allowFailure: boolean) =>
     Workflow.create({
       name,

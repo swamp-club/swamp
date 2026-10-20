@@ -341,6 +341,7 @@ Deno.test("superseding a suspended run settles its jobs and steps in its record"
       workflow,
       suspended.inputs,
       {
+        evaluatedCache: () => Promise.resolve(null),
         findSuspendedRuns: async (workflowId) =>
           (await runRepo.findAllByWorkflowId(workflowId))
             .filter((run) => run.status === "suspended"),

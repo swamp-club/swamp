@@ -91,6 +91,7 @@ Deno.test("supersedeSuspendedRuns: cancels matching-input suspended run", async 
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -116,6 +117,7 @@ Deno.test("supersedeSuspendedRuns: settles the superseded run's unfinished work"
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -139,6 +141,7 @@ Deno.test("supersedeSuspendedRuns: preserves different-input suspended run", asy
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -160,6 +163,7 @@ Deno.test("supersedeSuspendedRuns: cancels only matching runs", async () => {
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([matching, different]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -180,6 +184,7 @@ Deno.test("supersedeSuspendedRuns: skips serve-owned runs", async () => {
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -200,6 +205,7 @@ Deno.test("supersedeSuspendedRuns: empty inputs match empty inputs", async () =>
     {},
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -219,6 +225,7 @@ Deno.test("supersedeSuspendedRuns: no suspended runs returns empty", async () =>
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -242,6 +249,7 @@ Deno.test("supersedeSuspendedRuns: skips non-suspended runs in the list", async 
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -265,6 +273,7 @@ Deno.test("supersedeSuspendedRuns: cancels the run as stored, under its claim", 
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([listed]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: {
         withClaim: (runId, fn) => {
@@ -294,6 +303,7 @@ Deno.test("supersedeSuspendedRuns: leaves a run that stopped being suspended sin
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([listed]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -314,6 +324,7 @@ Deno.test("supersedeSuspendedRuns: leaves a run deleted since the listing", asyn
     { env: "prod" },
     {
       findSuspendedRuns: () => Promise.resolve([listed]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -346,6 +357,7 @@ Deno.test("supersedeSuspendedRuns: leaves a matching run that waits for a signal
     {},
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -373,6 +385,7 @@ Deno.test("supersedeSuspendedRuns: leaves a run whose wait is past its deadline,
     {},
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -398,6 +411,7 @@ Deno.test("supersedeSuspendedRuns: decides the skip on the run as stored under i
     {},
     {
       findSuspendedRuns: () => Promise.resolve([listed]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -418,6 +432,7 @@ Deno.test("supersedeSuspendedRuns: a run with different inputs is neither cancel
     { env: "staging" },
     {
       findSuspendedRuns: () => Promise.resolve([run]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -438,6 +453,7 @@ Deno.test("supersedeSuspendedRuns: leaves a run whose nested run waits for a sig
     {},
     {
       findSuspendedRuns: () => Promise.resolve([chain[0]]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
       cascade: () => {
@@ -466,6 +482,7 @@ Deno.test("supersedeSuspendedRuns: a run whose nested run waits at a gate is sti
     {},
     {
       findSuspendedRuns: () => Promise.resolve([chain[0]]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },
@@ -485,6 +502,7 @@ Deno.test("supersedeSuspendedRuns: a nested run that cannot be read does not sto
     {},
     {
       findSuspendedRuns: () => Promise.resolve([chain[0]]),
+      evaluatedCache: () => Promise.resolve(null),
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
     },

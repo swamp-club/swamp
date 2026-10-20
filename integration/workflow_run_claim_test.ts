@@ -381,6 +381,7 @@ function supersede(
     workflow,
     run.inputs,
     {
+      evaluatedCache: () => Promise.resolve(null),
       findSuspendedRuns: async (workflowId) =>
         (await runRepo.findAllByWorkflowId(workflowId))
           .filter((candidate) => candidate.status === "suspended"),

@@ -731,8 +731,9 @@ whose steps were resolved when it was written, so it runs and records the
 inputs the cache was evaluated with. The cache records them (`evaluatedInputs`,
 written by `workflow evaluate` and by every fresh run, after type coercion and
 schema defaults; `{}` for a workflow evaluated with none). The cache is read
-once per start, in the libswamp run path (`findEvaluatedWorkflowCache` in
-`src/libswamp/workflows/run.ts`), and that one copy serves the input check,
+once per start, in the libswamp run path, through the supersede deps'
+`evaluatedCache`, a required field so no caller that supersedes can leave it
+out (`src/libswamp/workflows/run.ts`), and that one copy serves the input check,
 superseding and execution: a `workflow evaluate` or fresh run in between cannot
 replace the cache after predecessors matching the first copy were cancelled.
 The execution service takes the loaded cache as a run option (`evaluatedCache`)

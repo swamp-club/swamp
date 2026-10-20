@@ -234,9 +234,7 @@ function freshService(
 async function failPipeline(repoDir: string) {
   const workflow = pipelineWorkflow();
   await new YamlWorkflowRepository(repoDir).save(workflow);
-  // The steps' definition reads no input. A resume reads the definition a
-  // finished step ran, and one it cannot find reads every input
-  // (swamp-club#3583).
+  // The definition the steps name.
   const type = ModelType.create("command/shell");
   await new YamlDefinitionRepository(repoDir).save(
     type,
@@ -613,6 +611,7 @@ for (
           workflow,
           suspended.inputs,
           {
+            evaluatedCache: () => Promise.resolve(null),
             findSuspendedRuns: (id) => runRepo.findAllByWorkflowId(id),
             findEvaluatedWorkflow: () => Promise.resolve(null),
             runClaims: unclaimedRuns,
