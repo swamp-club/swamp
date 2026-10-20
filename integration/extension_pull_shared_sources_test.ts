@@ -42,6 +42,7 @@ import {
 import { installExtension } from "../src/libswamp/extensions/pull.ts";
 import { RemoveExtensionService } from "../src/libswamp/extensions/remove_extension_service.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
+import { canonicalLockfilePath } from "../src/infrastructure/persistence/upstream_extensions.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { bundleExtension } from "../src/domain/models/bundle.ts";
@@ -247,7 +248,11 @@ Deno.test("extension pull: installs archive-root shared sources so the pulled so
     const files = lockfile.getEntry(NAME)!.files!;
     for (const path of installed) {
       assertEquals(await exists(path), true, path);
-      assertEquals(files.includes(relative(consumer, path)), true, path);
+      assertEquals(
+        files.includes(canonicalLockfilePath(relative(consumer, path))),
+        true,
+        path,
+      );
     }
 
     // The installed source resolves and rebundles on its own.
