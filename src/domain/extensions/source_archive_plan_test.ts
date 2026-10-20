@@ -528,6 +528,17 @@ Deno.test("bareImportRewrites: a zod 4 target ships as npm:zod@4, keeping a subp
   );
 });
 
+Deno.test("bareImportRewrites: a zod subpath other than /v4 ships as the map writes it, so it stays bundled", () => {
+  const source =
+    'import { $ZodType } from "zod/v4/core";\nimport * as zm from "zod/mini";\n';
+  assertEquals(
+    bareImportRewrites(source, { zod: "npm:zod@^4.1.0" }, "/m.ts").map((r) =>
+      r.to
+    ),
+    ["npm:zod@^4.1.0/v4/core", "npm:zod@^4.1.0/mini"],
+  );
+});
+
 Deno.test("mergeSpecifierRewrites: keeps the plan's rewrite at a shared span and sorts by position", () => {
   const span = (line: number, character: number) => ({
     start: { line, character },

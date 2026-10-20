@@ -215,12 +215,17 @@ function zodSpecifierVersion(specifier: string): string | null | undefined {
 /**
  * Whether an import of `specifier` gets the host's zod 4: `zod`, `npm:zod`,
  * or a version or range every admitted version of which is 4.x (`npm:zod@4`,
- * `npm:zod@4.3.6`, `npm:zod@^4.1`, `npm:zod@~4.2`). Push can ship any of
- * these, rewritten from an import-map target (swamp-club#3637).
+ * `npm:zod@4.3.6`, `npm:zod@^4.1`, `npm:zod@~4.2`), at the root or `/v4`
+ * subpath. Push can ship any of these, rewritten from an import-map target
+ * (swamp-club#3637).
  */
 export function isZod4Specifier(specifier: string): boolean {
   const version = zodSpecifierVersion(specifier);
   if (version === undefined) return false;
+  // Only the root and `/v4` are the namespace the host shares; another
+  // subpath (`/v4/core`, `/mini`) has its own exports and stays bundled.
+  const subpath = /^[^@]*@[^/]+(\/.*)?$/.exec(specifier)?.[1];
+  if (subpath !== undefined && subpath !== "/v4") return false;
   return version === null || versionWithinMajor(version, 4);
 }
 

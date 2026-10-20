@@ -500,6 +500,8 @@ Deno.test("isZod4Specifier: rejects zod 3, ranges that leave 4.x, and other pack
       "jsr:@zod/zod@4",
       "npm:zod@3.25.0/v4",
       "zod/v4",
+      "npm:zod@4.3.6/v4/core",
+      "npm:zod@^4/mini",
     ]
   ) {
     assertEquals(isZod4Specifier(spec), false, spec);
