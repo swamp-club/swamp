@@ -719,6 +719,13 @@ overloads only and has no data-access leaves to proxy. A method that wants data
 inside a CEL expression fetches it first through `context.queryData` /
 `readResource`.
 
+`readResource` on a worker is the same `createResourceReader` a local run uses,
+built over the remote data repository and vault service proxies and fed the
+verified bundle's resource specs by the runner (`exec_dispatch.ts`), so an
+untagged record's sensitive fields resolve from the schema and a malformed
+sensitive-fields tag refuses the read exactly as locally (swamp-club#3530). The
+dispatch's own `resourceSpecs` carry descriptions only.
+
 ## The capability protocol
 
 The proxied calls must be a **closed, named set of verbs**, because any

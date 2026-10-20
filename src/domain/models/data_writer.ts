@@ -55,6 +55,7 @@ import {
   wordedText,
 } from "../behavior_wording.ts";
 import { currentVaultAccess } from "../vaults/run_vault_access.ts";
+import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
 import {
   overriddenSpecVaultName,
   resolveSensitiveOutputVault,
@@ -1377,16 +1378,19 @@ async function resolveValueAtPath(
  * The returned function reads previously stored resource data by instance name,
  * returning the parsed JSON object or null if no data exists.
  * When a VaultService is provided, vault reference expressions are resolved
- * only in fields marked as sensitive — determined by the `_swamp.sensitiveFields`
- * tag on the data record (for new data) or by the resource spec schema (for
- * legacy data without the tag).
+ * only in the fields {@link getSensitiveFieldsForResolution} chooses: those
+ * the `_swamp.sensitiveFields` tag names, or, for an untagged record, those
+ * the resource spec schema marks sensitive. A malformed tag fails the read.
+ * The worker's remote method context builds the same reader over its proxies
+ * with the verified bundle's specs, so both executors read alike
+ * (swamp-club#3530).
  *
  * @param repo - The unified data repository
  * @param modelType - The model type
  * @param modelId - The model ID (definition ID)
  * @param vaultService - Optional vault service for resolving vault references
  * @param redactor - Optional secret redactor to register resolved secrets
- * @param resourceSpecs - Optional resource specs for legacy data schema fallback
+ * @param resourceSpecs - Optional resource specs for the untagged-record schema fallback
  * @returns A readResource function
  */
 export function createResourceReader(
@@ -1435,38 +1439,57 @@ export function createResourceReader(
       );
     }
     const data = parsed as Record<string, unknown>;
-    if (vaultService) {
-      const sensitiveFields = dataRecord
-        ? getSensitiveFieldsForResolution(
-          dataRecord.tags,
-          resourceSpecs,
-        )
-        : null;
-      if (sensitiveFields) {
-        await resolveSensitiveVaultRefs(
-          data,
-          sensitiveFields,
-          vaultService,
-          redactor,
-        );
-      }
+    // Decided before any vault read, so a malformed tag refuses the read
+    // whether or not a vault service is wired.
+    const sensitiveFields = dataRecord
+      ? getSensitiveFieldsForResolution(
+        dataRecord.tags,
+        resourceSpecs,
+        instanceName,
+      )
+      : null;
+    if (vaultService && sensitiveFields) {
+      await resolveSensitiveVaultRefs(
+        data,
+        sensitiveFields,
+        vaultService,
+        redactor,
+      );
     }
     return data;
   };
 }
 
 /**
- * Determines which fields to resolve vault references in. Prefers the
- * `_swamp.sensitiveFields` tag (new data). Falls back to schema-based
- * extraction (legacy data). Returns null when neither is available (skip
- * resolution, secure default).
+ * Decides which fields of a stored resource resolve vault references, for
+ * `readResource` on both executors. The record's `_swamp.sensitiveFields` tag
+ * is read strictly, as the accessor adapter reads it
+ * ({@link readSensitiveFieldsTag}): a present tag names the fields, and a tag
+ * the writer could not have produced fails the read with
+ * {@link ResourceSensitiveFieldsInvalidError}, naming the record, rather than
+ * being read as absent. An absent tag (a record written before the tag
+ * existed, or with nothing vaulted at write time) falls back to the resource
+ * spec's schema, found by the record's `specName` tag; without specs, a spec
+ * name or a matching spec nothing resolves, the secure default.
  */
-function getSensitiveFieldsForResolution(
+export function getSensitiveFieldsForResolution(
   tags: Record<string, string>,
-  resourceSpecs?: Record<string, ResourceOutputSpec>,
+  resourceSpecs: Record<string, ResourceOutputSpec> | undefined,
+  instanceName: string,
 ): string[] | "*" | null {
-  const fromTag = parseSensitiveFieldsTag(tags);
-  if (fromTag !== null) return fromTag;
+  let tag: SensitiveFieldsTag;
+  try {
+    tag = readSensitiveFieldsTag(tags);
+  } catch (error) {
+    if (error instanceof SensitiveFieldsTagInvalidError) {
+      throw new ResourceSensitiveFieldsInvalidError(instanceName, error);
+    }
+    throw error;
+  }
+  if (tag.kind === "all") return SENSITIVE_FIELDS_ALL;
+  if (tag.kind === "paths") {
+    return tag.paths.map((segments) => segments.join("."));
+  }
 
   if (!resourceSpecs) return null;
   const specName = tags["specName"];

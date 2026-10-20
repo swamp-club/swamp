@@ -840,9 +840,28 @@ literal text.
 
 A `_swamp.sensitiveFields` tag written at save time lists the dot-paths of
 vaulted fields, or `*` for `sensitiveOutput: true`. Read sites parse it to pick
-the fields to resolve. For legacy data without the tag, call sites with schema
-access fall back to `extractSensitiveFields()` on the resource spec; those
-without skip resolution (secure default).
+the fields to resolve. A record is untagged when it was written before the tag
+existed, or when nothing was vaulted at write time (the writer sets the tag
+only after vaulting a field). For an untagged record, call sites with schema
+access fall back to `extractSensitiveFields()` on the resource spec the
+record's `specName` tag names; those without skip resolution (secure default).
+The fallback's trust in `specName`, which workflow tags and `--tag` can
+override, is tracked as swamp-club#3684.
+
+`readResource` is the one caller with schema access, on both executors:
+`getSensitiveFieldsForResolution()` decides the fields, and the worker builds
+the same `createResourceReader()` over its proxies with the verified bundle's
+resource specs, since the dispatch carries only spec descriptions
+(swamp-club#3530). The tag is read strictly there, with the
+`readSensitiveFieldsTag()` the typed-secrets accessor adapter uses: a present
+tag the writer could not have produced is not the vaulting step's, so
+`readResource` refuses the read on both executors with
+`secret_reference_invalid` (`ResourceSensitiveFieldsInvalidError` in
+`src/domain/vaults/secret_reference_errors.ts`, naming the record and wrapping
+the reading's `SensitiveFieldsTagInvalidError`). The expression-facing
+accessors still read a malformed tag as absent through
+`parseSensitiveFieldsTag()` ([typed-secrets](../enablers/typed-secrets.md)
+Section 6.1).
 
 Only the vaulting step writes the tag. The `_swamp.` tag prefix is reserved, and
 a user-supplied key under it is refused from every source: definition, spec

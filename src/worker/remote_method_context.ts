@@ -35,6 +35,7 @@ import type {
   DataHandle,
   DataWriter,
   MethodContext,
+  ResourceOutputSpec,
 } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import {
@@ -58,10 +59,7 @@ import type { DefinitionRepository } from "../domain/definitions/repositories.ts
 import type { OutputRepository } from "../domain/models/repositories.ts";
 import type { DataQueryService } from "../domain/data/data_query_service.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
-import {
-  parseSensitiveFieldsTag,
-  resolveSensitiveVaultRefs,
-} from "../domain/models/data_writer.ts";
+import { createResourceReader } from "../domain/models/data_writer.ts";
 import { wrapLoggerWithOutput } from "../domain/models/in_process_executor.ts";
 import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { VaultSecretBag } from "../domain/vaults/vault_secret_bag.ts";
@@ -125,6 +123,13 @@ export interface RemoteContextOptions {
   scratchDir: string;
   /** Local root the bundle's co-located assets were prefetched to. */
   extensionFilesDir?: string;
+  /**
+   * The verified bundle's resource specs, so `readResource` resolves an
+   * untagged record's sensitive fields from the schema as a local run does
+   * (swamp-club#3530). The dispatch's own `resourceSpecs` carry descriptions
+   * only, so they cannot stand in.
+   */
+  resourceSpecs?: Record<string, ResourceOutputSpec>;
   signal: AbortSignal;
   onEvent?: MethodContext["onEvent"];
 }
@@ -626,44 +631,18 @@ export function createRemoteMethodContext(
       )
     : undefined;
 
-  const readResource = async (
-    instanceName: string,
-    version?: number,
-  ): Promise<Record<string, unknown> | null> => {
-    const dataRecord = await dataRepository.findByName(
-      modelType,
-      execution.modelId,
-      instanceName,
-      version,
-    );
-    const resolvedVersion = dataRecord?.version;
-
-    const content = await dataRepository.getContent(
-      modelType,
-      execution.modelId,
-      instanceName,
-      resolvedVersion ?? version,
-    );
-    if (content === null) {
-      return null;
-    }
-    const data = JSON.parse(new TextDecoder().decode(content)) as Record<
-      string,
-      unknown
-    >;
-    const sensitiveFields = dataRecord
-      ? parseSensitiveFieldsTag(dataRecord.tags)
-      : null;
-    if (sensitiveFields) {
-      await resolveSensitiveVaultRefs(
-        data,
-        sensitiveFields,
-        vaultService,
-        redactor,
-      );
-    }
-    return data;
-  };
+  // The reader a local run uses, over the proxies: the sensitive-fields tag
+  // names the fields to resolve, an untagged record falls back to the
+  // bundle's resource schema, and a malformed tag refuses the read
+  // (swamp-club#3530).
+  const readResource = createResourceReader(
+    dataRepository,
+    modelType,
+    execution.modelId,
+    vaultService,
+    redactor,
+    options.resourceSpecs,
+  );
 
   const deleteResource = async (instanceName: string): Promise<void> => {
     await options.client.deleteResource({ name: instanceName }, signal);

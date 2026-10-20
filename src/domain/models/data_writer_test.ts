@@ -30,6 +30,7 @@ import {
   createResourceDeleter,
   createResourceReader,
   createResourceWriter,
+  getSensitiveFieldsForResolution,
   modelRequiresVault,
   parseSensitiveFieldsTag,
   parseStoredVaultReference,
@@ -57,6 +58,7 @@ import {
   runWithVaultAccess,
   VaultAccessDeniedError,
 } from "../vaults/run_vault_access.ts";
+import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
 
 /**
  * Creates a minimal mock UnifiedDataRepository for tag resolution tests.
@@ -2534,9 +2536,99 @@ Deno.test("parseSensitiveFieldsTag: returns null when tag absent", () => {
   assertEquals(parseSensitiveFieldsTag({}), null);
 });
 
+// The lenient contract is the expression-facing accessors' until the
+// typed-secrets accessor adapter refuses a malformed tag; readResource refuses
+// it today through getSensitiveFieldsForResolution (swamp-club#3530).
 Deno.test("parseSensitiveFieldsTag: returns null for invalid JSON", () => {
   const tags = { [SENSITIVE_FIELDS_TAG]: "not-json" };
   assertEquals(parseSensitiveFieldsTag(tags), null);
+});
+
+// --- getSensitiveFieldsForResolution tests ---
+
+const fallbackSpecs: Record<string, ResourceOutputSpec> = {
+  creds: {
+    schema: z.object({
+      name: z.string(),
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+  all: {
+    schema: z.object({ secret: z.string() }),
+    sensitiveOutput: true,
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+};
+
+Deno.test("getSensitiveFieldsForResolution: a present tag wins over the schema", () => {
+  assertEquals(
+    getSensitiveFieldsForResolution(
+      { specName: "creds", [SENSITIVE_FIELDS_TAG]: JSON.stringify(["name"]) },
+      fallbackSpecs,
+      "inst",
+    ),
+    ["name"],
+  );
+  assertEquals(
+    getSensitiveFieldsForResolution(
+      { specName: "creds", [SENSITIVE_FIELDS_TAG]: SENSITIVE_FIELDS_ALL },
+      fallbackSpecs,
+      "inst",
+    ),
+    SENSITIVE_FIELDS_ALL,
+  );
+});
+
+Deno.test("getSensitiveFieldsForResolution: an absent tag falls back to the spec schema", () => {
+  assertEquals(
+    getSensitiveFieldsForResolution({ specName: "creds" }, fallbackSpecs, "i"),
+    ["secret"],
+  );
+  assertEquals(
+    getSensitiveFieldsForResolution({ specName: "all" }, fallbackSpecs, "i"),
+    SENSITIVE_FIELDS_ALL,
+  );
+});
+
+Deno.test("getSensitiveFieldsForResolution: an absent tag resolves nothing without specs, a spec name, a matching spec or a sensitive field", () => {
+  assertEquals(
+    getSensitiveFieldsForResolution({ specName: "creds" }, undefined, "i"),
+    null,
+  );
+  assertEquals(getSensitiveFieldsForResolution({}, fallbackSpecs, "i"), null);
+  assertEquals(
+    getSensitiveFieldsForResolution({ specName: "other" }, fallbackSpecs, "i"),
+    null,
+  );
+  assertEquals(
+    getSensitiveFieldsForResolution({ specName: "item" }, testResources, "i"),
+    null,
+  );
+});
+
+Deno.test("getSensitiveFieldsForResolution: a malformed tag fails with secret_reference_invalid, naming the record and the tag key but not the tag", () => {
+  for (
+    const malformed of ['["secret"', "[1,2]", '{"secret":true}', "null", ""]
+  ) {
+    const error = assertThrows(
+      () =>
+        getSensitiveFieldsForResolution(
+          { specName: "creds", [SENSITIVE_FIELDS_TAG]: malformed },
+          fallbackSpecs,
+          "my-instance",
+        ),
+      ResourceSensitiveFieldsInvalidError,
+      "my-instance",
+    );
+    assertEquals(error.code, "secret_reference_invalid", malformed);
+    assertStringIncludes(error.message, SENSITIVE_FIELDS_TAG);
+    if (malformed !== "") {
+      assert(!error.message.includes(malformed), malformed);
+    }
+  }
 });
 
 // --- createResourceReader: non-sensitive fields NOT resolved ---
@@ -2608,6 +2700,62 @@ Deno.test("createResourceReader: legacy data without tag uses schema fallback", 
   const result = await readResource("my-instance");
   assertEquals(result?.secret, "secret-value");
   assertEquals(result?.name, "public");
+});
+
+Deno.test("createResourceReader: a malformed tag fails the read before any vault read, even when the spec could resolve the field (swamp-club#3530)", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "secret-value");
+  // Any vault read would reject with its own error, so the tag error proves
+  // none was issued.
+  (vaultService as { get: VaultService["get"] }).get = () =>
+    Promise.reject(new Error("vault read issued"));
+
+  const data = {
+    name: "public",
+    secret: "${{ vault.get('test-vault', 'k1') }}",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({
+    specName: "creds",
+    [SENSITIVE_FIELDS_TAG]: '["secret"',
+  });
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+    undefined,
+    fallbackSpecs,
+  );
+  const error = await assertRejects(
+    () => readResource("my-instance"),
+    ResourceSensitiveFieldsInvalidError,
+    "my-instance",
+  );
+  assertEquals(error.code, "secret_reference_invalid");
+});
+
+Deno.test("createResourceReader: a malformed tag fails the read without a VaultService too", async () => {
+  const encoded = new TextEncoder().encode(JSON.stringify({ secret: "x" }));
+  const mockData = createMockDataEntity({ [SENSITIVE_FIELDS_TAG]: "[1,2]" });
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
+  };
+
+  const readResource = createResourceReader(repo, modelType, modelId);
+  await assertRejects(
+    () => readResource("my-instance"),
+    ResourceSensitiveFieldsInvalidError,
+    "my-instance",
+  );
 });
 
 Deno.test("createResourceReader: legacy data without tag or specs skips resolution", async () => {
