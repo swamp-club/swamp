@@ -70,10 +70,19 @@ Deno.test("probeStartServer: any other status means something else owns the port
 });
 
 Deno.test("probeStartServer: a closed port is dead", async () => {
-  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
-  const port = (listener.addr as Deno.NetAddr).port;
-  listener.close();
-  assertEquals(await probeStartServer(record(port)), "dead");
+  // A test running in parallel can bind the freed port before the probe
+  // reaches it, so each attempt frees a new one; a refusal misread as
+  // anything else fails them all (swamp-club#3672).
+  const results: string[] = [];
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+    const port = (listener.addr as Deno.NetAddr).port;
+    listener.close();
+    const liveness = await probeStartServer(record(port));
+    if (liveness === "dead") return;
+    results.push(liveness);
+  }
+  assertEquals(results, [], "no freed port probed as dead");
 });
 
 Deno.test("probeStartServer: a ping that times out is unknown", async () => {
