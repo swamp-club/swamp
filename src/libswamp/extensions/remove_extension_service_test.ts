@@ -28,6 +28,7 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { FaultingStubRepository } from "../../infrastructure/persistence/test_helpers/faulting_stub_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { canonicalLockfilePath } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
 import {
   bundleNamespace,
@@ -1340,7 +1341,7 @@ Deno.test(
         }).execute(owner);
 
         assertEquals(result.retainedFiles, [{
-          path: root,
+          path: canonicalLockfilePath(root),
           claimedBy: [other],
         }]);
         assertEquals(result.filesDeleted, 0);
@@ -1475,7 +1476,7 @@ Deno.test(
         }).execute(owner);
 
         assertEquals(result.retainedFiles, [{
-          path: root,
+          path: canonicalLockfilePath(root),
           claimedBy: [other],
         }]);
         assertEquals(
@@ -1524,7 +1525,7 @@ Deno.test(
 
         const result = await removal;
         assertEquals(result.retainedFiles, [{
-          path: root,
+          path: canonicalLockfilePath(root),
           claimedBy: [other],
         }]);
         assertEquals(

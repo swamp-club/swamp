@@ -46,6 +46,7 @@ import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { canonicalLockfilePath } from "../../infrastructure/persistence/upstream_extensions.ts";
 import {
   extensionInstallRoots,
   swampPath,
@@ -489,7 +490,9 @@ Deno.test("InstallExtensionService.execute: a skill file the new version drops i
     const result = await repo.install(n.a, V2);
 
     assertEquals(await exists(join(repo.skillsDir, dropped)), false);
-    const droppedRel = relative(repo.repoDir, join(repo.skillsDir, dropped));
+    const droppedRel = canonicalLockfilePath(
+      relative(repo.repoDir, join(repo.skillsDir, dropped)),
+    );
     assert(
       result?.pruned.includes(droppedRel),
       `pruned should report ${droppedRel}: ${result?.pruned}`,
@@ -734,7 +737,9 @@ Deno.test("installExtension: without a caller phase the install commits and prun
     );
 
     assertEquals(await exists(join(repo.skillsDir, skill)), false);
-    const skillRel = relative(repo.repoDir, join(repo.skillsDir, skill));
+    const skillRel = canonicalLockfilePath(
+      relative(repo.repoDir, join(repo.skillsDir, skill)),
+    );
     assert(
       result?.pruned.includes(skillRel),
       `pruned should report ${skillRel}: ${result?.pruned}`,
